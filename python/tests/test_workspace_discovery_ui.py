@@ -559,6 +559,8 @@ async def test_discover_wire_tools(app: FastAPI, tmp_path, monkeypatch: pytest.M
     )
     monkeypatch.setattr("apx_agent._dev._find_agent_router_path", lambda: agent_py)
     monkeypatch.setattr("apx_agent._ui_edit._find_agent_router_path", lambda: agent_py)
+    # #628: wire probes reachability under OBO before planting — allow in this shape test.
+    monkeypatch.setattr("apx_agent._ui_probe._verify_resource", lambda _ws, _kind, _ident: None)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
         r = await ac.post(
@@ -601,3 +603,101 @@ async def test_discover_wire_tools(app: FastAPI, tmp_path, monkeypatch: pytest.M
         )
         assert uw.status_code == 200
         assert f"{binding} = " not in agent_py.read_text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload,kind,ident",
+    [
+        (
+            {"kind": "uc_function", "full_name": "main.ml.score_lead", "target": "agent"},
+            "uc_function",
+            "main.ml.score_lead",
+        ),
+        (
+            {"kind": "genie_space", "space_id": "space-denied", "title": "Sales", "target": "agent"},
+            "genie_space",
+            "space-denied",
+        ),
+        (
+            {
+                "kind": "vector_search_index",
+                "index_name": "main.rag.denied_idx",
+                "columns": ["content"],
+                "target": "agent",
+            },
+            "vector_search_index",
+            "main.rag.denied_idx",
+        ),
+    ],
+)
+async def test_discover_wire_tool_rejects_unreachable_under_obo(
+    app: FastAPI,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict,
+    kind: str,
+    ident: str,
+):
+    """#628: do not plant a UC/Genie/VS tool the wiring principal cannot resolve."""
+    agent_py = tmp_path / "agent.py"
+    before = 'from apx_agent import Agent\n\nagent = Agent(tools=[], instructions="hi")\n'
+    agent_py.write_text(before)
+    monkeypatch.setattr("apx_agent._dev._find_agent_router_path", lambda: agent_py)
+    monkeypatch.setattr("apx_agent._ui_edit._find_agent_router_path", lambda: agent_py)
+
+    seen: dict[str, str] = {}
+
+    def _deny(ws, resource_kind: str, resource_id: str) -> None:  # noqa: ANN001
+        seen["kind"] = resource_kind
+        seen["ident"] = resource_id
+        raise PermissionError(f"PERMISSION_DENIED: {resource_kind} {resource_id}")
+
+    monkeypatch.setattr("apx_agent._ui_probe._verify_resource", _deny)
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda _request: MagicMock(name="obo"))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.post(
+            "/_apx/discover/wire-tool",
+            headers={"X-Forwarded-Access-Token": "obo-token"},
+            json=payload,
+        )
+
+    assert r.status_code == 403, r.text
+    detail = r.json()["detail"]
+    assert "PERMISSION_DENIED" in detail or "not accessible" in detail.lower()
+    assert seen == {"kind": kind, "ident": ident}
+    assert agent_py.read_text() == before
+
+
+@pytest.mark.asyncio
+async def test_discover_wire_tool_probes_as_caller_obo(
+    app: FastAPI, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """#628: reachability probe uses the caller's OBO client, not the App SP."""
+    agent_py = tmp_path / "agent.py"
+    agent_py.write_text(
+        'from apx_agent import Agent\n\nagent = Agent(tools=[], instructions="hi")\n'
+    )
+    monkeypatch.setattr("apx_agent._dev._find_agent_router_path", lambda: agent_py)
+    monkeypatch.setattr("apx_agent._ui_edit._find_agent_router_path", lambda: agent_py)
+
+    obo_ws = MagicMock(name="obo")
+    app.state.workspace_client = MagicMock(name="sp")
+    probed: list[MagicMock] = []
+
+    def _ok(ws, kind: str, ident: str) -> None:  # noqa: ANN001
+        probed.append(ws)
+
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda _request: obo_ws)
+    monkeypatch.setattr("apx_agent._ui_probe._verify_resource", _ok)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.post(
+            "/_apx/discover/wire-tool",
+            headers={"X-Forwarded-Access-Token": "obo-token"},
+            json={"kind": "uc_function", "full_name": "main.ml.score_lead", "target": "agent"},
+        )
+
+    assert r.status_code == 200, r.text
+    assert probed == [obo_ws]

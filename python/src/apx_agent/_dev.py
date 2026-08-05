@@ -2704,6 +2704,29 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 detail=f"unsupported kind {kind!r}; use uc_function, genie_space, or vector_search_index",
             )
 
+        # #628: probe reachability under the caller's OBO before planting. Shape
+        # validation alone let operators wire ids that only fail mid-turn; reuse
+        # Probe's SDK getters so wire and Probe agree on "resolves for this
+        # principal." Lookup ≠ EXECUTE-at-SQL-time, but it is the same gate
+        # doctor/probe use and stops the empty-plant class of failure.
+        from ._defaults import _ws_prefer_obo
+        from ._ui_probe import _verify_resource
+
+        probe_id = full or space_id or index or ""
+        try:
+            await asyncio.to_thread(_verify_resource, _ws_prefer_obo(request), kind, probe_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"{kind} {probe_id!r} is not accessible to the wiring principal "
+                    f"({type(exc).__name__}: {exc}). Grant access before wiring, or "
+                    f"pick a resource you can resolve under OBO (#628)."
+                ),
+            ) from exc
+
         tools_now = _agent_tool_names(source, target) or []
         already = binding in tools_now and binding in existing
         if not already:

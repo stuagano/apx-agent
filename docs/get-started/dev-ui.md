@@ -45,7 +45,11 @@ Refresh re-scans. Backed by `GET /_apx/workspace-agents`,
 - **Unwire** appears on peers already in `sub_agents=` for the selected leaf
 - **Attach as tool** on UC functions, Genie spaces, and Vector Search indexes —
   splices `uc_function_tool` / `genie_tool` / `vector_search_tool` into
-  `tools=` and registers them live
+  `tools=` and registers them live. Before writing, Discover **probes** the
+  resource under the caller's OBO token (same SDK getters Probe uses) and
+  **rejects** (403) when the wiring principal cannot resolve it — so a planted
+  tool is not deferred mid-turn failure for an id the operator cannot see
+  (#628). Lookup ≠ full EXECUTE-at-SQL-time; UC still enforces at invocation.
 - Model Serving cards stay display-only (set `model=` / use Playground)
 
 Mutating Discover / Topology wire calls on a **deployed App** require the
