@@ -88,7 +88,7 @@ guardrails cannot apply; document remote leaf policy.
 | D5 | Med | Docs/UI oversell user-scoped Discover vs SP-seeded setup (residual after #612) — **fixed:** Setup inventory + auto-prefill now read via OBO | [#627](https://github.com/stuagano/apx-agent/issues/627) |
 | D6 | Med | Wire-tool plants UC/Genie/VS by client id; no wire-time grant check — **fixed:** OBO reachability probe before plant/hot-apply | [#628](https://github.com/stuagano/apx-agent/issues/628) |
 | D7 | Med | Discover inventory GETs open to any OBO App user (recon; residual after #612) — **documented intentional:** caller-scoped grants; wire stays operator-gated | [#629](https://github.com/stuagano/apx-agent/issues/629) |
-| M5 | Med | A2A auth assumed at gateway, not in-process | [#631](https://github.com/stuagano/apx-agent/issues/631) |
+| M5 | Med | A2A auth assumed at gateway, not in-process — **fixed:** Apps fail-closed without proxy/bearer; docs state gateway+CAN_USE invariants | [#631](https://github.com/stuagano/apx-agent/issues/631) |
 | M6 | Med | Nested loops / truthy `max_iterations` cost DoS | [#632](https://github.com/stuagano/apx-agent/issues/632) |
 | M7 | Med | Docs over-claim “identity every hop” vs callee FMAPI SP | [#633](https://github.com/stuagano/apx-agent/issues/633) |
 | M8 | Med | Handoff compile drops specialist `description` | [#634](https://github.com/stuagano/apx-agent/issues/634) |
