@@ -13,6 +13,14 @@ principal (#612, #627). That covers `/_apx/setup/catalogs`, `/schemas`,
 so a suggestion never names a resource only the App SP can read. Operators who
 genuinely want App-SP inventory opt in with
 `APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true`.
+
+Inventory GETs are **intentionally not** gated by `APX_DEV_UI_TOKEN` (#629):
+any signed-in Apps user may enumerate catalogs / UC functions / Genie / Vector
+Search / peer Apps **visible to them** under their own grants. That is
+caller-scoped discovery, not App-SP recon. Mutating wire/unwire still requires
+the operator secret (#611) because those change the shared live agent for
+everyone.
+
 **Write** routes (edit, create tools, replay) are allowed for any **signed-in
 Apps user** (SSO / `X-Forwarded-Access-Token`). Discover wire/unwire additionally
 requires `APX_DEV_UI_TOKEN` (#611). Optional `APX_DEV_UI_TOKEN` also covers

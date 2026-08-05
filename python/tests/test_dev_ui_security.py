@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -138,6 +139,44 @@ async def test_guard_discover_mutation_needs_operator_even_with_sso(monkeypatch)
             headers={**sso, "x-apx-dev-token": "s3cret"},
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_guard_discover_inventory_gets_not_gated_by_operator_token(
+    monkeypatch,
+):
+    """#629: Discover inventory GETs stay open at the router — intentional.
+
+    Any signed-in OBO user may enumerate resources *visible to them*; the
+    operator token gates wire/unwire only (#611). Handlers still fail closed
+    without OBO via ``_ws_prefer_obo`` (#612). This locks the product decision
+    not to require ``APX_DEV_UI_TOKEN`` for inventory reads.
+    """
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
+    monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
+    # No SSO header and no operator token — guard must still allow these GETs.
+    for path in (
+        "/_apx/workspace-agents",
+        "/_apx/workspace-functions",
+        "/_apx/workspace-apis",
+        "/_apx/setup/catalogs",
+        "/_apx/setup/schemas",
+        "/_apx/setup/tables",
+        "/_apx/setup/warehouses",
+        "/_apx/setup/vs-indexes",
+    ):
+        await _dev_write_guard(_req(method="GET", path=path))
+
+
+def test_dev_ui_docs_state_discover_inventory_intentional_under_obo():
+    """#629 claim-vs-reality: docs must name the intentional OBO-scoped recon."""
+    docs = Path(__file__).resolve().parents[2] / "docs" / "get-started" / "dev-ui.md"
+    text = docs.read_text()
+    assert "#629" in text
+    assert "APX_DEV_UI_TOKEN" in text
+    # Intentional: inventory is caller-scoped grants, not operator-gated.
+    assert "own grants" in text.lower() or "visible to them" in text.lower()
+    assert "wire/unwire" in text.lower()
 
 
 @pytest.mark.asyncio
