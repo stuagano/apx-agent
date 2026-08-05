@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import keyword
+
 from apx_agent._ui_edit import (
     _append_sub_agent,
     _get_agent_sub_agents,
@@ -75,6 +77,13 @@ def test_peer_env_key():
 def test_slug_tool_name_collision():
     assert _slug_tool_name("main.ml.score_lead") == "score_lead"
     assert _slug_tool_name("main.ml.score_lead", {"score_lead"}) == "ml_score_lead"
+
+
+def test_slug_tool_name_avoids_keywords():
+    """#630: UC function short name that is a Python keyword must not be emitted raw."""
+    name = _slug_tool_name("main.ml.class")
+    assert name == "t_class"
+    assert not keyword.iskeyword(name)
 
 
 def test_splice_uc_function_tool():

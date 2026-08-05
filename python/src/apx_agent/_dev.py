@@ -109,6 +109,7 @@ from ._ui_edit import (
     _remove_sub_agent,
     _peer_env_key,
     _slug_tool_name,
+    _require_python_binding,
     _existing_binding_names,
     _splice_factory_tool,
     _remove_factory_binding,
@@ -2712,6 +2713,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 detail=f"unsupported kind {kind!r}; use uc_function, genie_space, or vector_search_index",
             )
 
+        # #630: binding is interpolated into agent.py as a Name — reject anything
+        # that would not parse (user override or a keyword-shaped auto-slug).
+        try:
+            binding = _require_python_binding(binding)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
         # #628: probe reachability under the caller's OBO before planting. Shape
         # validation alone let operators wire ids that only fail mid-turn; reuse
         # Probe's SDK getters so wire and Probe agree on "resolves for this
@@ -2784,6 +2792,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         binding = (body.binding_name or "").strip()
         if not binding:
             raise HTTPException(status_code=400, detail="binding_name is required to unwire a tool")
+        try:
+            binding = _require_python_binding(binding)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         path = _find_agent_router_path()
         if path is None or not path.exists():
             raise HTTPException(status_code=400, detail="agent.py not found")

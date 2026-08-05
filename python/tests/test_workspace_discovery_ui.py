@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import keyword
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
 from apx_agent import AgentConfig, AgentContext
+from apx_agent._apx_models import DiscoverWireToolRequest
 from apx_agent._apps_discovery import AppAgentInfo
 from apx_agent._dev import build_dev_ui_router
 from apx_agent._models import AgentCard
 from apx_agent._topology import AgentNode, Topology
+from apx_agent._ui_edit import _slug_tool_name
 
 
 def _make_ctx() -> AgentContext:
@@ -701,3 +705,69 @@ async def test_discover_wire_tool_probes_as_caller_obo(
 
     assert r.status_code == 200, r.text
     assert probed == [obo_ws]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_name", ["123bad", "foo-bar", "class", "with space", ""])
+async def test_discover_wire_tool_rejects_non_identifier_binding_name(
+    app: FastAPI,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad_name: str,
+):
+    """#630: binding_name must be a non-keyword Python identifier before plant."""
+    agent_py = tmp_path / "agent.py"
+    before = 'from apx_agent import Agent\n\nagent = Agent(tools=[], instructions="hi")\n'
+    agent_py.write_text(before)
+    monkeypatch.setattr("apx_agent._dev._find_agent_router_path", lambda: agent_py)
+    monkeypatch.setattr("apx_agent._ui_edit._find_agent_router_path", lambda: agent_py)
+    monkeypatch.setattr("apx_agent._ui_probe._verify_resource", lambda *_a, **_k: None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.post(
+            "/_apx/discover/wire-tool",
+            json={
+                "kind": "uc_function",
+                "full_name": "main.ml.score_lead",
+                "target": "agent",
+                "binding_name": bad_name,
+            },
+        )
+
+    # Empty strip → treated as omitted (auto-slug); non-empty bad → 400 or 422.
+    if not bad_name.strip():
+        assert r.status_code == 200, r.text
+        assert "score_lead" in agent_py.read_text()
+    else:
+        assert r.status_code in (400, 422), r.text
+        assert agent_py.read_text() == before
+
+
+def test_slug_tool_name_avoids_python_keywords():
+    """#630: auto-slug of a UC function named like a keyword stays a safe binding."""
+    name = _slug_tool_name("main.ml.class")
+    assert name.isidentifier()
+    assert not keyword.iskeyword(name)
+    assert name != "class"
+
+
+def test_discover_wire_tool_request_rejects_non_identifier_binding():
+    """#630: model validation rejects bad binding_name before the handler runs."""
+    with pytest.raises(ValidationError):
+        DiscoverWireToolRequest(
+            kind="uc_function",
+            full_name="main.ml.score_lead",
+            binding_name="foo-bar",
+        )
+    with pytest.raises(ValidationError):
+        DiscoverWireToolRequest(
+            kind="uc_function",
+            full_name="main.ml.score_lead",
+            binding_name="class",
+        )
+    ok = DiscoverWireToolRequest(
+        kind="uc_function",
+        full_name="main.ml.score_lead",
+        binding_name=" score_lead ",
+    )
+    assert ok.binding_name == "score_lead"
