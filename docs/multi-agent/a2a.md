@@ -19,6 +19,8 @@ Apps-hosted agents publish `/.well-known/agent.json` with capabilities, skills, 
 
 On Model Serving, UC + the Mosaic AI registry are the equivalent discovery surface.
 
+A peer reached via `sub_agents=[url]` becomes a callable delegate tool named after its card (`peer-agent` → `peer_agent`). If a local tool already owns that name, the local tool keeps it and the peer is **neither advertised nor callable** — a startup warning names the collision, and the fix is to rename one of them (#636). Advertised capability and callable tool always agree.
+
 ## App-to-app authentication
 
 When sub-agents are deployed as sibling Apps (not Model Serving endpoints),

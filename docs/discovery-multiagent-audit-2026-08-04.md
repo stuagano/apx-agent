@@ -94,7 +94,7 @@ guardrails cannot apply; document remote leaf policy.
 | M8 | Med | Handoff compile drops specialist `description` — **fixed:** shared `handoff_transfer_description` used by both paths | [#634](https://github.com/stuagano/apx-agent/issues/634) |
 | D8 | Low | `binding_name` not `isidentifier()` — **fixed:** model + wire reject non-identifier/keyword; slug avoids keywords | [#630](https://github.com/stuagano/apx-agent/issues/630) |
 | M9 | Low | Empty Router/remote `agent_tool` descriptions — **fixed:** `routing_description` normalizes blank triples and blank card descriptions | [#635](https://github.com/stuagano/apx-agent/issues/635) |
-| M10 | Low | Sub-agent name collision advertises ≠ callable | [#636](https://github.com/stuagano/apx-agent/issues/636) |
+| M10 | Low | Sub-agent name collision advertises ≠ callable — **fixed:** advertise only after successful delegate registration | [#636](https://github.com/stuagano/apx-agent/issues/636) |
 
 ## Explicitly reviewed — not defects (caveats)
 

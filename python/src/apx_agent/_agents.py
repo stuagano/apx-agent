@@ -385,12 +385,15 @@ class LlmAgent(BaseAgent):
                     output_schema={"type": "string"},
                     sub_agent_url=base_url,
                 )
-                tools.append(descriptor)
                 # Advertised AND callable must come from the same loop: register
-                # the matching delegate tool so the compiled graph can invoke it.
-                self._ensure_sub_agent_tool(
+                # the matching delegate tool so the compiled graph can invoke
+                # it, and advertise only once that succeeded — a name collision
+                # otherwise promises delegation the graph cannot perform (#636).
+                if not self._ensure_sub_agent_tool(
                     tool_name, description, base_url, input_schema=structured
-                )
+                ):
+                    continue
+                tools.append(descriptor)
                 if card is None and base_url in self._materialized_sub_agent_urls:
                     self._degraded_sub_agents.setdefault(base_url, descriptor)
                     logger.warning(
@@ -470,8 +473,12 @@ class LlmAgent(BaseAgent):
         description: str,
         base_url: str,
         input_schema: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
         """Register the callable delegate tool for a sub-agent URL (idempotent).
+
+        Returns whether the sub-agent is callable under ``name`` — ``False``
+        only when an existing tool already owns that name, so the caller can
+        avoid advertising a delegation it cannot perform (#636).
 
         The A2A card advertises sub-agents from ``fetch_remote_tools``; the
         compiled LangGraph builds its tools from ``_tool_fns``. Before #436
@@ -497,16 +504,16 @@ class LlmAgent(BaseAgent):
             for fn in self._tool_fns:
                 if getattr(fn, "__name__", None) == name:
                     fn.__apx_sub_agent_url__ = base_url  # type: ignore[attr-defined]
-            return
+            return True
         if any(fn.__name__ == name for fn in self._tool_fns):
             logger.warning(
                 "sub-agent tool %r collides with an existing tool name — the "
-                "sub-agent at %s is advertised but keeps the existing tool's "
-                "implementation. Rename one of them.",
+                "existing tool keeps that name, so the sub-agent at %s is "
+                "not advertised and not callable. Rename one of them.",
                 name,
                 base_url,
             )
-            return
+            return False
         from ._agent_tool import remote_agent_tool  # noqa: PLC0415 — avoid import cycle
 
         tool = remote_agent_tool(
@@ -522,6 +529,7 @@ class LlmAgent(BaseAgent):
         tool.__apx_sub_agent_url__ = base_url  # type: ignore[attr-defined]
         self._register_tool(tool)
         self._materialized_sub_agent_urls.add(base_url)
+        return True
 
 
 class _FinishLoopBody(BaseModel):
