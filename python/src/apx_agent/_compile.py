@@ -52,6 +52,7 @@ from ._agents import (
     RouterAgent,
     SEQUENTIAL_CONTINUATION,
     SequentialAgent,
+    handoff_transfer_description,
 )
 from ._defaults import (
     _get_principal,
@@ -764,7 +765,9 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
         transfer_tools = [
             _build_synthetic_tool(
                 name=f"{prefix}{other}",
-                description=f"Hand off to the {other} agent.",
+                # Same description the in-process path gives the routing LLM —
+                # the specialist's own description when it has one (#634).
+                description=handoff_transfer_description(agents[other], other),
                 marker=f"HANDOFF:{other}",
             )
             for other in names

@@ -79,7 +79,7 @@ triage = HandoffAgent(
 )
 ```
 
-Each agent's `description` becomes the transfer tool's description visible to the LLM — same rule as `RouterAgent`: write it like documentation.
+Each agent's `description` becomes the transfer tool's description visible to the LLM — same rule as `RouterAgent`: write it like documentation. This holds on both paths: in-process `run()` and the compiled LangGraph used when the agent is served (#634). Agents with no `description` fall back to `Hand off to the <name> agent.`
 
 ## KeywordRouter — keyword-based routing
 

@@ -908,6 +908,16 @@ def _normalize_handoff_agents(
     return result
 
 
+def handoff_transfer_description(sub: object, name: str) -> str:
+    """Describe a ``transfer_to_<name>`` tool for the routing LLM.
+
+    Shared by the in-process ``HandoffAgent`` path and the compiled graph so
+    the served agent routes on the same information as the local one (#634).
+    """
+    description = (getattr(sub, "_description", None) or "").strip()
+    return description or f"Hand off to the {name} agent."
+
+
 class HandoffAgent(BaseAgent):
     """Multi-agent system where each agent can hand off control to another mid-conversation.
 
@@ -942,9 +952,7 @@ class HandoffAgent(BaseAgent):
         return [
             AgentTool(
                 name=f"{self.TRANSFER_PREFIX}{name}",
-                description=(
-                    getattr(sub, "_description", "") or f"Hand off to the {name} agent."
-                ),
+                description=handoff_transfer_description(sub, name),
                 input_schema={
                     "type": "object",
                     "properties": {
