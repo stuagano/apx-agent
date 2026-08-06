@@ -119,7 +119,9 @@ orchestrator = Agent(tools=[
 ])
 ```
 
-`BaseAgent.run` is the only contract — the wrapper doesn't care whether the agent runs in-process or over HTTP. Identity passthrough (OBO token) flows through every form: in-process delegation, Model Serving sub-agent calls, and A2A app-to-app calls all preserve the calling user's OAuth token.
+`BaseAgent.run` is the only contract — the wrapper doesn't care whether the agent runs in-process or over HTTP. Identity passthrough (OBO token) flows through every form: in-process delegation, Model Serving sub-agent calls, and A2A app-to-app calls all forward the calling user's OAuth token, so the sub-agent's *tools* run under that user's UC grants.
+
+One scope limit on the A2A hop: a remote callee's own LLM (FMAPI) calls run as the callee app's service principal, not the caller's OBO token — each Databricks App authenticates outbound model traffic with its own credentials. Tool/data access is user-scoped per hop; model access is app-scoped. See [../multi-agent/a2a.md](../multi-agent/a2a.md) (#633).
 
 ### `sub_agents=[url]` shorthand
 

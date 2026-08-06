@@ -27,7 +27,9 @@ Use apx-agent when you want a **production data agent**:
   normalizes the LLM API formats, memory backends, conversation history, and trace schemas
   underneath. The same declaration scales to a **fleet**: `sub_agents=[url]` and A2A let agents
   call each other across apps, with the caller's identity passed through per hop so downstream
-  tools still run under the asking user's UC grants — see [the fleet section below](#a-governed-fleet-not-just-one-agent).
+  *tools* still run under the asking user's UC grants. A callee's own LLM (FMAPI) calls run as
+  that app's service principal — see [the fleet section below](#a-governed-fleet-not-just-one-agent)
+  and [multi-agent/a2a.md](multi-agent/a2a.md).
 
 Canonical examples are `DataAgent` (one line over a UC schema) and `CoworkerAgent` (join two
 source systems on a shared key) — see [agents/overview.md](agents/overview.md).
@@ -49,7 +51,7 @@ What apx-agent adds is the layer the GA authoring workflow leaves to the develop
 | Built-in UC data tools (connect via MCP / custom endpoints) | `sql_tool`, `genie_tool`, `uc_function_tool`, `vector_search_tool` — built-in and governed |
 | End-user identity passthrough (manual `get_user_workspace_client()`) | identity passthrough wired declaratively; tools run as the asking user, and metadata writes run under their grants |
 | Memory / state backends (not configured for you) | Lakebase / UC managed semantic memory and sessions, declared |
-| Multi-agent orchestration (structural primitives, no cross-app runtime or governed-per-hop story) | `SequentialAgent` / `ParallelAgent` / `RouterAgent` / `HandoffAgent` locally, **plus `sub_agents=[url]` + A2A across apps with identity passed through per hop** — shipped and demonstrated (`data-triage-agent` over A2A, `customer_triage` handoffs) |
+| Multi-agent orchestration (structural primitives, no cross-app runtime or governed-per-hop story) | `SequentialAgent` / `ParallelAgent` / `RouterAgent` / `HandoffAgent` locally, **plus `sub_agents=[url]` + A2A across apps with the caller's identity passed through per hop for tool calls** (callee LLM calls use the callee's service principal) — shipped and demonstrated (`data-triage-agent` over A2A, `customer_triage` handoffs) |
 | Authoring (write a `ResponsesAgent`, wrap your framework) | declare a `[tool.apx.agent]` block or a Python object; apx-agent compiles it and normalizes the LLM, memory, and trace formats |
 
 In short: apx-agent is a batteries-included, governed, data-grounded toolkit over the same
@@ -70,10 +72,13 @@ declaration composes into a fleet without changing how governance works.
   scaling profile, it lives in its own app and is reached with `sub_agents=[url]`. Every
   deployed agent serves an A2A discovery card at `/.well-known/agent.json`; siblings find each
   other by probe. `apx-agent doctor` reports per-sub-agent reachability.
-- **Governed per hop** — the cross-app call uses the app-to-app auth path, so the caller's
-  identity is passed through. A downstream agent's tools run under the *asking user's* UC
-  grants, not a shared service principal — the same identity-passthrough guarantee a single
-  agent gives, extended across the fleet.
+- **Governed per hop, at the tool boundary** — the cross-app call uses the app-to-app auth path
+  and forwards the caller's OBO token, so a downstream agent's *tools* run under the *asking
+  user's* UC grants, not a shared service principal. What does **not** cross the boundary is the
+  callee's model access: an A2A callee's own LLM (FMAPI) calls run as that app's service
+  principal, because each Databricks App authenticates outbound model traffic with its own
+  credentials. Data access stays user-scoped per hop; model access is app-scoped. See
+  [multi-agent/a2a.md](multi-agent/a2a.md) for the auth path and this caveat in full (#633).
 
 This is precisely the gap the platform leaves open. Databricks
 [Agent Services](https://docs.databricks.com/aws/en/ai-gateway/agent-services) (Beta) lets you
@@ -82,7 +87,8 @@ models, and functions, and set permissions with the same grants that protect you
 Catalog assets" — registration, discovery, and UC permissions. But its own documentation states:
 "Runtime invocation is not available. Agents cannot be called through a registered agent
 service." apx-agent is the **runtime** layer over that governance surface: registered or not, a
-declared agent can actually *call* another agent, across apps, governed per hop. The two compose
+declared agent can actually *call* another agent, across apps, with tool access governed per hop.
+The two compose
 — register the fleet in Agent Services for org-wide discovery; let apx-agent's A2A make the
 agents talk.
 

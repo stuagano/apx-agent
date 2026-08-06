@@ -90,7 +90,7 @@ guardrails cannot apply; document remote leaf policy.
 | D7 | Med | Discover inventory GETs open to any OBO App user (recon; residual after #612) — **documented intentional:** caller-scoped grants; wire stays operator-gated | [#629](https://github.com/stuagano/apx-agent/issues/629) |
 | M5 | Med | A2A auth assumed at gateway, not in-process — **fixed:** Apps fail-closed without proxy/bearer; docs state gateway+CAN_USE invariants | [#631](https://github.com/stuagano/apx-agent/issues/631) |
 | M6 | Med | Nested loops / truthy `max_iterations` cost DoS — **fixed:** `is not None` gate; docs on nested budgets / `0` as cap | [#632](https://github.com/stuagano/apx-agent/issues/632) |
-| M7 | Med | Docs over-claim “identity every hop” vs callee FMAPI SP | [#633](https://github.com/stuagano/apx-agent/issues/633) |
+| M7 | Med | Docs over-claim “identity every hop” vs callee FMAPI SP — **fixed:** per-hop claims scoped to tool/data access; callee-SP model access named and cross-linked | [#633](https://github.com/stuagano/apx-agent/issues/633) |
 | M8 | Med | Handoff compile drops specialist `description` | [#634](https://github.com/stuagano/apx-agent/issues/634) |
 | D8 | Low | `binding_name` not `isidentifier()` — **fixed:** model + wire reject non-identifier/keyword; slug avoids keywords | [#630](https://github.com/stuagano/apx-agent/issues/630) |
 | M9 | Low | Empty Router/remote `agent_tool` descriptions | [#635](https://github.com/stuagano/apx-agent/issues/635) |
