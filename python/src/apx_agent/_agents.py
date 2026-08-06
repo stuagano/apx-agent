@@ -348,7 +348,11 @@ class LlmAgent(BaseAgent):
                 degraded = self._degraded_sub_agents.get(base_url)
                 structured: dict[str, Any] | None = None
                 if card is not None:
-                    description = card.get("description", f"Agent at {url}")
+                    # A card may advertise an empty description; normalize it
+                    # so the sub-agent tool always states a purpose (#635).
+                    description = routing_description(
+                        card.get("description"), f"Agent at {url}"
+                    )
                     if degraded is not None:
                         # A repeated fetch found the previously-degraded peer
                         # alive. The callable delegate keeps its startup name
@@ -724,6 +728,16 @@ class _TransferBody(BaseModel):
     context: str = ""
 
 
+def routing_description(raw: str | None, fallback: str) -> str:
+    """Return a non-empty description for an LLM-visible routing tool (#635).
+
+    A blank description gives the routing LLM a tool with no stated purpose,
+    which is worse than generic text. Blank (or whitespace-only) falls back.
+    """
+    text = raw.strip() if isinstance(raw, str) else ""
+    return text or fallback
+
+
 def _normalize_router_agents(
     agents: list[tuple[str, str, "BaseAgent"]] | list["BaseAgent"],
 ) -> list[tuple[str, str, "BaseAgent"]]:
@@ -731,7 +745,12 @@ def _normalize_router_agents(
     if not agents:
         raise ValueError("RouterAgent requires at least one agent")
     if isinstance(agents[0], tuple):
-        return agents  # type: ignore[return-value]
+        # Explicit triples still go through description normalization — an
+        # empty string here reached the transfer-tool schema verbatim (#635).
+        return [
+            (name, routing_description(desc, f"Routes to the {name} agent."), sub)
+            for name, desc, sub in agents  # type: ignore[misc]
+        ]
     routes: list[tuple[str, "BaseAgent", "BaseAgent"]] = []
     for agent in agents:
         name = getattr(agent, "_name", None)
@@ -740,7 +759,9 @@ def _normalize_router_agents(
                 "RouterAgent: each agent must have name= set when passed as a list. "
                 f"Got {agent!r} with no name."
             )
-        desc = getattr(agent, "_description", "") or f"Routes to the {name} agent."
+        desc = routing_description(
+            getattr(agent, "_description", None), f"Routes to the {name} agent."
+        )
         routes.append((name, desc, agent))  # type: ignore[arg-type]
     return routes  # type: ignore[return-value]
 

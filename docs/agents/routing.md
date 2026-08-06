@@ -40,6 +40,8 @@ router = RouterAgent([billing_agent, tech_agent])
 
 `description` is the routing signal the LLM sees — write it like tool documentation: what topics this agent handles, when to route here.
 
+A blank or whitespace-only description falls back to `Routes to the <name> agent.` rather than reaching the LLM empty — that applies to the list form, the explicit tuple form below, and descriptions read from a remote agent's A2A card (#635). The fallback keeps the tool callable, but it tells the LLM nothing useful; write a real description.
+
 ### Explicit tuple form
 
 Pass `(name, description, agent)` triples to set routing metadata separately from the agent definition. Use this when you want the router's view of each branch to differ from the agent's own `name`/`description`.
