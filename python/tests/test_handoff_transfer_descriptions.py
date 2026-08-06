@@ -46,10 +46,9 @@ def captured_tools(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     transfers: dict[str, Any] = {}
 
     def fake_create_agent(**kwargs: Any) -> Any:
-        for tool in kwargs.get("tools", []):
-            name = getattr(tool, "name", "")
-            if name.startswith(HandoffAgent.TRANSFER_PREFIX):
-                transfers[name] = tool
+        for tool in kwargs["tools"]:
+            if tool.name.startswith(HandoffAgent.TRANSFER_PREFIX):
+                transfers[tool.name] = tool
         return MagicMock()
 
     monkeypatch.setattr(_la, "create_agent", fake_create_agent)
