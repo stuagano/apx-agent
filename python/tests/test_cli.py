@@ -9038,3 +9038,22 @@ class TestDeployHistoryIndex:
         monkeypatch.setattr(cli, "_deploy_history_path", lambda: path)
 
         assert cli._load_deploy_history_entry("main.apx.my_agent") is None
+
+
+def test_interactive_resolve_allows_manual_catalog_and_schema(monkeypatch):
+    from apx_agent import cli
+
+    catalogs = [SimpleNamespace(name=f"catalog_{i:02d}") for i in range(25)]
+    schemas = [SimpleNamespace(name=f"schema_{i:02d}") for i in range(25)]
+    ws = SimpleNamespace(
+        catalogs=SimpleNamespace(list=lambda: catalogs),
+        schemas=SimpleNamespace(list=lambda catalog_name: schemas),
+    )
+    answers = iter(["m", "catalog_24", "m", "schema_24"])
+    monkeypatch.setattr(cli.click, "prompt", lambda *args, **kwargs: next(answers))
+
+    resolved = cli._interactive_resolve(
+        ws, None, None, None, None, None, "data",
+    )
+
+    assert resolved[:2] == ("catalog_24", "schema_24")
