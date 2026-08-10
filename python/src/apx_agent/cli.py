@@ -2126,21 +2126,30 @@ _SKIP_CATALOGS: frozenset[str] = frozenset({"system", "__databricks_internal"})
 _SKIP_SCHEMAS: frozenset[str] = frozenset({"information_schema"})
 
 
-def _ws_list_catalogs(ws: "Any", limit: int = 50) -> list[str]:
+def _ws_list_catalogs(ws: "Any", limit: int | None = None) -> list[str]:
     try:
-        return [c.name for c in ws.catalogs.list() if c.name and c.name not in _SKIP_CATALOGS][:limit]
+        names = [c.name for c in ws.catalogs.list() if c.name and c.name not in _SKIP_CATALOGS]
+        names.sort()
+        return names if limit is None else names[:limit]
     except Exception as exc:
         click.echo(f"  (warning: could not list catalogs — {exc})", err=True)
         return []
 
 
 def _pick_from_list(items: list[str], prompt: str) -> str:
-    """Present a numbered list and return the user's selection."""
+    """Present a numbered list, with manual entry for long workspaces."""
     if not items:
         raise click.ClickException("No items found in the workspace.")
     for i, item in enumerate(items, 1):
         click.echo(f"  {i:2}. {item}")
-    raw = click.prompt(prompt, default="1")
+    click.echo("   m. Enter a name manually")
+    raw = click.prompt(prompt, default="1").strip()
+    if raw.lower() in {"m", "manual"}:
+        while True:
+            value = click.prompt("Name").strip()
+            if value:
+                return value
+            click.echo("  Name cannot be empty.")
     try:
         idx = int(raw) - 1
         if not 0 <= idx < len(items):
@@ -3255,12 +3264,14 @@ def _scaffold_sanity_check(
             )
 
 
-def _ws_list_schemas(ws: "Any", catalog: str, limit: int = 50) -> list[str]:
+def _ws_list_schemas(ws: "Any", catalog: str, limit: int | None = None) -> list[str]:
     try:
-        return [
+        names = [
             s.name for s in ws.schemas.list(catalog_name=catalog)
             if s.name and s.name not in _SKIP_SCHEMAS
-        ][:limit]
+        ]
+        names.sort()
+        return names if limit is None else names[:limit]
     except Exception as exc:
         click.echo(f"  (warning: could not list schemas in {catalog} — {exc})", err=True)
         return []
@@ -3346,16 +3357,23 @@ def _interactive_resolve(
     ``(catalog, schema, persona, objective, join_key)``.
     """
     if catalog is None:
-        cat_list = _ws_list_catalogs(ws, limit=20) if ws is not None else []
+        cat_list = _ws_list_catalogs(ws) if ws is not None else []
         if cat_list:
             click.echo("Available catalogs:")
             for i, c in enumerate(cat_list, 1):
                 click.echo(f"  {i:2}. {c}")
-            idx = click.prompt(
-                "Choose a catalog",
-                type=click.IntRange(1, len(cat_list)),
-            )
-            catalog = cat_list[idx - 1]
+            click.echo("   m. Enter a catalog name manually")
+            raw = click.prompt("Choose a catalog", default="1").strip()
+            if raw.lower() in {"m", "manual"}:
+                catalog = click.prompt("Catalog").strip()
+                while not catalog:
+                    click.echo("  Catalog cannot be empty.")
+                    catalog = click.prompt("Catalog").strip()
+            else:
+                try:
+                    catalog = cat_list[int(raw) - 1]
+                except (ValueError, IndexError):
+                    raise click.ClickException(f"Invalid selection: {raw!r}") from None
         else:
             click.echo("  (no catalogs found in your workspace — enter a name manually)")
             while True:
@@ -3365,16 +3383,23 @@ def _interactive_resolve(
                 click.echo("  Catalog cannot be empty.")
 
     if schema is None:
-        sch_list = _ws_list_schemas(ws, catalog, limit=20) if (ws is not None and catalog) else []
+        sch_list = _ws_list_schemas(ws, catalog) if (ws is not None and catalog) else []
         if sch_list:
             click.echo(f"Available schemas in {catalog}:")
             for i, s in enumerate(sch_list, 1):
                 click.echo(f"  {i:2}. {s}")
-            idx = click.prompt(
-                "Choose a schema",
-                type=click.IntRange(1, len(sch_list)),
-            )
-            schema = sch_list[idx - 1]
+            click.echo("   m. Enter a schema name manually")
+            raw = click.prompt("Choose a schema", default="1").strip()
+            if raw.lower() in {"m", "manual"}:
+                schema = click.prompt("Schema").strip()
+                while not schema:
+                    click.echo("  Schema cannot be empty.")
+                    schema = click.prompt("Schema").strip()
+            else:
+                try:
+                    schema = sch_list[int(raw) - 1]
+                except (ValueError, IndexError):
+                    raise click.ClickException(f"Invalid selection: {raw!r}") from None
         else:
             click.echo(f"  (no schemas found in {catalog} — enter a name manually)")
             while True:
