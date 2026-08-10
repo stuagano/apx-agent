@@ -4,6 +4,38 @@ All notable changes to apx-agent. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are git tags
 (`v*`) and the wheel version is derived from the tag via hatch-vcs.
 
+## [0.4.8] — 2026-08-10
+
+Headline: safer multi-agent discovery and identity handling, more reliable
+scaffolding and chat responses, and clearer state-sharing and grounding docs.
+
+### Fixed
+
+- **Multi-agent security and routing.** Apps discovery now requires caller
+  identity, rejects unsafe peer URLs and binding names, fails closed when
+  gateway identity is unavailable, and binds A2A task state to the OBO
+  principal (#610–#614, #617, #628–#631, #636).
+- **Composition and guardrails.** Handoff descriptions, routing descriptions,
+  guardrail config propagation, and explicit `max_iterations=0` behavior now
+  compile consistently (#616, #624, #632–#635).
+- **Scaffold and chat reliability.** Scaffold catalog/schema selection can be
+  entered manually when the picker is insufficient, and the Hub extracts
+  assistant text instead of rendering raw response payloads (#657, #660).
+
+### Added
+
+- **Dev UI and topology workflows.** Workspace discovery, topology wire/chat,
+  OKF pack generation, and sample DataAgent fleet support (#594–#595).
+- **Evaluation and diagnostics.** CLEARS-aligned scorers and an AI Gateway
+  guardrail warning in `apx-agent doctor` (#596).
+
+### Docs / examples
+
+- Documented grounding asset lifecycle, `Dependencies.State` and
+  `output_key` state sharing, and the identity boundaries for remote agents.
+- Hardened the example agents and added ADK-pattern skills and audit notes
+  (#597–#608).
+
 ## [0.4.7] — 2026-08-04
 
 Headline: workspace discovery + topology wire/chat in the Apps Dev UI, remote
