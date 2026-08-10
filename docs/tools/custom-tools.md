@@ -81,8 +81,50 @@ Available injected types:
 | `Dependencies.Principal` | Current user's username string, or `None` in local dev |
 | `Dependencies.Progress` | Callable to emit a progress marker into the trace |
 | `Dependencies.Request` | Raw FastAPI `Request` object |
+| `Dependencies.State` | Dict-like state shared by tools and composition steps in this invocation |
 
 `Dependencies.Workspace` is the most common choice — it passes the calling user's identity through to UC, SQL warehouses, and Genie spaces.
+
+### Share state within an invocation
+
+`Dependencies.State` is a dict-like, per-invocation view that lets tools pass
+values to later graph steps. The state parameter is hidden from the model's
+tool schema.
+
+```python
+from apx_agent import Agent, Dependencies, SequentialAgent, tool
+
+@tool
+def resolve_account(name: str, state: Dependencies.State) -> str:
+    """Resolve an account and save its ID for a later tool."""
+    account_id = lookup_account(name)
+    state["account_id"] = account_id
+    return account_id
+
+@tool
+def load_account_notes(state: Dependencies.State) -> str:
+    """Load notes for the account resolved earlier in this invocation."""
+    return fetch_notes(state["account_id"])
+
+pipeline = SequentialAgent([
+    Agent(tools=[resolve_account]),
+    Agent(tools=[load_account_notes]),
+])
+```
+
+For agent-to-agent handoffs, set `output_key` on the producing agent and
+reference that key in the downstream agent's instructions:
+
+```python
+planner = Agent(instructions="Create an execution plan.", output_key="plan")
+executor = Agent(instructions="Execute this plan:\n{plan}", tools=[...])
+pipeline = SequentialAgent([planner, executor])
+```
+
+State is available only during the current invocation; it is not cross-session
+memory. Reassign values after changing them (`state["items"] = [*state.get("items", []), item]`) because in-place mutation is not tracked. State
+merges are shallow last-write-wins, so concurrent writers should use distinct
+keys or aggregate at the agent step. See the [state access design reference](../design/keyed-state-tool-access.md) for mechanics and limits.
 
 ### UC-syncable tools
 
