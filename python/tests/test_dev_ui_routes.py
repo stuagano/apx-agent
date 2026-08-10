@@ -336,6 +336,25 @@ class TestTraceDetailSpanEvents:
         html = _render_trace_detail("tr-1", spans, None)
         assert "Starting SQL warehouse" in html
 
+    def test_render_trace_detail_shows_exception_event_details(self):
+        from apx_agent._dev import _render_trace_detail
+
+        spans = [{
+            "span_id": "s1", "parent_id": None, "name": "run_sql",
+            "span_type": "TOOL", "status": "ERROR",
+            "start_time_ns": 0, "end_time_ns": 1_000_000, "duration_ms": 1.0,
+            "inputs": None, "outputs": None,
+            "events": [{"name": "exception", "attributes": {
+                "exception.type": "ValueError",
+                "exception.message": "warehouse failed",
+                "exception.stacktrace": "Traceback (most recent call last):\\nValueError: warehouse failed",
+            }}],
+        }]
+
+        html = _render_trace_detail("tr-1", spans, None)
+        assert "ValueError: warehouse failed" in html
+        assert "Traceback (most recent call last)" in html
+
 
 class TestEventsToolCalls:
     """The chat stream surfaces tool calls (+ their SQL/args) as Events live,
