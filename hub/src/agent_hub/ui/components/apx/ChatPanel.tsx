@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { Send, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AgentCard } from "@/lib/api";
+import { extractResponseText } from "@/lib/response-text";
 
 interface Message {
   id: number;
@@ -49,7 +50,7 @@ export default function ChatPanel({ agent }: { agent: AgentCard }) {
         throw new Error(`${res.status}: ${body}`);
       }
       const data = await res.json();
-      const responseText = data.output_text ?? JSON.stringify(data, null, 2);
+      const responseText = extractResponseText(data) ?? "No assistant text returned.";
       setMessages((prev) => [...prev, { id: nextId.current++, role: "agent", text: responseText }]);
     } catch (e: unknown) {
       setMessages((prev) => [
