@@ -205,6 +205,15 @@ Schema discovery priority (first match wins):
 3. **Explicit override** — pass `tables={"orders": ["id(bigint)", ...]}` for tests.
 4. **Ungrounded fallback** — discovers schema with SQL on the first turn.
 
+To update a scaffolded project after tables or columns change, run
+`apx-agent agents refresh-schema` from inside the project. It refreshes the
+live metadata in place and preserves enriched OKF content by default; pass
+`--prune-missing-tables` only to intentionally remove concepts for tables no
+longer present. Older projects can be converted with
+`apx-agent agents migrate-to-okf`. See the [DataAgent grounding asset
+lifecycle](docs/agents/data-agent.md#grounding-asset-lifecycle) for the
+create → refresh → enrich → migrate workflow.
+
 ```python
 # Live introspection
 from databricks.sdk import WorkspaceClient
