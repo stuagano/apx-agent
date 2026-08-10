@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -7287,14 +7288,13 @@ def _run_bundle_artifacts(cwd: Path) -> None:
     we just built into ``.build/``.
 
     Implementation: read ``databricks.yml``, walk to
-    ``artifacts.default.build``, extract the bash script body, execute
-    it via ``bash -c`` with ``cwd=cwd``. On failure, raise
+    ``artifacts.default.build``, extract the POSIX shell script body, execute
+    it via the first available ``bash`` or ``sh`` with ``cwd=cwd``. On failure,
+    raise
     ``click.ClickException`` with the script output. If the
     ``artifacts.default.build`` block is missing, return silently — the
     project doesn't need pre-build.
     """
-    import subprocess
-
     doc = _read_databricks_yml(cwd)
     artifacts = doc.get("artifacts") or {}
     if not isinstance(artifacts, dict):
@@ -7306,8 +7306,15 @@ def _run_bundle_artifacts(cwd: Path) -> None:
     if not isinstance(script, str) or not script.strip():
         return
 
+    shell = shutil.which("bash") or shutil.which("sh")
+    if shell is None:
+        raise click.ClickException(
+            "`artifacts.default.build` requires a POSIX shell (`sh` or `bash`) "
+            "available on PATH."
+        )
+
     proc = subprocess.run(
-        ["bash", "-c", script],
+        [shell, "-c", script],
         cwd=str(cwd),
         capture_output=True,
         text=True,

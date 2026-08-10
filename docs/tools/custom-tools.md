@@ -232,6 +232,31 @@ type = "uc_connection"
 name = "weather_api"
 ```
 
+### Creating and granting the connection
+
+The connection must exist in Unity Catalog before the app can use it. A
+metastore admin (or a principal with `CREATE CONNECTION`) can create an HTTP
+connection in Catalog Explorer, through the Databricks SQL editor, or with the
+Connections API. The exact authentication fields depend on the external
+service; keep tokens and OAuth credentials in the connection, never in
+`agent.py`.
+
+See the authoritative [Connect to external HTTP services](https://docs.databricks.com/aws/en/query-federation/http)
+guide for the supported authentication modes and `CREATE CONNECTION` examples.
+
+After creating the connection, grant the deployed app identity (or the user
+running locally) permission to use it:
+
+```sql
+GRANT USE CONNECTION ON CONNECTION `weather_api` TO `<principal>`;
+```
+
+Then declare the same connection name in `pyproject.toml` as above. For a
+Databricks App deployment, the generated resource declaration requests the
+`USE_CONNECTION` grant; confirm the app resource grant is approved before
+testing the tool. For local runs, the calling user needs `USE CONNECTION` and
+the SQL warehouse used by the tool must be available.
+
 ---
 
 ## `openapi_tool` — OpenAPI spec → many tools

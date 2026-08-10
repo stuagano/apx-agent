@@ -3478,6 +3478,42 @@ def test_ensure_apx_wheel_resolves_dynamic_version(tmp_path: Path, monkeypatch) 
     assert staged.exists()
 
 
+def test_run_bundle_artifacts_falls_back_to_sh(tmp_path: Path, monkeypatch) -> None:
+    """Artifact builds work when bash is absent but the standard POSIX shell exists."""
+    from apx_agent import cli
+
+    (tmp_path / "databricks.yml").write_text(
+        "artifacts:\n  default:\n    build: mkdir -p .build\n",
+    )
+    calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(args, cwd=None, **kwargs):
+        calls.append((args, cwd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/bin/sh" if name == "sh" else None,
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli._run_bundle_artifacts(tmp_path)
+
+    assert calls == [(["/bin/sh", "-c", "mkdir -p .build"], str(tmp_path))]
+
+
+def test_run_bundle_artifacts_reports_missing_shell(tmp_path: Path, monkeypatch) -> None:
+    """A missing shell produces an actionable deploy error."""
+    from apx_agent import cli
+
+    (tmp_path / "databricks.yml").write_text(
+        "artifacts:\n  default:\n    build: echo build\n",
+    )
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+
+    with pytest.raises(click.ClickException, match="POSIX shell"):
+        cli._run_bundle_artifacts(tmp_path)
+
+
 def test_sanitize_uv_lock_rewrites_internal_index(tmp_path: Path) -> None:
     """Deploy artifacts must resolve from public PyPI: the internal Databricks
     proxy in a uv.lock's source.registry is rewritten, download URLs untouched."""
