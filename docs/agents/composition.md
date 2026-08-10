@@ -32,6 +32,11 @@ pipeline = SequentialAgent([
 ])
 ```
 
+To pass a value from one step to the next, set `output_key` on the producing
+agent and reference `{key}` in the downstream instructions. Tools that need to
+read or write several values can instead declare `state: Dependencies.State`;
+see [custom-tool state sharing](../tools/custom-tools.md#share-state-within-an-invocation).
+
 ## ParallelAgent — fan-out / gather
 
 Run sub-agents concurrently and merge results. Use for independent lookups that don't depend on each other.
