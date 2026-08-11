@@ -2090,6 +2090,80 @@ def _bake_schema_into_project(
     return True
 
 
+def _materialize_yaml_project(
+    yaml_path: Path, config: Any, profile: str | None
+) -> Path:
+    """Materialize a YAML spec beside itself and return its project directory.
+
+    YAML remains the source of truth; generated Python/DAB files are refreshed
+    from it on each run or deploy. The sibling directory retains ``.apx``
+    grounding so ``refresh-schema`` and OKF enrichment work across invocations.
+    """
+    from ._project_gen import generate_project
+
+    target = yaml_path.with_suffix("")
+    if target.is_symlink():
+        raise click.ClickException(
+            f"Refusing to materialize into symlinked project directory: {target}"
+        )
+    if target.exists() and not target.is_dir():
+        raise click.ClickException(
+            f"Cannot materialize YAML project: {target} exists and is not a directory."
+        )
+    if target.exists() and any(target.iterdir()) and not (
+        (target / "pyproject.toml").exists() and (target / "databricks.yml").exists()
+    ):
+        raise click.ClickException(
+            f"Refusing to overwrite non-apx directory {target}. "
+            "Choose a different YAML filename or move the directory."
+        )
+
+    target.mkdir(parents=True, exist_ok=True)
+    generate_project(config, target, source_dir=yaml_path.parent)
+    if _bake_schema_into_project(target, config, profile):
+        click.echo(f"# refreshed .apx/schema.json in {target}", err=True)
+    click.echo(
+        f"# Materialized {yaml_path.name} at {target}/ "
+        "(YAML remains the source of truth)",
+        err=True,
+    )
+    return target
+
+
+def _resolve_project_directory(spec: str | None, profile: str | None = None) -> Path:
+    """Resolve a CLI source to the canonical project directory.
+
+    YAML specs are materialized; directory specs are used as-is; omitted specs
+    resolve to the current project. Target-specific deploy adapters consume the
+    returned directory after this source-resolution step.
+    """
+    from ._doctor import _is_apx_project
+
+    cwd = Path.cwd()
+    if spec is None:
+        return cwd
+    path = Path(spec)
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        from ._yaml_spec import SpecValidationError, load_spec
+
+        if not path.exists():
+            raise click.ClickException(f"Spec file not found: {spec}")
+        try:
+            config = load_spec(path)
+        except SpecValidationError as e:
+            raise click.ClickException(f"Invalid spec {path}: {e}") from e
+        return _materialize_yaml_project(path, config, profile)
+    if path.is_dir():
+        return path.resolve()
+    candidate = cwd / path
+    if candidate.is_dir() and _is_apx_project(candidate):
+        return candidate.resolve()
+    raise click.ClickException(
+        f"No runnable agent project found for {spec!r}. "
+        "Pass a project directory or a .yaml spec."
+    )
+
+
 def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[str, str]":
     """Bake a 'talk to your data' example tool against a real table.
 
@@ -5155,69 +5229,18 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         _, project_dir = agents[idx - 1]
         os.chdir(project_dir)
     elif spec_is_yaml:
-        # A .yaml spec has no project files — generate one into a temp dir and
-        # serve from there, mirroring `deploy <spec>.yaml`. The temp dir lives
-        # for the server's lifetime and is cleaned up on process exit. Edit the
-        # YAML and re-run to pick up changes (the generated project is derived,
-        # not the source of truth — that's the YAML).
-        import atexit
-        import shutil
-        import tempfile
-        from ._project_gen import generate_project
-        from ._yaml_spec import SpecValidationError, load_spec
-
+        # Materialize beside the YAML so grounding survives process restarts.
         assert spec is not None  # spec_is_yaml implies spec is truthy
-        yaml_path = Path(spec)
-        if not yaml_path.exists():
-            raise click.ClickException(f"Spec file not found: {spec}")
-        try:
-            config = load_spec(yaml_path)
-        except SpecValidationError as e:
-            raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
-        tmp = tempfile.mkdtemp(prefix="apx_run_")
-        atexit.register(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        project_dir = Path(tmp) / config.name
-        generate_project(config, project_dir, source_dir=yaml_path.parent)
-        # Ground the served agent: bake .apx/schema.json so the DataAgent
-        # declares its UC tables (no runtime DESCRIBE; dev-UI DATA panel shows
-        # them). Best-effort — falls back to live introspection if it can't read.
-        if _bake_schema_into_project(project_dir, config, None):
-            click.echo("# baked .apx/schema.json from the UC schema", err=True)
-        click.echo(
-            f"# Generated a local project from {yaml_path.name} "
-            "(edit the YAML and re-run to update)",
-            err=True,
-        )
+        project_dir = _resolve_project_directory(spec)
         os.chdir(project_dir)
         # Pin config resolution to the generated project. The apps runtime's
         # _load_agent_config() otherwise walks up from __main__ (uvicorn / the
         # apx-agent bin) and can find a nearer [tool.apx.agent] than this one.
         os.environ["APX_PYPROJECT"] = str(project_dir / "pyproject.toml")
     elif spec is not None:
-        # A directory name (or bare stem) of an already-materialized project.
-        spec_path = Path(spec)
-        candidate_dir: Path | None = None
-        if spec_path.is_dir():
-            candidate_dir = spec_path.resolve()
-        else:
-            # Match against real apx projects only — _detect_target defaults to
-            # "apps" for any directory, so checking it would falsely match cwd.
-            for d in [cwd / spec, cwd]:
-                if d.is_dir() and _is_apx_project(d):
-                    candidate_dir = d
-                    break
-        if candidate_dir is None:
-            hint = (
-                f"{spec!r} looks like a spec file but doesn't exist."
-                if spec.endswith((".yaml", ".yml"))
-                else f"No runnable agent project found for {spec!r}."
-            )
-            raise click.ClickException(
-                f"{hint}\nTry 'apx-agent agents run list' to see what's available, or "
-                "'apx-agent agents run <spec>.yaml' to run from a spec."
-            )
-        if candidate_dir != cwd:
-            os.chdir(candidate_dir)
+        project_dir = _resolve_project_directory(spec)
+        if project_dir != cwd:
+            os.chdir(project_dir)
 
     if module is None:
         detected = _detect_target()
@@ -5691,49 +5714,33 @@ def _deploy_from_yaml(
     json_output: bool,
     assume_yes: bool,
 ) -> None:
-    """Read *yaml_path*, generate a temp project, and deploy it via _deploy_apps."""
-    import tempfile
-    from ._yaml_spec import load_spec, SpecValidationError
-    from ._project_gen import generate_project
+    """Read *yaml_path*, materialize its project, and deploy it."""
+    project_dir = _resolve_project_directory(str(yaml_path), profile)
 
+    # When running inside the framework source repo, inject the editable
+    # source so _ensure_apx_wheel can build and bundle the wheel.
+    framework_python = _find_nearby_framework_python(Path.cwd())
+    if framework_python is not None:
+        _inject_framework_source(project_dir, framework_python)
+
+    import os
+    orig = os.getcwd()
     try:
-        config = load_spec(yaml_path)
-    except SpecValidationError as e:
-        raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
-
-    with tempfile.TemporaryDirectory(prefix="apx_deploy_") as tmp:
-        project_dir = Path(tmp) / config.name
-        generate_project(config, project_dir, source_dir=yaml_path.parent)
-        # Ground the deployed agent: bake .apx/schema.json so the DataAgent
-        # declares its UC tables (no runtime DESCRIBE; dev-UI DATA panel shows
-        # them). The bundle step copies .apx/ into .build/. Best-effort.
-        if _bake_schema_into_project(project_dir, config, profile):
-            click.echo("  baked .apx/schema.json from the UC schema", err=True)
-
-        # When running inside the framework source repo, inject the editable
-        # source so _ensure_apx_wheel can build and bundle the wheel.
-        framework_python = _find_nearby_framework_python(Path.cwd())
-        if framework_python is not None:
-            _inject_framework_source(project_dir, framework_python)
-
-        import os
-        orig = os.getcwd()
-        try:
-            os.chdir(project_dir)
-            _deploy_apps(
-                module="agent:agent",
-                profile=profile,
-                bundle_target=bundle_target,
-                no_run=no_run,
-                auto_update_yml=False,  # generated yml is complete; agent.py is codegen'd
-                auto_build_wheel=True,
-                auto_experiment=True,
-                vars=(),
-                json_output=json_output,
-                readyz_gate=readyz_gate,
-            )
-        finally:
-            os.chdir(orig)
+        os.chdir(project_dir)
+        _deploy_apps(
+            module="agent:agent",
+            profile=profile,
+            bundle_target=bundle_target,
+            no_run=no_run,
+            auto_update_yml=False,  # generated yml is complete; agent.py is codegen'd
+            auto_build_wheel=True,
+            auto_experiment=True,
+            vars=(),
+            json_output=json_output,
+            readyz_gate=readyz_gate,
+        )
+    finally:
+        os.chdir(orig)
 
 
 # deploy options only the model-serving branch consumes (issue #413):
