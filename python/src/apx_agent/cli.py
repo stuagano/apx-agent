@@ -2090,6 +2090,46 @@ def _bake_schema_into_project(
     return True
 
 
+def _materialize_yaml_project(
+    yaml_path: Path, config: Any, profile: str | None
+) -> Path:
+    """Materialize a YAML spec beside itself and return its project directory.
+
+    YAML remains the source of truth; generated Python/DAB files are refreshed
+    from it on each run or deploy. The sibling directory retains ``.apx``
+    grounding so ``refresh-schema`` and OKF enrichment work across invocations.
+    """
+    from ._project_gen import generate_project
+
+    target = yaml_path.with_suffix("")
+    if target.is_symlink():
+        raise click.ClickException(
+            f"Refusing to materialize into symlinked project directory: {target}"
+        )
+    if target.exists() and not target.is_dir():
+        raise click.ClickException(
+            f"Cannot materialize YAML project: {target} exists and is not a directory."
+        )
+    if target.exists() and any(target.iterdir()) and not (
+        (target / "pyproject.toml").exists() and (target / "databricks.yml").exists()
+    ):
+        raise click.ClickException(
+            f"Refusing to overwrite non-apx directory {target}. "
+            "Choose a different YAML filename or move the directory."
+        )
+
+    target.mkdir(parents=True, exist_ok=True)
+    generate_project(config, target, source_dir=yaml_path.parent)
+    if _bake_schema_into_project(target, config, profile):
+        click.echo(f"# refreshed .apx/schema.json in {target}", err=True)
+    click.echo(
+        f"# Materialized {yaml_path.name} at {target}/ "
+        "(YAML remains the source of truth)",
+        err=True,
+    )
+    return target
+
+
 def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[str, str]":
     """Bake a 'talk to your data' example tool against a real table.
 
@@ -5155,15 +5195,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         _, project_dir = agents[idx - 1]
         os.chdir(project_dir)
     elif spec_is_yaml:
-        # A .yaml spec has no project files — generate one into a temp dir and
-        # serve from there, mirroring `deploy <spec>.yaml`. The temp dir lives
-        # for the server's lifetime and is cleaned up on process exit. Edit the
-        # YAML and re-run to pick up changes (the generated project is derived,
-        # not the source of truth — that's the YAML).
-        import atexit
-        import shutil
-        import tempfile
-        from ._project_gen import generate_project
+        # Materialize beside the YAML so grounding survives process restarts.
         from ._yaml_spec import SpecValidationError, load_spec
 
         assert spec is not None  # spec_is_yaml implies spec is truthy
@@ -5174,20 +5206,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
             config = load_spec(yaml_path)
         except SpecValidationError as e:
             raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
-        tmp = tempfile.mkdtemp(prefix="apx_run_")
-        atexit.register(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        project_dir = Path(tmp) / config.name
-        generate_project(config, project_dir, source_dir=yaml_path.parent)
-        # Ground the served agent: bake .apx/schema.json so the DataAgent
-        # declares its UC tables (no runtime DESCRIBE; dev-UI DATA panel shows
-        # them). Best-effort — falls back to live introspection if it can't read.
-        if _bake_schema_into_project(project_dir, config, None):
-            click.echo("# baked .apx/schema.json from the UC schema", err=True)
-        click.echo(
-            f"# Generated a local project from {yaml_path.name} "
-            "(edit the YAML and re-run to update)",
-            err=True,
-        )
+        project_dir = _materialize_yaml_project(yaml_path, config, None)
         os.chdir(project_dir)
         # Pin config resolution to the generated project. The apps runtime's
         # _load_agent_config() otherwise walks up from __main__ (uvicorn / the
@@ -5691,49 +5710,40 @@ def _deploy_from_yaml(
     json_output: bool,
     assume_yes: bool,
 ) -> None:
-    """Read *yaml_path*, generate a temp project, and deploy it via _deploy_apps."""
-    import tempfile
+    """Read *yaml_path*, materialize its project, and deploy it."""
     from ._yaml_spec import load_spec, SpecValidationError
-    from ._project_gen import generate_project
 
     try:
         config = load_spec(yaml_path)
     except SpecValidationError as e:
         raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
 
-    with tempfile.TemporaryDirectory(prefix="apx_deploy_") as tmp:
-        project_dir = Path(tmp) / config.name
-        generate_project(config, project_dir, source_dir=yaml_path.parent)
-        # Ground the deployed agent: bake .apx/schema.json so the DataAgent
-        # declares its UC tables (no runtime DESCRIBE; dev-UI DATA panel shows
-        # them). The bundle step copies .apx/ into .build/. Best-effort.
-        if _bake_schema_into_project(project_dir, config, profile):
-            click.echo("  baked .apx/schema.json from the UC schema", err=True)
+    project_dir = _materialize_yaml_project(yaml_path, config, profile)
 
-        # When running inside the framework source repo, inject the editable
-        # source so _ensure_apx_wheel can build and bundle the wheel.
-        framework_python = _find_nearby_framework_python(Path.cwd())
-        if framework_python is not None:
-            _inject_framework_source(project_dir, framework_python)
+    # When running inside the framework source repo, inject the editable
+    # source so _ensure_apx_wheel can build and bundle the wheel.
+    framework_python = _find_nearby_framework_python(Path.cwd())
+    if framework_python is not None:
+        _inject_framework_source(project_dir, framework_python)
 
-        import os
-        orig = os.getcwd()
-        try:
-            os.chdir(project_dir)
-            _deploy_apps(
-                module="agent:agent",
-                profile=profile,
-                bundle_target=bundle_target,
-                no_run=no_run,
-                auto_update_yml=False,  # generated yml is complete; agent.py is codegen'd
-                auto_build_wheel=True,
-                auto_experiment=True,
-                vars=(),
-                json_output=json_output,
-                readyz_gate=readyz_gate,
-            )
-        finally:
-            os.chdir(orig)
+    import os
+    orig = os.getcwd()
+    try:
+        os.chdir(project_dir)
+        _deploy_apps(
+            module="agent:agent",
+            profile=profile,
+            bundle_target=bundle_target,
+            no_run=no_run,
+            auto_update_yml=False,  # generated yml is complete; agent.py is codegen'd
+            auto_build_wheel=True,
+            auto_experiment=True,
+            vars=(),
+            json_output=json_output,
+            readyz_gate=readyz_gate,
+        )
+    finally:
+        os.chdir(orig)
 
 
 # deploy options only the model-serving branch consumes (issue #413):
