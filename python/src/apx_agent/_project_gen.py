@@ -16,6 +16,8 @@ agent in code (ADK-style), and ``module = "agent:agent"`` is always written.
 
 from __future__ import annotations
 
+import keyword
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -116,7 +118,7 @@ def _build_pyproject(config: "AgentConfig") -> str:
         lines.append(f"instructions = {_toml_value(config.instructions)}")
     # sub_agents — without this the runtime envelope merge never sees the
     # spec's sub-agent URLs and the deployed app silently has no A2A tools.
-    if config.sub_agents:
+    if config.sub_agents and not config.agents:
         lines.append(f"sub_agents = {_toml_value(config.sub_agents)}")
 
     # knowledge — emit only when the caller explicitly set it in the AgentConfig.
@@ -192,6 +194,203 @@ _TEMPLATE_TARGETS = {
 }
 
 
+_AGENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class _PyExpr(str):
+    """String that should be emitted as Python source, not repr() quoted."""
+
+
+_LOAD_PYTHON_TOOL_HELPER = (
+    "def _load_python_tool(ref):\n"
+    "    module, attr = ref.split(':', 1)\n"
+    "    return getattr(import_module(module), attr)"
+)
+
+
+def _agent_var(name: str) -> str:
+    """Return a Python variable name for a graph node name."""
+    candidate = name.replace("-", "_")
+    if not _AGENT_NAME_RE.match(candidate) or keyword.iskeyword(candidate):
+        raise ValueError(f"Invalid graph agent name: {name!r}")
+    return candidate
+
+
+def _ctor_kwargs(spec: dict[str, Any]) -> str:
+    """Render constructor kwargs, skipping ``None`` values."""
+    return ", ".join(
+        f"{k}={v if isinstance(v, _PyExpr) else repr(v)}"
+        for k, v in spec.items()
+        if v is not None
+    )
+
+
+def _normalize_leaf_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    """Normalize YAML-friendly tool aliases to ``load_config_tools`` kwargs."""
+    out = dict(tool)
+    kind = out.get("type")
+    if kind == "uc_function" and "function" in out and "function_name" not in out:
+        out["function_name"] = out.pop("function")
+    if kind == "vector_search" and "index" in out and "index_name" not in out:
+        out["index_name"] = out.pop("index")
+    return out
+
+
+def _render_leaf_tools(
+    name: str,
+    spec: dict[str, Any],
+    imports: set[str],
+) -> str | None:
+    """Render a leaf ``tools=[...]`` expression, if the YAML leaf declares tools."""
+    raw_tools = spec.pop("tools", None)
+    if raw_tools is None:
+        return None
+    if not isinstance(raw_tools, list):
+        raise ValueError(f"Graph agent {name!r} tools must be a list")
+
+    python_refs: list[str] = []
+    config_tools: list[dict[str, Any]] = []
+    for i, tool in enumerate(raw_tools):
+        if not isinstance(tool, dict):
+            raise ValueError(f"Graph agent {name!r} tool #{i} must be a mapping")
+        normalized = _normalize_leaf_tool(tool)
+        if normalized.get("type") == "python":
+            ref = normalized.get("module")
+            if not isinstance(ref, str) or ":" not in ref:
+                raise ValueError(
+                    f"Graph agent {name!r} python tool #{i} requires module: 'pkg.mod:fn'"
+                )
+            python_refs.append(ref)
+        else:
+            config_tools.append(normalized)
+
+    pieces: list[str] = []
+    if python_refs:
+        pieces.extend(f"_load_python_tool({ref!r})" for ref in python_refs)
+    if config_tools:
+        imports.add("load_config_tools")
+        pieces.append(f"*load_config_tools({config_tools!r})")
+    return _PyExpr("[" + ", ".join(pieces) + "]")
+
+
+def _render_leaf(name: str, spec: dict[str, Any], imports: set[str]) -> str:
+    """Render one YAML graph leaf as a Python assignment."""
+    kind = str(spec.get("type", "agent")).replace("-", "_").lower()
+    kwargs = {k: v for k, v in spec.items() if k != "type"}
+    kwargs.setdefault("name", name)
+    tools_expr = _render_leaf_tools(name, kwargs, imports)
+    if tools_expr is not None:
+        kwargs["tools"] = tools_expr if kind in {"agent", "llm", "llm_agent"} else None
+        if kind not in {"agent", "llm", "llm_agent"}:
+            kwargs["extra_tools"] = tools_expr
+    var = _agent_var(name)
+
+    if kind in {"agent", "llm", "llm_agent"}:
+        imports.add("Agent")
+        return f"{var} = Agent({_ctor_kwargs(kwargs)})"
+
+    if kind in {"data", "data_agent"}:
+        imports.add("DataAgent")
+        catalog = kwargs.pop("catalog", None)
+        schema = kwargs.pop("schema", None)
+        if catalog is None or schema is None:
+            raise ValueError(f"Data graph agent {name!r} requires catalog and schema")
+        args = ", ".join([repr(catalog), repr(schema), _ctor_kwargs(kwargs)]).rstrip(", ")
+        return f"{var} = DataAgent({args})"
+
+    if kind in {"coworker", "coworker_agent"}:
+        imports.add("CoworkerAgent")
+        catalog = kwargs.pop("catalog", None)
+        schema = kwargs.pop("schema", None)
+        if catalog is None or schema is None:
+            raise ValueError(f"Coworker graph agent {name!r} requires catalog and schema")
+        args = ", ".join([repr(catalog), repr(schema), _ctor_kwargs(kwargs)]).rstrip(", ")
+        return f"{var} = CoworkerAgent({args})"
+
+    raise ValueError(f"Unsupported graph agent type {kind!r} for {name!r}")
+
+
+def _render_root(root: dict[str, Any], agent_names: set[str], imports: set[str]) -> str:
+    """Render the YAML graph root assignment."""
+    kind = str(root.get("type", "router")).replace("-", "_").lower()
+
+    def _refs(key: str = "agents") -> list[str]:
+        names = root.get(key)
+        if not isinstance(names, list) or not names:
+            raise ValueError(f"{kind} root requires a non-empty {key} list")
+        missing = [n for n in names if n not in agent_names]
+        if missing:
+            raise ValueError(f"{kind} root references unknown agents: {missing}")
+        return [_agent_var(n) for n in names]
+
+    def _ref(key: str) -> str:
+        name = root.get(key)
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"{kind} root requires {key}")
+        if name not in agent_names:
+            raise ValueError(f"{kind} root references unknown agent: {name!r}")
+        return _agent_var(name)
+
+    list_roots = {"router": "RouterAgent", "sequential": "SequentialAgent", "parallel": "ParallelAgent"}
+    if kind in list_roots:
+        cls = list_roots[kind]
+        imports.add(cls)
+        refs = ", ".join(_refs())
+        instructions = root.get("instructions")
+        extra = f", instructions={instructions!r}" if instructions else ""
+        return f"agent = {cls}(agents=[{refs}]{extra})"
+
+    if kind == "handoff":
+        imports.add("HandoffAgent")
+        refs = ", ".join(_refs())
+        start = root.get("start")
+        if start is not None and start not in agent_names:
+            raise ValueError(f"handoff root references unknown start agent: {start!r}")
+        extra = f", start={start!r}" if start else ""
+        return f"agent = HandoffAgent(agents=[{refs}]{extra})"
+
+    if kind == "loop":
+        imports.add("LoopAgent")
+        max_iterations = root.get("max_iterations", 5)
+        return f"agent = LoopAgent({_ref('agent')}, max_iterations={max_iterations!r})"
+
+    raise ValueError(f"Unsupported graph root type {kind!r}")
+
+
+def _render_graph_agent_py(config: "AgentConfig") -> str:
+    """Codegen a top-level ``agent.py`` from YAML graph declarations."""
+    if not config.agents or config.root is None:
+        raise ValueError("YAML graph generation requires both agents and root")
+    if config.template is not None:
+        raise ValueError("YAML graph generation cannot also set template")
+
+    # Distinct leaf names must not collapse to the same Python variable (e.g.
+    # "my-agent" and "my_agent" both sanitize to `my_agent`), or one leaf would
+    # silently shadow the other and root refs would point at the wrong agent.
+    by_var: dict[str, str] = {}
+    for name in config.agents:
+        var = _agent_var(name)
+        if var in by_var:
+            raise ValueError(
+                f"Graph agent names {by_var[var]!r} and {name!r} both map to variable {var!r}"
+            )
+        by_var[var] = name
+
+    imports: set[str] = set()
+    leaves = [_render_leaf(name, spec, imports) for name, spec in config.agents.items()]
+    root = _render_root(config.root, set(config.agents), imports)
+    import_lines = ["from apx_agent import " + ", ".join(sorted(imports))]
+    uses_python_tool = any("_load_python_tool" in leaf for leaf in leaves)
+    if uses_python_tool:
+        import_lines.insert(0, "from importlib import import_module")
+    blocks = ["\n".join(import_lines)]
+    if uses_python_tool:
+        blocks.append(_LOAD_PYTHON_TOOL_HELPER)
+    blocks.extend(leaves)
+    blocks.append(root)
+    return "\n\n".join(blocks) + "\n"
+
+
 def render_agent_py(config: "AgentConfig") -> str:
     """Codegen a top-level ``agent.py`` that builds the template agent in code.
 
@@ -209,6 +408,9 @@ def render_agent_py(config: "AgentConfig") -> str:
     :param config: Validated ``AgentConfig`` whose ``template`` selects the agent.
     :returns: Complete ``agent.py`` source.
     """
+    if config.agents or config.root is not None:
+        return _render_graph_agent_py(config)
+
     if config.template is None:
         raise ValueError("render_agent_py requires config.template to be set")
     name = config.template.get("name")
@@ -422,7 +624,7 @@ def generate_project(
 
     # agent.py — single Python definition of the agent (Python-canonical). The
     # template selects the constructor; the runtime imports this module.
-    if config.template is not None:
+    if config.template is not None or config.agents or config.root is not None:
         (target_dir / "agent.py").write_text(render_agent_py(config))
     else:
         # Template-less spec (persona/orchestrator agents): a bare LlmAgent.
