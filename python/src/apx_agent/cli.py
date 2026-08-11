@@ -2137,6 +2137,8 @@ def _resolve_project_directory(spec: str | None, profile: str | None = None) -> 
     resolve to the current project. Target-specific deploy adapters consume the
     returned directory after this source-resolution step.
     """
+    from ._doctor import _is_apx_project
+
     cwd = Path.cwd()
     if spec is None:
         return cwd
