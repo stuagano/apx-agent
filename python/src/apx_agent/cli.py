@@ -2130,6 +2130,38 @@ def _materialize_yaml_project(
     return target
 
 
+def _resolve_project_directory(spec: str | None, profile: str | None = None) -> Path:
+    """Resolve a CLI source to the canonical project directory.
+
+    YAML specs are materialized; directory specs are used as-is; omitted specs
+    resolve to the current project. Target-specific deploy adapters consume the
+    returned directory after this source-resolution step.
+    """
+    cwd = Path.cwd()
+    if spec is None:
+        return cwd
+    path = Path(spec)
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        from ._yaml_spec import SpecValidationError, load_spec
+
+        if not path.exists():
+            raise click.ClickException(f"Spec file not found: {spec}")
+        try:
+            config = load_spec(path)
+        except SpecValidationError as e:
+            raise click.ClickException(f"Invalid spec {path}: {e}") from e
+        return _materialize_yaml_project(path, config, profile)
+    if path.is_dir():
+        return path.resolve()
+    candidate = cwd / path
+    if candidate.is_dir() and _is_apx_project(candidate):
+        return candidate.resolve()
+    raise click.ClickException(
+        f"No runnable agent project found for {spec!r}. "
+        "Pass a project directory or a .yaml spec."
+    )
+
+
 def _example_tool_block(catalog: str, schema: str, table: str | None) -> "tuple[str, str]":
     """Bake a 'talk to your data' example tool against a real table.
 
@@ -5196,47 +5228,17 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         os.chdir(project_dir)
     elif spec_is_yaml:
         # Materialize beside the YAML so grounding survives process restarts.
-        from ._yaml_spec import SpecValidationError, load_spec
-
         assert spec is not None  # spec_is_yaml implies spec is truthy
-        yaml_path = Path(spec)
-        if not yaml_path.exists():
-            raise click.ClickException(f"Spec file not found: {spec}")
-        try:
-            config = load_spec(yaml_path)
-        except SpecValidationError as e:
-            raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
-        project_dir = _materialize_yaml_project(yaml_path, config, None)
+        project_dir = _resolve_project_directory(spec)
         os.chdir(project_dir)
         # Pin config resolution to the generated project. The apps runtime's
         # _load_agent_config() otherwise walks up from __main__ (uvicorn / the
         # apx-agent bin) and can find a nearer [tool.apx.agent] than this one.
         os.environ["APX_PYPROJECT"] = str(project_dir / "pyproject.toml")
     elif spec is not None:
-        # A directory name (or bare stem) of an already-materialized project.
-        spec_path = Path(spec)
-        candidate_dir: Path | None = None
-        if spec_path.is_dir():
-            candidate_dir = spec_path.resolve()
-        else:
-            # Match against real apx projects only — _detect_target defaults to
-            # "apps" for any directory, so checking it would falsely match cwd.
-            for d in [cwd / spec, cwd]:
-                if d.is_dir() and _is_apx_project(d):
-                    candidate_dir = d
-                    break
-        if candidate_dir is None:
-            hint = (
-                f"{spec!r} looks like a spec file but doesn't exist."
-                if spec.endswith((".yaml", ".yml"))
-                else f"No runnable agent project found for {spec!r}."
-            )
-            raise click.ClickException(
-                f"{hint}\nTry 'apx-agent agents run list' to see what's available, or "
-                "'apx-agent agents run <spec>.yaml' to run from a spec."
-            )
-        if candidate_dir != cwd:
-            os.chdir(candidate_dir)
+        project_dir = _resolve_project_directory(spec)
+        if project_dir != cwd:
+            os.chdir(project_dir)
 
     if module is None:
         detected = _detect_target()
@@ -5711,14 +5713,7 @@ def _deploy_from_yaml(
     assume_yes: bool,
 ) -> None:
     """Read *yaml_path*, materialize its project, and deploy it."""
-    from ._yaml_spec import load_spec, SpecValidationError
-
-    try:
-        config = load_spec(yaml_path)
-    except SpecValidationError as e:
-        raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
-
-    project_dir = _materialize_yaml_project(yaml_path, config, profile)
+    project_dir = _resolve_project_directory(str(yaml_path), profile)
 
     # When running inside the framework source repo, inject the editable
     # source so _ensure_apx_wheel can build and bundle the wheel.
