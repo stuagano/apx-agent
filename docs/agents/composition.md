@@ -151,4 +151,18 @@ Use explicit `agent_tool(...)` whenever the calling context wants a different `n
 
 Reach for `agent_tool` when the parent needs to stay in charge. Reach for `RouterAgent` when one decision is enough and the branches are mutually exclusive. Reach for `HandoffAgent` when control should fully transfer to the specialist.
 
+### Tools or sub-agents?
+
+Use a tool when the operation is one governed action with a compact result —
+for example, an Information Extraction Service request or a single SQL query.
+Use a sub-agent when the work has its own instructions, tools, model budget,
+or reusable domain boundary. A sub-agent is still exposed to the parent as a
+tool when delegation is model-selected; use `SequentialAgent` when delegation
+must happen in a fixed order.
+
+For an external REST service, prefer `openapi_tool` when the service has an
+OpenAPI document so each operation gets an accurate schema and description.
+Use a custom tool when the API needs bespoke validation or orchestration. See
+[custom tools](../tools/custom-tools.md#openapi_tool--openapi-spec--many-tools).
+
 See [routing.md](routing.md) for `RouterAgent` and `HandoffAgent` details.

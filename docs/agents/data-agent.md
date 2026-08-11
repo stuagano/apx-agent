@@ -75,9 +75,13 @@ removed from the live schema deleted; this is destructive to local-only and
 hand-authored table concepts.
 
 The default YAML-only scaffold has no project directory or `.apx/` assets to
-refresh. Create a full project scaffold first, or deploy the YAML spec again to
-regenerate its temporary project. After changing a grounding bundle, restart
-the local agent or redeploy so the generated files are loaded by the runtime.
+refresh. Treat `apx-agent agents deploy <spec>.yaml` as an ephemeral build: it
+regenerates its temporary grounding from the spec on each deploy. If grounding
+needs day-two edits or incremental refreshes, create a full project with
+`apx-agent agents scaffold`, keep `.apx/` under version control, and run
+`apx-agent agents refresh-schema` (or `migrate-to-okf`) from that project. After
+changing a grounding bundle, restart the local agent or redeploy so the
+generated files are loaded by the runtime.
 
 For most production deployments (Databricks Apps): `apx-agent agents scaffold`
 generates a full project directory (`agent.py` + `pyproject.toml` +

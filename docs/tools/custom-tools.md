@@ -43,6 +43,27 @@ agent = Agent(
 
 The `@tool` decorator is optional — a plain function works the same way when passed to `tools=[...]`. Use the decorator when you want to override the name or description, or when you intend to publish the tool to UC.
 
+### Make tool use explicit
+
+The model decides whether to call a tool. If an answer must be grounded in a
+service or table, say so in the agent instructions and make the tool
+description specific about when it must be called:
+
+```python
+agent = Agent(
+    instructions=(
+        "For order status, always call get_order_status before answering. "
+        "Never invent an order status when the tool has not returned one."
+    ),
+    tools=[get_order_status],
+)
+```
+
+Use the **Traces** view to confirm the expected tool call and its result. If a
+step must run regardless of model choice, use a `SequentialAgent` or call the
+Python function directly; a tool exposed to an LLM is a model-selected action,
+not a guaranteed workflow edge.
+
 ### Override name and description
 
 Use the parameterized form to control what the LLM sees without changing the function code:
