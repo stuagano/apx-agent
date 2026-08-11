@@ -24,6 +24,19 @@ def get_table_lineage(table_full_name: str, ws: Dependencies.Workspace) -> dict:
 
 When deployed to Model Serving and called from a trusted Databricks surface (AI Playground, Genie, Review App, Supervisor sub-agent), the calling user's identity threads automatically through the agent and its sub-agents — scoped to the declared resources at every hop.
 
+## New permissions require reauthorization
+
+Adding a `user_api_scope` or a new governed resource does not guarantee that
+an existing browser session will show a consent dialog. The caller's OBO token
+may still be an older grant. If a request fails with `Invalid scope` or
+`required scopes`, re-authorize the App by opening its URL and approving the
+permissions prompt; if the prompt is cached, revoke the App authorization in
+Genie (or clear the browser cookies) and open it again. Then retry the request.
+
+This is an OAuth/session lifecycle constraint, not a substitute for declaring
+the required scope in the bundle. The runtime surfaces the same recovery hint
+for SQL scope denials.
+
 ## Scope limit: cross-app model calls
 
 On an A2A hop between two Databricks Apps, the caller's OBO token is forwarded, so the callee's tools and Databricks API calls still run as the asking user. The callee's own LLM (FMAPI) calls do not: they run as the callee app's service principal, because each App authenticates outbound model traffic with its own credentials. Data access is user-scoped per hop; model access is app-scoped. See [../multi-agent/a2a.md](../multi-agent/a2a.md) for the full auth path.
