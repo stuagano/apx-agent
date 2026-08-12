@@ -15,13 +15,16 @@ Covers:
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import pytest
 import yaml
 
-from apx_agent import BaseAgent, CoworkerAgent
+from apx_agent import BaseAgent, CoworkerAgent, DataAgent, RouterAgent
 from apx_agent._models import AgentConfig, MemoryBackendConfig, SessionBackendConfig, SkillConfig
 from apx_agent._project_gen import generate_project, render_agent_py
 
@@ -74,6 +77,13 @@ def _tool_names(agent: BaseAgent) -> list[str]:
     return sorted(t.name for t in agent.collect_tools())
 
 
+def _exec_agent_py(src: str) -> dict[str, Any]:
+    """Execute generated agent.py source and return its globals."""
+    ns: dict[str, Any] = {}
+    exec(compile(src, "agent.py", "exec"), ns)  # noqa: S102 — testing generated code
+    return ns
+
+
 # ---------------------------------------------------------------------------
 # Faithfulness: the codegen'd agent.py builds the SAME agent as the template
 # registry. This is the core claim of Python-canonical generation.
@@ -90,6 +100,7 @@ def test_render_agent_py_matches_registry_build(coworker_config: AgentConfig) ->
     coded = ns["agent"]
     assert isinstance(coded, CoworkerAgent)
 
+    assert coworker_config.template is not None
     spec = {k: v for k, v in coworker_config.template.items() if k != "name"}
     built = template_registry.build("coworker", spec)
     assert isinstance(built, CoworkerAgent)
@@ -108,6 +119,209 @@ def test_render_agent_py_unknown_template_falls_back_to_registry() -> None:
     src = render_agent_py(cfg)
     assert "template_registry.build('third_party'" in src
     compile(src, "agent.py", "exec")
+
+
+def test_render_agent_py_graph_router_with_data_and_agent_leaves() -> None:
+    """YAML graph declarations materialize into a real RouterAgent tree."""
+    cfg = AgentConfig(
+        name="revenue_ops",
+        agents={
+            "sales": {
+                "type": "data",
+                "catalog": "main",
+                "schema": "sales",
+                "description": "Handles sales and revenue questions.",
+                "knowledge": "./.apx/okf/sales",
+            },
+            "contracts": {
+                "type": "agent",
+                "instructions": "Answer contract questions.",
+                "description": "Handles contract terms and renewals.",
+                "sub_agents": ["$CONTRACT_INSPECTOR_URL"],
+            },
+        },
+        root={
+            "type": "router",
+            "agents": ["sales", "contracts"],
+            "instructions": "Route to the right specialist.",
+        },
+    )
+
+    ns = _exec_agent_py(render_agent_py(cfg))
+
+    assert isinstance(ns["sales"], DataAgent)
+    assert ns["sales"].catalog == "main"
+    assert ns["sales"].schema == "sales"
+    assert isinstance(ns["agent"], RouterAgent)
+    assert ns["contracts"]._sub_agent_urls == ["$CONTRACT_INSPECTOR_URL"]
+
+
+def test_generate_project_graph_writes_agent_py_not_root_sub_agents(tmp_path: Path) -> None:
+    """Graph specs keep remote sub_agents on leaves, avoiding ignored root config merge."""
+    cfg = AgentConfig(
+        name="graph_agent",
+        sub_agents=["$ROOT_REMOTE_IGNORED"],
+        agents={
+            "sales": {
+                "type": "data",
+                "catalog": "main",
+                "schema": "sales",
+                "sub_agents": ["$SALES_INSPECTOR_URL"],
+            },
+            "general": {"type": "agent", "instructions": "Answer general questions."},
+        },
+        root={"type": "router", "agents": ["sales", "general"]},
+    )
+
+    generate_project(cfg, tmp_path)
+    ns = _exec_agent_py((tmp_path / "agent.py").read_text())
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
+    assert "sub_agents" not in agent_section
+    assert ns["sales"]._sub_agent_urls == ["$SALES_INSPECTOR_URL"]
+
+
+def test_render_agent_py_graph_colliding_leaf_names_raise() -> None:
+    """Leaf names that sanitize to the same Python variable are rejected, not shadowed."""
+    cfg = AgentConfig(
+        name="collide",
+        agents={
+            "my-agent": {"type": "agent", "instructions": "A."},
+            "my_agent": {"type": "agent", "instructions": "B."},
+        },
+        root={"type": "router", "agents": ["my-agent", "my_agent"]},
+    )
+
+    with pytest.raises(ValueError, match="both map to variable"):
+        render_agent_py(cfg)
+
+
+def test_render_agent_py_graph_handoff_unknown_start_raises() -> None:
+    """A handoff start naming no declared leaf fails at codegen, not deploy-time import."""
+    cfg = AgentConfig(
+        name="triage_flow",
+        agents={
+            "a": {"type": "agent", "instructions": "A."},
+            "b": {"type": "agent", "instructions": "B."},
+        },
+        root={"type": "handoff", "agents": ["a", "b"], "start": "triage"},
+    )
+
+    with pytest.raises(ValueError, match="unknown start agent"):
+        render_agent_py(cfg)
+
+
+def test_render_agent_py_graph_two_python_tool_leaves_emit_helper_once() -> None:
+    """The _load_python_tool helper is defined once, not per python-tool leaf."""
+    module = ModuleType("apx_test_two_leaf_tools")
+
+    def tool_a() -> str:
+        """Tool a."""
+        return "a"
+
+    def tool_b() -> str:
+        """Tool b."""
+        return "b"
+
+    module.tool_a = tool_a  # type: ignore[attr-defined]
+    module.tool_b = tool_b  # type: ignore[attr-defined]
+    sys.modules[module.__name__] = module
+    try:
+        cfg = AgentConfig(
+            name="two_tools",
+            agents={
+                "x": {
+                    "type": "agent",
+                    "instructions": "X.",
+                    "tools": [{"type": "python", "module": "apx_test_two_leaf_tools:tool_a"}],
+                },
+                "y": {
+                    "type": "agent",
+                    "instructions": "Y.",
+                    "tools": [{"type": "python", "module": "apx_test_two_leaf_tools:tool_b"}],
+                },
+            },
+            root={"type": "router", "agents": ["x", "y"]},
+        )
+
+        src = render_agent_py(cfg)
+        assert src.count("def _load_python_tool(") == 1
+        _exec_agent_py(src)  # still importable
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_render_agent_py_graph_loop_root() -> None:
+    """Loop roots take a single named agent, not an agents list."""
+    cfg = AgentConfig(
+        name="review_loop",
+        agents={"drafter": {"type": "agent", "instructions": "Draft until done."}},
+        root={"type": "loop", "agent": "drafter", "max_iterations": 2},
+    )
+
+    ns = _exec_agent_py(render_agent_py(cfg))
+
+    assert type(ns["agent"]).__name__ == "LoopAgent"
+
+
+def test_render_agent_py_graph_leaf_python_tool() -> None:
+    """Leaf tools can import plain Python callables by module:attr."""
+    module = ModuleType("apx_test_leaf_tools")
+
+    def lookup_order(order_id: str) -> str:
+        """Look up an order by id."""
+        return order_id
+
+    module.lookup_order = lookup_order  # type: ignore[attr-defined]
+    sys.modules[module.__name__] = module
+    try:
+        cfg = AgentConfig(
+            name="tool_graph",
+            agents={
+                "orders": {
+                    "type": "agent",
+                    "instructions": "Answer order questions.",
+                    "tools": [
+                        {"type": "python", "module": "apx_test_leaf_tools:lookup_order"}
+                    ],
+                }
+            },
+            root={"type": "router", "agents": ["orders"]},
+        )
+
+        ns = _exec_agent_py(render_agent_py(cfg))
+
+        assert _tool_names(ns["orders"]) == ["lookup_order"]
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_render_agent_py_graph_leaf_config_tools() -> None:
+    """Leaf tools reuse the existing declarative tool factories."""
+    cfg = AgentConfig(
+        name="tool_graph",
+        agents={
+            "sales": {
+                "type": "agent",
+                "tools": [
+                    {
+                        "type": "skill",
+                        "name": "sales_guide",
+                        "description": "Load the sales guide.",
+                        "path": "skills/sales.md",
+                    },
+                ],
+            }
+        },
+        root={"type": "router", "agents": ["sales"]},
+    )
+
+    ns = _exec_agent_py(render_agent_py(cfg))
+
+    assert _tool_names(ns["sales"]) == ["sales_guide"]
 
 
 # ---------------------------------------------------------------------------

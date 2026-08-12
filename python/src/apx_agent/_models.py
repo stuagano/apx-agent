@@ -332,6 +332,22 @@ class AgentConfig(BaseModel):
     afterward via ``finalize_agent`` as usual — template builds the leaf, persona
     overlays.
     """
+    agents: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """YAML graph leaf declarations keyed by local agent name.
+
+    Each value declares one leaf agent, for example
+    ``{"type": "data", "catalog": "main", "schema": "sales"}`` or
+    ``{"type": "agent", "instructions": "..."}``. ``generate_project``
+    materializes these into explicit Python constructors in ``agent.py``.
+    """
+
+    root: dict[str, Any] | None = None
+    """YAML graph root declaration.
+
+    Examples: ``{"type": "router", "agents": ["sales", "support"]}`` or
+    ``{"type": "sequential", "agents": ["plan", "answer"]}``.
+    """
+
     knowledge: str | None = None
     """Path to an OKF bundle directory used to ground this agent.
 
@@ -546,5 +562,4 @@ class AgentContext:
 
     def get_tool(self, name: str) -> AgentTool | None:
         return self._tool_map.get(name)
-
 

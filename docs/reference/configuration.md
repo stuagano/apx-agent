@@ -157,6 +157,68 @@ The `template` inline-table selects a registered template by `name` and passes t
 
 **Cross-repo templates:** Third-party templates register via the `apx_agent.templates` Python entry-point group — they appear in the registry after `pip install`. See the E1 spec and the `Template` protocol for authoring a template.
 
+## YAML graph specs — `agents` + `root`
+
+Hand-authored `.yaml` specs can declare a local `BaseAgent` tree. `agents`
+defines the leaves; `root` defines the composition primitive. Deploying or
+running the spec materializes a sibling project with an explicit `agent.py`.
+
+```yaml
+name: revenue-ops
+model: databricks-claude-sonnet-4-6
+
+agents:
+  sales:
+    type: data
+    catalog: main
+    schema: sales
+    knowledge: ./.apx/okf/sales
+    description: Handles sales, revenue, customers, and orders.
+
+  contracts:
+    type: agent
+    instructions: Answer contract questions.
+    description: Handles contract terms and renewals.
+    tools:
+      - type: python
+        module: tools.contracts:summarize_contract
+      - type: uc_function
+        function: main.agent_tools.lookup_contract
+    sub_agents:
+      - $CONTRACT_INSPECTOR_URL
+
+root:
+  type: router
+  agents: [sales, contracts]
+  instructions: Route to the right specialist.
+```
+
+Supported leaf `type` values are `agent`, `data`, and `coworker`. Supported
+root `type` values are `router`, `sequential`, `parallel`, `handoff`, and
+`loop`. Put remote `sub_agents` on a leaf, not on a composition root; only
+`Agent`/`DataAgent`/`CoworkerAgent` leaves can materialize remote peers as
+callable tools.
+
+Leaf `tools` supports the same declarative factories as `[[tool.apx.tools]]`,
+plus plain Python imports:
+
+```yaml
+tools:
+  - type: python
+    module: tools.orders:lookup_order
+  - type: uc_function
+    function: main.agent_tools.lookup_order
+  - type: genie
+    space_id: 01f...
+  - type: vector_search
+    index: main.docs.order_index
+  - type: openapi
+    spec: ./openapi/orders.yaml
+```
+
+For `type: data` and `type: coworker`, leaf tools are passed as
+`extra_tools`; for `type: agent`, they are passed as `tools`.
+
 ## Declarative grounding — `knowledge`
 
 > Python only. Pins the agent to a specific OKF bundle directory instead of relying on the upward directory walk.
