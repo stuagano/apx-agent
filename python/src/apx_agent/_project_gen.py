@@ -16,8 +16,10 @@ agent in code (ADK-style), and ``module = "agent:agent"`` is always written.
 
 from __future__ import annotations
 
+import inspect
 import keyword
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -273,9 +275,90 @@ def _render_leaf_tools(
     return _PyExpr("[" + ", ".join(pieces) + "]")
 
 
+# Resolved leaf kind -> the apx_agent class the render path forwards kwargs to.
+# Aliases collapse to the same class so the allowed-key set is derived once from
+# the constructor the generated code actually calls (R-1: never drift from render).
+_LEAF_CLASSES = {
+    "agent": "Agent",
+    "llm": "Agent",
+    "llm_agent": "Agent",
+    "data": "DataAgent",
+    "data_agent": "DataAgent",
+    "coworker": "CoworkerAgent",
+    "coworker_agent": "CoworkerAgent",
+}
+
+
+@lru_cache(maxsize=None)
+def _leaf_ctor_params(class_name: str) -> frozenset[str]:
+    """Every named ``__init__`` param across the class and its bases.
+
+    These are exactly the keys the render path may forward to the constructor,
+    so validating declared leaf keys against them rejects an unknown key at
+    codegen instead of letting it become an import-time ``TypeError`` (FR-3).
+    Imported lazily to avoid an import cycle at module load.
+    """
+    import apx_agent
+
+    cls = getattr(apx_agent, class_name)
+    names: set[str] = set()
+    for base in cls.__mro__:
+        init = base.__dict__.get("__init__")
+        if init is None:
+            continue
+        for pname, param in inspect.signature(init).parameters.items():
+            if pname != "self" and param.kind in (
+                param.POSITIONAL_OR_KEYWORD,
+                param.KEYWORD_ONLY,
+            ):
+                names.add(pname)
+    return frozenset(names)
+
+
+# Remote leaf keys: RemoteDatabricksAgent params + the YAML ``url`` alias for the
+# positional ``card_url``. Hardcoded (not introspected) because ``url`` is a
+# render-path alias with no matching constructor param.
+_REMOTE_LEAF_KEYS = frozenset(
+    {"type", "url", "card_url", "app_name", "headers", "timeout", "long_task", "max_continuations"}
+)
+
+
+def _render_remote_leaf(name: str, var: str, spec: dict[str, Any], imports: set[str]) -> str:
+    """Render a ``RemoteDatabricksAgent`` leaf (the A2A / sub_agents story)."""
+    imports.add("RemoteDatabricksAgent")
+    unknown = set(spec) - _REMOTE_LEAF_KEYS
+    if unknown:
+        raise ValueError(f"Remote graph agent {name!r} has unknown key(s): {sorted(unknown)}")
+    url = spec.get("url")
+    if url is None:
+        url = spec.get("card_url")
+    if not isinstance(url, str) or not url:
+        raise ValueError(f"Remote graph agent {name!r} requires a non-empty url")
+    kwargs = {k: v for k, v in spec.items() if k not in {"type", "url", "card_url"}}
+    rendered = _ctor_kwargs(kwargs)
+    args = ", ".join([repr(url)] + ([rendered] if rendered else []))
+    return f"{var} = RemoteDatabricksAgent({args})"
+
+
 def _render_leaf(name: str, spec: dict[str, Any], imports: set[str]) -> str:
     """Render one YAML graph leaf as a Python assignment."""
     kind = str(spec.get("type", "agent")).replace("-", "_").lower()
+    var = _agent_var(name)
+
+    if kind in {"remote", "remote_databricks"}:
+        return _render_remote_leaf(name, var, spec, imports)
+
+    class_name = _LEAF_CLASSES.get(kind)
+    if class_name is None:
+        raise ValueError(f"Unsupported graph agent type {kind!r} for {name!r}")
+    # FR-3: reject a leaf key that is not valid for the resolved type, before it
+    # becomes an opaque constructor TypeError at import. ``tools`` is a render-path
+    # alias (mapped to tools/extra_tools below), so it is always allowed.
+    allowed = _leaf_ctor_params(class_name) | {"type", "tools"}
+    unknown = set(spec) - allowed
+    if unknown:
+        raise ValueError(f"Graph agent {name!r} ({kind}) has unknown key(s): {sorted(unknown)}")
+
     kwargs = {k: v for k, v in spec.items() if k != "type"}
     kwargs.setdefault("name", name)
     tools_expr = _render_leaf_tools(name, kwargs, imports)
@@ -283,7 +366,6 @@ def _render_leaf(name: str, spec: dict[str, Any], imports: set[str]) -> str:
         kwargs["tools"] = tools_expr if kind in {"agent", "llm", "llm_agent"} else None
         if kind not in {"agent", "llm", "llm_agent"}:
             kwargs["extra_tools"] = tools_expr
-    var = _agent_var(name)
 
     if kind in {"agent", "llm", "llm_agent"}:
         imports.add("Agent")
@@ -307,12 +389,33 @@ def _render_leaf(name: str, spec: dict[str, Any], imports: set[str]) -> str:
         args = ", ".join([repr(catalog), repr(schema), _ctor_kwargs(kwargs)]).rstrip(", ")
         return f"{var} = CoworkerAgent({args})"
 
-    raise ValueError(f"Unsupported graph agent type {kind!r} for {name!r}")
+    raise ValueError(f"Unsupported graph agent type {kind!r} for {name!r}")  # pragma: no cover
 
 
-def _render_root(root: dict[str, Any], agent_names: set[str], imports: set[str]) -> str:
+def _render_root(
+    root: dict[str, Any], agent_names: set[str], imports: set[str], remote_names: set[str]
+) -> str:
     """Render the YAML graph root assignment."""
     kind = str(root.get("type", "router")).replace("-", "_").lower()
+
+    # Keys each root kind consumes below. Anything else is rejected (FR-2) rather
+    # than silently dropped by the previous ``root.get`` reads.
+    allowed_keys = {
+        "router": {"type", "agents", "instructions"},
+        "sequential": {"type", "agents", "instructions"},
+        "parallel": {"type", "agents", "instructions"},
+        "handoff": {"type", "agents", "start"},
+        "loop": {"type", "agent", "max_iterations"},
+    }.get(kind)
+    if allowed_keys is None:
+        raise ValueError(f"Unsupported graph root type {kind!r}")
+    if kind in {"handoff", "loop"} and "instructions" in root:
+        raise ValueError(
+            f"instructions is only supported on router/sequential/parallel roots, not {kind!r}"
+        )
+    unknown = set(root) - allowed_keys
+    if unknown:
+        raise ValueError(f"{kind} root has unknown key(s): {sorted(unknown)}")
 
     def _refs(key: str = "agents") -> list[str]:
         names = root.get(key)
@@ -331,11 +434,26 @@ def _render_root(root: dict[str, Any], agent_names: set[str], imports: set[str])
             raise ValueError(f"{kind} root references unknown agent: {name!r}")
         return _agent_var(name)
 
+    def _reject_remote_members() -> None:
+        # router/handoff build routing tools that read each member's name at
+        # construction; RemoteDatabricksAgent only learns its name from an async
+        # card fetch, so a remote member would fail at import. Reject at codegen
+        # (consistent with FR-2/FR-3) instead of emitting a graph that dies later.
+        remotes = [n for n in root["agents"] if n in remote_names]
+        if remotes:
+            raise ValueError(
+                f"{kind} root cannot reference remote leaf/leaves {sorted(remotes)}: "
+                f"{kind} needs a synchronous agent name and RemoteDatabricksAgent has none "
+                f"until its card is fetched. Use a sequential/parallel/loop root."
+            )
+
     list_roots = {"router": "RouterAgent", "sequential": "SequentialAgent", "parallel": "ParallelAgent"}
     if kind in list_roots:
         cls = list_roots[kind]
         imports.add(cls)
         refs = ", ".join(_refs())
+        if kind == "router":
+            _reject_remote_members()
         instructions = root.get("instructions")
         extra = f", instructions={instructions!r}" if instructions else ""
         return f"agent = {cls}(agents=[{refs}]{extra})"
@@ -343,6 +461,7 @@ def _render_root(root: dict[str, Any], agent_names: set[str], imports: set[str])
     if kind == "handoff":
         imports.add("HandoffAgent")
         refs = ", ".join(_refs())
+        _reject_remote_members()
         start = root.get("start")
         if start is not None and start not in agent_names:
             raise ValueError(f"handoff root references unknown start agent: {start!r}")
@@ -352,9 +471,14 @@ def _render_root(root: dict[str, Any], agent_names: set[str], imports: set[str])
     if kind == "loop":
         imports.add("LoopAgent")
         max_iterations = root.get("max_iterations", 5)
-        return f"agent = LoopAgent({_ref('agent')}, max_iterations={max_iterations!r})"
+        # bool is an int subclass — reject it too (FR-5).
+        if not isinstance(max_iterations, int) or isinstance(max_iterations, bool) or max_iterations <= 0:
+            raise ValueError(
+                f"loop root max_iterations must be a positive int, got {max_iterations!r}"
+            )
+        return f"agent = LoopAgent({_ref('agent')}, max_iterations={max_iterations})"
 
-    raise ValueError(f"Unsupported graph root type {kind!r}")
+    raise ValueError(f"Unsupported graph root type {kind!r}")  # pragma: no cover
 
 
 def _render_graph_agent_py(config: "AgentConfig") -> str:
@@ -378,7 +502,12 @@ def _render_graph_agent_py(config: "AgentConfig") -> str:
 
     imports: set[str] = set()
     leaves = [_render_leaf(name, spec, imports) for name, spec in config.agents.items()]
-    root = _render_root(config.root, set(config.agents), imports)
+    remote_names = {
+        name
+        for name, spec in config.agents.items()
+        if str(spec.get("type", "agent")).replace("-", "_").lower() in {"remote", "remote_databricks"}
+    }
+    root = _render_root(config.root, set(config.agents), imports, remote_names)
     import_lines = ["from apx_agent import " + ", ".join(sorted(imports))]
     uses_python_tool = any("_load_python_tool" in leaf for leaf in leaves)
     if uses_python_tool:
