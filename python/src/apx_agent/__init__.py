@@ -92,6 +92,7 @@ from .sql_tools import sql_tool
 from .http_tools import http_tool, openapi_tool
 from .mcp_consume import mcp_tool, mcp_toolkit
 from .foundation_model import foundation_model_tool
+from .knowledge_assistant import knowledge_assistant_tool
 from .jobs_tools import (
     jobs_for_table_tool,
     jobs_history_tool,
@@ -472,6 +473,7 @@ __all__ = [
     "mcp_tool",
     "mcp_toolkit",
     "foundation_model_tool",
+    "knowledge_assistant_tool",
     "jobs_for_table_tool",
     "jobs_history_tool",
     "jobs_logs_tool",
