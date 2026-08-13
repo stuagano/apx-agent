@@ -51,11 +51,47 @@ def _normalize_citation(raw: Any) -> dict[str, Any]:
 def _extract_citations(response: Any, message: Any) -> list[dict[str, Any]]:
     """Pull citation records off the KA response, defensively.
 
-    KA endpoints have carried citations either at the response top level or on
-    the answer message; check both and normalize each to a ``doc_uri`` dict.
+    KA endpoints have carried citations either at the response top level, on the
+    answer message, or (Responses API) as ``annotations`` inside the message's
+    output_text parts. Check all three, accepting dicts or SDK objects, and
+    normalize each to a ``doc_uri`` dict.
     """
-    raw = getattr(response, "citations", None) or getattr(message, "citations", None) or []
+    def _get(obj: Any, key: str) -> Any:
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+    raw = _get(response, "citations") or _get(message, "citations") or []
+    if not raw and isinstance(message, dict):
+        for part in message.get("content") or []:
+            if isinstance(part, dict) and part.get("annotations"):
+                raw = part["annotations"]
+                break
     return [_normalize_citation(c) for c in raw]
+
+
+def _extract_answer(raw: Any) -> "tuple[str, Any]":
+    """Return ``(answer_text, message)`` from a KA invocation payload.
+
+    Handles the Responses API shape first (``output[].content[].output_text`` —
+    what current Agent Bricks KAs return) and falls back to the chat-completions
+    shape (``choices[0].message.content``) for older endpoints.
+    """
+    if not isinstance(raw, dict):
+        as_dict = getattr(raw, "as_dict", None)
+        raw = as_dict() if callable(as_dict) else getattr(raw, "__dict__", {})
+    for item in raw.get("output") or []:
+        if isinstance(item, dict) and item.get("type") == "message":
+            texts = [
+                c.get("text", "")
+                for c in item.get("content") or []
+                if isinstance(c, dict) and c.get("type") == "output_text"
+            ]
+            if texts:
+                return "".join(texts), item
+    choices = raw.get("choices") or []
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message") or {}
+        return (message.get("content") or ""), message
+    return "", None
 
 
 def knowledge_assistant_tool(
@@ -107,18 +143,22 @@ def knowledge_assistant_tool(
         ws: UserClientDependency,  # type: ignore[valid-type]
     ) -> dict[str, Any]:
         """Placeholder doc — overwritten below."""
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-
-        messages = [ChatMessage(role=ChatMessageRole.USER, content=question)]
+        # Agent Bricks KAs are ``agent/v1/responses`` endpoints: they require the
+        # ``input`` field (reject ``messages``), and the SDK's typed
+        # ``serving_endpoints.query`` drops the ``output`` array for them — so we
+        # POST to ``/invocations`` directly and parse the raw payload. Runs under
+        # the OBO user client (``ws``) so per-user KA access policies apply.
         try:
-            response = ws.serving_endpoints.query(name=endpoint_name, messages=messages)
+            response = ws.api_client.do(
+                "POST",
+                f"/serving-endpoints/{endpoint_name}/invocations",
+                body={"input": [{"role": "user", "content": question}]},
+            )
         except Exception as exc:
             logger.warning("Knowledge assistant query failed on %s: %s", endpoint_name, exc)
             return {"question": question, "error": f"Knowledge assistant query failed: {exc}"}
 
-        choices = getattr(response, "choices", None) or []
-        message = getattr(choices[0], "message", None) if choices else None
-        answer = getattr(message, "content", "") or "" if message is not None else ""
+        answer, message = _extract_answer(response)
         return {
             "question": question,
             "answer": answer,

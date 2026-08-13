@@ -18,17 +18,25 @@ from apx_agent._inspection import _inspect_tool_fn
 # Fake KA serving response
 # ---------------------------------------------------------------------------
 
-def _make_ka_response(*, answer: str, citations: list[dict[str, Any]] | None = None) -> MagicMock:
-    """Build a fake ``QueryEndpointResponse`` matching the serving-query shape."""
-    resp = MagicMock()
-    resp.choices = [MagicMock(message=MagicMock(content=answer))]
-    resp.citations = citations
-    return resp
+def _make_ka_response(*, answer: str, citations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Build a fake KA payload in the Responses API shape (what current Agent
+    Bricks KAs return from ``/serving-endpoints/<name>/invocations``)."""
+    return {
+        "object": "response",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": answer, "annotations": []}],
+            }
+        ],
+        "citations": citations,
+    }
 
 
-def _make_ws(response: MagicMock) -> MagicMock:
+def _make_ws(response: dict[str, Any]) -> MagicMock:
     ws = MagicMock(name="ws")
-    ws.serving_endpoints.query.return_value = response
+    ws.api_client.do.return_value = response
     return ws
 
 
@@ -145,7 +153,7 @@ class TestKaResponseParsing:
     async def test_error_degrades_not_raises(self):
         """A KA/API failure degrades to {'error': …}, never a raise."""
         ws = MagicMock()
-        ws.serving_endpoints.query.side_effect = RuntimeError("endpoint not ONLINE")
+        ws.api_client.do.side_effect = RuntimeError("endpoint not ONLINE")
         tool = knowledge_assistant_tool("ka-10k")
         result = await tool(question="anything", ws=ws)
         assert "error" in result
