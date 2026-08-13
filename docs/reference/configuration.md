@@ -193,11 +193,68 @@ root:
   instructions: Route to the right specialist.
 ```
 
-Supported leaf `type` values are `agent`, `data`, and `coworker`. Supported
-root `type` values are `router`, `sequential`, `parallel`, `handoff`, and
-`loop`. Put remote `sub_agents` on a leaf, not on a composition root; only
+Supported leaf `type` values are `agent`, `data`, `coworker`, and `remote`.
+Supported root `type` values are `router`, `sequential`, `parallel`, `handoff`,
+and `loop`. Put remote `sub_agents` on a leaf, not on a composition root; only
 `Agent`/`DataAgent`/`CoworkerAgent` leaves can materialize remote peers as
 callable tools.
+
+A `remote` leaf is a first-class `RemoteDatabricksAgent` node (the A2A /
+`sub_agents` story, declared not wired). `url` (alias `card_url`) is the base or
+full agent-card URL; optional keys are `app_name`, `headers`, `timeout`,
+`long_task`, `max_continuations`:
+
+```yaml
+agents:
+  billing:
+    type: remote
+    url: https://billing-agent.<workspace>.databricksapps.com
+```
+
+A `remote` leaf can sit under `sequential`, `parallel`, or `loop` roots. It
+**cannot** be a `router` or `handoff` member: those build routing tools from each
+member's name, and a remote's name is only known after its card is fetched.
+Declaring one there fails at project generation with a clear error rather than at
+import.
+
+A `coworker` leaf is a `CoworkerAgent` and, like `data`, requires `catalog` and
+`schema`:
+
+```yaml
+agents:
+  reconcile:
+    type: coworker
+    catalog: main
+    schema: payroll
+```
+
+Each root kind:
+
+```yaml
+root:
+  type: sequential   # runs leaves in order
+  agents: [sales, contracts]
+```
+
+```yaml
+root:
+  type: parallel     # runs leaves concurrently
+  agents: [sales, contracts]
+```
+
+```yaml
+root:
+  type: handoff      # leaves hand off to each other; start names the first
+  agents: [sales, contracts]
+  start: sales
+```
+
+```yaml
+root:
+  type: loop         # repeat one leaf up to max_iterations (a positive int)
+  agent: sales
+  max_iterations: 5
+```
 
 Leaf `tools` supports the same declarative factories as `[[tool.apx.tools]]`,
 plus plain Python imports:

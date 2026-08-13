@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 import yaml
 
-from apx_agent import BaseAgent, CoworkerAgent, DataAgent, RouterAgent
+from apx_agent import BaseAgent, CoworkerAgent, DataAgent, RemoteDatabricksAgent, RouterAgent
 from apx_agent._models import AgentConfig, MemoryBackendConfig, SessionBackendConfig, SkillConfig
 from apx_agent._project_gen import generate_project, render_agent_py
 
@@ -615,3 +615,130 @@ def test_explicit_knowledge_is_emitted_by_generate_project(tmp_path: Path) -> No
     assert agent_section.get("knowledge") == "./.apx/okf", (
         f"Explicit config.knowledge must be emitted, got: {agent_section.get('knowledge')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# PRD: Harden YAML graph-spec compilation — AC-1..AC-7 gate tests.
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_render_agent_py_graph_remote_leaf() -> None:
+    """AC-1: a remote leaf renders RemoteDatabricksAgent and execs to an instance."""
+    cfg = AgentConfig(
+        name="a2a_graph",
+        agents={"billing": {"type": "remote", "url": "https://x/.well-known/agent.json"}},
+        root={"type": "sequential", "agents": ["billing"]},
+    )
+
+    src = render_agent_py(cfg)
+    assert "RemoteDatabricksAgent" in src
+    assert "billing = RemoteDatabricksAgent('https://x/.well-known/agent.json')" in src
+
+    ns = _exec_agent_py(src)
+    assert isinstance(ns["billing"], RemoteDatabricksAgent)
+
+
+@pytest.mark.parametrize("kind", ["router", "handoff"])
+def test_render_agent_py_graph_remote_leaf_under_router_or_handoff_raises(kind: str) -> None:
+    """A remote leaf under router/handoff is rejected at codegen, not at import.
+
+    RouterAgent/HandoffAgent read each member's name when building routing tools,
+    but RemoteDatabricksAgent has no name until its card is fetched async — so an
+    unguarded graph would raise a ValueError only at ``import agent``. The guard
+    moves that failure to render time, naming the offending leaf.
+    """
+    cfg = AgentConfig(
+        name="a2a_bad",
+        agents={"billing": {"type": "remote", "url": "https://x/.well-known/agent.json"}},
+        root={"type": kind, "agents": ["billing"]},
+    )
+
+    with pytest.raises(ValueError, match="billing"):
+        render_agent_py(cfg)
+
+
+def test_render_agent_py_graph_root_unknown_key_raises() -> None:
+    """AC-2: an unknown root key fails at codegen, naming the offending key."""
+    cfg = AgentConfig(
+        name="bad_root",
+        agents={"a": {"type": "agent", "instructions": "A."}},
+        root={"type": "router", "agents": ["a"], "bogus": 1},
+    )
+
+    with pytest.raises(ValueError, match="bogus"):
+        render_agent_py(cfg)
+
+
+def test_render_agent_py_graph_leaf_unknown_key_raises() -> None:
+    """AC-3: an unknown leaf key raises ValueError naming it, not an import TypeError."""
+    cfg = AgentConfig(
+        name="typo_leaf",
+        agents={"a": {"type": "agent", "instrctions": "x"}},
+        root={"type": "router", "agents": ["a"]},
+    )
+
+    with pytest.raises(ValueError, match="instrctions"):
+        render_agent_py(cfg)
+
+
+def test_render_agent_py_graph_instructions_on_handoff_loop_raises() -> None:
+    """AC-4: instructions on handoff or loop roots is rejected, not silently dropped."""
+    handoff = AgentConfig(
+        name="ho",
+        agents={"a": {"type": "agent", "instructions": "A."}, "b": {"type": "agent", "instructions": "B."}},
+        root={"type": "handoff", "agents": ["a", "b"], "instructions": "nope"},
+    )
+    with pytest.raises(ValueError, match="instructions"):
+        render_agent_py(handoff)
+
+    loop = AgentConfig(
+        name="lo",
+        agents={"a": {"type": "agent", "instructions": "A."}},
+        root={"type": "loop", "agent": "a", "instructions": "nope"},
+    )
+    with pytest.raises(ValueError, match="instructions"):
+        render_agent_py(loop)
+
+
+def test_render_agent_py_graph_loop_max_iterations_validated() -> None:
+    """AC-5: loop max_iterations must be a positive int; a valid one renders through."""
+    bad = AgentConfig(
+        name="lo_bad",
+        agents={"a": {"type": "agent", "instructions": "A."}},
+        root={"type": "loop", "agent": "a", "max_iterations": "lots"},
+    )
+    with pytest.raises(ValueError, match="max_iterations"):
+        render_agent_py(bad)
+
+    good = AgentConfig(
+        name="lo_good",
+        agents={"a": {"type": "agent", "instructions": "A."}},
+        root={"type": "loop", "agent": "a", "max_iterations": 3},
+    )
+    assert "max_iterations=3" in render_agent_py(good)
+
+
+def test_configuration_doc_covers_all_graph_kinds() -> None:
+    """AC-6: configuration.md documents every leaf and root kind."""
+    doc = (_REPO_ROOT / "docs" / "reference" / "configuration.md").read_text()
+    for kind in ("agent", "data", "coworker", "remote", "router", "sequential", "parallel", "handoff", "loop"):
+        # Graph specs are authored in YAML (type: x) or pyproject TOML (type = "x");
+        # accept either so the doc isn't forced into one syntax.
+        assert f'type = "{kind}"' in doc or f"type: {kind}" in doc, (
+            f"configuration.md missing example for {kind!r}"
+        )
+
+
+def test_example_graph_spec_compiles(tmp_path: Path) -> None:
+    """AC-7: the committed example graph spec compiles and execs to its declared root."""
+    from apx_agent._inspection import _load_agent_config
+
+    example = _REPO_ROOT / "examples" / "graph_spec" / "pyproject.toml"
+    config = _load_agent_config(pyproject_path=example)
+    assert config is not None
+
+    generate_project(config, tmp_path)
+    ns = _exec_agent_py((tmp_path / "agent.py").read_text())
+    assert isinstance(ns["agent"], RouterAgent)

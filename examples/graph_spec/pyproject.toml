@@ -1,0 +1,28 @@
+[project]
+name = "graph-spec-example"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["apx-agent[langgraph]"]
+
+# A YAML graph declaration: leaves under [tool.apx.agent.agents.*], a root under
+# [tool.apx.agent.root]. generate_project compiles this to a top-level agent.py
+# that constructs the RouterAgent tree in code. See docs/reference/configuration.md.
+[tool.apx.agent]
+name = "graph-spec-example"
+model = "databricks-claude-sonnet-4-6"
+
+[tool.apx.agent.agents.sales]
+type = "data"
+catalog = "main"
+schema = "sales"
+description = "Answers sales and revenue questions."
+
+[tool.apx.agent.agents.support]
+type = "agent"
+instructions = "Answer customer support questions."
+description = "Handles support tickets."
+
+[tool.apx.agent.root]
+type = "router"
+agents = ["sales", "support"]
+instructions = "Route to the right specialist."
