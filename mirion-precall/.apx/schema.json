@@ -1,0 +1,100 @@
+{
+  "catalog": "serverless_stable_hvhhmh_catalog",
+  "schema": "mirion_precall",
+  "tables": {
+    "src_vw_actions": [
+      "company(string)",
+      "action(string)",
+      "due_date(string)",
+      "status(string)"
+    ],
+    "src_vw_field_notes": [
+      "company(string)",
+      "note(string)",
+      "author(string)",
+      "date(string)"
+    ],
+    "src_vw_opportunities": [
+      "company(string)",
+      "opportunity(string)",
+      "stage(string)",
+      "value(bigint)",
+      "close_date(string)"
+    ],
+    "src_vw_orders": [
+      "company(string)",
+      "order_id(string)",
+      "description(string)",
+      "qty(bigint)",
+      "expected_ship(string)",
+      "status(string)"
+    ],
+    "src_vw_pprs": [
+      "company(string)",
+      "ppr_id(string)",
+      "description(string)",
+      "severity(string)",
+      "status(string)"
+    ],
+    "src_vw_rmas": [
+      "company(string)",
+      "rma_id(string)",
+      "description(string)",
+      "status(string)",
+      "date(string)"
+    ],
+    "src_vw_winloss": [
+      "company(string)",
+      "outcome(string)",
+      "product(string)",
+      "date(string)"
+    ],
+    "vw_actions": [
+      "company(string)",
+      "action(string)",
+      "due_date(string)",
+      "status(string)"
+    ],
+    "vw_field_notes": [
+      "company(string)",
+      "note(string)",
+      "author(string)",
+      "date(string)"
+    ],
+    "vw_opportunities": [
+      "company(string)",
+      "opportunity(string)",
+      "stage(string)",
+      "value(bigint)",
+      "close_date(string)"
+    ],
+    "vw_orders": [
+      "company(string)",
+      "order_id(string)",
+      "description(string)",
+      "qty(bigint)",
+      "expected_ship(string)",
+      "status(string)"
+    ],
+    "vw_pprs": [
+      "company(string)",
+      "ppr_id(string)",
+      "description(string)",
+      "severity(string)",
+      "status(string)"
+    ],
+    "vw_rmas": [
+      "company(string)",
+      "rma_id(string)",
+      "description(string)",
+      "status(string)",
+      "date(string)"
+    ],
+    "vw_winloss": [
+      "company(string)",
+      "outcome(string)",
+      "product(string)",
+      "date(string)"
+    ]
+  }
+}

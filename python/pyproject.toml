@@ -28,6 +28,12 @@ dependencies = [
     # silently strips comments on every write (#527).
     "ruamel.yaml>=0.18.0",
     "sqlglot>=30.12.0",
+    # PDF rendering for render_pdf. ReportLab is pure-Python (no native libs) so
+    # it always installs on serverless App compute — the guaranteed fallback.
+    # WeasyPrint (preferred, better fidelity) is an opportunistic soft-import in
+    # render_pdf.py, used only when the environment already provides its native
+    # libs; not a hard dep here so a clean install never breaks on them.
+    "reportlab>=4.0.0",
 ]
 
 [project.optional-dependencies]

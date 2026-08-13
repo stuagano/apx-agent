@@ -1,0 +1,38 @@
+# Pre-call brief config for Mirion. A second customer = a copy of this file +
+# their own <name>_precall UC schema. No agent code change (G3).
+#
+# Section order/titles here mirror customers/mirion/contract.py:SECTIONS; each
+# `view` must be one of the frozen contract views (customers/mirion/contract.py:VIEWS).
+[precall]
+entity       = "company"
+catalog      = "main"
+schema       = "mirion_precall"
+warehouse_id = "REPLACE_WITH_WAREHOUSE_ID"  # set at deploy time (fevm-hvhhmh)
+
+[[precall.section]]
+title = "Open Orders & Shipping"
+view  = "vw_orders"
+
+[[precall.section]]
+title = "Open Opportunities"
+view  = "vw_opportunities"
+
+[[precall.section]]
+title = "Recent Win / Loss"
+view  = "vw_winloss"
+
+[[precall.section]]
+title = "Open RMAs"
+view  = "vw_rmas"
+
+[[precall.section]]
+title = "Open PPRs"
+view  = "vw_pprs"
+
+[[precall.section]]
+title = "Field Notes"
+view  = "vw_field_notes"
+
+[[precall.section]]
+title = "Overdue Actions"
+view  = "vw_actions"
