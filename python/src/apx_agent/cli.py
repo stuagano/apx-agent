@@ -347,10 +347,12 @@ def _detect_module_spec(cwd: Path | None = None) -> str | None:
 def _sanitize_uv_lock(lock_path: Path) -> bool:
     """Re-point a uv.lock's internal Databricks PyPI proxy at public PyPI.
 
-    The dev's ``UV_INDEX_URL`` / ``~/.config/uv/uv.toml`` leaks
-    ``pypi-proxy.dev.databricks.com`` into the lock. Deployed apps / serving
-    endpoints (and external users) can't reach that host, so any lock we ship
-    must point at public hosts. Two things get rewritten:
+    The dev's ``UV_INDEX_URL`` / ``~/.config/uv/uv.toml`` leaks a Databricks
+    ``pypi-proxy.<env>.databricks.com`` host into the lock — ``dev`` on some
+    machines, ``cloud`` on others. Deployed apps / serving endpoints (and
+    external users) can't reach that host, so any lock we ship must point at
+    public hosts. Every ``pypi-proxy.*.databricks.com`` variant mirrors PyPI's
+    path layout, so two things get rewritten for all of them:
 
     1. the index registry line (``.../simple`` → ``pypi.org/simple``), and
     2. per-package download URLs — this proxy also *serves package files*
@@ -366,13 +368,18 @@ def _sanitize_uv_lock(lock_path: Path) -> bool:
         return False
     text = lock_path.read_text()
     original = text
-    text = text.replace(
-        "https://pypi-proxy.dev.databricks.com/simple",
+    # Match any Databricks pypi-proxy env variant (dev, cloud, …) — a single
+    # subdomain label before ``.databricks.com``. Non-Databricks mirrors
+    # (Artifactory, etc.) don't match and are left for _warn_unknown_lock_mirrors.
+    text = re.sub(
+        r"https://pypi-proxy\.[\w-]+\.databricks\.com/simple",
         "https://pypi.org/simple",
+        text,
     )
-    text = text.replace(
-        "https://pypi-proxy.dev.databricks.com/packages/",
+    text = re.sub(
+        r"https://pypi-proxy\.[\w-]+\.databricks\.com/packages/",
         "https://files.pythonhosted.org/packages/",
+        text,
     )
     if text == original:
         return False

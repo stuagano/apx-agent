@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Fail (or, with --fix, rewrite) if any tracked uv.lock pins packages to
-# Databricks' internal PyPI proxy (pypi-proxy.dev.databricks.com). That index
-# is unreachable for external users and for deployed Apps/serving endpoints, so
-# committed + shipped locks must resolve from public PyPI. uv re-records the
-# proxy whenever `uv sync` runs with UV_INDEX_URL pointed at it — hence the
-# pre-commit auto-fix + this CI guard. The package download URLs are already
-# public (files.pythonhosted.org); only the recorded index changes.
+# Fail (or, with --fix, rewrite) if any tracked uv.lock pins packages to a
+# Databricks internal PyPI proxy (pypi-proxy.<env>.databricks.com — dev, cloud,
+# …). That index is unreachable for external users and for deployed
+# Apps/serving endpoints, so committed + shipped locks must resolve from public
+# PyPI. uv re-records the proxy whenever `uv sync` runs with UV_INDEX_URL
+# pointed at it — hence the pre-commit auto-fix + this CI guard. Some proxy
+# variants (cloud) also serve the wheel files themselves, so both the index
+# (/simple) and the package download URLs (/packages/) are rewritten. Kept in
+# sync with _sanitize_uv_lock in cli.py (the deploy-time equivalent).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,19 +16,16 @@ cd "$ROOT"
 FIX=0
 [ "${1:-}" = "--fix" ] && FIX=1
 
-# Match on the host (not the full URL) so the detector and the fixer cover the
-# same surface: a scheme (http vs https), trailing-slash, or sub-path variant of
-# the proxy host must both trip CI red AND be rewritten by --fix. The package
-# download URLs are on files.pythonhosted.org, so host replacement never touches
-# them.
-PROXY_HOST="pypi-proxy.dev.databricks.com"
-PUBLIC_HOST="pypi.org"
+# Any pypi-proxy env variant: a single subdomain label before .databricks.com.
+PROXY_RE='pypi-proxy\.[A-Za-z0-9-]+\.databricks\.com'
 
 bad=""
 for f in $(git ls-files '*uv.lock'); do
-  if grep -q "$PROXY_HOST" "$f" 2>/dev/null; then
+  if grep -qE "$PROXY_RE" "$f" 2>/dev/null; then
     if [ "$FIX" = "1" ]; then
-      perl -i -pe "s{\Q${PROXY_HOST}\E}{${PUBLIC_HOST}}g" "$f"
+      # Two rules, matching _sanitize_uv_lock: index → pypi.org, package files →
+      # files.pythonhosted.org (the proxy mirrors PyPI's /packages/ layout).
+      perl -i -pe "s{https://${PROXY_RE}/simple}{https://pypi.org/simple}g; s{https://${PROXY_RE}/packages/}{https://files.pythonhosted.org/packages/}g" "$f"
       echo "fixed: $f"
     else
       bad="$bad $f"
@@ -37,8 +36,8 @@ done
 if [ "$FIX" = "0" ] && [ -n "$bad" ]; then
   {
     echo ""
-    echo "ERROR: uv.lock files pin packages to the internal Databricks PyPI proxy"
-    echo "(pypi-proxy.dev.databricks.com) — unreachable for external users and"
+    echo "ERROR: uv.lock files pin packages to an internal Databricks PyPI proxy"
+    echo "(pypi-proxy.<env>.databricks.com) — unreachable for external users and"
     echo "deployed apps. Affected:"
     for f in $bad; do echo "  - $f"; done
     echo ""

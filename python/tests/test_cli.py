@@ -3551,6 +3551,30 @@ def test_sanitize_uv_lock_rewrites_proxy_package_urls(tmp_path: Path) -> None:
     )
 
 
+def test_sanitize_uv_lock_rewrites_cloud_proxy_variant(tmp_path: Path) -> None:
+    """Not just the dev proxy: pypi-proxy.cloud.databricks.com (and any other
+    env variant) mirrors PyPI too and must be rewritten, or the deployed
+    container's `uv sync` 404s on it. Regression for the graph-App deploy that
+    failed to download databricks-connect from the cloud proxy."""
+    from apx_agent.cli import _sanitize_uv_lock
+
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        'source = { registry = "https://pypi-proxy.cloud.databricks.com/simple" }\n'
+        'url = "https://pypi-proxy.cloud.databricks.com/packages/d1/5d/ae8c/'
+        'databricks_connect-16.1.7-py2.py3-none-any.whl"\n'
+    )
+    assert _sanitize_uv_lock(lock) is True
+    text = lock.read_text()
+    assert "pypi-proxy.cloud.databricks.com" not in text
+    assert 'registry = "https://pypi.org/simple"' in text
+    assert (
+        "https://files.pythonhosted.org/packages/d1/5d/ae8c/"
+        "databricks_connect-16.1.7-py2.py3-none-any.whl" in text
+    )
+    assert _sanitize_uv_lock(lock) is False  # idempotent
+
+
 def test_warn_unknown_lock_mirrors_names_hosts(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
