@@ -394,3 +394,33 @@ def test_uc_comment_writer_missing_required_arg_raises():
     """Missing required kwarg (catalog/schema) must raise ToolConfigError."""
     with pytest.raises(ToolConfigError, match=r"type=uc_comment_writer"):
         load_config_tools([{"type": "uc_comment_writer", "catalog": "c"}])  # missing schema
+
+
+def test_knowledge_assistant_in_registry():
+    """The registry maps 'knowledge_assistant' to knowledge_assistant_tool so a
+    KA serving endpoint can be declared as a governed tool (it can't be an A2A
+    sub-agent — see the graph-spec docs)."""
+    import apx_agent._tool_config as mod
+    from apx_agent.knowledge_assistant import knowledge_assistant_tool
+
+    registry = mod._registry()
+    assert "knowledge_assistant" in registry, (
+        f"'knowledge_assistant' not found in registry; known: {sorted(registry)}"
+    )
+    assert registry["knowledge_assistant"] is knowledge_assistant_tool
+
+
+def test_knowledge_assistant_builds_via_load_config_tools():
+    """A config table with type='knowledge_assistant' builds a callable tool with
+    the requested name; the endpoint is fixed at factory time."""
+    tools = load_config_tools([
+        {
+            "type": "knowledge_assistant",
+            "endpoint_name": "ka-563b93a6-endpoint",
+            "name": "ask_security_kb",
+            "description": "Ask the security knowledge base.",
+        }
+    ])
+    assert len(tools) == 1
+    assert callable(tools[0])
+    assert tools[0].__name__ == "ask_security_kb"

@@ -22,18 +22,26 @@ import pytest
 from apx_agent import knowledge_assistant_tool
 
 
-def _ka_response(answer: str, citations: list[dict] | None) -> MagicMock:
-    resp = MagicMock()
-    resp.choices = [MagicMock(message=MagicMock(content=answer))]
-    resp.citations = citations
-    return resp
+def _ka_response(answer: str, citations: list[dict] | None) -> dict:
+    """KA payload in the Responses API shape returned by /invocations."""
+    return {
+        "object": "response",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": answer, "annotations": []}],
+            }
+        ],
+        "citations": citations,
+    }
 
 
 @pytest.mark.asyncio
 async def test_ka_grounded_contract_mocked():
     """Cheap reality check: the grounded-result contract holds end-to-end."""
     ws = MagicMock()
-    ws.serving_endpoints.query.return_value = _ka_response(
+    ws.api_client.do.return_value = _ka_response(
         "Apple's FY2023 net revenue was $383.3B.",
         [{"doc_uri": "s3://filings/AAPL-10-K-2023.pdf", "text": "Total net sales…"}],
     )

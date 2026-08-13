@@ -103,6 +103,7 @@ def _registry() -> dict[str, Callable[..., Any]]:
     )
     from .foundation_model import foundation_model_tool
     from .genie import genie_query_tool, genie_tool
+    from .knowledge_assistant import knowledge_assistant_tool
     from .http_tools import http_tool, openapi_tool
     from .jobs_tools import (
         jobs_for_table_tool,
@@ -132,6 +133,7 @@ def _registry() -> dict[str, Callable[..., Any]]:
         "mcp_tool": mcp_tool,
         "mcp_toolkit": mcp_toolkit,
         "foundation_model": foundation_model_tool,
+        "knowledge_assistant": knowledge_assistant_tool,
         "jobs": jobs_tools,
         "jobs_for_table": jobs_for_table_tool,
         "jobs_history": jobs_history_tool,
