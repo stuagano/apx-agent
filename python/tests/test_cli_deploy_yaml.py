@@ -15,6 +15,8 @@ import pytest
 from click.testing import CliRunner
 
 from apx_agent.cli import main
+from apx_agent import cli
+from apx_agent._yaml_spec import load_spec
 
 
 # ---------------------------------------------------------------------------
@@ -115,3 +117,21 @@ def test_deploy_invalid_yaml_raises_click_exception(tmp_path):
     # file failed validation.
     output = result.output + (str(result.exception) if result.exception else "")
     assert str(bad_spec) in output or "bad.yaml" in output
+
+
+def test_yaml_spec_materializes_reusable_project(tmp_path):
+    """YAML execution keeps generated grounding beside the source spec."""
+    spec = _minimal_yaml(tmp_path)
+    config = load_spec(spec)
+
+    with patch("apx_agent.cli._bake_schema_into_project", return_value=False):
+        project = cli._materialize_yaml_project(spec, config, None)
+        (project / ".apx").mkdir()
+        (project / ".apx" / "local-note.txt").write_text("keep")
+        again = cli._materialize_yaml_project(spec, config, None)
+
+    assert project == tmp_path / "my-agent"
+    assert again == project
+    assert (project / "pyproject.toml").exists()
+    assert (project / "databricks.yml").exists()
+    assert (project / ".apx" / "local-note.txt").read_text() == "keep"

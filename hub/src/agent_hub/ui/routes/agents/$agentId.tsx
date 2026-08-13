@@ -14,6 +14,7 @@ import {
 import Navbar from "@/components/apx/navbar";
 import { getAgent, type AgentCard } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { extractResponseText } from "@/lib/response-text";
 import { useState } from "react";
 
 export const Route = createFileRoute("/agents/$agentId")({
@@ -67,7 +68,7 @@ function TryItPanel({ agent }: { agent: AgentCard }) {
         throw new Error(`${res.status}: ${text}`);
       }
       const data = await res.json();
-      setResponse(data.output_text ?? JSON.stringify(data, null, 2));
+      setResponse(extractResponseText(data) ?? "No assistant text returned.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

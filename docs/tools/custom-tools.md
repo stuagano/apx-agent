@@ -43,6 +43,27 @@ agent = Agent(
 
 The `@tool` decorator is optional — a plain function works the same way when passed to `tools=[...]`. Use the decorator when you want to override the name or description, or when you intend to publish the tool to UC.
 
+### Make tool use explicit
+
+The model decides whether to call a tool. If an answer must be grounded in a
+service or table, say so in the agent instructions and make the tool
+description specific about when it must be called:
+
+```python
+agent = Agent(
+    instructions=(
+        "For order status, always call get_order_status before answering. "
+        "Never invent an order status when the tool has not returned one."
+    ),
+    tools=[get_order_status],
+)
+```
+
+Use the **Traces** view to confirm the expected tool call and its result. If a
+step must run regardless of model choice, use a `SequentialAgent` or call the
+Python function directly; a tool exposed to an LLM is a model-selected action,
+not a guaranteed workflow edge.
+
 ### Override name and description
 
 Use the parameterized form to control what the LLM sees without changing the function code:
@@ -81,8 +102,50 @@ Available injected types:
 | `Dependencies.Principal` | Current user's username string, or `None` in local dev |
 | `Dependencies.Progress` | Callable to emit a progress marker into the trace |
 | `Dependencies.Request` | Raw FastAPI `Request` object |
+| `Dependencies.State` | Dict-like state shared by tools and composition steps in this invocation |
 
 `Dependencies.Workspace` is the most common choice — it passes the calling user's identity through to UC, SQL warehouses, and Genie spaces.
+
+### Share state within an invocation
+
+`Dependencies.State` is a dict-like, per-invocation view that lets tools pass
+values to later graph steps. The state parameter is hidden from the model's
+tool schema.
+
+```python
+from apx_agent import Agent, Dependencies, SequentialAgent, tool
+
+@tool
+def resolve_account(name: str, state: Dependencies.State) -> str:
+    """Resolve an account and save its ID for a later tool."""
+    account_id = lookup_account(name)
+    state["account_id"] = account_id
+    return account_id
+
+@tool
+def load_account_notes(state: Dependencies.State) -> str:
+    """Load notes for the account resolved earlier in this invocation."""
+    return fetch_notes(state["account_id"])
+
+pipeline = SequentialAgent([
+    Agent(tools=[resolve_account]),
+    Agent(tools=[load_account_notes]),
+])
+```
+
+For agent-to-agent handoffs, set `output_key` on the producing agent and
+reference that key in the downstream agent's instructions:
+
+```python
+planner = Agent(instructions="Create an execution plan.", output_key="plan")
+executor = Agent(instructions="Execute this plan:\n{plan}", tools=[...])
+pipeline = SequentialAgent([planner, executor])
+```
+
+State is available only during the current invocation; it is not cross-session
+memory. Reassign values after changing them (`state["items"] = [*state.get("items", []), item]`) because in-place mutation is not tracked. State
+merges are shallow last-write-wins, so concurrent writers should use distinct
+keys or aggregate at the agent step. See the [state access design reference](../design/keyed-state-tool-access.md) for mechanics and limits.
 
 ### UC-syncable tools
 
@@ -231,6 +294,31 @@ In `pyproject.toml`, declare the UC HTTP connection so `apx-agent agents deploy`
 type = "uc_connection"
 name = "weather_api"
 ```
+
+### Creating and granting the connection
+
+The connection must exist in Unity Catalog before the app can use it. A
+metastore admin (or a principal with `CREATE CONNECTION`) can create an HTTP
+connection in Catalog Explorer, through the Databricks SQL editor, or with the
+Connections API. The exact authentication fields depend on the external
+service; keep tokens and OAuth credentials in the connection, never in
+`agent.py`.
+
+See the authoritative [Connect to external HTTP services](https://docs.databricks.com/aws/en/query-federation/http)
+guide for the supported authentication modes and `CREATE CONNECTION` examples.
+
+After creating the connection, grant the deployed app identity (or the user
+running locally) permission to use it:
+
+```sql
+GRANT USE CONNECTION ON CONNECTION `weather_api` TO `<principal>`;
+```
+
+Then declare the same connection name in `pyproject.toml` as above. For a
+Databricks App deployment, the generated resource declaration requests the
+`USE_CONNECTION` grant; confirm the app resource grant is approved before
+testing the tool. For local runs, the calling user needs `USE CONNECTION` and
+the SQL warehouse used by the tool must be available.
 
 ---
 

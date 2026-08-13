@@ -55,6 +55,34 @@ order (first match wins):
 4. **Ungrounded fallback** — generic data-assistant instructions; still
    functional, just not schema-aware
 
+### Grounding asset lifecycle
+
+Scaffolding is not a one-time snapshot. A full project scaffold keeps its
+grounding under `.apx/` so the project can be refreshed in place:
+
+| Stage | Command or file | What is authoritative |
+|---|---|---|
+| Create | `apx-agent agents scaffold <name> --catalog <catalog> --schema <schema>` | Generates `.apx/schema.json`; newer projects also generate `.apx/okf/`. |
+| Refresh | `apx-agent agents refresh-schema` | Re-introspects the configured UC schema and updates table/column metadata without regenerating the project. |
+| Enrich | Edit `.apx/okf/tables/*.md`, or use `apx-agent agents pull-comments` | `.apx/okf/` is the source of truth for enriched grounding; curated descriptions are preserved by refresh. |
+| Migrate | `apx-agent agents migrate-to-okf` | Converts a legacy `.apx/schema.json` project to `.apx/okf/` and regenerates `schema.json` as a derived cache. |
+
+Run `refresh-schema` from inside the generated project. It preserves local-only
+tables and enriched OKF sections by default, so adding a table in Unity Catalog
+does not require scaffolding again. Use
+`--prune-missing-tables` only when you intentionally want concepts for tables
+removed from the live schema deleted; this is destructive to local-only and
+hand-authored table concepts.
+
+YAML is the source of truth, but `agents run <spec>.yaml` and
+`agents deploy <spec>.yaml` now materialize a sibling project directory (for
+example `sales.yaml` → `sales/`) and refresh its generated files on each run.
+The retained `.apx/` assets make grounding available across restarts. Run
+`apx-agent agents refresh-schema` (or `migrate-to-okf`) inside that materialized
+directory for day-two refreshes and enrichment; edit the YAML for agent
+configuration changes. After changing a grounding bundle, restart the local
+agent or redeploy so the generated files are loaded by the runtime.
+
 For most production deployments (Databricks Apps): `apx-agent agents scaffold`
 generates a full project directory (`agent.py` + `pyproject.toml` +
 `databricks.yml` + the baked `.apx/schema.json`), and `apx-agent agents deploy`

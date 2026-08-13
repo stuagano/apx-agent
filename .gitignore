@@ -18,6 +18,11 @@ typescript/deploy/*/app.yaml
 .superpowers/
 
 # Claude / agent IDE state
+.agents/
+.codex/
+.isaac/
+.serena/
+.vscode/
 .claude/*
 !.claude/skills/
 !.claude/agents/
@@ -88,6 +93,9 @@ docs/omniagent/
 
 # Local scratch — PR diffs, gap analysis, registry snapshots (not for the repo)
 .polly/
+
+# Local deployment script scratch (not part of apx-agent)
+docs/deploy/scripts/
 
 # Client-specific demos — built locally, not shipped or tracked
 demos/

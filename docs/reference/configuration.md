@@ -157,6 +157,125 @@ The `template` inline-table selects a registered template by `name` and passes t
 
 **Cross-repo templates:** Third-party templates register via the `apx_agent.templates` Python entry-point group — they appear in the registry after `pip install`. See the E1 spec and the `Template` protocol for authoring a template.
 
+## YAML graph specs — `agents` + `root`
+
+Hand-authored `.yaml` specs can declare a local `BaseAgent` tree. `agents`
+defines the leaves; `root` defines the composition primitive. Deploying or
+running the spec materializes a sibling project with an explicit `agent.py`.
+
+```yaml
+name: revenue-ops
+model: databricks-claude-sonnet-4-6
+
+agents:
+  sales:
+    type: data
+    catalog: main
+    schema: sales
+    knowledge: ./.apx/okf/sales
+    description: Handles sales, revenue, customers, and orders.
+
+  contracts:
+    type: agent
+    instructions: Answer contract questions.
+    description: Handles contract terms and renewals.
+    tools:
+      - type: python
+        module: tools.contracts:summarize_contract
+      - type: uc_function
+        function: main.agent_tools.lookup_contract
+    sub_agents:
+      - $CONTRACT_INSPECTOR_URL
+
+root:
+  type: router
+  agents: [sales, contracts]
+  instructions: Route to the right specialist.
+```
+
+Supported leaf `type` values are `agent`, `data`, `coworker`, and `remote`.
+Supported root `type` values are `router`, `sequential`, `parallel`, `handoff`,
+and `loop`. Put remote `sub_agents` on a leaf, not on a composition root; only
+`Agent`/`DataAgent`/`CoworkerAgent` leaves can materialize remote peers as
+callable tools.
+
+A `remote` leaf is a first-class `RemoteDatabricksAgent` node (the A2A /
+`sub_agents` story, declared not wired). `url` (alias `card_url`) is the base or
+full agent-card URL; optional keys are `app_name`, `headers`, `timeout`,
+`long_task`, `max_continuations`:
+
+```yaml
+agents:
+  billing:
+    type: remote
+    url: https://billing-agent.<workspace>.databricksapps.com
+```
+
+A `remote` leaf can sit under `sequential`, `parallel`, or `loop` roots. It
+**cannot** be a `router` or `handoff` member: those build routing tools from each
+member's name, and a remote's name is only known after its card is fetched.
+Declaring one there fails at project generation with a clear error rather than at
+import.
+
+A `coworker` leaf is a `CoworkerAgent` and, like `data`, requires `catalog` and
+`schema`:
+
+```yaml
+agents:
+  reconcile:
+    type: coworker
+    catalog: main
+    schema: payroll
+```
+
+Each root kind:
+
+```yaml
+root:
+  type: sequential   # runs leaves in order
+  agents: [sales, contracts]
+```
+
+```yaml
+root:
+  type: parallel     # runs leaves concurrently
+  agents: [sales, contracts]
+```
+
+```yaml
+root:
+  type: handoff      # leaves hand off to each other; start names the first
+  agents: [sales, contracts]
+  start: sales
+```
+
+```yaml
+root:
+  type: loop         # repeat one leaf up to max_iterations (a positive int)
+  agent: sales
+  max_iterations: 5
+```
+
+Leaf `tools` supports the same declarative factories as `[[tool.apx.tools]]`,
+plus plain Python imports:
+
+```yaml
+tools:
+  - type: python
+    module: tools.orders:lookup_order
+  - type: uc_function
+    function: main.agent_tools.lookup_order
+  - type: genie
+    space_id: 01f...
+  - type: vector_search
+    index: main.docs.order_index
+  - type: openapi
+    spec: ./openapi/orders.yaml
+```
+
+For `type: data` and `type: coworker`, leaf tools are passed as
+`extra_tools`; for `type: agent`, they are passed as `tools`.
+
 ## Declarative grounding — `knowledge`
 
 > Python only. Pins the agent to a specific OKF bundle directory instead of relying on the upward directory walk.
@@ -178,7 +297,7 @@ knowledge = "./.apx/okf"   # relative to project root
 
 **Graceful degradation:** If the path does not exist at startup (e.g. a freshly-cloned project before `apx-agent okf pull` has been run), grounding falls back silently to the cwd walk. The agent still starts.
 
-**Project generation:** `apx-agent agents scaffold` emits an `.apx/okf/` pack **by default** whenever catalog.schema introspection succeeds, and writes both `knowledge = "./.apx/okf"` in `pyproject.toml` and `knowledge="./.apx/okf"` on the generated `DataAgent` / `CoworkerAgent`. If introspection fails (no grants / empty schema), neither the knob nor the bundle is written — ungrounded is the escape hatch. On a running App with no pack yet, Grounding's empty state offers **Generate pack from `catalog.schema`** (`POST /_apx/grounding/generate`). Deploying a hand-authored `.yaml` spec directly (`apx-agent agents deploy <spec>.yaml`) uses `generate_project` at deploy time and does not auto-emit this knob; set `knowledge:` explicitly in your YAML spec if you ship your own bundle.
+**Project generation:** `apx-agent agents scaffold` emits an `.apx/okf/` pack **by default** whenever catalog.schema introspection succeeds, and writes both `knowledge = "./.apx/okf"` in `pyproject.toml` and `knowledge="./.apx/okf"` on the generated `DataAgent` / `CoworkerAgent`. If introspection fails (no grants / empty schema), neither the knob nor the bundle is written — ungrounded is the escape hatch. On a running App with no pack yet, Grounding's empty state offers **Generate pack from `catalog.schema`** (`POST /_apx/grounding/generate`). Deploying a hand-authored `.yaml` spec (`apx-agent agents deploy <spec>.yaml`) now materializes and retains a sibling project with its baked `schema.json`; set `knowledge:` explicitly in your YAML spec if you ship your own OKF bundle, then run `refresh-schema` from the materialized project for day-two updates.
 
 ## Declarative memory — `[tool.apx.agent.memory]`
 

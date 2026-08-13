@@ -291,7 +291,10 @@ agent = Agent(
 )
 ```
 
-See [../tools/custom-tools.md](../tools/custom-tools.md) for `http_tool`, `openapi_tool`, and MCP tools.
+See [../tools/custom-tools.md](../tools/custom-tools.md) for governed HTTP
+connections, [`openapi_tool`](../tools/custom-tools.md#openapi_tool--openapi-spec--many-tools),
+and MCP tools. Prefer `openapi_tool` when the external service publishes an
+OpenAPI document; it generates one accurately described tool per operation.
 
 ---
 

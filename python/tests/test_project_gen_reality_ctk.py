@@ -76,6 +76,33 @@ def test_generated_project_files_are_real_not_just_present(tmp_path: Path) -> No
 
 
 @pytest.mark.unit
+def test_generated_graph_agent_py_is_real_not_just_present(tmp_path: Path) -> None:
+    """A YAML graph spec writes an agent.py that is non-empty AND actually wired.
+
+    ``test_project_gen.py`` execs the generated source in-memory; that proves it
+    runs but not that ``generate_project`` wrote it to disk. This asserts the
+    on-disk ``agent.py`` carries its imports, both leaf constructors, and the
+    ``RouterAgent`` root — the wiring that makes the graph real.
+    """
+    config = AgentConfig(
+        name="revenue-ops",
+        model="databricks-claude-sonnet-4-6",
+        agents={
+            "sales": {"type": "data", "catalog": "main", "schema": "sales"},
+            "contracts": {"type": "agent", "instructions": "Answer contract questions."},
+        },
+        root={"type": "router", "agents": ["sales", "contracts"]},
+    )
+
+    generate_project(config, tmp_path)
+
+    src = (tmp_path / "agent.py").read_text()
+    for wiring in ("from apx_agent import", "DataAgent(", "Agent(", "agent = RouterAgent("):
+        assert wiring in src, f"generated agent.py missing wiring: {wiring!r}"
+    verify(Artifact(str(tmp_path / "agent.py"), min_bytes=40, must_contain="RouterAgent"))
+
+
+@pytest.mark.unit
 def test_generated_skill_file_carries_content_not_just_exists(tmp_path: Path) -> None:
     source_dir = tmp_path / "source"
     source_dir.mkdir()

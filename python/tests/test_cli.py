@@ -3478,6 +3478,42 @@ def test_ensure_apx_wheel_resolves_dynamic_version(tmp_path: Path, monkeypatch) 
     assert staged.exists()
 
 
+def test_run_bundle_artifacts_falls_back_to_sh(tmp_path: Path, monkeypatch) -> None:
+    """Artifact builds work when bash is absent but the standard POSIX shell exists."""
+    from apx_agent import cli
+
+    (tmp_path / "databricks.yml").write_text(
+        "artifacts:\n  default:\n    build: mkdir -p .build\n",
+    )
+    calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(args, cwd=None, **kwargs):
+        calls.append((args, cwd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/bin/sh" if name == "sh" else None,
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli._run_bundle_artifacts(tmp_path)
+
+    assert calls == [(["/bin/sh", "-c", "mkdir -p .build"], str(tmp_path))]
+
+
+def test_run_bundle_artifacts_reports_missing_shell(tmp_path: Path, monkeypatch) -> None:
+    """A missing shell produces an actionable deploy error."""
+    from apx_agent import cli
+
+    (tmp_path / "databricks.yml").write_text(
+        "artifacts:\n  default:\n    build: echo build\n",
+    )
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+
+    with pytest.raises(click.ClickException, match="POSIX shell"):
+        cli._run_bundle_artifacts(tmp_path)
+
+
 def test_sanitize_uv_lock_rewrites_internal_index(tmp_path: Path) -> None:
     """Deploy artifacts must resolve from public PyPI: the internal Databricks
     proxy in a uv.lock's source.registry is rewritten, download URLs untouched."""
@@ -9002,3 +9038,22 @@ class TestDeployHistoryIndex:
         monkeypatch.setattr(cli, "_deploy_history_path", lambda: path)
 
         assert cli._load_deploy_history_entry("main.apx.my_agent") is None
+
+
+def test_interactive_resolve_allows_manual_catalog_and_schema(monkeypatch):
+    from apx_agent import cli
+
+    catalogs = [SimpleNamespace(name=f"catalog_{i:02d}") for i in range(25)]
+    schemas = [SimpleNamespace(name=f"schema_{i:02d}") for i in range(25)]
+    ws = SimpleNamespace(
+        catalogs=SimpleNamespace(list=lambda: catalogs),
+        schemas=SimpleNamespace(list=lambda catalog_name: schemas),
+    )
+    answers = iter(["m", "catalog_24", "m", "schema_24"])
+    monkeypatch.setattr(cli.click, "prompt", lambda *args, **kwargs: next(answers))
+
+    resolved = cli._interactive_resolve(
+        ws, None, None, None, None, None, "data",
+    )
+
+    assert resolved[:2] == ("catalog_24", "schema_24")

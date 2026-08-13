@@ -768,8 +768,30 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             # so a cold-start step shows even while the body is collapsed.
             events_html = ""
             for ev in (s.get("events") or []):
-                msg = (ev.get("attributes") or {}).get("message") or ev.get("name", "")
-                events_html += f'<div class="span-event">▸ {_html.escape(msg)}</div>'
+                attrs = ev.get("attributes") or {}
+                # MLflow records failures as the standard OpenTelemetry
+                # ``exception`` event.  Those events do not have the generic
+                # ``message`` attribute used by progress events, so rendering
+                # only the event name hid the actual exception from the trace
+                # detail view.
+                if ev.get("name") == "exception" or "exception.message" in attrs:
+                    exc_type = attrs.get("exception.type")
+                    exc_message = attrs.get("exception.message")
+                    summary = ": ".join(
+                        str(part) for part in (exc_type, exc_message) if part
+                    ) or "exception"
+                    events_html += (
+                        f'<div class="span-event">▸ {_html.escape(summary)}</div>'
+                    )
+                    stacktrace = attrs.get("exception.stacktrace")
+                    if stacktrace:
+                        events_html += (
+                            '<pre class="span-event exception-stacktrace">'
+                            f'{_html.escape(str(stacktrace))}</pre>'
+                        )
+                else:
+                    msg = attrs.get("message") or ev.get("name", "")
+                    events_html += f'<div class="span-event">▸ {_html.escape(msg)}</div>'
             kids = "".join(_render_span(c, depth + 1) for c in children.get(s.get("span_id", ""), []))
             indent = f'<div class="indent">{kids}</div>' if kids else ""
             return (

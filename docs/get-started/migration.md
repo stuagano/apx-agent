@@ -28,7 +28,7 @@ apx-agent is structurally aligned with both Google ADK and the OpenAI Agents SDK
 | Sessions (in-conversation) | `Session` + `SessionService` | `session` strategy / `conversation_id` | `ConversationStore` — pass `session_id` in `custom_inputs` |
 | Cross-session memory | `MemoryService` | `to_input_list()` + external store | `MemoryStore` — `make_memory_tools` or `assemble_memory_context` |
 | Deploy agent | _(separate infra)_ | _(separate infra)_ | `apx-agent agents deploy` — Apps or Model Serving |
-| Scaffold new agent | _(manual)_ | _(manual)_ | `apx-agent agents scaffold my-agent` writes `my-agent.yaml` by default |
+| Scaffold new agent | _(manual)_ | _(manual)_ | `apx-agent agents scaffold my-agent` writes an editable `my-agent/` project directory |
 | Governed data access | _(manual)_ | _(manual)_ | `DataAgent`, `genie_tool`, `uc_function_tool` |
 | Two-system join pattern | _(manual)_ | _(manual)_ | `CoworkerAgent` |
 | Identity passthrough | _(manual)_ | _(manual)_ | OBO token — see [identity-passthrough.md](../safety/identity-passthrough.md) |
