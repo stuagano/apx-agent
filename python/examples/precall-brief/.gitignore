@@ -1,0 +1,12 @@
+.env
+.env.local
+__pycache__
+*.pyc
+.pytest_cache
+.coverage
+*.egg-info
+dist/
+build/
+.build/
+# NOTE: .apx/okf/ IS committed — it's the shipped knowledge bundle so the agent
+# boots with no generation step. Regenerate with `python generate/gen_okf.py`.
