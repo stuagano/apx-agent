@@ -768,6 +768,11 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
             # so a cold-start step shows even while the body is collapsed.
             events_html = ""
             for ev in (s.get("events") or []):
+                # Streaming logs one 'new_token' event per generated token —
+                # hundreds per span. They carry no diagnostic value here and
+                # bury the real spans; skip them.
+                if ev.get("name") == "new_token":
+                    continue
                 attrs = ev.get("attributes") or {}
                 # MLflow records failures as the standard OpenTelemetry
                 # ``exception`` event.  Those events do not have the generic

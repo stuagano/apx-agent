@@ -721,3 +721,22 @@ class TestEditReadOnlyConfigAgent:
         from apx_agent._ui_edit import _render_edit_ui
         html = _render_edit_ui("agent = 1\n")
         assert "const READ_ONLY = false" in html
+
+
+def test_trace_detail_hides_new_token_events_keeps_exceptions():
+    """Streaming logs one 'new_token' event per token — hundreds per span. The
+    full-trace view must skip them (they bury the real spans) while still
+    surfacing meaningful events like exceptions."""
+    from apx_agent._dev import _render_trace_detail
+
+    spans = [{
+        "span_id": "a", "parent_id": None, "name": "knowledge_assistant",
+        "span_type": "CHAIN", "status": "OK", "duration_ms": 5,
+        "inputs": None, "outputs": None,
+        "events": [{"name": "new_token", "attributes": {}} for _ in range(50)]
+        + [{"name": "exception",
+            "attributes": {"exception.type": "ValueError", "exception.message": "boom"}}],
+    }]
+    html = _render_trace_detail("tr-x", spans, None)
+    assert "▸ new_token" not in html, "new_token events must be hidden"
+    assert "boom" in html, "real exception event must still render"
