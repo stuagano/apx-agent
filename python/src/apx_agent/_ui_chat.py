@@ -2213,11 +2213,16 @@ async function finalizeTrace(traceId, status, opts) {{
     // Framework-plumbing CHAIN spans that aren't meaningful sub-agents. Named
     // CHAIN/AGENT spans (router, knowledge_assistant, …) ARE sub-agent
     // boundaries and belong in the summary alongside LLM + TOOL steps.
-    const CHAIN_NOISE = new Set(['LangGraph','RunnableCallable','model','tools']);
+    const CHAIN_NOISE = new Set(['LangGraph','RunnableCallable','model','tools','compile_to_langgraph']);
     function isSubAgent(s) {{
       const t = spanTypeShort(s.span_type);
-      return (t === 'AGENT' || t === 'CHAIN') && s.name
-        && !CHAIN_NOISE.has(s.name) && !s.name.includes('.');
+      const n = s.name || '';
+      // Real sub-agents are graph-node names (bare identifiers: router,
+      // knowledge_assistant, …). Exclude framework wrappers: the noise set,
+      // dotted names (ApxResponsesAgent.invoke), and request/transport spans
+      // with spaces or slashes (POST /responses).
+      return (t === 'AGENT' || t === 'CHAIN') && n
+        && !CHAIN_NOISE.has(n) && !n.includes('.') && !n.includes(' ') && !n.includes('/');
     }}
     const keySpans = ordered.filter(s => {{
       const t = spanTypeShort(s.span_type);
