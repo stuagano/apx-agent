@@ -20,6 +20,7 @@ from ._executor import (
     ExecutorEvent,
     TextChunk,
     TurnComplete,
+    content_to_text,
 )
 
 if TYPE_CHECKING:
@@ -93,7 +94,7 @@ def _texts_from_chunk(chunk: Any) -> list[str]:
                 continue
             if getattr(msg, "tool_calls", None):
                 continue  # internal step, not user-visible text
-            text = msg.content if isinstance(msg.content, str) else str(msg.content)
+            text = content_to_text(msg.content)
             if text:
                 texts.append(text)
     return texts

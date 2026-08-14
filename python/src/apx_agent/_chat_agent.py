@@ -388,7 +388,9 @@ def _from_langchain_message(msg: Any, idx: int) -> "ChatAgentMessage":
     from mlflow.types.agent import ChatAgentMessage
 
     msg_id = getattr(msg, "id", None) or f"msg-{idx}"
-    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+    from ._executor import content_to_text
+
+    content = content_to_text(msg.content)
 
     if isinstance(msg, AIMessage):
         import json

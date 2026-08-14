@@ -59,9 +59,51 @@ from apx_agent._executor import (  # noqa: E402
 from apx_agent._responses_agent import (  # noqa: E402
     _conv_items_to_lc_messages,
     _executor_events_to_items,
+    _langchain_to_output_item,
     _lc_to_openai_messages,
     _persist_conv_turn,
 )
+
+
+# Anthropic extended-thinking content: a reasoning block followed by the visible
+# text. LangChain surfaces this as msg.content = list[dict], NOT a plain string.
+_THINKING_CONTENT = [
+    {"type": "reasoning", "summary": [{"type": "summary_text", "text": "", "signature": "sig"}]},
+    {"type": "text", "text": "Here is the answer."},
+]
+
+
+def test_output_item_extracts_text_from_thinking_content():
+    """A full AIMessage whose content is a reasoning+text list must yield an
+    output_text of the VISIBLE text only. Regression: str(list) dumped the whole
+    [{"type":"reasoning",...},{"type":"text",...}] blob into output_text, so the
+    Apps dev UI rendered raw JSON instead of the message."""
+    item = _langchain_to_output_item(AIMessage(content=_THINKING_CONTENT, id="m1"), 0)
+    assert item["content"][0]["text"] == "Here is the answer."
+
+
+def test_lc_to_openai_messages_extracts_text_from_thinking_content():
+    """History→chat-completions conversion must not feed the reasoning-blob JSON
+    back to the model as prior assistant content."""
+    out = _lc_to_openai_messages([AIMessage(content=_THINKING_CONTENT)])
+    assert out[0]["content"] == "Here is the answer."
+
+
+def test_output_item_unwraps_json_stringified_thinking_content():
+    """langchain-databricks coerces a reasoning model's list content into a JSON
+    STRING before it reaches any converter. The chokepoint must detect and unwrap
+    that string, or the raw [{"type":"reasoning",...}] JSON surfaces in the UI."""
+    stringified = json.dumps(_THINKING_CONTENT)
+    item = _langchain_to_output_item(AIMessage(content=stringified, id="m1"), 0)
+    assert item["content"][0]["text"] == "Here is the answer."
+
+
+def test_output_item_passes_through_ordinary_json_array_string():
+    """A legitimate assistant message that merely looks like a JSON array (no
+    content-block "type" keys) must pass through untouched — no false unwrap."""
+    plain = "[1, 2, 3] is the list you asked for"
+    item = _langchain_to_output_item(AIMessage(content=plain, id="m1"), 0)
+    assert item["content"][0]["text"] == plain
 
 
 # ---------------------------------------------------------------------------

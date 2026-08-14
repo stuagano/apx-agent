@@ -61,6 +61,7 @@ from ._agents import BaseAgent
 from ._audit import AuditAttrs, set_audit_attrs, stamp_version_correlation, user_hash
 from ._chat_agent import _pending_interrupt, _resume_decision
 from ._compile import compile_to_langgraph
+from ._executor import content_to_text as _content_to_text
 from ._conversation import (
     ConversationItem,
     ConversationStore,
@@ -389,7 +390,7 @@ def _langchain_to_output_item(msg: Any, idx: int) -> dict[str, Any]:
     from langchain_core.messages import AIMessage, ToolMessage
 
     msg_id = getattr(msg, "id", None) or f"msg-{idx}"
-    text = msg.content if isinstance(msg.content, str) else str(msg.content)
+    text = _content_to_text(msg.content)
 
     if isinstance(msg, AIMessage) and (msg.tool_calls or []):
         # Surface tool calls as function_call items per the Responses spec.
@@ -488,11 +489,8 @@ def _token_text(chunk: Any) -> str:
     output-text deltas.
     """
     content = chunk.content
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [p.get("text") for p in content if isinstance(p, dict)]
-        return "".join(p for p in parts if isinstance(p, str))
+    if isinstance(content, (str, list)):
+        return _content_to_text(content)
     return ""
 
 
@@ -813,7 +811,7 @@ def _lc_to_openai_messages(messages: list["BaseMessage"]) -> list[dict[str, Any]
     result: list[dict[str, Any]] = []
     for m in messages:
         msg_type = getattr(m, "type", "human")
-        content = m.content if isinstance(m.content, str) else str(m.content)
+        content = _content_to_text(m.content)
         if msg_type == "human":
             result.append({"role": "user", "content": content})
         elif msg_type == "ai":

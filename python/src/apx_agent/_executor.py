@@ -10,6 +10,56 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _join_text_blocks(blocks: list) -> str:
+    """Concatenate the ``text`` of content-block dicts, dropping non-text blocks.
+
+    Reasoning/thinking/signature blocks carry no top-level ``text`` key and are
+    dropped, so only the visible assistant text survives.
+    """
+    parts = [b.get("text") for b in blocks if isinstance(b, dict)]
+    return "".join(p for p in parts if isinstance(p, str))
+
+
+def content_to_text(content: Any) -> str:
+    """Extract the visible assistant text from a message's ``content``.
+
+    Handles the three shapes a thinking-enabled model's content arrives in:
+
+    * **str** — passes through unchanged (the normal case).
+    * **list of content-block dicts** — the LangChain shape for Anthropic
+      extended thinking, ``[{"type": "reasoning", ...}, {"type": "text", ...}]``;
+      yields only the concatenated ``text`` blocks.
+    * **str that is a JSON-encoded content-block list** — the
+      ``langchain-databricks`` serving integration coerces a reasoning model's
+      list content into a JSON *string* (a Pydantic "Expected str, got list"
+      warning fires when it does). Detect that and unwrap it, else the raw
+      ``[{"type": "reasoning", ...}]`` JSON surfaces verbatim in the Apps dev UI.
+
+    ``str(content)`` on a list would dump the whole ``[{...}]`` repr into the
+    response text, so never fall back to that for lists. This is the single
+    chokepoint every served path routes message content through.
+    """
+    if isinstance(content, list):
+        return _join_text_blocks(content)
+    if isinstance(content, str):
+        stripped = content.lstrip()
+        # Cheap prefilter before attempting a JSON parse: only strings that look
+        # like a content-block array ("[{...\"type\"...}]") are candidates.
+        if stripped.startswith("[") and '"type"' in stripped:
+            import json
+
+            try:
+                parsed = json.loads(content)
+            except ValueError:
+                return content
+            if isinstance(parsed, list) and any(
+                isinstance(b, dict) and "type" in b for b in parsed
+            ):
+                return _join_text_blocks(parsed)
+        return content
+    return str(content)
+
+
 # ---------------------------------------------------------------------------
 # Event types
 # ---------------------------------------------------------------------------
