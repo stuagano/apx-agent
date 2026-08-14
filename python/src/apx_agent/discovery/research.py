@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from .schemas import ResearchBundle
+from .schemas import ResearchBundle, _obj, _str_list
 
 
 @runtime_checkable
@@ -50,7 +50,6 @@ class LLMResearchProvider:
             'Return JSON with "findings" (array of strings).'
         )
         raw = await self._completion(prompt, _RESEARCH_SCHEMA)
-        findings = raw["findings"] if "findings" in raw else []
-        if not isinstance(findings, list):
-            findings = [str(findings)]
-        return ResearchBundle(customer=customer, persona=persona, findings=[str(f) for f in findings])
+        d = _obj("research", raw, ["findings"])
+        findings = _str_list("research", d["findings"], "findings")
+        return ResearchBundle(customer=customer, persona=persona, findings=findings)

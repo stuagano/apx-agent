@@ -102,6 +102,16 @@ async def test_research_provider_feeds_priorities() -> None:
     assert "RESEARCH-MARKER for Acme" in completion.prompts[0]
 
 
+async def test_research_rejects_malformed_findings() -> None:
+    # Research must validate as strictly as every other step: a non-list
+    # 'findings' fails loudly, not silently coerced into garbage.
+    async def bad_completion(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        return {"findings": 42}
+
+    with pytest.raises(MalformedStepOutput):
+        await discovery.LLMResearchProvider(bad_completion).research("Acme")
+
+
 async def test_structured_output_per_step() -> None:
     engine = InMemoryEngine()
     wf = DiscoveryWorkflow(engine, StubCompletion())
