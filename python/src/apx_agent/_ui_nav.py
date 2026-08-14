@@ -59,6 +59,7 @@ APX_NAV_PAGES: list[tuple[str, str]] = [
     # (/_apx/setup?embed=1). The /_apx/setup route still exists for that iframe.
     ("discover", "Discover"),
     ("grounding", "Grounding"),
+    ("knowledge", "Knowledge"),
     ("probe", "Probe"),
     ("topology", "Topology"),
 ]

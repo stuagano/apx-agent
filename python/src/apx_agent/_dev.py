@@ -2860,6 +2860,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         return HTMLResponse(render_grounding_ui())
 
+    @router.get("/_apx/knowledge", include_in_schema=False)
+    async def knowledge_ui() -> Any:
+        """The Knowledge page — displays OKF bundle Functions, Views, and Glossary."""
+        from ._ui_knowledge import render_knowledge_ui
+
+        return HTMLResponse(render_knowledge_ui())
+
     @router.get("/_apx/grounding/columns", response_model=GroundingColumnsResponse)
     async def grounding_columns(request: Request) -> Any:
         """Per-column current-vs-suggested description curation state for the

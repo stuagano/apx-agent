@@ -22,6 +22,8 @@ _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
     # "setup" is intentionally not a shell tab — its data-source + tool
     # generation flow is reached from the Edit page's "✨ From data" modal.
     ("discover", "Discover", "/_apx/discover"),
+    ("grounding", "Grounding", "/_apx/grounding"),
+    ("knowledge", "Knowledge", "/_apx/knowledge"),
     ("probe", "Probe", "/_apx/probe"),
 )
 
