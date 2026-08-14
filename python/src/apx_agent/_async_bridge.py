@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import logging
 import threading
 from typing import Any, AsyncGenerator, Callable, Generator
@@ -164,8 +165,17 @@ def make_async_stream(
                     except Exception:
                         logger.debug("stream generator close failed", exc_info=True)
 
+        # Run the worker inside a COPY of the current context. A raw
+        # threading.Thread otherwise starts with an empty contextvars.Context,
+        # so request-scoped ContextVars set on the event loop — notably mlflow's
+        # request headers, which carry the OBO X-Forwarded-Access-Token — are
+        # invisible in the worker and the served agent fails closed with no data.
+        # (make_async_invoke gets this for free via asyncio.to_thread.) The whole
+        # generator still runs on this ONE thread, so OTel span attach/detach
+        # stays paired.
+        ctx = contextvars.copy_context()
         worker = threading.Thread(
-            target=_worker,
+            target=lambda: ctx.run(_worker),
             name=f"stream-bridge-{getattr(stream_fn, '__name__', 'stream')}",
             daemon=True,
         )

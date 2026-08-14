@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 from typing import Any, Generator
 
@@ -204,6 +205,34 @@ async def test_stream_worker_stops_when_consumer_abandons():
     # (A small overrun is expected: chunks already queued plus one
     # in-flight put when consumer_gone is set.)
     assert len(produced) < 10_000
+
+
+# ContextVar the test sets on the event loop and reads inside the worker. Stands
+# in for mlflow's request-headers ContextVar, which carries the OBO
+# X-Forwarded-Access-Token the served agent needs.
+_probe_ctxvar: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "apx_test_probe", default="MISSING"
+)
+
+
+@pytest.mark.asyncio
+async def test_stream_propagates_contextvars_to_worker():
+    """Request-scoped ContextVars set on the event loop MUST be visible inside
+    the worker thread. mlflow stashes the request headers (and thus the OBO
+    X-Forwarded-Access-Token) in a ContextVar set on the loop before the handler
+    runs; a raw threading.Thread starts with an EMPTY context, so without
+    copy_context the sync generator reads the default and apx fails closed on the
+    streaming endpoint — the deployed agent returns no data."""
+    _probe_ctxvar.set("token-abc")
+    seen: list[str] = []
+
+    def gen(request: Any) -> Generator[int, None, None]:
+        seen.append(_probe_ctxvar.get())
+        yield 1
+
+    handler = make_async_stream(gen)
+    _ = [c async for c in handler({})]
+    assert seen == ["token-abc"], f"contextvar lost crossing into worker: {seen}"
 
 
 @pytest.mark.asyncio
