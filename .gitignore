@@ -111,3 +111,12 @@ docs/superpowers/
 
 # caps / python artifacts (added by caps init)
 .pytest_cache/
+
+# relentless run artifacts (local orchestration state/logs)
+.relentless_logs/
+_relentless_*
+relentless_*.log
+_prd_*.md
+
+# Databricks Apps deploy logs (local)
+**/deploy_apps*.log
