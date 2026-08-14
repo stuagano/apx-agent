@@ -26,6 +26,7 @@ TABLE = f"{CATALOG}.{SCHEMA}.{TICKETS_TABLE}"
 agent = DataAgent(
     CATALOG, SCHEMA,
     name="hubspot-complaints-agent",
+    knowledge="./.apx/okf",  # OKF bundle grounds the agent + populates the dev-UI Knowledge tab
     instructions=(
         f"You summarize customer complaints from HubSpot support tickets synced "
         f"into Unity Catalog. Query the fully-qualified table {TABLE}"

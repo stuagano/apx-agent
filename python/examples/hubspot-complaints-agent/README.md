@@ -6,6 +6,11 @@ Summarizes customer complaints from a HubSpot Tickets object already synced
 into Unity Catalog — chat with it interactively, or let the scheduled job
 write a monthly summary row automatically.
 
+**Knowledge (OKF) bundle.** Ships an `.apx/okf/` bundle — a `tickets` table card
+(columns + how a complaint's month is defined) plus a glossary (complaint, theme,
+ticket month, pipeline stage). It grounds the DataAgent (`knowledge="./.apx/okf"`)
+and populates the **Knowledge** tab in the dev UI (`/_apx/knowledge`). See `.apx/okf/`.
+
 ## Expected data
 
 A Unity Catalog table (`${APX_CATALOG}.${APX_SCHEMA}.${APX_TICKETS_TABLE}`,

@@ -33,6 +33,7 @@ sales_agent = DataAgent(
     "samples", "bakehouse",
     warehouse_id=WAREHOUSE_ID,
     name="sales_agent",
+    knowledge="./.apx/okf",  # OKF bundle grounds the agent + populates the dev-UI Knowledge tab
     instructions=(
         "You answer questions about the bakery's sales. Use FULLY-QUALIFIED table "
         "names and these exact columns (note the camelCase IDs):\n"
@@ -55,6 +56,7 @@ reviews_agent = DataAgent(
     "samples", "bakehouse",
     warehouse_id=WAREHOUSE_ID,
     name="reviews_agent",
+    knowledge="./.apx/okf",  # same bundle; the media_customer_reviews card grounds this leaf
     instructions=(
         "You answer questions about what customers say. Query the fully-qualified "
         "table samples.bakehouse.media_customer_reviews(review, franchiseID, "
