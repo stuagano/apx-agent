@@ -41,6 +41,8 @@ artifacts:
       cp -r sub_agents .build/ 2>/dev/null || true
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
+      # OKF knowledge bundle — grounds the agent + populates the dev-UI Knowledge tab.
+      cp -r .apx .build/ 2>/dev/null || true
       # app.yml pins the uvicorn entrypoint + env. Without it Databricks Apps
       # defaults to ``python agent.py`` (finds agent.py at root) and the app
       # crashes — agent_server/start_server.py is the real ASGI entrypoint.

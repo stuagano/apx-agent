@@ -98,6 +98,23 @@ apx-agent deploy --target apps
 <!-- (optional) The tools this agent exposes, one line each. For an API/service
      example, title this "## API reference" instead. -->
 
+## Knowledge (OKF) bundle
+
+<!-- (optional — include for DATA-GROUNDED examples: DataAgent / anything over
+     governed UC tables or functions.) Ship an `.apx/okf/` bundle so the agent is
+     grounded and the dev-UI **Knowledge** tab (`/_apx/knowledge`) shows content.
+     A bundle is:
+       .apx/okf/
+       ├── datasets/<schema>.md     # frontmatter + # Tables + # Glossary (### Term / def / Synonyms:)
+       ├── tables/<table>.md        # frontmatter + # Overview + # Schema table + # Examples
+       ├── tables/index.md
+       └── index.md
+     Wire it into the agent with `knowledge="./.apx/okf"`, and make sure your
+     databricks.yml build rule copies it: `cp -r .apx .build/`. See
+     python/examples/precall-brief (functions + views), bakehouse-agent, and
+     hubspot-complaints-agent (tables) for worked bundles. Non-data examples
+     (tool/MCP/handoff only) can omit this — delete the section. -->
+
 ## Project structure
 
 <!-- (optional but recommended) A short tree of the important files. Frontend
@@ -110,6 +127,7 @@ apx-agent deploy --target apps
 ├── app.yml                  # Databricks Apps entrypoint + env
 ├── databricks.yml           # Bundle config
 ├── agent_server/            # Deploy bootstrap (don't edit)
+├── .apx/okf/                # (data-grounded examples) OKF bundle → Knowledge tab
 └── tests/
 ```
 

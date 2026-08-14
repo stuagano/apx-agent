@@ -19,6 +19,11 @@ serverless SQL the agent works out of the box: `sql_tool` auto-discovers a
 warehouse, with **no Vector Search endpoint, no index, no idle cost**. Every
 leaf runs as the **calling user** — Unity Catalog grants apply per request.
 
+**Knowledge (OKF) bundle.** Ships an `.apx/okf/` bundle — table cards for the
+five `samples.bakehouse` tables plus a domain glossary (revenue, franchise,
+supplier, sentiment). It grounds both DataAgents (`knowledge="./.apx/okf"`) and
+populates the **Knowledge** tab in the dev UI (`/_apx/knowledge`). See `.apx/okf/`.
+
 ## What it demonstrates
 - **`DataAgent("samples", "bakehouse")`** — a governed agent over the schema.
   Pass `ws=WorkspaceClient()` to have it introspect at startup: auto-wire the
