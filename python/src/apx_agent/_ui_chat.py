@@ -2133,6 +2133,12 @@ function extractMsg(value) {{
   if (typeof value === 'object') {{
     // Responses-API output_text block.
     if (value.type === 'output_text' && value.text) return value.text.slice(0, 400);
+    // Grounded-tool result (e.g. knowledge_assistant): show the answer + a
+    // citation count, not the raw {{question, answer, citations}} dict.
+    if ('answer' in value) {{
+      const n = Array.isArray(value.citations) ? value.citations.length : 0;
+      return String(value.answer).slice(0, 400) + (n ? ` [${{n}} citation${{n > 1 ? 's' : ''}}]` : '');
+    }}
     for (const k of ['content', 'text', 'output_text', 'message', 'messages', 'choices', 'output', 'input']) {{
       if (k in value && value[k] != null) return extractMsg(value[k]);
     }}
@@ -2204,9 +2210,18 @@ async function finalizeTrace(traceId, status, opts) {{
     // already have CHAT_MODEL spans and synthetic TOOL children, so one path
     // handles all formats.
     const ordered = [...data.spans].sort((a,b) => (a.start_time_ns||0)-(b.start_time_ns||0));
+    // Framework-plumbing CHAIN spans that aren't meaningful sub-agents. Named
+    // CHAIN/AGENT spans (router, knowledge_assistant, …) ARE sub-agent
+    // boundaries and belong in the summary alongside LLM + TOOL steps.
+    const CHAIN_NOISE = new Set(['LangGraph','RunnableCallable','model','tools']);
+    function isSubAgent(s) {{
+      const t = spanTypeShort(s.span_type);
+      return (t === 'AGENT' || t === 'CHAIN') && s.name
+        && !CHAIN_NOISE.has(s.name) && !s.name.includes('.');
+    }}
     const keySpans = ordered.filter(s => {{
       const t = spanTypeShort(s.span_type);
-      return t === 'LLM' || t === 'TOOL';
+      return t === 'LLM' || t === 'TOOL' || isSubAgent(s);
     }});
 
     function makeStepCard(typeLabel, color, name, dur, isErr) {{
@@ -2237,12 +2252,19 @@ async function finalizeTrace(traceId, status, opts) {{
     }}
     for (const s of keySpans) {{
       const type = spanTypeShort(s.span_type);
-      const color = SPAN_COLORS[type] || '#888';
+      const sub = isSubAgent(s);
+      const label = sub ? 'SUB-AGENT' : type;
+      const color = sub ? SPAN_COLORS.AGENT : (SPAN_COLORS[type] || '#888');
       const dur = s.duration_ms != null ? `${{Math.round(s.duration_ms)}}ms` : '';
       const isErr = (s.status||'').toUpperCase().includes('ERR');
-      const card = makeStepCard(type, color, s.name, dur, isErr);
-      addBubble(card, s.inputs,  type === 'TOOL' ? 'tool-in' : 'agent-ask');
-      addBubble(card, s.outputs, type === 'TOOL' ? 'tool-out' : 'llm-reply');
+      const card = makeStepCard(label, color, s.name, dur, isErr);
+      if (sub) {{
+        // Sub-agent boundary: show only what it was asked, not its full plumbing.
+        addBubble(card, s.inputs, 'agent-ask');
+      }} else {{
+        addBubble(card, s.inputs,  type === 'TOOL' ? 'tool-in' : 'agent-ask');
+        addBubble(card, s.outputs, type === 'TOOL' ? 'tool-out' : 'llm-reply');
+      }}
       traceBody.appendChild(card);
     }}
 
