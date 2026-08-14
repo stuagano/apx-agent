@@ -111,9 +111,8 @@ apx-agent deploy --target apps
        └── index.md
      Wire it into the agent with `knowledge="./.apx/okf"`, and make sure your
      databricks.yml build rule copies it: `cp -r .apx .build/`. See
-     python/examples/precall-brief (functions + views), bakehouse-agent, and
-     hubspot-complaints-agent (tables) for worked bundles. Non-data examples
-     (tool/MCP/handoff only) can omit this — delete the section. -->
+     bakehouse-agent and hubspot-complaints-agent (tables) for worked bundles.
+     Non-data examples (tool/MCP/handoff only) can omit this — delete the section. -->
 
 ## Project structure
 
