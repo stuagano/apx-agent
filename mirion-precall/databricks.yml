@@ -92,6 +92,11 @@ resources:
       user_api_scopes:
         - sql
         - serving.serving-endpoints
+        # NOTE: the agent calls the section functions via SQL (SELECT cat.sch.fn(...)),
+        # which needs only `sql` — server-side UC enforces the rep's EXECUTE/SELECT
+        # grants. We deliberately avoid uc_function_toolkit's functions.get metadata
+        # call, which would require a `unity-catalog` OBO scope this Apps runtime
+        # doesn't offer (rejects both `unity-catalog` and `all-apis`).
       resources:
         - name: experiment
           experiment:

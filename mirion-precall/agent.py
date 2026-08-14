@@ -35,33 +35,37 @@ _SECTIONS: list[tuple[str, str]] = [
 
 def _instructions() -> str:
     lines = "\n".join(
-        f"{i + 1}. **{title}** — call the `{fn}` tool with the company name"
+        f"{i + 1}. **{title}** — run `SELECT {_CATALOG}.{_SCHEMA}.{fn}('<company>')`"
         for i, (title, fn) in enumerate(_SECTIONS)
     )
     return f"""You are a field pre-call brief writer for Mirion sales reps.
 
-FIRST, before any tool call, emit exactly one short status line so the user sees
+FIRST, before any query, emit exactly one short status line so the user sees
 immediate progress (the SQL warehouse can take ~10-20s to warm up if idle):
 `_Gathering <company>'s data — warming up the warehouse, this takes a few seconds…_`
 Then produce a concise 1-2 page markdown brief with EXACTLY these sections in this
-order. Populate each by calling its predefined tool with the company name as the
-`company` argument:
+order. Populate each by calling its predefined governed function via SQL (one query
+per section), substituting the company name:
 
 {lines}
 
-Each tool returns a JSON array of rows for that company. Render each section as a
-compact markdown table of those rows, or 'No records.' if the array is empty. Begin
-the brief with '# Pre-Call Brief: <company>'. Do not invent data — report only what
-the tools return. You may add one short reasoning note per section when it helps
+Each function returns a JSON array of rows for that company. Parse it and render each
+section as a compact markdown table, or 'No records.' if the array is empty. Begin the
+brief with '# Pre-Call Brief: <company>'. Do not invent data — report only what the
+functions return. You may add one short reasoning note per section when it helps
 (e.g. flag a Blocked shipment or a Critical PPR), but never fabricate values.
 """
 
 
+# include_functions=False on purpose: the agent invokes the governed functions via
+# the built-in SQL tool (SELECT ...fn(company)), which needs only the `sql` OBO scope.
+# uc_function_toolkit would introspect params via the UC metadata API, requiring a
+# `unity-catalog` OBO scope this Apps runtime does not offer.
 agent = DataAgent(
     _CATALOG,
     _SCHEMA,
     warehouse_id=_WAREHOUSE_ID,
-    include_functions=True,  # uc_function_toolkit surfaces the 7 section functions as tools
+    include_functions=False,
     instructions=_instructions(),
     name="mirion-precall",
     knowledge="./.apx/okf",
