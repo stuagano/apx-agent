@@ -20,9 +20,9 @@ def render_knowledge_ui() -> str:
 
     okf_root = resolve_okf_root()
 
-    # Parse OKF bundle
-    views_data = okf_grounding(okf_root) or {}
-    glossary_data = okf_glossary(okf_root) or []
+    # Parse OKF bundle (okf_root is None when no bundle is found -> empty state)
+    views_data = (okf_grounding(okf_root) or {}) if okf_root else {}
+    glossary_data = (okf_glossary(okf_root) or []) if okf_root else []
     functions_data = []
 
     # Parse functions from functions/*.md if they exist
