@@ -45,7 +45,7 @@ Provision under **Settings → Secrets and variables → Actions**:
 
 | Secret | What it is |
 |---|---|
-| `DATABRICKS_CLI_CI_HOST` | Workspace URL, e.g. `https://fevm-serverless-stable-qh44kx.cloud.databricks.com` |
+| `DATABRICKS_CLI_CI_HOST` | Workspace URL, e.g. `https://example-workspace.cloud.databricks.com` |
 | `DATABRICKS_CLI_CI_CLIENT_ID` | Service-principal OAuth client ID |
 | `DATABRICKS_CLI_CI_CLIENT_SECRET` | Service-principal OAuth secret |
 | `DATABRICKS_CLI_CI_USER_EMAIL` | SP's email — used as the MLflow experiment owner (`/Users/<email>/memory-demo-dev`) |

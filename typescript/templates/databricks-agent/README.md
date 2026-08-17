@@ -13,7 +13,7 @@ TS agent for Databricks Apps using FMAPI direct. No `@openai/agents` SDK.
 | `{{AGENT_DISPLAY_NAME}}` | `Entity Resolution Agent` |
 | `{{AGENT_DESCRIPTION}}` | `Resolve and deduplicate customer entities` |
 | `{{AGENT_INSTRUCTIONS}}` | `You are an entity resolution assistant...` |
-| `{{WORKSPACE_HOST}}` | `https://fevm-serverless-stable-s0v155.cloud.databricks.com` |
+| `{{WORKSPACE_HOST}}` | `https://example-workspace.cloud.databricks.com` |
 | `{{DATABRICKS_TOKEN}}` | PAT for the workspace |
 
 3. Add your tools in `src/tools.ts`

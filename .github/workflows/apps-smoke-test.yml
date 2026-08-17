@@ -6,7 +6,7 @@ name: apps-smoke-test
 #
 # Required GitHub secrets (configure under Settings → Secrets → Actions):
 #   DATABRICKS_CLI_CI_HOST           — workspace URL, e.g.
-#                                      https://fevm-serverless-stable-qh44kx.cloud.databricks.com
+#                                      https://example-workspace.cloud.databricks.com
 #   DATABRICKS_CLI_CI_CLIENT_ID      — service-principal OAuth client ID
 #   DATABRICKS_CLI_CI_CLIENT_SECRET  — service-principal OAuth secret
 #   DATABRICKS_CLI_CI_USER_EMAIL     — SP's email; used as the MLflow

@@ -179,14 +179,14 @@ def test_workspace_host_env_wins_over_forwarded_host(
     workspace API host, so the env must win. Verified on fe-stable
     2026-05-20.
     """
-    monkeypatch.setenv("DATABRICKS_HOST", "fevm-serverless-stable-qh44kx.cloud.databricks.com")
+    monkeypatch.setenv("DATABRICKS_HOST", "example-workspace.cloud.databricks.com")
     obo = extract_obo_headers(
         headers={
             "X-Forwarded-Access-Token": "tok",
             "X-Forwarded-Host": "my-app-1234.aws.databricksapps.com",
         },
     )
-    assert obo["workspace_host"] == "fevm-serverless-stable-qh44kx.cloud.databricks.com"
+    assert obo["workspace_host"] == "example-workspace.cloud.databricks.com"
 
 
 def test_workspace_host_falls_back_to_forwarded_host_when_no_env(
