@@ -85,6 +85,27 @@ Color coding follows NodeType: pink stroke for routing agents (`HandoffAgent`, `
 
 Data is served from `GET /_apx/topology.json` (full graph), `GET /_apx/topology/inspect/{node_id}` (per-node details), `GET /_apx/topology/tracing` (experiment destination), and `GET /_apx/traces/last-route` (last-turn highlight).
 
+#### Semantic overlays
+
+Applications with domain-specific vocabulary can enrich the same graph without
+replacing the topology contract or the built-in UI:
+
+```python
+from apx_agent import annotate_topology
+
+topology = annotate_topology(
+    build_topology(context),
+    node_metadata={"agent:root": {"purpose": "Routes governed questions."}},
+    edge_metadata={"agent:root->agent:root.billing:branch": {"input_contract": "EvidenceRecord.v1"}},
+    execution={"trace_id": "trace-123", "active_node_ids": ["agent:root"]},
+    artifact_summaries=[{"source_agent": "agent:root", "contract": "DecisionPacket.v1"}],
+)
+```
+
+Annotations are additive: node and edge metadata, execution state, and bounded
+artifact summaries are preserved for consumers that understand them, while
+existing topology clients continue to read the original graph fields.
+
 ### `/_apx/edit` — Edit agent source
 Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file to disk; the running agent is compiled at startup, so a save here — like any source change — takes effect on the next restart. Auto-reload on source changes happens only when you start the server with `apx-agent agents run --reload` (the `--reload` flag is off by default).
 

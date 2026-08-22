@@ -32,6 +32,8 @@ export interface TopoNode {
   type: NodeType;
   label: string;
   description?: string;
+  /** Application-owned semantic fields added by apx_agent.annotate_topology. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface TopoEdge {
@@ -39,6 +41,22 @@ export interface TopoEdge {
   source: string;
   target: string;
   kind: EdgeKind;
+  /** Application-owned semantic fields added by apx_agent.annotate_topology. */
+  metadata?: Record<string, unknown>;
+}
+
+export interface TopologyExecution {
+  trace_id?: string;
+  active_node_ids?: string[];
+  completed_edge_ids?: string[];
+  failed_node_ids?: string[];
+  [key: string]: unknown;
+}
+
+export interface ArtifactSummary {
+  source_agent?: string;
+  contract?: string;
+  [key: string]: unknown;
 }
 
 export interface TopologyResponse {
@@ -46,6 +64,8 @@ export interface TopologyResponse {
   agentName: string;
   nodes: TopoNode[];
   edges: TopoEdge[];
+  execution?: TopologyExecution;
+  artifact_summaries?: ArtifactSummary[];
 }
 
 // /_apx/topology/inspect/{node_id}

@@ -293,6 +293,7 @@ from ._topology import (
     AgentNode,
     Topology,
     TopologyEdge,
+    annotate_topology,
     discover_topology,
     render_topology,
 )
@@ -620,6 +621,7 @@ __all__ = [
     "AgentNode",
     "Topology",
     "TopologyEdge",
+    "annotate_topology",
     "discover_topology",
     "render_topology",
     # Cross-agent eval
