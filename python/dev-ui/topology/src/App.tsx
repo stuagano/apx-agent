@@ -182,12 +182,18 @@ export default function App() {
   }, [state.data, eligibleTargets]);
 
   const routeNodeIds = useMemo(
-    () => new Set(route?.node_ids || []),
-    [route],
+    () => new Set([
+      ...(route?.node_ids || []),
+      ...(state.data?.execution?.active_node_ids || []),
+    ]),
+    [route, state.data],
   );
   const routeEdgeIds = useMemo(
-    () => new Set(route?.edge_ids || []),
-    [route],
+    () => new Set([
+      ...(route?.edge_ids || []),
+      ...(state.data?.execution?.completed_edge_ids || []),
+    ]),
+    [route, state.data],
   );
 
   const showToast = (text: string, ok: boolean) => {
@@ -398,6 +404,9 @@ export default function App() {
             {state.selected && (
               <NodeInspector
                 nodeId={state.selected}
+                node={data.nodes.find((node) => node.id === state.selected)}
+                execution={data.execution}
+                artifactSummaries={data.artifact_summaries}
                 onClose={() => setState((s) => ({ ...s, selected: null }))}
                 onMutated={(msg) => {
                   showToast(msg, true);

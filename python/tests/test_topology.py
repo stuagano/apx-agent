@@ -22,9 +22,11 @@ from apx_agent import (
     AgentNode,
     Topology,
     TopologyEdge,
+    annotate_topology,
     discover_topology,
     render_topology,
 )
+from apx_agent._apx_models import TopologyResponse
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +295,45 @@ def test_render_handles_empty_topology() -> None:
     assert mermaid.startswith("graph LR")
     graphviz = render_topology(topo, format="graphviz")
     assert graphviz.startswith("digraph apx_topology")
+
+
+def test_annotate_topology_adds_semantics_and_run_facts_without_mutating_graph() -> None:
+    topology = {
+        "rootId": "agent:root",
+        "agentName": "fleet",
+        "nodes": [{"id": "agent:root", "type": "LlmAgent", "label": "Fleet"}],
+        "edges": [{"id": "root->peer:branch", "source": "agent:root", "target": "peer", "kind": "branch"}],
+    }
+
+    annotated = annotate_topology(
+        topology,
+        node_metadata={
+            "agent:root": {
+                "purpose": "Routes governed questions.",
+                "output_contracts": ["DecisionPacket.v1"],
+            }
+        },
+        edge_metadata={
+            "root->peer:branch": {"input_contract": "EvidenceRecord.v1"}
+        },
+        execution={"trace_id": "trace-1", "active_node_ids": ["agent:root"]},
+        artifact_summaries=[{"source_agent": "agent:root", "contract": "DecisionPacket.v1"}],
+    )
+
+    assert topology["nodes"][0] == {"id": "agent:root", "type": "LlmAgent", "label": "Fleet"}
+    assert annotated["nodes"][0]["metadata"]["purpose"] == "Routes governed questions."
+    assert annotated["nodes"][0]["description"] == "Routes governed questions."
+    assert annotated["edges"][0]["metadata"]["input_contract"] == "EvidenceRecord.v1"
+    assert annotated["execution"]["trace_id"] == "trace-1"
+    assert annotated["artifact_summaries"][0]["contract"] == "DecisionPacket.v1"
+    response = TopologyResponse.model_validate(annotated)
+    assert response.model_extra["execution"]["trace_id"] == "trace-1"
+    assert response.model_extra["artifact_summaries"][0]["contract"] == "DecisionPacket.v1"
+
+
+def test_annotate_topology_rejects_non_graph_entries() -> None:
+    with pytest.raises(TypeError, match=r"topology\['nodes'\]"):
+        annotate_topology({"nodes": "not-a-list", "edges": []})
 
 
 # ---------------------------------------------------------------------------

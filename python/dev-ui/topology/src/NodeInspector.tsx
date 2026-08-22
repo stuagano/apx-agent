@@ -13,7 +13,9 @@ import type {
   ResourceDetails,
   SubAgentDetails,
   ToolDetails,
+  ArtifactSummary,
   TopoNode,
+  TopologyExecution,
 } from "./types";
 import {
   postUnwireAgent,
@@ -24,6 +26,10 @@ import sampleTopology from "./sample-topology.json";
 
 export interface NodeInspectorProps {
   nodeId: string;
+  /** The selected node from the topology payload, including semantic metadata. */
+  node?: TopoNode;
+  execution?: TopologyExecution;
+  artifactSummaries?: ArtifactSummary[];
   onClose: () => void;
   /** Called after a successful Save / Unwire so the graph can refresh. */
   onMutated?: (msg: string) => void;
@@ -274,7 +280,15 @@ function buildFallback(nodeId: string): InspectResponse | null {
 }
 
 export function NodeInspector(props: NodeInspectorProps) {
-  const { nodeId, onClose, onMutated, onError } = props;
+  const {
+    nodeId,
+    node,
+    execution,
+    artifactSummaries,
+    onClose,
+    onMutated,
+    onError,
+  } = props;
   const [data, setData] = useState<InspectResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -398,6 +412,9 @@ export function NodeInspector(props: NodeInspectorProps) {
         {data && !loading && !error && (
           <InspectBody
             data={data}
+            node={node}
+            execution={execution}
+            artifactSummaries={artifactSummaries}
             instrDraft={instrDraft}
             setInstrDraft={setInstrDraft}
             busy={busy}
@@ -412,6 +429,9 @@ export function NodeInspector(props: NodeInspectorProps) {
 
 function InspectBody({
   data,
+  node,
+  execution,
+  artifactSummaries,
   instrDraft,
   setInstrDraft,
   busy,
@@ -419,6 +439,9 @@ function InspectBody({
   onUnwire,
 }: {
   data: InspectResponse;
+  node?: TopoNode;
+  execution?: TopologyExecution;
+  artifactSummaries?: ArtifactSummary[];
   instrDraft: string;
   setInstrDraft: (v: string) => void;
   busy: boolean;
@@ -426,6 +449,17 @@ function InspectBody({
   onUnwire: (actions: InspectActions) => void;
 }) {
   const actions = data.actions;
+  const metadata = node?.metadata;
+  const artifacts = artifactSummaries?.filter(
+    (summary) => summary.source_agent === node?.id,
+  );
+  const runState = execution
+    ? execution.failed_node_ids?.includes(node?.id || "")
+      ? "failed"
+      : execution.active_node_ids?.includes(node?.id || "")
+        ? "active"
+        : "not active"
+    : null;
   return (
     <>
       {data.description && !data.agent && (
@@ -443,6 +477,15 @@ function InspectBody({
           </Field>
         </dl>
       </section>
+
+      {(metadata && Object.keys(metadata).length > 0) || runState || artifacts?.length ? (
+        <SemanticSection
+          metadata={metadata}
+          runState={runState}
+          traceId={execution?.trace_id}
+          artifacts={artifacts}
+        />
+      ) : null}
 
       {data.agent && (
         <AgentSection
@@ -480,6 +523,71 @@ function InspectBody({
       )}
     </>
   );
+}
+
+function SemanticSection({
+  metadata,
+  runState,
+  traceId,
+  artifacts,
+}: {
+  metadata?: Record<string, unknown>;
+  runState: string | null;
+  traceId?: string;
+  artifacts?: ArtifactSummary[];
+}) {
+  return (
+    <section style={sectionStyle}>
+      <div style={sectionTitleStyle}>Semantic overlay</div>
+      <dl style={dlStyle}>
+        {runState && <Field label="Run state">{runState}</Field>}
+        {traceId && (
+          <Field label="Trace">
+            <code>{traceId}</code>
+          </Field>
+        )}
+        {Object.entries(metadata || {}).map(([key, value]) => (
+          <Field key={key} label={humanize(key)}>
+            {formatOverlayValue(value)}
+          </Field>
+        ))}
+        {artifacts && artifacts.length > 0 && (
+          <Field label="Artifacts">
+            <div style={{ display: "grid", gap: 6 }}>
+              {artifacts.map((artifact, index) => (
+                <div key={`${artifact.contract || "artifact"}-${index}`}>
+                  <code>{artifact.contract || "artifact"}</code>
+                  {Object.entries(artifact)
+                    .filter(([key]) => key !== "source_agent" && key !== "contract")
+                    .map(([key, value]) => (
+                      <div key={key} style={{ color: "var(--muted)", marginTop: 2 }}>
+                        {humanize(key)}: {formatOverlayValue(value)}
+                      </div>
+                    ))}
+                </div>
+              ))}
+            </div>
+          </Field>
+        )}
+      </dl>
+    </section>
+  );
+}
+
+function humanize(key: string): string {
+  return key
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/^./, (char) => char.toUpperCase());
+}
+
+function formatOverlayValue(value: unknown): React.ReactNode {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) return value.map(String).join(", ");
+  return <code>{JSON.stringify(value)}</code>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

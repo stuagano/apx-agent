@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -620,6 +621,66 @@ def build_topology(ctx: "AgentContext") -> dict[str, Any]:
         "nodes": nodes,
         "edges": edges,
     }
+
+
+def annotate_topology(
+    topology: Mapping[str, Any],
+    *,
+    node_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    edge_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    execution: Mapping[str, Any] | None = None,
+    artifact_summaries: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Add optional semantic and run metadata to a topology payload.
+
+    The base graph remains the small ``rootId``/``agentName``/``nodes``/``edges``
+    contract used by the built-in topology UI. Applications can add their own
+    business vocabulary—purpose, contracts, questions, approval state, and
+    bounded artifact facts—without replacing that graph or teaching the SDK
+    about a domain-specific manifest.
+
+    The input is never mutated. Node and edge annotations are merged under
+    their existing ``metadata`` key; all other existing fields are preserved.
+    """
+    annotated = dict(topology)
+    annotated["nodes"] = [
+        _annotate_topology_entry(node, (node_metadata or {}).get(str(node.get("id"))))
+        for node in _topology_entries(topology, "nodes")
+    ]
+    annotated["edges"] = [
+        _annotate_topology_entry(edge, (edge_metadata or {}).get(str(edge.get("id"))))
+        for edge in _topology_entries(topology, "edges")
+    ]
+    if execution is not None:
+        annotated["execution"] = dict(execution)
+    if artifact_summaries is not None:
+        annotated["artifact_summaries"] = [dict(summary) for summary in artifact_summaries]
+    return annotated
+
+
+def _topology_entries(topology: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
+    entries = topology.get(key) or []
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise TypeError(f"topology[{key!r}] must be a sequence of mappings")
+    if not all(isinstance(entry, Mapping) for entry in entries):
+        raise TypeError(f"topology[{key!r}] must contain only mappings")
+    return list(entries)
+
+
+def _annotate_topology_entry(
+    entry: Mapping[str, Any], metadata: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    annotated = dict(entry)
+    if metadata:
+        existing = annotated.get("metadata") or {}
+        if not isinstance(existing, Mapping):
+            raise TypeError("topology entry metadata must be a mapping")
+        merged = dict(existing)
+        merged.update(metadata)
+        annotated["metadata"] = merged
+        if not annotated.get("description") and isinstance(metadata.get("purpose"), str):
+            annotated["description"] = metadata["purpose"]
+    return annotated
 
 
 def route_highlight_from_spans(
