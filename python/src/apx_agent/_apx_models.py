@@ -544,18 +544,12 @@ class TopologyResponse(BaseModel):
     :func:`apx_agent.annotate_topology`, which can add application-owned
     execution state and bounded artifact summaries at the top level.
 
-    ``extra="allow"`` keeps the graph contract forward-compatible with
-    :func:`apx_agent.annotate_topology`, which can add application-owned
-    execution state and bounded artifact summaries at the top level.
-
     ``rootId`` is the root agent node's id (the graph's entry point) and
     ``agentName`` is the served agent's name; both must be modelled (a raw
     return + ``response_model`` would otherwise strip them off the wire). The
     no-context error path (503 ``{error}``) returns a ``JSONResponse`` and
     bypasses this model.
     """
-
-    model_config = ConfigDict(extra="allow")
 
     model_config = ConfigDict(extra="allow")
 
