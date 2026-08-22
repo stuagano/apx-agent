@@ -1,5 +1,10 @@
 # Where apx-agent fits
 
+> **Build governed Databricks data agents without wiring the platform by hand.**
+
+Define your agent's tools, data access, identity, memory, and policies once, then run it on the
+Databricks runtime that fits your workload.
+
 apx-agent is **infrastructure for building and serving governed data agents on Databricks**.
 You declare what an agent should be; apx-agent compiles it to a Databricks runtime, grounds it
 in your Unity Catalog data, runs its tools under UC governance, and makes it observable.
