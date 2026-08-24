@@ -429,6 +429,27 @@ def test_workflows_section_present_when_configured(tmp_path: Path) -> None:
     assert workflows[0]["handoffs"] == []
 
 
+def test_workflows_toml_escapes_control_characters(tmp_path: Path) -> None:
+    config = AgentConfig(
+        name="control-character-agent",
+        workflows=[
+            ExampleWorkflow(
+                id="control-character-workflow",
+                title="First\rSecond\x01",
+                question="Show me the evidence",
+                purpose="Check generated TOML.",
+                route=["inspect"],
+            )
+        ],
+    )
+    generate_project(config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    assert data["tool"]["apx"]["agent"]["workflows"][0]["title"] == "First\rSecond\x01"
+
+
 def test_workflows_section_absent_when_empty(tmp_path: Path, minimal_config: AgentConfig) -> None:
     generate_project(minimal_config, tmp_path)
 

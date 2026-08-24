@@ -305,7 +305,7 @@ def _validate_nonblank_strings(value: Any) -> Any:
     if isinstance(value, str):
         if not value.strip():
             raise ValueError("must not be blank")
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
         for item in value:
             _validate_nonblank_strings(item)
     return value

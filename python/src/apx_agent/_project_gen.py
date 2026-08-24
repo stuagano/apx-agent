@@ -37,7 +37,20 @@ def _toml_value(v: Any) -> str:
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, str):
-        escaped = v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        escaped = (
+            v.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\b", "\\b")
+            .replace("\t", "\\t")
+            .replace("\n", "\\n")
+            .replace("\f", "\\f")
+            .replace("\r", "\\r")
+        )
+        escaped = re.sub(
+            r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]",
+            lambda match: f"\\u{ord(match.group()):04x}",
+            escaped,
+        )
         return f'"{escaped}"'
     if isinstance(v, list):
         return "[" + ", ".join(_toml_value(i) for i in v) + "]"

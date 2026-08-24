@@ -53,6 +53,11 @@ def test_workflow_rejects_blank_route_stage() -> None:
         AgentConfig.model_validate({"name": "demo", "workflows": [_workflow(route=[""])]})
 
 
+def test_workflow_rejects_blank_tuple_route_stage() -> None:
+    with pytest.raises(ValidationError, match="route"):
+        AgentConfig.model_validate({"name": "demo", "workflows": [_workflow(route=(" ",))]})
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("id", ""), ("question", " "), ("title", "\t"), ("purpose", "\n")],
