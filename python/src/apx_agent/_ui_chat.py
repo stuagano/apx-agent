@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from ._models import AgentContext, AgentTool
+from ._models import AgentContext, AgentTool, workflow_prompts
 from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 
 
@@ -661,8 +661,8 @@ def _render_landing(ctx: AgentContext) -> str:
     """Server-rendered empty-chat landing: greeting + capability cards + starter chips.
 
     Cards come from the agent's tools (click to expand params); chips come from
-    ``ctx.config.examples`` (click fills the input). Each block renders only when
-    its data is present; the greeting always renders.
+    configured examples and workflows (click fills the input). Each block renders
+    only when its data is present; the greeting always renders.
     """
     import html as _html
     import json as _json
@@ -670,7 +670,8 @@ def _render_landing(ctx: AgentContext) -> str:
     name = ctx.config.name
     desc = ctx.config.description or ""
     tools = [t for t in ctx.tools if t.name != "create_tool"]
-    examples = ctx.config.examples or []
+    examples = workflow_prompts(ctx.config)
+    workflows = {workflow.question: workflow for workflow in ctx.config.workflows}
 
     parts = [f'<div class="landing-hi">{_html.escape(name)}</div>']
     if desc:
@@ -734,11 +735,28 @@ def _render_landing(ctx: AgentContext) -> str:
                      f'<div class="cap-cards">{cards}</div>')
 
     if examples:
-        chips = "".join(
-            f'<button type="button" class="starter-chip" onclick="useExample(this)" '
-            f'data-q="{_html.escape(q, quote=True)}">{_html.escape(q)}</button>'
-            for q in examples
-        )
+        def _render_example(q: str) -> str:
+            workflow = workflows.get(q)
+            if workflow is None:
+                return (
+                    f'<button type="button" class="starter-chip" onclick="useExample(this)" '
+                    f'data-q="{_html.escape(q, quote=True)}">{_html.escape(q)}</button>'
+                )
+
+            # The browser decodes character references in data attributes, so
+            # use one for '?' to avoid serializing the question twice while
+            # preserving the exact value consumed by useExample().
+            data_q = _html.escape(q, quote=True).replace("?", "&#x3f;")
+            return (
+                f'<button type="button" class="starter-chip workflow-chip" onclick="useExample(this)" '
+                f'data-q="{data_q}">'
+                f'<span class="workflow-title">{_html.escape(workflow.title)}</span>'
+                f'<span class="workflow-purpose">{_html.escape(workflow.purpose)}</span>'
+                f'<span class="workflow-question">{_html.escape(q)}</span>'
+                '</button>'
+            )
+
+        chips = "".join(_render_example(q) for q in examples)
         parts.append('<div class="landing-label">Try asking</div>'
                      f'<div class="starter-chips">{chips}</div>')
 
@@ -1092,6 +1110,10 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
                    cursor: pointer; text-align: left; transition: background 0.12s, border-color 0.12s; }}
   .starter-chip:hover {{ background: #1c2822; border-color: #2f6b46; }}
   .starter-chip:active {{ background: #213326; }}
+  .workflow-chip {{ display: inline-flex; flex-direction: column; gap: 3px; min-width: 220px; }}
+  .workflow-title {{ color: #d8f3df; font-weight: 600; }}
+  .workflow-purpose {{ color: #8a929b; font-size: 11px; }}
+  .workflow-question {{ color: #bfe9cf; font-size: 12px; }}
 </style>
 </head>
 <body>

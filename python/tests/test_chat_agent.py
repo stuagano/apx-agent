@@ -36,7 +36,7 @@ from mlflow.types.agent import (  # noqa: E402
     ChatAgentChunk,
 )
 
-from apx_agent import Agent, LlmAgent, chat_agent_for  # noqa: E402
+from apx_agent import Agent, AgentConfig, AgentContext, LlmAgent, chat_agent_for  # noqa: E402
 from apx_agent._resources import collect_resource_specs  # noqa: E402
 from apx_agent._wiring import finalize_agent  # noqa: E402
 
@@ -382,3 +382,33 @@ def test_user_id_without_token_still_builds_headers(monkeypatch) -> None:
 
 def test_no_identity_yields_none_headers(monkeypatch) -> None:
     assert _resolve_headers(monkeypatch, {}) is None
+
+
+def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
+    from apx_agent._models import AgentCard
+    from apx_agent._ui_chat import _render_landing
+
+    config = AgentConfig(
+        name="demo-agent",
+        examples=["What is the position?"],
+        workflows=[{
+            "id": "position",
+            "title": "<Pricing review>",
+            "question": "What is the position?",
+            "purpose": "Compare <b>peers</b>.",
+            "route": ["calibrate"],
+        }],
+    )
+    ctx = AgentContext(
+        config=config,
+        tools=[],
+        card=AgentCard(name=config.name, description="", skills=[]),
+        agent=None,  # type: ignore[arg-type]
+    )
+
+    html = _render_landing(ctx)
+
+    assert html.count("What is the position?") == 1
+    assert "&lt;Pricing review&gt;" in html
+    assert "Compare &lt;b&gt;peers&lt;/b&gt;." in html
+    assert "<b>peers</b>" not in html
