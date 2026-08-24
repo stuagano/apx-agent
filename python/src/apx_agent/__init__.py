@@ -279,6 +279,15 @@ from ._service_policies import (
     ordered_policies,
 )
 from ._service_policies_local import LocalServicePolicyAdapter
+from ._service_policies_native import (
+    NativePolicyApplyReceipt,
+    NativePolicyCapability,
+    NativePolicyPlan,
+    NativePolicyVerification,
+    apply_native_policy_plan,
+    build_native_policy_plan,
+    verify_native_policy_plan,
+)
 
 # Cost tracking helpers
 from ._cost import CostBreakdown, cost_for_agent, cost_for_endpoint
@@ -632,6 +641,13 @@ __all__ = [
     "LocalServicePolicyAdapter",
     "evaluate_ordered_service_policies",
     "ordered_policies",
+    "NativePolicyApplyReceipt",
+    "NativePolicyCapability",
+    "NativePolicyPlan",
+    "NativePolicyVerification",
+    "apply_native_policy_plan",
+    "build_native_policy_plan",
+    "verify_native_policy_plan",
     # Cost tracking
     "CostBreakdown",
     "cost_for_agent",

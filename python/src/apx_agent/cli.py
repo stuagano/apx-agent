@@ -817,6 +817,48 @@ def agents() -> None:
     """Create, run, deploy, and manage agents."""
 
 
+@agents.command("policies")
+@click.argument("spec_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("action", type=click.Choice(("plan", "apply", "verify")))
+@click.option("--profile", default=None, help="Explicit Databricks profile for apply/verify.")
+def service_policies(spec_path: Path, action: str, profile: str | None) -> None:
+    """Plan, apply, or verify Service Policies from SPEC_PATH.
+
+    PLAN is side-effect-free. APPLY and VERIFY require an explicit profile and
+    use only a verified native transport; unsupported Beta surfaces fail closed.
+    """
+    from ._service_policies_native import (
+        UnavailableNativePolicyTransport,
+        apply_native_policy_plan,
+        build_native_policy_plan,
+        verify_native_policy_plan,
+    )
+    from ._yaml_spec import load_spec
+
+    if action != "plan" and not profile:
+        raise click.UsageError("--profile <name> is required for apply and verify")
+    try:
+        config = load_spec(spec_path, strict=True)
+        plan = build_native_policy_plan(config.service_policies)
+        if action == "plan":
+            click.echo(json.dumps({
+                "native_mode": plan.native_mode.value,
+                "operations": plan.operations,
+                "unsupported": plan.unsupported,
+                "declaration_fingerprint": plan.declaration_fingerprint,
+            }, indent=2, sort_keys=True))
+            return
+        transport = UnavailableNativePolicyTransport()
+        if action == "apply":
+            receipt = apply_native_policy_plan(plan, transport=transport, profile=profile or "")
+            click.echo(json.dumps(receipt.__dict__, indent=2, sort_keys=True, default=str))
+        else:
+            verification = verify_native_policy_plan(plan, transport=transport, profile=profile or "")
+            click.echo(json.dumps(verification.__dict__, indent=2, sort_keys=True, default=str))
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @main.group(cls=_ApxGroup)
 def traces() -> None:
     """Inspect and export MLflow traces."""
