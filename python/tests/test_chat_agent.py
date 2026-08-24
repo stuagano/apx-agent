@@ -385,16 +385,20 @@ def test_no_identity_yields_none_headers(monkeypatch) -> None:
 
 
 def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
+    from html import escape
+    from html.parser import HTMLParser
+
     from apx_agent._models import AgentCard
     from apx_agent._ui_chat import _render_landing
 
+    question = 'What is the <b>position</b>? <script>alert("x")</script> & peers?'
     config = AgentConfig(
         name="demo-agent",
-        examples=["What is the position?"],
+        examples=[question],
         workflows=[{
             "id": "position",
             "title": "<Pricing review>",
-            "question": "What is the position?",
+            "question": question,
             "purpose": "Compare <b>peers</b>.",
             "route": ["calibrate"],
         }],
@@ -408,7 +412,27 @@ def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
 
     html = _render_landing(ctx)
 
-    assert html.count("What is the position?") == 1
+    assert html.count('class="starter-chip workflow-chip"') == 1
+    assert escape(question) in html
+    assert "<b>position</b>" not in html
+    assert "<script>alert(\"x\")</script>" not in html
+
+    class _WorkflowButtonParser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.data_q: str | None = None
+            self.uses_example = False
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            attributes = dict(attrs)
+            class_attr = attributes.get("class")
+            if tag == "button" and class_attr is not None and "workflow-chip" in class_attr.split():
+                self.data_q = attributes.get("data-q")
+                self.uses_example = attributes.get("onclick") == "useExample(this)"
+
+    parser = _WorkflowButtonParser()
+    parser.feed(html)
+    assert parser.uses_example
+    assert parser.data_q == question
     assert "&lt;Pricing review&gt;" in html
     assert "Compare &lt;b&gt;peers&lt;/b&gt;." in html
-    assert "<b>peers</b>" not in html
