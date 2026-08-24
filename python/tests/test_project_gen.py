@@ -25,7 +25,13 @@ import pytest
 import yaml
 
 from apx_agent import BaseAgent, CoworkerAgent, DataAgent, RemoteDatabricksAgent, RouterAgent
-from apx_agent._models import AgentConfig, MemoryBackendConfig, SessionBackendConfig, SkillConfig
+from apx_agent._models import (
+    AgentConfig,
+    ExampleWorkflow,
+    MemoryBackendConfig,
+    SessionBackendConfig,
+    SkillConfig,
+)
 from apx_agent._project_gen import generate_project, render_agent_py
 
 
@@ -396,6 +402,40 @@ def test_memory_section_absent_when_not_configured(tmp_path: Path, minimal_confi
 
     memory_section = data.get("tool", {}).get("apx", {}).get("agent", {}).get("memory")
     assert memory_section is None, "[tool.apx.agent.memory] should not be present"
+
+
+def test_workflows_section_present_when_configured(tmp_path: Path) -> None:
+    config = AgentConfig(
+        name="pricing-agent",
+        workflows=[
+            ExampleWorkflow(
+                id="pricing-review",
+                title="Pricing review",
+                question="Show me the pricing evidence",
+                purpose="Move from signal to decision.",
+                route=["intelligence", "calibrate"],
+                outcome="Reviewable pricing packet",
+            )
+        ],
+    )
+    generate_project(config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    workflows = data["tool"]["apx"]["agent"]["workflows"]
+    assert workflows[0]["id"] == "pricing-review"
+    assert workflows[0]["route"] == ["intelligence", "calibrate"]
+    assert workflows[0]["handoffs"] == []
+
+
+def test_workflows_section_absent_when_empty(tmp_path: Path, minimal_config: AgentConfig) -> None:
+    generate_project(minimal_config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+
+    assert "workflows" not in data["tool"]["apx"]["agent"]
 
 
 # ---------------------------------------------------------------------------

@@ -138,6 +138,9 @@ def _build_pyproject(config: "AgentConfig") -> str:
 
     if config.examples:
         lines.append(f"examples = {_toml_value(config.examples)}")
+    if config.workflows:
+        workflows = [workflow.model_dump() for workflow in config.workflows]
+        lines.append(f"workflows = {_toml_value_nested(workflows)}")
     lines.append("")
 
     # [tool.apx.agent.service_policies] — omit the default empty declaration
