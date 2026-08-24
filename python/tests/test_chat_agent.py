@@ -419,6 +419,7 @@ def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
     class _WorkflowButtonParser(HTMLParser):
         def __init__(self) -> None:
             super().__init__()
+            self.starter_button_count = 0
             self.starter_data_qs: list[str] = []
             self.workflow_data_qs: list[str] = []
             self.workflow_uses_example: list[bool] = []
@@ -431,6 +432,7 @@ def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
             classes = class_attr.split()
             if "starter-chip" not in classes:
                 return
+            self.starter_button_count += 1
             data_q = attributes.get("data-q")
             if data_q is None:
                 return
@@ -443,6 +445,7 @@ def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
 
     parser = _WorkflowButtonParser()
     parser.feed(html)
+    assert parser.starter_button_count == 1
     assert parser.starter_data_qs == [question]
     assert parser.workflow_data_qs == [question]
     assert parser.workflow_uses_example == [True]
