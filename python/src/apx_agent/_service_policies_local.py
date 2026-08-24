@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from ._guards import prompt_injection_heuristic
+from ._audit import hash_for_audit, set_audit_attrs
+from ._mlflow_tracing import current_active_span
 from ._policy import (
     ApprovalStore,
     PolicyAction,
@@ -139,6 +141,10 @@ class LocalServicePolicyAdapter:
         self.approvals = ApprovalStore()
         self.decisions: list[ServicePolicyDecision] = []
         self._context = dict(context) if context else {}
+        self._fingerprint = hash_for_audit(json.dumps(
+            config.model_dump(mode="json", exclude_none=True),
+            sort_keys=True,
+        ))
         self._evaluators = build_local_policy_evaluators(
             config,
             watchdog=watchdog,
@@ -186,7 +192,23 @@ class LocalServicePolicyAdapter:
             evaluator=lambda policy, current: self._evaluators[policy.name](current),
         )
         self.decisions.append(decision)
+        self._record_audit(decision, attachment)
         return decision
+
+    def _record_audit(self, decision: ServicePolicyDecision, attachment: ServicePolicyAttachment) -> None:
+        set_audit_attrs(
+            current_active_span(),
+            service_policy_name=decision.policy_name or attachment.name,
+            service_policy_kind=(
+                next((policy.kind.value for policy in attachment.policies if policy.name == decision.policy_name), None)
+            ),
+            service_policy_phase=decision.phase,
+            service_policy_rank=decision.rank,
+            service_policy_mode=decision.mode.value,
+            service_policy_action=decision.action,
+            service_policy_adapter=decision.adapter,
+            service_policy_fingerprint=self._fingerprint,
+        )
 
     def _make_gate_evaluator(
         self,
@@ -207,6 +229,7 @@ class LocalServicePolicyAdapter:
                 evaluator=lambda policy, service_event: self._evaluators[policy.name](service_event),
             )
             self.decisions.append(decision)
+            self._record_audit(decision, attachment)
             action = PolicyAction[decision.action]
             return PolicyResult(action=action, reason=decision.reason)
 

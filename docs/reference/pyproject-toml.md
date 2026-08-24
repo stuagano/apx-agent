@@ -1,5 +1,7 @@
 # pyproject.toml — [tool.apx.agent]
 
+Service Policy declarations are documented in [service-policies.md](service-policies.md).
+
 Every apx-agent app has a `pyproject.toml` with a `[tool.apx.agent]` block.
 This is the **app envelope**: it declares name, model, instructions, and where
 to find the agent code. It is not the agent itself — that lives in `agent.py`.

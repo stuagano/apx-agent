@@ -1,5 +1,8 @@
 # Configuration
 
+For declarative Service Policies, including local mirror and native plan/apply/
+verify behavior, see [service-policies.md](service-policies.md).
+
 **Python** — `[tool.apx.agent]` in `pyproject.toml`:
 
 ```toml

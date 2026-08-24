@@ -9851,6 +9851,36 @@ def _find_apx_specs(cwd: Path) -> list[Path]:
     return found
 
 
+def _service_policy_description(config: "AgentConfig") -> dict[str, Any]:
+    """Return safe Service Policy metadata without prompts or payloads."""
+    return {
+        "local_mode": config.service_policies.local_mode.value,
+        "native_mode": config.service_policies.native_mode.value,
+        "abac": config.service_policies.abac.model_dump(mode="json") if config.service_policies.abac else None,
+        "attachments": [
+            {
+                "name": attachment.name,
+                "target_type": attachment.target_type.value,
+                "target": attachment.target,
+                "mode": attachment.mode.value,
+                "policies": [
+                    {
+                        "name": policy.name,
+                        "kind": policy.kind.value,
+                        "builtin": policy.builtin.value if policy.builtin else None,
+                        "classifier": policy.classifier,
+                        "function": policy.function,
+                        "phase": policy.phase.value,
+                        "rank": policy.rank,
+                    }
+                    for policy in attachment.policies
+                ],
+            }
+            for attachment in config.service_policies.attachments
+        ],
+    }
+
+
 def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
     """Render what a YAML spec declares — pure-local, no agent resolution."""
     from ._yaml_spec import SpecValidationError, load_spec
@@ -9868,6 +9898,7 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
         "template": cfg.template,
         "tools": cfg.tools,
         "sub_agents": cfg.sub_agents,
+        "service_policies": _service_policy_description(cfg),
     }
     if fmt == "json":
         click.echo(json.dumps(payload, indent=2))
@@ -9889,6 +9920,21 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
         click.echo("  (none)")
     for t in cfg.tools:
         click.echo(f"  - {t.get('type', '?')}: {t.get('name', '')}".rstrip())
+    policy_info = _service_policy_description(cfg)
+    attachments = policy_info["attachments"]
+    click.echo(f"\nService Policies ({len(attachments)} attachments):")
+    if not attachments:
+        click.echo("  (none)")
+    for attachment in attachments:
+        click.echo(
+            f"  - {attachment['name']}: {attachment['target_type']} "
+            f"{attachment['target']} ({attachment['mode']})"
+        )
+        for policy in attachment["policies"]:
+            click.echo(
+                f"    - {policy['name']}: {policy['kind']} "
+                f"{policy['phase']} rank={policy['rank']}"
+            )
     if cfg.sub_agents:
         click.echo(f"\nSub-agents ({len(cfg.sub_agents)}):")
         for s in cfg.sub_agents:
