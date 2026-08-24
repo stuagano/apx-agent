@@ -343,6 +343,22 @@ def test_gate_allow_passes():
     gate("any_tool", {"a": 1})
 
 
+def test_gate_accepts_injected_evaluator_without_changing_default():
+    seen: list[PolicyEvent] = []
+
+    def injected(policies: list[Any], event: PolicyEvent) -> PolicyResult:
+        seen.append(event)
+        return PolicyResult(PolicyAction.DENY, "injected deny")
+
+    gate = PolicyGate(
+        [_const_policy(PolicyAction.ALLOW)],
+        evaluator=injected,
+    )
+    with pytest.raises(PermissionError, match="injected deny"):
+        gate("tool", {"x": 1})
+    assert seen[0].tool_name == "tool"
+
+
 def test_gate_deny_raises_permission_error_with_reason():
     gate = PolicyGate([_const_policy(PolicyAction.DENY, "not allowed here")])
     with pytest.raises(PermissionError, match="not allowed here"):
