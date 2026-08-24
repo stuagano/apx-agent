@@ -140,6 +140,41 @@ def _build_pyproject(config: "AgentConfig") -> str:
         lines.append(f"examples = {_toml_value(config.examples)}")
     lines.append("")
 
+    # [tool.apx.agent.service_policies] — omit the default empty declaration
+    # so existing generated projects remain byte-for-byte compatible.
+    service_policies = config.service_policies
+    if service_policies.attachments or service_policies.abac is not None or service_policies.native_mode.value != "off" or service_policies.local_mode.value != "mirror":
+        lines.append("[tool.apx.agent.service_policies]")
+        lines.append(f"local_mode = {_toml_value(service_policies.local_mode.value)}")
+        lines.append(f"native_mode = {_toml_value(service_policies.native_mode.value)}")
+        lines.append("")
+        if service_policies.abac is not None:
+            lines.append("[tool.apx.agent.service_policies.abac]")
+            lines.append(f"tags = {_toml_value_nested(dict(service_policies.abac.tags))}")
+            lines.append("")
+        for attachment in service_policies.attachments:
+            lines.append("[[tool.apx.agent.service_policies.attachments]]")
+            lines.append(f"name = {_toml_value(attachment.name)}")
+            lines.append(f"target_type = {_toml_value(attachment.target_type.value)}")
+            lines.append(f"target = {_toml_value(attachment.target)}")
+            lines.append(f"mode = {_toml_value(attachment.mode.value)}")
+            lines.append("")
+            for policy in attachment.policies:
+                lines.append("[[tool.apx.agent.service_policies.attachments.policies]]")
+                lines.append(f"name = {_toml_value(policy.name)}")
+                lines.append(f"kind = {_toml_value(policy.kind.value)}")
+                if policy.builtin is not None:
+                    lines.append(f"builtin = {_toml_value(policy.builtin.value)}")
+                if policy.classifier is not None:
+                    lines.append(f"classifier = {_toml_value(policy.classifier)}")
+                if policy.prompt is not None:
+                    lines.append(f"prompt = {_toml_value(policy.prompt)}")
+                if policy.function is not None:
+                    lines.append(f"function = {_toml_value(policy.function)}")
+                lines.append(f"phase = {_toml_value(policy.phase.value)}")
+                lines.append(f"rank = {policy.rank}")
+                lines.append("")
+
     # [tool.apx.agent.memory]
     if config.memory is not None:
         mem = config.memory

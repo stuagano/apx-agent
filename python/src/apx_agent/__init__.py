@@ -46,6 +46,7 @@ from ._models import (
     OnModelErrorCallback,
     OnToolErrorCallback,
     OutputGuardrailFn,
+    ServicePoliciesConfig,
     SessionBackendConfig,
 )
 
@@ -259,6 +260,34 @@ from ._policy import (
     PromptPolicy,
     evaluate_policies,
 )
+from ._service_policies import (
+    AbacSelector,
+    BuiltinServicePolicy,
+    LocalPolicyMode,
+    NativePolicyMode,
+    ServicePolicy,
+    ServicePolicyAction,
+    ServicePolicyAttachment,
+    ServicePolicyDecision,
+    ServicePolicyEvent,
+    ServicePolicyKind,
+    ServicePolicyMode,
+    ServicePolicyPhase,
+    ServicePolicyTarget,
+    ServicePolicyTargetType,
+    evaluate_ordered_service_policies,
+    ordered_policies,
+)
+from ._service_policies_local import LocalServicePolicyAdapter
+from ._service_policies_native import (
+    NativePolicyApplyReceipt,
+    NativePolicyCapability,
+    NativePolicyPlan,
+    NativePolicyVerification,
+    apply_native_policy_plan,
+    build_native_policy_plan,
+    verify_native_policy_plan,
+)
 
 # Cost tracking helpers
 from ._cost import CostBreakdown, cost_for_agent, cost_for_endpoint
@@ -431,6 +460,7 @@ __all__ = [
     "OnModelErrorCallback",
     "OnToolErrorCallback",
     "OutputGuardrailFn",
+    "ServicePoliciesConfig",
     "SessionBackendConfig",
     # Dependencies
     "Dependencies",
@@ -594,6 +624,30 @@ __all__ = [
     "PolicyResult",
     "PromptPolicy",
     "evaluate_policies",
+    "AbacSelector",
+    "BuiltinServicePolicy",
+    "LocalPolicyMode",
+    "NativePolicyMode",
+    "ServicePolicy",
+    "ServicePolicyAction",
+    "ServicePolicyAttachment",
+    "ServicePolicyDecision",
+    "ServicePolicyEvent",
+    "ServicePolicyKind",
+    "ServicePolicyMode",
+    "ServicePolicyPhase",
+    "ServicePolicyTarget",
+    "ServicePolicyTargetType",
+    "LocalServicePolicyAdapter",
+    "evaluate_ordered_service_policies",
+    "ordered_policies",
+    "NativePolicyApplyReceipt",
+    "NativePolicyCapability",
+    "NativePolicyPlan",
+    "NativePolicyVerification",
+    "apply_native_policy_plan",
+    "build_native_policy_plan",
+    "verify_native_policy_plan",
     # Cost tracking
     "CostBreakdown",
     "cost_for_agent",

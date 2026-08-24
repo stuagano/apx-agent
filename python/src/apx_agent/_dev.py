@@ -81,10 +81,13 @@ from ._apx_models import (
     WorkspaceContextResponse,
     WorkspaceFunctionsResponse,
     DiscoverTargetsResponse,
+    DiscoverTablesResponse,
+    DiscoverSampleResponse,
     DiscoverWireAgentRequest,
     DiscoverWireResponse,
     DiscoverWireToolRequest,
 )
+from ._discover_data import list_discover_tables, sample_discover_table
 from ._models import AgentContext, AgentTool
 from ._topology import build_topology, inspect_node, route_highlight_from_spans
 from ._ui_chat import (
@@ -126,10 +129,15 @@ from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_prob
 logger = logging.getLogger(__name__)
 
 
-def _edit_panel_inventory(ctx: AgentContext | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+class _EditPanelInventory(NamedTuple):
+    schemas: list[dict[str, Any]]
+    agents: list[dict[str, Any]]
+
+
+def _edit_panel_inventory(ctx: AgentContext | None) -> _EditPanelInventory:
     """Return live local-tool schemas and remote-agent descriptors for Edit."""
     if ctx is None:
-        return [], []
+        return _EditPanelInventory([], [])
     schemas: list[dict[str, Any]] = []
     agents: list[dict[str, Any]] = []
     for tool in ctx.tools or []:
@@ -142,7 +150,7 @@ def _edit_panel_inventory(ctx: AgentContext | None) -> tuple[list[dict[str, Any]
             agents.append({**item, "url": tool.sub_agent_url})
         else:
             schemas.append(item)
-    return schemas, agents
+    return _EditPanelInventory(schemas, agents)
 
 
 # ── Response contracts for the read-only MEMORY + CONVERSATIONS routes ───────
@@ -563,7 +571,12 @@ def _lookup_experiment_name(experiment_id: str) -> str | None:
         return None
 
 
-def _latest_buffered_spans() -> tuple[str | None, list[dict]]:
+class _BufferedSpans(NamedTuple):
+    trace_id: str | None
+    spans: list[dict[str, Any]]
+
+
+def _latest_buffered_spans() -> _BufferedSpans:
     """Return ``(trace_id, spans)`` for the newest non-warmup buffered trace."""
     from ._trace_store import WARMUP_SPAN_NAME, get as _ts_get, list_recent as _ts_list
 
@@ -572,8 +585,8 @@ def _latest_buffered_spans() -> tuple[str | None, list[dict]]:
         if any((s.get("name") or "") == WARMUP_SPAN_NAME for s in spans):
             continue
         if spans:
-            return tid, spans
-    return None, []
+            return _BufferedSpans(tid, spans)
+    return _BufferedSpans(None, [])
 
 
 def _is_message_heavy(obj: Any) -> bool:
@@ -2538,6 +2551,55 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         apis = await _asyncio.to_thread(_run)
         return {"apis": apis}
+
+    @router.get("/_apx/discover/tables", response_model=DiscoverTablesResponse)
+    async def discover_tables(request: Request, catalog: str, schema: str) -> Any:
+        """List bounded table metadata using the signed-in user's grants."""
+        import asyncio as _asyncio
+
+        from ._defaults import _ws_prefer_obo
+
+        ws: WorkspaceClient = _ws_prefer_obo(request)
+        try:
+            tables = await _asyncio.to_thread(list_discover_tables, ws, catalog, schema)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not list table metadata: {exc}") from exc
+        return {"catalog": catalog, "schema_name": schema, "tables": tables}
+
+    @router.get("/_apx/discover/sample", response_model=DiscoverSampleResponse)
+    async def discover_sample(
+        request: Request,
+        catalog: str,
+        schema: str,
+        table: str,
+        warehouse_id: str | None = None,
+        limit: int = 20,
+    ) -> Any:
+        """Return a bounded SQL preview under the caller's OBO identity."""
+        import asyncio as _asyncio
+
+        from fastapi.encoders import jsonable_encoder
+
+        from ._defaults import _ws_prefer_obo
+
+        ws: WorkspaceClient = _ws_prefer_obo(request)
+        try:
+            preview = await _asyncio.to_thread(
+                sample_discover_table,
+                ws,
+                catalog,
+                schema,
+                table,
+                warehouse_id=warehouse_id,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not sample table: {exc}") from exc
+        return jsonable_encoder(preview)
 
     @router.get("/_apx/discover/targets", response_model=DiscoverTargetsResponse)
     async def discover_targets() -> Any:

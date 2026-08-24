@@ -817,6 +817,48 @@ def agents() -> None:
     """Create, run, deploy, and manage agents."""
 
 
+@agents.command("policies")
+@click.argument("spec_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("action", type=click.Choice(("plan", "apply", "verify")))
+@click.option("--profile", default=None, help="Explicit Databricks profile for apply/verify.")
+def service_policies(spec_path: Path, action: str, profile: str | None) -> None:
+    """Plan, apply, or verify Service Policies from SPEC_PATH.
+
+    PLAN is side-effect-free. APPLY and VERIFY require an explicit profile and
+    use only a verified native transport; unsupported Beta surfaces fail closed.
+    """
+    from ._service_policies_native import (
+        UnavailableNativePolicyTransport,
+        apply_native_policy_plan,
+        build_native_policy_plan,
+        verify_native_policy_plan,
+    )
+    from ._yaml_spec import load_spec
+
+    if action != "plan" and not profile:
+        raise click.UsageError("--profile <name> is required for apply and verify")
+    try:
+        config = load_spec(spec_path, strict=True)
+        plan = build_native_policy_plan(config.service_policies)
+        if action == "plan":
+            click.echo(json.dumps({
+                "native_mode": plan.native_mode.value,
+                "operations": plan.operations,
+                "unsupported": plan.unsupported,
+                "declaration_fingerprint": plan.declaration_fingerprint,
+            }, indent=2, sort_keys=True))
+            return
+        transport = UnavailableNativePolicyTransport()
+        if action == "apply":
+            receipt = apply_native_policy_plan(plan, transport=transport, profile=profile or "")
+            click.echo(json.dumps(receipt.__dict__, indent=2, sort_keys=True, default=str))
+        else:
+            verification = verify_native_policy_plan(plan, transport=transport, profile=profile or "")
+            click.echo(json.dumps(verification.__dict__, indent=2, sort_keys=True, default=str))
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @main.group(cls=_ApxGroup)
 def traces() -> None:
     """Inspect and export MLflow traces."""
@@ -9809,6 +9851,36 @@ def _find_apx_specs(cwd: Path) -> list[Path]:
     return found
 
 
+def _service_policy_description(config: "AgentConfig") -> dict[str, Any]:
+    """Return safe Service Policy metadata without prompts or payloads."""
+    return {
+        "local_mode": config.service_policies.local_mode.value,
+        "native_mode": config.service_policies.native_mode.value,
+        "abac": config.service_policies.abac.model_dump(mode="json") if config.service_policies.abac else None,
+        "attachments": [
+            {
+                "name": attachment.name,
+                "target_type": attachment.target_type.value,
+                "target": attachment.target,
+                "mode": attachment.mode.value,
+                "policies": [
+                    {
+                        "name": policy.name,
+                        "kind": policy.kind.value,
+                        "builtin": policy.builtin.value if policy.builtin else None,
+                        "classifier": policy.classifier,
+                        "function": policy.function,
+                        "phase": policy.phase.value,
+                        "rank": policy.rank,
+                    }
+                    for policy in attachment.policies
+                ],
+            }
+            for attachment in config.service_policies.attachments
+        ],
+    }
+
+
 def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
     """Render what a YAML spec declares — pure-local, no agent resolution."""
     from ._yaml_spec import SpecValidationError, load_spec
@@ -9826,6 +9898,7 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
         "template": cfg.template,
         "tools": cfg.tools,
         "sub_agents": cfg.sub_agents,
+        "service_policies": _service_policy_description(cfg),
     }
     if fmt == "json":
         click.echo(json.dumps(payload, indent=2))
@@ -9847,6 +9920,21 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
         click.echo("  (none)")
     for t in cfg.tools:
         click.echo(f"  - {t.get('type', '?')}: {t.get('name', '')}".rstrip())
+    policy_info = _service_policy_description(cfg)
+    attachments = policy_info["attachments"]
+    click.echo(f"\nService Policies ({len(attachments)} attachments):")
+    if not attachments:
+        click.echo("  (none)")
+    for attachment in attachments:
+        click.echo(
+            f"  - {attachment['name']}: {attachment['target_type']} "
+            f"{attachment['target']} ({attachment['mode']})"
+        )
+        for policy in attachment["policies"]:
+            click.echo(
+                f"    - {policy['name']}: {policy['kind']} "
+                f"{policy['phase']} rank={policy['rank']}"
+            )
     if cfg.sub_agents:
         click.echo(f"\nSub-agents ({len(cfg.sub_agents)}):")
         for s in cfg.sub_agents:

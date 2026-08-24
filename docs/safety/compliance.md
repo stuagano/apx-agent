@@ -173,3 +173,8 @@ agent = Agent(
 | `compose(*callbacks)` | Chain N callbacks. Short-circuits on the first non-`None` return (for `input_guardrails`-style hooks) or first exception (for `before_*` hooks). |
 
 These are runtime helpers, not a policy engine. Compliance posture (cross-domain rules, ontology, violation tracking, owner accountability) lives in [databricks-watchdog](https://github.com/stuagano/databricks-watchdog) — wire `WatchdogGuard` next to these for the full layered story.
+## Service Policy integration
+
+The portable Service Policy declaration and its fail-closed semantics are
+documented in [reference/service-policies.md](../reference/service-policies.md).
+It complements, rather than replaces, Watchdog and Unity Catalog governance.

@@ -630,10 +630,12 @@ class PolicyGate:
         *,
         approval_store: ApprovalStore | None = None,
         context: dict[str, Any] | None = None,
+        evaluator: Callable[[Sequence[Any], PolicyEvent], PolicyResult] | None = None,
     ) -> None:
         self.policies = list(policies)
         self.approvals = approval_store if approval_store is not None else ApprovalStore()
         self._context = dict(context) if context else {}
+        self._evaluator = evaluator or evaluate_policies
         # Accumulated set_labels from policy results; the embedding app
         # reads + clears between turns to persist onto the session.
         self.labels: dict[str, str] = {}
@@ -671,7 +673,7 @@ class PolicyGate:
             arguments=arguments,
             context=self._context,
         )
-        result = evaluate_policies(self.policies, event)
+        result = self._evaluator(self.policies, event)
         self.labels.update(result.set_labels)
 
         if result.action == PolicyAction.DENY:

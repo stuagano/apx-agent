@@ -8,6 +8,7 @@
 - [get-started/migration.md](get-started/migration.md) — **Coming from ADK or OpenAI Agents SDK?** concept-mapping table and translation guide
 - [get-started/cli.md](get-started/cli.md) — full CLI reference (`apx-agent agents scaffold`, `apx-agent agents run`, `apx-agent agents deploy`, `apx-agent eval`, ...)
 - [get-started/dev-ui.md](get-started/dev-ui.md) — built-in tooling at `/_apx/*` (chat, traces, topology, probe)
+- [discovery-data-audit-2026-08-24.md](discovery-data-audit-2026-08-24.md) — Discover Data audit and delivered table/schema sampling contract
 
 ## Agents
 
@@ -70,6 +71,7 @@
 ## Reference
 
 - [reference/configuration.md](reference/configuration.md) — full `[tool.apx.agent]` field reference
+- [reference/service-policies.md](reference/service-policies.md) — portable local/native Service Policy declaration
 - [reference/pyproject-toml.md](reference/pyproject-toml.md) — `pyproject.toml` shape
 - [reference/cost-tracking.md](reference/cost-tracking.md) — `cost_for_agent`, `apx-agent agents cost` CLI
 - [reference/ecosystem.md](reference/ecosystem.md) — ecosystem integrations

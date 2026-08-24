@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "source": "https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/create-service-policy",
+  "native_apply": false,
+  "native_verify": false,
+  "abac_attachment": false,
+  "targets": {
+    "mcp_service": {
+      "kinds": ["builtin", "llm_judge", "sql"],
+      "phases": ["on_call", "on_result"],
+      "ask_phases": ["on_call"]
+    },
+    "model_service": {
+      "kinds": ["builtin", "llm_judge", "sql"],
+      "phases": ["on_call", "on_result"],
+      "ask_phases": []
+    },
+    "model_provider_service": {
+      "kinds": ["builtin", "llm_judge", "sql"],
+      "phases": ["on_call", "on_result"],
+      "ask_phases": []
+    }
+  }
+}

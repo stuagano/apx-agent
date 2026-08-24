@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ._service_policies import ServicePoliciesConfig
+
 if TYPE_CHECKING:
     from ._agents import BaseAgent
 
@@ -321,6 +323,8 @@ class AgentConfig(BaseModel):
     declarative example *backend* config)."""
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     """Built-in guard configuration — see ``[tool.apx.agent.guardrails]``."""
+    service_policies: ServicePoliciesConfig = Field(default_factory=ServicePoliciesConfig)
+    """Portable Service Policy declaration and native/local lifecycle mode."""
     template: dict[str, Any] | None = None
     """Template-as-config: ``{ name = "data", catalog = "main", schema = "sales" }``.
 

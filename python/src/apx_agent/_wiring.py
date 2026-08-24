@@ -266,6 +266,73 @@ def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
     setattr(agent, "_apx_config_guards_applied", True)
 
 
+def _service_policies_configured(config: AgentConfig) -> bool:
+    """True when local Service Policy mirroring is declared and enabled."""
+    return config.service_policies.local_mode.value == "mirror" and bool(
+        config.service_policies.attachments
+    )
+
+
+def _attach_service_policies_to_leaf(
+    leaf: BaseAgent,
+    adapter: Any,
+    *,
+    compose: Any,
+) -> bool:
+    """Attach one shared local policy adapter to a leaf exactly once."""
+    if getattr(leaf, "_apx_service_policies_applied", False):
+        return False
+    attached = False
+    if hasattr(leaf, "_input_guardrails"):
+        getattr(leaf, "_input_guardrails").append(adapter.for_input())
+        attached = True
+    if hasattr(leaf, "_output_guardrails"):
+        getattr(leaf, "_output_guardrails").append(adapter.for_output())
+        attached = True
+    if hasattr(leaf, "_before_tool"):
+        current = getattr(leaf, "_before_tool", None)
+        setattr(leaf, "_before_tool", compose(current, adapter.for_tool()) if current is not None else adapter.for_tool())
+        attached = True
+    if hasattr(leaf, "_after_tool"):
+        current = getattr(leaf, "_after_tool", None)
+        setattr(leaf, "_after_tool", compose(current, adapter.for_tool_result()) if current is not None else adapter.for_tool_result())
+        attached = True
+    if hasattr(leaf, "_before_model"):
+        current = getattr(leaf, "_before_model", None)
+        setattr(leaf, "_before_model", compose(current, adapter.for_model()) if current is not None else adapter.for_model())
+        attached = True
+    if attached:
+        setattr(leaf, "_apx_service_policies_applied", True)
+        setattr(leaf, "_apx_service_policy_adapter", adapter)
+    return attached
+
+
+def apply_config_service_policies(agent: BaseAgent, config: AgentConfig) -> None:
+    """Apply local Service Policy hooks through the shared runtime seam."""
+    if getattr(agent, "_apx_service_policies_applied", False):
+        return
+    if not _service_policies_configured(config):
+        setattr(agent, "_apx_service_policies_applied", True)
+        return
+
+    from ._guards import compose  # noqa: PLC0415
+    from ._service_policies_local import LocalServicePolicyAdapter  # noqa: PLC0415
+
+    adapter = LocalServicePolicyAdapter(config.service_policies)
+    targets = _collect_guardrail_targets(agent)
+    attached_any = False
+    for leaf in targets:
+        if _attach_service_policies_to_leaf(leaf, adapter, compose=compose):
+            attached_any = True
+    if not attached_any:
+        raise ValueError(
+            f"[tool.apx.agent.service_policies] declared on {type(agent).__name__} but "
+            "no eligible local agent leaf could receive policy hooks."
+        )
+    setattr(agent, "_apx_service_policies_applied", True)
+    setattr(agent, "_apx_service_policy_adapter", adapter)
+
+
 def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None:
     """Wire ``[tool.apx.agent] vector_search_index`` into the agent as a tool.
 
@@ -343,6 +410,7 @@ def finalize_agent(
         # E3c: attach declarative guards (idempotent; warns on composition
         # roots lacking the guard hook attributes).
         apply_config_guardrails(agent, config)
+        apply_config_service_policies(agent, config)
 
     # Local import: _tool_config lazily imports _resolve_env_var from this module;
     # a top-level import here would make that cycle unconditional at load time.

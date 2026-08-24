@@ -116,6 +116,17 @@ class AuditAttrs:
     WATCHDOG_REASON = "apx.watchdog.reason"
     WATCHDOG_DOMAIN = "apx.watchdog.domain"
 
+    # Service Policy decisions — names, modes, and fingerprints only; never
+    # raw prompts, SQL bodies, arguments, or model payloads.
+    SERVICE_POLICY_NAME = "apx.service_policy.name"
+    SERVICE_POLICY_KIND = "apx.service_policy.kind"
+    SERVICE_POLICY_PHASE = "apx.service_policy.phase"
+    SERVICE_POLICY_RANK = "apx.service_policy.rank"
+    SERVICE_POLICY_MODE = "apx.service_policy.mode"
+    SERVICE_POLICY_ACTION = "apx.service_policy.action"
+    SERVICE_POLICY_ADAPTER = "apx.service_policy.adapter"
+    SERVICE_POLICY_FINGERPRINT = "apx.service_policy.fingerprint"
+
     # Deploy / version correlation (issue #404). Stamped from the container
     # env (APX_MODEL_VERSION / APX_GIT_SHA — injected at deploy time) so
     # `canary analyze --target apps` can attribute traces per version.
@@ -167,6 +178,14 @@ _KWARG_TO_KEY: dict[str, str] = {
     "watchdog_policy_id": AuditAttrs.WATCHDOG_POLICY_ID,
     "watchdog_reason": AuditAttrs.WATCHDOG_REASON,
     "watchdog_domain": AuditAttrs.WATCHDOG_DOMAIN,
+    "service_policy_name": AuditAttrs.SERVICE_POLICY_NAME,
+    "service_policy_kind": AuditAttrs.SERVICE_POLICY_KIND,
+    "service_policy_phase": AuditAttrs.SERVICE_POLICY_PHASE,
+    "service_policy_rank": AuditAttrs.SERVICE_POLICY_RANK,
+    "service_policy_mode": AuditAttrs.SERVICE_POLICY_MODE,
+    "service_policy_action": AuditAttrs.SERVICE_POLICY_ACTION,
+    "service_policy_adapter": AuditAttrs.SERVICE_POLICY_ADAPTER,
+    "service_policy_fingerprint": AuditAttrs.SERVICE_POLICY_FINGERPRINT,
     "model_version": AuditAttrs.MODEL_VERSION,
     "git_sha": AuditAttrs.GIT_SHA,
 }
