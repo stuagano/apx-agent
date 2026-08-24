@@ -575,7 +575,7 @@ class TopologyEdge(BaseModel):
 
 class TopologyResponse(BaseModel):
     """Success shape of ``GET /_apx/topology.json`` — the agent graph the
-    react-flow topology UI renders: ``{rootId, agentName, nodes, edges}``.
+    react-flow topology UI renders: ``{rootId, agentName, nodes, edges, workflows}``.
 
     ``extra="allow"`` keeps the graph contract forward-compatible with
     :func:`apx_agent.annotate_topology`, which can add application-owned
@@ -594,6 +594,7 @@ class TopologyResponse(BaseModel):
     agentName: str
     nodes: list[TopologyNode]
     edges: list[TopologyEdge]
+    workflows: list[dict[str, Any]] | None = None
 
 
 class TopologyTracingResponse(BaseModel):

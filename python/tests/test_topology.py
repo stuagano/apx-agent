@@ -158,8 +158,10 @@ def test_build_topology_labels_peer_env_ref(monkeypatch) -> None:
     nodes = {n["id"]: n for n in topo["nodes"]}
     sub = nodes["endpoint:$APX_PEER_MCP_DATA_INSPECTOR_URL"]
     assert sub["label"] == "mcp-data-inspector"
-    assert "$APX_PEER_MCP_DATA_INSPECTOR_URL" in (sub["description"] or "")
-    assert "mcp-data-inspector-7474660064938119" in (sub["description"] or "")
+    description = sub["description"]
+    assert isinstance(description, str)
+    assert "$APX_PEER_MCP_DATA_INSPECTOR_URL" in description
+    assert "mcp-data-inspector-7474660064938119" in description
 
 
 def test_build_topology_skips_materialized_sub_agent_tool(monkeypatch) -> None:
@@ -336,6 +338,31 @@ def test_annotate_topology_rejects_non_graph_entries() -> None:
         annotate_topology({"nodes": "not-a-list", "edges": []})
 
 
+def test_annotate_topology_copies_workflows_without_mutating_input() -> None:
+    base = {"nodes": [], "edges": []}
+
+    annotated = annotate_topology(base, workflows=[{"id": "one", "route": ["a"]}])
+
+    assert annotated["workflows"] == [{"id": "one", "route": ["a"]}]
+    assert "workflows" not in base
+
+
+def test_topology_response_accepts_graph_only_and_workflow_metadata() -> None:
+    graph = {
+        "rootId": "agent:root",
+        "agentName": "agent",
+        "nodes": [],
+        "edges": [],
+    }
+
+    assert TopologyResponse.model_validate(graph).workflows is None
+    response = TopologyResponse.model_validate({
+        **graph,
+        "workflows": [{"id": "pricing-review", "route": ["intelligence", "calibrate"]}],
+    })
+    assert response.workflows == [{"id": "pricing-review", "route": ["intelligence", "calibrate"]}]
+
+
 # ---------------------------------------------------------------------------
 # build_topology / inspect_node — in-process agent-tree topology
 #
@@ -367,6 +394,44 @@ def _uc_tool(name: str, uc_full_name: str):
     _fn.__qualname__ = name
     attach_resources(_fn, [ResourceSpec("uc_function", uc_full_name)])
     return _fn
+
+
+def test_build_topology_includes_declared_workflows_without_changing_graph() -> None:
+    agent = Agent(tools=[], instructions="You are helpful.")
+    config = AgentConfig(
+        name="pricing-agent",
+        model="databricks-claude-sonnet-4-6",
+        instructions="You are helpful.",
+        workflows=[{
+            "id": "pricing-review",
+            "title": "Pricing review",
+            "question": "How is pricing positioned?",
+            "purpose": "Compare the product with peers.",
+            "route": ["intelligence", "calibrate"],
+        }],
+    )
+    ctx = AgentContext(
+        config=config,
+        tools=[],
+        card=AgentCard(name="pricing-agent", description=""),
+        agent=agent,
+    )
+
+    topology = build_topology(ctx)
+    baseline = build_topology(_make_ctx(agent, name="pricing-agent"))
+
+    assert topology["workflows"] == [{
+        "id": "pricing-review",
+        "title": "Pricing review",
+        "question": "How is pricing positioned?",
+        "purpose": "Compare the product with peers.",
+        "route": ["intelligence", "calibrate"],
+        "handoffs": [],
+        "outcome": "",
+        "follow_ups": [],
+    }]
+    assert topology["nodes"] == baseline["nodes"]
+    assert topology["edges"] == baseline["edges"]
 
 
 def test_build_topology_llm_agent_with_uc_function_tools() -> None:
@@ -455,7 +520,9 @@ def test_inspect_node_returns_agent_tool_and_uc_function_details() -> None:
     assert agent_detail["agent"]["subAgentCount"] == 0
     assert agent_detail["agent"]["model"] == "databricks-claude-sonnet-4-6"
     assert agent_detail["agent"]["maxIterations"] == 7
-    assert "Route" in (agent_detail["agent"]["instructions"] or "")
+    instructions = agent_detail["agent"]["instructions"]
+    assert isinstance(instructions, str)
+    assert "Route" in instructions
 
     # Tool detail
     tool_detail = inspect_node(ctx, "tool:agent:root:classify_intent")
