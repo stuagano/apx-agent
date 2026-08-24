@@ -85,17 +85,13 @@ declaration composes into a fleet without changing how governance works.
   credentials. Data access stays user-scoped per hop; model access is app-scoped. See
   [multi-agent/a2a.md](multi-agent/a2a.md) for the auth path and this caveat in full (#633).
 
-This is precisely the gap the platform leaves open. Databricks
-[Agent Services](https://docs.databricks.com/aws/en/ai-gateway/agent-services) (Beta) lets you
-"register agents from any team in one place, browse and discover them alongside your tables,
-models, and functions, and set permissions with the same grants that protect your other Unity
-Catalog assets" — registration, discovery, and UC permissions. But its own documentation states:
-"Runtime invocation is not available. Agents cannot be called through a registered agent
-service." apx-agent is the **runtime** layer over that governance surface: registered or not, a
-declared agent can actually *call* another agent, across apps, with tool access governed per hop.
-The two compose
-— register the fleet in Agent Services for org-wide discovery; let apx-agent's A2A make the
-agents talk.
+This is adjacent to Databricks
+[Agent Services](https://docs.databricks.com/aws/en/ai-gateway/agent-services) (Beta), a
+registration, discovery, and governance surface. Its current documentation is transitional:
+one section describes `EXECUTE` invocation while the limitations section says runtime invocation
+is unavailable. Do not assume that registering an agent creates a supported runtime call path.
+apx-agent's A2A runtime is separate; the two may compose where the workspace release supports
+both paths, but verify runtime invocation before making it a customer promise.
 
 Two examples ship this end-to-end: `data-triage-agent` (a 6-step `SequentialAgent` delegating to
 a `data-inspector` sub-agent over A2A) and `customer_triage` (a `HandoffAgent` over four

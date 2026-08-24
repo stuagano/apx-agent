@@ -18,7 +18,7 @@ Why Postgres for these:
 - **pgvector in SQL.** Cosine ranking via `embedding <=> :q::vector` runs server-side. No client-side scoring loop and no extra Vector Search index to keep in sync with the source-of-truth table.
 - **Per-user OAuth.** Lakebase mints short-lived database credentials per request via `databricks database generate-database-credential`, so the calling user's identity threads through to Postgres-level row-level security if you wire it.
 
-For memory specifically, `ManagedMemoryStore` (UC managed memory, GA) is a no-extra-infra alternative when the semantic-recall workload doesn't justify an always-on Lakebase instance — see [sessions-and-memory.md](sessions-and-memory.md). It covers long-term memory only; there's no managed equivalent for session/conversation history or few-shot examples.
+For memory specifically, `ManagedMemoryStore` (UC-managed memory, Beta) is a no-extra-infra alternative when the semantic-recall workload doesn't justify an always-on Lakebase instance — see [sessions-and-memory.md](sessions-and-memory.md). Preview availability and UC memory-store privileges are required. Memory scopes are not access-control boundaries, so derive principal/scope values from trusted identity. It covers long-term memory only; there's no managed equivalent for session/conversation history or few-shot examples.
 
 ## 2. One-time provisioning
 

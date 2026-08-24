@@ -1,12 +1,11 @@
 /**
  * Databricks Managed MCP integration — generate URLs and client configs.
  *
- * Databricks Managed MCP (Public Preview, Jan 2026) exposes Unity Catalog
- * functions, Genie spaces, and Vector Search indexes as MCP servers, hosted
- * by the platform. Anything an apx-agent declares as a Mosaic AI resource
- * becomes a Managed MCP endpoint automatically — there's no per-agent MCP
- * server to deploy, no app.yaml to maintain, no naming conventions for
- * discovery.
+ * Databricks Managed MCP (Public Preview) exposes supported Unity Catalog
+ * functions, Genie Agents, and AI Search indexes as MCP servers hosted by the
+ * platform. This helper generates endpoint configuration for declared
+ * resources; it does not provision resources, enable preview features, grant
+ * permissions, or make unsupported resources available.
  *
  * This module provides two helpers:
  *
@@ -20,8 +19,9 @@
  *
  * URL patterns (from the Databricks managed MCP docs):
  *   - UC function:   `/api/2.0/mcp/functions/{catalog}/{schema}/{function_name}`
- *   - Genie space:   `/api/2.0/mcp/genie/{genie_space_id}`
- *   - Vector Search: `/api/2.0/mcp/vector-search/{catalog}/{schema}/{index_name}`
+ *   - Genie Agent:   `/api/2.0/mcp/genie/{genie_space_id}`
+ *   - AI Search (legacy Vector Search path):
+ *     `/api/2.0/mcp/vector-search/{catalog}/{schema}/{index_name}`
  *
  * Resources outside those three kinds (serving endpoints, SQL warehouses,
  * UC tables) don't have a corresponding Managed MCP server today — those
@@ -81,6 +81,8 @@ const KIND_TO_PATH: Record<string, { template: string; scope: string }> = {
     template: '/api/2.0/mcp/genie/{0}',
     scope: 'genie',
   },
+  // Databricks now calls this AI Search; the legacy path and scope remain
+  // supported for compatibility.
   vector_search_index: {
     template: '/api/2.0/mcp/vector-search/{0}/{1}/{2}',
     scope: 'vector-search',
