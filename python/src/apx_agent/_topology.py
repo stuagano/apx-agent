@@ -496,13 +496,15 @@ def _resource_url_for(kind: str, identifier: str, workspace_host: str | None) ->
 def _serialize_workflows(
     workflows: Sequence[Mapping[str, Any] | "ExampleWorkflow"],
 ) -> list[dict[str, Any]]:
-    """Serialize declared workflows or copy application-owned annotations."""
+    """Serialize declared workflows through the public workflow contract."""
     from ._models import ExampleWorkflow
 
     return [
-        workflow.model_dump(mode="json")
-        if isinstance(workflow, ExampleWorkflow)
-        else dict(workflow)
+        (
+            workflow
+            if isinstance(workflow, ExampleWorkflow)
+            else ExampleWorkflow.model_validate(workflow)
+        ).model_dump(mode="json")
         for workflow in workflows
     ]
 

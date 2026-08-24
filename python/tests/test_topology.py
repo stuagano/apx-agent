@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from apx_agent import (
     AgentNode,
@@ -340,11 +341,37 @@ def test_annotate_topology_rejects_non_graph_entries() -> None:
 
 def test_annotate_topology_copies_workflows_without_mutating_input() -> None:
     base = {"nodes": [], "edges": []}
+    workflow = {
+        "id": "one",
+        "title": "One",
+        "question": "What is one?",
+        "purpose": "Explain one.",
+        "route": ["a"],
+    }
 
-    annotated = annotate_topology(base, workflows=[{"id": "one", "route": ["a"]}])
+    annotated = annotate_topology(base, workflows=[workflow])
 
-    assert annotated["workflows"] == [{"id": "one", "route": ["a"]}]
+    assert annotated["workflows"] == [{
+        **workflow,
+        "handoffs": [],
+        "outcome": "",
+        "follow_ups": [],
+    }]
     assert "workflows" not in base
+
+
+def test_annotate_topology_rejects_unsafe_workflow_metadata() -> None:
+    with pytest.raises(ValidationError, match="authorization"):
+        annotate_topology({"nodes": [], "edges": []}, workflows=[{
+            "id": "one",
+            "title": "One",
+            "question": "What is one?",
+            "purpose": "Explain one.",
+            "route": ["a"],
+            "authorization": "Bearer secret",
+            "headers": {"Authorization": "Bearer secret"},
+            "tool_args": {"query": "sensitive"},
+        }])
 
 
 def test_topology_response_accepts_graph_only_and_workflow_metadata() -> None:
