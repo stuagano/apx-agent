@@ -535,6 +535,31 @@ export {
 } from './prompt-assembly.js';
 export type { AssembleContextOptions } from './prompt-assembly.js';
 
+// Service Policies — shared declarations, validation, and local decision ordering
+export {
+  validateServicePolicies,
+  orderedPolicies,
+  evaluateOrderedServicePolicies,
+} from './service-policies.js';
+export type {
+  ServicePolicyTargetType,
+  ServicePolicyKind,
+  BuiltinServicePolicy,
+  ServicePolicyPhase,
+  ServicePolicyMode,
+  LocalPolicyMode,
+  NativePolicyMode,
+  ServicePolicyAction,
+  ServicePolicy,
+  ServicePolicyAttachment,
+  AbacSelector,
+  ServicePoliciesConfig,
+  ServicePolicyEvent,
+  ServicePolicyDecision,
+  ServicePolicyEvaluationResult,
+  ServicePolicyEvaluator,
+} from './service-policies.js';
+
 // Example mining — extract few-shot examples from session history
 export { mineExamples, pairTurns } from './example-mining.js';
 export type {
