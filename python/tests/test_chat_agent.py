@@ -412,7 +412,6 @@ def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
 
     html = _render_landing(ctx)
 
-    assert html.count('class="starter-chip workflow-chip"') == 1
     assert escape(question) in html
     assert "<b>position</b>" not in html
     assert "<script>alert(\"x\")</script>" not in html
@@ -420,19 +419,32 @@ def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
     class _WorkflowButtonParser(HTMLParser):
         def __init__(self) -> None:
             super().__init__()
-            self.data_q: str | None = None
-            self.uses_example = False
+            self.starter_data_qs: list[str] = []
+            self.workflow_data_qs: list[str] = []
+            self.workflow_uses_example: list[bool] = []
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
             attributes = dict(attrs)
             class_attr = attributes.get("class")
-            if tag == "button" and class_attr is not None and "workflow-chip" in class_attr.split():
-                self.data_q = attributes.get("data-q")
-                self.uses_example = attributes.get("onclick") == "useExample(this)"
+            if tag != "button" or class_attr is None:
+                return
+            classes = class_attr.split()
+            if "starter-chip" not in classes:
+                return
+            data_q = attributes.get("data-q")
+            if data_q is None:
+                return
+            self.starter_data_qs.append(data_q)
+            if "workflow-chip" in classes:
+                self.workflow_data_qs.append(data_q)
+                self.workflow_uses_example.append(
+                    attributes.get("onclick") == "useExample(this)"
+                )
 
     parser = _WorkflowButtonParser()
     parser.feed(html)
-    assert parser.uses_example
-    assert parser.data_q == question
+    assert parser.starter_data_qs == [question]
+    assert parser.workflow_data_qs == [question]
+    assert parser.workflow_uses_example == [True]
     assert "&lt;Pricing review&gt;" in html
     assert "Compare &lt;b&gt;peers&lt;/b&gt;." in html
