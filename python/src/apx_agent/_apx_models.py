@@ -441,6 +441,43 @@ class WorkspaceApisResponse(BaseModel):
     apis: list[WorkspaceApiInfo]
 
 
+class DiscoverColumnInfo(BaseModel):
+    """One column in a Discover table metadata response."""
+
+    name: str
+    type: str
+    nullable: bool | None = None
+    comment: str | None = None
+
+
+class DiscoverTableInfo(BaseModel):
+    """One table in ``GET /_apx/discover/tables``."""
+
+    name: str
+    full_name: str
+    table_type: str = ""
+    comment: str | None = None
+    columns: list[DiscoverColumnInfo] = []
+    row_count: int | None = None
+
+
+class DiscoverTablesResponse(BaseModel):
+    """Shape of ``GET /_apx/discover/tables``."""
+
+    catalog: str
+    schema_name: str
+    tables: list[DiscoverTableInfo]
+
+
+class DiscoverSampleResponse(BaseModel):
+    """Shape of ``GET /_apx/discover/sample``."""
+
+    table: str
+    columns: list[str]
+    rows: list[dict[str, Any]]
+    truncated: bool
+
+
 class DiscoverTargetInfo(BaseModel):
     """One agent assignment from ``GET /_apx/discover/targets``."""
 

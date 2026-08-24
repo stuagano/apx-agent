@@ -60,6 +60,21 @@ def render_discover_ui() -> str:
     #wire-banner.show {{ display:block; }}
     #wire-banner a {{ color:#86efac; }}
     #target-bar {{ margin-bottom:16px; }}
+    .data-controls {{ background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }}
+    .data-controls select {{ min-width:150px; }}
+    .data-tables {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:8px; }}
+    .data-table {{ background:#0d0d0d; border:1px solid var(--border); border-radius:8px; padding:12px; }}
+    .data-table h3 {{ margin:0 0 4px; font-size:13px; }}
+    .data-table .columns {{ display:flex; flex-wrap:wrap; gap:4px; margin:8px 0; }}
+    .data-table .column {{ font-size:10px; color:#aaa; background:#161616; border:1px solid #2a2a2a; border-radius:4px; padding:2px 5px; }}
+    .data-table .column span {{ color:#666; }}
+    .data-inspector {{ margin-top:14px; background:#0d0d0d; border:1px solid var(--accent-border); border-radius:8px; padding:14px; }}
+    .data-inspector h3 {{ margin:0 0 4px; font-size:14px; }}
+    .data-preview {{ overflow:auto; max-height:360px; border:1px solid #222; border-radius:6px; }}
+    .data-preview table {{ border-collapse:collapse; min-width:100%; font-size:11px; }}
+    .data-preview th, .data-preview td {{ text-align:left; vertical-align:top; padding:7px 9px; border-bottom:1px solid #222; white-space:nowrap; max-width:260px; overflow:hidden; text-overflow:ellipsis; }}
+    .data-preview th {{ position:sticky; top:0; background:#171717; color:#aaa; }}
+    .data-preview td {{ color:#ccc; font-family:ui-monospace,monospace; }}
   </style>
 </head>
 <body>
@@ -79,6 +94,34 @@ def render_discover_ui() -> str:
     <select id="wire-target" title="Leaf Agent that receives sub_agents= / tools="></select>
     <span id="targets-status" class="meta"></span>
   </div>
+
+  <section id="data-section">
+    <div class="row">
+      <h2 style="margin:0;flex:1">Data</h2>
+      <span id="data-status" class="meta"></span>
+    </div>
+    <p class="sub">Browse tables visible to your Databricks identity, inspect their schema, and preview a bounded sample before wiring tools.</p>
+    <div class="data-controls">
+      <div class="row" style="margin-bottom:0">
+        <select id="data-catalog" aria-label="Data catalog"><option value="">Loading catalogs…</option></select>
+        <select id="data-schema" aria-label="Data schema" disabled><option value="">Select a catalog first</option></select>
+        <select id="data-warehouse" aria-label="Sampling warehouse"><option value="">Auto-select warehouse</option></select>
+        <button id="btn-data-refresh" class="secondary">Refresh tables</button>
+      </div>
+    </div>
+    <div id="data-tables-list" class="empty">Choose a catalog and schema to browse tables.</div>
+    <div id="data-inspector" class="data-inspector" hidden>
+      <div class="row" style="margin-bottom:8px">
+        <div style="flex:1"><h3 id="data-inspector-title"></h3><div id="data-inspector-meta" class="meta"></div></div>
+        <select id="data-sample-limit" aria-label="Sample row limit">
+          <option value="10">10 rows</option><option value="20" selected>20 rows</option><option value="50">50 rows</option>
+        </select>
+        <button id="btn-data-sample">Sample rows</button>
+      </div>
+      <div id="data-sample-status" class="meta" style="margin-bottom:8px"></div>
+      <div id="data-preview" class="data-preview"><div class="empty">Select a table to inspect it.</div></div>
+    </div>
+  </section>
 
   <section>
     <div class="row">
@@ -115,7 +158,7 @@ def render_discover_ui() -> str:
 const df = (url, init) => (window.apxDevFetch || fetch)(url, init);
 
 function esc(s) {{
-  return String(s||'').replace(/[&<>"']/g, c => ({{
+  return String(s ?? '').replace(/[&<>"']/g, c => ({{
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
   }})[c]);
 }}
@@ -128,6 +171,128 @@ function showBanner(msg, live) {{
   el.innerHTML = esc(msg) + extra + ' <a href="/_apx/agent?wired=1">Open Chat</a>';
   el.classList.add('show');
 }}
+
+const dataState = {{ catalog: '', schema: '', warehouse: '', table: null }};
+
+async function dataJson(url) {{
+  const r = await fetch(url);
+  const d = await r.json().catch(() => ({{}}));
+  if (!r.ok) throw new Error(d.detail || d.error || `Request failed (${{r.status}})`);
+  return d;
+}}
+
+async function loadDataCatalogs() {{
+  const sel = document.getElementById('data-catalog');
+  try {{
+    const catalogs = await dataJson('/_apx/setup/catalogs');
+    sel.innerHTML = '<option value="">Select catalog…</option>' +
+      catalogs.map(c => `<option value="${{esc(c)}}">${{esc(c)}}</option>`).join('');
+  }} catch (e) {{
+    sel.innerHTML = '<option value="">Catalog discovery unavailable</option>';
+    document.getElementById('data-status').textContent = e.message;
+    document.getElementById('data-status').className = 'meta err';
+  }}
+}}
+
+async function loadDataSchemas(catalog) {{
+  const sel = document.getElementById('data-schema');
+  dataState.schema = ''; dataState.table = null;
+  sel.disabled = true; sel.innerHTML = '<option value="">Loading schemas…</option>';
+  document.getElementById('data-tables-list').innerHTML = '<div class="empty">Loading schemas…</div>';
+  try {{
+    const schemas = await dataJson('/_apx/setup/schemas?catalog=' + encodeURIComponent(catalog));
+    sel.innerHTML = '<option value="">Select schema…</option>' +
+      schemas.map(s => `<option value="${{esc(s)}}">${{esc(s)}}</option>`).join('');
+    sel.disabled = false;
+    document.getElementById('data-tables-list').innerHTML = '<div class="empty">Choose a schema to browse tables.</div>';
+  }} catch (e) {{
+    sel.innerHTML = '<option value="">Schema discovery unavailable</option>';
+    document.getElementById('data-tables-list').innerHTML = `<div class="empty err">${{esc(e.message)}}</div>`;
+  }}
+}}
+
+async function loadDataWarehouses() {{
+  try {{
+    const warehouses = await dataJson('/_apx/setup/warehouses');
+    const sel = document.getElementById('data-warehouse');
+    sel.innerHTML = '<option value="">Auto-select warehouse</option>' + warehouses.map(w =>
+      `<option value="${{esc(w.id)}}">${{esc(w.name)}} (${{esc(w.state)}})</option>`).join('');
+  }} catch (e) {{
+    document.getElementById('data-status').textContent = 'Warehouse discovery unavailable — sampling will auto-select if possible.';
+  }}
+}}
+
+async function loadDataTables() {{
+  const list = document.getElementById('data-tables-list');
+  const catalog = dataState.catalog; const schema = dataState.schema;
+  if (!catalog || !schema) {{ list.innerHTML = '<div class="empty">Choose a catalog and schema to browse tables.</div>'; return; }}
+  list.innerHTML = '<div class="empty">Loading table metadata…</div>';
+  try {{
+    const q = new URLSearchParams({{ catalog, schema }});
+    const d = await dataJson('/_apx/discover/tables?' + q);
+    const tables = d.tables || [];
+    document.getElementById('data-status').textContent = tables.length + ' table' + (tables.length === 1 ? '' : 's');
+    if (!tables.length) {{ list.innerHTML = '<div class="empty">No tables found in this schema.</div>'; return; }}
+    list.className = 'data-tables';
+    list.innerHTML = tables.map((t, i) => {{
+      const cols = (t.columns || []).slice(0, 12).map(c => `<span class="column">${{esc(c.name)}} <span>${{esc(c.type)}}</span></span>`).join('');
+      const extra = (t.columns || []).length > 12 ? ` +${{t.columns.length - 12}} columns` : '';
+      return `<div class="data-table"><h3>${{esc(t.name)}}</h3>
+        <div class="meta">${{esc(t.table_type || 'table')}}${{t.row_count != null ? ' · ' + Number(t.row_count).toLocaleString() + ' rows' : ''}}</div>
+        ${{t.comment ? `<p class="desc">${{esc(t.comment)}}</p>` : ''}}
+        <div class="columns">${{cols || '<span class="hint">No column metadata returned</span>'}}</div>
+        <div class="meta">${{extra}}</div>
+        <div class="card-actions"><button type="button" data-inspect-table="${{i}}">Inspect &amp; sample</button></div></div>`;
+    }}).join('');
+    list._tables = tables;
+    list.querySelectorAll('[data-inspect-table]').forEach(btn => btn.addEventListener('click', () => showDataTable(list._tables[Number(btn.dataset.inspectTable)])));
+  }} catch (e) {{
+    list.className = 'empty'; list.innerHTML = `<div class="err">Table discovery failed: ${{esc(e.message)}}</div>`;
+  }}
+}}
+
+function showDataTable(table) {{
+  dataState.table = table;
+  document.getElementById('data-inspector').hidden = false;
+  document.getElementById('data-inspector-title').textContent = table.full_name || table.name;
+  document.getElementById('data-inspector-meta').textContent = (table.columns || []).length + ' columns' +
+    (table.row_count != null ? ' · ' + Number(table.row_count).toLocaleString() + ' rows' : '');
+  document.getElementById('data-sample-status').textContent = 'Schema loaded. Sample rows run with your current Databricks identity.';
+  document.getElementById('data-preview').innerHTML = '<div class="empty">Click Sample rows to preview data.</div>';
+}}
+
+async function sampleDataTable() {{
+  const table = dataState.table; if (!table) return;
+  const btn = document.getElementById('btn-data-sample');
+  const status = document.getElementById('data-sample-status');
+  btn.disabled = true; status.textContent = 'Running bounded sample…'; status.className = 'meta';
+  try {{
+    const q = new URLSearchParams({{ catalog: dataState.catalog, schema: dataState.schema, table: table.name,
+      limit: document.getElementById('data-sample-limit').value }});
+    const warehouse = document.getElementById('data-warehouse').value;
+    if (warehouse) q.set('warehouse_id', warehouse);
+    const d = await dataJson('/_apx/discover/sample?' + q);
+    const cols = d.columns || [];
+    const rows = d.rows || [];
+    if (!rows.length) {{ document.getElementById('data-preview').innerHTML = '<div class="empty">The table returned no rows.</div>'; }}
+    else {{
+      document.getElementById('data-preview').innerHTML = '<table><thead><tr>' + cols.map(c => `<th>${{esc(c)}}</th>`).join('') + '</tr></thead><tbody>' +
+        rows.map(row => '<tr>' + cols.map(c => {{ const v = row[c]; return `<td title="${{esc(typeof v === 'object' ? JSON.stringify(v) : v)}}">${{esc(typeof v === 'object' ? JSON.stringify(v) : v)}}</td>`; }}).join('') + '</tr>').join('') + '</tbody></table>';
+    }}
+    status.textContent = rows.length + ' row' + (rows.length === 1 ? '' : 's') + (d.truncated ? ' · more rows available' : '');
+  }} catch (e) {{
+    status.textContent = 'Sample failed: ' + e.message; status.className = 'meta err';
+  }} finally {{ btn.disabled = false; }}
+}}
+
+document.getElementById('data-catalog').addEventListener('change', e => {{
+  dataState.catalog = e.target.value; loadDataSchemas(dataState.catalog);
+}});
+document.getElementById('data-schema').addEventListener('change', e => {{
+  dataState.schema = e.target.value; loadDataTables();
+}});
+document.getElementById('btn-data-refresh').addEventListener('click', loadDataTables);
+document.getElementById('btn-data-sample').addEventListener('click', sampleDataTable);
 
 async function loadTargets() {{
   const sel = document.getElementById('wire-target');
@@ -456,6 +621,8 @@ document.getElementById('btn-scan-agents').addEventListener('click', scanAgents)
 document.getElementById('btn-scan-fns').addEventListener('click', scanFns);
 document.getElementById('btn-scan-apis').addEventListener('click', scanApis);
 
+loadDataCatalogs();
+loadDataWarehouses();
 loadTargets();
 fetch('/_apx/workspace-context').then(r => r.json()).then(d => {{
   const c = (d.used_catalogs||[])[0];

@@ -8,6 +8,7 @@
 - [get-started/migration.md](get-started/migration.md) — **Coming from ADK or OpenAI Agents SDK?** concept-mapping table and translation guide
 - [get-started/cli.md](get-started/cli.md) — full CLI reference (`apx-agent agents scaffold`, `apx-agent agents run`, `apx-agent agents deploy`, `apx-agent eval`, ...)
 - [get-started/dev-ui.md](get-started/dev-ui.md) — built-in tooling at `/_apx/*` (chat, traces, topology, probe)
+- [discovery-data-audit-2026-08-24.md](discovery-data-audit-2026-08-24.md) — Discover Data audit and delivered table/schema sampling contract
 
 ## Agents
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import keyword
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -44,6 +46,113 @@ async def test_discover_page_renders(app: FastAPI):
     assert "Scanning workspace" in r.text
     assert "workspace-apis" in r.text
     assert "APIs" in r.text
+    assert "Browse tables visible to your Databricks identity" in r.text
+    assert "/_apx/discover/tables" in r.text
+    assert "/_apx/discover/sample" in r.text
+
+
+def _data_ws() -> MagicMock:
+    ws = MagicMock()
+    listed = SimpleNamespace(name="orders", full_name="main.sales.orders")
+    detail = SimpleNamespace(
+        name="orders",
+        full_name="main.sales.orders",
+        table_type=SimpleNamespace(value="MANAGED"),
+        comment="Customer orders",
+        properties={"numRows": "42"},
+        columns=[
+            SimpleNamespace(name="order_id", type_text="BIGINT", nullable=False, comment="Order id"),
+            SimpleNamespace(name="amount", type_text="DECIMAL(10,2)", nullable=True, comment=None),
+        ],
+    )
+    ws.tables.list.return_value = [listed]
+    ws.tables.get.return_value = detail
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_discover_tables_uses_obo_and_returns_schema_metadata(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+):
+    obo_ws = _data_ws()
+    app.state.workspace_client = _inventory_ws("sp")
+    seen: dict[str, Any] = {}
+
+    def _prefer(request):  # noqa: ANN001
+        seen["token"] = request.headers.get("X-Forwarded-Access-Token")
+        return obo_ws
+
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", _prefer)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get(
+            "/_apx/discover/tables",
+            params={"catalog": "main", "schema": "sales"},
+            headers={"X-Forwarded-Access-Token": "obo-token"},
+        )
+    assert r.status_code == 200, r.text
+    assert seen["token"] == "obo-token"
+    assert r.json() == {
+        "catalog": "main",
+        "schema_name": "sales",
+        "tables": [{
+            "name": "orders",
+            "full_name": "main.sales.orders",
+            "table_type": "MANAGED",
+            "comment": "Customer orders",
+            "columns": [
+                {"name": "order_id", "type": "bigint", "nullable": False, "comment": "Order id"},
+                {"name": "amount", "type": "decimal(10,2)", "nullable": True, "comment": None},
+            ],
+            "row_count": 42,
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_discover_sample_is_bounded_and_quotes_identifiers(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+):
+    seen: dict[str, Any] = {}
+
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda request: request.app.state.workspace_client)
+
+    def _run_sql(ws, sql, *, warehouse_id=None):  # noqa: ANN001
+        seen.update({"ws": ws, "sql": sql, "warehouse_id": warehouse_id})
+        return [{"order_id": 1}, {"order_id": 2}, {"order_id": 3}]
+
+    monkeypatch.setattr("apx_agent._discover_data.run_sql", _run_sql)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get(
+            "/_apx/discover/sample",
+            params={
+                "catalog": "main",
+                "schema": "sales",
+                "table": "orders",
+                "warehouse_id": "wh-1",
+                "limit": 2,
+            },
+        )
+    assert r.status_code == 200, r.text
+    assert seen["sql"] == "SELECT * FROM `main`.`sales`.`orders` LIMIT 3"
+    assert seen["warehouse_id"] == "wh-1"
+    assert r.json() == {
+        "table": "main.sales.orders",
+        "columns": ["order_id"],
+        "rows": [{"order_id": 1}, {"order_id": 2}],
+        "truncated": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_discover_sample_rejects_unsafe_identifier(app: FastAPI, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda request: request.app.state.workspace_client)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get(
+            "/_apx/discover/sample",
+            params={"catalog": "main", "schema": "sales", "table": "orders; DROP TABLE users"},
+        )
+    assert r.status_code == 400
+    assert "unsupported character" in r.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -91,7 +200,7 @@ async def test_workspace_agents_merges_apps_and_uc(app: FastAPI, monkeypatch: py
 @pytest.mark.asyncio
 async def test_workspace_agents_prefers_obo_client(app: FastAPI, monkeypatch: pytest.MonkeyPatch):
     """Discover must use the caller's OBO token — App SP often cannot list Apps."""
-    seen: dict[str, object] = {}
+    seen: dict[str, Any] = {}
 
     class _FakeWs:
         pass
