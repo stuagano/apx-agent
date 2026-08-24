@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from ._service_policies import ServicePoliciesConfig
 
+from ._service_policies import ServicePoliciesConfig
+
 if TYPE_CHECKING:
     from ._agents import BaseAgent
 
