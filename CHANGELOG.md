@@ -4,6 +4,17 @@ All notable changes to apx-agent. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are git tags
 (`v*`) and the wheel version is derived from the tag via hatch-vcs.
 
+## [Unreleased]
+
+### Added
+
+- **Service Policies.** Declarative built-in, LLM-as-a-judge, and SQL policy
+  attachments with local enforce/dry-run evaluation, deterministic rank
+  ordering, MCP-only ASK handling, audit metadata, YAML/project generation,
+  CLI plan/apply/verify boundaries, and TypeScript declaration parity. Native
+  apply/verify remain explicit plan-only operations until a verified Databricks
+  attachment API is available.
+
 ## [0.4.8] — 2026-08-10
 
 Headline: safer multi-agent discovery and identity handling, more reliable
@@ -35,7 +46,6 @@ scaffolding and chat responses, and clearer state-sharing and grounding docs.
   `output_key` state sharing, and the identity boundaries for remote agents.
 - Hardened the example agents and added ADK-pattern skills and audit notes
   (#597–#608).
-
 ## [0.4.7] — 2026-08-04
 
 Headline: workspace discovery + topology wire/chat in the Apps Dev UI, remote
