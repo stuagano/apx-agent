@@ -97,9 +97,11 @@ def build_local_policy_evaluators(
                 elif watchdog is not None:
                     evaluators[policy.name] = lambda event, p=policy: _watchdog_action(watchdog, p, event)
                 else:
+                    builtin = policy.builtin
+
                     def _unavailable(event: ServicePolicyEvent, p: ServicePolicy = policy) -> ServicePolicyAction:
                         raise ServicePolicyEvaluationError(
-                            f"local evaluator unavailable for built-in {p.builtin.value}"
+                            f"local evaluator unavailable for built-in {builtin.value}"
                         )
 
                     evaluators[policy.name] = _unavailable
