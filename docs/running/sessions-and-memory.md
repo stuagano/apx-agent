@@ -196,7 +196,12 @@ def build_instructions(user_id: str, query: str) -> str:
 |-------|----------|
 | `InMemoryMemoryStore` | Tests, dev |
 | `LakebaseMemoryStore` | pgvector, low-latency chat-style recall |
-| `ManagedMemoryStore` | UC managed memory store (GA) — no extra infra, UC-governed |
+| `ManagedMemoryStore` | UC-managed memory store (Beta; preview availability and privileges required) |
+
+`ManagedMemoryStore` is a Beta Databricks capability, not a fully isolated per-user database.
+Memory scopes are partitioning/isolation keys, not access-control boundaries. Derive the
+principal and scope from trusted caller identity, reject missing identity for user-scoped memory,
+and review the app service principal's UC memory-store privileges separately from the caller's.
 
 ### Memory consolidation
 

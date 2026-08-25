@@ -80,6 +80,8 @@ databricks api patch /api/2.0/permissions/apps/<sub-agent-name> \
 | FMAPI 401 inside sub-agent | Sub-agent using caller's OBO for LLM calls | Set `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET` on the sub-agent |
 | `invalid_client` on M2M | Wrong SP secret (app recreated, SP changed) | Mint a new secret for the current SP |
 
-For user-scoped multi-agent across boundaries, prefer Model Serving deployment — the platform handles identity passthrough automatically, no SP-to-SP dance.
+For user-scoped multi-agent across boundaries, prefer a Model Serving deployment when the
+Databricks caller supplies identity passthrough. Apps still require explicit app-to-app OAuth
+and `CAN_USE` authorization; do not assume an Apps gateway call becomes user-scoped automatically.
 
 Apps-hosted agents can also be routed through a Mosaic AI Supervisor directly: `apx-agent supervisor add --app <app-name>` registers the App as an `app`-type supervisor tool (requires databricks-sdk >= 0.120).

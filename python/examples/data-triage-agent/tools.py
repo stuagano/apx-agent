@@ -21,7 +21,9 @@ from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_identi
 Workspace = Dependencies.Workspace
 logger = logging.getLogger(__name__)
 
-DATA_INSPECTOR_URL = os.environ.get("DATA_INSPECTOR_URL", "http://localhost:9000")
+# Local-development default documented in README.md Part 2.
+_DEFAULT_DATA_INSPECTOR_URL = "http://localhost:9000"
+DATA_INSPECTOR_URL = os.environ.get("DATA_INSPECTOR_URL", _DEFAULT_DATA_INSPECTOR_URL)
 
 
 # ---------------------------------------------------------------------------
@@ -144,11 +146,34 @@ def find_jobs_for_table(table_full_name: str, ws: Workspace) -> dict[str, Any]:
 # Job tools
 # ---------------------------------------------------------------------------
 
+_JOB_SCOPE_FAILURE = "required scopes: jobs"
+_JOB_ACCESS_REASON = (
+    "Job inspection is unavailable in this deployment: Databricks Apps "
+    "user-OBO does not provide arbitrary dynamic Job access."
+)
+
+
+def _job_access_failure(identifier: str, value: int, error: Exception) -> dict[str, Any]:
+    """Return a legible capability finding for a Jobs authorization failure."""
+    if _JOB_SCOPE_FAILURE in str(error).lower():
+        return {
+            identifier: value,
+            "availability": "unavailable",
+            "capability": "jobs",
+            "reason": _JOB_ACCESS_REASON,
+        }
+    raise error
+
 def get_job_run_history(job_id: int, ws: Workspace) -> dict[str, Any]:
     """Get recent run history for a Databricks job — status, duration, errors.
     Use to check if the job populating a table has been failing recently."""
     # Local because: thin wrapper over ws.jobs.list_runs shaped for LLM consumption — the framework toolkit equivalent is a separate planned promotion (see jobs_tools).
-    runs = list(ws.jobs.list_runs(job_id=job_id, limit=10))
+    try:
+        runs = list(ws.jobs.list_runs(job_id=job_id, limit=10))
+    except Exception as e:
+        logger.info("Job run history unavailable for job_id=%s: %s", job_id, e)
+        result = _job_access_failure("job_id", job_id, e)
+        return {"recent_runs": [], **result}
     return {
         "job_id": job_id,
         "recent_runs": [
@@ -172,12 +197,17 @@ def get_job_run_logs(run_id: int, ws: Workspace) -> dict[str, Any]:
     """Get error output and logs from a specific failed job run.
     Use after get_job_run_history identifies a failure."""
     # Local because: thin wrapper over ws.jobs.get_run_output — planned for the jobs_tools toolkit promotion.
-    output = ws.jobs.get_run_output(run_id=run_id)
+    try:
+        output = ws.jobs.get_run_output(run_id=run_id)
+    except Exception as e:
+        logger.info("Job run logs unavailable for run_id=%s: %s", run_id, e)
+        result = _job_access_failure("run_id", run_id, e)
+        return {"error": None, "error_trace": None, "logs": "", **result}
     return {
         "run_id": run_id,
         "error": output.error,
         "error_trace": output.error_trace,
-        "logs": (output.logs or "")[:5000],
+        "logs": output.logs[:5000] if output.logs is not None else "",
     }
 
 
@@ -185,7 +215,12 @@ def get_job_source_paths(job_id: int, ws: Workspace) -> dict[str, Any]:
     """Get the notebook or file paths used by a job's tasks.
     Use to find the source code to inspect for filter or transformation logic."""
     # Local because: extracts notebook/python/dbt/pipeline paths from job tasks — planned for the jobs_tools toolkit promotion.
-    job = ws.jobs.get(job_id=job_id)
+    try:
+        job = ws.jobs.get(job_id=job_id)
+    except Exception as e:
+        logger.info("Job source paths unavailable for job_id=%s: %s", job_id, e)
+        result = _job_access_failure("job_id", job_id, e)
+        return {"name": None, "tasks": [], **result}
     raw_tasks = job.settings.tasks if job.settings else None
     tasks = []
     for task in (raw_tasks or []):
@@ -234,7 +269,17 @@ def list_genie_spaces(ws: Workspace) -> dict[str, Any]:
     Returns space IDs, titles, and descriptions — use the space_id with
     query_genie_space to ask questions."""
     # Local because: framework genie_tool(space_id) pins the space at construction. This is the dynamic pattern — the LLM picks a space at runtime by calling list_genie_spaces first, then query_genie_space.
-    resp = ws.genie.list_spaces()
+    try:
+        resp = ws.genie.list_spaces()
+    except Exception as e:
+        logger.info("Genie space discovery unavailable: %s", e)
+        return {
+            "spaces": [],
+            "count": 0,
+            "availability": "unavailable",
+            "capability": "genie",
+            "error": f"Genie discovery failed: {e}",
+        }
     spaces = []
     for s in (resp.spaces or []):
         spaces.append({
@@ -252,7 +297,18 @@ def query_genie_space(space_id: str, question: str, ws: Workspace) -> dict[str, 
     space_id: ID from list_genie_spaces
     question: plain English question (e.g. 'What upstream tables feed into gold.dr_accounts?')"""
     # Local because: paired with list_genie_spaces for runtime space selection; the framework's static genie_tool factory can't express this.
-    msg = ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
+    try:
+        msg = ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
+    except Exception as e:
+        logger.info("Genie query unavailable for space %s: %s", space_id, e)
+        return {
+            "space_id": space_id,
+            "question": question,
+            "status": "failed",
+            "availability": "unavailable",
+            "capability": "genie",
+            "error": f"Genie query failed: {e}",
+        }
 
     result: dict[str, Any] = {
         "space_id": space_id,
@@ -261,6 +317,8 @@ def query_genie_space(space_id: str, question: str, ws: Workspace) -> dict[str, 
     }
 
     if msg.status == MessageStatus.FAILED:
+        result["availability"] = "unavailable"
+        result["capability"] = "genie"
         result["error"] = msg.error.message if msg.error else "Unknown error"
         return result
 

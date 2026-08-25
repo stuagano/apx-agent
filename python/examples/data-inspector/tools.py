@@ -378,15 +378,13 @@ def list_tables(catalog: str, schema: str, ws: Workspace) -> dict[str, Any]:
 
 # get_table_info + the discovery tools above call the Unity Catalog metadata
 # REST API (ws.tables.get() / ws.catalogs.list() / ws.schemas.list() /
-# ws.tables.list()), which needs the `unity-catalog` OBO scope. It names no
-# specific securable, so no ResourceSpec can imply it — declare it directly so
-# `apx-agent deploy` unions `unity-catalog` into databricks.yml automatically
-# instead of relying on a hand-edited scope (#563). search_tables and the
-# SQL/Delta tools below use the `sql` scope the scaffold already ships.
-require_user_api_scopes(get_table_info, ["unity-catalog"])
-require_user_api_scopes(list_catalogs, ["unity-catalog"])
-require_user_api_scopes(list_schemas, ["unity-catalog"])
-require_user_api_scopes(list_tables, ["unity-catalog"])
+# ws.tables.list()) uses the SDK catalog scopes. These calls name no specific
+# securable, so no ResourceSpec can imply them — declare them directly so
+# `apx-agent deploy` unions the read-only scopes into databricks.yml (#563).
+require_user_api_scopes(get_table_info, ["catalog.tables:read"])
+require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
+require_user_api_scopes(list_schemas, ["catalog.schemas:read"])
+require_user_api_scopes(list_tables, ["catalog.tables:read"])
 
 
 def search_tables(query: str, ws: Workspace) -> dict[str, Any]:

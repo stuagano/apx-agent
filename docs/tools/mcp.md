@@ -1,6 +1,9 @@
 # MCP — Databricks Managed MCP
 
-Databricks Managed MCP is the platform gateway that exposes your agent's UC assets — functions, Genie spaces, Vector Search indexes — as MCP servers accessible to any MCP-compatible client. No per-app MCP route to deploy, no naming conventions for discovery, no app.yaml plumbing.
+Databricks Managed MCP is the platform gateway for supported Unity Catalog resources — UC
+functions, Genie Agents, and AI Search indexes — as MCP servers accessible to MCP-compatible
+clients. It removes the need to deploy a per-resource MCP server or add custom app routing, but
+feature availability, OAuth scopes, resource existence, and Unity Catalog permissions still apply.
 
 ## Consuming MCP servers in your agent
 
@@ -14,21 +17,25 @@ agent = Agent(
 )
 ```
 
-For MCP servers in the same Databricks workspace, the calling user's OBO token is forwarded automatically.
+For MCP servers in the same Databricks workspace, the calling user's OBO token is forwarded when
+the request has a valid user-authorization context and the target supports that path.
 
 ---
 
-## Exposing your agent's tools via Managed MCP
+## Using supported UC resources via Managed MCP
 
-Every UC function, Genie space, and Vector Search index your agent declares is **automatically reachable** at the Databricks-hosted Managed MCP gateway. The assets live in UC; the gateway exposes them.
+For supported UC resources, apx-agent can generate the Databricks-hosted Managed MCP endpoint
+configuration. Declaring a resource in apx-agent does not provision the resource, enable a
+preview feature, grant permissions, or guarantee that the endpoint is reachable. The assets live
+in UC; the gateway applies the configured OAuth and UC authorization when the request runs.
 
 URL patterns the platform hosts:
 
 | Kind | URL |
 |------|-----|
 | UC function | `https://<host>/api/2.0/mcp/functions/{catalog}/{schema}/{function}` |
-| Genie space | `https://<host>/api/2.0/mcp/genie/{space_id}` |
-| Vector Search index | `https://<host>/api/2.0/mcp/vector-search/{catalog}/{schema}/{index}` |
+| Genie Agent | `https://<host>/api/2.0/mcp/genie/{space_id}` |
+| AI Search index | `https://<host>/api/2.0/mcp/vector-search/{catalog}/{schema}/{index}` (legacy-compatible path) |
 
 apx-agent generates these URLs and the corresponding client config from the agent's declared resources:
 
@@ -51,7 +58,7 @@ config = managed_mcp_client_config(endpoints, name="data-triage")
 # }
 ```
 
-Drop the result into Claude Desktop's `claude_desktop_config.json`, Cursor's `~/.cursor/mcp.json`, or any client that speaks the standard `mcpServers` shape. UC permissions are enforced end-to-end — the client authenticates as a user, the gateway calls UC, UC enforces the user's grants. No additional auth wiring.
+Drop the result into Claude Desktop's `claude_desktop_config.json`, Cursor's `~/.cursor/mcp.json`, or any client that speaks the standard `mcpServers` shape. UC permissions are enforced end-to-end when the client authenticates with the required scopes and the user has the required grants. No custom per-app MCP server is needed for these platform resources, but authorization setup is still required.
 
 ---
 

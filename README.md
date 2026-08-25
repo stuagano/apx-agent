@@ -94,7 +94,7 @@ catalog = "main"
 schema = "payroll"
 ```
 
-That declaration becomes: an agent grounded in its schema before the first question, durable memory that persists across sessions, a dev UI that surfaces tool calls and conversation correctly regardless of which underlying API format produced them, and a deployment target that enforces Unity Catalog grants per-caller without any per-agent configuration.
+That declaration becomes: an agent grounded in its schema before the first question, durable memory that persists across sessions, a dev UI that surfaces tool calls and conversation correctly regardless of which underlying API format produced them, and a deployment target that can enforce Unity Catalog grants per caller when user authorization is configured.
 
 **What gets normalized so you don't have to think about it:**
 
@@ -102,10 +102,10 @@ That declaration becomes: an agent grounded in its schema before the first quest
 |---|---|
 | **LLM API format** | Responses API and chat-completions traces both surface identically in the dev UI |
 | **Conversation history** | One canonical message format across all agent types and frameworks |
-| **Memory backends** | Lakebase, UC managed memory, or in-memory — same interface, declared not implemented |
+| **Memory backends** | Lakebase, UC-managed memory (Beta), or in-memory — same interface, declared not implemented |
 | **Observation** | Tool calls, spans, and conversation deltas normalized before they reach any renderer |
 | **Governance** | Identity passthrough, UC grants, and audit logging wired from the declaration |
-| **Multi-agent** | `sub_agents=[url]` + A2A — agents call each other across apps, identity passed through per hop, all declared |
+| **Multi-agent** | `sub_agents=[url]` + A2A — agents call each other across apps; supported tool/data calls can forward caller identity per hop |
 
 You write a Python object or a TOML block. The normalization work is apx-agent's job.
 
@@ -229,7 +229,7 @@ agent = DataAgent(
 )
 ```
 
-**Governance:** deploy once, everyone runs as themselves. The app forwards each caller's OAuth token per request, and Unity Catalog enforces their grants on their data. See [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md).
+**Governance:** when user authorization is enabled and a valid per-request token is present, governed data and tool calls run under that caller's Unity Catalog grants. Background, M2M, and app-to-app calls still use their configured service-principal or gateway authorization path. See [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md).
 
 See [docs/agents/data-agent.md](docs/agents/data-agent.md) for the full reference.
 
@@ -288,19 +288,21 @@ agent = Agent(
 ```
 
 When you split an agent into its own app, the sub-agent call goes through the
-**app-to-app auth path** — the caller's identity is passed through per hop, so a
-downstream agent's tools still run under the *asking user's* UC grants, not a
-shared service principal. Every deployed agent serves an [A2A discovery
+**app-to-app auth path** — supported caller-token forwarding lets a downstream
+agent's tools run under the *asking user's* UC grants. App-to-app gateway
+authorization and the callee's own model calls remain app-scoped; they do not
+automatically become user-scoped. Every deployed agent serves an [A2A discovery
 card](docs/multi-agent/a2a.md) at `/.well-known/agent.json`, so sibling apps find
 each other by probe, not by hardcoded config. `apx-agent doctor` reports whether
 each declared sub-agent is actually reachable.
 
 This is the layer the platform leaves open. Databricks
 [Agent Services](https://docs.databricks.com/aws/en/ai-gateway/agent-services)
-(Beta) registers agents in Unity Catalog for discovery and permissions — but its
-own docs note "Runtime invocation is not available. Agents cannot be called
-through a registered agent service." apx-agent is the runtime path: registered or
-not, a declared agent can *call* another, governed, per hop.
+(Beta) is a separate registration, discovery, and governance surface. Its
+current documentation is transitional: one section describes `EXECUTE`
+invocation while the limitations section says runtime invocation is unavailable.
+Do not assume that registering an agent creates a supported runtime call path;
+apx-agent's A2A runtime remains separate.
 
 Two examples ship this end-to-end:
 

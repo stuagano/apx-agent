@@ -76,7 +76,7 @@ database       = "agentdb"
 embedding_model = "databricks-bge-large-en"
 embedding_dim  = 1024
 
-# Production: UC managed memory store, no extra infra
+# Beta: UC managed memory store, no extra infra (subject to preview availability)
 [tool.apx.agent.memory]
 type       = "managed"
 store_name = "main.agents.apx_memory"

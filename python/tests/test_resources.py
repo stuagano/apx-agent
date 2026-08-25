@@ -496,9 +496,9 @@ def test_user_api_scopes_sql_family_dedups_to_sql() -> None:
 def test_user_api_scopes_per_kind() -> None:
     from apx_agent._resources import ResourceSpec, user_api_scopes_for
 
-    assert user_api_scopes_for([ResourceSpec("serving_endpoint", "m")]) == ["serving.serving-endpoints"]
-    assert user_api_scopes_for([ResourceSpec("genie_space", "sp")]) == ["dashboards.genie"]
-    assert user_api_scopes_for([ResourceSpec("vector_search_index", "i")]) == ["vectorsearch.vector-search-endpoints"]
+    assert user_api_scopes_for([ResourceSpec("serving_endpoint", "m")]) == ["model-serving"]
+    assert user_api_scopes_for([ResourceSpec("genie_space", "sp")]) == ["genie"]
+    assert user_api_scopes_for([ResourceSpec("vector_search_index", "i")]) == ["vector-search"]
 
 
 def test_user_api_scopes_mixed_sorted_union() -> None:
@@ -509,7 +509,7 @@ def test_user_api_scopes_mixed_sorted_union() -> None:
         ResourceSpec("uc_function", "main.s.f"),
         ResourceSpec("genie_space", "sp"),
     ]
-    assert user_api_scopes_for(specs) == ["dashboards.genie", "serving.serving-endpoints", "sql"]
+    assert user_api_scopes_for(specs) == ["genie", "model-serving", "sql"]
 
 
 def test_user_api_scopes_empty() -> None:
@@ -526,9 +526,9 @@ def test_require_user_api_scopes_round_trip() -> None:
 
     def uc_tool(ws: Any) -> None: ...
 
-    returned = require_user_api_scopes(uc_tool, ["unity-catalog"])
+    returned = require_user_api_scopes(uc_tool, ["catalog.tables:read"])
     assert returned is uc_tool  # returns fn for chaining
-    assert get_user_api_scopes(uc_tool) == ["unity-catalog"]
+    assert get_user_api_scopes(uc_tool) == ["catalog.tables:read"]
 
 
 def test_require_user_api_scopes_dedups_and_accumulates() -> None:
@@ -537,9 +537,9 @@ def test_require_user_api_scopes_dedups_and_accumulates() -> None:
 
     def uc_tool(ws: Any) -> None: ...
 
-    require_user_api_scopes(uc_tool, ["unity-catalog", "unity-catalog"])
-    require_user_api_scopes(uc_tool, ["sql", "unity-catalog"])
-    assert get_user_api_scopes(uc_tool) == ["unity-catalog", "sql"]
+    require_user_api_scopes(uc_tool, ["catalog.tables:read", "catalog.tables:read"])
+    require_user_api_scopes(uc_tool, ["sql", "catalog.tables:read"])
+    assert get_user_api_scopes(uc_tool) == ["catalog.tables:read", "sql"]
 
 
 def test_require_user_api_scopes_rejects_unknown() -> None:
@@ -565,10 +565,10 @@ def test_collect_user_api_scopes_walks_router_leaves() -> None:
 
     def uc_tool(ws: Any) -> None: ...
 
-    require_user_api_scopes(uc_tool, ["unity-catalog"])
+    require_user_api_scopes(uc_tool, ["catalog.tables:read"])
     leaf = Agent(tools=[uc_tool])
     router = KeywordRouter(branches=[("inv", leaf, ["go"])], default=Agent(tools=[_plain_tool]))
-    assert collect_user_api_scopes(router) == ["unity-catalog"]
+    assert collect_user_api_scopes(router) == ["catalog.tables:read"]
 
 
 def test_collect_user_api_scopes_none_declared() -> None:

@@ -1,8 +1,8 @@
 # Identity passthrough
 
-The calling user's OAuth token flows through every tool, every sub-agent call, and every outbound Databricks API call. The agent's data access runs as the user — not as a service principal. Unity Catalog enforces *their* grants on *their* data. No auth code at the tool level; the framework handles capture, propagation, and resolution. (One scope limit applies to cross-app model calls — see [below](#scope-limit-cross-app-model-calls).)
+For every hop that supports user-token forwarding, the calling user's OAuth context flows through the agent's governed tool and data paths. Those calls run as the user — not as a shared service principal — and Unity Catalog enforces *their* grants on *their* data. This is not a universal claim about every outbound API or downstream model call: background/M2M paths and cross-app model calls remain app-scoped. No auth code is needed at the tool level; the framework handles capture, propagation, and resolution. See [the cross-app scope limit](#scope-limit-cross-app-model-calls).
 
-In Databricks Apps, the user's OAuth token arrives as `X-Forwarded-Access-Token`. The framework captures it at the middleware boundary, propagates it through the async context, and resolves it at every outbound call.
+In Databricks Apps, the user's OAuth token arrives as `X-Forwarded-Access-Token`. The framework captures it at the middleware boundary, propagates it through the async context, and resolves it at supported outbound calls.
 
 ```python
 def get_table_lineage(table_full_name: str, ws: Dependencies.Workspace) -> dict:
@@ -22,7 +22,7 @@ def get_table_lineage(table_full_name: str, ws: Dependencies.Workspace) -> dict:
 | 3 | `DATABRICKS_TOKEN` env var | Local dev with a static PAT |
 | 4 | M2M OAuth (`DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`) | Background jobs, workflows — no user present |
 
-When deployed to Model Serving and called from a trusted Databricks surface (AI Playground, Genie, Review App, Supervisor sub-agent), the calling user's identity threads automatically through the agent and its sub-agents — scoped to the declared resources at every hop.
+When deployed to Model Serving and called from a trusted Databricks surface (AI Playground, Genie, Review App, or Supervisor sub-agent) that supplies caller identity, the calling user's identity can thread through the agent and its sub-agents — scoped to the declared resources at every supported hop.
 
 ## New permissions require reauthorization
 
@@ -39,4 +39,4 @@ for SQL scope denials.
 
 ## Scope limit: cross-app model calls
 
-On an A2A hop between two Databricks Apps, the caller's OBO token is forwarded, so the callee's tools and Databricks API calls still run as the asking user. The callee's own LLM (FMAPI) calls do not: they run as the callee app's service principal, because each App authenticates outbound model traffic with its own credentials. Data access is user-scoped per hop; model access is app-scoped. See [../multi-agent/a2a.md](../multi-agent/a2a.md) for the full auth path.
+On an A2A hop between two Databricks Apps, supported caller-token forwarding lets the callee's tools and governed data calls run as the asking user. The callee's own LLM (FMAPI) calls do not: they run as the callee app's service principal, because each App authenticates outbound model traffic with its own credentials. Data access can be user-scoped per hop; model access is app-scoped. See [../multi-agent/a2a.md](../multi-agent/a2a.md) for the full auth path.

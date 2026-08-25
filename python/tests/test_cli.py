@@ -4507,7 +4507,7 @@ class TestDatabricksYmlMergePreservesComments:
         assert "# a note about this block" in out
 
     def test_auto_update_yml_unions_tool_declared_scope(self, tmp_path):
-        # #563: a tool that declares unity-catalog via require_user_api_scopes
+        # #563: a tool that declares a catalog scope via require_user_api_scopes
         # gets that scope unioned into databricks.yml at deploy time, even
         # though no ResourceSpec implies it. Turns the prod-only "missing
         # scopes" 500 into a scope declared at deploy time.
@@ -4516,7 +4516,7 @@ class TestDatabricksYmlMergePreservesComments:
         from apx_agent.cli import _auto_update_databricks_yml
 
         def list_catalogs(ws) -> None: ...
-        require_user_api_scopes(list_catalogs, ["unity-catalog"])
+        require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
 
         yml_path = tmp_path / "databricks.yml"
         yml_path.write_text(self._SEED)
@@ -4527,7 +4527,7 @@ class TestDatabricksYmlMergePreservesComments:
         )
 
         app = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]
-        assert "unity-catalog" in app["user_api_scopes"]
+        assert "catalog.catalogs:read" in app["user_api_scopes"]
 
     def test_auto_update_yml_never_drops_existing_scopes(self, tmp_path):
         # The scope union is additive: an operator's existing user_api_scopes
@@ -4549,7 +4549,7 @@ class TestDatabricksYmlMergePreservesComments:
         )
 
         def list_catalogs(ws) -> None: ...
-        require_user_api_scopes(list_catalogs, ["unity-catalog"])
+        require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
 
         _auto_update_databricks_yml(
             tmp_path, agent=Agent(tools=[list_catalogs]),
@@ -4557,7 +4557,9 @@ class TestDatabricksYmlMergePreservesComments:
         )
 
         scopes = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]["user_api_scopes"]
-        assert set(scopes) == {"sql", "serving.serving-endpoints", "unity-catalog"}
+        assert set(scopes) == {
+            "sql", "serving.serving-endpoints", "catalog.catalogs:read",
+        }
 
     def test_auto_update_yml_unions_sql_from_auto_discover_sql_tool(self, tmp_path):
         # sql_tool() with no warehouse_id attaches no ResourceSpec, but still
@@ -4601,11 +4603,11 @@ class TestDeployScopePrecheck:
             "user_api_scopes": list(scopes),
         }}}}
 
-    def _agent_needing_unity_catalog(self):
+    def _agent_needing_catalog_scope(self):
         from apx_agent import Agent, require_user_api_scopes
 
         def list_catalogs(ws) -> None: ...
-        require_user_api_scopes(list_catalogs, ["unity-catalog"])
+        require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
         return Agent(tools=[list_catalogs])
 
     def test_warns_on_missing_scope(self, monkeypatch):
@@ -4613,26 +4615,26 @@ class TestDeployScopePrecheck:
 
         monkeypatch.setattr(
             "apx_agent.cli._load_finalized_agent",
-            lambda module: self._agent_needing_unity_catalog(),
+            lambda module: self._agent_needing_catalog_scope(),
         )
         logs: list[str] = []
         missing = _warn_missing_user_api_scopes(
             self._doc(["sql", "serving.serving-endpoints"]),
             module="agent", bundle_key="my-agent", log=logs.append,
         )
-        assert missing == ["unity-catalog"]
-        assert any("unity-catalog" in m and "WARNING" in m for m in logs)
+        assert missing == ["catalog.catalogs:read"]
+        assert any("catalog.catalogs:read" in m and "WARNING" in m for m in logs)
 
     def test_silent_when_scope_present(self, monkeypatch):
         from apx_agent.cli import _warn_missing_user_api_scopes
 
         monkeypatch.setattr(
             "apx_agent.cli._load_finalized_agent",
-            lambda module: self._agent_needing_unity_catalog(),
+            lambda module: self._agent_needing_catalog_scope(),
         )
         logs: list[str] = []
         missing = _warn_missing_user_api_scopes(
-            self._doc(["sql", "unity-catalog"]),
+            self._doc(["sql", "catalog.catalogs:read"]),
             module="agent", bundle_key="my-agent", log=logs.append,
         )
         assert missing == []

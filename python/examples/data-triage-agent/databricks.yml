@@ -47,6 +47,9 @@ artifacts:
       cp prompts.py .build/ 2>/dev/null || true
       cp -r integrations .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true
+      # databricks-tools-core is a repo-local helper, not a public PyPI package.
+      # Stage the importable package directly so Apps installs no Git dependency.
+      cp -r ../databricks-tools-core/databricks_tools_core .build/
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
@@ -69,8 +72,9 @@ resources:
       # OBO scopes the forwarded-user token carries — the presence/lineage
       # steps and the delegated data-inspector both hit the SQL APIs.
       user_api_scopes:
+        - genie
         - sql
-        - serving.serving-endpoints
+        - model-serving
 
       resources:
         - name: llm-endpoint

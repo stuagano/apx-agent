@@ -125,14 +125,23 @@ def get_resources(fn: Any) -> list[ResourceSpec]:
 
 # The raw Databricks OBO scopes a tool may declare directly. Kept as a closed
 # set so a typo becomes a deploy-time error instead of another prod-only
-# "missing scopes" 500 (#563). These mirror ``_KIND_TO_SCOPE``'s values plus
-# ``unity-catalog`` — the one scope no ResourceSpec can imply.
+# "missing scopes" 500 (#563). These are the currently supported Databricks
+# Apps API scopes; SDK scopes also accept the documented ``:read`` modifier.
 _KNOWN_USER_API_SCOPES = frozenset({
     "sql",
-    "unity-catalog",
-    "serving.serving-endpoints",
-    "dashboards.genie",
-    "vectorsearch.vector-search-endpoints",
+    "sql:restricted-query",
+    "genie",
+    "files",
+    "model-serving",
+    "postgres",
+    "apps",
+    "ai-gateway",
+    "vector-search",
+    "catalog.catalogs",
+    "catalog.connections",
+    "catalog.schemas",
+    "catalog.tables",
+    "workspace.workspace",
 })
 
 
@@ -140,16 +149,16 @@ def require_user_api_scopes(fn: Any, scopes: Iterable[str]) -> Any:
     """Declare raw OBO ``user_api_scopes`` a tool needs. Returns ``fn``.
 
     Most scopes are *derived* from a tool's ``ResourceSpec``s (a Genie space
-    implies ``dashboards.genie``; a serving endpoint implies
-    ``serving.serving-endpoints`` — see :func:`user_api_scopes_for`). Use this
+    implies ``genie``; a serving endpoint implies ``model-serving`` — see
+    :func:`user_api_scopes_for`). Use this
     only for a tool that calls a Databricks API with **no securable** to point a
     ``ResourceSpec`` at. The UC metadata/discovery REST API is the motivating
     case: ``ws.catalogs.list()`` / ``ws.schemas.list()`` / ``ws.tables.get()``
-    need the ``unity-catalog`` scope but name no specific table or function, so
-    the scope can't be inferred from a resource (#563)::
+    need an SDK catalog scope but name no specific securable, so the scope can't
+    be inferred from a resource (#563)::
 
         def list_catalogs(ws): ...
-        require_user_api_scopes(list_catalogs, ["unity-catalog"])
+        require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
 
     ``apx-agent deploy`` unions these declared scopes onto the resource-derived
     baseline in ``databricks.yml`` — turning a runtime "does not have required
@@ -157,7 +166,18 @@ def require_user_api_scopes(fn: Any, scopes: Iterable[str]) -> Any:
     an unknown scope string so a typo fails fast rather than silently.
     """
     cleaned = [s for s in scopes if s]
-    unknown = [s for s in cleaned if s not in _KNOWN_USER_API_SCOPES]
+    sdk_read_scopes = {
+        "catalog.catalogs",
+        "catalog.connections",
+        "catalog.schemas",
+        "catalog.tables",
+        "workspace.workspace",
+    }
+    unknown = [
+        s for s in cleaned
+        if s not in _KNOWN_USER_API_SCOPES
+        and not (s.endswith(":read") and s[:-5] in sdk_read_scopes)
+    ]
     if unknown:
         raise ValueError(
             f"Unknown user_api_scope(s) {unknown}. "
@@ -594,24 +614,23 @@ def resources_to_databricks_yml(
 
 # Map a ResourceSpec kind → the Databricks Apps OAuth scope the forwarded user
 # (OBO) token needs to use it. The iam.* defaults are always granted and are
-# never listed. sql/serving.serving-endpoints are validated; the genie/vector
-# strings track the documented Apps authorization scopes.
+# never listed. These names track the current Apps authorization scopes.
 _KIND_TO_SCOPE: dict[str, str] = {
     "sql_warehouse": "sql",
     "uc_table": "sql",
     "uc_function": "sql",
     "uc_connection": "sql",
-    "serving_endpoint": "serving.serving-endpoints",
-    "genie_space": "dashboards.genie",
-    "vector_search_index": "vectorsearch.vector-search-endpoints",
+    "serving_endpoint": "model-serving",
+    "genie_space": "genie",
+    "vector_search_index": "vector-search",
 }
 
 
 def user_api_scopes_for(resources: Iterable["ResourceSpec"]) -> list[str]:
     """Derive the OBO ``user_api_scopes`` an Apps deploy needs from its resources.
 
-    e.g. a Genie space → ``dashboards.genie``; a serving endpoint →
-    ``serving.serving-endpoints``. Returned sorted + de-duplicated. Note: a
+    e.g. a Genie space → ``genie``; a serving endpoint → ``model-serving``.
+    Returned sorted + de-duplicated. Note: a
     ``sql_tool`` that auto-discovers its warehouse declares no SQL resource —
     that path uses :func:`require_user_api_scopes` for ``sql`` instead, and
     deploy unions both sources onto the scaffold baseline.
@@ -628,8 +647,9 @@ def collect_user_api_scopes(agent: "BaseAgent") -> list[str]:
     Walks the same tool set as :func:`collect_resource_specs` (so router /
     composite leaves are included) and unions every tool's
     :func:`require_user_api_scopes` declaration. Sorted + de-duplicated. These
-    are scopes with no backing ``ResourceSpec`` — e.g. ``unity-catalog`` for UC
-    metadata/discovery calls — so :func:`user_api_scopes_for` can't derive them;
+    are scopes with no backing ``ResourceSpec`` — e.g. ``catalog.tables:read``
+    for UC metadata/discovery calls — so :func:`user_api_scopes_for` can't
+    derive them;
     the deploy path unions this onto the derived baseline (#563).
     """
     scopes: set[str] = set()

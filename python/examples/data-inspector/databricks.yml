@@ -29,6 +29,9 @@ artifacts:
       cp tools.py .build/ 2>/dev/null || true
       cp app.py .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true
+      # databricks-tools-core is a repo-local helper, not a public PyPI package.
+      # Stage the importable package directly so Apps installs no Git dependency.
+      cp -r ../databricks-tools-core/databricks_tools_core .build/
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
@@ -52,15 +55,15 @@ resources:
       # OBO scopes the forwarded-user token carries. The Delta forensics tools
       # call the SQL warehouses + statement-execution APIs, so `sql` is required
       # — without it those calls 403 ("Invalid scope, required: sql"). The UC
-      # discovery tools (list_catalogs/schemas/tables, search_tables,
-      # get_table_info) call the Unity Catalog REST API, which needs
-      # `unity-catalog` — without it they 403 ("required scopes: unity-catalog").
-      # Prod-only: local dev uses the developer's full-scope CLI profile, so the
-      # gap only surfaces once deployed with a scope-limited OBO token (#563).
+      # discovery tools use the read-only SDK catalog scopes. Prod-only: local
+      # dev uses the developer's full-scope CLI profile, so the gap only
+      # surfaces once deployed with a scope-limited OBO token (#563).
       user_api_scopes:
         - sql
-        - unity-catalog
-        - serving.serving-endpoints
+        - catalog.catalogs:read
+        - catalog.schemas:read
+        - catalog.tables:read
+        - model-serving
 
       resources:
         - name: llm-endpoint
