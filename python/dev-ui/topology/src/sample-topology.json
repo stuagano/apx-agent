@@ -107,5 +107,25 @@
     { "id": "e15", "source": "agent:root.billing", "target": "endpoint:databricks-claude-sonnet-4-6", "kind": "calls-model" },
     { "id": "e16", "source": "agent:root.technical", "target": "endpoint:databricks-claude-sonnet-4-6", "kind": "calls-model" },
     { "id": "e17", "source": "agent:root.account", "target": "endpoint:databricks-claude-sonnet-4-6", "kind": "calls-model" }
+  ],
+  "workflows": [
+    {
+      "id": "billing-orders",
+      "title": "Recent orders",
+      "question": "What are my three most recent orders?",
+      "purpose": "Route a billing question to the specialist that can retrieve recent orders.",
+      "route": ["customer_triage", "billing_specialist"],
+      "handoffs": [
+        {
+          "source": "customer_triage",
+          "target": "billing_specialist",
+          "input_contract": "Customer billing question",
+          "output_contract": "Billing answer with recent orders",
+          "explanation": "The triage agent delegates billing requests to the billing specialist."
+        }
+      ],
+      "outcome": "A concise list of the customer's three most recent orders.",
+      "follow_ups": ["Explain a specific order", "Check an invoice"]
+    }
   ]
 }

@@ -59,11 +59,32 @@ export interface ArtifactSummary {
   [key: string]: unknown;
 }
 
+export interface WorkflowHandoff {
+  source: string;
+  target: string;
+  input_contract: string;
+  output_contract: string;
+  explanation: string;
+}
+
+export interface ExampleWorkflow {
+  id: string;
+  title: string;
+  question: string;
+  purpose: string;
+  route: string[];
+  handoffs: WorkflowHandoff[];
+  outcome: string;
+  follow_ups: string[];
+}
+
 export interface TopologyResponse {
   rootId: string;
   agentName: string;
   nodes: TopoNode[];
   edges: TopoEdge[];
+  /** Absent from topology fixtures emitted before example workflows existed. */
+  workflows?: ExampleWorkflow[];
   execution?: TopologyExecution;
   artifact_summaries?: ArtifactSummary[];
 }

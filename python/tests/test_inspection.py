@@ -346,6 +346,21 @@ def test_load_agent_config_examples_defaults_empty(tmp_path):
     assert cfg.examples == []
 
 
+def test_load_agent_config_parses_workflows(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[tool.apx.agent]\n'
+        'name = "demo"\n'
+        'workflows = [{ id = "pricing-review", title = "Pricing review", '
+        'question = "Show me the pricing evidence", purpose = "Move from signal to decision.", '
+        'route = ["intelligence", "calibrate"], outcome = "Reviewable pricing packet" }]\n'
+    )
+    cfg = _load_agent_config(pyproject_path=str(pyproject))
+    assert cfg is not None
+    assert cfg.workflows[0].id == "pricing-review"
+    assert cfg.workflows[0].route == ["intelligence", "calibrate"]
+
+
 def test_load_agent_config_deploy_only_section_returns_none(tmp_path):
     """#407/#434 CI regression: a [tool.apx.agent] holding only deploy-envelope
     keys (registered_model, experiment) declares no agent config — the loader

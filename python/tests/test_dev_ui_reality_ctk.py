@@ -68,6 +68,36 @@ def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
 
 
+@pytest.mark.asyncio
+async def test_chat_landing_route_renders_workflow_examples_once_and_escapes_text() -> None:
+    config = AgentConfig(
+        name="workflow-reality",
+        examples=["What is the position?"],
+        workflows=[{
+            "id": "position",
+            "title": "<Pricing review>",
+            "question": "What is the position?",
+            "purpose": "Compare <b>peers</b>.",
+            "route": ["calibrate"],
+        }],
+    )
+    card = AgentCard(name=config.name, description="", skills=[])
+    app = FastAPI()
+    app.state.agent_context = AgentContext(
+        config=config, tools=[], card=card, agent=None  # type: ignore[arg-type]
+    )
+    app.include_router(build_dev_ui_router())
+
+    async with _client(app) as ac:
+        resp = await ac.get("/_apx/chat")
+
+    assert resp.status_code == 200
+    assert resp.text.count("What is the position?") == 1
+    assert "&lt;Pricing review&gt;" in resp.text
+    assert "Compare &lt;b&gt;peers&lt;/b&gt;." in resp.text
+    assert "<b>peers</b>" not in resp.text
+
+
 # ---------------------------------------------------------------------------
 # 1) Conversations — append through the store, read back through the route.
 # ---------------------------------------------------------------------------

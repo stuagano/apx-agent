@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
     from ._agents import BaseAgent
-    from ._models import AgentContext
+    from ._models import AgentContext, ExampleWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -493,13 +493,31 @@ def _resource_url_for(kind: str, identifier: str, workspace_host: str | None) ->
         return None
 
 
+def _serialize_workflows(
+    workflows: Sequence[Mapping[str, Any] | "ExampleWorkflow"],
+) -> list[dict[str, Any]]:
+    """Serialize declared workflows through the public workflow contract."""
+    from ._models import ExampleWorkflow
+
+    return [
+        (
+            workflow
+            if isinstance(workflow, ExampleWorkflow)
+            else ExampleWorkflow.model_validate(workflow)
+        ).model_dump(mode="json")
+        for workflow in workflows
+    ]
+
+
 def build_topology(ctx: "AgentContext") -> dict[str, Any]:
     """Walk ``ctx.agent`` and return the ``TopologyResponse``-shaped dict.
 
-    Returns ``{rootId, agentName, nodes, edges}``. Each node has ``{id, type,
-    label, description?}``; each edge has ``{id, source, target, kind}``. See
-    ``docs/superpowers/specs/2026-05-22-topology-ui.md`` for the schema.
+    Returns ``{rootId, agentName, nodes, edges, workflows}``. Each node has
+    ``{id, type, label, description?}``; each edge has ``{id, source, target,
+    kind}``. See ``docs/superpowers/specs/2026-05-22-topology-ui.md`` for the
+    graph schema.
     """
+    from ._models import workflows_for_context
     from ._resources import get_resources
 
     nodes: list[dict[str, Any]] = []
@@ -620,6 +638,7 @@ def build_topology(ctx: "AgentContext") -> dict[str, Any]:
         "agentName": ctx.config.name if ctx and ctx.config else "agent",
         "nodes": nodes,
         "edges": edges,
+        "workflows": _serialize_workflows(workflows_for_context(ctx)),
     }
 
 
@@ -630,6 +649,7 @@ def annotate_topology(
     edge_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     execution: Mapping[str, Any] | None = None,
     artifact_summaries: Sequence[Mapping[str, Any]] | None = None,
+    workflows: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Add optional semantic and run metadata to a topology payload.
 
@@ -640,7 +660,8 @@ def annotate_topology(
     about a domain-specific manifest.
 
     The input is never mutated. Node and edge annotations are merged under
-    their existing ``metadata`` key; all other existing fields are preserved.
+    their existing ``metadata`` key; workflow annotations are added at the top
+    level; all other existing fields are preserved.
     """
     annotated = dict(topology)
     annotated["nodes"] = [
@@ -655,6 +676,8 @@ def annotate_topology(
         annotated["execution"] = dict(execution)
     if artifact_summaries is not None:
         annotated["artifact_summaries"] = [dict(summary) for summary in artifact_summaries]
+    if workflows is not None:
+        annotated["workflows"] = _serialize_workflows(workflows)
     return annotated
 
 

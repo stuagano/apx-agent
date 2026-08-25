@@ -10,7 +10,8 @@ import { TopologyGraph } from "./TopologyGraph";
 import { NodeInspector } from "./NodeInspector";
 import { WirePalette } from "./WirePalette";
 import { ChatDock } from "./ChatDock";
-import type { TopologyResponse } from "./types";
+import { WorkflowPanel } from "./WorkflowPanel";
+import type { ExampleWorkflow, TopoNode, TopologyResponse } from "./types";
 import {
   fetchDiscoverTargets,
   isLeafAgentType,
@@ -56,6 +57,37 @@ const EMBED =
 
 const ROUTE_POLL_MS = 4000;
 
+type WorkflowStatus = "declared" | "active" | "partial" | "completed" | "failed";
+
+interface ActiveWorkflowRun {
+  workflowId: string;
+  requestId: number;
+}
+
+function workflowStatus(
+  workflow: ExampleWorkflow,
+  observedNodeIds: ReadonlySet<string>,
+  failed: boolean,
+): WorkflowStatus {
+  if (failed) return "failed";
+  const observed = workflow.route.filter((stage) => observedNodeIds.has(stage));
+  if (observed.length === 0) return "declared";
+  if (observed.length === workflow.route.length) return "completed";
+  return "partial";
+}
+
+function resolveWorkflowRoute(
+  workflow: ExampleWorkflow,
+  nodes: TopoNode[],
+): Array<{ stage: string; nodeId?: string }> {
+  return workflow.route.map((stage) => ({
+    stage,
+    nodeId: nodes.find((node) => node.id === stage)?.id ?? nodes.find(
+      (node) => node.label.toLocaleLowerCase() === stage.toLocaleLowerCase(),
+    )?.id,
+  }));
+}
+
 export default function App() {
   const [state, setState] = useState<AppState>({
     data: null,
@@ -77,6 +109,14 @@ export default function App() {
   const [expDraft, setExpDraft] = useState("");
   const [savingExp, setSavingExp] = useState(false);
   const [chatOpen, setChatOpen] = useState(!EMBED);
+  const [chatSending, setChatSending] = useState(false);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
+  const [activeWorkflowRun, setActiveWorkflowRun] = useState<ActiveWorkflowRun | null>(null);
+  const [nextWorkflowRequestId, setNextWorkflowRequestId] = useState(0);
+  const [failedWorkflowIds, setFailedWorkflowIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const data = state.data;
 
   const load = useCallback(() => {
     setState((s) => ({ ...s, loading: true, error: null }));
@@ -157,6 +197,14 @@ export default function App() {
   }, [load, loadTargets, loadTracing, loadRoute]);
 
   useEffect(() => {
+    const workflows = state.data?.workflows ?? [];
+    if (selectedWorkflowId && workflows.some((workflow) => workflow.id === selectedWorkflowId)) {
+      return;
+    }
+    setSelectedWorkflowId(workflows[0]?.id ?? null);
+  }, [selectedWorkflowId, state.data]);
+
+  useEffect(() => {
     const id = window.setInterval(() => {
       if (document.visibilityState === "visible") loadRoute();
     }, ROUTE_POLL_MS);
@@ -181,14 +229,14 @@ export default function App() {
     return ids;
   }, [state.data, eligibleTargets]);
 
-  const routeNodeIds = useMemo(
+  const observedNodeIds = useMemo(
     () => new Set([
       ...(route?.node_ids || []),
       ...(state.data?.execution?.active_node_ids || []),
     ]),
     [route, state.data],
   );
-  const routeEdgeIds = useMemo(
+  const observedEdgeIds = useMemo(
     () => new Set([
       ...(route?.edge_ids || []),
       ...(state.data?.execution?.completed_edge_ids || []),
@@ -196,9 +244,61 @@ export default function App() {
     [route, state.data],
   );
 
+  const selectedWorkflow = useMemo(
+    () => data?.workflows?.find((workflow) => workflow.id === selectedWorkflowId),
+    [data, selectedWorkflowId],
+  );
+  const resolvedSelectedRoute = useMemo(
+    () => selectedWorkflow && data
+      ? resolveWorkflowRoute(selectedWorkflow, data.nodes)
+      : [],
+    [data, selectedWorkflow],
+  );
+  const unresolvedRouteStages = useMemo(
+    () => new Set(resolvedSelectedRoute.flatMap((stage) => stage.nodeId ? [] : [stage.stage])),
+    [resolvedSelectedRoute],
+  );
+  // Graph highlights are evidence only: declared workflow routes stay in the rail.
+  const routeNodeIds = observedNodeIds;
+  const routeEdgeIds = observedEdgeIds;
+  const workflowStatuses = useMemo(() => new Map((data?.workflows ?? []).map((workflow) => {
+    const resolved = resolveWorkflowRoute(workflow, data?.nodes ?? []);
+    const observedLogicalNodeIds = new Set(resolved.flatMap((stage) => stage.nodeId && observedNodeIds.has(stage.nodeId)
+      ? [stage.stage]
+      : []));
+    return [
+      workflow.id,
+      workflowStatus(workflow, observedLogicalNodeIds, failedWorkflowIds.has(workflow.id)),
+    ] as const;
+  })), [data, failedWorkflowIds, observedNodeIds]);
+  const observedRoute = useMemo(
+    () => (route?.node_ids ?? []).map(
+      (id) => data?.nodes.find((node) => node.id === id)?.label ?? id,
+    ),
+    [data, route],
+  );
+
   const showToast = (text: string, ok: boolean) => {
     setToast({ text, ok });
     window.setTimeout(() => setToast(null), 6000);
+  };
+
+  const runWorkflow = (workflow: ExampleWorkflow) => {
+    if (EMBED) return;
+    if (chatSending || activeWorkflowRun) {
+      showToast("Wait for the current Chat response before running an example.", false);
+      return;
+    }
+    const requestId = nextWorkflowRequestId + 1;
+    setSelectedWorkflowId(workflow.id);
+    setActiveWorkflowRun({ workflowId: workflow.id, requestId });
+    setNextWorkflowRequestId(requestId);
+    setFailedWorkflowIds((failed) => {
+      const next = new Set(failed);
+      next.delete(workflow.id);
+      return next;
+    });
+    setChatOpen(true);
   };
 
   const onWireDrop = async (nodeId: string, payload: WirePayload) => {
@@ -260,7 +360,6 @@ export default function App() {
     }
   };
 
-  const data = state.data;
   const nodeCount = data?.nodes.length ?? 0;
 
   const isEmbedded =
@@ -389,17 +488,33 @@ export default function App() {
             {!EMBED && (
               <WirePalette catalog={ucContext.catalog} schema={ucContext.schema} />
             )}
-            <div className="apx-graph">
-              <TopologyGraph
-                data={data}
-                selected={state.selected}
+            <div className="apx-workspace">
+              <WorkflowPanel
+                workflows={data.workflows ?? []}
+                selectedWorkflowId={selectedWorkflowId}
                 routeNodeIds={routeNodeIds}
                 routeEdgeIds={routeEdgeIds}
-                droppableIds={droppableIds}
-                showMap={data.nodes.length >= 12}
-                onNodeClick={(id) => setState((s) => ({ ...s, selected: id }))}
-                onWireDrop={EMBED ? undefined : onWireDrop}
+                statuses={workflowStatuses}
+                unresolvedRouteStages={unresolvedRouteStages}
+                observedRoute={observedRoute}
+                activeWorkflowId={activeWorkflowRun?.workflowId ?? null}
+                canRun={!EMBED}
+                senderBusy={chatSending}
+                onSelect={setSelectedWorkflowId}
+                onRun={runWorkflow}
               />
+              <div className="apx-graph">
+                <TopologyGraph
+                  data={data}
+                  selected={state.selected}
+                  routeNodeIds={routeNodeIds}
+                  routeEdgeIds={routeEdgeIds}
+                  droppableIds={droppableIds}
+                  showMap={data.nodes.length >= 12}
+                  onNodeClick={(id) => setState((s) => ({ ...s, selected: id }))}
+                  onWireDrop={EMBED ? undefined : onWireDrop}
+                />
+              </div>
             </div>
             {state.selected && (
               <NodeInspector
@@ -420,6 +535,20 @@ export default function App() {
               <ChatDock
                 collapsed={!chatOpen}
                 onToggle={() => setChatOpen((v) => !v)}
+                starterQuestion={activeWorkflowRun
+                  ? data.workflows?.find((workflow) => workflow.id === activeWorkflowRun.workflowId)?.question
+                  : null}
+                runRequestId={activeWorkflowRun?.requestId}
+                onSendingChange={setChatSending}
+                onRunQuestion={(requestId, completed) => {
+                  setActiveWorkflowRun((activeRun) => {
+                    if (!activeRun || activeRun.requestId !== requestId) return activeRun;
+                    if (!completed) {
+                      setFailedWorkflowIds((failed) => new Set(failed).add(activeRun.workflowId));
+                    }
+                    return null;
+                  });
+                }}
                 onTurnComplete={() => {
                   loadRoute();
                   // Second pass — ring buffer may lag a tick behind stream end.

@@ -757,6 +757,7 @@ async def test_r3_topology_json_preserves_rootid_and_agentname(client: AsyncClie
     assert set(g) >= {"rootId", "agentName", "nodes", "edges"}
     assert g["rootId"]  # non-empty entry-point id
     assert isinstance(g["nodes"], list) and isinstance(g["edges"], list)
+    assert g["workflows"] == []
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from ._service_policies import ServicePoliciesConfig
 
@@ -300,6 +300,74 @@ class SkillConfig(BaseModel):
     path: str
 
 
+def _validate_nonblank_strings(value: Any) -> Any:
+    """Reject blank strings in workflow declarations, including list items."""
+    if isinstance(value, str):
+        if not value.strip():
+            raise ValueError("must not be blank")
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _validate_nonblank_strings(item)
+    return value
+
+
+class WorkflowHandoff(BaseModel):
+    """A declared contract between two stages of an example workflow."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    target: str
+    input_contract: str
+    output_contract: str
+    explanation: str
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _require_nonblank_strings(cls, value: Any) -> Any:
+        return _validate_nonblank_strings(value)
+
+
+class ExampleWorkflow(BaseModel):
+    """A declarative, app-neutral workflow shown in the example experience."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    title: str
+    question: str
+    purpose: str
+    route: list[str] = Field(min_length=1)
+    handoffs: list[WorkflowHandoff] = Field(default_factory=list)
+    outcome: str = ""
+    follow_ups: list[str] = Field(default_factory=list)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _require_nonblank_strings(cls, value: Any, info: ValidationInfo) -> Any:
+        if info.field_name == "outcome" and value == "":
+            return value
+        return _validate_nonblank_strings(value)
+
+
+def normalize_workflows(value: Any) -> list[ExampleWorkflow]:
+    """Normalize config or app-attached workflow declarations into models."""
+    if value is None:
+        return []
+    if isinstance(value, ExampleWorkflow):
+        return [value]
+    if isinstance(value, dict):
+        values = [value]
+    elif isinstance(value, (list, tuple)):
+        values = value
+    else:
+        raise TypeError("workflows must be a workflow object or a list of workflows")
+    return [
+        item if isinstance(item, ExampleWorkflow) else ExampleWorkflow.model_validate(item)
+        for item in values
+    ]
+
+
 class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 
@@ -321,6 +389,14 @@ class AgentConfig(BaseModel):
     UI-only metadata: surfaced to the chat landing as clickable starter chips;
     does not affect runtime agent behavior. Distinct from ``example`` (the
     declarative example *backend* config)."""
+    workflows: list[ExampleWorkflow] = Field(default_factory=list)
+    """Declarative example workflows shown alongside starter prompts."""
+
+    @field_validator("workflows", mode="before")
+    @classmethod
+    def _normalize_workflows(cls, value: Any) -> list[ExampleWorkflow]:
+        return normalize_workflows(value)
+
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     """Built-in guard configuration — see ``[tool.apx.agent.guardrails]``."""
     service_policies: ServicePoliciesConfig = Field(default_factory=ServicePoliciesConfig)
@@ -400,6 +476,20 @@ class AgentConfig(BaseModel):
     tool list.  Agents with composite topologies fall back to ``'langgraph'``
     automatically with a warning.
     """
+
+
+def workflow_prompts(
+    config: AgentConfig, workflows: list[ExampleWorkflow] | None = None
+) -> list[str]:
+    """Merge configured starter prompts with unique workflow questions."""
+    workflows = config.workflows if workflows is None else workflows
+    prompts: list[str] = []
+    seen: set[str] = set()
+    for prompt in [*config.examples, *(workflow.question for workflow in workflows)]:
+        if prompt not in seen:
+            seen.add(prompt)
+            prompts.append(prompt)
+    return prompts
 
 
 class AgentTool(BaseModel):
@@ -567,3 +657,9 @@ class AgentContext:
     def get_tool(self, name: str) -> AgentTool | None:
         return self._tool_map.get(name)
 
+
+def workflows_for_context(ctx: AgentContext) -> list[ExampleWorkflow]:
+    """Resolve configured workflows, then an optional app-owned metadata hook."""
+    if ctx.config.workflows:
+        return ctx.config.workflows
+    return normalize_workflows(getattr(ctx.agent, "__apx_workflows__", None))

@@ -36,7 +36,7 @@ from mlflow.types.agent import (  # noqa: E402
     ChatAgentChunk,
 )
 
-from apx_agent import Agent, LlmAgent, chat_agent_for  # noqa: E402
+from apx_agent import Agent, AgentConfig, AgentContext, LlmAgent, chat_agent_for  # noqa: E402
 from apx_agent._resources import collect_resource_specs  # noqa: E402
 from apx_agent._wiring import finalize_agent  # noqa: E402
 
@@ -382,3 +382,111 @@ def test_user_id_without_token_still_builds_headers(monkeypatch) -> None:
 
 def test_no_identity_yields_none_headers(monkeypatch) -> None:
     assert _resolve_headers(monkeypatch, {}) is None
+
+
+def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
+    from html import escape
+    from html.parser import HTMLParser
+
+    from apx_agent._models import AgentCard
+    from apx_agent._ui_chat import _render_landing
+
+    question = 'What is the <b>position</b>? <script>alert("x")</script> & peers?'
+    config = AgentConfig(
+        name="demo-agent",
+        examples=[question],
+        workflows=[{
+            "id": "position",
+            "title": "<Pricing review>",
+            "question": question,
+            "purpose": "Compare <b>peers</b>.",
+            "route": ["calibrate"],
+        }],
+    )
+    ctx = AgentContext(
+        config=config,
+        tools=[],
+        card=AgentCard(name=config.name, description="", skills=[]),
+        agent=None,  # type: ignore[arg-type]
+    )
+
+    html = _render_landing(ctx)
+
+    assert escape(question) in html
+    assert "<b>position</b>" not in html
+    assert "<script>alert(\"x\")</script>" not in html
+
+    class _WorkflowButtonParser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.starter_button_count = 0
+            self.starter_data_qs: list[str] = []
+            self.workflow_data_qs: list[str] = []
+            self.workflow_uses_example: list[bool] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            attributes = dict(attrs)
+            class_attr = attributes.get("class")
+            if tag != "button" or class_attr is None:
+                return
+            classes = class_attr.split()
+            if "starter-chip" not in classes:
+                return
+            self.starter_button_count += 1
+            data_q = attributes.get("data-q")
+            if data_q is None:
+                return
+            self.starter_data_qs.append(data_q)
+            if "workflow-chip" in classes:
+                self.workflow_data_qs.append(data_q)
+                self.workflow_uses_example.append(
+                    attributes.get("onclick") == "useExample(this)"
+                )
+
+    parser = _WorkflowButtonParser()
+    parser.feed(html)
+    assert parser.starter_button_count == 1
+    assert parser.starter_data_qs == [question]
+    assert parser.workflow_data_qs == [question]
+    assert parser.workflow_uses_example == [True]
+    assert "&lt;Pricing review&gt;" in html
+    assert "Compare &lt;b&gt;peers&lt;/b&gt;." in html
+
+
+def test_chat_landing_renders_attached_workflow_examples_once_and_escapes_text() -> None:
+    from html import escape
+    from types import SimpleNamespace
+
+    from apx_agent._models import AgentCard
+    from apx_agent._ui_chat import _render_landing
+
+    title = "<Attached pricing review>"
+    purpose = 'Compare <b>peers</b> & "positioning".'
+    question = 'What is the <b>position</b>? <script>alert("x")</script> & peers?'
+    workflow = {
+        "id": "attached-position",
+        "title": title,
+        "question": question,
+        "purpose": purpose,
+        "route": ["calibrate"],
+    }
+    config = AgentConfig(name="demo-agent")
+    ctx = AgentContext(
+        config=config,
+        tools=[],
+        card=AgentCard(name=config.name, description="", skills=[]),
+        agent=SimpleNamespace(__apx_workflows__=[workflow]),
+    )
+
+    html = _render_landing(ctx)
+
+    data_q = escape(question, quote=True).replace("?", "&#x3f;")
+    assert html.count(escape(title)) == 1
+    assert html.count(escape(purpose)) == 1
+    assert html.count(escape(question)) == 1
+    assert "<b>position</b>" not in html
+    assert "<script>alert(\"x\")</script>" not in html
+    assert (
+        'class="starter-chip workflow-chip" onclick="useExample(this)" '
+        f'data-q="{data_q}"'
+    ) in html
