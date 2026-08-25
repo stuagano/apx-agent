@@ -634,7 +634,10 @@ async def setup_agent(
     # advertise a skill twice.
     remote_tools = await agent.fetch_remote_tools()
     known_names = {t.name for t in tools}
-    tools += [t for t in remote_tools if t.name not in known_names]
+    for tool in remote_tools:
+        if tool.name not in known_names:
+            tools.append(tool)
+            known_names.add(tool.name)
     card = AgentCard(
         name=config.name,
         description=config.description,

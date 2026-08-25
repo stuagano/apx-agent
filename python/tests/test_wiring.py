@@ -80,6 +80,22 @@ class TestSetupAgent:
         assert len(ctx.tools) == 2
 
     @pytest.mark.asyncio
+    async def test_dedupes_remote_tools_in_card(self):
+        app = FastAPI()
+        agent = LlmAgent(tools=[get_weather])
+        config = AgentConfig(name="test")
+        from apx_agent._models import AgentTool
+
+        agent.fetch_remote_tools = AsyncMock(return_value=[
+            AgentTool(name="peer", description="Peer"),
+            AgentTool(name="peer", description="Peer"),
+        ])
+
+        ctx = await setup_agent(app, agent, config)
+
+        assert [tool.name for tool in ctx.tools].count("peer") == 1
+
+    @pytest.mark.asyncio
     async def test_sub_agent_env_var_expansion(self):
         app = FastAPI()
         agent = LlmAgent(tools=[get_weather])

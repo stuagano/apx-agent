@@ -59,7 +59,10 @@ async def refresh_agent_context(ctx: AgentContext) -> None:
     tools = list(agent.collect_tools())
     remote = await agent.fetch_remote_tools()
     known = {t.name for t in tools}
-    tools.extend(t for t in remote if t.name not in known)
+    for tool in remote:
+        if tool.name not in known:
+            tools.append(tool)
+            known.add(tool.name)
     ctx.tools = tools
     ctx._tool_map = {t.name: t for t in tools}
     ctx.card = AgentCard(
