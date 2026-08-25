@@ -345,6 +345,13 @@ pre {
   line-height: 1.4;
 }
 
+.apx-workflow-run-notice {
+  margin: 0 14px 8px;
+  color: #fde68a;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .apx-workflows-graph-count {
   color: var(--dim);
   font-family: ui-monospace, monospace;

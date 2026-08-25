@@ -13,6 +13,8 @@ export interface WorkflowPanelProps {
   unresolvedRouteStages: ReadonlySet<string>;
   observedRoute: string[];
   activeWorkflowId: string | null;
+  canRun: boolean;
+  senderBusy: boolean;
 }
 
 function statusText(status: WorkflowStatus): string {
@@ -41,8 +43,16 @@ export function WorkflowPanel({
   unresolvedRouteStages,
   observedRoute,
   activeWorkflowId,
+  canRun,
+  senderBusy,
 }: WorkflowPanelProps) {
   if (workflows.length === 0) return null;
+  const runDisabled = !canRun || activeWorkflowId !== null || senderBusy;
+  const runNotice = !canRun
+    ? "Run examples are unavailable in embedded topology because Chat is not available."
+    : senderBusy
+      ? "Wait for the current Chat response before running an example."
+      : null;
 
   return (
     <section className="apx-workflows" aria-labelledby="apx-workflows-title">
@@ -53,10 +63,11 @@ export function WorkflowPanel({
         </div>
         {selectedWorkflowId && (
           <span className="apx-workflows-graph-count">
-            {routeNodeIds.size} nodes · {routeEdgeIds.size} edges highlighted
+            {routeNodeIds.size} observed nodes · {routeEdgeIds.size} observed edges
           </span>
         )}
       </div>
+      {runNotice && <p id="apx-workflow-run-notice" className="apx-workflow-run-notice">{runNotice}</p>}
       <div className="apx-workflows-list">
         {workflows.map((workflow) => {
           const selected = workflow.id === selectedWorkflowId;
@@ -100,9 +111,10 @@ export function WorkflowPanel({
                   type="button"
                   className="apx-btn"
                   onClick={() => onRun(workflow)}
-                  disabled={activeWorkflowId !== null}
+                  disabled={runDisabled}
+                  aria-describedby={runNotice ? "apx-workflow-run-notice" : undefined}
                 >
-                  {running ? "Running…" : "Run example"}
+                  {!canRun ? "Run unavailable" : running ? "Running…" : senderBusy ? "Chat busy" : "Run example"}
                 </button>
               </div>
             </article>

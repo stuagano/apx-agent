@@ -14,6 +14,8 @@ export interface ChatDockProps {
   runRequestId?: number;
   /** Reports whether a workflow-started request reached a completed response. */
   onRunQuestion?: (requestId: number, completed: boolean) => void;
+  /** Lets the workflow rail avoid queueing behind the dock's one active stream. */
+  onSendingChange?: (sending: boolean) => void;
 }
 
 interface ToolStep {
@@ -142,6 +144,7 @@ export function ChatDock(props: ChatDockProps) {
     starterQuestion,
     runRequestId,
     onRunQuestion,
+    onSendingChange,
   } = props;
   const [messages, setMessages] = useState<Msg[]>([]);
   const [draft, setDraft] = useState("");
@@ -156,9 +159,13 @@ export function ChatDock(props: ChatDockProps) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
+  useEffect(() => {
+    onSendingChange?.(sending);
+  }, [onSendingChange, sending]);
+
   const send = useCallback(async (question: string, fromWorkflow = false) => {
     const text = question.trim();
-    if (!text || sending) return;
+    if (!text || sending) return false;
     setDraft("");
     const nextHistory = [...history, { role: "user", content: text }];
     setHistory(nextHistory);
@@ -210,6 +217,7 @@ export function ChatDock(props: ChatDockProps) {
     } finally {
       setSending(false);
     }
+    return true;
   }, [history, onRunQuestion, onTurnComplete, runRequestId, sending]);
 
   useEffect(() => {
@@ -221,8 +229,10 @@ export function ChatDock(props: ChatDockProps) {
       return;
     }
     lastRunRequest.current = runRequestId;
-    void send(starterQuestion, true);
-  }, [runRequestId, send, starterQuestion]);
+    void send(starterQuestion, true).then((dispatched) => {
+      if (!dispatched) onRunQuestion?.(runRequestId, false);
+    });
+  }, [onRunQuestion, runRequestId, send, starterQuestion]);
 
   if (collapsed) {
     return (

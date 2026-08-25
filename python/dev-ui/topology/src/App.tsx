@@ -109,6 +109,7 @@ export default function App() {
   const [expDraft, setExpDraft] = useState("");
   const [savingExp, setSavingExp] = useState(false);
   const [chatOpen, setChatOpen] = useState(!EMBED);
+  const [chatSending, setChatSending] = useState(false);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [activeWorkflowRun, setActiveWorkflowRun] = useState<ActiveWorkflowRun | null>(null);
   const [nextWorkflowRequestId, setNextWorkflowRequestId] = useState(0);
@@ -253,30 +254,13 @@ export default function App() {
       : [],
     [data, selectedWorkflow],
   );
-  const declaredRouteNodeIds = useMemo(
-    () => new Set(resolvedSelectedRoute.flatMap((stage) => stage.nodeId ? [stage.nodeId] : [])),
-    [resolvedSelectedRoute],
-  );
   const unresolvedRouteStages = useMemo(
     () => new Set(resolvedSelectedRoute.flatMap((stage) => stage.nodeId ? [] : [stage.stage])),
     [resolvedSelectedRoute],
   );
-  const declaredRouteEdgeIds = useMemo(
-    () => new Set((data?.edges ?? []).flatMap((edge) =>
-      declaredRouteNodeIds.has(edge.source) && declaredRouteNodeIds.has(edge.target)
-        ? [edge.id]
-        : [],
-    )),
-    [data, declaredRouteNodeIds],
-  );
-  const routeNodeIds = useMemo(
-    () => new Set([...observedNodeIds, ...declaredRouteNodeIds]),
-    [declaredRouteNodeIds, observedNodeIds],
-  );
-  const routeEdgeIds = useMemo(
-    () => new Set([...observedEdgeIds, ...declaredRouteEdgeIds]),
-    [declaredRouteEdgeIds, observedEdgeIds],
-  );
+  // Graph highlights are evidence only: declared workflow routes stay in the rail.
+  const routeNodeIds = observedNodeIds;
+  const routeEdgeIds = observedEdgeIds;
   const workflowStatuses = useMemo(() => new Map((data?.workflows ?? []).map((workflow) => {
     const resolved = resolveWorkflowRoute(workflow, data?.nodes ?? []);
     const observedLogicalNodeIds = new Set(resolved.flatMap((stage) => stage.nodeId && observedNodeIds.has(stage.nodeId)
@@ -300,6 +284,11 @@ export default function App() {
   };
 
   const runWorkflow = (workflow: ExampleWorkflow) => {
+    if (EMBED) return;
+    if (chatSending || activeWorkflowRun) {
+      showToast("Wait for the current Chat response before running an example.", false);
+      return;
+    }
     const requestId = nextWorkflowRequestId + 1;
     setSelectedWorkflowId(workflow.id);
     setActiveWorkflowRun({ workflowId: workflow.id, requestId });
@@ -509,6 +498,8 @@ export default function App() {
                 unresolvedRouteStages={unresolvedRouteStages}
                 observedRoute={observedRoute}
                 activeWorkflowId={activeWorkflowRun?.workflowId ?? null}
+                canRun={!EMBED}
+                senderBusy={chatSending}
                 onSelect={setSelectedWorkflowId}
                 onRun={runWorkflow}
               />
@@ -548,6 +539,7 @@ export default function App() {
                   ? data.workflows?.find((workflow) => workflow.id === activeWorkflowRun.workflowId)?.question
                   : null}
                 runRequestId={activeWorkflowRun?.requestId}
+                onSendingChange={setChatSending}
                 onRunQuestion={(requestId, completed) => {
                   setActiveWorkflowRun((activeRun) => {
                     if (!activeRun || activeRun.requestId !== requestId) return activeRun;
