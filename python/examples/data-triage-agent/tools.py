@@ -269,7 +269,17 @@ def list_genie_spaces(ws: Workspace) -> dict[str, Any]:
     Returns space IDs, titles, and descriptions — use the space_id with
     query_genie_space to ask questions."""
     # Local because: framework genie_tool(space_id) pins the space at construction. This is the dynamic pattern — the LLM picks a space at runtime by calling list_genie_spaces first, then query_genie_space.
-    resp = ws.genie.list_spaces()
+    try:
+        resp = ws.genie.list_spaces()
+    except Exception as e:
+        logger.info("Genie space discovery unavailable: %s", e)
+        return {
+            "spaces": [],
+            "count": 0,
+            "availability": "unavailable",
+            "capability": "genie",
+            "error": f"Genie discovery failed: {e}",
+        }
     spaces = []
     for s in (resp.spaces or []):
         spaces.append({
@@ -287,7 +297,18 @@ def query_genie_space(space_id: str, question: str, ws: Workspace) -> dict[str, 
     space_id: ID from list_genie_spaces
     question: plain English question (e.g. 'What upstream tables feed into gold.dr_accounts?')"""
     # Local because: paired with list_genie_spaces for runtime space selection; the framework's static genie_tool factory can't express this.
-    msg = ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
+    try:
+        msg = ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
+    except Exception as e:
+        logger.info("Genie query unavailable for space %s: %s", space_id, e)
+        return {
+            "space_id": space_id,
+            "question": question,
+            "status": "failed",
+            "availability": "unavailable",
+            "capability": "genie",
+            "error": f"Genie query failed: {e}",
+        }
 
     result: dict[str, Any] = {
         "space_id": space_id,
@@ -296,6 +317,8 @@ def query_genie_space(space_id: str, question: str, ws: Workspace) -> dict[str, 
     }
 
     if msg.status == MessageStatus.FAILED:
+        result["availability"] = "unavailable"
+        result["capability"] = "genie"
         result["error"] = msg.error.message if msg.error else "Unknown error"
         return result
 
