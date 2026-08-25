@@ -8,7 +8,7 @@ This file is the framework boilerplate:
   * Compiles it to the MLflow ResponsesAgent contract.
   * Registers ``@invoke`` / ``@stream`` handlers.
   * Mounts apx-agent's ``/mcp`` + ``/.well-known/agent.json`` + ``/health``
-    so Genie / Genie Code can consume the agent.
+    + ``/readyz`` so the deploy gate and Genie / Genie Code can consume it.
 
 Driven by the ``uvicorn`` command in ``databricks.yml`` at deploy time.
 """
@@ -19,11 +19,13 @@ import os
 
 from mlflow.genai.agent_server import AgentServer, invoke, stream
 
-from apx_agent import compile_to_responses_agent, mount_mcp_endpoints
+from apx_agent import compile_to_responses_agent, mount_mcp_endpoints, mount_readyz
 
 from agent import agent
 
-MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
+# Keep this fallback aligned with databricks.yml's llm_endpoint_name default.
+DEFAULT_MODEL = "databricks-claude-sonnet-4-6"
+MODEL = os.environ.get("APX_MODEL", DEFAULT_MODEL)
 
 _invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL)
 
@@ -44,6 +46,7 @@ server = AgentServer(agent_type="ResponsesAgent")
 app = server.app
 
 mount_mcp_endpoints(app, agent)
+mount_readyz(app, agent, model=MODEL)
 
 # Dev UI (/_apx/* including Discover) is mounted by mount_mcp_endpoints for
 # both local and Apps runtimes. Writes on Apps still require APX_DEV_UI_TOKEN.
