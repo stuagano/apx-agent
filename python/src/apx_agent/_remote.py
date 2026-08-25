@@ -740,7 +740,7 @@ class RemoteDatabricksAgent(BaseAgent):
         """
         from httpx import AsyncClient
 
-        payload = {
+        payload: dict[str, Any] = {
             "input": [{"role": m.role, "content": m.content} for m in messages],
         }
         custom_inputs = _obo_custom_inputs(headers)
@@ -777,7 +777,7 @@ class RemoteDatabricksAgent(BaseAgent):
         """Direct POST /invocations with stream=true, parsing SSE."""
         from httpx import AsyncClient
 
-        payload = {
+        payload: dict[str, Any] = {
             "input": [{"role": m.role, "content": m.content} for m in messages],
             "stream": True,
         }
