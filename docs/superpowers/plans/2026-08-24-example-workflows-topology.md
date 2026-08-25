@@ -505,6 +505,24 @@ Expected: the existing `curinos-one-prod` app updates in place and remains `ACTI
 
 - [ ] **Step 6: Record deployment evidence and stop.** Capture the production URL, app deployment ID, workflow IDs, trace IDs, route/artifact summaries, and any environment-only test gap. Do not merge or delete worktrees until the user explicitly requests the repository handoff.
 
+### Task 9: Resolve metadata-hook coverage on the APX Chat landing
+
+**Files:**
+- Modify: `python/src/apx_agent/_models.py`
+- Modify: `python/src/apx_agent/_ui_chat.py`
+- Test: `python/tests/test_models.py`
+- Test: `python/tests/test_chat_agent.py`
+
+**Interfaces:**
+- The Chat landing must resolve workflow declarations through the same `workflows_for_context(ctx)` path as topology, while preserving config-backed `AgentConfig.workflows` behavior.
+- Existing legacy examples remain first, deduplicated against attached workflow questions.
+- Curinos's `agent.__apx_workflows__` metadata must appear as escaped workflow starter chips in `/_apx/chat` and `/_apx/agent` without copying customer declarations into APX.
+
+- [ ] **Step 1: Add a failing attached-workflow landing test.** Configure an otherwise empty `AgentConfig`, attach one valid serialized workflow through `agent.__apx_workflows__`, render the landing, and assert its escaped title/purpose/question appears once as a `workflow-chip` with the existing `useExample` behavior.
+- [ ] **Step 2: Implement the smallest shared prompt-resolution change.** Reuse `workflows_for_context(ctx)` from the Chat renderer and keep `workflow_prompts` insertion-order deduplication for legacy plus resolved workflow questions. Do not add a second metadata channel or execution path.
+- [ ] **Step 3: Run APX focused Chat/model tests and packaging checks.** Rebuild the Chat/topology assets as required by the existing packaging workflow.
+- [ ] **Step 4: Republish APX, repin Curinos to the new immutable SHA, redeploy the existing bundle, and rerun the Task 8 read-after-write checks.** Preserve the synthetic catalog/schema/warehouse/Genie settings and record the new deployment evidence.
+
 ---
 
 ## Plan self-review
