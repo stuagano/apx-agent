@@ -700,6 +700,39 @@ class TestRun:
         ]
 
     @pytest.mark.asyncio
+    async def test_http_path_forwards_obo_token_in_custom_inputs(self):
+        """Apps may strip forwarded credential headers between sibling apps."""
+        agent = self._make_agent_with_card()
+        agent._app_name = None  # force HTTP path
+        request = make_request(
+            {
+                "X-Forwarded-Access-Token": "obo-token",
+                "X-Forwarded-Host": "workspace.example.com",
+            }
+        )
+        received_body: dict = {}
+
+        async def mock_post(url, **kwargs):
+            received_body.update(kwargs.get("json", {}))
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 200
+            resp.json.return_value = make_responses_payload("ok")
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(side_effect=mock_post)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await agent.run([Message(role="user", content="hi")], request)
+
+        assert received_body["custom_inputs"] == {
+            "user_token": "obo-token",
+        }
+
+    @pytest.mark.asyncio
     async def test_http_path_raises_on_error_status(self):
         agent = self._make_agent_with_card()
         agent._app_name = None

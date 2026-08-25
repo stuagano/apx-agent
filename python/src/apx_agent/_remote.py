@@ -50,6 +50,12 @@ from ._models import (
 logger = logging.getLogger(__name__)
 
 
+def _obo_custom_inputs(headers: Mapping[str, str]) -> dict[str, str]:
+    """Preserve the caller token when an Apps proxy strips hop headers."""
+    token = headers.get("X-Forwarded-Access-Token")
+    return {"user_token": token} if token else {}
+
+
 # Host suffixes allowed for an *explicit* ``from_app_name`` remap of
 # ``card.url`` (workspace host → that app's ``*.databricksapps.com`` URL).
 # Never treat every Apps host as trusted for OBO (#614) — only same-origin, or
@@ -737,6 +743,9 @@ class RemoteDatabricksAgent(BaseAgent):
         payload = {
             "input": [{"role": m.role, "content": m.content} for m in messages],
         }
+        custom_inputs = _obo_custom_inputs(headers)
+        if custom_inputs:
+            payload["custom_inputs"] = custom_inputs
         url = f"{self._base_url}/responses"
 
         async with AsyncClient(timeout=self._timeout) as client:
@@ -772,6 +781,9 @@ class RemoteDatabricksAgent(BaseAgent):
             "input": [{"role": m.role, "content": m.content} for m in messages],
             "stream": True,
         }
+        custom_inputs = _obo_custom_inputs(headers)
+        if custom_inputs:
+            payload["custom_inputs"] = custom_inputs
 
         async with AsyncClient(timeout=self._timeout) as client:
             async with client.stream(
