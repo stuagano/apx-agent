@@ -487,7 +487,7 @@ git commit -m "chore(curinos): pin workflow-aware apx-agent"
 - Production app: `https://curinos-one-prod-7474660401027952.aws.databricksapps.com`.
 - Existing synthetic catalog/schema/warehouse and Genie settings remain unchanged.
 
-- [ ] **Step 1: Build/deploy with the existing Databricks Apps bundle.** Use the pinned APX wheel and the explicit profile. Do not change catalog, schema, warehouse, Genie space, source allowlist, or data mode.
+- [x] **Step 1: Build/deploy with the existing Databricks Apps bundle.** Use the pinned APX wheel and the explicit profile. Do not change catalog, schema, warehouse, Genie space, source allowlist, or data mode.
 
 ```bash
 databricks bundle deploy -t prod --profile fevm-hvhhmh-7def3z
@@ -495,15 +495,15 @@ databricks bundle deploy -t prod --profile fevm-hvhhmh-7def3z
 
 Expected: the existing `curinos-one-prod` app updates in place and remains `ACTIVE` at the existing URL.
 
-- [ ] **Step 2: Verify readiness and default-page payloads.** Check `/readyz`, `/_apx/topology.json`, and the Chat landing page. Assert the topology response contains the three workflow IDs and the Chat HTML contains their questions once each.
+- [x] **Step 2: Verify readiness and default-page payloads.** Check `/readyz`, `/_apx/topology.json`, and the Chat landing page. Assert the topology response contains the three workflow IDs and the Chat HTML contains their questions once each.
 
-- [ ] **Step 3: Run all three examples through the default Topology ChatDock.** For each question, record the response status, trace ID, displayed route, artifact/handoff summary, and final plain-English answer. Confirm a declared-but-unrun workflow says “not yet run” before invocation and changes only after trace evidence arrives.
+- [x] **Step 3: Run all three examples through the default Topology ChatDock.** For each question, record the response status, trace ID, displayed route, artifact/handoff summary, and final plain-English answer. Confirm a declared-but-unrun workflow says “not yet run” before invocation and changes only after trace evidence arrives.
 
-- [ ] **Step 4: Verify the Curinos account-scoped relationship example.** POST the existing coordinate request with `institution_id=bank-c` and assert HTTP 200, route `intelligence -> compound` or the declared coordinated route returned by the current dispatcher, account scope containing `bank-c`, and an account-specific answer. Verify the UI displays the answer outside the JSON/technical detail block.
+- [x] **Step 4: Verify the Curinos account-scoped relationship example.** POST the existing coordinate request with `institution_id=bank-c` and assert HTTP 200, route `intelligence -> compound` or the declared coordinated route returned by the current dispatcher, account scope containing `bank-c`, and an account-specific answer. Verify the UI displays the answer outside the JSON/technical detail block. (Final rerun used the selected production account `bank-a`; the earlier bank-c scoped contract was also verified.)
 
-- [ ] **Step 5: Verify failure and safety boundaries.** Run an unsupported question and confirm it returns a bounded error with trace correlation, without marking a workflow completed. Confirm no raw token, OBO context, or unbounded tool arguments appear in the default pages.
+- [x] **Step 5: Verify failure and safety boundaries.** Run an unsupported question and confirm it returns a bounded error with trace correlation, without marking a workflow completed. Confirm no raw token, OBO context, or unbounded tool arguments appear in the default pages.
 
-- [ ] **Step 6: Record deployment evidence and stop.** Capture the production URL, app deployment ID, workflow IDs, trace IDs, route/artifact summaries, and any environment-only test gap. Do not merge or delete worktrees until the user explicitly requests the repository handoff.
+- [x] **Step 6: Record deployment evidence and stop.** Capture the production URL, app deployment ID, workflow IDs, trace IDs, route/artifact summaries, and any environment-only test gap. Do not merge or delete worktrees until the user explicitly requests the repository handoff.
 
 ### Task 9: Resolve metadata-hook coverage on the APX Chat landing
 
@@ -518,10 +518,10 @@ Expected: the existing `curinos-one-prod` app updates in place and remains `ACTI
 - Existing legacy examples remain first, deduplicated against attached workflow questions.
 - Curinos's `agent.__apx_workflows__` metadata must appear as escaped workflow starter chips in `/_apx/chat` and `/_apx/agent` without copying customer declarations into APX.
 
-- [ ] **Step 1: Add a failing attached-workflow landing test.** Configure an otherwise empty `AgentConfig`, attach one valid serialized workflow through `agent.__apx_workflows__`, render the landing, and assert its escaped title/purpose/question appears once as a `workflow-chip` with the existing `useExample` behavior.
-- [ ] **Step 2: Implement the smallest shared prompt-resolution change.** Reuse `workflows_for_context(ctx)` from the Chat renderer and keep `workflow_prompts` insertion-order deduplication for legacy plus resolved workflow questions. Do not add a second metadata channel or execution path.
-- [ ] **Step 3: Run APX focused Chat/model tests and packaging checks.** Rebuild the Chat/topology assets as required by the existing packaging workflow.
-- [ ] **Step 4: Republish APX, repin Curinos to the new immutable SHA, redeploy the existing bundle, and rerun the Task 8 read-after-write checks.** Preserve the synthetic catalog/schema/warehouse/Genie settings and record the new deployment evidence.
+- [x] **Step 1: Add a failing attached-workflow landing test.** Configure an otherwise empty `AgentConfig`, attach one valid serialized workflow through `agent.__apx_workflows__`, render the landing, and assert its escaped title/purpose/question appears once as a `workflow-chip` with the existing `useExample` behavior.
+- [x] **Step 2: Implement the smallest shared prompt-resolution change.** Reuse `workflows_for_context(ctx)` from the Chat renderer and keep `workflow_prompts` insertion-order deduplication for legacy plus resolved workflow questions. Do not add a second metadata channel or execution path.
+- [x] **Step 3: Run APX focused Chat/model tests and packaging checks.** Rebuild the Chat/topology assets as required by the existing packaging workflow.
+- [x] **Step 4: Republish APX, repin Curinos to the new immutable SHA, redeploy the existing bundle, and rerun the Task 8 read-after-write checks.** Preserve the synthetic catalog/schema/warehouse/Genie settings and record the new deployment evidence. The final typed-artifact answer remediation is `21e5932b`; the final production rerun returned nonblank plain-English answers for all coordinated routes.
 
 ---
 
