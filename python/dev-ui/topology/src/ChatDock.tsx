@@ -2,12 +2,18 @@
 // Uses the same `/responses` streaming contract as `/_apx/agent` Chat.
 // On completion, calls `onTurnComplete` so the amber last-turn highlight refreshes.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface ChatDockProps {
   onTurnComplete?: () => void;
   collapsed?: boolean;
   onToggle?: () => void;
+  /** A workflow question supplied by the topology rail. */
+  starterQuestion?: string | null;
+  /** Changes for each requested run, including retries of the same question. */
+  runRequestId?: number;
+  /** Reports whether a workflow-started request reached a completed response. */
+  onRunQuestion?: (requestId: number, completed: boolean) => void;
 }
 
 interface ToolStep {
@@ -129,7 +135,14 @@ async function streamChat(
 }
 
 export function ChatDock(props: ChatDockProps) {
-  const { onTurnComplete, collapsed, onToggle } = props;
+  const {
+    onTurnComplete,
+    collapsed,
+    onToggle,
+    starterQuestion,
+    runRequestId,
+    onRunQuestion,
+  } = props;
   const [messages, setMessages] = useState<Msg[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -137,23 +150,14 @@ export function ChatDock(props: ChatDockProps) {
     [],
   );
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const lastRunRequest = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
-  if (collapsed) {
-    return (
-      <div className="apx-chat-dock collapsed">
-        <button type="button" className="apx-btn" onClick={onToggle}>
-          Chat
-        </button>
-      </div>
-    );
-  }
-
-  const send = async () => {
-    const text = draft.trim();
+  const send = useCallback(async (question: string, fromWorkflow = false) => {
+    const text = question.trim();
     if (!text || sending) return;
     setDraft("");
     const nextHistory = [...history, { role: "user", content: text }];
@@ -189,6 +193,7 @@ export function ChatDock(props: ChatDockProps) {
         },
       );
       setHistory((h) => [...h, { role: "assistant", content: full }]);
+      if (fromWorkflow && runRequestId !== undefined) onRunQuestion?.(runRequestId, true);
       // Give the ring buffer a beat to capture the trace, then highlight.
       window.setTimeout(() => onTurnComplete?.(), 400);
     } catch (err: unknown) {
@@ -201,10 +206,33 @@ export function ChatDock(props: ChatDockProps) {
         }
         return copy;
       });
+      if (fromWorkflow && runRequestId !== undefined) onRunQuestion?.(runRequestId, false);
     } finally {
       setSending(false);
     }
-  };
+  }, [history, onRunQuestion, onTurnComplete, runRequestId, sending]);
+
+  useEffect(() => {
+    if (
+      runRequestId === undefined ||
+      !starterQuestion ||
+      lastRunRequest.current === runRequestId
+    ) {
+      return;
+    }
+    lastRunRequest.current = runRequestId;
+    void send(starterQuestion, true);
+  }, [runRequestId, send, starterQuestion]);
+
+  if (collapsed) {
+    return (
+      <div className="apx-chat-dock collapsed">
+        <button type="button" className="apx-btn" onClick={onToggle}>
+          Chat
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="apx-chat-dock">
@@ -248,7 +276,7 @@ export function ChatDock(props: ChatDockProps) {
         className="apx-chat-dock-form"
         onSubmit={(e) => {
           e.preventDefault();
-          void send();
+          void send(draft);
         }}
       >
         <input

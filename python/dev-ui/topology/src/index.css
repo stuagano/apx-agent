@@ -303,6 +303,161 @@ pre {
   min-width: 0;
 }
 
+.apx-workspace {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Declared example workflows sit above the graph; traces remain the evidence source. */
+
+.apx-workflows {
+  flex-shrink: 0;
+  max-height: 290px;
+  overflow: auto;
+  border-bottom: 1px solid var(--border);
+  background: #0d0d0d;
+}
+
+.apx-workflows-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 8px;
+}
+
+.apx-workflows h2,
+.apx-workflows h3,
+.apx-workflows p {
+  margin: 0;
+}
+
+.apx-workflows h2 {
+  font-size: 13px;
+}
+
+.apx-workflows-head p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.apx-workflows-graph-count {
+  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.apx-workflows-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 0 14px 12px;
+}
+
+.apx-workflow-card {
+  flex: 0 0 min(360px, 80vw);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--panel);
+}
+
+.apx-workflow-card.selected {
+  border-color: var(--accent-border);
+  box-shadow: inset 0 0 0 1px var(--accent-bg);
+}
+
+.apx-workflow-title-row,
+.apx-workflow-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.apx-workflow-title-row h3 {
+  font-size: 12px;
+}
+
+.apx-workflow-status {
+  flex-shrink: 0;
+  border-radius: 4px;
+  padding: 2px 5px;
+  color: var(--muted);
+  background: #1a1a1a;
+  font-size: 10px;
+}
+
+.apx-workflow-status.partial,
+.apx-workflow-status.active {
+  color: #fde68a;
+  background: #1a1508;
+}
+
+.apx-workflow-status.completed {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.apx-workflow-status.failed {
+  color: #fca5a5;
+  background: #2a1215;
+}
+
+.apx-workflow-question,
+.apx-workflow-purpose,
+.apx-workflow-outcome,
+.apx-workflow-route {
+  margin-top: 7px !important;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.apx-workflow-question {
+  color: #dbeafe;
+}
+
+.apx-workflow-purpose,
+.apx-workflow-outcome {
+  color: var(--muted);
+}
+
+.apx-workflow-route {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  padding-left: 18px;
+  color: var(--text);
+}
+
+.apx-workflow-route .unresolved {
+  color: #fde68a;
+}
+
+.apx-workflow-route-note {
+  display: grid;
+  gap: 3px;
+  margin-top: 7px;
+  color: #fde68a;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.apx-workflow-actions {
+  justify-content: flex-start;
+  margin-top: 9px;
+}
+
+.apx-workflow-actions .apx-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
 /* Chat dock — right rail for try-a-turn without leaving Topology */
 
 .apx-chat-dock {
@@ -662,4 +817,45 @@ pre {
   background: #2a0f0f;
   border: 1px solid #7f1d1d;
   color: #f87171;
+}
+
+button:focus-visible,
+a:focus-visible,
+.apx-tracing-bar input:focus-visible,
+.apx-chat-dock-form input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 1050px) {
+  .apx-chat-dock {
+    width: 280px;
+  }
+
+  .apx-workflows {
+    max-height: 250px;
+  }
+}
+
+@media (max-width: 760px) {
+  .apx-content {
+    overflow: auto;
+  }
+
+  .apx-palette {
+    display: none;
+  }
+
+  .apx-chat-dock {
+    width: 260px;
+  }
+
+  .apx-workflows-head {
+    display: block;
+  }
+
+  .apx-workflows-graph-count {
+    display: block;
+    margin-top: 5px;
+  }
 }
