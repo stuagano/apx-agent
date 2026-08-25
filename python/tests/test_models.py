@@ -122,3 +122,17 @@ def test_workflow_prompts_deduplicate_in_declaration_order() -> None:
     )
 
     assert workflow_prompts(config) == ["first", "second", "third"]
+
+
+def test_workflow_prompts_accepts_resolved_workflows() -> None:
+    config = AgentConfig(
+        name="demo",
+        examples=["first", "attached"],
+        workflows=[ExampleWorkflow.model_validate(_workflow(question="configured"))],
+    )
+    attached = [
+        ExampleWorkflow.model_validate(_workflow(id="attached", question="attached")),
+        ExampleWorkflow.model_validate(_workflow(id="next", question="next")),
+    ]
+
+    assert workflow_prompts(config, attached) == ["first", "attached", "next"]

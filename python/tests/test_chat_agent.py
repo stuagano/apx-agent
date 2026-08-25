@@ -451,3 +451,42 @@ def test_chat_landing_renders_workflow_examples_once_and_escapes_text() -> None:
     assert parser.workflow_uses_example == [True]
     assert "&lt;Pricing review&gt;" in html
     assert "Compare &lt;b&gt;peers&lt;/b&gt;." in html
+
+
+def test_chat_landing_renders_attached_workflow_examples_once_and_escapes_text() -> None:
+    from html import escape
+    from types import SimpleNamespace
+
+    from apx_agent._models import AgentCard
+    from apx_agent._ui_chat import _render_landing
+
+    title = "<Attached pricing review>"
+    purpose = 'Compare <b>peers</b> & "positioning".'
+    question = 'What is the <b>position</b>? <script>alert("x")</script> & peers?'
+    workflow = {
+        "id": "attached-position",
+        "title": title,
+        "question": question,
+        "purpose": purpose,
+        "route": ["calibrate"],
+    }
+    config = AgentConfig(name="demo-agent")
+    ctx = AgentContext(
+        config=config,
+        tools=[],
+        card=AgentCard(name=config.name, description="", skills=[]),
+        agent=SimpleNamespace(__apx_workflows__=[workflow]),
+    )
+
+    html = _render_landing(ctx)
+
+    data_q = escape(question, quote=True).replace("?", "&#x3f;")
+    assert html.count(escape(title)) == 1
+    assert html.count(escape(purpose)) == 1
+    assert html.count(escape(question)) == 1
+    assert "<b>position</b>" not in html
+    assert "<script>alert(\"x\")</script>" not in html
+    assert (
+        'class="starter-chip workflow-chip" onclick="useExample(this)" '
+        f'data-q="{data_q}"'
+    ) in html

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from ._models import AgentContext, AgentTool, workflow_prompts
+from ._models import AgentContext, AgentTool, workflow_prompts, workflows_for_context
 from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 
 
@@ -670,8 +670,9 @@ def _render_landing(ctx: AgentContext) -> str:
     name = ctx.config.name
     desc = ctx.config.description or ""
     tools = [t for t in ctx.tools if t.name != "create_tool"]
-    examples = workflow_prompts(ctx.config)
-    workflows = {workflow.question: workflow for workflow in ctx.config.workflows}
+    resolved_workflows = workflows_for_context(ctx)
+    examples = workflow_prompts(ctx.config, resolved_workflows)
+    workflows = {workflow.question: workflow for workflow in resolved_workflows}
 
     parts = [f'<div class="landing-hi">{_html.escape(name)}</div>']
     if desc:

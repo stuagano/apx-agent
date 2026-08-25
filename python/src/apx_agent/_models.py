@@ -478,11 +478,14 @@ class AgentConfig(BaseModel):
     """
 
 
-def workflow_prompts(config: AgentConfig) -> list[str]:
+def workflow_prompts(
+    config: AgentConfig, workflows: list[ExampleWorkflow] | None = None
+) -> list[str]:
     """Merge configured starter prompts with unique workflow questions."""
+    workflows = config.workflows if workflows is None else workflows
     prompts: list[str] = []
     seen: set[str] = set()
-    for prompt in [*config.examples, *(workflow.question for workflow in config.workflows)]:
+    for prompt in [*config.examples, *(workflow.question for workflow in workflows)]:
         if prompt not in seen:
             seen.add(prompt)
             prompts.append(prompt)
