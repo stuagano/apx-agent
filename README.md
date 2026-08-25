@@ -210,9 +210,12 @@ To update a scaffolded project after tables or columns change, run
 live metadata in place and preserves enriched OKF content by default; pass
 `--prune-missing-tables` only to intentionally remove concepts for tables no
 longer present. Older projects can be converted with
-`apx-agent agents migrate-to-okf`. See the [DataAgent grounding asset
+`apx-agent agents migrate-to-okf`. To seed an agent from Databricks' public
+industry models, run
+`apx-agent agents ontology-jumpstart path/to/model.json --catalog <catalog> --schema <schema>`.
+See the [DataAgent grounding asset
 lifecycle](docs/agents/data-agent.md#grounding-asset-lifecycle) for the
-create → refresh → enrich → migrate workflow.
+create, jumpstart, refresh, enrich, and migrate workflow.
 
 ```python
 # Live introspection

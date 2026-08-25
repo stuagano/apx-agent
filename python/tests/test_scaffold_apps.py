@@ -437,6 +437,7 @@ def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None
             # catalog → "main", schema → "sales", persona → role text, join_key → blank, objective → blank, instructions → blank
             input="main\nsales\na sales analyst who knows revenue data deeply\n\n\n\n",
             catch_exceptions=False,
+            env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
         )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "my_coworker" / "agent.py").read_text()
@@ -460,6 +461,7 @@ def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
             # catalog, schema, persona, join_key, objective, instructions
             input="main\nfraud\na fraud detection analyst\ntransaction ID\ndetect fraudulent transactions and flag anomalies\n\n",
             catch_exceptions=False,
+            env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
         )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "fraud_agent" / "agent.py").read_text()
@@ -514,6 +516,7 @@ def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path)
             # catalog, schema, persona, join_key (blank), objective (blank), instructions (blank)
             input="main\nsales\npayroll analyst\n\n\n\n",
             catch_exceptions=False,
+            env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
         )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "interactive_agent" / "agent.py").read_text()

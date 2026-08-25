@@ -32,6 +32,7 @@ dev = [
 
 [tool.uv.sources]
 apx-agent = { path = "../..", editable = true }
+databricks-tools-core = { path = "./databricks_tools_core-0.1.0-py3-none-any.whl" }
 
 [project.scripts]
 quickstart = "scripts.quickstart:main"

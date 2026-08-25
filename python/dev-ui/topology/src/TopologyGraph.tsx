@@ -66,6 +66,17 @@ interface LayoutResult {
   edges: Edge[];
 }
 
+function contextBadges(metadata?: Record<string, unknown>): string[] {
+  if (!metadata) return [];
+  const badges: string[] = [];
+  if (typeof metadata.purpose === "string" && metadata.purpose.trim()) badges.push("OKF");
+  if (typeof metadata.domain === "string" && metadata.domain.trim()) badges.push("Domain");
+  if (Array.isArray(metadata.question_answer_pairs) && metadata.question_answer_pairs.length) {
+    badges.push("Q/A");
+  }
+  return badges;
+}
+
 function layout(
   data: TopologyResponse,
   selected: string | null,
@@ -90,6 +101,7 @@ function layout(
   const rfNodes: Node[] = data.nodes.map((n) => {
     const pos = g.node(n.id);
     const style = styleFor(n.type);
+    const badges = contextBadges(n.metadata);
     const isSelected = selected === n.id;
     const onRoute = !!routeNodeIds?.has(n.id);
     const isDroppable = !!droppableIds?.has(n.id) && isLeafAgentType(n.type);
@@ -101,7 +113,7 @@ function layout(
         y: (pos?.y ?? 0) - NODE_HEIGHT / 2,
       },
       data: {
-        label: n.label,
+        label: badges.length ? `${n.label}  ${badges.join(" · ")}` : n.label,
         topoType: n.type,
         droppable: isDroppable,
       },

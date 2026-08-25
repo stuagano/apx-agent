@@ -16,7 +16,7 @@ Subcommands:
 Most agent-facing commands accept ``--module MODULE:VAR`` to point at the
 agent definition (defaults to ``agent:agent``); the module must be importable
 from the current working directory. The OKF bundle commands
-(``refresh-schema`` / ``migrate-to-okf`` / ``pull-comments`` /
+(``refresh-schema`` / ``migrate-to-okf`` / ``ontology-jumpstart`` / ``pull-comments`` /
 ``push-comments`` / ``drift-pr`` / ``enrich``) and ``scaffold`` / ``cost`` operate on the project, not a
 loaded agent, and so take no ``--module``.
 
@@ -4421,6 +4421,58 @@ def migrate_to_okf(force: bool) -> None:
     if regen is not None:
         manifest_path.write_text(dump_schema_cache(regen))
     click.echo(f"Wrote OKF bundle to {okf_root} (schema.json regenerated as derived cache).")
+
+
+@agents.command("ontology-jumpstart")
+@click.argument("model_json", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--catalog", required=True, help="APX catalog envelope for generated grounding.")
+@click.option("--schema", required=True, help="APX schema envelope for generated grounding.")
+@click.option(
+    "--output",
+    "apx_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path(".apx"),
+    show_default=True,
+    help="Directory that will receive okf/ and schema.json.",
+)
+@click.option("--force", is_flag=True, help="Overwrite an existing output okf/ bundle.")
+def ontology_jumpstart(
+    model_json: Path,
+    catalog: str,
+    schema: str,
+    apx_dir: Path,
+    force: bool,
+) -> None:
+    """Create APX OKF grounding from a Databricks industry model.json.
+
+    Use with model files from
+    databricks-industry-solutions/lakehouse-industry-data-models. The command is
+    local-only: it writes ``.apx/okf`` plus the derived ``.apx/schema.json`` cache
+    and does not call a Databricks workspace.
+    """
+    from ._industry_models import write_industry_model_apx
+
+    okf_root = apx_dir / "okf"
+    if okf_root.exists() and not force:
+        raise click.ClickException(f"{okf_root} already exists. Use --force to overwrite.")
+    if okf_root.exists():
+        if okf_root.is_symlink():
+            raise click.ClickException(f"{okf_root} is a symlink; refusing to overwrite.")
+        if okf_root.is_dir():
+            shutil.rmtree(okf_root)
+        else:
+            okf_root.unlink()
+    manifest = write_industry_model_apx(
+        model_json,
+        apx_dir,
+        catalog=catalog,
+        schema=schema,
+    )
+    n = len(manifest["tables"])
+    click.echo(
+        f"Wrote ontology jumpstart to {okf_root} (+ schema.json cache) "
+        f"from {model_json} - {n} table{'s' if n != 1 else ''}."
+    )
 
 
 class _OkfProject(NamedTuple):

@@ -884,6 +884,39 @@ def test_token_without_user_id_still_builds_forwarding_headers(monkeypatch):
     assert headers.token.get_secret_value() == "tok-xyz"
 
 
+def test_apps_request_header_token_builds_forwarding_headers(monkeypatch):
+    """Browser Apps requests carry OBO in request headers, not custom_inputs.
+
+    The ResponsesAgent adapter must still surface ``Dependencies.Headers`` with
+    the token so remote sub-agent tools forward the caller identity.
+    """
+    import mlflow.genai.agent_server as agent_server
+
+    from apx_agent._responses_agent import _resolve_ws_and_headers_for_request
+
+    monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+    monkeypatch.delenv("DATABRICKS_APP_URL", raising=False)
+    monkeypatch.setenv("DATABRICKS_HOST", "https://fake.cloud.databricks.com")
+    monkeypatch.setattr(
+        agent_server,
+        "get_request_headers",
+        lambda: {
+            "X-Forwarded-Access-Token": "tok-from-header",
+            "X-Forwarded-User": "user-123",
+            "X-Forwarded-Email": "user@example.com",
+        },
+        raising=False,
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=MagicMock()):
+        headers = _resolve_ws_and_headers_for_request(custom_inputs=None).headers
+
+    assert headers is not None
+    assert headers.token is not None
+    assert headers.token.get_secret_value() == "tok-from-header"
+    assert headers.user_id == "user-123"
+    assert headers.user_email == "user@example.com"
+
+
 def test_load_replays_most_recent_items_in_chronological_order() -> None:
     """#489: load must request the NEWEST items (order='desc'), not the oldest
     10k, and hand them back chronologically for replay."""

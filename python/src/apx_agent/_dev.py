@@ -89,7 +89,12 @@ from ._apx_models import (
 )
 from ._discover_data import list_discover_tables, sample_discover_table
 from ._models import AgentContext, AgentTool
-from ._topology import build_topology, inspect_node, route_highlight_from_spans
+from ._topology import (
+    annotate_topology,
+    build_topology,
+    inspect_node,
+    route_highlight_from_spans,
+)
 from ._ui_chat import (
     _render_agent_ui,
     _render_unified_shell,
@@ -448,6 +453,28 @@ def _normalize_responses_api_spans(span_dicts: list[dict]) -> list[dict]:
             })
 
     return result
+
+
+def _load_topology_node_metadata(start: Path | None = None) -> dict[str, dict[str, Any]]:
+    root = (start or Path.cwd()).resolve()
+    for directory in (root, *root.parents):
+        path = directory / ".apx" / "topology_metadata.json"
+        if not path.is_file():
+            continue
+        try:
+            data = _json.loads(path.read_text())
+        except Exception:
+            logger.debug("topology metadata sidecar did not parse: %s", path, exc_info=True)
+            return {}
+        raw = data.get("node_metadata") if isinstance(data, dict) else None
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(node_id): dict(metadata)
+            for node_id, metadata in raw.items()
+            if isinstance(metadata, dict)
+        }
+    return {}
 
 
 def _serialize_trace_spans(trace: Any) -> list[dict]:
@@ -1721,7 +1748,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse(
                 {"error": "Agent context not available"}, status_code=503
             )
-        return build_topology(ctx)
+        topology = build_topology(ctx)
+        node_metadata = _load_topology_node_metadata()
+        if node_metadata:
+            return annotate_topology(topology, node_metadata=node_metadata)
+        return topology
 
     @router.get("/_apx/topology/inspect/{node_id:path}", response_model=dict[str, Any])
     async def topology_inspect(node_id: str, request: Request) -> Any:

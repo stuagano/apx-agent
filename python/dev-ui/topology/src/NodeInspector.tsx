@@ -159,6 +159,19 @@ const preStyle: React.CSSProperties = {
   fontSize: 12,
 };
 
+const qaCardStyle: React.CSSProperties = {
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  background: "var(--code-bg)",
+  padding: 10,
+};
+
+const qaGridStyle: React.CSSProperties = {
+  display: "grid",
+  gap: 8,
+  marginBottom: 10,
+};
+
 const RESOURCE_KIND_LABELS: Record<ResourceDetails["resourceKind"], string> = {
   uc_function: "UC Function",
   genie_space: "Genie Space",
@@ -536,21 +549,72 @@ function SemanticSection({
   traceId?: string;
   artifacts?: ArtifactSummary[];
 }) {
+  const qaPairs = questionAnswerPairs(metadata);
+  const metadataEntries = Object.entries(metadata || {}).filter(
+    ([key]) => key !== "question_answer_pairs",
+  );
   return (
     <section style={sectionStyle}>
-      <div style={sectionTitleStyle}>Semantic overlay</div>
+      <div style={sectionTitleStyle}>Context readiness</div>
       <dl style={dlStyle}>
-        {runState && <Field label="Run state">{runState}</Field>}
-        {traceId && (
-          <Field label="Trace">
-            <code>{traceId}</code>
+        {metadata?.purpose !== undefined && (
+          <Field label="Meaning">{formatOverlayValue(metadata.purpose)}</Field>
+        )}
+        {metadata?.domain !== undefined && (
+          <Field label="Domain">{formatOverlayValue(metadata.domain)}</Field>
+        )}
+        {metadata?.subdomain !== undefined && (
+          <Field label="Subdomain">{formatOverlayValue(metadata.subdomain)}</Field>
+        )}
+        {qaPairs.length > 0 && (
+          <Field label="Questions this can answer">
+            <div style={qaGridStyle}>
+              {qaPairs.map((pair, index) => (
+                <div key={`${String(pair.question || "question")}-${index}`} style={qaCardStyle}>
+                  <div style={dtStyle}>Question</div>
+                  <div style={{ ...ddStyle, fontWeight: 600, marginBottom: 8 }}>
+                    {formatOverlayValue(pair.question)}
+                  </div>
+                  <div style={dtStyle}>Answer</div>
+                  <div
+                    style={{
+                      ...ddStyle,
+                      marginBottom: pair.source === null || pair.source === undefined ? 0 : 8,
+                    }}
+                  >
+                    {formatOverlayValue(pair.answer)}
+                  </div>
+                  {pair.source !== null && pair.source !== undefined && (
+                    <>
+                      <div style={dtStyle}>Source</div>
+                      <div style={ddStyle}>
+                        <code>{String(pair.source)}</code>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
           </Field>
         )}
-        {Object.entries(metadata || {}).map(([key, value]) => (
+        {metadataEntries
+          .filter(([key]) => key !== "purpose" && key !== "domain" && key !== "subdomain")
+          .map(([key, value]) => (
           <Field key={key} label={humanize(key)}>
             {formatOverlayValue(value)}
           </Field>
         ))}
+      </dl>
+      {(runState || traceId || artifacts?.length) && (
+        <>
+          <div style={{ ...sectionTitleStyle, marginTop: 14 }}>Runtime overlay</div>
+          <dl style={dlStyle}>
+            {runState && <Field label="Run state">{runState}</Field>}
+            {traceId && (
+              <Field label="Trace">
+                <code>{traceId}</code>
+              </Field>
+            )}
         {artifacts && artifacts.length > 0 && (
           <Field label="Artifacts">
             <div style={{ display: "grid", gap: 6 }}>
@@ -569,8 +633,19 @@ function SemanticSection({
             </div>
           </Field>
         )}
-      </dl>
+          </dl>
+        </>
+      )}
     </section>
+  );
+}
+
+function questionAnswerPairs(metadata?: Record<string, unknown>) {
+  const raw = metadata?.question_answer_pairs;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (item): item is { question?: unknown; answer?: unknown; source?: unknown } =>
+      item !== null && typeof item === "object" && !Array.isArray(item),
   );
 }
 
@@ -586,7 +661,16 @@ function formatOverlayValue(value: unknown): React.ReactNode {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return String(value);
   }
-  if (Array.isArray(value)) return value.map(String).join(", ");
+  if (Array.isArray(value)) {
+    if (value.every((item) => item === null || typeof item !== "object")) {
+      return value.map(String).join(", ");
+    }
+    return (
+      <pre style={preStyle}>
+        <code>{JSON.stringify(value, null, 2)}</code>
+      </pre>
+    );
+  }
   return <code>{JSON.stringify(value)}</code>;
 }
 

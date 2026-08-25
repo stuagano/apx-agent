@@ -45,6 +45,7 @@ artifacts:
       cp app.py .build/ 2>/dev/null || true
       cp api.py .build/ 2>/dev/null || true
       cp prompts.py .build/ 2>/dev/null || true
+      cp -r .apx .build/ 2>/dev/null || true
       cp -r integrations .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true
       # databricks-tools-core is a repo-local helper, not a public PyPI package.
@@ -52,6 +53,7 @@ artifacts:
       cp -r ../databricks-tools-core/databricks_tools_core .build/
       # Framework boilerplate + project files (don't edit agent_server/).
       cp -r agent_server scripts README.md .build/ 2>/dev/null || true
+      cp databricks_tools_core-*.whl .build/ 2>/dev/null || true
       cp apx_agent-*.whl .build/ 2>/dev/null || true
       # pyproject.toml and uv.lock are written by apx deploy (wheel-pinned +
       # sanitized to public PyPI). Do NOT copy or re-`uv lock` them here:

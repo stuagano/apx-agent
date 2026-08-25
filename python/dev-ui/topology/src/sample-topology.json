@@ -46,7 +46,19 @@
     {
       "id": "uc:main.tools.get_recent_orders",
       "type": "UCFunction",
-      "label": "main.tools.get_recent_orders"
+      "label": "main.tools.get_recent_orders",
+      "metadata": {
+        "domain": "billing",
+        "subdomain": "orders",
+        "purpose": "Order history lookup for billing questions.",
+        "question_answer_pairs": [
+          {
+            "question": "Which orders should I inspect before answering an invoice question?",
+            "answer": "Use recent orders keyed by the requesting principal, then reconcile order totals against the invoice line items.",
+            "source": "sample-topology"
+          }
+        ]
+      }
     },
     {
       "id": "tool:agent:root.technical:genie_engineering",

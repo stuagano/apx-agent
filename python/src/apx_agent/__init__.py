@@ -326,6 +326,7 @@ from ._topology import (
     discover_topology,
     render_topology,
 )
+from ._industry_models import industry_model_question_pairs, industry_model_topology_metadata
 
 # Cross-agent evaluation
 from ._eval_chain import ChainCaseResult, ChainEvalReport, evaluate_chain
@@ -677,6 +678,8 @@ __all__ = [
     "TopologyEdge",
     "annotate_topology",
     "discover_topology",
+    "industry_model_question_pairs",
+    "industry_model_topology_metadata",
     "render_topology",
     # Cross-agent eval
     "ChainCaseResult",

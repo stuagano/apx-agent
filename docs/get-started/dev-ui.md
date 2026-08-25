@@ -106,6 +106,22 @@ Annotations are additive: node and edge metadata, execution state, and bounded
 artifact summaries are preserved for consumers that understand them, while
 existing topology clients continue to read the original graph fields.
 
+Databricks Industry Data Models can seed table-node question/answer metadata for
+the same overlay:
+
+```python
+from apx_agent import annotate_topology, industry_model_topology_metadata
+
+topology = annotate_topology(
+    build_topology(context),
+    node_metadata=industry_model_topology_metadata(
+        "data-models/banking/v1/mvm/model.json",
+        catalog="main",
+        schema="banking",
+    ),
+)
+```
+
 ### `/_apx/edit` — Edit agent source
 Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file to disk; the running agent is compiled at startup, so a save here — like any source change — takes effect on the next restart. Auto-reload on source changes happens only when you start the server with `apx-agent agents run --reload` (the `--reload` flag is off by default).
 

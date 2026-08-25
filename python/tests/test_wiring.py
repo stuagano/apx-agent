@@ -111,9 +111,14 @@ class TestSetupAgent:
         agent = LlmAgent(tools=[get_weather])
         config = AgentConfig(name="test", sub_agents=["$MISSING_VAR"])
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "databricks.sdk.WorkspaceClient",
+            side_effect=AssertionError("unresolved sub_agents must not auth"),
+        ):
             ctx = await setup_agent(app, agent, config)
         # Should not crash, just skip
+        assert ctx is not None
+        assert agent._sub_agent_urls == []
 
     @pytest.mark.asyncio
     async def test_config_generation_knobs_applied_when_constructor_unset(self):
