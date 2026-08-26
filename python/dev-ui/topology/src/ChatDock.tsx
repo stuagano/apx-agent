@@ -33,7 +33,7 @@ export function ChatDock(props: ChatDockProps) {
       </div>
       <iframe
         className="apx-chat-frame"
-        src="/_apx/chat"
+        src="/_apx/chat?embed=1"
         title="APX Chat"
       />
     </div>

@@ -1310,7 +1310,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         the user-visible behaviour is unchanged.
         """
         ctx: AgentContext | None = request.app.state.agent_context
-        return HTMLResponse(_render_agent_ui(ctx))
+        return HTMLResponse(
+            _render_agent_ui(ctx, embed=request.query_params.get("embed") == "1")
+        )
 
     @router.get("/_apx/tools", include_in_schema=False)
     async def tools_dev_ui() -> Any:

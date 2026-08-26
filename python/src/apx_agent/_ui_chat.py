@@ -764,12 +764,13 @@ def _render_landing(ctx: AgentContext) -> str:
     return f'<div id="landing">{"".join(parts)}</div>'
 
 
-def _render_agent_ui(ctx: AgentContext | None) -> str:
+def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
     """Return a self-contained HTML page for interactively testing the agent."""
     import json as _json
 
     agent_name = ctx.config.name if ctx else "Agent"
     agent_desc = ctx.config.description if ctx else ""
+    body_class = ' class="apx-embed"' if embed else ""
     tools_json = (
         _json.dumps([{
             "name": t.name, "description": t.description,
@@ -1115,9 +1116,61 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .workflow-title {{ color: #d8f3df; font-weight: 600; }}
   .workflow-purpose {{ color: #8a929b; font-size: 11px; }}
   .workflow-question {{ color: #bfe9cf; font-size: 12px; }}
+
+  /* Compact embed mode for topology's right rail. Same chat implementation,
+     without the standalone page chrome or side-by-side desktop split. */
+  body.apx-embed header,
+  body.apx-embed #setup-banner,
+  body.apx-embed .mcp-bar,
+  body.apx-embed .resize-handle {{
+    display: none !important;
+  }}
+  body.apx-embed .main {{
+    flex-direction: column;
+    height: 100vh;
+  }}
+  body.apx-embed .chat-panel {{
+    min-height: 0;
+  }}
+  body.apx-embed #chat {{
+    padding: 16px 18px;
+    gap: 12px;
+  }}
+  body.apx-embed .msg,
+  body.apx-embed .inline-step,
+  body.apx-embed #landing,
+  body.apx-embed .data-card {{
+    max-width: 100%;
+  }}
+  body.apx-embed .right-panel {{
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex: 0 0 42%;
+    min-height: 210px;
+    border-left: 0;
+    border-top: 1px solid #1a1a1a;
+  }}
+  body.apx-embed .panel-tabs button {{
+    font-size: 12px;
+    padding: 9px 0;
+  }}
+  body.apx-embed .panel-content {{
+    min-height: 0;
+  }}
+  body.apx-embed .cap-cards {{
+    grid-template-columns: 1fr;
+  }}
+  body.apx-embed .input-bar {{
+    padding: 12px 14px;
+  }}
+  body.apx-embed .input-bar textarea {{
+    font-size: 14px;
+    padding: 10px 12px;
+  }}
 </style>
 </head>
-<body>
+<body{body_class}>
 <header>
   <span class="badge">APX dev</span>
   <h1>{agent_name}</h1>

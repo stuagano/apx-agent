@@ -170,6 +170,17 @@ class TestMarkdownWiring:
         assert "custom_inputs" in html
         assert "thread_id: devThreadId" in html
 
+    def test_embed_mode_keeps_shared_chat_but_removes_page_chrome(self):
+        from apx_agent._ui_chat import _render_agent_ui
+
+        html = _render_agent_ui(_make_ctx(), embed=True)
+        assert '<body class="apx-embed">' in html
+        assert "body.apx-embed header" in html
+        assert "body.apx-embed .main" in html
+        assert "body.apx-embed .right-panel" in html
+        assert "stream: true" in html
+        assert "thread_id: devThreadId" in html
+
 
 # ---------------------------------------------------------------------------
 # _pick_workspace_defaults — the Setup page's auto-prefill source

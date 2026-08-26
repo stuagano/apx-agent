@@ -468,7 +468,7 @@ pre {
 /* Chat dock — right rail for try-a-turn without leaving Topology */
 
 .apx-chat-dock {
-  width: clamp(520px, 42vw, 760px);
+  width: clamp(420px, 36vw, 560px);
   flex-shrink: 0;
   border-left: 1px solid var(--border);
   background: var(--panel);
