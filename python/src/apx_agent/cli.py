@@ -1723,14 +1723,14 @@ WITH span_rows AS (
     u.trace_id,
     span.span_id,
     span.parent_span_id,
-    CAST(u.tags['apx.agent.name'] AS STRING) AS agent_name,
-    CAST(u.tags['apx.agent.version'] AS STRING) AS agent_version,
-    CAST(u.tags['apx.session.id'] AS STRING) AS session_id,
+    COALESCE(CAST(u.tags['apx.agent.name'] AS STRING), span.attributes:['apx.agent.name']::STRING) AS agent_name,
+    COALESCE(CAST(u.tags['apx.agent.version'] AS STRING), span.attributes:['apx.agent.version']::STRING) AS agent_version,
+    COALESCE(CAST(u.tags['apx.session.id'] AS STRING), span.attributes:['apx.session.id']::STRING) AS session_id,
     NULL AS event_type,
     span.name AS span_name,
-    CAST(span.attributes:`apx.tool.name` AS STRING) AS tool_name,
-    CAST(span.attributes:`apx.watchdog.policy_id` AS STRING) AS policy_id,
-    CAST(span.attributes:`apx.watchdog.action` AS STRING) AS decision,
+    span.attributes:['apx.tool.name']::STRING AS tool_name,
+    span.attributes:['apx.watchdog.policy_id']::STRING AS policy_id,
+    span.attributes:['apx.watchdog.action']::STRING AS decision,
     span.status.code AS status,
     (span.end_time_unix_nano - span.start_time_unix_nano) / 1000000.0 AS latency_ms,
     TO_JSON(span.attributes) AS payload_json
@@ -1835,7 +1835,7 @@ resources:
 
   apps:
     <APP_NAME>:
-      name: <APP_NAME>
+      name: <WORKSPACE_APP_NAME>
       description: <APP_NAME> apx-agent
       source_code_path: ./.build
       # OAuth scopes the forwarded user (OBO) token carries, so governed tools
@@ -1897,13 +1897,13 @@ targets:
     resources:
       apps:
         <APP_NAME>:
-          name: <APP_NAME>-staging
+          name: <WORKSPACE_APP_NAME>-staging
   prod:
     mode: production
     resources:
       apps:
         <APP_NAME>:
-          name: <APP_NAME>
+          name: <WORKSPACE_APP_NAME>
 '''
 
 
@@ -2022,6 +2022,15 @@ shouldn't need to edit it.
 '''
 
 
+def _is_observability_table_name(name: str) -> bool:
+    return (
+        name.startswith("apx_agent_")
+        or "_otel_" in name
+        or name.endswith("_trace_metadata")
+        or name.endswith("_trace_unified")
+    )
+
+
 def _discover_default_data(
     profile: str | None = None,
 ) -> "tuple[str, str, str | None] | None":
@@ -2042,7 +2051,7 @@ def _discover_default_data(
     def _first_table(cat: str, sch: str) -> str | None:
         try:
             for t in ws.tables.list(catalog_name=cat, schema_name=sch):
-                if t.name:
+                if t.name and not _is_observability_table_name(t.name):
                     return t.name
         except Exception:
             return None
@@ -2086,7 +2095,7 @@ def _probe_first_table(catalog: str, schema: str, profile: str | None = None) ->
     try:
         ws = _make_scaffold_workspace_client(profile)
         for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
-            if t.name:
+            if t.name and not _is_observability_table_name(t.name):
                 return t.name
     except Exception:
         return None
@@ -3956,6 +3965,7 @@ def _scaffold_apps(
 
     import re as _re
     name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
+    workspace_app_name = name_slug.replace("_", "-")
     trace_table_prefix = f"apx_{name_slug}"
 
     # Emit the knowledge knob iff the bundle is actually being written (manifest is not None).
@@ -3983,6 +3993,7 @@ def _scaffold_apps(
         return (
             template.replace("<CATALOG_SCHEMA_VARS_BLOCK>\n", catalog_schema_vars_block)
             .replace("<CATALOG_SCHEMA_ENV_BLOCK>\n", catalog_schema_env_block)
+            .replace("<WORKSPACE_APP_NAME>", workspace_app_name)
             .replace("<APP_NAME>", name)
             .replace("<APP_NAME_SLUG>", name_slug)
             .replace("<CATALOG>", catalog)
