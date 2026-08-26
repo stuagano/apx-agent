@@ -414,6 +414,7 @@ class TestEventsToolCalls:
         assert "tool-group" in html                 # the group container styling
         # The grouped block labels the two parts request / response.
         assert ">request<" in html
+        assert "request + response" in html
         assert "'error' : 'response'" in html  # the response/error label ternary
 
 
@@ -461,6 +462,8 @@ class TestInlineSteps:
         assert "response:" in html     # function_call_output branch passes the output
         assert "Request" in html       # labeled section in the expanded detail
         assert "Response" in html      # labeled section in the expanded detail
+        assert "done - details" in html
+        assert "body.classList.contains('apx-embed')" in html
 
 
 class TestTraceDeltaRender:

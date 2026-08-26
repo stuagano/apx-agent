@@ -621,6 +621,7 @@ pre {
 
 .apx-palette-empty.err {
   color: #f87171;
+  white-space: pre-wrap;
 }
 
 .apx-card {

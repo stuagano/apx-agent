@@ -34,6 +34,18 @@ interface WorkspaceApi {
   extra?: { space_id?: string; columns?: string[] } | null;
 }
 
+async function fetchJson<T>(label: string, url: string): Promise<T> {
+  const response = await fetch(url);
+  if (response.ok) return (await response.json()) as T;
+  const body = await response.json().catch(() => ({})) as { detail?: unknown; error?: unknown };
+  const detail = typeof body.detail === "string"
+    ? body.detail
+    : typeof body.error === "string"
+      ? body.error
+      : response.statusText;
+  throw new Error(`${label}: HTTP ${response.status}${detail ? ` - ${detail}` : ""}`);
+}
+
 export interface WirePaletteProps {
   catalog?: string;
   schema?: string;
@@ -66,11 +78,12 @@ export function WirePalette(props: WirePaletteProps) {
     const schema = props.schema || DEFAULT_UC.schema;
 
     Promise.all([
-      fetch("/_apx/workspace-agents").then((r) => (r.ok ? r.json() : { agents: [] })),
-      fetch("/_apx/workspace-apis").then((r) => (r.ok ? r.json() : { apis: [] })),
-      fetch(
+      fetchJson<{ agents?: WorkspaceAgent[] }>("Apps peers", "/_apx/workspace-agents"),
+      fetchJson<{ apis?: WorkspaceApi[] }>("Workspace APIs", "/_apx/workspace-apis"),
+      fetchJson<{ functions?: WorkspaceFunction[] }>(
+        "UC functions",
         `/_apx/workspace-functions?${new URLSearchParams({ catalog, schema })}`,
-      ).then((r) => (r.ok ? r.json() : { functions: [] })),
+      ),
     ])
       .then(([agentsBody, apisBody, fnsBody]) => {
         const next: PaletteItem[] = [];
