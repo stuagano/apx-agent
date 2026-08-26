@@ -176,8 +176,11 @@ class TestMarkdownWiring:
         html = _render_agent_ui(_make_ctx(), embed=True)
         assert '<body class="apx-embed">' in html
         assert "body.apx-embed header" in html
+        assert "body.apx-embed #landing" in html
         assert "body.apx-embed .main" in html
         assert "body.apx-embed .right-panel" in html
+        assert '<button class="active" onclick="switchTab(\'trace\',this)">Trace</button>' in html
+        assert '<div id="tab-trace" class="tab-panel active">' in html
         assert "stream: true" in html
         assert "thread_id: devThreadId" in html
 

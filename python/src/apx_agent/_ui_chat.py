@@ -771,6 +771,10 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
     agent_name = ctx.config.name if ctx else "Agent"
     agent_desc = ctx.config.description if ctx else ""
     body_class = ' class="apx-embed"' if embed else ""
+    trace_active = ' class="active"' if embed else ""
+    events_active = "" if embed else ' class="active"'
+    trace_panel_class = "tab-panel active" if embed else "tab-panel"
+    events_panel_class = "tab-panel" if embed else "tab-panel active"
     tools_json = (
         _json.dumps([{
             "name": t.name, "description": t.description,
@@ -1136,9 +1140,11 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
     padding: 16px 18px;
     gap: 12px;
   }}
+  body.apx-embed #landing {{
+    display: none;
+  }}
   body.apx-embed .msg,
   body.apx-embed .inline-step,
-  body.apx-embed #landing,
   body.apx-embed .data-card {{
     max-width: 100%;
   }}
@@ -1209,8 +1215,8 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
     <div class="panel-tabs">
       <button onclick="switchTab('history',this)">History</button>
       <button onclick="switchTab('tools',this)">Tools</button>
-      <button onclick="switchTab('trace',this)">Trace</button>
-      <button class="active" onclick="switchTab('events',this)">Events</button>
+      <button{trace_active} onclick="switchTab('trace',this)">Trace</button>
+      <button{events_active} onclick="switchTab('events',this)">Events</button>
       <button onclick="switchTab('eval',this)">Eval</button>
     </div>
     <div class="panel-content">
@@ -1223,14 +1229,14 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
         </div>
       </div>
       <div id="tab-tools" class="tab-panel"></div>
-      <div id="tab-trace" class="tab-panel">
+      <div id="tab-trace" class="{trace_panel_class}">
         <div id="trace-header" style="padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:11px;color:#666;display:flex;justify-content:space-between;align-items:center">
           <span id="trace-status">No trace yet — send a message</span>
           <a id="trace-link" href="#" target="_blank" style="display:none;color:#60b0ff;text-decoration:none;font-size:11px">open full →</a>
         </div>
         <div id="trace-body" style="overflow-y:auto;flex:1;padding:12px"></div>
       </div>
-      <div id="tab-events" class="tab-panel active">
+      <div id="tab-events" class="{events_panel_class}">
         <div id="events-list" class="empty-state">Send a message to see events</div>
       </div>
       <div id="tab-eval" class="tab-panel">
