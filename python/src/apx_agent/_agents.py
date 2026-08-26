@@ -29,6 +29,7 @@ from ._models import (
     OutputGuardrailFn,
     SessionBackendConfig,
     _ToolFn,
+    FLOW_GRAPH_TOOL_NAME,
     message_input_schema,
     normalize_memory_knob,
     structured_input_schema,
@@ -65,11 +66,16 @@ def _card_structured_input_schema(card: dict[str, Any]) -> dict[str, Any] | None
     LLM routes across skills internally.
     """
     skills = card.get("skills")
-    if not isinstance(skills, list) or len(skills) != 1:
+    if not isinstance(skills, list):
+        return None
+    skills = [
+        skill for skill in skills
+        if isinstance(skill, dict)
+        and (skill.get("name") or skill.get("id")) != FLOW_GRAPH_TOOL_NAME
+    ]
+    if len(skills) != 1:
         return None
     skill = skills[0]
-    if not isinstance(skill, dict):
-        return None
     return structured_input_schema(skill.get("inputSchema"))
 
 

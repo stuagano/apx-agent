@@ -175,7 +175,9 @@ def register_apps_manifest(
 
     from ._watchdog import set_uc_tags_for_agent
 
-    class _AppsManifestModel(mlflow.pyfunc.PythonModel):
+    pyfunc: Any = mlflow.pyfunc
+
+    class _AppsManifestModel(pyfunc.PythonModel):
         def predict(self, context, model_input, params=None):
             return [{"app_name": app_name, "apx.serving": "apps"}]
 
@@ -210,7 +212,8 @@ def register_apps_manifest(
                 info = mlflow.register_model(
                     f"runs:/{run.info.run_id}/apps_manifest", uc_name,
                 )
-        version = str(info.registered_model_version)
+        info_any: Any = info
+        version = str(info_any.registered_model_version)
 
         client = mlflow_client or MlflowClient()
         for key, value in (

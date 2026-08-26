@@ -347,7 +347,7 @@ def check_uvicorn() -> Check:
 def check_databricks_auth() -> Check:
     """Confirm a Databricks Config can be constructed (offline, no API call)."""
     try:
-        from databricks.sdk.core import Config
+        from databricks.sdk.core import Config  # noqa: F401
     except Exception as e:  # SDK missing in a minimal install
         return Check(
             "Databricks auth",
@@ -355,27 +355,54 @@ def check_databricks_auth() -> Check:
             f"databricks-sdk not importable: {e}",
             "uv add databricks-sdk  (normally pulled in by apx-agent)",
         )
-    try:
-        Config()
-        return Check("Databricks auth", Status.OK, "credentials resolved", None)
-    except Exception as e:
-        from apx_agent.cli import _databrickscfg_profiles
 
-        profiles = _databrickscfg_profiles()
-        if profiles:
-            fix = (
-                "Pick a profile: DATABRICKS_CONFIG_PROFILE=<name> apx-agent ...  "
-                f"(configured: {', '.join(profiles)})"
+    from apx_agent.cli import _databrickscfg_profiles
+
+    env_profile = os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if os.environ.get("DATABRICKS_HOST") and (
+        os.environ.get("DATABRICKS_TOKEN")
+        or os.environ.get("DATABRICKS_CLIENT_ID")
+    ):
+        return Check("Databricks auth", Status.OK, "credentials resolved from env", None)
+    profiles = _databrickscfg_profiles()
+    if env_profile:
+        if not profiles or env_profile in profiles:
+            return Check(
+                "Databricks auth",
+                Status.OK,
+                f"credentials resolved from profile {env_profile}",
+                None,
             )
-            detail = "credentials unresolved — profile unset or ambiguous"
-        else:
-            fix = (
-                "databricks auth login --host "
-                "https://<your-workspace>.cloud.databricks.com  "
-                "(or `databricks configure --token`)"
-            )
-            detail = "no profiles in ~/.databrickscfg"
-        return Check("Databricks auth", Status.FAIL, f"{detail} ({e})", fix)
+        return Check(
+            "Databricks auth",
+            Status.FAIL,
+            f"profile {env_profile!r} is not in ~/.databrickscfg",
+            f"Pick a profile: DATABRICKS_CONFIG_PROFILE=<name> apx-agent ...  "
+            f"(configured: {', '.join(profiles)})",
+        )
+    if len(profiles) == 1:
+        return Check(
+            "Databricks auth",
+            Status.OK,
+            f"credentials resolved from profile {profiles[0]}",
+            None,
+        )
+    if profiles:
+        return Check(
+            "Databricks auth",
+            Status.FAIL,
+            "credentials unresolved — profile unset or ambiguous",
+            "Pick a profile: DATABRICKS_CONFIG_PROFILE=<name> apx-agent ...  "
+            f"(configured: {', '.join(profiles)})",
+        )
+    return Check(
+        "Databricks auth",
+        Status.FAIL,
+        "no profiles in ~/.databrickscfg",
+        "databricks auth login --host "
+        "https://<your-workspace>.cloud.databricks.com  "
+        "(or `databricks configure --token`)",
+    )
 
 
 def check_databricks_workspace(*, auth_ok: bool) -> Check:

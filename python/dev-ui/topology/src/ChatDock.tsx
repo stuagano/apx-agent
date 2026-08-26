@@ -1,10 +1,17 @@
+import { useEffect } from "react";
+
 export interface ChatDockProps {
   collapsed?: boolean;
   onToggle?: () => void;
+  onSendingChange?: (sending: boolean) => void;
 }
 
 export function ChatDock(props: ChatDockProps) {
-  const { collapsed, onToggle } = props;
+  const { collapsed, onToggle, onSendingChange } = props;
+
+  useEffect(() => {
+    onSendingChange?.(false);
+  }, [onSendingChange]);
 
   if (collapsed) {
     return (

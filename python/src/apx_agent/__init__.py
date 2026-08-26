@@ -28,6 +28,7 @@ from ._template import Template, TemplateInfo, TemplateRegistry, template, templ
 
 # Models
 from ._models import (
+    A2AFlowGraph,
     AfterAgentCallback,
     AfterModelHook,
     AfterToolHook,
@@ -39,6 +40,11 @@ from ._models import (
     BeforeModelHook,
     BeforeToolHook,
     ExampleBackendConfig,
+    FLOW_GRAPH_DIGEST_ENDPOINT,
+    FLOW_GRAPH_FULL_GRAPH_ENDPOINT,
+    FLOW_GRAPH_LAST_ROUTE_ENDPOINT,
+    FLOW_GRAPH_SCHEMA_VERSION,
+    FLOW_GRAPH_TOOL_NAME,
     GuardrailsConfig,
     InputGuardrailFn,
     MemoryBackendConfig,
@@ -322,9 +328,18 @@ from ._topology import (
     AgentNode,
     Topology,
     TopologyEdge,
+    agent_flow_graph_tool,
     annotate_topology,
     discover_topology,
     render_topology,
+    summarize_topology,
+)
+from ._apx_models import (
+    TopologyDigestCounts,
+    TopologyDigestEdge,
+    TopologyDigestNode,
+    TopologyDigestRelationship,
+    TopologyDigestResponse,
 )
 from ._industry_models import industry_model_question_pairs, industry_model_topology_metadata
 
@@ -443,6 +458,12 @@ __all__ = [
     "template",
     "template_registry",
     # Models
+    "A2AFlowGraph",
+    "FLOW_GRAPH_DIGEST_ENDPOINT",
+    "FLOW_GRAPH_FULL_GRAPH_ENDPOINT",
+    "FLOW_GRAPH_LAST_ROUTE_ENDPOINT",
+    "FLOW_GRAPH_SCHEMA_VERSION",
+    "FLOW_GRAPH_TOOL_NAME",
     "AfterAgentCallback",
     "AfterModelHook",
     "AfterToolHook",
@@ -676,11 +697,18 @@ __all__ = [
     "AgentNode",
     "Topology",
     "TopologyEdge",
+    "TopologyDigestCounts",
+    "TopologyDigestEdge",
+    "TopologyDigestNode",
+    "TopologyDigestRelationship",
+    "TopologyDigestResponse",
+    "agent_flow_graph_tool",
     "annotate_topology",
     "discover_topology",
     "industry_model_question_pairs",
     "industry_model_topology_metadata",
     "render_topology",
+    "summarize_topology",
     # Cross-agent eval
     "ChainCaseResult",
     "ChainEvalReport",

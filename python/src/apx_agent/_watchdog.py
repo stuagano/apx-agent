@@ -705,7 +705,7 @@ def set_uc_tags_for_agent(
     written: dict[str, str] = {}
     failed: list[str] = []
     for key, value in tags.items():
-        safe_key = uc_safe_tag_key(key)
+        safe_key = key if key == "apx.mlflow.experiment_id" else uc_safe_tag_key(key)
         try:
             client.set_registered_model_tag(
                 name=registered_model_name, key=safe_key, value=value,

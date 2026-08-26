@@ -535,6 +535,7 @@ export default function App() {
               <ChatDock
                 collapsed={!chatOpen}
                 onToggle={() => setChatOpen((v) => !v)}
+                onSendingChange={setChatSending}
               />
             )}
           </div>

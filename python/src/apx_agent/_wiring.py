@@ -24,7 +24,7 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from starlette.responses import Response
 
-from ._agents import BaseAgent
+from ._agents import BaseAgent, LlmAgent
 from ._env import resolve_env_var
 from ._prompt_assembly import compose_instructions
 from ._defaults import _make_workspace_client
@@ -35,9 +35,34 @@ from ._models import (
     AgentCard,
     AgentConfig,
     AgentContext,
+    AgentTool,
+    A2AFlowGraph,
+    FLOW_GRAPH_TOOL_NAME,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _dedupe_tools(tools: list[AgentTool]) -> list[AgentTool]:
+    seen: set[str] = set()
+    deduped: list[AgentTool] = []
+    for tool in tools:
+        if tool.name in seen:
+            continue
+        deduped.append(tool)
+        seen.add(tool.name)
+    return deduped
+
+
+def _builtin_agent_flow_graph(agent: BaseAgent) -> LlmAgent | None:
+    """Expose the live topology tool without requiring user config."""
+    from ._topology import agent_flow_graph_tool
+
+    existing = {t.name for t in agent.collect_tools()}
+    if FLOW_GRAPH_TOOL_NAME in existing:
+        return None
+
+    return LlmAgent(tools=[agent_flow_graph_tool()])
 
 
 def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
@@ -625,7 +650,10 @@ async def setup_agent(
         ws=getattr(app.state, "workspace_client", None),
     )
 
-    tools = agent.collect_tools()
+    builtin_agent = _builtin_agent_flow_graph(agent)
+    tools = _dedupe_tools(agent.collect_tools())
+    if builtin_agent is not None:
+        tools = _dedupe_tools([*tools, *builtin_agent.collect_tools()])
     # fetch_remote_tools ALSO materializes each reachable sub-agent as a
     # callable tool in the agent's _tool_fns (#436) — the card below and the
     # compiled graph's tool set therefore derive from the same source of
@@ -641,6 +669,9 @@ async def setup_agent(
     card = AgentCard(
         name=config.name,
         description=config.description,
+        flowGraph=A2AFlowGraph(
+            toolEndpoint=f"{config.api_prefix}/tools/{FLOW_GRAPH_TOOL_NAME}"
+        ),
         skills=[
             A2ASkill(
                 id=t.name,
@@ -664,6 +695,9 @@ async def setup_agent(
     # Per-tool FastAPI routes (live under {api_prefix}/tools/<name>)
     for router in agent.get_tool_routers():
         app.include_router(router, prefix=config.api_prefix)
+    if builtin_agent is not None:
+        for router in builtin_agent.get_tool_routers():
+            app.include_router(router, prefix=config.api_prefix)
 
     _mount_protocol_routes(app)
 
@@ -959,11 +993,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        # MLflow auto-tracing. ``apx-agent run`` sets ``APX_AGENT_MLFLOW_AUTOLOG=1``
-        # before importing the user's module so the dev loop gets per-tool +
-        # per-LLM spans by default. Deploy paths reach this lifespan with the
-        # env unset, so autolog stays off there (selective spans in the
-        # compile path are always on either way).
+        # MLflow auto-tracing. Enabled by default so hand-authored create_app()
+        # services get the same LangChain/LangGraph spans as scaffolded Apps.
+        # Set APX_AGENT_MLFLOW_AUTOLOG=0 to force the cheaper selective-span path.
         try:
             from ._mlflow_tracing import autolog_if_env
 

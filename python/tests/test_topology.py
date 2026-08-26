@@ -20,12 +20,15 @@ import pytest
 from pydantic import ValidationError
 
 from apx_agent import (
+    A2AFlowGraph,
     AgentNode,
     Topology,
+    TopologyDigestResponse,
     TopologyEdge,
     annotate_topology,
     discover_topology,
     render_topology,
+    summarize_topology,
 )
 from apx_agent._apx_models import TopologyResponse
 
@@ -298,6 +301,43 @@ def test_render_handles_empty_topology() -> None:
     assert mermaid.startswith("graph LR")
     graphviz = render_topology(topo, format="graphviz")
     assert graphviz.startswith("digraph apx_topology")
+
+
+def test_public_topology_digest_contract() -> None:
+    digest = summarize_topology({
+        "agentName": "billing",
+        "rootId": "agent:root",
+        "nodes": [{"id": "agent:root", "type": "LlmAgent", "label": "billing"}],
+        "edges": [
+            {
+                "source": "agent:root",
+                "target": "tool:agent:root:get_invoice",
+                "kind": "uses-tool",
+            }
+        ],
+        "execution": {
+            "trace_id": "trace-1",
+            "node_ids": ["agent:root"],
+            "edge_ids": ["agent:root->tool:agent:root:get_invoice:uses-tool"],
+            "tool_names": ["get_invoice"],
+            "span_count": 2,
+        },
+    })
+
+    assert isinstance(digest, TopologyDigestResponse)
+    assert digest.schema_version == "apx.flow_graph.digest.v1"
+    assert digest.last_route is not None
+    assert digest.last_route.trace_id == "trace-1"
+    assert digest.last_route.tool_names == ["get_invoice"]
+    assert digest.relationship_predicates == ["uses-tool"]
+    assert digest.relationships[0].model_dump(by_alias=True) == {
+        "subject": "agent:root",
+        "predicate": "uses-tool",
+        "object": "tool:agent:root:get_invoice",
+    }
+    assert A2AFlowGraph(toolEndpoint="/api/tools/get_agent_flow_graph").toolName == (
+        "get_agent_flow_graph"
+    )
 
 
 def test_annotate_topology_adds_semantics_and_run_facts_without_mutating_graph() -> None:

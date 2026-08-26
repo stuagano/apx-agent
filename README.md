@@ -321,7 +321,12 @@ Pick the deploy boundary by lifecycle and consumers, not agent count — see
 
 ## See what you built
 
-Every deployed agent ships with `/_apx/topology` — an interactive graph of agents, tools, sub-agents, and the UC / Genie / Vector Search / serving resources they reach. Click any node for its details.
+Every deployed agent ships with the flow graph as a first-class runtime surface:
+`/_apx/topology` for people, `/_apx/topology/digest` for compact JSON, and an
+always-on `get_agent_flow_graph` tool advertised through the agent card and MCP.
+The card also includes a `flowGraph` block with the graph endpoints and tool name.
+The graph shows agents, tools, sub-agents, and the UC / Genie / Vector Search /
+serving resources they reach. Click any node in the UI for its details.
 
 ![/_apx/topology — interactive graph of agents, tools, sub-agents, and platform resources](docs/images/topology-customer-triage.png)
 

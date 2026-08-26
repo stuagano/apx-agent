@@ -81,7 +81,9 @@ def test_workflow_rail_keeps_execution_and_sender_state_truthful() -> None:
     assert "if (EMBED) return;" in app
     assert "if (chatSending || activeWorkflowRun)" in app
     assert "onSendingChange?: (sending: boolean) => void;" in chat
-    assert "if (!text || sending) return false;" in chat
-    assert "if (!dispatched) onRunQuestion?.(runRequestId, false);" in chat
+    assert "onSendingChange?.(false);" in chat
+    assert 'src="/_apx/chat?embed=1"' in chat
+    assert "if (!text || sending) return false;" not in chat
+    assert "onRunQuestion" not in chat
     assert "disabled={runDisabled}" in panel
     assert "Run examples are unavailable in embedded topology" in panel

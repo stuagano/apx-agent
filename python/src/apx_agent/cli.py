@@ -262,7 +262,7 @@ def _load_agent(module_spec: str) -> Any:
     return getattr(module, variable)
 
 
-def _load_finalized_agent(module_spec: str) -> Any:
+def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
     """Resolve + finalize an agent for CLI commands.
 
     Loads [tool.apx.agent] config first, then resolve_agent so template-only
@@ -274,7 +274,11 @@ def _load_finalized_agent(module_spec: str) -> Any:
 
     config = _load_agent_config(pyproject_path=None)
     try:
-        agent = resolve_agent(module_spec, config, ws=_ws_for_template(config))
+        agent = resolve_agent(
+            module_spec,
+            config,
+            ws=_ws_for_template(config) if template_ws else None,
+        )
     except TemplateConfigError as e:
         raise click.ClickException(
             f"{e}\n"
@@ -1352,10 +1356,8 @@ dependencies = [
     # imports lazily under the hood. A bare ``apx-agent`` dep would let
     # ``uv sync`` succeed but fail at first request inside the deployed App.
     <APX_AGENT_DEP>
-    # mlflow.genai.agent_server (imported by agent_server/start_server.py)
-    # only exists in mlflow >=3.12; an older floor lets `uv sync` succeed but
-    # the deployed App 502s with ModuleNotFoundError: mlflow.genai.
-    "mlflow[databricks]>=3.12",
+    # mlflow.genai.agent_server plus Unity Catalog trace locations.
+    "mlflow[databricks]>=3.14",
     # Add your agent's deps here
 ]
 
@@ -1609,12 +1611,19 @@ Creates the MLflow experiment for tracing and writes its ID to .env.
 Reports Lakebase memory/session backend status if configured.
 Safe to re-run; idempotent.
 """
-from apx_agent.bootstrap import init_apps_experiment, provision_memory_backends
+from apx_agent.bootstrap import (
+    init_apps_experiment,
+    provision_lakehouse_observability,
+    provision_memory_backends,
+)
 
 
 def main() -> None:
-    path, exp_id = init_apps_experiment()
+    path, exp_id = init_apps_experiment(<TRACE_LOCATION_ARGS>)
     print(f"MLflow experiment: {path} (id={exp_id})")
+
+    for line in provision_lakehouse_observability(<TRACE_LOCATION_ARGS>):
+        print(line)
 
     for line in provision_memory_backends():
         print(line)
@@ -1675,6 +1684,82 @@ _SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK = '''\
             value: ${var.catalog}
           - name: APX_SCHEMA
             value: ${var.schema}
+'''
+
+
+_SCAFFOLD_APX_OBSERVABILITY_SQL = '''\
+-- APX lakehouse observability read model.
+-- Generated for MLflow UC trace prefix: <TRACE_TABLE_PREFIX>
+--
+-- Run this after quickstart has created the MLflow UC trace location and at
+-- least one trace has landed, so <TRACE_TABLE_PREFIX>_trace_unified exists.
+
+CREATE TABLE IF NOT EXISTS `<CATALOG>`.`<SCHEMA>`.`apx_agent_events` (
+  event_time TIMESTAMP NOT NULL,
+  event_type STRING NOT NULL,
+  trace_id STRING,
+  span_id STRING,
+  agent_name STRING,
+  agent_version STRING,
+  session_id STRING,
+  principal_hash STRING,
+  route_id STRING,
+  tool_name STRING,
+  policy_id STRING,
+  decision STRING,
+  status STRING,
+  latency_ms DOUBLE,
+  payload_json STRING
+) USING DELTA
+TBLPROPERTIES (
+  delta.enableChangeDataFeed = true
+);
+
+CREATE OR REPLACE VIEW `<CATALOG>`.`<SCHEMA>`.`apx_agent_timeline` AS
+WITH span_rows AS (
+  SELECT
+    span.time AS event_time,
+    'span' AS row_type,
+    u.trace_id,
+    span.span_id,
+    span.parent_span_id,
+    CAST(u.tags['apx.agent.name'] AS STRING) AS agent_name,
+    CAST(u.tags['apx.agent.version'] AS STRING) AS agent_version,
+    CAST(u.tags['apx.session.id'] AS STRING) AS session_id,
+    NULL AS event_type,
+    span.name AS span_name,
+    CAST(span.attributes:`apx.tool.name` AS STRING) AS tool_name,
+    CAST(span.attributes:`apx.watchdog.policy_id` AS STRING) AS policy_id,
+    CAST(span.attributes:`apx.watchdog.action` AS STRING) AS decision,
+    span.status.code AS status,
+    (span.end_time_unix_nano - span.start_time_unix_nano) / 1000000.0 AS latency_ms,
+    TO_JSON(span.attributes) AS payload_json
+  FROM `<CATALOG>`.`<SCHEMA>`.`<TRACE_TABLE_PREFIX>_trace_unified` u
+  LATERAL VIEW OUTER explode(u.spans) exploded AS span
+),
+event_rows AS (
+  SELECT
+    event_time,
+    'apx_event' AS row_type,
+    trace_id,
+    span_id,
+    NULL AS parent_span_id,
+    agent_name,
+    agent_version,
+    session_id,
+    event_type,
+    NULL AS span_name,
+    tool_name,
+    policy_id,
+    decision,
+    status,
+    latency_ms,
+    payload_json
+  FROM `<CATALOG>`.`<SCHEMA>`.`apx_agent_events`
+)
+SELECT * FROM span_rows
+UNION ALL
+SELECT * FROM event_rows;
 '''
 
 _SCAFFOLD_APPS_DATABRICKS_YML = '''\
@@ -1826,6 +1911,7 @@ _SCAFFOLD_APPS_ENV_EXAMPLE = '''\
 DATABRICKS_CONFIG_PROFILE=
 MLFLOW_EXPERIMENT_ID=
 MLFLOW_EXPERIMENT_NAME=
+MLFLOW_TRACING_SQL_WAREHOUSE_ID=
 '''
 
 
@@ -1837,7 +1923,7 @@ apx-agent project targeting Databricks Apps.
 ## Setup
 ```bash
 uv sync --group dev
-uv run quickstart  # creates the MLflow experiment + writes .env
+uv run quickstart  # creates the MLflow experiment + UC trace location, applies observability SQL when MLFLOW_TRACING_SQL_WAREHOUSE_ID is set, writes .env
 ```
 
 ## Local dev
@@ -1853,6 +1939,12 @@ curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","con
 ```bash
 uv run apx-agent agents deploy --target apps  # validates, deploys, runs the bundle
 ```
+
+## Lakehouse Observability
+Data/coworker scaffolds write `.apx/sql/apx_agent_timeline.sql`. `uv run quickstart`
+applies it automatically when `MLFLOW_TRACING_SQL_WAREHOUSE_ID` is set. It creates
+`apx_agent_events` and the joined `apx_agent_timeline` view beside the MLflow
+`<prefix>_trace_unified` view in the same UC schema.
 
 ## Promoting to another environment
 `databricks.yml` ships `dev` (default), `staging`, and `prod` targets. All
@@ -1943,8 +2035,7 @@ def _discover_default_data(
     the caller falls back to the samples default. Scans are capped for speed.
     """
     try:
-        from databricks.sdk import WorkspaceClient
-        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        ws = _make_scaffold_workspace_client(profile)
     except Exception:
         return None
 
@@ -1993,8 +2084,7 @@ def _probe_first_table(catalog: str, schema: str, profile: str | None = None) ->
     """First readable table in ``catalog.schema`` (best-effort) for the example
     tool. Returns None when auth can't be resolved or the schema is empty."""
     try:
-        from databricks.sdk import WorkspaceClient
-        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        ws = _make_scaffold_workspace_client(profile)
         for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
             if t.name:
                 return t.name
@@ -2003,11 +2093,71 @@ def _probe_first_table(catalog: str, schema: str, profile: str | None = None) ->
     return None
 
 
+def _make_scaffold_workspace_client(profile: str | None):
+    """WorkspaceClient for best-effort scaffold probes with bounded retries."""
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.config import Config
+
+    is_real_sdk_client = str(getattr(WorkspaceClient, "__module__", "")).startswith(
+        "databricks.sdk"
+    )
+    if not is_real_sdk_client:
+        return WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    if not _scaffold_databricks_host_resolves(profile):
+        raise RuntimeError("configured Databricks host is not resolvable")
+    cfg = Config(
+        profile=profile,
+        http_timeout_seconds=3,
+        retry_timeout_seconds=1,
+    )
+    return WorkspaceClient(config=cfg)
+
+
+def _scaffold_databricks_host_resolves(profile: str | None) -> bool:
+    """False when the configured scaffold probe host fails DNS preflight."""
+    import configparser
+    from urllib.parse import urlparse
+
+    host = os.environ.get("DATABRICKS_HOST")
+    if not host:
+        profile_name = profile or os.environ.get("DATABRICKS_CONFIG_PROFILE") or "DEFAULT"
+        cfg_path = Path.home() / ".databrickscfg"
+        if cfg_path.exists():
+            parser = configparser.ConfigParser()
+            parser.read(cfg_path)
+            host = parser.get(profile_name, "host", fallback="")
+    if not host:
+        return True
+    parsed = urlparse(host if "://" in host else f"https://{host}")
+    hostname = parsed.hostname
+    if not hostname:
+        return True
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import socket, sys; "
+                    "socket.getaddrinfo(sys.argv[1], int(sys.argv[2]))"
+                ),
+                hostname,
+                str(parsed.port or 443),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
 def _make_ws_for_scaffold(profile: str | None):
     """Build a WorkspaceClient for scaffold-time introspection, or None."""
     try:
-        from databricks.sdk import WorkspaceClient
-        return WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        return _make_scaffold_workspace_client(profile)
     except Exception as exc:
         click.echo(f"  (warning: could not connect to the workspace — {exc})", err=True)
         return None
@@ -3806,6 +3956,7 @@ def _scaffold_apps(
 
     import re as _re
     name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
+    trace_table_prefix = f"apx_{name_slug}"
 
     # Emit the knowledge knob iff the bundle is actually being written (manifest is not None).
     # This keeps pyproject.toml coherent: the knob resolves iff the bundle exists on disk.
@@ -3821,6 +3972,12 @@ def _scaffold_apps(
     catalog_schema_env_block = (
         _SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK if (catalog and schema) else ""
     )
+    trace_location_args = (
+        f"catalog_name=\"{catalog}\", "
+        f"schema_name=\"{schema}\", "
+        f"table_prefix=\"{trace_table_prefix}\""
+        if (catalog and schema) else ""
+    )
 
     def _sub(template: str) -> str:
         return (
@@ -3830,6 +3987,8 @@ def _scaffold_apps(
             .replace("<APP_NAME_SLUG>", name_slug)
             .replace("<CATALOG>", catalog)
             .replace("<SCHEMA>", schema)
+            .replace("<TRACE_LOCATION_ARGS>", trace_location_args)
+            .replace("<TRACE_TABLE_PREFIX>", trace_table_prefix)
             .replace("<EXAMPLE_TOOL>", prelude)
             .replace("<EXTRA_TOOLS>", extra_tools)
             .replace("<PERSONA_ARG>", persona_arg)
@@ -3869,6 +4028,8 @@ def _scaffold_apps(
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
         "tests/test_agent_imports.py": _sub(_SCAFFOLD_APPS_TEST_IMPORT),
     }
+    if catalog and schema:
+        files[".apx/sql/apx_agent_timeline.sql"] = _sub(_SCAFFOLD_APX_OBSERVABILITY_SQL)
     if manifest is not None:
         from ._okf import dump_schema_cache
         files[".apx/schema.json"] = dump_schema_cache(manifest)
@@ -9205,9 +9366,7 @@ def _maybe_write_deploy_state(
 ) -> None:
     """Persist Apps deploy metadata to ``/Shared/apx-agent/.../_state/``."""
     try:
-        from databricks.sdk import WorkspaceClient
-
-        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        ws = _make_scaffold_workspace_client(profile)
         state = ApxAppDeployState(
             app_name=app_name,
             bundle_target=bundle_target,
@@ -10294,6 +10453,8 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
     if spec and not spec.endswith((".yaml", ".yml")) and ":" not in spec:
         _describe_app_agent(spec, profile, fmt)
         return
+    if spec and ":" in spec:
+        module = spec
 
     from apx_agent._resources import (
         _iter_sub_agents,
@@ -10335,7 +10496,7 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
 
     # Finalize so `apx-agent agents describe` reports the same tools/resources the serve and
     # deploy paths will — config-declared [[tool.apx.tools]] included.
-    agent = _load_finalized_agent(module)
+    agent = _load_finalized_agent(module, template_ws=False)
 
     # Walk the whole tree — HandoffAgent / SequentialAgent / etc. have no
     # _tool_fns of their own; the tools live on nested LlmAgents.

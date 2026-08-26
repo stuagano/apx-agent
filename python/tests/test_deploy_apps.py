@@ -874,7 +874,7 @@ def test_successful_apps_deploy_records_local_history(
     monkeypatch.setattr(
         "apx_agent._apps_registry.register_apps_manifest",
         lambda agent, *, uc_name, model, app_name, bundle_target,
-               agent_name=None, extra_version_tags=None:
+               agent_name=None, extra_version_tags=None, experiment_id=None:
             AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name),
     )
 

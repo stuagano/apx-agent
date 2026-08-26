@@ -35,6 +35,21 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from ._apps_registry import tag_value
+from ._apx_models import (
+    LastRouteResponse,
+    TopologyDigestCounts,
+    TopologyDigestEdge,
+    TopologyDigestNode,
+    TopologyDigestRelationship,
+    TopologyDigestResponse,
+)
+from ._defaults import Dependencies
+from ._models import (
+    FLOW_GRAPH_FULL_GRAPH_ENDPOINT,
+    FLOW_GRAPH_LAST_ROUTE_ENDPOINT,
+    FLOW_GRAPH_TOOL_NAME,
+)
+from ._tool_factory import build_tool
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -624,6 +639,18 @@ def build_topology(ctx: "AgentContext") -> dict[str, Any]:
     root_label = ctx.config.name if ctx and ctx.config else "agent"
     _walk(ctx.agent, root_id, root_label)
 
+    if any(t.name == FLOW_GRAPH_TOOL_NAME for t in getattr(ctx, "tools", [])):
+        tool_id = f"tool:{root_id}:{FLOW_GRAPH_TOOL_NAME}"
+        _add_node({
+            "id": tool_id,
+            "type": "Tool",
+            "label": FLOW_GRAPH_TOOL_NAME,
+            "description": (
+                "Return the live apx-agent flow graph for protocol and MCP callers."
+            ),
+        })
+        _add_edge(root_id, tool_id, "uses-tool")
+
     # Add the model serving endpoint (calls-model edge) for the root
     model = getattr(ctx.config, "model", None)
     if model:
@@ -643,6 +670,123 @@ def build_topology(ctx: "AgentContext") -> dict[str, Any]:
         "edges": edges,
         "workflows": _serialize_workflows(workflows_for_context(ctx)),
     }
+
+
+def summarize_topology(topology: Mapping[str, Any]) -> TopologyDigestResponse:
+    """Compact graph digest for coding agents reading ``/_apx/topology.json``."""
+    nodes = [dict(n) for n in _topology_entries(topology, "nodes")]
+    edges = [dict(e) for e in _topology_entries(topology, "edges")]
+    outgoing: dict[str, list[dict[str, Any]]] = {}
+    for edge in edges:
+        outgoing.setdefault(str(edge.get("source") or ""), []).append(edge)
+
+    def _node_summary(node: dict[str, Any]) -> TopologyDigestNode:
+        node_id = str(node.get("id") or "")
+        out = outgoing.get(node_id, [])
+        return TopologyDigestNode(
+            id=node_id,
+            type=node.get("type"),
+            label=node.get("label"),
+            description=node.get("description"),
+            outgoing=len(out),
+            tools=sum(1 for e in out if e.get("kind") == "uses-tool"),
+            delegates=sum(
+                1 for e in out if e.get("kind") in {"branch", "delegates-to"}
+            ),
+        )
+
+    return TopologyDigestResponse(
+        agent=topology.get("agentName"),
+        root_id=topology.get("rootId"),
+        counts=TopologyDigestCounts(nodes=len(nodes), edges=len(edges)),
+        nodes=[_node_summary(n) for n in nodes],
+        edges=[
+            TopologyDigestEdge(
+                source=e.get("source"),
+                target=e.get("target"),
+                kind=e.get("kind"),
+            )
+            for e in edges
+        ],
+        relationships=[
+            TopologyDigestRelationship(
+                subject=e.get("source"),
+                predicate=e.get("kind"),
+                object=e.get("target"),
+            )
+            for e in edges
+        ],
+        relationship_predicates=sorted(
+            {str(e.get("kind")) for e in edges if e.get("kind")}
+        ),
+        last_route=_topology_last_route(topology),
+        live_route_endpoint=FLOW_GRAPH_LAST_ROUTE_ENDPOINT,
+        full_graph_endpoint=FLOW_GRAPH_FULL_GRAPH_ENDPOINT,
+    )
+
+
+def _topology_last_route(topology: Mapping[str, Any]) -> LastRouteResponse | None:
+    raw = topology.get("last_route") or topology.get("execution")
+    if not isinstance(raw, Mapping):
+        return None
+    return LastRouteResponse(
+        trace_id=raw.get("trace_id"),
+        node_ids=list(raw.get("node_ids") or raw.get("active_node_ids") or []),
+        edge_ids=list(raw.get("edge_ids") or raw.get("completed_edge_ids") or []),
+        tool_names=list(raw.get("tool_names") or []),
+        span_count=int(raw.get("span_count") or 0),
+    )
+
+
+def _annotate_topology_with_buffered_route(topology: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from ._trace_store import WARMUP_SPAN_NAME, get as _ts_get, list_recent
+
+        for trace_id in list_recent(20):
+            spans = _ts_get(trace_id) or []
+            if any((s.get("name") or "") == WARMUP_SPAN_NAME for s in spans):
+                continue
+            if not spans:
+                continue
+            highlight = route_highlight_from_spans(topology, spans)
+            return annotate_topology(
+                topology,
+                execution={
+                    "trace_id": trace_id,
+                    "node_ids": highlight["node_ids"],
+                    "edge_ids": highlight["edge_ids"],
+                    "tool_names": highlight["tool_names"],
+                    "span_count": len(spans),
+                },
+            )
+    except Exception:
+        logger.debug("topology digest route overlay failed", exc_info=True)
+    return topology
+
+
+def agent_flow_graph_tool(
+    *,
+    name: str = FLOW_GRAPH_TOOL_NAME,
+    description: str | None = None,
+) -> Any:
+    """Return a tool that lets an agent inspect its own apx flow graph."""
+
+    def _get_agent_flow_graph(request: Dependencies.Request) -> TopologyDigestResponse:
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        if ctx is None:
+            raise RuntimeError("Agent context not available")
+        return summarize_topology(
+            _annotate_topology_with_buffered_route(build_topology(ctx))
+        )
+
+    return build_tool(
+        _get_agent_flow_graph,
+        name=name,
+        description=description or (
+            "Return the live apx-agent flow graph: agents, tools, resources, "
+            "handoff edges, model endpoint edges, and endpoints for last-run route data."
+        ),
+    )
 
 
 def annotate_topology(

@@ -17,11 +17,16 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from apx_agent.bootstrap import init_apps_experiment, provision_memory_backends
+from apx_agent.bootstrap import (
+    init_apps_experiment,
+    provision_lakehouse_observability,
+    provision_memory_backends,
+)
 
 
 @pytest.fixture
@@ -38,12 +43,33 @@ def fake_mlflow(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
     client.get_experiment_by_name.return_value = None
     client.create_experiment.return_value = "exp-123"
 
-    tracking_mod = types.SimpleNamespace(MlflowClient=lambda: client)
+    tracking_mod = types.ModuleType("mlflow.tracking")
+    tracking_mod.MlflowClient = lambda: client  # type: ignore[attr-defined]
     fake = types.SimpleNamespace(
         set_tracking_uri=MagicMock(),
+        set_experiment=MagicMock(),
         tracking=tracking_mod,
     )
     monkeypatch.setitem(sys.modules, "mlflow", fake)
+    monkeypatch.setitem(sys.modules, "mlflow.tracking", tracking_mod)
+    entities_mod = types.ModuleType("mlflow.entities")
+    trace_location_mod = types.ModuleType("mlflow.entities.trace_location")
+
+    class UnityCatalog:
+        def __init__(
+            self,
+            *,
+            catalog_name: str,
+            schema_name: str,
+            table_prefix: str | None = None,
+        ) -> None:
+            self.catalog_name = catalog_name
+            self.schema_name = schema_name
+            self.table_prefix = table_prefix
+
+    trace_location_mod.UnityCatalog = UnityCatalog  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mlflow.entities", entities_mod)
+    monkeypatch.setitem(sys.modules, "mlflow.entities.trace_location", trace_location_mod)
     # init_apps_experiment also references mlflow.tracking — make sure the
     # attribute lookup ``mlflow.tracking.MlflowClient`` resolves through the
     # stub namespace.
@@ -159,6 +185,106 @@ def test_init_is_idempotent_when_experiment_exists(
     lines = env_file.read_text().splitlines()
     exp_lines = [l for l in lines if l.startswith("MLFLOW_EXPERIMENT_ID=")]
     assert exp_lines == ["MLFLOW_EXPERIMENT_ID=exp-existing"]
+
+
+def test_init_binds_uc_trace_location(
+    fake_mlflow: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_USER", "alice")
+    monkeypatch.setenv("BUNDLE_TARGET", "dev")
+    experiment = MagicMock()
+    experiment.experiment_id = "exp-uc"
+    fake_mlflow.mlflow.set_experiment.return_value = experiment
+
+    env_file = tmp_path / ".env"
+    path, exp_id = init_apps_experiment(
+        agent_name="my-agent",
+        env_path=str(env_file),
+        catalog_name="samples",
+        schema_name="tpch",
+        table_prefix="apx_my_agent",
+    )
+
+    assert path == "/Users/alice/my-agent-dev"
+    assert exp_id == "exp-uc"
+    fake_mlflow.client.get_experiment_by_name.assert_not_called()
+    fake_mlflow.client.create_experiment.assert_not_called()
+    fake_mlflow.mlflow.set_experiment.assert_called_once()
+    kwargs = fake_mlflow.mlflow.set_experiment.call_args.kwargs
+    assert kwargs["experiment_name"] == "/Users/alice/my-agent-dev"
+    loc = kwargs["trace_location"]
+    assert loc.catalog_name == "samples"
+    assert loc.schema_name == "tpch"
+    assert loc.table_prefix == "apx_my_agent"
+    assert "MLFLOW_EXPERIMENT_ID=exp-uc" in env_file.read_text()
+
+
+def test_provision_lakehouse_observability_skips_without_warehouse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", raising=False)
+    sql_path = tmp_path / ".apx" / "sql" / "apx_agent_timeline.sql"
+    sql_path.parent.mkdir(parents=True)
+    sql_path.write_text("CREATE VIEW v AS SELECT 1;")
+
+    lines = provision_lakehouse_observability(
+        catalog_name="samples",
+        schema_name="tpch",
+        table_prefix="apx_my_agent",
+        sql_path=str(sql_path),
+    )
+
+    assert lines == [
+        "  skip   observability SQL — set MLFLOW_TRACING_SQL_WAREHOUSE_ID "
+        "to create apx_agent_timeline"
+    ]
+
+
+def test_provision_lakehouse_observability_applies_sql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = MagicMock()
+    sdk_mod = types.ModuleType("databricks.sdk")
+    sdk_mod.WorkspaceClient = lambda: ws  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "databricks.sdk", sdk_mod)
+    monkeypatch.setenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", "wh-123")
+
+    calls: list[tuple[Any, str, str | None]] = []
+
+    def fake_run_sql(
+        workspace: Any,
+        statement: str,
+        *,
+        warehouse_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        calls.append((workspace, statement, warehouse_id))
+        return []
+
+    monkeypatch.setattr("apx_agent._sql.run_sql", fake_run_sql)
+    sql_path = tmp_path / ".apx" / "sql" / "apx_agent_timeline.sql"
+    sql_path.parent.mkdir(parents=True)
+    sql_path.write_text("CREATE TABLE t (id INT); CREATE VIEW v AS SELECT * FROM t;")
+
+    lines = provision_lakehouse_observability(
+        catalog_name="samples",
+        schema_name="tpch",
+        table_prefix="apx_my_agent",
+        sql_path=str(sql_path),
+    )
+
+    assert [c[1] for c in calls] == [
+        "CREATE TABLE t (id INT)",
+        "CREATE VIEW v AS SELECT * FROM t",
+    ]
+    assert [c[2] for c in calls] == ["wh-123", "wh-123"]
+    assert lines == [
+        "  apply  observability SQL "
+        "samples.tpch.apx_agent_timeline with prefix apx_my_agent (2 statements)"
+    ]
 
 
 # ---------------------------------------------------------------------------

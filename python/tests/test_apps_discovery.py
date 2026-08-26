@@ -7,7 +7,10 @@ list/filter/merge logic, not urllib.
 from __future__ import annotations
 
 import json
+import sys
+import types
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
@@ -111,7 +114,7 @@ def test_env_seed_rejects_non_apps_http_prefix(monkeypatch):
 
 def test_probe_card_blocks_off_allowlist_before_http(monkeypatch):
     """#613: never attach Bearer / open HTTP for non-Apps or private targets."""
-    calls: list[object] = []
+    calls: list[Any] = []
 
     class _BoomClient:
         def __init__(self, *a, **k):
@@ -143,7 +146,7 @@ def test_probe_card_blocks_off_allowlist_before_http(monkeypatch):
 
 def test_probe_card_httpx_no_redirects_and_allowlisted(monkeypatch):
     """#613: allowlisted Apps host uses httpx with follow_redirects=False."""
-    seen: dict[str, object] = {}
+    seen: dict[str, Any] = {}
 
     class _Resp:
         status_code = 200
@@ -433,17 +436,29 @@ def test_describe_yaml_spec_does_not_auto_route_to_app(monkeypatch, tmp_path):
 
 def test_describe_module_spec_does_not_auto_route_to_app(monkeypatch):
     # A `module:attr` SPEC has a ':' → stays the local module path, not an app.
+    captured = {}
+    resources = types.ModuleType("apx_agent._resources")
+    resources._iter_sub_agents = lambda _agent: iter(())  # type: ignore[attr-defined]
+    resources._iter_tool_fns = lambda _agent: iter(())  # type: ignore[attr-defined]
+    resources.collect_resource_specs = lambda _agent: []  # type: ignore[attr-defined]
+    resources.get_resources = lambda _fn: []  # type: ignore[attr-defined]
+    tool_mod = types.ModuleType("apx_agent._tool")
+    tool_mod.get_tool_metadata = lambda _fn: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "apx_agent._resources", resources)
+    monkeypatch.setitem(sys.modules, "apx_agent._tool", tool_mod)
+
+    def _fake_load(module: str, **_kwargs):
+        captured["module"] = module
+        return SimpleNamespace(_tool_fns=[], _sub_agent_urls=[], _instructions="")
+
     monkeypatch.setattr(
         "apx_agent.cli._describe_app_agent",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not hit app path")),
+        lambda *a, **k: pytest.fail("should not hit app path"),
     )
-    monkeypatch.setattr(
-        "apx_agent.cli._load_finalized_agent",
-        lambda module: (_ for _ in ()).throw(RuntimeError(f"tried module {module}")),
-    )
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _fake_load)
     result = CliRunner().invoke(main, ["agents", "describe", "pkg.mod:agent"])
-    # it went down the module path (and failed there), NOT the app path
-    assert "tried module pkg.mod:agent" in str(result.exception) or result.exit_code != 0
+    assert result.exit_code == 0, result.output
+    assert captured == {"module": "pkg.mod:agent"}
 
 
 # ── agents describe: LOCAL picklist when >1 spec (parity with --app) ──────────

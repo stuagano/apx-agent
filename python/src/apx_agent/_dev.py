@@ -69,6 +69,7 @@ from ._apx_models import (
     TopologyTracingResponse,
     TopologyTracingSetRequest,
     TopologyTracingSetResponse,
+    TopologyDigestResponse,
     LastRouteResponse,
     TraceDetailResponse,
     TraceRow,
@@ -94,6 +95,7 @@ from ._topology import (
     build_topology,
     inspect_node,
     route_highlight_from_spans,
+    summarize_topology,
 )
 from ._ui_chat import (
     _render_agent_ui,
@@ -1587,21 +1589,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return rows
         return HTMLResponse(_render_traces_list(rows, agent_name))
 
-    @router.get("/_apx/traces/last-route", response_model=LastRouteResponse)
-    async def traces_last_route(request: Request) -> Any:
-        """Map the latest Chat turn onto topology node/edge ids for live highlight.
-
-        Registered before ``/_apx/traces/{trace_id:path}`` so ``last-route`` is
-        not captured as a trace id.
-        """
-        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
-        if ctx is None:
-            return JSONResponse(
-                {"error": "Agent context not available"}, status_code=503
-            )
-
+    def _last_route_payload(
+        ctx: AgentContext, *, include_tracking_fallback: bool = True
+    ) -> dict[str, Any]:
         tid, spans = _latest_buffered_spans()
-        if not spans:
+        if include_tracking_fallback and not spans:
             # Fall back to tracking-store metadata + buffer/detail fetch for the newest id.
             experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
             try:
@@ -1655,6 +1647,21 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "tool_names": highlight["tool_names"],
             "span_count": len(spans),
         }
+
+    @router.get("/_apx/traces/last-route", response_model=LastRouteResponse)
+    async def traces_last_route(request: Request) -> Any:
+        """Map the latest Chat turn onto topology node/edge ids for live highlight.
+
+        Registered before ``/_apx/traces/{trace_id:path}`` so ``last-route`` is
+        not captured as a trace id.
+        """
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        if ctx is None:
+            return JSONResponse(
+                {"error": "Agent context not available"}, status_code=503
+            )
+
+        return _last_route_payload(ctx)
 
     @router.get("/_apx/traces/{trace_id:path}", response_model=TraceDetailResponse)
     async def trace_detail_ui(trace_id: str, request: Request) -> Any:
@@ -1755,6 +1762,21 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if node_metadata:
             return annotate_topology(topology, node_metadata=node_metadata)
         return topology
+
+    @router.get("/_apx/topology/digest", response_model=TopologyDigestResponse)
+    async def topology_digest(request: Request) -> Any:
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse(
+                {"error": "Agent context not available"}, status_code=503
+            )
+        topology = build_topology(ctx)
+        return summarize_topology(
+            annotate_topology(
+                topology,
+                execution=_last_route_payload(ctx, include_tracking_fallback=False),
+            )
+        )
 
     @router.get("/_apx/topology/inspect/{node_id:path}", response_model=dict[str, Any])
     async def topology_inspect(node_id: str, request: Request) -> Any:

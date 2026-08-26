@@ -22,6 +22,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import FastAPI
 
 # Skip the whole module unless the optional extra is installed.
 pytest.importorskip("langgraph")
@@ -29,9 +30,11 @@ pytest.importorskip("langchain_core")
 
 from apx_agent import (  # noqa: E402
     Dependencies,
+    AgentConfig,
     LlmAgent,
     SequentialAgent,
     compile_to_langgraph,
+    setup_agent,
 )
 
 
@@ -102,6 +105,19 @@ class TestCompileLlmAgent:
         assert compiled is not None
         # create_react_agent returns a Pregel/Runnable — must be invokable.
         assert hasattr(compiled, "invoke") or hasattr(compiled, "ainvoke")
+
+    @pytest.mark.asyncio
+    async def test_builtin_flow_graph_tool_does_not_enter_compiled_tools(
+        self, fake_ws: MagicMock
+    ) -> None:
+        app = FastAPI()
+        agent = LlmAgent(tools=[], instructions="Help.")
+        await setup_agent(app, agent, AgentConfig(name="graph-agent"))
+
+        compiled = compile_to_langgraph(agent, ws=fake_ws, model="any")
+
+        assert compiled is not None
+        assert agent._tool_fns == []
 
     def test_resolved_dep_is_captured_in_closure(self, fake_ws: MagicMock) -> None:
         """Tool's ``ws`` parameter must be bound to OUR fake_ws at compile time."""

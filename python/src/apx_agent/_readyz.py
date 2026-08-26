@@ -275,7 +275,7 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
         return
 
     @app.get("/readyz")
-    def readyz(request: Request) -> Response:
+    def readyz(request: Request) -> Response:  # type: ignore[reportInvalidTypeForm]
         import json
 
         checks: dict[str, Any] = {

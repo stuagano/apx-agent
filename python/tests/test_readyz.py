@@ -29,6 +29,26 @@ def _trivial_tool(query: str) -> str:
     return f"got: {query}"
 
 
+def _stub_create_app_startup(monkeypatch) -> None:
+    import apx_agent._wiring as wiring
+
+    async def _no_mcp(*_args, **_kwargs):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    monkeypatch.setattr(wiring, "_make_workspace_client", lambda: None)
+    monkeypatch.setattr(wiring, "_setup_mcp", _no_mcp)
+    monkeypatch.setattr(
+        "apx_agent._mlflow_tracing.autolog_if_env", lambda: None, raising=False,
+    )
+    monkeypatch.setattr(
+        "apx_agent._trace_store.install_capture_processor_at_startup",
+        lambda: None,
+        raising=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Import / export
 # ---------------------------------------------------------------------------
@@ -480,6 +500,7 @@ def test_create_app_serves_readyz(monkeypatch) -> None:
         return ProbeResult(assistant_text="READY", trace_id="tr-449")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
+    _stub_create_app_startup(monkeypatch)
 
     app = create_app(Agent(tools=[_trivial_tool]), AgentConfig(name="t"))
     with TestClient(app) as client:
@@ -502,6 +523,7 @@ def test_create_app_readyz_single_route_after_explicit_mount(monkeypatch) -> Non
         return ProbeResult(assistant_text="READY", trace_id="tr-449b")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
+    _stub_create_app_startup(monkeypatch)
 
     agent = Agent(tools=[_trivial_tool])
     app = create_app(agent, AgentConfig(name="t"))

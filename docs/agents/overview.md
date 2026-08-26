@@ -16,6 +16,10 @@ An **agent** in apx-agent is a declaration: `instructions` + `tools` + a model n
 | `HandoffAgent` | LLM-driven peer handoff — transfers the conversation to a specialist mid-session |
 | `agent_tool` | Wraps any agent as a callable tool so the parent LLM controls when and how often to delegate |
 | `RemoteDatabricksAgent` | Wraps a deployed agent over HTTP — same interface as a local agent |
+| Flow graph | Runtime topology of agents, tools, handoffs, resources, and last-route evidence; visible in `/_apx/topology` and callable as `get_agent_flow_graph` |
+
+The typed flow-graph contract is public API: import `TopologyDigestResponse`
+and `summarize_topology` from `apx_agent` when building custom consumers.
 
 ## Agent types
 

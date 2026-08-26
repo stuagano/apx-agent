@@ -14,11 +14,10 @@ Design principles:
      manager so the compile path works without the ``eval`` extra installed.
      Users opt into MLflow tracing by installing it.
 
-  2. **No autolog by default.** ``mlflow.langchain.autolog()`` adds ~30s
-     overhead per run (it logs the model itself, not just traces — verified
-     scar tissue from the customer's hand-rolled pipeline). Use selective
-     spans by default; expose ``enable_langchain_autolog()`` for users who
-     want deep auto-instrumentation and can pay the cost.
+  2. **Autolog by default.** ``mlflow.langchain.autolog()`` is the standard
+     path for LangChain/LangGraph trace capture. Users can opt out with
+     ``APX_AGENT_MLFLOW_AUTOLOG=0`` if model artifact logging overhead matters
+     more than complete auto-instrumentation.
 
   3. **No forced tracking URI.** We never call ``mlflow.set_tracking_uri``.
      The user (or Databricks env) configures the destination; we just emit.
@@ -145,7 +144,8 @@ def enable_langchain_autolog() -> bool:
 
     This auto-instruments every LangChain / LangGraph call (LLM invocations,
     tool calls, graph nodes) into MLflow traces. Costs ~30s overhead per run
-    in some configurations (model logging side-effect), so it's opt-in.
+    in some configurations (model logging side-effect), so callers can opt out
+    with ``APX_AGENT_MLFLOW_AUTOLOG=0``.
 
     Returns True if autolog was enabled; False if MLflow isn't installed.
     """
@@ -167,17 +167,14 @@ def enable_langchain_autolog() -> bool:
 
 
 def autolog_if_env() -> None:
-    """If ``APX_AGENT_MLFLOW_AUTOLOG=1`` is set in the environment, enable
-    LangChain autolog. Call this once at app startup.
+    """Enable LangChain autolog unless ``APX_AGENT_MLFLOW_AUTOLOG=0``.
 
-    ``apx-agent run`` sets this variable by default (via ``os.environ.setdefault``)
-    so the dev loop's Trace panel gets per-tool + per-LLM spans without the
-    user opting in. Deploy runtimes reach this with the env unset and stay
-    on the cheaper boot path. Set ``APX_AGENT_MLFLOW_AUTOLOG=0`` to force off
-    in either case.
+    MLflow autolog is the primary tracing path for LangChain/LangGraph apps.
+    Set ``APX_AGENT_MLFLOW_AUTOLOG=0`` to force it off when startup/model
+    artifact overhead is unacceptable.
     """
     _autolog_raw = os.environ.get("APX_AGENT_MLFLOW_AUTOLOG")
-    if _autolog_raw and _autolog_raw.strip().lower() in ("1", "true", "yes"):
+    if _autolog_raw is None or _autolog_raw.strip().lower() in ("1", "true", "yes"):
         enable_langchain_autolog()
 
 
