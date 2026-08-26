@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import tomllib
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -103,7 +104,7 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     assert parsed["bundle"]["name"] == "my_agent"
     apps = parsed["resources"]["apps"]
     assert "my_agent" in apps
-    assert apps["my_agent"]["name"] == "my_agent"
+    assert apps["my_agent"]["name"] == "my-agent"
     # Build artifacts step copies sources into ./.build before deploy so the
     # apx-agent wheel can ride along — see commit 6f84ad24 for the rationale.
     assert apps["my_agent"]["source_code_path"] == "./.build"
@@ -125,7 +126,7 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     assert parsed["targets"]["dev"]["default"] is True
     assert (
         parsed["targets"]["staging"]["resources"]["apps"]["my_agent"]["name"]
-        == "my_agent-staging"
+        == "my-agent-staging"
     )
 
     # Version correlation (issue #404): the bundle declares the correlation
@@ -321,7 +322,8 @@ def test_scaffold_apps_writes_apx_timeline_sql(tmp_path: Path) -> None:
     assert "CREATE TABLE IF NOT EXISTS `samples`.`tpch`.`apx_agent_events`" in sql
     assert "CREATE OR REPLACE VIEW `samples`.`tpch`.`apx_agent_timeline`" in sql
     assert "`samples`.`tpch`.`apx_my_agent_trace_unified`" in sql
-    assert "span.attributes:`apx.tool.name`" in sql
+    assert "COALESCE(CAST(u.tags['apx.session.id'] AS STRING), span.attributes:['apx.session.id']::STRING)" in sql
+    assert "span.attributes:['apx.tool.name']::STRING" in sql
     assert "UNION ALL" in sql
 
 
@@ -682,6 +684,27 @@ def test_resolve_data_source_explicit_probes_first_table(
     assert cli._resolve_scaffold_data_source("data", "main", "sales", None) == (
         "main", "sales", "trips",
     )
+
+
+def test_probe_first_table_skips_observability_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apx_agent.cli as cli
+
+    class Tables:
+        @staticmethod
+        def list(catalog_name: str, schema_name: str) -> list[Any]:
+            assert catalog_name == "main"
+            assert schema_name == "sales"
+            return [
+                type("Table", (), {"name": "apx_agent_events"})(),
+                type("Table", (), {"name": "apx_demo_trace_unified"})(),
+                type("Table", (), {"name": "customers"})(),
+            ]
+
+    monkeypatch.setattr(cli, "_make_scaffold_workspace_client", lambda profile: type("WS", (), {"tables": Tables})())
+
+    assert cli._probe_first_table("main", "sales") == "customers"
 
 
 def test_resolve_data_source_auto_detects_when_unspecified(
