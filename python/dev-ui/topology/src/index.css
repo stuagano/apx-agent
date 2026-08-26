@@ -468,7 +468,7 @@ pre {
 /* Chat dock — right rail for try-a-turn without leaving Topology */
 
 .apx-chat-dock {
-  width: 320px;
+  width: clamp(520px, 42vw, 760px);
   flex-shrink: 0;
   border-left: 1px solid var(--border);
   background: var(--panel);
@@ -505,105 +505,12 @@ pre {
   line-height: 1.35;
 }
 
-.apx-chat-dock-msgs {
+.apx-chat-frame {
   flex: 1;
-  overflow: auto;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.apx-chat-dock-empty {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.45;
-}
-
-.apx-chat-msg {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: flex-start;
-}
-
-.apx-chat-msg.user {
-  align-items: flex-end;
-}
-
-.apx-chat-bubble {
-  max-width: 100%;
-  font-size: 12px;
-  line-height: 1.45;
-  padding: 8px 10px;
-  border-radius: 8px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: #1a1a1a;
-  border: 1px solid var(--border);
-  color: var(--text);
-}
-
-.apx-chat-msg.user .apx-chat-bubble {
-  background: var(--accent-bg);
-  border-color: var(--accent-border);
-  color: #dbeafe;
-}
-
-.apx-chat-tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.apx-chat-tool {
-  font-size: 10px;
-  font-family: ui-monospace, monospace;
-  padding: 1px 6px;
-  border-radius: 4px;
-  border: 1px solid #5b4a1e;
-  background: #1a1508;
-  color: #fbbf24;
-}
-
-.apx-chat-tool.done {
-  border-color: #14532d;
-  background: #052e1c;
-  color: #4ade80;
-}
-
-.apx-chat-tool.error {
-  border-color: #7f1d1d;
-  background: #2a1215;
-  color: #fca5a5;
-}
-
-.apx-chat-dock-form {
-  display: flex;
-  gap: 8px;
-  padding: 10px 12px;
-  border-top: 1px solid var(--border);
-}
-
-.apx-chat-dock-form input {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--code-bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 9px;
-}
-
-.apx-chat-dock-form input:focus {
-  outline: none;
-  border-color: var(--accent-border);
-}
-
-.apx-chat-dock-form input:disabled {
-  opacity: 0.6;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #050505;
 }
 
 .apx-empty,

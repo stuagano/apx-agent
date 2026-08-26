@@ -535,25 +535,6 @@ export default function App() {
               <ChatDock
                 collapsed={!chatOpen}
                 onToggle={() => setChatOpen((v) => !v)}
-                starterQuestion={activeWorkflowRun
-                  ? data.workflows?.find((workflow) => workflow.id === activeWorkflowRun.workflowId)?.question
-                  : null}
-                runRequestId={activeWorkflowRun?.requestId}
-                onSendingChange={setChatSending}
-                onRunQuestion={(requestId, completed) => {
-                  setActiveWorkflowRun((activeRun) => {
-                    if (!activeRun || activeRun.requestId !== requestId) return activeRun;
-                    if (!completed) {
-                      setFailedWorkflowIds((failed) => new Set(failed).add(activeRun.workflowId));
-                    }
-                    return null;
-                  });
-                }}
-                onTurnComplete={() => {
-                  loadRoute();
-                  // Second pass — ring buffer may lag a tick behind stream end.
-                  window.setTimeout(() => loadRoute(), 1200);
-                }}
               />
             )}
           </div>
