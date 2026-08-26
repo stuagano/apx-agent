@@ -31,6 +31,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ._models import (
+    FLOW_GRAPH_FULL_GRAPH_ENDPOINT,
+    FLOW_GRAPH_LAST_ROUTE_ENDPOINT,
+    FLOW_GRAPH_SCHEMA_VERSION,
+)
 from ._ui_edit import _require_python_binding
 
 # ── POST /_apx/eval/data ─────────────────────────────────────────────────────
@@ -595,6 +600,64 @@ class TopologyResponse(BaseModel):
     nodes: list[TopologyNode]
     edges: list[TopologyEdge]
     workflows: list[dict[str, Any]] | None = None
+
+
+class TopologyDigestNode(BaseModel):
+    """One compact node summary in ``TopologyDigestResponse.nodes``."""
+
+    id: str
+    type: str | None = None
+    label: str | None = None
+    description: str | None = None
+    outgoing: int
+    tools: int
+    delegates: int
+
+
+class TopologyDigestEdge(BaseModel):
+    """One compact edge summary in ``TopologyDigestResponse.edges``."""
+
+    source: str | None = None
+    target: str | None = None
+    kind: str | None = None
+
+
+class TopologyDigestCounts(BaseModel):
+    """Node/edge counts for the compact topology digest."""
+
+    nodes: int
+    edges: int
+
+
+class TopologyDigestRelationship(BaseModel):
+    """Ontology-style graph statement derived from a topology edge."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    subject: str | None = None
+    predicate: str | None = None
+    object_id: str | None = Field(default=None, alias="object")
+
+
+class TopologyDigestResponse(BaseModel):
+    """Agent-readable compact shape for the topology digest and graph tool.
+
+    This is intentionally smaller than :class:`TopologyResponse`: it keeps the
+    graph traversal contract and endpoint pointers without carrying every UI
+    field needed by React Flow.
+    """
+
+    schema_version: str = FLOW_GRAPH_SCHEMA_VERSION
+    agent: str | None = None
+    root_id: str | None = None
+    counts: TopologyDigestCounts
+    nodes: list[TopologyDigestNode]
+    edges: list[TopologyDigestEdge]
+    relationships: list[TopologyDigestRelationship]
+    relationship_predicates: list[str]
+    last_route: LastRouteResponse | None = None
+    live_route_endpoint: str = FLOW_GRAPH_LAST_ROUTE_ENDPOINT
+    full_graph_endpoint: str = FLOW_GRAPH_FULL_GRAPH_ENDPOINT
 
 
 class TopologyTracingResponse(BaseModel):

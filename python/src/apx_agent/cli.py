@@ -16,7 +16,7 @@ Subcommands:
 Most agent-facing commands accept ``--module MODULE:VAR`` to point at the
 agent definition (defaults to ``agent:agent``); the module must be importable
 from the current working directory. The OKF bundle commands
-(``refresh-schema`` / ``migrate-to-okf`` / ``pull-comments`` /
+(``refresh-schema`` / ``migrate-to-okf`` / ``ontology-jumpstart`` / ``pull-comments`` /
 ``push-comments`` / ``drift-pr`` / ``enrich``) and ``scaffold`` / ``cost`` operate on the project, not a
 loaded agent, and so take no ``--module``.
 
@@ -262,7 +262,7 @@ def _load_agent(module_spec: str) -> Any:
     return getattr(module, variable)
 
 
-def _load_finalized_agent(module_spec: str) -> Any:
+def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
     """Resolve + finalize an agent for CLI commands.
 
     Loads [tool.apx.agent] config first, then resolve_agent so template-only
@@ -274,7 +274,11 @@ def _load_finalized_agent(module_spec: str) -> Any:
 
     config = _load_agent_config(pyproject_path=None)
     try:
-        agent = resolve_agent(module_spec, config, ws=_ws_for_template(config))
+        agent = resolve_agent(
+            module_spec,
+            config,
+            ws=_ws_for_template(config) if template_ws else None,
+        )
     except TemplateConfigError as e:
         raise click.ClickException(
             f"{e}\n"
@@ -288,6 +292,77 @@ def _load_finalized_agent(module_spec: str) -> Any:
         ) from e
     finalize_agent(agent, config, pyproject_path=None)
     return agent
+
+
+@contextlib.contextmanager
+def _registration_import_context(cwd: Path | None) -> Iterator[None]:
+    """Temporarily import an app like its local uv project."""
+    import tempfile
+
+    old_cwd = Path.cwd()
+    added: list[str] = []
+    stack = contextlib.ExitStack()
+    if cwd is not None:
+        os.chdir(cwd)
+    try:
+        try:
+            import tomllib  # py>=3.11
+        except ImportError:  # pragma: no cover
+            import tomli as tomllib  # type: ignore[no-redef]
+
+        pyproject = Path.cwd() / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                doc = tomllib.loads(pyproject.read_text())
+            except Exception:
+                doc = {}
+            sources = doc.get("tool", {}).get("uv", {}).get("sources", {})
+            if isinstance(sources, dict):
+                for source in sources.values():
+                    if not isinstance(source, dict):
+                        continue
+                    raw_path = source.get("path")
+                    if not isinstance(raw_path, str) or not raw_path.endswith(".whl"):
+                        continue
+                    wheel = str((Path.cwd() / raw_path).resolve())
+                    if Path(wheel).exists() and wheel not in sys.path:
+                        sys.path.insert(0, wheel)
+                        added.append(wheel)
+            if isinstance(doc.get("project"), dict) and shutil.which("uv"):
+                uv_env = stack.enter_context(
+                    tempfile.TemporaryDirectory(prefix="apx-register-uv-"),
+                )
+                env = os.environ.copy()
+                env["UV_PROJECT_ENVIRONMENT"] = uv_env
+                proc = subprocess.run(
+                    [
+                        "uv", "run", "--frozen", "--python", sys.executable,
+                        "python", "-c",
+                        "import json, sys; print(json.dumps(sys.path))",
+                    ],
+                    cwd=str(Path.cwd()),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    with contextlib.suppress(Exception):
+                        for raw_path in json.loads(proc.stdout):
+                            if not isinstance(raw_path, str) or not raw_path:
+                                continue
+                            path = str((Path.cwd() / raw_path).resolve())
+                            if Path(path).exists() and path not in sys.path:
+                                sys.path.insert(0, path)
+                                added.append(path)
+        yield
+    finally:
+        for path in added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(path)
+        stack.close()
+        if cwd is not None:
+            os.chdir(old_cwd)
 
 
 # ASGI app module spec served by `apx-agent agents run`, per scaffold layout.
@@ -1281,10 +1356,8 @@ dependencies = [
     # imports lazily under the hood. A bare ``apx-agent`` dep would let
     # ``uv sync`` succeed but fail at first request inside the deployed App.
     <APX_AGENT_DEP>
-    # mlflow.genai.agent_server (imported by agent_server/start_server.py)
-    # only exists in mlflow >=3.12; an older floor lets `uv sync` succeed but
-    # the deployed App 502s with ModuleNotFoundError: mlflow.genai.
-    "mlflow[databricks]>=3.12",
+    # mlflow.genai.agent_server plus Unity Catalog trace locations.
+    "mlflow[databricks]>=3.14",
     # Add your agent's deps here
 ]
 
@@ -1538,12 +1611,19 @@ Creates the MLflow experiment for tracing and writes its ID to .env.
 Reports Lakebase memory/session backend status if configured.
 Safe to re-run; idempotent.
 """
-from apx_agent.bootstrap import init_apps_experiment, provision_memory_backends
+from apx_agent.bootstrap import (
+    init_apps_experiment,
+    provision_lakehouse_observability,
+    provision_memory_backends,
+)
 
 
 def main() -> None:
-    path, exp_id = init_apps_experiment()
+    path, exp_id = init_apps_experiment(<TRACE_LOCATION_ARGS>)
     print(f"MLflow experiment: {path} (id={exp_id})")
+
+    for line in provision_lakehouse_observability(<TRACE_LOCATION_ARGS>):
+        print(line)
 
     for line in provision_memory_backends():
         print(line)
@@ -1604,6 +1684,82 @@ _SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK = '''\
             value: ${var.catalog}
           - name: APX_SCHEMA
             value: ${var.schema}
+'''
+
+
+_SCAFFOLD_APX_OBSERVABILITY_SQL = '''\
+-- APX lakehouse observability read model.
+-- Generated for MLflow UC trace prefix: <TRACE_TABLE_PREFIX>
+--
+-- Run this after quickstart has created the MLflow UC trace location and at
+-- least one trace has landed, so <TRACE_TABLE_PREFIX>_trace_unified exists.
+
+CREATE TABLE IF NOT EXISTS `<CATALOG>`.`<SCHEMA>`.`apx_agent_events` (
+  event_time TIMESTAMP NOT NULL,
+  event_type STRING NOT NULL,
+  trace_id STRING,
+  span_id STRING,
+  agent_name STRING,
+  agent_version STRING,
+  session_id STRING,
+  principal_hash STRING,
+  route_id STRING,
+  tool_name STRING,
+  policy_id STRING,
+  decision STRING,
+  status STRING,
+  latency_ms DOUBLE,
+  payload_json STRING
+) USING DELTA
+TBLPROPERTIES (
+  delta.enableChangeDataFeed = true
+);
+
+CREATE OR REPLACE VIEW `<CATALOG>`.`<SCHEMA>`.`apx_agent_timeline` AS
+WITH span_rows AS (
+  SELECT
+    span.time AS event_time,
+    'span' AS row_type,
+    u.trace_id,
+    span.span_id,
+    span.parent_span_id,
+    CAST(u.tags['apx.agent.name'] AS STRING) AS agent_name,
+    CAST(u.tags['apx.agent.version'] AS STRING) AS agent_version,
+    CAST(u.tags['apx.session.id'] AS STRING) AS session_id,
+    NULL AS event_type,
+    span.name AS span_name,
+    CAST(span.attributes:`apx.tool.name` AS STRING) AS tool_name,
+    CAST(span.attributes:`apx.watchdog.policy_id` AS STRING) AS policy_id,
+    CAST(span.attributes:`apx.watchdog.action` AS STRING) AS decision,
+    span.status.code AS status,
+    (span.end_time_unix_nano - span.start_time_unix_nano) / 1000000.0 AS latency_ms,
+    TO_JSON(span.attributes) AS payload_json
+  FROM `<CATALOG>`.`<SCHEMA>`.`<TRACE_TABLE_PREFIX>_trace_unified` u
+  LATERAL VIEW OUTER explode(u.spans) exploded AS span
+),
+event_rows AS (
+  SELECT
+    event_time,
+    'apx_event' AS row_type,
+    trace_id,
+    span_id,
+    NULL AS parent_span_id,
+    agent_name,
+    agent_version,
+    session_id,
+    event_type,
+    NULL AS span_name,
+    tool_name,
+    policy_id,
+    decision,
+    status,
+    latency_ms,
+    payload_json
+  FROM `<CATALOG>`.`<SCHEMA>`.`apx_agent_events`
+)
+SELECT * FROM span_rows
+UNION ALL
+SELECT * FROM event_rows;
 '''
 
 _SCAFFOLD_APPS_DATABRICKS_YML = '''\
@@ -1755,6 +1911,7 @@ _SCAFFOLD_APPS_ENV_EXAMPLE = '''\
 DATABRICKS_CONFIG_PROFILE=
 MLFLOW_EXPERIMENT_ID=
 MLFLOW_EXPERIMENT_NAME=
+MLFLOW_TRACING_SQL_WAREHOUSE_ID=
 '''
 
 
@@ -1766,7 +1923,7 @@ apx-agent project targeting Databricks Apps.
 ## Setup
 ```bash
 uv sync --group dev
-uv run quickstart  # creates the MLflow experiment + writes .env
+uv run quickstart  # creates the MLflow experiment + UC trace location, applies observability SQL when MLFLOW_TRACING_SQL_WAREHOUSE_ID is set, writes .env
 ```
 
 ## Local dev
@@ -1782,6 +1939,12 @@ curl -X POST http://localhost:8000/invocations -d '{"input":[{"role":"user","con
 ```bash
 uv run apx-agent agents deploy --target apps  # validates, deploys, runs the bundle
 ```
+
+## Lakehouse Observability
+Data/coworker scaffolds write `.apx/sql/apx_agent_timeline.sql`. `uv run quickstart`
+applies it automatically when `MLFLOW_TRACING_SQL_WAREHOUSE_ID` is set. It creates
+`apx_agent_events` and the joined `apx_agent_timeline` view beside the MLflow
+`<prefix>_trace_unified` view in the same UC schema.
 
 ## Promoting to another environment
 `databricks.yml` ships `dev` (default), `staging`, and `prod` targets. All
@@ -1872,8 +2035,7 @@ def _discover_default_data(
     the caller falls back to the samples default. Scans are capped for speed.
     """
     try:
-        from databricks.sdk import WorkspaceClient
-        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        ws = _make_scaffold_workspace_client(profile)
     except Exception:
         return None
 
@@ -1922,8 +2084,7 @@ def _probe_first_table(catalog: str, schema: str, profile: str | None = None) ->
     """First readable table in ``catalog.schema`` (best-effort) for the example
     tool. Returns None when auth can't be resolved or the schema is empty."""
     try:
-        from databricks.sdk import WorkspaceClient
-        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        ws = _make_scaffold_workspace_client(profile)
         for t in ws.tables.list(catalog_name=catalog, schema_name=schema):
             if t.name:
                 return t.name
@@ -1932,11 +2093,71 @@ def _probe_first_table(catalog: str, schema: str, profile: str | None = None) ->
     return None
 
 
+def _make_scaffold_workspace_client(profile: str | None):
+    """WorkspaceClient for best-effort scaffold probes with bounded retries."""
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.config import Config
+
+    is_real_sdk_client = str(getattr(WorkspaceClient, "__module__", "")).startswith(
+        "databricks.sdk"
+    )
+    if not is_real_sdk_client:
+        return WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    if not _scaffold_databricks_host_resolves(profile):
+        raise RuntimeError("configured Databricks host is not resolvable")
+    cfg = Config(
+        profile=profile,
+        http_timeout_seconds=3,
+        retry_timeout_seconds=1,
+    )
+    return WorkspaceClient(config=cfg)
+
+
+def _scaffold_databricks_host_resolves(profile: str | None) -> bool:
+    """False when the configured scaffold probe host fails DNS preflight."""
+    import configparser
+    from urllib.parse import urlparse
+
+    host = os.environ.get("DATABRICKS_HOST")
+    if not host:
+        profile_name = profile or os.environ.get("DATABRICKS_CONFIG_PROFILE") or "DEFAULT"
+        cfg_path = Path.home() / ".databrickscfg"
+        if cfg_path.exists():
+            parser = configparser.ConfigParser()
+            parser.read(cfg_path)
+            host = parser.get(profile_name, "host", fallback="")
+    if not host:
+        return True
+    parsed = urlparse(host if "://" in host else f"https://{host}")
+    hostname = parsed.hostname
+    if not hostname:
+        return True
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import socket, sys; "
+                    "socket.getaddrinfo(sys.argv[1], int(sys.argv[2]))"
+                ),
+                hostname,
+                str(parsed.port or 443),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
 def _make_ws_for_scaffold(profile: str | None):
     """Build a WorkspaceClient for scaffold-time introspection, or None."""
     try:
-        from databricks.sdk import WorkspaceClient
-        return WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        return _make_scaffold_workspace_client(profile)
     except Exception as exc:
         click.echo(f"  (warning: could not connect to the workspace — {exc})", err=True)
         return None
@@ -3735,6 +3956,7 @@ def _scaffold_apps(
 
     import re as _re
     name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
+    trace_table_prefix = f"apx_{name_slug}"
 
     # Emit the knowledge knob iff the bundle is actually being written (manifest is not None).
     # This keeps pyproject.toml coherent: the knob resolves iff the bundle exists on disk.
@@ -3750,6 +3972,12 @@ def _scaffold_apps(
     catalog_schema_env_block = (
         _SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK if (catalog and schema) else ""
     )
+    trace_location_args = (
+        f"catalog_name=\"{catalog}\", "
+        f"schema_name=\"{schema}\", "
+        f"table_prefix=\"{trace_table_prefix}\""
+        if (catalog and schema) else ""
+    )
 
     def _sub(template: str) -> str:
         return (
@@ -3759,6 +3987,8 @@ def _scaffold_apps(
             .replace("<APP_NAME_SLUG>", name_slug)
             .replace("<CATALOG>", catalog)
             .replace("<SCHEMA>", schema)
+            .replace("<TRACE_LOCATION_ARGS>", trace_location_args)
+            .replace("<TRACE_TABLE_PREFIX>", trace_table_prefix)
             .replace("<EXAMPLE_TOOL>", prelude)
             .replace("<EXTRA_TOOLS>", extra_tools)
             .replace("<PERSONA_ARG>", persona_arg)
@@ -3798,6 +4028,8 @@ def _scaffold_apps(
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
         "tests/test_agent_imports.py": _sub(_SCAFFOLD_APPS_TEST_IMPORT),
     }
+    if catalog and schema:
+        files[".apx/sql/apx_agent_timeline.sql"] = _sub(_SCAFFOLD_APX_OBSERVABILITY_SQL)
     if manifest is not None:
         from ._okf import dump_schema_cache
         files[".apx/schema.json"] = dump_schema_cache(manifest)
@@ -4421,6 +4653,58 @@ def migrate_to_okf(force: bool) -> None:
     if regen is not None:
         manifest_path.write_text(dump_schema_cache(regen))
     click.echo(f"Wrote OKF bundle to {okf_root} (schema.json regenerated as derived cache).")
+
+
+@agents.command("ontology-jumpstart")
+@click.argument("model_json", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--catalog", required=True, help="APX catalog envelope for generated grounding.")
+@click.option("--schema", required=True, help="APX schema envelope for generated grounding.")
+@click.option(
+    "--output",
+    "apx_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path(".apx"),
+    show_default=True,
+    help="Directory that will receive okf/ and schema.json.",
+)
+@click.option("--force", is_flag=True, help="Overwrite an existing output okf/ bundle.")
+def ontology_jumpstart(
+    model_json: Path,
+    catalog: str,
+    schema: str,
+    apx_dir: Path,
+    force: bool,
+) -> None:
+    """Create APX OKF grounding from a Databricks industry model.json.
+
+    Use with model files from
+    databricks-industry-solutions/lakehouse-industry-data-models. The command is
+    local-only: it writes ``.apx/okf`` plus the derived ``.apx/schema.json`` cache
+    and does not call a Databricks workspace.
+    """
+    from ._industry_models import write_industry_model_apx
+
+    okf_root = apx_dir / "okf"
+    if okf_root.exists() and not force:
+        raise click.ClickException(f"{okf_root} already exists. Use --force to overwrite.")
+    if okf_root.exists():
+        if okf_root.is_symlink():
+            raise click.ClickException(f"{okf_root} is a symlink; refusing to overwrite.")
+        if okf_root.is_dir():
+            shutil.rmtree(okf_root)
+        else:
+            okf_root.unlink()
+    manifest = write_industry_model_apx(
+        model_json,
+        apx_dir,
+        catalog=catalog,
+        schema=schema,
+    )
+    n = len(manifest["tables"])
+    click.echo(
+        f"Wrote ontology jumpstart to {okf_root} (+ schema.json cache) "
+        f"from {model_json} - {n} table{'s' if n != 1 else ''}."
+    )
 
 
 class _OkfProject(NamedTuple):
@@ -7240,6 +7524,15 @@ def _ensure_apx_wheel(cwd: Path) -> Path | None:
         wheel_target = raw_target
         expected_name = wheel_target.name
 
+    for stale_wheel in cwd.glob("apx_agent-*.whl"):
+        if stale_wheel == wheel_target:
+            continue
+        if stale_wheel.is_symlink():
+            raise click.ClickException(
+                f"refusing to remove symlinked stale wheel: {stale_wheel}"
+            )
+        stale_wheel.unlink()
+
     if wheel_target.exists() and not is_editable_dir:
         click.echo(
             f"  apx-agent wheel already staged: {wheel_target.name}", err=True,
@@ -8400,18 +8693,22 @@ def _register_apps_manifest_step(
     bundle_target: str,
     uc_name_override: str | None,
     extra_version_tags: dict[str, str] | None = None,
+    experiment_id: str | None = None,
     profile: str | None = None,  # only names the repair command on failure
+    load_cwd: Path | None = None,
+    required: bool = False,
     log: Any,
 ) -> str | None:
-    """Register a UC version manifest for a freshly-deployed App (best-effort).
+    """Register a UC version manifest for a freshly-deployed App.
 
     Runs AFTER the App is live. Skips with a loud, actionable stderr notice when
     a UC name or LLM model can't be resolved (so a bare apps deploy still
-    succeeds). Treats any logging/registration failure as non-fatal — the App is
-    already running; a missing manifest must not turn a green deploy red.
+    succeeds). When ``required`` is true, logging/registration failures make the
+    deploy command fail because the App is live but the requested deploy
+    contract is incomplete.
 
     Returns the registered manifest version, or None when registration was
-    skipped or failed (issue #417 — the deploy JSON reports what shipped).
+    skipped.
     """
     uc_name = _resolve_apps_uc_name(config, app_name, override=uc_name_override)
     if uc_name is None:
@@ -8426,45 +8723,92 @@ def _register_apps_manifest_step(
 
     model = config.get("model")
     if not model:
-        log(
-            "# UC registration skipped: no LLM model in [tool.apx.agent].model "
-            f"to log {uc_name} with. Set a model, or pass --no-register-uc to "
-            "silence this."
+        msg = (
+            "UC registration incomplete: no LLM model in "
+            f"[tool.apx.agent].model to log {uc_name} with. Set a model, or "
+            "pass --no-register-uc to intentionally skip the Apps ledger."
         )
+        if required:
+            raise click.ClickException(msg)
+        log(f"# {msg}")
         return None
 
     agent_name = config.get("name") or app_name
+    old_profile = os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    repair = "apx-agent agents register"
+    if uc_name_override:
+        repair += f" --uc-name {uc_name_override}"
+    if profile:
+        repair += f" --profile {profile}"
     try:
-        agent = _load_finalized_agent(module)
-        from ._apps_registry import register_apps_manifest
-        res = register_apps_manifest(
-            agent,
-            uc_name=uc_name,
-            model=model,
-            app_name=app_name,
-            bundle_target=bundle_target,
-            agent_name=agent_name,
-            extra_version_tags=extra_version_tags,
-        )
+        _ensure_uc_registered_model_parent(uc_name, profile=profile, log=log)
+        if profile:
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+        with _registration_import_context(load_cwd):
+            agent = _load_finalized_agent(module)
+            from ._apps_registry import register_apps_manifest
+            res = register_apps_manifest(
+                agent,
+                uc_name=uc_name,
+                model=model,
+                app_name=app_name,
+                bundle_target=bundle_target,
+                agent_name=agent_name,
+                extra_version_tags=extra_version_tags,
+                experiment_id=experiment_id,
+            )
+        if profile:
+            if old_profile is None:
+                os.environ.pop("DATABRICKS_CONFIG_PROFILE", None)
+            else:
+                os.environ["DATABRICKS_CONFIG_PROFILE"] = old_profile
         log(
             f"# registered {res.uc_name} version {res.version} "
             f"(manifest for App {res.app_name}; not promoted to serving)"
         )
         return res.version
     except Exception as e:  # non-fatal: the App is live regardless
-        # Name the exact single-agent repair command (issue #418) so the
-        # operator doesn't reach for a workspace-wide `fleet backfill`.
-        repair = "apx-agent agents register"
-        if uc_name_override:
-            repair += f" --uc-name {uc_name_override}"
         if profile:
-            repair += f" --profile {profile}"
-        log(
-            f"# UC registration failed (non-fatal — App is live): {e}\n"
-            "# the App is running; only the version-ledger entry is missing. "
-            f"Backfill it with:\n#   {repair}"
+            if old_profile is None:
+                os.environ.pop("DATABRICKS_CONFIG_PROFILE", None)
+            else:
+                os.environ["DATABRICKS_CONFIG_PROFILE"] = old_profile
+        msg = (
+            "UC registration failed after the App reached RUNNING. "
+            "The App is live, but deploy is incomplete because the requested "
+            f"version-ledger entry is missing: {e}\n"
+            f"Repair with:\n  {repair}"
         )
+        if required:
+            raise click.ClickException(msg) from e
+        log(f"# {msg}")
         return None
+
+
+def _ensure_uc_registered_model_parent(
+    uc_name: str, *, profile: str | None, log: Any,
+) -> None:
+    """Create the UC catalog/schema parent for an Apps manifest if missing."""
+    parts = uc_name.split(".")
+    if len(parts) != 3 or not all(parts):
+        raise click.ClickException(
+            f"UC name must be catalog.schema.model, got {uc_name!r}"
+        )
+    catalog, schema, _model = parts
+    ws, _cfg = _connect_workspace(profile)
+
+    try:
+        ws.catalogs.get(catalog)
+    except Exception:
+        ws.catalogs.create(name=catalog)
+        log(f"# created UC catalog: {catalog}")
+
+    full_schema = f"{catalog}.{schema}"
+    try:
+        ws.schemas.get(full_schema)
+    except Exception:
+        ws.schemas.create(name=schema, catalog_name=catalog)
+        log(f"# created UC schema: {full_schema}")
 
 
 def _apps_readyz_recovery_hint(
@@ -8697,6 +9041,15 @@ def _deploy_apps_impl(
                         "manifest and 502 on startup. Check that the project root "
                         "has a pyproject.toml."
                     )
+                build_venv = build_dir / ".venv"
+                if build_venv.exists():
+                    if build_venv.is_symlink():
+                        raise click.ClickException(
+                            "deploy aborted: refusing to remove symlinked "
+                            ".build/.venv. Remove it manually and retry."
+                        )
+                    shutil.rmtree(build_venv)
+                    log("  removed .build/.venv from deploy source")
         else:
             log("# --no-auto-build-wheel: skipping wheel build + artifacts step")
 
@@ -8867,7 +9220,14 @@ def _deploy_apps_impl(
                             **(extra_version_tags or {}),
                             "apx.apps.readyz": "failed",
                         },
+                        experiment_id=resolved_exp_id,
                         profile=profile,
+                        load_cwd=(
+                            cwd / ".build"
+                            if (cwd / ".build" / "pyproject.toml").exists()
+                            else cwd
+                        ),
+                        required=False,
                         log=log,
                     )
                 recovery = _apps_readyz_recovery_hint(
@@ -8910,7 +9270,14 @@ def _deploy_apps_impl(
                 bundle_target=bundle_target,
                 uc_name_override=uc_name,
                 extra_version_tags=extra_version_tags,
+                experiment_id=resolved_exp_id,
                 profile=profile,
+                load_cwd=(
+                    cwd / ".build"
+                    if (cwd / ".build" / "pyproject.toml").exists()
+                    else cwd
+                ),
+                required=True,
                 log=log,
             )
         else:
@@ -8999,9 +9366,7 @@ def _maybe_write_deploy_state(
 ) -> None:
     """Persist Apps deploy metadata to ``/Shared/apx-agent/.../_state/``."""
     try:
-        from databricks.sdk import WorkspaceClient
-
-        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        ws = _make_scaffold_workspace_client(profile)
         state = ApxAppDeployState(
             app_name=app_name,
             bundle_target=bundle_target,
@@ -9568,8 +9933,9 @@ def supervisor_add(
             raise click.ClickException(
                 f"Could not read UC model {uc_name!r} to resolve its app name: {exc}"
             ) from exc
+        from ._apps_registry import tag_value
         uc_tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
-        app = uc_tags.get("apx.apps.app_name")
+        app = tag_value(uc_tags, "apx.apps.app_name")
         if not app:
             raise click.ClickException(
                 f"UC model {uc_name!r} has no apx.apps.app_name tag — pass the "
@@ -10087,6 +10453,8 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
     if spec and not spec.endswith((".yaml", ".yml")) and ":" not in spec:
         _describe_app_agent(spec, profile, fmt)
         return
+    if spec and ":" in spec:
+        module = spec
 
     from apx_agent._resources import (
         _iter_sub_agents,
@@ -10128,7 +10496,7 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
 
     # Finalize so `apx-agent agents describe` reports the same tools/resources the serve and
     # deploy paths will — config-declared [[tool.apx.tools]] included.
-    agent = _load_finalized_agent(module)
+    agent = _load_finalized_agent(module, template_ws=False)
 
     # Walk the whole tree — HandoffAgent / SequentialAgent / etc. have no
     # _tool_fns of their own; the tools live on nested LlmAgents.
@@ -11179,21 +11547,22 @@ def list_agents_cmd(
     # app_name -> row, so app discovery can fill in the live URL for an
     # apps-deploy that also registered a UC manifest (rather than duplicate it).
     by_app_name: dict[str, dict[str, Any]] = {}
+    from ._apps_registry import tag_value
     for a in agents_:
         resource_count = 0
         try:
-            resource_count = len(json.loads(a.tags.get("apx.agent.metadata") or "{}")
+            resource_count = len(json.loads(tag_value(a.tags, "apx.agent.metadata") or "{}")
                                  .get("resources") or [])
         except Exception:
             pass
-        serving = "apps" if a.tags.get("apx.serving") == "apps" else "model-serving"
+        serving = "apps" if tag_value(a.tags, "apx.serving") == "apps" else "model-serving"
         row = {
             "agent_name": a.name,
             "serving": serving,
             "model_endpoint": a.model,
             "uc_name": a.uc_name,
             "url": None,
-            "tool_count": a.tags.get("apx.agent.tool_count"),
+            "tool_count": tag_value(a.tags, "apx.agent.tool_count"),
             "resource_count": resource_count,
         }
         rows.append(row)
@@ -11317,7 +11686,14 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
     healthy (app not RUNNING, /readyz failed, endpoint not ready) or the
     target / UC could not be reached.
     """
-    from ._apps_registry import APP_NAME_TAG, GIT_DIRTY_TAG, GIT_SHA_TAG, SERVING_TAG
+    from ._apps_registry import (
+        APP_NAME_TAG,
+        GIT_DIRTY_TAG,
+        GIT_SHA_TAG,
+        SERVING_TAG,
+        _uc_registry_context,
+        tag_value,
+    )
 
     resolved = uc_name or _resolve_project_uc_name(Path.cwd())
     if resolved is None:
@@ -11331,33 +11707,38 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
     # 1. What's deployed, per the UC version ledger.
     try:
         from mlflow.tracking import MlflowClient
-        versions = MlflowClient().search_model_versions(f"name='{resolved}'")
+        with _uc_registry_context():
+            client = MlflowClient()
+            versions = client.search_model_versions(f"name='{resolved}'")
+            latest_summary = (
+                max(versions, key=lambda v: int(v.version)) if versions else None
+            )
+            version = str(latest_summary.version) if latest_summary else None
+            latest = (
+                client.get_model_version(resolved, version) if version else None
+            )
+            registered = client.get_registered_model(resolved) if version else None
     except Exception as exc:
         raise click.ClickException(
             f"could not reach Unity Catalog for {resolved!r}: {exc}"
         ) from exc
-    if not versions:
+    if not versions or latest is None or registered is None or version is None:
         raise click.ClickException(
             f"nothing deployed under {resolved!r} — no registered versions. "
             "Deploy with `apx-agent agents deploy` first."
         )
-    latest = max(versions, key=lambda v: int(v.version))
-    version = str(latest.version)
-    tags: dict[str, str] = {}
+    registered_tags = getattr(registered, "tags", {}) or {}
+    version_tags = getattr(latest, "tags", {}) or {}
+    tags: dict[str, str] = dict(registered_tags)
     ws, cfg = _connect_workspace(profile)
-    try:
-        model = ws.registered_models.get(resolved)
-        tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
-    except Exception:
-        pass  # version tags alone usually carry the target — keep going
-    tags.update(dict(getattr(latest, "tags", None) or {}))  # version tags win
+    tags.update(dict(version_tags))  # version tags win
 
     # 2. Probe the live target.
-    target = "apps" if tags.get(SERVING_TAG) == "apps" else "model-serving"
+    target = "apps" if tag_value(tags, SERVING_TAG) == "apps" else "model-serving"
     readyz: bool | None = None
     readyz_detail: str | None = None
     if target == "apps":
-        name = tags.get(APP_NAME_TAG)
+        name = tag_value(tags, APP_NAME_TAG)
         if not name:
             raise click.ClickException(
                 f"{resolved} version {version} is an Apps deploy but records "
@@ -11383,7 +11764,7 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
                 readyz_detail = str(result.checks)
         healthy = state == "RUNNING" and readyz is True
     else:
-        name = tags.get("apx.agent.model")
+        name = tag_value(tags, "apx.agent.model")
         if not name:
             raise click.ClickException(
                 f"{resolved} version {version} records no apx.agent.model tag "
@@ -11409,8 +11790,8 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
         healthy = state == "READY"
 
     # 3. Provenance + drift vs local HEAD (issue #403 tags).
-    git_sha = tags.get(GIT_SHA_TAG)
-    dirty = tags.get(GIT_DIRTY_TAG) == "true"
+    git_sha = tag_value(tags, GIT_SHA_TAG)
+    dirty = tag_value(tags, GIT_DIRTY_TAG) == "true"
     local_sha = _git_head_sha(Path.cwd())
     drift: str | None = None  # None: not a git repo, or no recorded provenance
     drift_line: str | None = None
@@ -11581,6 +11962,9 @@ def register_agent_cmd(
         agent = _load_finalized_agent(module)
         from ._apps_registry import register_apps_manifest
         try:
+            _ensure_uc_registered_model_parent(
+                resolved_uc, profile=profile, log=click.echo,
+            )
             res = register_apps_manifest(
                 agent,
                 uc_name=resolved_uc,
@@ -11728,10 +12112,11 @@ def delete_agent_cmd(
             uc_tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
         except Exception:
             pass
+    from ._apps_registry import tag_value
     if not resolved_endpoint:
-        resolved_endpoint = uc_tags.get("apx.agent.model")
+        resolved_endpoint = tag_value(uc_tags, "apx.agent.model")
     if not resolved_app:
-        resolved_app = uc_tags.get("apx.apps.app_name")
+        resolved_app = tag_value(uc_tags, "apx.apps.app_name")
 
     # Advertise-registry cleanup + dependents scan (#446). Best-effort: only
     # attempted when the registry tables affirmatively exist — an agent that
@@ -11798,7 +12183,7 @@ def delete_agent_cmd(
     canary_apps: list[str] = []
     bundle_path: str | None = None
     if purge:
-        bundle_target = uc_tags.get("apx.apps.bundle_target") or "dev"
+        bundle_target = tag_value(uc_tags, "apx.apps.bundle_target") or "dev"
         user_name: str | None = None
         try:
             user_name = ws.current_user.me().user_name
@@ -12881,6 +13266,7 @@ def fleet_backfill_cmd(
     apx.apps.app_name. It cannot reconstruct apx.agent.tools/resources/metadata.
     """
     from apx_agent import _fleet
+    from apx_agent._apps_registry import tag_value, uc_safe_tag_key
 
     from mlflow.tracking import MlflowClient
     client = MlflowClient()
@@ -12896,13 +13282,16 @@ def fleet_backfill_cmd(
             }
             if app_name:
                 want[_fleet.APP_NAME_TAG] = app_name
-            missing = {k: v for k, v in want.items() if k not in existing}
+            missing = {
+                k: v for k, v in want.items()
+                if tag_value(existing, k) != v
+            }
             if not missing:
                 outcomes.append(_fleet.AgentOutcome(uc, "skipped", "already tagged"))
                 continue
             if apply:
                 for k, v in missing.items():
-                    client.set_registered_model_tag(uc, k, v)
+                    client.set_registered_model_tag(uc, uc_safe_tag_key(k), v)
             detail = "stamp " + ",".join(sorted(missing))
             outcomes.append(_fleet.AgentOutcome(uc, "ok", detail))
         except Exception as e:

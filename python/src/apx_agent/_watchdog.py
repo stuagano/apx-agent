@@ -76,6 +76,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 from ._audit import set_audit_attrs
+from ._apps_registry import uc_safe_tag_key
 from ._mlflow_tracing import current_active_span
 from ._sql import run_sql
 from ._sql import sql_str_literal as _sql_str_literal
@@ -606,7 +607,7 @@ def _count_prompts(prompts: Any) -> int:
 # UC tag value size is finite; trim very long fields to keep tag writes
 # from rejecting on length. The full structured metadata still lives in
 # apx.agent.metadata as JSON so callers that need detail can parse it.
-_TAG_VALUE_MAX = 4000
+_TAG_VALUE_MAX = 1000
 
 
 def _truncate(value: str, limit: int = _TAG_VALUE_MAX) -> str:
@@ -704,16 +705,17 @@ def set_uc_tags_for_agent(
     written: dict[str, str] = {}
     failed: list[str] = []
     for key, value in tags.items():
+        safe_key = key if key == "apx.mlflow.experiment_id" else uc_safe_tag_key(key)
         try:
             client.set_registered_model_tag(
-                name=registered_model_name, key=key, value=value,
+                name=registered_model_name, key=safe_key, value=value,
             )
-            written[key] = value
+            written[safe_key] = value
         except Exception as e:
-            failed.append(key)
+            failed.append(safe_key)
             logger.warning(
                 "Failed to write UC tag %s on %s: %s — continuing with remaining tags.",
-                key, registered_model_name, e,
+                safe_key, registered_model_name, e,
             )
     if failed:
         logger.warning(

@@ -12,7 +12,15 @@ from httpx import ASGITransport, AsyncClient
 
 from pydantic import ValidationError
 
-from apx_agent import Agent, LlmAgent, AgentConfig, AgentContext, SequentialAgent, create_app, setup_agent
+from apx_agent import (
+    Agent,
+    AgentConfig,
+    AgentContext,
+    LlmAgent,
+    SequentialAgent,
+    create_app,
+    setup_agent,
+)
 from apx_agent._models import GuardrailsConfig
 from apx_agent._inspection import _load_agent_config
 from apx_agent._wiring import (
@@ -59,6 +67,8 @@ class TestSetupAgent:
         await setup_agent(app, agent, config)
         route_paths = [r.path for r in app.routes]
         assert "/api/tools/get_weather" in route_paths
+        assert "/api/tools/get_agent_flow_graph" in route_paths
+        assert [fn.__name__ for fn in agent._tool_fns] == ["get_weather"]
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_config(self):
@@ -77,7 +87,42 @@ class TestSetupAgent:
         config = AgentConfig(name="test")
 
         ctx = await setup_agent(app, agent, config)
-        assert len(ctx.tools) == 2
+        assert {t.name for t in ctx.tools} == {
+            "get_agent_flow_graph",
+            "get_weather",
+            "query_genie",
+        }
+
+    @pytest.mark.asyncio
+    async def test_agent_card_exposes_builtin_flow_graph_tool(self):
+        app = FastAPI()
+        agent = LlmAgent(tools=[get_weather])
+        config = AgentConfig(name="test")
+        await setup_agent(app, agent, config)
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            resp = await client.get("/.well-known/agent.json")
+
+        assert resp.status_code == 200
+        skills = resp.json()["skills"]
+        assert {s["name"] for s in skills} == {
+            "get_agent_flow_graph",
+            "get_weather",
+        }
+        graph_skill = next(s for s in skills if s["name"] == "get_agent_flow_graph")
+        assert graph_skill["outputSchema"]["properties"]["root_id"]["anyOf"]
+        assert "relationships" in graph_skill["outputSchema"]["properties"]
+        assert resp.json()["flowGraph"] == {
+            "schemaVersion": "apx.flow_graph.digest.v1",
+            "digestEndpoint": "/_apx/topology/digest",
+            "fullGraphEndpoint": "/_apx/topology.json",
+            "lastRouteEndpoint": "/_apx/traces/last-route",
+            "toolName": "get_agent_flow_graph",
+            "toolEndpoint": "/api/tools/get_agent_flow_graph",
+        }
 
     @pytest.mark.asyncio
     async def test_dedupes_remote_tools_in_card(self):
@@ -99,6 +144,7 @@ class TestSetupAgent:
     async def test_sub_agent_env_var_expansion(self):
         app = FastAPI()
         agent = LlmAgent(tools=[get_weather])
+        agent.fetch_remote_tools = AsyncMock(return_value=[])  # type: ignore[method-assign]
         config = AgentConfig(name="test", sub_agents=["$MY_AGENT_URL"])
 
         with patch.dict("os.environ", {"MY_AGENT_URL": "http://remote.com"}):
@@ -111,9 +157,14 @@ class TestSetupAgent:
         agent = LlmAgent(tools=[get_weather])
         config = AgentConfig(name="test", sub_agents=["$MISSING_VAR"])
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "databricks.sdk.WorkspaceClient",
+            side_effect=AssertionError("unresolved sub_agents must not auth"),
+        ):
             ctx = await setup_agent(app, agent, config)
         # Should not crash, just skip
+        assert ctx is not None
+        assert agent._sub_agent_urls == []
 
     @pytest.mark.asyncio
     async def test_config_generation_knobs_applied_when_constructor_unset(self):
@@ -323,6 +374,57 @@ class TestProtocolRoutes:
             )
             assert resp.status_code == 200
             assert "Portland" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_agent_flow_graph_tool_route_invocation(self):
+        from apx_agent import _trace_store as ts
+
+        app = FastAPI()
+        agent = LlmAgent(tools=[])
+        config = AgentConfig(name="graph-agent", api_prefix="/api")
+        await setup_agent(app, agent, config)
+        ts.reset()
+        ts.put(
+            "trace-tool-1",
+            [{"name": "get_agent_flow_graph", "span_type": "TOOL"}],
+        )
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                resp = await client.post("/api/tools/get_agent_flow_graph", json={})
+        finally:
+            ts.reset()
+
+        assert resp.status_code == 200
+        graph = resp.json()
+        assert graph["agent"] == "graph-agent"
+        assert graph["root_id"] == "agent:root"
+        assert graph["full_graph_endpoint"] == "/_apx/topology.json"
+        assert graph["last_route"]["trace_id"] == "trace-tool-1"
+        assert graph["last_route"]["tool_names"] == ["get_agent_flow_graph"]
+        assert any(n["label"] == "get_agent_flow_graph" for n in graph["nodes"])
+        assert any(r["predicate"] == "uses-tool" for r in graph["relationships"])
+        assert agent._tool_fns == []
+
+    @pytest.mark.asyncio
+    async def test_agent_flow_graph_tool_route_for_composition_root(self):
+        app = FastAPI()
+        agent = SequentialAgent(agents=[LlmAgent(tools=[get_weather])])
+        config = AgentConfig(name="graph-agent", api_prefix="/api")
+        ctx = await setup_agent(app, agent, config)
+
+        assert {t.name for t in ctx.tools} == {"get_agent_flow_graph", "get_weather"}
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            resp = await client.post("/api/tools/get_agent_flow_graph", json={})
+
+        assert resp.status_code == 200
+        assert resp.json()["counts"]["nodes"] >= 2
 
     @pytest.mark.asyncio
     async def test_mcp_sse_503_when_disabled(self, app_with_agent):

@@ -13,8 +13,8 @@ Verifies that:
      ``graph.invoke`` CHAIN spans.
   5. The ``/invocations`` route emits a CHAIN-typed request span and bridges
      OBO into ``apx.user_scoped`` on the span.
-  6. ``APX_AGENT_MLFLOW_AUTOLOG=1`` triggers ``mlflow.langchain.autolog()`` on
-     ``create_app`` startup; default doesn't.
+  6. ``mlflow.langchain.autolog()`` is enabled by default on ``create_app``
+     startup; ``APX_AGENT_MLFLOW_AUTOLOG=0`` disables it.
 """
 
 from __future__ import annotations
@@ -353,18 +353,18 @@ class TestInvocationsRouteSpans:
 
 
 # ---------------------------------------------------------------------------
-# Env-var autolog opt-in
+# Env-var autolog control
 # ---------------------------------------------------------------------------
 
 
 class TestAutologEnvVar:
-    def test_autolog_off_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_autolog_on_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("APX_AGENT_MLFLOW_AUTOLOG", raising=False)
         with patch("mlflow.langchain.autolog") as mock_autolog:
             from apx_agent._mlflow_tracing import autolog_if_env
 
             autolog_if_env()
-            mock_autolog.assert_not_called()
+            mock_autolog.assert_called_once()
 
     def test_autolog_on_when_env_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("APX_AGENT_MLFLOW_AUTOLOG", "1")
@@ -373,6 +373,14 @@ class TestAutologEnvVar:
 
             autolog_if_env()
             mock_autolog.assert_called_once()
+
+    def test_autolog_off_when_env_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("APX_AGENT_MLFLOW_AUTOLOG", "0")
+        with patch("mlflow.langchain.autolog") as mock_autolog:
+            from apx_agent._mlflow_tracing import autolog_if_env
+
+            autolog_if_env()
+            mock_autolog.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -730,6 +730,7 @@ async def test_r3_orphan_read_routes_published_to_openapi(client: AsyncClient) -
     for route in (
         "/_apx/openapi.json",
         "/_apx/probe/checks",
+        "/_apx/topology/digest",
         "/_apx/topology.json",
         "/_apx/workspace-context",
     ):
@@ -758,6 +759,59 @@ async def test_r3_topology_json_preserves_rootid_and_agentname(client: AsyncClie
     assert g["rootId"]  # non-empty entry-point id
     assert isinstance(g["nodes"], list) and isinstance(g["edges"], list)
     assert g["workflows"] == []
+
+
+@pytest.mark.asyncio
+async def test_r3_topology_digest_is_codex_readable(client: AsyncClient) -> None:
+    from apx_agent import _trace_store as ts
+
+    ts.reset()
+    ts.put("trace-digest-1", [{"name": "dev-ui-test", "span_type": "AGENT"}])
+    try:
+        r = await client.get("/_apx/topology/digest")
+    finally:
+        ts.reset()
+    assert r.status_code == 200
+    digest = r.json()
+    assert digest["schema_version"] == "apx.flow_graph.digest.v1"
+    assert digest["agent"] == "dev-ui-test"
+    assert digest["root_id"] == "agent:root"
+    assert digest["counts"]["nodes"] >= 2
+    assert digest["live_route_endpoint"] == "/_apx/traces/last-route"
+    assert any(n["id"] == "agent:root" for n in digest["nodes"])
+    assert any(e["kind"] == "calls-model" for e in digest["edges"])
+    assert any(
+        r["subject"] == "agent:root" and r["predicate"] == "calls-model"
+        for r in digest["relationships"]
+    )
+    assert "calls-model" in digest["relationship_predicates"]
+    assert digest["last_route"]["trace_id"] == "trace-digest-1"
+    assert digest["last_route"]["node_ids"] == ["agent:root"]
+    assert digest["last_route"]["span_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_r3_topology_digest_skips_tracking_fallback(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import _trace_store as ts
+
+    class _FailingMlflowClient:
+        def __init__(self) -> None:
+            raise AssertionError("digest must not search MLflow traces")
+
+    tracking = ModuleType("mlflow.tracking")
+    tracking.MlflowClient = _FailingMlflowClient  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mlflow.tracking", tracking)
+    ts.reset()
+    try:
+        r = await client.get("/_apx/topology/digest")
+    finally:
+        ts.reset()
+
+    assert r.status_code == 200
+    assert r.json()["last_route"]["span_count"] == 0
 
 
 @pytest.mark.asyncio

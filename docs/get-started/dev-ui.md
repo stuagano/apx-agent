@@ -83,7 +83,23 @@ A React-flow visualization of the agent topology: agent nodes, tools, sub-agents
 
 Color coding follows NodeType: pink stroke for routing agents (`HandoffAgent`, `RouterAgent`), blue for `LlmAgent`, slate for tools, green/yellow/cyan/orange for UC functions / Genie spaces / vector indexes / serving endpoints respectively. Selection highlights the node and its incident edges.
 
-Data is served from `GET /_apx/topology.json` (full graph), `GET /_apx/topology/inspect/{node_id}` (per-node details), `GET /_apx/topology/tracing` (experiment destination), and `GET /_apx/traces/last-route` (last-turn highlight).
+Data is served from `GET /_apx/topology.json` (full graph), `GET /_apx/topology/digest` (compact agent-readable graph), `GET /_apx/topology/inspect/{node_id}` (per-node details), `GET /_apx/topology/tracing` (experiment destination), and `GET /_apx/traces/last-route` (last-turn highlight).
+
+### Agent-readable flow graph
+
+Every served app also advertises a `flowGraph` block in
+`/.well-known/agent.json`, plus `get_agent_flow_graph` in the card's skills and
+MCP. `flowGraph` points clients at the compact digest, full graph, last-route
+highlight, and direct tool endpoint. The tool returns the same compact digest as
+`/_apx/topology/digest`: agent name, root id, node/edge counts, summarized nodes,
+typed edges, ontology-style `relationships` (`subject`, `predicate`, `object`),
+the `relationship_predicates` vocabulary present in the graph, optional
+`last_route` evidence from the latest traced turn, and links to the full graph
+and last-route endpoints. `schema_version` marks the contract as
+`apx.flow_graph.digest.v1`. No config is required. It is mounted on the protocol
+surface for external tool callers without mutating the compiled model tool list.
+The same typed response schema is published in OpenAPI and the tool's advertised
+output schema.
 
 #### Semantic overlays
 
@@ -105,6 +121,22 @@ topology = annotate_topology(
 Annotations are additive: node and edge metadata, execution state, and bounded
 artifact summaries are preserved for consumers that understand them, while
 existing topology clients continue to read the original graph fields.
+
+Databricks Industry Data Models can seed table-node question/answer metadata for
+the same overlay:
+
+```python
+from apx_agent import annotate_topology, industry_model_topology_metadata
+
+topology = annotate_topology(
+    build_topology(context),
+    node_metadata=industry_model_topology_metadata(
+        "data-models/banking/v1/mvm/model.json",
+        catalog="main",
+        schema="banking",
+    ),
+)
+```
 
 ### `/_apx/edit` — Edit agent source
 Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file to disk; the running agent is compiled at startup, so a save here — like any source change — takes effect on the next restart. Auto-reload on source changes happens only when you start the server with `apx-agent agents run --reload` (the `--reload` flag is off by default).

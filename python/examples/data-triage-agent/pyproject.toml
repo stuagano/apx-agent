@@ -32,6 +32,7 @@ dev = [
 
 [tool.uv.sources]
 apx-agent = { path = "../..", editable = true }
+databricks-tools-core = { path = "./databricks_tools_core-0.1.0-py3-none-any.whl" }
 
 [project.scripts]
 quickstart = "scripts.quickstart:main"
@@ -49,6 +50,7 @@ model = "databricks-claude-sonnet-4-6"
 module = "agent:agent"
 url = ""
 registry = ""
+registered_model = "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"
 
 [tool.apx.deploy]
 target = "apps"

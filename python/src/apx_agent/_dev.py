@@ -69,6 +69,7 @@ from ._apx_models import (
     TopologyTracingResponse,
     TopologyTracingSetRequest,
     TopologyTracingSetResponse,
+    TopologyDigestResponse,
     LastRouteResponse,
     TraceDetailResponse,
     TraceRow,
@@ -89,7 +90,13 @@ from ._apx_models import (
 )
 from ._discover_data import list_discover_tables, sample_discover_table
 from ._models import AgentContext, AgentTool
-from ._topology import build_topology, inspect_node, route_highlight_from_spans
+from ._topology import (
+    annotate_topology,
+    build_topology,
+    inspect_node,
+    route_highlight_from_spans,
+    summarize_topology,
+)
 from ._ui_chat import (
     _render_agent_ui,
     _render_unified_shell,
@@ -448,6 +455,28 @@ def _normalize_responses_api_spans(span_dicts: list[dict]) -> list[dict]:
             })
 
     return result
+
+
+def _load_topology_node_metadata(start: Path | None = None) -> dict[str, dict[str, Any]]:
+    root = (start or Path.cwd()).resolve()
+    for directory in (root, *root.parents):
+        path = directory / ".apx" / "topology_metadata.json"
+        if not path.is_file():
+            continue
+        try:
+            data = _json.loads(path.read_text())
+        except Exception:
+            logger.debug("topology metadata sidecar did not parse: %s", path, exc_info=True)
+            return {}
+        raw = data.get("node_metadata") if isinstance(data, dict) else None
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(node_id): dict(metadata)
+            for node_id, metadata in raw.items()
+            if isinstance(metadata, dict)
+        }
+    return {}
 
 
 def _serialize_trace_spans(trace: Any) -> list[dict]:
@@ -1283,7 +1312,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         the user-visible behaviour is unchanged.
         """
         ctx: AgentContext | None = request.app.state.agent_context
-        return HTMLResponse(_render_agent_ui(ctx))
+        return HTMLResponse(
+            _render_agent_ui(ctx, embed=request.query_params.get("embed") == "1")
+        )
 
     @router.get("/_apx/tools", include_in_schema=False)
     async def tools_dev_ui() -> Any:
@@ -1558,21 +1589,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return rows
         return HTMLResponse(_render_traces_list(rows, agent_name))
 
-    @router.get("/_apx/traces/last-route", response_model=LastRouteResponse)
-    async def traces_last_route(request: Request) -> Any:
-        """Map the latest Chat turn onto topology node/edge ids for live highlight.
-
-        Registered before ``/_apx/traces/{trace_id:path}`` so ``last-route`` is
-        not captured as a trace id.
-        """
-        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
-        if ctx is None:
-            return JSONResponse(
-                {"error": "Agent context not available"}, status_code=503
-            )
-
+    def _last_route_payload(
+        ctx: AgentContext, *, include_tracking_fallback: bool = True
+    ) -> dict[str, Any]:
         tid, spans = _latest_buffered_spans()
-        if not spans:
+        if include_tracking_fallback and not spans:
             # Fall back to tracking-store metadata + buffer/detail fetch for the newest id.
             experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
             try:
@@ -1626,6 +1647,21 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "tool_names": highlight["tool_names"],
             "span_count": len(spans),
         }
+
+    @router.get("/_apx/traces/last-route", response_model=LastRouteResponse)
+    async def traces_last_route(request: Request) -> Any:
+        """Map the latest Chat turn onto topology node/edge ids for live highlight.
+
+        Registered before ``/_apx/traces/{trace_id:path}`` so ``last-route`` is
+        not captured as a trace id.
+        """
+        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
+        if ctx is None:
+            return JSONResponse(
+                {"error": "Agent context not available"}, status_code=503
+            )
+
+        return _last_route_payload(ctx)
 
     @router.get("/_apx/traces/{trace_id:path}", response_model=TraceDetailResponse)
     async def trace_detail_ui(trace_id: str, request: Request) -> Any:
@@ -1721,7 +1757,26 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse(
                 {"error": "Agent context not available"}, status_code=503
             )
-        return build_topology(ctx)
+        topology = build_topology(ctx)
+        node_metadata = _load_topology_node_metadata()
+        if node_metadata:
+            return annotate_topology(topology, node_metadata=node_metadata)
+        return topology
+
+    @router.get("/_apx/topology/digest", response_model=TopologyDigestResponse)
+    async def topology_digest(request: Request) -> Any:
+        ctx: AgentContext | None = request.app.state.agent_context
+        if ctx is None:
+            return JSONResponse(
+                {"error": "Agent context not available"}, status_code=503
+            )
+        topology = build_topology(ctx)
+        return summarize_topology(
+            annotate_topology(
+                topology,
+                execution=_last_route_payload(ctx, include_tracking_fallback=False),
+            )
+        )
 
     @router.get("/_apx/topology/inspect/{node_id:path}", response_model=dict[str, Any])
     async def topology_inspect(node_id: str, request: Request) -> Any:

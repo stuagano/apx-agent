@@ -63,7 +63,11 @@ def test_scaffold_apps_creates_expected_file_tree(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps",
+            "--template", "data", "--catalog", "samples", "--schema", "tpch",
+            "--dir", str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
@@ -85,7 +89,11 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps",
+            "--template", "data", "--catalog", "samples", "--schema", "tpch",
+            "--dir", str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -144,7 +152,11 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps",
+            "--template", "data", "--catalog", "samples", "--schema", "tpch",
+            "--dir", str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -181,7 +193,11 @@ def test_scaffold_apps_defaults_to_lakebase_session(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps",
+            "--template", "data", "--catalog", "samples", "--schema", "tpch",
+            "--dir", str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -213,7 +229,11 @@ def test_scaffold_apps_echoes_lakebase_guidance(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps",
+            "--template", "data", "--catalog", "samples", "--schema", "tpch",
+            "--dir", str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
     assert "durable on Lakebase" in result.output
@@ -254,7 +274,11 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps",
+            "--template", "data", "--catalog", "samples", "--schema", "tpch",
+            "--dir", str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -275,6 +299,30 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
 
     quickstart_src = (tmp_path / "my_agent" / "scripts" / "quickstart.py").read_text()
     ast.parse(quickstart_src)
+    assert 'catalog_name="samples"' in quickstart_src
+    assert 'schema_name="tpch"' in quickstart_src
+    assert 'table_prefix="apx_my_agent"' in quickstart_src
+    assert "provision_lakehouse_observability" in quickstart_src
+
+
+def test_scaffold_apps_writes_apx_timeline_sql(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps",
+            "--template", "data", "--catalog", "samples", "--schema", "tpch",
+            "--dir", str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    sql = (tmp_path / "my_agent" / ".apx" / "sql" / "apx_agent_timeline.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS `samples`.`tpch`.`apx_agent_events`" in sql
+    assert "CREATE OR REPLACE VIEW `samples`.`tpch`.`apx_agent_timeline`" in sql
+    assert "`samples`.`tpch`.`apx_my_agent_trace_unified`" in sql
+    assert "span.attributes:`apx.tool.name`" in sql
+    assert "UNION ALL" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +485,7 @@ def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None
             # catalog → "main", schema → "sales", persona → role text, join_key → blank, objective → blank, instructions → blank
             input="main\nsales\na sales analyst who knows revenue data deeply\n\n\n\n",
             catch_exceptions=False,
+            env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
         )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "my_coworker" / "agent.py").read_text()
@@ -460,6 +509,7 @@ def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
             # catalog, schema, persona, join_key, objective, instructions
             input="main\nfraud\na fraud detection analyst\ntransaction ID\ndetect fraudulent transactions and flag anomalies\n\n",
             catch_exceptions=False,
+            env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
         )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "fraud_agent" / "agent.py").read_text()
@@ -514,6 +564,7 @@ def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path)
             # catalog, schema, persona, join_key (blank), objective (blank), instructions (blank)
             input="main\nsales\npayroll analyst\n\n\n\n",
             catch_exceptions=False,
+            env={"DATABRICKS_CONFIG_PROFILE": "__none__"},
         )
     assert result.exit_code == 0, result.output
     agent_src = (tmp_path / "interactive_agent" / "agent.py").read_text()

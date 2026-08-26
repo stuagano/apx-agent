@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -27,7 +28,13 @@ import click
 from click.testing import CliRunner, Result
 
 from apx_agent._doctor import SubAgentProbe
-from apx_agent.cli import _load_agent, _parse_module_spec, _ReadyzResult, main
+from apx_agent.cli import (
+    _load_agent,
+    _parse_module_spec,
+    _ReadyzResult,
+    _scaffold_databricks_host_resolves,
+    main,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +249,37 @@ def test_plain_scaffold_always_materializes_full_project(tmp_path: Path) -> None
     assert result.exit_code == 0, result.output
     assert (tmp_path / "plain-agent" / "agent.py").exists()
     assert not (tmp_path / "plain-agent.yaml").exists()
+
+
+def test_scaffold_host_preflight_rejects_unresolvable_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = tmp_path / ".databrickscfg"
+    cfg.write_text("[DEFAULT]\nhost = https://missing.example.invalid\n")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+
+    assert _scaffold_databricks_host_resolves(None) is False
+
+
+def test_scaffold_host_preflight_times_out_slow_dns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = tmp_path / ".databrickscfg"
+    cfg.write_text("[DEFAULT]\nhost = https://slow.example.invalid\n")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+
+    def slow_dns(*_a, **_kw):
+        raise subprocess.TimeoutExpired(["python"], timeout=1)
+
+    monkeypatch.setattr(subprocess, "run", slow_dns)
+
+    assert _scaffold_databricks_host_resolves(None) is False
 
 
 def test_scaffold_creates_expected_files(tmp_path: Path) -> None:
@@ -3670,11 +3708,11 @@ def test_stage_build_manifest_no_wheel_missing_lock_stages_pyproject_only(
 
 def test_scaffold_apps_pins_mlflow_with_genai_agent_server(tmp_path: Path) -> None:
     """The Apps scaffold must pin mlflow to a version that ships
-    ``mlflow.genai.agent_server`` (the start_server import). ``>=3.0`` doesn't
-    guarantee it; the floor must be >=3.12. Regression for issue #116."""
+    ``mlflow.genai.agent_server`` plus UC trace locations. ``>=3.0`` doesn't
+    guarantee it; the floor must be >=3.14."""
     from apx_agent.cli import _SCAFFOLD_APPS_PYPROJECT
 
-    assert '"mlflow[databricks]>=3.12"' in _SCAFFOLD_APPS_PYPROJECT
+    assert '"mlflow[databricks]>=3.14"' in _SCAFFOLD_APPS_PYPROJECT
     assert '"mlflow[databricks]>=3.0"' not in _SCAFFOLD_APPS_PYPROJECT
 
 
@@ -3845,6 +3883,20 @@ def test_doctor_online_invokes_live_check():
     ) as ws, patch(
         "apx_agent._doctor.check_databricks_auth",
         return_value=Check("Databricks auth", Status.OK, "ok", None),
+    ), patch(
+        "apx_agent._doctor.check_model_endpoint", return_value=None,
+    ), patch(
+        "apx_agent._doctor.check_gateway_guardrails", return_value=None,
+    ), patch(
+        "apx_agent._doctor.check_apps_enabled", return_value=None,
+    ), patch(
+        "apx_agent._doctor.check_memory_backend", return_value=None,
+    ), patch(
+        "apx_agent._doctor.check_uc_data_source", return_value=None,
+    ), patch(
+        "apx_agent._doctor.check_deploy_provenance", return_value=None,
+    ), patch(
+        "apx_agent._doctor.check_declared_tools", return_value=[],
     ):
         ws.return_value = Check("Workspace reachable", Status.OK, "ok", None)
         runner.invoke(main, ["doctor"])
@@ -3988,7 +4040,7 @@ def test_apps_databricks_yml_has_staging_target_for_all_templates(tmp_path):
 def test_apps_databricks_yml_catalog_schema_vars_for_data_template(tmp_path):
     """A data/coworker template's databricks.yml declares catalog/schema DAB
     variables (defaulting to the scaffolded values) and wires them into the
-    app's env as APX_CATALOG/APX_SCHEMA (#323)."""
+    app's env as APX_CATALOG/APX_SCHEMA."""
     from apx_agent import cli
     cli._scaffold_apps(tmp_path, "demo", force=True,
                        catalog="samples", schema="tpch", table="customer",
@@ -4219,7 +4271,8 @@ def _drive_deploy_to_gate(tmp_path, monkeypatch, *, readyz_gate, check_result):
              },
          ), \
          patch("apx_agent.cli._check_readyz", side_effect=fake_check_readyz), \
-         patch("apx_agent.cli._fetch_app_log_tail", return_value="  ERROR: boom\n  Traceback..."):
+         patch("apx_agent.cli._fetch_app_log_tail", return_value="  ERROR: boom\n  Traceback..."), \
+         patch("apx_agent.cli._maybe_write_deploy_state", return_value=None):
         _deploy_apps_impl(
             cwd=tmp_path,
             module="agent:agent",
@@ -8179,6 +8232,11 @@ def _invoke_status(
         client.search_model_versions.side_effect = search_error
     else:
         client.search_model_versions.return_value = list(versions or [])
+        by_version = {str(v.version): v for v in (versions or [])}
+        client.get_model_version.side_effect = (
+            lambda name, version: by_version[str(version)]
+        )
+        client.get_registered_model.return_value = SimpleNamespace(tags=rm_tags or {})
 
     readyz_mock = MagicMock(
         return_value=readyz

@@ -1,0 +1,161 @@
+{
+  "source": "data-triage topology validation",
+  "node_metadata": {
+    "agent:root": {
+      "purpose": "Routes investigation questions into the governed triage pipeline and sends everything else to a general fallback.",
+      "domain": "agentic operations",
+      "subdomain": "routing",
+      "question_answer_pairs": [
+        {
+          "question": "Where does an operational data-quality question enter this system?",
+          "answer": "The keyword router detects investigation language such as missing, stale, failed, or root cause and sends the request into the sequential triage pipeline.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "agent:root.investigation": {
+      "purpose": "Runs the data-triage investigation as a deterministic sequence from data presence through synthesis.",
+      "domain": "agentic operations",
+      "subdomain": "investigation pipeline",
+      "question_answer_pairs": [
+        {
+          "question": "Why is this more than a single data Q&A agent?",
+          "answer": "The workflow separates availability, lineage, pipeline state, domain context, code inspection, and final synthesis so each operational concern is visible and inspectable.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "agent:root.investigation.step0": {
+      "purpose": "Business and data context: confirm what data exists, whether it is present, and what table metadata says.",
+      "domain": "business and data context",
+      "subdomain": "data presence",
+      "question_answer_pairs": [
+        {
+          "question": "For this use case, what data is available?",
+          "answer": "This step uses SQL and table metadata tools, plus the data-inspector sub-agent, to establish whether the expected data exists before later diagnosis.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "tool:agent:root.investigation.step0:run_sql_query": {
+      "purpose": "Executes governed SQL checks for row counts, samples, and direct availability probes.",
+      "domain": "data verification",
+      "subdomain": "sql checks",
+      "question_answer_pairs": [
+        {
+          "question": "How does the agent verify the data is actually there?",
+          "answer": "It runs explicit SQL checks as the calling user, so Unity Catalog permissions govern what can be inspected.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "tool:agent:root.investigation.step0:get_table_info": {
+      "purpose": "Reads table metadata so the agent can reason about names, schema, and available columns.",
+      "domain": "business and data context",
+      "subdomain": "schema meaning",
+      "question_answer_pairs": [
+        {
+          "question": "What does this table or column mean?",
+          "answer": "The table-info tool provides schema and metadata context before the agent attempts root-cause reasoning.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "endpoint:https://mcp-data-inspector-7474660401027952.aws.databricksapps.com": {
+      "purpose": "Delegated data verification sub-agent for deeper SQL and Delta forensics.",
+      "domain": "data verification",
+      "subdomain": "sub-agent delegation",
+      "question_answer_pairs": [
+        {
+          "question": "Where does the triage agent delegate deeper data inspection?",
+          "answer": "It calls the data-inspector app as a sub-agent, keeping the root workflow focused while preserving a drill-in path for table forensics.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "agent:root.investigation.step1": {
+      "purpose": "Traces lineage and upstream dependencies that may explain missing or stale data.",
+      "domain": "data verification",
+      "subdomain": "lineage",
+      "question_answer_pairs": [
+        {
+          "question": "Where did this data come from?",
+          "answer": "This step checks lineage and related jobs so the investigation can move from symptom table to upstream cause.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "agent:root.investigation.step2": {
+      "purpose": "Inspects pipeline and job runs to identify operational failures, stale runs, or bad source paths.",
+      "domain": "process management",
+      "subdomain": "jobs and pipelines",
+      "question_answer_pairs": [
+        {
+          "question": "Is a process or job failure causing the data issue?",
+          "answer": "This step checks run history, logs, and source paths to connect data symptoms to process failures.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "agent:root.investigation.step3": {
+      "purpose": "Adds curated business context from Genie spaces when raw metadata is not enough.",
+      "domain": "business and data context",
+      "subdomain": "domain question answering",
+      "question_answer_pairs": [
+        {
+          "question": "What domain context can explain this data issue?",
+          "answer": "This step queries curated Genie spaces to bring in governed semantic context alongside raw lineage and job facts.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "agent:root.investigation.step4": {
+      "purpose": "Inspects transformation code and repository context for filters, joins, and logic that can create the observed symptom.",
+      "domain": "analysis tools",
+      "subdomain": "code inspection",
+      "question_answer_pairs": [
+        {
+          "question": "Could code or transformation logic explain the missing data?",
+          "answer": "This step searches and reads source code so the agent can connect runtime symptoms to implementation logic.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "agent:root.investigation.step5": {
+      "purpose": "Synthesizes the evidence into a root-cause answer and next actions.",
+      "domain": "analysis tools",
+      "subdomain": "synthesis",
+      "question_answer_pairs": [
+        {
+          "question": "What should the operator do next?",
+          "answer": "The final step summarizes verified evidence from earlier stages into a concrete diagnosis and recommended follow-up.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "agent:root.__default__": {
+      "purpose": "Fallback path for non-investigation questions that still need agent assistance.",
+      "domain": "serving infrastructure",
+      "subdomain": "fallback routing",
+      "question_answer_pairs": [
+        {
+          "question": "What happens when the question is not an investigation?",
+          "answer": "The router sends it to the general fallback agent instead of forcing every request through the triage pipeline.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    },
+    "endpoint:databricks-claude-sonnet-4-6": {
+      "purpose": "Foundation model serving resource used by the investigation agents.",
+      "domain": "machine resource management",
+      "subdomain": "model serving",
+      "question_answer_pairs": [
+        {
+          "question": "Which model resource powers the agentic reasoning?",
+          "answer": "The workflow uses the Databricks-hosted Claude Sonnet endpoint as the governed model serving resource.",
+          "source": "data-triage-agent topology"
+        }
+      ]
+    }
+  }
+}

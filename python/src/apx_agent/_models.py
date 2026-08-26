@@ -11,8 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from ._service_policies import ServicePoliciesConfig
 
-from ._service_policies import ServicePoliciesConfig
-
 if TYPE_CHECKING:
     from ._agents import BaseAgent
 
@@ -623,6 +621,24 @@ class A2ASkill(BaseModel):
     outputSchema: dict[str, Any] | None = None
 
 
+FLOW_GRAPH_SCHEMA_VERSION = "apx.flow_graph.digest.v1"
+FLOW_GRAPH_DIGEST_ENDPOINT = "/_apx/topology/digest"
+FLOW_GRAPH_FULL_GRAPH_ENDPOINT = "/_apx/topology.json"
+FLOW_GRAPH_LAST_ROUTE_ENDPOINT = "/_apx/traces/last-route"
+FLOW_GRAPH_TOOL_NAME = "get_agent_flow_graph"
+
+
+class A2AFlowGraph(BaseModel):
+    """Flow-graph discovery metadata on ``/.well-known/agent.json``."""
+
+    schemaVersion: str = FLOW_GRAPH_SCHEMA_VERSION
+    digestEndpoint: str = FLOW_GRAPH_DIGEST_ENDPOINT
+    fullGraphEndpoint: str = FLOW_GRAPH_FULL_GRAPH_ENDPOINT
+    lastRouteEndpoint: str = FLOW_GRAPH_LAST_ROUTE_ENDPOINT
+    toolName: str = FLOW_GRAPH_TOOL_NAME
+    toolEndpoint: str
+
+
 class AgentCard(BaseModel):
     """A2A discovery card served at /.well-known/agent.json."""
 
@@ -636,6 +652,7 @@ class AgentCard(BaseModel):
     authSchemes: list[A2AAuthScheme] = [A2AAuthScheme()]
     skills: list[A2ASkill] = []
     mcpEndpoint: str | None = None  # SSE URL for MCP clients; populated at request time
+    flowGraph: A2AFlowGraph | None = None
 
 
 class AgentContext:
@@ -658,8 +675,6 @@ class AgentContext:
 
     def get_tool(self, name: str) -> AgentTool | None:
         return self._tool_map.get(name)
-
-
 def workflows_for_context(ctx: AgentContext) -> list[ExampleWorkflow]:
     """Resolve configured workflows, then an optional app-owned metadata hook."""
     if ctx.config.workflows:

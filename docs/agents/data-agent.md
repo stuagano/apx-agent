@@ -63,6 +63,7 @@ grounding under `.apx/` so the project can be refreshed in place:
 | Stage | Command or file | What is authoritative |
 |---|---|---|
 | Create | `apx-agent agents scaffold <name> --catalog <catalog> --schema <schema>` | Generates `.apx/schema.json`; newer projects also generate `.apx/okf/`. |
+| Jumpstart | `apx-agent agents ontology-jumpstart <model.json> --catalog <catalog> --schema <schema>` | Converts a Databricks Industry Data Models `model.json` into `.apx/okf/` plus the derived cache. |
 | Refresh | `apx-agent agents refresh-schema` | Re-introspects the configured UC schema and updates table/column metadata without regenerating the project. |
 | Enrich | Edit `.apx/okf/tables/*.md`, or use `apx-agent agents pull-comments` | `.apx/okf/` is the source of truth for enriched grounding; curated descriptions are preserved by refresh. |
 | Migrate | `apx-agent agents migrate-to-okf` | Converts a legacy `.apx/schema.json` project to `.apx/okf/` and regenerates `schema.json` as a derived cache. |

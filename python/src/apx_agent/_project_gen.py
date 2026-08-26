@@ -119,7 +119,7 @@ def _build_pyproject(config: "AgentConfig") -> str:
     lines.append('requires-python = ">=3.11"')
     lines.append("dependencies = [")
     lines.append('    "apx-agent[langgraph]",')
-    lines.append('    "mlflow[databricks]>=3.12",')
+    lines.append('    "mlflow[databricks]>=3.14",')
     lines.append("]")
     lines.append("")
 

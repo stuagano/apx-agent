@@ -273,9 +273,9 @@ def test_fleet_backfill_stamps_missing_identity_tags():
     assert result.exit_code == 0, result.output
     calls = {c.args[1]: c.args[2]
              for c in client.set_registered_model_tag.call_args_list}
-    assert calls["apx.agent.name"] == "payroll"
-    assert calls["apx.apps.app_name"] == "payroll-app"
-    assert calls["apx.serving"] == "apps"
+    assert calls["apx_agent_name"] == "payroll"
+    assert calls["apx_apps_app_name"] == "payroll-app"
+    assert calls["apx_serving"] == "apps"
 
 
 @pytest.mark.unit

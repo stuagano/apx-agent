@@ -380,9 +380,9 @@ def test_set_uc_tags_writes_expected_keys() -> None:
     )
 
     expected_keys = {
-        "apx.agent.name", "apx.agent.model", "apx.agent.tool_count",
-        "apx.agent.tools", "apx.agent.uc_functions",
-        "apx.agent.sub_agents", "apx.agent.resources", "apx.agent.metadata",
+        "apx_agent_name", "apx_agent_model", "apx_agent_tool_count",
+        "apx_agent_tools", "apx_agent_uc_functions",
+        "apx_agent_sub_agents", "apx_agent_resources", "apx_agent_metadata",
     }
     assert expected_keys.issubset(set(tags.keys()))
 
@@ -401,7 +401,7 @@ def test_set_uc_tags_model_value_propagates() -> None:
         model="databricks-claude-sonnet-4-6",
         mlflow_client=mlflow_client,
     )
-    assert tags["apx.agent.model"] == "databricks-claude-sonnet-4-6"
+    assert tags["apx_agent_model"] == "databricks-claude-sonnet-4-6"
 
 
 def test_set_uc_tags_continues_past_failure_and_excludes_it() -> None:
@@ -459,7 +459,7 @@ def test_set_uc_tags_truncates_long_metadata() -> None:
     )
     # Every written tag value stays under the UC limit
     for value in tags.values():
-        assert len(value) <= 4000
+        assert len(value) <= 1000
 
 
 # ---------------------------------------------------------------------------

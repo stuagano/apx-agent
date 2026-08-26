@@ -36,6 +36,9 @@ node_modules/
 
 # apx
 .apx/
+!.apx/
+.apx/*
+!.apx/topology_metadata.json
 
 # UI dist folder
 src/data_triage_agent/__dist__/

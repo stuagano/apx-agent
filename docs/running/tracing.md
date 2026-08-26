@@ -43,18 +43,21 @@ View traces in the Databricks UI: open the experiment → **Traces** tab. Each r
 
 If no experiment is set, MLflow uses its currently-active experiment. See [Evaluation](../evaluate/overview.md) for how experiments and eval results share the same workspace path.
 
-## Deep LangGraph tracing
+## MLflow autolog tracing
 
-apx-agent emits a focused span set by default (agent, tools, model calls). `apx-agent agents run` automatically enables full LangGraph-level spans for the dev loop — each graph node, edge, and conditional branch appears in `/_apx/traces` without any configuration.
+apx-agent enables `mlflow.langchain.autolog()` by default when MLflow is installed. LangChain/LangGraph calls, graph nodes, tool calls, and model calls are captured as MLflow traces alongside APX's request-level spans.
 
-Production deploys leave deep tracing off. The reason: `mlflow.langchain.autolog()` logs the full LangGraph model as an MLflow artifact, not just traces — that serialization adds ~30s to the first request. The focused span set captures everything useful for the trace browser without that cost.
+For production lakehouse traces, bind the MLflow experiment to a Unity Catalog trace location so MLflow writes the standard OTEL trace tables there. Data-agent scaffolds do this in `uv run quickstart` with `trace_location=UnityCatalog(catalog_name=..., schema_name=..., table_prefix=...)`. When `MLFLOW_TRACING_SQL_WAREHOUSE_ID` is set, quickstart also applies the generated `.apx/sql/apx_agent_timeline.sql` read model. APX's `apx.*` attributes then become queryable dimensions on standard MLflow trace data instead of a separate trace transport.
 
-To force deep tracing on in production, or off in dev:
+Langfuse and other OTEL-native trace sources should use the same standard shape: emit OTEL spans, land them in Databricks/Delta through the supported ingestion path, and surface/query them through MLflow and UC tables. ZeroBus fits APX-native lifecycle events that are not already MLflow spans.
+
+To force autologging off:
 
 ```bash
-APX_AGENT_MLFLOW_AUTOLOG=1 apx-agent agents run   # already the default in dev — explicit override
-APX_AGENT_MLFLOW_AUTOLOG=0 apx-agent agents run   # force off, even in dev
+APX_AGENT_MLFLOW_AUTOLOG=0 apx-agent agents run
 ```
+
+Use that only when the model artifact logging overhead matters more than complete auto-instrumentation.
 
 To remove tracing entirely, don't install the `eval` extra — tracing is a no-op when MLflow isn't installed:
 

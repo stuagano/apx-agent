@@ -12,10 +12,12 @@ from mcp.types import (
     ListToolsRequest,
 )
 
-from apx_agent import AgentConfig, AgentContext, AgentTool
+from apx_agent import AgentConfig, AgentContext, AgentTool, LlmAgent, setup_agent
 from apx_agent._agents import BaseAgent
 from apx_agent._mcp import _build_mcp_components
 from apx_agent._models import AgentCard
+
+from .conftest import get_weather
 
 
 @pytest.fixture
@@ -64,6 +66,25 @@ class TestBuildMcpComponents:
         assert len(inner.tools) == 1
         assert inner.tools[0].name == "my_tool"
         assert "q" in inner.tools[0].inputSchema["properties"]
+
+    @pytest.mark.asyncio
+    async def test_setup_agent_mcp_lists_builtin_flow_graph_tool(self):
+        app = FastAPI()
+        ctx = await setup_agent(
+            app,
+            LlmAgent(tools=[get_weather]),
+            AgentConfig(name="test-mcp", api_prefix="/api"),
+        )
+        assert ctx is not None
+        server = _build_mcp_components(ctx, app, "/api").server
+
+        handler = server.request_handlers[ListToolsRequest]
+        result = await handler(MagicMock())
+
+        assert {t.name for t in result.root.tools} == {
+            "get_agent_flow_graph",
+            "get_weather",
+        }
 
     @pytest.mark.asyncio
     async def test_call_tool(self, mcp_ctx_and_app):

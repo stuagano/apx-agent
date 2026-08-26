@@ -142,30 +142,28 @@ def test_uvicorn_missing_is_warn(monkeypatch):
 
 
 def test_auth_ok(monkeypatch):
-    with patch("databricks.sdk.core.Config", return_value=object()):
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    monkeypatch.delenv("DATABRICKS_CLIENT_ID", raising=False)
+    with patch("apx_agent.cli._databrickscfg_profiles", return_value=["DEFAULT"]):
         c = doctor.check_databricks_auth()
     assert c.status is doctor.Status.OK
 
 
 def test_auth_no_profiles_first_timer(monkeypatch):
-    def boom(*a, **k):
-        raise ValueError("no creds")
-
-    with patch("databricks.sdk.core.Config", side_effect=boom), patch(
-        "apx_agent.cli._databrickscfg_profiles", return_value=[]
-    ):
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    with patch("apx_agent.cli._databrickscfg_profiles", return_value=[]):
         c = doctor.check_databricks_auth()
     assert c.status is doctor.Status.FAIL
     assert "auth login" in c.fix
 
 
 def test_auth_ambiguous_profiles(monkeypatch):
-    def boom(*a, **k):
-        raise ValueError("ambiguous")
-
-    with patch("databricks.sdk.core.Config", side_effect=boom), patch(
-        "apx_agent.cli._databrickscfg_profiles", return_value=["DEFAULT", "prod"]
-    ):
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    with patch("apx_agent.cli._databrickscfg_profiles", return_value=["DEFAULT", "prod"]):
         c = doctor.check_databricks_auth()
     assert c.status is doctor.Status.FAIL
     assert "DATABRICKS_CONFIG_PROFILE" in c.fix
@@ -692,6 +690,10 @@ class TestCheckDeployProvenance:
             client.search_model_versions.side_effect = error
         else:
             client.search_model_versions.return_value = versions or []
+            by_version = {str(v.version): v for v in (versions or [])}
+            client.get_model_version.side_effect = (
+                lambda name, version: by_version[str(version)]
+            )
         with patch("mlflow.tracking.MlflowClient", return_value=client):
             return doctor.check_deploy_provenance(tmp_path, auth_ok=True)
 

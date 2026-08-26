@@ -1,10 +1,9 @@
 """Unit tests for ``apx_agent._apps_registry.register_apps_manifest``.
 
-The registrar reuses the two serving-independent halves of the model-serving
-flow — ``log_agent`` and ``set_uc_tags_for_agent`` — plus version-level tag
-writes, and must NEVER touch ``databricks.agents`` (the App, not the artifact,
-serves traffic). These tests mock MLflow at the seams so no run is created and
-no network is hit.
+The registrar writes a minimal non-serving MLflow artifact plus discovery tags
+and must NEVER touch ``databricks.agents`` (the App, not the artifact, serves
+traffic). These tests mock MLflow at the seams so no run is created and no
+network is hit.
 """
 
 from __future__ import annotations
@@ -21,6 +20,8 @@ from apx_agent._apps_registry import (
     BUNDLE_TARGET_TAG,
     SERVING_TAG,
     AppsManifestResult,
+    _set_model_version_tag_with_retry,
+    uc_safe_tag_key,
     register_apps_manifest,
 )
 
@@ -35,43 +36,49 @@ class _FakeMlflowClient:
 
     def __init__(self) -> None:
         self.version_tags: list[tuple[str, str, str, str]] = []
+        self.registry_uris: list[str] = []
 
     def set_model_version_tag(self, name: str, version: str, key: str, value: str) -> None:
+        import mlflow
+
+        self.registry_uris.append(mlflow.get_registry_uri())
         self.version_tags.append((name, version, key, value))
 
 
 @pytest.fixture
 def patched(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Patch mlflow.start_run + log_agent + set_uc_tags_for_agent at their seams.
+    """Patch mlflow.start_run + log_model + set_uc_tags_for_agent at their seams.
 
     Returns a dict capturing what each stub saw, so tests can assert on it.
     """
-    captured: dict[str, Any] = {"log_agent": None, "set_uc_tags": None}
+    captured: dict[str, Any] = {"log_model": None, "set_uc_tags": None}
 
     # mlflow.start_run() must be a context manager; create a stub mlflow module
     # path is real (it's installed), so just patch the attribute.
     import mlflow
+    import mlflow.pyfunc
 
     monkeypatch.setattr(mlflow, "start_run", lambda *a, **k: contextlib.nullcontext())
 
-    def _fake_log_agent(agent: Any, *, model: str, registered_model_name: str, **kw: Any) -> Any:
-        captured["log_agent"] = {
-            "agent": agent, "model": model, "uc_name": registered_model_name,
-        }
+    def _fake_log_model(**kw: Any) -> Any:
+        captured["log_model"] = kw
         return _FakeModelInfo("7")
 
     def _fake_set_uc_tags(agent: Any, *, registered_model_name: str, model: str | None, name: str | None) -> dict:
+        import mlflow
+
         captured["set_uc_tags"] = {
             "uc_name": registered_model_name, "model": model, "name": name,
+            "registry_uri": mlflow.get_registry_uri(),
         }
         return {}
 
-    monkeypatch.setattr("apx_agent._chat_agent.log_agent", _fake_log_agent)
+    monkeypatch.setattr(mlflow.pyfunc, "log_model", _fake_log_model)
     monkeypatch.setattr("apx_agent._watchdog.set_uc_tags_for_agent", _fake_set_uc_tags)
     return captured
 
 
-def test_register_returns_version_from_log_agent(patched: dict[str, Any]) -> None:
+def test_register_returns_version_from_manifest_log(patched: dict[str, Any]) -> None:
     client = _FakeMlflowClient()
     res = register_apps_manifest(
         object(),
@@ -86,6 +93,8 @@ def test_register_returns_version_from_log_agent(patched: dict[str, Any]) -> Non
     assert res.uc_name == "main.agents.my_app"
     assert res.version == "7"
     assert res.app_name == "my-app"
+    assert patched["log_model"]["registered_model_name"] == "main.agents.my_app"
+    assert patched["log_model"]["pip_requirements"] == []
 
 
 def test_register_writes_all_manifest_version_tags(patched: dict[str, Any]) -> None:
@@ -99,12 +108,13 @@ def test_register_writes_all_manifest_version_tags(patched: dict[str, Any]) -> N
         mlflow_client=client,
     )
     tagged = {(key, value) for _name, _ver, key, value in client.version_tags}
-    assert (SERVING_TAG, "apps") in tagged
-    assert (APP_NAME_TAG, "my-app") in tagged
-    assert (BUNDLE_TARGET_TAG, "staging") in tagged
+    assert (uc_safe_tag_key(SERVING_TAG), "apps") in tagged
+    assert (uc_safe_tag_key(APP_NAME_TAG), "my-app") in tagged
+    assert (uc_safe_tag_key(BUNDLE_TARGET_TAG), "staging") in tagged
     # All tags written against the resolved uc_name + version.
     assert all(name == "main.agents.my_app" and ver == "7"
                for name, ver, _k, _v in client.version_tags)
+    assert set(client.registry_uris) == {"databricks-uc"}
 
 
 def test_register_calls_set_uc_tags_with_resolved_name(patched: dict[str, Any]) -> None:
@@ -119,6 +129,7 @@ def test_register_calls_set_uc_tags_with_resolved_name(patched: dict[str, Any]) 
     )
     assert patched["set_uc_tags"]["uc_name"] == "main.agents.my_app"
     assert patched["set_uc_tags"]["name"] == "Friendly"
+    assert patched["set_uc_tags"]["registry_uri"] == "databricks-uc"
 
 
 def test_register_never_imports_databricks_agents(
@@ -159,9 +170,51 @@ def test_register_writes_extra_version_tags(patched: dict[str, Any]) -> None:
         extra_version_tags={"apx.apps.role": "canary"},
     )
     tagged = {(key, value) for _n, _v, key, value in client.version_tags}
-    assert ("apx.apps.role", "canary") in tagged
+    assert ("apx_apps_role", "canary") in tagged
     # base manifest tags still written
-    assert (SERVING_TAG, "apps") in tagged
+    assert (uc_safe_tag_key(SERVING_TAG), "apps") in tagged
+
+
+def test_set_model_version_tag_retries_uc_visibility_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+    calls = {"count": 0}
+
+    class _FlakyClient:
+        def set_model_version_tag(
+            self, name: str, version: str, key: str, value: str,
+        ) -> None:
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise RuntimeError("Model Version (name=x, version=1) not found")
+
+    monkeypatch.setattr("apx_agent._apps_registry.time.sleep", sleeps.append)
+
+    _set_model_version_tag_with_retry(
+        _FlakyClient(), "main.agents.my_app", "1", SERVING_TAG, "apps",
+    )
+
+    assert calls["count"] == 3
+    assert sleeps == [2.0, 2.0]
+
+
+def test_set_model_version_tag_does_not_retry_permission_errors() -> None:
+    calls = {"count": 0}
+
+    class _DeniedClient:
+        def set_model_version_tag(
+            self, name: str, version: str, key: str, value: str,
+        ) -> None:
+            calls["count"] += 1
+            raise RuntimeError("PERMISSION_DENIED")
+
+    with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
+        _set_model_version_tag_with_retry(
+            _DeniedClient(), "main.agents.my_app", "1", SERVING_TAG, "apps",
+        )
+
+    assert calls["count"] == 1
 
 
 class _FakeModelVersion:
@@ -180,6 +233,12 @@ class _FakeQueryClient:
 
     def search_model_versions(self, filter_string: str) -> list:
         return list(self._versions)
+
+    def get_model_version(self, name: str, version: str):
+        for candidate in self._versions:
+            if str(candidate.version) == version:
+                return candidate
+        raise RuntimeError("version not found")
 
     def get_model_version_by_alias(self, name: str, alias: str):
         if self._alias_version is None:
@@ -266,3 +325,26 @@ def test_get_latest_prod_version_filters_to_prod_role() -> None:
         _FakeModelVersion("9", {"apx.apps.role": "canary"}),
     ])
     assert get_latest_prod_version("main.agents.my_app", mlflow_client=no_prod) is None
+
+
+def test_version_readers_accept_uc_safe_tag_keys() -> None:
+    from apx_agent._apps_registry import (
+        GIT_SHA_TAG,
+        ROLE_TAG,
+        find_latest_canary_version,
+        get_latest_prod_version,
+    )
+
+    client = _FakeQueryClient(versions=[
+        _FakeModelVersion("1", {
+            uc_safe_tag_key(ROLE_TAG): "canary",
+            uc_safe_tag_key(GIT_SHA_TAG): "abc123",
+        }),
+        _FakeModelVersion("2", {uc_safe_tag_key(ROLE_TAG): "prod"}),
+    ])
+
+    canary = find_latest_canary_version("main.agents.my_app", mlflow_client=client)
+    assert canary is not None
+    assert canary.version == "1"
+    assert canary.git_sha == "abc123"
+    assert get_latest_prod_version("main.agents.my_app", mlflow_client=client) == "2"

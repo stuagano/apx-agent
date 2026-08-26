@@ -210,9 +210,12 @@ To update a scaffolded project after tables or columns change, run
 live metadata in place and preserves enriched OKF content by default; pass
 `--prune-missing-tables` only to intentionally remove concepts for tables no
 longer present. Older projects can be converted with
-`apx-agent agents migrate-to-okf`. See the [DataAgent grounding asset
+`apx-agent agents migrate-to-okf`. To seed an agent from Databricks' public
+industry models, run
+`apx-agent agents ontology-jumpstart path/to/model.json --catalog <catalog> --schema <schema>`.
+See the [DataAgent grounding asset
 lifecycle](docs/agents/data-agent.md#grounding-asset-lifecycle) for the
-create → refresh → enrich → migrate workflow.
+create, jumpstart, refresh, enrich, and migrate workflow.
 
 ```python
 # Live introspection
@@ -318,7 +321,12 @@ Pick the deploy boundary by lifecycle and consumers, not agent count — see
 
 ## See what you built
 
-Every deployed agent ships with `/_apx/topology` — an interactive graph of agents, tools, sub-agents, and the UC / Genie / Vector Search / serving resources they reach. Click any node for its details.
+Every deployed agent ships with the flow graph as a first-class runtime surface:
+`/_apx/topology` for people, `/_apx/topology/digest` for compact JSON, and an
+always-on `get_agent_flow_graph` tool advertised through the agent card and MCP.
+The card also includes a `flowGraph` block with the graph endpoints and tool name.
+The graph shows agents, tools, sub-agents, and the UC / Genie / Vector Search /
+serving resources they reach. Click any node in the UI for its details.
 
 ![/_apx/topology — interactive graph of agents, tools, sub-agents, and platform resources](docs/images/topology-customer-triage.png)
 

@@ -71,6 +71,11 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+try:  # FastAPI is present on served Apps; keep import-time fallback defensive.
+    from fastapi import Request
+except Exception:  # pragma: no cover
+    Request = Any  # type: ignore
+
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from fastapi import FastAPI
 
@@ -170,7 +175,9 @@ def _last_trace_id() -> str | None:
         return None
 
 
-def _sub_agents_check(urls: list[str]) -> dict[str, Any]:
+def _sub_agents_check(
+    urls: list[str], *, auth_headers: dict[str, str] | None = None
+) -> dict[str, Any]:
     """Probe declared sub-agent cards — informational, never gates readiness.
 
     Returns ``{"degraded": bool, "agents": [{url, reachable, name?|error?}]}``
@@ -180,7 +187,7 @@ def _sub_agents_check(urls: list[str]) -> dict[str, Any]:
     try:
         from ._doctor import probe_sub_agents
 
-        probes = probe_sub_agents(urls)
+        probes = probe_sub_agents(urls, auth_headers=auth_headers)
         return {
             "degraded": any(not p.reachable for p in probes),
             "agents": [p.as_dict() for p in probes],
@@ -205,7 +212,12 @@ def _mcp_check(app: "FastAPI") -> str:
     return "not-configured"
 
 
-def _run_canned_probe(agent: "BaseAgent", model: str | None) -> ProbeResult:
+def _run_canned_probe(
+    agent: "BaseAgent",
+    model: str | None,
+    *,
+    user_token: str | None = None,
+) -> ProbeResult:
     """Run the canned prompt through the compiled agent.
 
     Returns ``(assistant_text, trace_id)``. Compiles the agent via
@@ -220,7 +232,12 @@ def _run_canned_probe(agent: "BaseAgent", model: str | None) -> ProbeResult:
 
     effective_model = model or os.environ.get("APX_MODEL") or _DEFAULT_MODEL
     non_streaming, _stream = compile_to_responses_agent(agent, model=effective_model)
-    response = non_streaming({"input": [{"role": "user", "content": _CANNED_PROMPT}]})
+    request: dict[str, Any] = {
+        "input": [{"role": "user", "content": _CANNED_PROMPT}],
+    }
+    if user_token:
+        request["custom_inputs"] = {"user_token": user_token}
+    response = non_streaming(request)
     text = _extract_assistant_text(response)
     trace_id = _last_trace_id()
     return ProbeResult(assistant_text=text, trace_id=trace_id)
@@ -258,7 +275,7 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
         return
 
     @app.get("/readyz")
-    def readyz() -> Response:
+    def readyz(request: Request) -> Response:  # type: ignore[reportInvalidTypeForm]
         import json
 
         checks: dict[str, Any] = {
@@ -284,14 +301,30 @@ def mount_readyz(app: "FastAPI", agent: "BaseAgent", *, model: str | None = None
         # Declared-sub-agent reachability (issue #445). Present only when
         # sub-agents are declared; informational — a down peer degrades
         # delegation, it does not kill the agent — so it NEVER flips overall
-        # readiness. Computed outside the try so the detail survives a
-        # canned-probe error too.
+        # readiness.
         sub_agent_urls = _collect_sub_agent_urls(agent)
-        if sub_agent_urls:
-            checks["sub_agents"] = _sub_agents_check(sub_agent_urls)
         try:
             # Module-global lookup so monkeypatch.setattr resolves at call time.
-            _probe = _run_canned_probe(agent, model)
+            auth = request.headers.get("Authorization", "")
+            bearer = (
+                auth.removeprefix("Bearer ").strip()
+                if auth.startswith("Bearer ")
+                else None
+            )
+            user_token = (
+                request.headers.get("X-Forwarded-Access-Token")
+                or bearer
+            )
+            auth_headers = (
+                {"Authorization": f"Bearer {user_token}"}
+                if user_token
+                else None
+            )
+            if sub_agent_urls:
+                checks["sub_agents"] = _sub_agents_check(
+                    sub_agent_urls, auth_headers=auth_headers
+                )
+            _probe = _run_canned_probe(agent, model, user_token=user_token)
             checks["llm"] = "ok" if _probe.assistant_text else "fail"
             checks["tracing"] = "ok" if _probe.trace_id else "unavailable"
 

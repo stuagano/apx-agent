@@ -29,6 +29,7 @@ from ._models import (
     OutputGuardrailFn,
     SessionBackendConfig,
     _ToolFn,
+    FLOW_GRAPH_TOOL_NAME,
     message_input_schema,
     normalize_memory_knob,
     structured_input_schema,
@@ -65,11 +66,16 @@ def _card_structured_input_schema(card: dict[str, Any]) -> dict[str, Any] | None
     LLM routes across skills internally.
     """
     skills = card.get("skills")
-    if not isinstance(skills, list) or len(skills) != 1:
+    if not isinstance(skills, list):
+        return None
+    skills = [
+        skill for skill in skills
+        if isinstance(skill, dict)
+        and (skill.get("name") or skill.get("id")) != FLOW_GRAPH_TOOL_NAME
+    ]
+    if len(skills) != 1:
         return None
     skill = skills[0]
-    if not isinstance(skill, dict):
-        return None
     return structured_input_schema(skill.get("inputSchema"))
 
 
@@ -323,10 +329,21 @@ class LlmAgent(BaseAgent):
         descriptor is registered and repaired lazily on the tool's first
         invocation (see ``_upgrade_sub_agent``).
         """
-        from databricks.sdk import WorkspaceClient
         from httpx import AsyncClient
 
         from ._env import resolve_env_var
+
+        resolved_urls: list[str] = []
+        for raw_url in self._sub_agent_urls:
+            url = resolve_env_var(raw_url)
+            if not url:
+                logger.warning(f"sub_agent env var {raw_url} not set — skipping")
+                continue
+            resolved_urls.append(url)
+        if not resolved_urls:
+            return []
+
+        from databricks.sdk import WorkspaceClient
 
         # Get auth headers from the workspace client for app-to-app calls
         try:
@@ -337,11 +354,7 @@ class LlmAgent(BaseAgent):
 
         tools: list[AgentTool] = []
         async with AsyncClient(timeout=10.0) as client:
-            for raw_url in self._sub_agent_urls:
-                url = resolve_env_var(raw_url)
-                if not url:
-                    logger.warning(f"sub_agent env var {raw_url} not set — skipping")
-                    continue
+            for url in resolved_urls:
                 base_url = url.rstrip("/")
                 card = await self._fetch_sub_agent_card(client, base_url, auth_headers)
 
@@ -916,7 +929,7 @@ def _normalize_handoff_agents(
     return result
 
 
-def handoff_transfer_description(sub: object, name: str) -> str:
+def handoff_transfer_description(sub: Any, name: str) -> str:
     """Describe a ``transfer_to_<name>`` tool for the routing LLM.
 
     Shared by the in-process ``HandoffAgent`` path and the compiled graph so

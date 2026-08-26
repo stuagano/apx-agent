@@ -1,0 +1,77 @@
+{
+  "source": "samples-bakehouse topology validation",
+  "node_metadata": {
+    "uc:samples.bakehouse.media_customer_reviews": {
+      "purpose": "Customer review source table used to inspect raw review text and sentiment inputs.",
+      "domain": "media",
+      "subdomain": "customer_reviews",
+      "question_answer_pairs": [
+        {
+          "question": "What does media_customer_reviews tell us in the bakehouse model?",
+          "answer": "It exposes raw customer review records for bakehouse media analysis and review sampling.",
+          "source": "samples-bakehouse OKF"
+        }
+      ]
+    },
+    "uc:samples.bakehouse.media_gold_reviews_chunked": {
+      "purpose": "Chunked review content table used for retrieval-style review analysis.",
+      "domain": "media",
+      "subdomain": "review_chunks",
+      "question_answer_pairs": [
+        {
+          "question": "What does media_gold_reviews_chunked tell us in the bakehouse model?",
+          "answer": "It provides review text chunks suitable for semantic lookup and grounded answer generation over customer feedback.",
+          "source": "samples-bakehouse OKF"
+        }
+      ]
+    },
+    "uc:samples.bakehouse.sales_customers": {
+      "purpose": "Customer dimension table for sales and franchise analysis.",
+      "domain": "sales",
+      "subdomain": "customers",
+      "question_answer_pairs": [
+        {
+          "question": "What does sales_customers tell us in the bakehouse model?",
+          "answer": "It describes customers that can be joined to sales transactions for segmentation and purchase analysis.",
+          "source": "samples-bakehouse OKF"
+        }
+      ]
+    },
+    "uc:samples.bakehouse.sales_franchises": {
+      "purpose": "Franchise dimension table for comparing bakehouse locations and operators.",
+      "domain": "sales",
+      "subdomain": "franchises",
+      "question_answer_pairs": [
+        {
+          "question": "What does sales_franchises tell us in the bakehouse model?",
+          "answer": "It describes franchise entities used to group and compare sales performance across bakehouse operations.",
+          "source": "samples-bakehouse OKF"
+        }
+      ]
+    },
+    "uc:samples.bakehouse.sales_suppliers": {
+      "purpose": "Supplier dimension table for supply-side sales context.",
+      "domain": "sales",
+      "subdomain": "suppliers",
+      "question_answer_pairs": [
+        {
+          "question": "What does sales_suppliers tell us in the bakehouse model?",
+          "answer": "It describes suppliers that provide context for bakehouse product and transaction analysis.",
+          "source": "samples-bakehouse OKF"
+        }
+      ]
+    },
+    "uc:samples.bakehouse.sales_transactions": {
+      "purpose": "Fact table for bakehouse sales activity and revenue questions.",
+      "domain": "sales",
+      "subdomain": "transactions",
+      "question_answer_pairs": [
+        {
+          "question": "What does sales_transactions tell us in the bakehouse model?",
+          "answer": "It captures transaction-level sales activity that can answer revenue, customer, product, and franchise performance questions.",
+          "source": "samples-bakehouse OKF"
+        }
+      ]
+    }
+  }
+}

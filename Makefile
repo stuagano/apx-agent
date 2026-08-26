@@ -4,8 +4,9 @@
 # the *_reality_ctk.py claim-vs-reality tests. Run this before claiming a change
 # works — a green exit code here is the read-back, not just "it ran".
 check:
-	cd python && uv run pytest
 	./scripts/check-uv-lock-registry.sh --fix
+	cd python && uv run --frozen pytest
+	./scripts/check-uv-lock-registry.sh
 
 # Lint suite from .pre-commit-config.yaml (enforces the Ponytail smells). Uses
 # uvx so it works without pre-commit installed in the project env; needs network

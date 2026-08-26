@@ -29,6 +29,26 @@ def _trivial_tool(query: str) -> str:
     return f"got: {query}"
 
 
+def _stub_create_app_startup(monkeypatch) -> None:
+    import apx_agent._wiring as wiring
+
+    async def _no_mcp(*_args, **_kwargs):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    monkeypatch.setattr(wiring, "_make_workspace_client", lambda: None)
+    monkeypatch.setattr(wiring, "_setup_mcp", _no_mcp)
+    monkeypatch.setattr(
+        "apx_agent._mlflow_tracing.autolog_if_env", lambda: None, raising=False,
+    )
+    monkeypatch.setattr(
+        "apx_agent._trace_store.install_capture_processor_at_startup",
+        lambda: None,
+        raising=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Import / export
 # ---------------------------------------------------------------------------
@@ -50,7 +70,7 @@ def test_readyz_ready_when_llm_and_trace_ok(monkeypatch) -> None:
 
     agent = Agent(tools=[_trivial_tool])
 
-    def _fake_probe(_agent, _model):
+    def _fake_probe(_agent, _model, **_k):
         return ProbeResult(assistant_text="READY", trace_id="tr-abc123")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
@@ -69,13 +89,33 @@ def test_readyz_ready_when_llm_and_trace_ok(monkeypatch) -> None:
     assert body["checks"]["tool_exec"] == "skipped"
 
 
+def test_readyz_forwards_bearer_token_to_probe(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    agent = Agent(tools=[_trivial_tool])
+    seen: dict[str, str | None] = {}
+
+    def _fake_probe(_agent, _model, *, user_token=None):
+        seen["user_token"] = user_token
+        return ProbeResult(assistant_text="READY", trace_id="tr-abc123")
+
+    monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
+
+    resp = TestClient(_make_app(agent)).get(
+        "/readyz", headers={"Authorization": "Bearer obo-token"},
+    )
+
+    assert resp.status_code == 200
+    assert seen["user_token"] == "obo-token"
+
+
 def test_readyz_ready_when_tracing_unavailable(monkeypatch) -> None:
     """No trace id (mlflow off / no trace) → tracing 'unavailable' but still ready."""
     from fastapi.testclient import TestClient
 
     agent = Agent(tools=[_trivial_tool])
 
-    def _fake_probe(_agent, _model):
+    def _fake_probe(_agent, _model, **_k):
         return ProbeResult(assistant_text="READY", trace_id=None)
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
@@ -100,7 +140,7 @@ def test_readyz_degraded_when_llm_empty(monkeypatch) -> None:
 
     agent = Agent(tools=[_trivial_tool])
 
-    def _fake_probe(_agent, _model):
+    def _fake_probe(_agent, _model, **_k):
         return ProbeResult(assistant_text="", trace_id="tr-abc123")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
@@ -120,7 +160,7 @@ def test_readyz_degraded_when_probe_raises(monkeypatch) -> None:
 
     agent = Agent(tools=[_trivial_tool])
 
-    def _fake_probe(_agent, _model):
+    def _fake_probe(_agent, _model, **_k):
         raise RuntimeError("boom: model endpoint unreachable")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
@@ -141,7 +181,7 @@ def test_readyz_never_500s(monkeypatch) -> None:
 
     agent = Agent(tools=[_trivial_tool])
 
-    def _fake_probe(_agent, _model):
+    def _fake_probe(_agent, _model, **_k):
         raise ValueError("unexpected")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
@@ -158,7 +198,7 @@ class TestReadyzMemory:
         from apx_agent._readyz import mount_readyz
         import apx_agent._readyz as rz
         # Stub the canned probe so the test doesn't need a real model.
-        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
+        rz._run_canned_probe = lambda a, m, **_k: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
         app = FastAPI()
         mount_readyz(app, agent)
         return TestClient(app)
@@ -200,7 +240,7 @@ class TestReadyzSession:
         from fastapi.testclient import TestClient
         from apx_agent._readyz import mount_readyz
         import apx_agent._readyz as rz
-        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
+        rz._run_canned_probe = lambda a, m, **_k: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
         app = FastAPI()
         app.state.checkpointer_degraded = degraded
         mount_readyz(app, agent)
@@ -230,7 +270,7 @@ class TestReadyzSession:
         from fastapi.testclient import TestClient
         from apx_agent._readyz import mount_readyz
         import apx_agent._readyz as rz
-        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
+        rz._run_canned_probe = lambda a, m, **_k: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
         app = FastAPI()  # no checkpointer_degraded on app.state
         mount_readyz(app, Agent(instructions="x", tools=[]))
         resp = TestClient(app).get("/readyz")
@@ -247,7 +287,7 @@ class TestReadyzMcp:
         from fastapi.testclient import TestClient
         import apx_agent._readyz as rz
         # Stub the canned probe so the test doesn't need a real model.
-        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
+        rz._run_canned_probe = lambda a, m, **_k: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
         app = FastAPI()
         # The readyz handler reads MCP status off app.state at request time.
         if mcp_mount_error is not ...:
@@ -297,7 +337,7 @@ class TestReadyzData:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         import apx_agent._readyz as rz
-        rz._run_canned_probe = lambda a, m: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
+        rz._run_canned_probe = lambda a, m, **_k: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
         app = FastAPI()
         from apx_agent._readyz import mount_readyz
         mount_readyz(app, agent)
@@ -334,7 +374,7 @@ class TestReadyzSubAgents:
 
         monkeypatch.setattr(
             readyz_mod, "_run_canned_probe",
-            lambda a, m: ProbeResult(assistant_text="READY", trace_id="tr-1"),
+            lambda a, m, **_k: ProbeResult(assistant_text="READY", trace_id="tr-1"),
         )
         return TestClient(_make_app(agent))
 
@@ -349,7 +389,7 @@ class TestReadyzSubAgents:
         agent = Agent(tools=[_trivial_tool], sub_agents=["https://peer.example.com"])
         monkeypatch.setattr(
             "apx_agent._doctor.probe_sub_agents",
-            lambda urls: [
+            lambda urls, **_k: [
                 SubAgentProbe(url=u, reachable=False, error="connection refused")
                 for u in urls
             ],
@@ -370,7 +410,7 @@ class TestReadyzSubAgents:
         agent = Agent(tools=[_trivial_tool], sub_agents=["https://peer.example.com"])
         monkeypatch.setattr(
             "apx_agent._doctor.probe_sub_agents",
-            lambda urls: [
+            lambda urls, **_k: [
                 SubAgentProbe(url=u, reachable=True, name="orders-agent")
                 for u in urls
             ],
@@ -383,7 +423,7 @@ class TestReadyzSubAgents:
         }
 
     def test_probe_error_reports_degraded_never_breaks_payload(self, monkeypatch):
-        def _boom(urls):
+        def _boom(urls, **_k):
             raise RuntimeError("event loop exploded")
 
         agent = Agent(tools=[_trivial_tool], sub_agents=["https://peer.example.com"])
@@ -409,7 +449,7 @@ class TestReadyzSubAgents:
         )
         monkeypatch.setattr(
             "apx_agent._doctor.probe_sub_agents",
-            lambda urls: [
+            lambda urls, **_k: [
                 SubAgentProbe(url=u, reachable=True, name="peer-agent") for u in urls
             ],
         )
@@ -421,6 +461,27 @@ class TestReadyzSubAgents:
         }
         # tools_registered walks leaves too — not a misleading 0 for a router root.
         assert body["checks"]["tools_registered"] >= 1
+
+    def test_forwards_bearer_token_to_sub_agent_probe(self, monkeypatch):
+        from apx_agent._doctor import SubAgentProbe
+
+        seen: dict[str, dict[str, str] | None] = {}
+        agent = Agent(tools=[_trivial_tool], sub_agents=["https://peer.example.com"])
+
+        def _probe(urls, *, auth_headers=None, **_k):
+            seen["auth_headers"] = auth_headers
+            return [
+                SubAgentProbe(url=u, reachable=True, name="orders-agent")
+                for u in urls
+            ]
+
+        monkeypatch.setattr("apx_agent._doctor.probe_sub_agents", _probe)
+        resp = self._client(agent, monkeypatch).get(
+            "/readyz", headers={"Authorization": "Bearer obo-token"}
+        )
+
+        assert resp.status_code == 200
+        assert seen["auth_headers"] == {"Authorization": "Bearer obo-token"}
 
 
 # ---------------------------------------------------------------------------
@@ -435,10 +496,11 @@ def test_create_app_serves_readyz(monkeypatch) -> None:
 
     from apx_agent import AgentConfig, create_app
 
-    def _fake_probe(_agent, _model):
+    def _fake_probe(_agent, _model, **_k):
         return ProbeResult(assistant_text="READY", trace_id="tr-449")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
+    _stub_create_app_startup(monkeypatch)
 
     app = create_app(Agent(tools=[_trivial_tool]), AgentConfig(name="t"))
     with TestClient(app) as client:
@@ -457,10 +519,11 @@ def test_create_app_readyz_single_route_after_explicit_mount(monkeypatch) -> Non
 
     from apx_agent import AgentConfig, create_app
 
-    def _fake_probe(_agent, _model):
+    def _fake_probe(_agent, _model, **_k):
         return ProbeResult(assistant_text="READY", trace_id="tr-449b")
 
     monkeypatch.setattr(readyz_mod, "_run_canned_probe", _fake_probe)
+    _stub_create_app_startup(monkeypatch)
 
     agent = Agent(tools=[_trivial_tool])
     app = create_app(agent, AgentConfig(name="t"))
@@ -473,10 +536,15 @@ def test_create_app_readyz_single_route_after_explicit_mount(monkeypatch) -> Non
     assert len(readyz_routes) == 1
 
 
-def test_mount_readyz_is_idempotent() -> None:
+def test_mount_readyz_is_idempotent(monkeypatch) -> None:
     """Repeated mount_readyz calls register the route exactly once (#449)."""
     from fastapi.routing import APIRoute
 
+    monkeypatch.setattr(
+        readyz_mod,
+        "_run_canned_probe",
+        lambda a, m, **_k: ProbeResult(assistant_text="READY", trace_id="tr-1"),
+    )
     agent = Agent(tools=[_trivial_tool])
     app = _make_app(agent)
     mount_readyz(app, agent)  # second mount — must be a no-op

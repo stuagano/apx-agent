@@ -275,8 +275,25 @@ def test_lifespan_closes_checkpointer_on_shutdown(monkeypatch: pytest.MonkeyPatc
         return saver
 
     import apx_agent._memory_wiring as mw
+    import apx_agent._wiring as wiring
 
     monkeypatch.setattr(mw, "resolve_checkpointer", fake_resolve)
+
+    async def _no_mcp(*_: Any, **__: Any) -> Any:
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    monkeypatch.setattr(wiring, "_make_workspace_client", lambda: None)
+    monkeypatch.setattr(wiring, "_setup_mcp", _no_mcp)
+    monkeypatch.setattr(
+        "apx_agent._mlflow_tracing.autolog_if_env", lambda: None, raising=False,
+    )
+    monkeypatch.setattr(
+        "apx_agent._trace_store.install_capture_processor_at_startup",
+        lambda: None,
+        raising=False,
+    )
     app = create_app(LlmAgent(name="t", tools=[]), AgentConfig(name="t", model="m"))
     with TestClient(app):
         pass  # startup mounts + stashes; exiting the block runs shutdown

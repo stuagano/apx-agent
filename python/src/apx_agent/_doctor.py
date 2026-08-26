@@ -100,7 +100,10 @@ class SubAgentProbe:
 
 
 def probe_sub_agents(
-    sub_agents: list[str], *, timeout_s: float = _SUB_AGENT_PROBE_TIMEOUT_S
+    sub_agents: list[str],
+    *,
+    timeout_s: float = _SUB_AGENT_PROBE_TIMEOUT_S,
+    auth_headers: dict[str, str] | None = None,
 ) -> list[SubAgentProbe]:
     """Fetch each declared sub-agent's ``/.well-known/agent.json`` card.
 
@@ -126,7 +129,7 @@ def probe_sub_agents(
             )
         card_url = f"{url.rstrip('/')}/.well-known/agent.json"
         try:
-            resp = await client.get(card_url)
+            resp = await client.get(card_url, headers=auth_headers)
         except Exception as exc:
             return SubAgentProbe(url=raw, reachable=False, error=str(exc)[:160])
         if resp.status_code != 200:
@@ -344,7 +347,7 @@ def check_uvicorn() -> Check:
 def check_databricks_auth() -> Check:
     """Confirm a Databricks Config can be constructed (offline, no API call)."""
     try:
-        from databricks.sdk.core import Config
+        from databricks.sdk.core import Config  # noqa: F401
     except Exception as e:  # SDK missing in a minimal install
         return Check(
             "Databricks auth",
@@ -352,27 +355,54 @@ def check_databricks_auth() -> Check:
             f"databricks-sdk not importable: {e}",
             "uv add databricks-sdk  (normally pulled in by apx-agent)",
         )
-    try:
-        Config()
-        return Check("Databricks auth", Status.OK, "credentials resolved", None)
-    except Exception as e:
-        from apx_agent.cli import _databrickscfg_profiles
 
-        profiles = _databrickscfg_profiles()
-        if profiles:
-            fix = (
-                "Pick a profile: DATABRICKS_CONFIG_PROFILE=<name> apx-agent ...  "
-                f"(configured: {', '.join(profiles)})"
+    from apx_agent.cli import _databrickscfg_profiles
+
+    env_profile = os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if os.environ.get("DATABRICKS_HOST") and (
+        os.environ.get("DATABRICKS_TOKEN")
+        or os.environ.get("DATABRICKS_CLIENT_ID")
+    ):
+        return Check("Databricks auth", Status.OK, "credentials resolved from env", None)
+    profiles = _databrickscfg_profiles()
+    if env_profile:
+        if not profiles or env_profile in profiles:
+            return Check(
+                "Databricks auth",
+                Status.OK,
+                f"credentials resolved from profile {env_profile}",
+                None,
             )
-            detail = "credentials unresolved — profile unset or ambiguous"
-        else:
-            fix = (
-                "databricks auth login --host "
-                "https://<your-workspace>.cloud.databricks.com  "
-                "(or `databricks configure --token`)"
-            )
-            detail = "no profiles in ~/.databrickscfg"
-        return Check("Databricks auth", Status.FAIL, f"{detail} ({e})", fix)
+        return Check(
+            "Databricks auth",
+            Status.FAIL,
+            f"profile {env_profile!r} is not in ~/.databrickscfg",
+            f"Pick a profile: DATABRICKS_CONFIG_PROFILE=<name> apx-agent ...  "
+            f"(configured: {', '.join(profiles)})",
+        )
+    if len(profiles) == 1:
+        return Check(
+            "Databricks auth",
+            Status.OK,
+            f"credentials resolved from profile {profiles[0]}",
+            None,
+        )
+    if profiles:
+        return Check(
+            "Databricks auth",
+            Status.FAIL,
+            "credentials unresolved — profile unset or ambiguous",
+            "Pick a profile: DATABRICKS_CONFIG_PROFILE=<name> apx-agent ...  "
+            f"(configured: {', '.join(profiles)})",
+        )
+    return Check(
+        "Databricks auth",
+        Status.FAIL,
+        "no profiles in ~/.databrickscfg",
+        "databricks auth login --host "
+        "https://<your-workspace>.cloud.databricks.com  "
+        "(or `databricks configure --token`)",
+    )
 
 
 def check_databricks_workspace(*, auth_ok: bool) -> Check:
@@ -752,7 +782,12 @@ def check_deploy_provenance(cwd: Path, *, auth_ok: bool) -> Check | None:
     """
     if not auth_ok or not _is_apx_project(cwd):
         return None
-    from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG
+    from ._apps_registry import (
+        GIT_DIRTY_TAG,
+        GIT_SHA_TAG,
+        _uc_registry_context,
+        tag_value,
+    )
     from .cli import _git_head_sha, _resolve_project_uc_name
 
     uc_name = _resolve_project_uc_name(cwd)
@@ -768,18 +803,26 @@ def check_deploy_provenance(cwd: Path, *, auth_ok: bool) -> Check | None:
     try:
         from mlflow.tracking import MlflowClient
 
-        versions = MlflowClient().search_model_versions(f"name='{uc_name}'")
+        with _uc_registry_context():
+            client = MlflowClient()
+            versions = client.search_model_versions(f"name='{uc_name}'")
+            latest_summary = (
+                max(versions, key=lambda v: int(v.version)) if versions else None
+            )
+            latest = (
+                client.get_model_version(uc_name, str(latest_summary.version))
+                if latest_summary else None
+            )
     except Exception as e:
         # Offline / no UC access must never hard-fail doctor — degrade to a
         # "could not verify" notice.
         return Check(
             label, Status.SKIP, f"could not verify deployed provenance ({e})", None
         )
-    if not versions:
+    if not versions or latest is None:
         return Check(label, Status.SKIP, "no deployed versions recorded yet", None)
-    latest = max(versions, key=lambda v: int(v.version))
     tags: dict = getattr(latest, "tags", None) or {}
-    deployed_sha = tags.get(GIT_SHA_TAG)
+    deployed_sha = tag_value(tags, GIT_SHA_TAG)
     if not deployed_sha:
         return Check(
             label, Status.SKIP,
@@ -795,7 +838,7 @@ def check_deploy_provenance(cwd: Path, *, auth_ok: bool) -> Check | None:
             "Re-deploy to ship local HEAD, or check out the deployed commit "
             "to match what's live.",
         )
-    if tags.get(GIT_DIRTY_TAG) == "true":
+    if tag_value(tags, GIT_DIRTY_TAG) == "true":
         return Check(
             label, Status.WARN,
             f"deployed version {latest.version} matches HEAD {head[:12]} but "

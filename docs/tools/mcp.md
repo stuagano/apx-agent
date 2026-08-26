@@ -70,4 +70,9 @@ When you need a custom MCP server hosted from a Databricks App — for example, 
 # Apps-hosted: http://localhost:8000/mcp  or  https://<app>.databricksapps.com/mcp
 ```
 
+Apps-hosted agents always include `get_agent_flow_graph` on this MCP surface.
+Use it when a client needs to inspect the live agent topology before deciding
+which tool, handoff, or route evidence to use. It returns the compact
+`/_apx/topology/digest` payload, not the full visual graph.
+
 Model Serving agents don't expose `/mcp` — Model Serving uses the `/invocations` endpoint with the `ChatAgent` contract.

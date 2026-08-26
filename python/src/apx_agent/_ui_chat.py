@@ -764,12 +764,17 @@ def _render_landing(ctx: AgentContext) -> str:
     return f'<div id="landing">{"".join(parts)}</div>'
 
 
-def _render_agent_ui(ctx: AgentContext | None) -> str:
+def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
     """Return a self-contained HTML page for interactively testing the agent."""
     import json as _json
 
     agent_name = ctx.config.name if ctx else "Agent"
     agent_desc = ctx.config.description if ctx else ""
+    body_class = ' class="apx-embed"' if embed else ""
+    trace_active = ' class="active"' if embed else ""
+    events_active = "" if embed else ' class="active"'
+    trace_panel_class = "tab-panel active" if embed else "tab-panel"
+    events_panel_class = "tab-panel" if embed else "tab-panel active"
     tools_json = (
         _json.dumps([{
             "name": t.name, "description": t.description,
@@ -890,6 +895,8 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .inline-step.error .step-icon {{ color: #f87171; }}
   .inline-step-head .step-name {{ color: #cfe; font-family: ui-monospace, monospace; }}
   .inline-step-head .step-label {{ color: #6b7280; margin-left: auto; font-size: 11px; }}
+  .inline-step-head .step-caret {{ color: #4b5563; font-size: 10px; transition: transform .12s; }}
+  .inline-step.open .step-caret {{ transform: rotate(90deg); }}
   .inline-step-detail {{ display: none; margin: 0; padding: 0 12px 10px; }}
   .inline-step.open .inline-step-detail {{ display: block; }}
   .step-detail-label {{ font-size: 10px; color: #5b6470; text-transform: uppercase; letter-spacing: .5px; margin: 8px 0 3px; }}
@@ -989,6 +996,7 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .tg-head:hover {{ background: #151515; }}
   .tg-name {{ flex: 1; color: #60b0ff; font-family: ui-monospace, monospace; font-size: 13px;
               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .tg-hint {{ color: #4b5563; font-size: 11px; white-space: nowrap; }}
   .tg-caret {{ color: #555; font-size: 10px; flex-shrink: 0; transition: transform .12s; }}
   .event.tool-group:not(.open) .tg-caret {{ transform: rotate(-90deg); }}
   .tg-body {{ display: none; flex-direction: column; gap: 1px; padding: 0 16px 8px 52px; }}
@@ -1115,9 +1123,63 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
   .workflow-title {{ color: #d8f3df; font-weight: 600; }}
   .workflow-purpose {{ color: #8a929b; font-size: 11px; }}
   .workflow-question {{ color: #bfe9cf; font-size: 12px; }}
+
+  /* Compact embed mode for topology's right rail. Same chat implementation,
+     without the standalone page chrome or side-by-side desktop split. */
+  body.apx-embed header,
+  body.apx-embed #setup-banner,
+  body.apx-embed .mcp-bar,
+  body.apx-embed .resize-handle {{
+    display: none !important;
+  }}
+  body.apx-embed .main {{
+    flex-direction: column;
+    height: 100vh;
+  }}
+  body.apx-embed .chat-panel {{
+    min-height: 0;
+  }}
+  body.apx-embed #chat {{
+    padding: 16px 18px;
+    gap: 12px;
+  }}
+  body.apx-embed #landing {{
+    display: none;
+  }}
+  body.apx-embed .msg,
+  body.apx-embed .inline-step,
+  body.apx-embed .data-card {{
+    max-width: 100%;
+  }}
+  body.apx-embed .right-panel {{
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex: 0 0 42%;
+    min-height: 210px;
+    border-left: 0;
+    border-top: 1px solid #1a1a1a;
+  }}
+  body.apx-embed .panel-tabs button {{
+    font-size: 12px;
+    padding: 9px 0;
+  }}
+  body.apx-embed .panel-content {{
+    min-height: 0;
+  }}
+  body.apx-embed .cap-cards {{
+    grid-template-columns: 1fr;
+  }}
+  body.apx-embed .input-bar {{
+    padding: 12px 14px;
+  }}
+  body.apx-embed .input-bar textarea {{
+    font-size: 14px;
+    padding: 10px 12px;
+  }}
 </style>
 </head>
-<body>
+<body{body_class}>
 <header>
   <span class="badge">APX dev</span>
   <h1>{agent_name}</h1>
@@ -1156,8 +1218,8 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
     <div class="panel-tabs">
       <button onclick="switchTab('history',this)">History</button>
       <button onclick="switchTab('tools',this)">Tools</button>
-      <button onclick="switchTab('trace',this)">Trace</button>
-      <button class="active" onclick="switchTab('events',this)">Events</button>
+      <button{trace_active} onclick="switchTab('trace',this)">Trace</button>
+      <button{events_active} onclick="switchTab('events',this)">Events</button>
       <button onclick="switchTab('eval',this)">Eval</button>
     </div>
     <div class="panel-content">
@@ -1170,14 +1232,14 @@ def _render_agent_ui(ctx: AgentContext | None) -> str:
         </div>
       </div>
       <div id="tab-tools" class="tab-panel"></div>
-      <div id="tab-trace" class="tab-panel">
+      <div id="tab-trace" class="{trace_panel_class}">
         <div id="trace-header" style="padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:11px;color:#666;display:flex;justify-content:space-between;align-items:center">
           <span id="trace-status">No trace yet — send a message</span>
           <a id="trace-link" href="#" target="_blank" style="display:none;color:#60b0ff;text-decoration:none;font-size:11px">open full →</a>
         </div>
         <div id="trace-body" style="overflow-y:auto;flex:1;padding:12px"></div>
       </div>
-      <div id="tab-events" class="tab-panel active">
+      <div id="tab-events" class="{events_panel_class}">
         <div id="events-list" class="empty-state">Send a message to see events</div>
       </div>
       <div id="tab-eval" class="tab-panel">
@@ -1879,7 +1941,7 @@ function addToolCall(groupId, name, reqText, reqData) {{
       const head = document.createElement('div');
       head.className = 'tg-head';
       head.innerHTML = `<span class="event-num">#${{num}}</span><span class="event-icon">🧠</span>`
-        + `<span class="tg-name">memory</span><span class="tg-caret">▾</span>`;
+        + `<span class="tg-name">memory</span><span class="tg-hint">request + response</span><span class="tg-caret">▾</span>`;
       head.onclick = () => group.classList.toggle('open');
       const body = document.createElement('div');
       body.className = 'tg-body';
@@ -1910,7 +1972,7 @@ function addToolCall(groupId, name, reqText, reqData) {{
   const head = document.createElement('div');
   head.className = 'tg-head';
   head.innerHTML = `<span class="event-num">#${{num}}</span><span class="event-icon">⚡</span>`
-    + `<span class="tg-name">${{esc(name || 'tool')}}</span><span class="tg-caret">▾</span>`;
+    + `<span class="tg-name">${{esc(name || 'tool')}}</span><span class="tg-hint">request + response</span><span class="tg-caret">▾</span>`;
   head.onclick = () => group.classList.toggle('open');
   const body = document.createElement('div');
   body.className = 'tg-body';
@@ -2488,11 +2550,14 @@ function renderInlineStep(stepsContainer, callId, opts) {{
   if (opts.response != null) row._resp = opts.response;
   const name = opts.name || row.dataset.toolName || 'tool';
   const icon = opts.phase === 'running' ? '⚙' : (opts.phase === 'error' ? '✗' : '✓');
-  const label = opts.phase === 'running' ? 'running…' : (opts.phase === 'error' ? 'error' : 'done');
+  const label = opts.phase === 'running' ? 'running…' : (opts.phase === 'error' ? 'error - details' : 'done - details');
   row.classList.toggle('error', opts.phase === 'error');
+  if (document.body.classList.contains('apx-embed') && opts.phase !== 'running') {{
+    row.classList.add('open');
+  }}
   row.querySelector('.inline-step-head').innerHTML =
     `<span class="step-icon">${{icon}}</span><span class="step-name">${{esc(name)}}</span>`
-    + `<span class="step-label">${{label}}</span>`;
+    + `<span class="step-label">${{label}}</span><span class="step-caret">›</span>`;
   const detail = row.querySelector('.inline-step-detail');
   detail.innerHTML = '';
   // Show the request unless it's empty/no-arg ('{{}}'): a no-arg tool has no
