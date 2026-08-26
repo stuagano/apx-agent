@@ -61,7 +61,7 @@
         }
       ]
     },
-    "endpoint:https://mcp-data-inspector-1965859176160743.aws.databricksapps.com": {
+    "endpoint:https://mcp-data-inspector-7474660401027952.aws.databricksapps.com": {
       "purpose": "Delegated data verification sub-agent for deeper SQL and Delta forensics.",
       "domain": "data verification",
       "subdomain": "sub-agent delegation",
