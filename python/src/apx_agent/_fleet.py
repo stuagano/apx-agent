@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import Any
 
+from ._apps_registry import tag_value
+
 
 @dataclass
 class ResolvedAgent:
@@ -72,7 +74,7 @@ def _uc_name(model: Any) -> str:
 
 def _matches_where(tags: dict[str, str], where: dict[str, str]) -> bool:
     for key, value in where.items():
-        candidates = {tags.get(key), tags.get(to_label_key(key))}
+        candidates = {tag_value(tags, key), tag_value(tags, to_label_key(key))}
         if value not in candidates:
             return False
     return True
@@ -99,7 +101,7 @@ def resolve_agents(
     out: list[ResolvedAgent] = []
     for model in models:
         tags = _tags_dict(model)
-        if NAME_TAG not in tags:
+        if tag_value(tags, NAME_TAG) is None:
             continue
         uc = _uc_name(model)
         if wanted:
@@ -110,7 +112,7 @@ def resolve_agents(
                 continue
             if schema and getattr(model, "schema_name", None) != schema:
                 continue
-            if name_glob and not fnmatch(tags.get(NAME_TAG, ""), name_glob):
+            if name_glob and not fnmatch(tag_value(tags, NAME_TAG) or "", name_glob):
                 continue
             if where and not _matches_where(tags, where):
                 continue
@@ -122,9 +124,9 @@ def resolve_agents(
         out.append(
             ResolvedAgent(
                 uc_name=uc,
-                name=tags.get(NAME_TAG, ""),
-                model=tags.get(MODEL_TAG),
-                app_name=tags.get(APP_NAME_TAG),
+                name=tag_value(tags, NAME_TAG) or "",
+                model=tag_value(tags, MODEL_TAG),
+                app_name=tag_value(tags, APP_NAME_TAG),
                 tags=tags,
                 labels=labels,
             )

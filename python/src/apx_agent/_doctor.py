@@ -100,7 +100,10 @@ class SubAgentProbe:
 
 
 def probe_sub_agents(
-    sub_agents: list[str], *, timeout_s: float = _SUB_AGENT_PROBE_TIMEOUT_S
+    sub_agents: list[str],
+    *,
+    timeout_s: float = _SUB_AGENT_PROBE_TIMEOUT_S,
+    auth_headers: dict[str, str] | None = None,
 ) -> list[SubAgentProbe]:
     """Fetch each declared sub-agent's ``/.well-known/agent.json`` card.
 
@@ -126,7 +129,7 @@ def probe_sub_agents(
             )
         card_url = f"{url.rstrip('/')}/.well-known/agent.json"
         try:
-            resp = await client.get(card_url)
+            resp = await client.get(card_url, headers=auth_headers)
         except Exception as exc:
             return SubAgentProbe(url=raw, reachable=False, error=str(exc)[:160])
         if resp.status_code != 200:
@@ -752,7 +755,12 @@ def check_deploy_provenance(cwd: Path, *, auth_ok: bool) -> Check | None:
     """
     if not auth_ok or not _is_apx_project(cwd):
         return None
-    from ._apps_registry import GIT_DIRTY_TAG, GIT_SHA_TAG
+    from ._apps_registry import (
+        GIT_DIRTY_TAG,
+        GIT_SHA_TAG,
+        _uc_registry_context,
+        tag_value,
+    )
     from .cli import _git_head_sha, _resolve_project_uc_name
 
     uc_name = _resolve_project_uc_name(cwd)
@@ -768,18 +776,26 @@ def check_deploy_provenance(cwd: Path, *, auth_ok: bool) -> Check | None:
     try:
         from mlflow.tracking import MlflowClient
 
-        versions = MlflowClient().search_model_versions(f"name='{uc_name}'")
+        with _uc_registry_context():
+            client = MlflowClient()
+            versions = client.search_model_versions(f"name='{uc_name}'")
+            latest_summary = (
+                max(versions, key=lambda v: int(v.version)) if versions else None
+            )
+            latest = (
+                client.get_model_version(uc_name, str(latest_summary.version))
+                if latest_summary else None
+            )
     except Exception as e:
         # Offline / no UC access must never hard-fail doctor — degrade to a
         # "could not verify" notice.
         return Check(
             label, Status.SKIP, f"could not verify deployed provenance ({e})", None
         )
-    if not versions:
+    if not versions or latest is None:
         return Check(label, Status.SKIP, "no deployed versions recorded yet", None)
-    latest = max(versions, key=lambda v: int(v.version))
     tags: dict = getattr(latest, "tags", None) or {}
-    deployed_sha = tags.get(GIT_SHA_TAG)
+    deployed_sha = tag_value(tags, GIT_SHA_TAG)
     if not deployed_sha:
         return Check(
             label, Status.SKIP,
@@ -795,7 +811,7 @@ def check_deploy_provenance(cwd: Path, *, auth_ok: bool) -> Check | None:
             "Re-deploy to ship local HEAD, or check out the deployed commit "
             "to match what's live.",
         )
-    if tags.get(GIT_DIRTY_TAG) == "true":
+    if tag_value(tags, GIT_DIRTY_TAG) == "true":
         return Check(
             label, Status.WARN,
             f"deployed version {latest.version} matches HEAD {head[:12]} but "

@@ -50,6 +50,7 @@ model = "databricks-claude-sonnet-4-6"
 module = "agent:agent"
 url = ""
 registry = ""
+registered_model = "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"
 
 [tool.apx.deploy]
 target = "apps"

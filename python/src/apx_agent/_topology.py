@@ -34,6 +34,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from ._apps_registry import tag_value
+
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
     from ._agents import BaseAgent
@@ -118,19 +120,20 @@ def discover_topology(
 
     for m in models:
         tags = {t.key: t.value for t in (getattr(m, "tags", None) or [])}
-        agent_name = tags.get("apx.agent.name")
+        agent_name = tag_value(tags, "apx.agent.name")
         if not agent_name:
             continue
         uc_name = (
             getattr(m, "full_name", None)
             or f"{getattr(m, 'catalog_name', '')}.{getattr(m, 'schema_name', '')}.{getattr(m, 'name', '')}"
         )
-        tool_count = _coerce_int(tags.get("apx.agent.tool_count"))
-        resource_kinds = _resource_kinds_from_metadata(tags.get("apx.agent.metadata"))
+        metadata = tag_value(tags, "apx.agent.metadata")
+        tool_count = _coerce_int(tag_value(tags, "apx.agent.tool_count"))
+        resource_kinds = _resource_kinds_from_metadata(metadata)
         nodes.append(AgentNode(
             name=agent_name,
             uc_name=uc_name,
-            model_endpoint=tags.get("apx.agent.model"),
+            model_endpoint=tag_value(tags, "apx.agent.model"),
             tool_count=tool_count,
             resource_kinds=tuple(sorted(resource_kinds)),
         ))
@@ -138,9 +141,9 @@ def discover_topology(
 
         # Sub-agent links from the metadata blob (preferred — full URL/name)
         # or from apx.agent.sub_agents (comma-separated fallback).
-        sub_agents = _sub_agents_from_metadata(tags.get("apx.agent.metadata"))
+        sub_agents = _sub_agents_from_metadata(metadata)
         if not sub_agents:
-            csv = tags.get("apx.agent.sub_agents") or ""
+            csv = tag_value(tags, "apx.agent.sub_agents") or ""
             sub_agents = [s.strip() for s in csv.split(",") if s.strip()]
         for raw in sub_agents:
             _ref = _classify_sub_agent(raw)

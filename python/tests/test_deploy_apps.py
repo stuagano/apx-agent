@@ -19,9 +19,11 @@ against that cwd. Subprocess outputs are stubbed by patching
 from __future__ import annotations
 
 import json
+import importlib
 import subprocess
 import sys
 import textwrap
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -175,6 +177,14 @@ def _install_subprocess_mock(
     monkeypatch.setattr(
         "apx_agent.cli._check_readyz",
         lambda app_url, *, profile, **_kw: (True, {}),
+    )
+    monkeypatch.setattr(
+        "apx_agent.cli._ensure_uc_registered_model_parent",
+        lambda *_a, **_kw: None,
+    )
+    monkeypatch.setattr(
+        "apx_agent.cli._maybe_write_deploy_state",
+        lambda *_a, **_kw: None,
     )
     # The Databricks-CLI presence preflight (`shutil.which("databricks")`) is
     # exercised separately in test_deploy_blocks_when_cli_missing; here we
@@ -491,7 +501,7 @@ def test_json_output_enriched_with_uc_version_provenance_readyz(
     (scaffold / "uv.lock").write_text("version = 1\n")
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="3", app_name=app_name)
 
@@ -825,7 +835,7 @@ def test_register_uc_runs_once_when_configured(
     calls: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         calls.append({
             "uc_name": uc_name, "model": model,
             "app_name": app_name, "bundle_target": bundle_target,
@@ -917,11 +927,10 @@ def test_apps_deploy_with_no_register_uc_still_records_history(
     assert entry["path"] == str(scaffold)
 
 
-def test_register_uc_failure_is_non_fatal(
+def test_register_uc_failure_is_fatal_when_configured(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A registrar exception logs a warning but the deploy still exits 0 —
-    the App is already live; a missing ledger entry must not redden a deploy."""
+    """With a resolved UC name, registrar failure makes deploy incomplete."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
 
     def _boom(*_a: Any, **_k: Any) -> Any:
@@ -935,9 +944,10 @@ def test_register_uc_failure_is_non_fatal(
         "agents", "deploy", "--target", "apps",
         "--uc-name", "main.agents.my_app",
     ])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code != 0, result.output
     assert "UC registration failed" in result.output
-    assert "non-fatal" in result.output
+    assert "App is live, but deploy is incomplete" in result.output
+    assert "UC write denied" in result.output
 
 
 def test_no_register_uc_skips_the_step(
@@ -989,7 +999,7 @@ def test_register_uc_forwards_extra_version_tags(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -1014,7 +1024,7 @@ def test_register_uc_forwards_extra_version_tags(
 def test_register_uc_failure_notice_names_register_repair(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When deploy-time registration fails, the non-fatal notice names the
+    """When deploy-time registration fails, the error names the
     exact single-agent repair command — `apx-agent agents register` with the
     deploy's --uc-name/--profile — not just 'register manually' (issue #418)."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
@@ -1030,11 +1040,95 @@ def test_register_uc_failure_notice_names_register_repair(
         "agents", "deploy", "--target", "apps",
         "--uc-name", "main.agents.my_app", "--profile", "my-prof",
     ])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code != 0, result.output
     assert (
         "apx-agent agents register --uc-name main.agents.my_app --profile my-prof"
         in result.output
     )
+
+
+def test_register_uc_ensures_uc_parent_before_logging(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Apps manifest registration creates the UC catalog/schema parent first."""
+    (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    calls: list[str] = []
+
+    class _Catalogs:
+        def get(self, name: str) -> Any:
+            calls.append(f"catalogs.get:{name}")
+            raise RuntimeError("missing catalog")
+
+        def create(self, *, name: str) -> None:
+            calls.append(f"catalogs.create:{name}")
+
+    class _Schemas:
+        def get(self, full_name: str) -> Any:
+            calls.append(f"schemas.get:{full_name}")
+            raise RuntimeError("missing schema")
+
+        def create(self, *, name: str, catalog_name: str) -> None:
+            calls.append(f"schemas.create:{catalog_name}.{name}")
+
+    class _WS:
+        catalogs = _Catalogs()
+        schemas = _Schemas()
+
+    monkeypatch.setattr(
+        "apx_agent.cli._connect_workspace", lambda profile: (_WS(), None),
+    )
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+
+    def _fake_registrar(agent: Any, **kwargs: Any) -> Any:
+        from apx_agent._apps_registry import AppsManifestResult
+
+        return AppsManifestResult(
+            uc_name=kwargs["uc_name"], version="1", app_name=kwargs["app_name"],
+        )
+
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.register_apps_manifest", _fake_registrar,
+    )
+
+    from apx_agent import cli as cli_mod
+    cli_mod._register_apps_manifest_step(
+        module="agent:agent",
+        config={"name": "a", "model": "m"},
+        app_name="my-app",
+        bundle_target="dev",
+        uc_name_override="main.agents.my_app",
+        extra_version_tags=None,
+        profile="my-prof",
+        log=calls.append,
+    )
+
+    sdk_calls = [c for c in calls if "." in c and not c.startswith("#")]
+    assert sdk_calls[:4] == [
+        "catalogs.get:main",
+        "catalogs.create:main",
+        "schemas.get:main.agents",
+        "schemas.create:main.agents",
+    ]
+
+
+def test_registration_import_context_adds_local_uv_wheels(tmp_path: Path) -> None:
+    """Deploy registration can import app-local wheel dependencies."""
+    wheel = tmp_path / "local_dep-0.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr("local_dep.py", "VALUE = 42\n")
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.uv.sources]\n"
+        'local-dep = { path = "./local_dep-0.0.0-py3-none-any.whl" }\n',
+    )
+
+    sys.modules.pop("local_dep", None)
+    from apx_agent import cli as cli_mod
+
+    with cli_mod._registration_import_context(tmp_path):
+        assert importlib.import_module("local_dep").VALUE == 42
+
+    assert str(wheel.resolve()) not in sys.path
+    sys.modules.pop("local_dep", None)
 
 
 # ---------------------------------------------------------------------------
@@ -1055,8 +1149,18 @@ def _install_workspace_mock(
                 raise RuntimeError(f"no app named {name}")
             return object()
 
+    class _Catalogs:
+        def get(self, name: str) -> Any:
+            return object()
+
+    class _Schemas:
+        def get(self, full_name: str) -> Any:
+            return object()
+
     class _WS:
         apps = _Apps()
+        catalogs = _Catalogs()
+        schemas = _Schemas()
 
     monkeypatch.setattr(
         "apx_agent.cli._connect_workspace", lambda profile: (_WS(), None),
@@ -1073,7 +1177,7 @@ def test_agents_register_backfills_manifest(
     calls: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         calls.append({
             "uc_name": uc_name, "model": model, "app_name": app_name,
             "bundle_target": bundle_target, "agent_name": agent_name,
@@ -1112,7 +1216,7 @@ def test_agents_register_json_output(
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="9", app_name=app_name)
 
@@ -1159,9 +1263,8 @@ def test_agents_register_refuses_missing_app(
 def test_agents_register_failure_is_fatal(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unlike the deploy-time best-effort step, a registrar failure here exits
-    non-zero — a backfill has no green deploy to protect. Also exercises the
-    confirmation prompt (no -y)."""
+    """A registrar failure here exits non-zero and exercises the confirmation
+    prompt (no -y)."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
 
     def _boom(*_a: Any, **_k: Any) -> Any:
@@ -1202,7 +1305,7 @@ def test_readyz_failure_registers_manifest_with_failed_tag(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="7", app_name=app_name)
@@ -1342,7 +1445,7 @@ def test_canary_deploy_apps_registers_role_tag_end_to_end(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         seen.update(tags=extra_version_tags, app_name=app_name,
                     uc_name=uc_name, bundle_target=bundle_target)
         from apx_agent._apps_registry import AppsManifestResult
@@ -1373,7 +1476,7 @@ def test_canary_deploy_apps_stamps_git_sha_end_to_end(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -1402,7 +1505,7 @@ def test_canary_deploy_apps_no_git_sha_still_succeeds(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -1454,7 +1557,7 @@ def _setup_promote_mocks(
     monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: dirty)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         captured["registered"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="5", app_name=app_name)
@@ -1602,7 +1705,7 @@ def _setup_rollback_mocks(
     monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: False)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         captured["registered"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="8", app_name=app_name)
@@ -1768,7 +1871,7 @@ def test_plain_deploy_threads_provenance_to_registrar(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="9", app_name=app_name)
@@ -1863,7 +1966,7 @@ def test_no_run_skips_readiness_poll_and_still_registers_manifest(
     registered: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None):
         registered.append({"uc_name": uc_name, "app_name": app_name})
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)

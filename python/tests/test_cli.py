@@ -8179,6 +8179,11 @@ def _invoke_status(
         client.search_model_versions.side_effect = search_error
     else:
         client.search_model_versions.return_value = list(versions or [])
+        by_version = {str(v.version): v for v in (versions or [])}
+        client.get_model_version.side_effect = (
+            lambda name, version: by_version[str(version)]
+        )
+        client.get_registered_model.return_value = SimpleNamespace(tags=rm_tags or {})
 
     readyz_mock = MagicMock(
         return_value=readyz

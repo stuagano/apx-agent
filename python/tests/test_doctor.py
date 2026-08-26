@@ -692,6 +692,10 @@ class TestCheckDeployProvenance:
             client.search_model_versions.side_effect = error
         else:
             client.search_model_versions.return_value = versions or []
+            by_version = {str(v.version): v for v in (versions or [])}
+            client.get_model_version.side_effect = (
+                lambda name, version: by_version[str(version)]
+            )
         with patch("mlflow.tracking.MlflowClient", return_value=client):
             return doctor.check_deploy_provenance(tmp_path, auth_ok=True)
 

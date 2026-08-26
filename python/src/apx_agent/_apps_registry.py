@@ -2,7 +2,7 @@
 
 The Apps target serves traffic from the deployed wheel / FastAPI app directly;
 it does NOT load a pyfunc model from Unity Catalog. This module logs and
-registers a UC model version anyway, as a **version-ledger record**: "App
+registers a minimal UC model version anyway, as a **version-ledger record**: "App
 ``<name>`` deploy corresponds to this logged artifact". The version is tagged
 ``apx.serving=apps`` so downstream tooling (canary, ``apx agents list``) never
 mistakes it for a serving-promoted version and never tries to
@@ -22,6 +22,9 @@ For the model-serving path — where the registered version IS what serves — s
 
 from __future__ import annotations
 
+import contextlib
+import os
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -63,6 +66,62 @@ LOCK_SHA256_TAG = "apx.lock_sha256"
 PROD_ALIAS = "prod"
 
 
+@contextlib.contextmanager
+def _uc_registry_context():
+    import mlflow
+
+    old_tracking_uri = mlflow.get_tracking_uri()
+    old_registry_uri = mlflow.get_registry_uri()
+    mlflow.set_tracking_uri("databricks")
+    mlflow.set_registry_uri("databricks-uc")
+    try:
+        yield
+    finally:
+        mlflow.set_tracking_uri(old_tracking_uri)
+        mlflow.set_registry_uri(old_registry_uri)
+
+
+def _looks_like_uc_visibility_delay(error: Exception) -> bool:
+    message = str(error).lower()
+    return (
+        "not found" in message
+        or "does not exist" in message
+        or "resource_does_not_exist" in message
+    )
+
+
+def uc_safe_tag_key(key: str) -> str:
+    """Return a UC model-version tag key accepted by the registry API."""
+    return key.replace(".", "_").replace("=", "_")
+
+
+def tag_value(tags: dict[str, str], key: str) -> str | None:
+    """Read a tag using either the historical dotted key or UC-safe key."""
+    return tags.get(key) or tags.get(uc_safe_tag_key(key))
+
+
+def _set_model_version_tag_with_retry(
+    client: Any,
+    uc_name: str,
+    version: str,
+    key: str,
+    value: str,
+    *,
+    attempts: int = 6,
+    delay_seconds: float = 2.0,
+) -> None:
+    for attempt in range(attempts):
+        try:
+            client.set_model_version_tag(
+                uc_name, version, uc_safe_tag_key(key), value,
+            )
+            return
+        except Exception as e:
+            if attempt == attempts - 1 or not _looks_like_uc_visibility_delay(e):
+                raise
+            time.sleep(delay_seconds)
+
+
 def register_apps_manifest(
     agent: "BaseAgent",
     *,
@@ -72,15 +131,16 @@ def register_apps_manifest(
     bundle_target: str,
     agent_name: str | None = None,
     extra_version_tags: dict[str, str] | None = None,
+    experiment_id: str | None = None,
     mlflow_client: Any | None = None,
 ) -> AppsManifestResult:
     """Log + register ``agent`` as a UC version manifest for a deployed App.
 
-    Reuses the two serving-independent halves of the model-serving flow —
-    ``log_agent`` (log + register) and ``set_uc_tags_for_agent`` (discovery
-    tags) — and adds version-level ``apx.apps.*`` tags marking the version as a
-    manifest. It deliberately does NOT call ``databricks.agents.deploy``: the
-    App, not this artifact, serves traffic.
+    Logs a tiny non-serving pyfunc artifact, calls ``set_uc_tags_for_agent`` for
+    discovery tags, and adds version-level ``apx.apps.*`` tags marking the
+    version as a manifest. It deliberately does NOT call
+    ``databricks.agents.deploy`` or exercise the live agent: the App, not this
+    artifact, serves traffic.
 
     Run this AFTER the App is live so a logging failure can be caught and
     surfaced without blocking the deploy (the caller is expected to treat
@@ -96,6 +156,8 @@ def register_apps_manifest(
         agent_name: Friendly name for the ``apx.agent.name`` discovery tag.
             Defaults to the agent's own name inside ``set_uc_tags_for_agent``.
         extra_version_tags: Extra version-level tags, e.g. ``{'apx.apps.role': 'canary'}``.
+        experiment_id: Optional Databricks MLflow experiment id for the
+            manifest run. When omitted, ``MLFLOW_EXPERIMENT_ID`` is honored.
         mlflow_client: Optional ``MlflowClient`` (injected in tests).
 
     Returns:
@@ -108,32 +170,70 @@ def register_apps_manifest(
     """
     import mlflow
     from mlflow.tracking import MlflowClient
+    from mlflow.models import ModelSignature
+    from mlflow.types.schema import ColSpec, Schema
 
-    from ._chat_agent import log_agent
     from ._watchdog import set_uc_tags_for_agent
 
-    with mlflow.start_run():
-        info = log_agent(agent, model=model, registered_model_name=uc_name)
-    version = str(info.registered_model_version)
+    class _AppsManifestModel(mlflow.pyfunc.PythonModel):
+        def predict(self, context, model_input, params=None):
+            return [{"app_name": app_name, "apx.serving": "apps"}]
 
-    client = mlflow_client or MlflowClient()
-    for key, value in (
-        (SERVING_TAG, "apps"),
-        (APP_NAME_TAG, app_name),
-        (BUNDLE_TARGET_TAG, bundle_target),
-    ):
-        client.set_model_version_tag(uc_name, version, key, value)
-
-    for key, value in (extra_version_tags or {}).items():
-        client.set_model_version_tag(uc_name, version, key, value)
-
-    # Registered-model-level discovery tags (apx.agent.*) so the manifest shows
-    # up in `apx agents list` / topology / watchdog, same as a serving deploy.
-    set_uc_tags_for_agent(
-        agent, registered_model_name=uc_name, model=model, name=agent_name,
+    old_tracking_uri = mlflow.get_tracking_uri()
+    old_registry_uri = mlflow.get_registry_uri()
+    signature = ModelSignature(
+        inputs=Schema([ColSpec("string", "input")]),
+        outputs=Schema([
+            ColSpec("string", "app_name"),
+            ColSpec("string", "apx.serving"),
+        ]),
     )
+    mlflow.set_tracking_uri("databricks")
+    mlflow.set_registry_uri("databricks-uc")
+    try:
+        with mlflow.start_run(
+            experiment_id=experiment_id or os.environ.get("MLFLOW_EXPERIMENT_ID"),
+        ) as run:
+            info = mlflow.pyfunc.log_model(
+                artifact_path="apps_manifest",
+                python_model=_AppsManifestModel(),
+                registered_model_name=uc_name,
+                signature=signature,
+                pip_requirements=[],
+                metadata={
+                    "apx.serving": "apps",
+                    "apx.apps.app_name": app_name,
+                    "apx.apps.bundle_target": bundle_target,
+                },
+            )
+            if info is None or getattr(info, "registered_model_version", None) is None:
+                info = mlflow.register_model(
+                    f"runs:/{run.info.run_id}/apps_manifest", uc_name,
+                )
+        version = str(info.registered_model_version)
 
-    return AppsManifestResult(uc_name=uc_name, version=version, app_name=app_name)
+        client = mlflow_client or MlflowClient()
+        for key, value in (
+            (SERVING_TAG, "apps"),
+            (APP_NAME_TAG, app_name),
+            (BUNDLE_TARGET_TAG, bundle_target),
+        ):
+            _set_model_version_tag_with_retry(client, uc_name, version, key, value)
+
+        for key, value in (extra_version_tags or {}).items():
+            _set_model_version_tag_with_retry(client, uc_name, version, key, value)
+
+        # Registered-model-level discovery tags (apx.agent.*) so the manifest
+        # shows up in `apx agents list` / topology / watchdog, same as a serving
+        # deploy.
+        set_uc_tags_for_agent(
+            agent, registered_model_name=uc_name, model=model, name=agent_name,
+        )
+
+        return AppsManifestResult(uc_name=uc_name, version=version, app_name=app_name)
+    finally:
+        mlflow.set_tracking_uri(old_tracking_uri)
+        mlflow.set_registry_uri(old_registry_uri)
 
 
 @dataclass(frozen=True)
@@ -162,17 +262,25 @@ def find_latest_canary_version(
     """
     from mlflow.tracking import MlflowClient
 
-    client = mlflow_client or MlflowClient()
-    versions = client.search_model_versions(f"name='{uc_name}'")
-    canaries = [
-        v for v in versions
-        if (getattr(v, "tags", None) or {}).get(ROLE_TAG) == "canary"
-    ]
-    if not canaries:
-        return None
-    latest = max(canaries, key=lambda v: int(v.version))
-    tags = getattr(latest, "tags", None) or {}
-    return CanaryManifest(version=str(latest.version), git_sha=tags.get(GIT_SHA_TAG))
+    with _uc_registry_context():
+        client = mlflow_client or MlflowClient()
+        version_summaries = client.search_model_versions(f"name='{uc_name}'")
+        versions = [
+            client.get_model_version(uc_name, str(v.version))
+            for v in version_summaries
+        ]
+        canaries = [
+            v for v in versions
+            if tag_value(getattr(v, "tags", None) or {}, ROLE_TAG) == "canary"
+        ]
+        if not canaries:
+            return None
+        latest = max(canaries, key=lambda v: int(v.version))
+        tags = getattr(latest, "tags", None) or {}
+        return CanaryManifest(
+            version=str(latest.version),
+            git_sha=tag_value(tags, GIT_SHA_TAG),
+        )
 
 
 def get_prod_alias_version(
@@ -181,12 +289,13 @@ def get_prod_alias_version(
     """Return the version the ``@prod`` alias points at, or None if unset."""
     from mlflow.tracking import MlflowClient
 
-    client = mlflow_client or MlflowClient()
-    try:
-        mv = client.get_model_version_by_alias(uc_name, PROD_ALIAS)
-    except Exception:
-        return None
-    return str(mv.version) if mv is not None else None
+    with _uc_registry_context():
+        client = mlflow_client or MlflowClient()
+        try:
+            mv = client.get_model_version_by_alias(uc_name, PROD_ALIAS)
+        except Exception:
+            return None
+        return str(mv.version) if mv is not None else None
 
 
 def set_prod_alias_version(
@@ -195,8 +304,9 @@ def set_prod_alias_version(
     """Point the ``@prod`` alias at ``version`` (records the live prod version)."""
     from mlflow.tracking import MlflowClient
 
-    client = mlflow_client or MlflowClient()
-    client.set_registered_model_alias(uc_name, PROD_ALIAS, version)
+    with _uc_registry_context():
+        client = mlflow_client or MlflowClient()
+        client.set_registered_model_alias(uc_name, PROD_ALIAS, version)
 
 
 def get_latest_prod_version(
@@ -212,15 +322,20 @@ def get_latest_prod_version(
     """
     from mlflow.tracking import MlflowClient
 
-    client = mlflow_client or MlflowClient()
-    versions = client.search_model_versions(f"name='{uc_name}'")
-    prods = [
-        v for v in versions
-        if (getattr(v, "tags", None) or {}).get(ROLE_TAG) == "prod"
-    ]
-    if not prods:
-        return None
-    return str(max(prods, key=lambda v: int(v.version)).version)
+    with _uc_registry_context():
+        client = mlflow_client or MlflowClient()
+        version_summaries = client.search_model_versions(f"name='{uc_name}'")
+        versions = [
+            client.get_model_version(uc_name, str(v.version))
+            for v in version_summaries
+        ]
+        prods = [
+            v for v in versions
+            if tag_value(getattr(v, "tags", None) or {}, ROLE_TAG) == "prod"
+        ]
+        if not prods:
+            return None
+        return str(max(prods, key=lambda v: int(v.version)).version)
 
 
 def get_latest_apps_version(
@@ -234,11 +349,12 @@ def get_latest_apps_version(
     """
     from mlflow.tracking import MlflowClient
 
-    client = mlflow_client or MlflowClient()
-    versions = client.search_model_versions(f"name='{uc_name}'")
-    if not versions:
-        return None
-    return str(max(versions, key=lambda v: int(v.version)).version)
+    with _uc_registry_context():
+        client = mlflow_client or MlflowClient()
+        versions = client.search_model_versions(f"name='{uc_name}'")
+        if not versions:
+            return None
+        return str(max(versions, key=lambda v: int(v.version)).version)
 
 
 def get_version_git_sha(
@@ -247,9 +363,10 @@ def get_version_git_sha(
     """Return the ``apx.apps.git_sha`` tag of a specific version, or None."""
     from mlflow.tracking import MlflowClient
 
-    client = mlflow_client or MlflowClient()
-    try:
-        mv = client.get_model_version(uc_name, version)
-    except Exception:
-        return None
-    return (getattr(mv, "tags", None) or {}).get(GIT_SHA_TAG)
+    with _uc_registry_context():
+        client = mlflow_client or MlflowClient()
+        try:
+            mv = client.get_model_version(uc_name, version)
+        except Exception:
+            return None
+        return tag_value(getattr(mv, "tags", None) or {}, GIT_SHA_TAG)
