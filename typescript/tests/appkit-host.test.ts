@@ -10,11 +10,14 @@ import { z } from 'zod';
 import {
   APX_APPKIT_PLUGIN_NAME,
   ApxAppKitGovernancePlugin,
-  createAgentPlugin,
   createApxAppKitAgentDefinition,
-  defineTool,
   type ApxAppKitAuditEvent,
+} from '../src/internal/appkit-host.js';
+import {
+  createAgentPlugin,
+  defineTool,
 } from '../src/index.js';
+import * as publicApi from '../src/index.js';
 
 function makeAgentExports() {
   const lookupPolicy = defineTool({
@@ -37,7 +40,14 @@ function makeAgentExports() {
   }).exports();
 }
 
-describe('AppKit adapter', () => {
+describe('internal AppKit host', () => {
+  it('does not expose AppKit host symbols from the public package interface', () => {
+    expect(publicApi).not.toHaveProperty('APX_APPKIT_PLUGIN_NAME');
+    expect(publicApi).not.toHaveProperty('ApxAppKitGovernancePlugin');
+    expect(publicApi).not.toHaveProperty('apxAppKitGovernance');
+    expect(publicApi).not.toHaveProperty('createApxAppKitAgentDefinition');
+  });
+
   it('exposes APX tools as AppKit toolkit entries for agents()', () => {
     const apx = new ApxAppKitGovernancePlugin({
       agent: makeAgentExports(),

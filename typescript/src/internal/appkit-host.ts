@@ -1,9 +1,10 @@
 /**
- * AppKit adapter for APX-governed agents.
+ * Internal AppKit host for APX-governed agents.
  *
- * This module keeps APX as the governed declaration layer while letting the
- * Databricks AppKit `agents()` plugin own Apps routing, streaming, approval,
- * and OBO-aware tool dispatch.
+ * APX's external interface stays the Python/declaration layer. This module is
+ * Apps deploy-target machinery: it lets Databricks AppKit `agents()` own Apps
+ * routing, streaming, approval, and OBO-aware tool dispatch while APX keeps
+ * policy/audit hooks around tool execution.
  */
 
 import {
@@ -22,8 +23,8 @@ import {
   type ToolkitOptions,
 } from '@databricks/appkit/beta';
 
-import type { AgentConfig, AgentExports, AgentTool } from './agent/index.js';
-import { toStrictSchema, zodToJsonSchema } from './agent/index.js';
+import type { AgentConfig, AgentExports, AgentTool } from '../agent/index.js';
+import { toStrictSchema, zodToJsonSchema } from '../agent/index.js';
 
 export const APX_APPKIT_PLUGIN_NAME = 'apx';
 
