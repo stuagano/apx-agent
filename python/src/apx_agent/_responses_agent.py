@@ -1064,7 +1064,7 @@ def compile_to_responses_agent(
     _model = model
     _conversation_store = conversation_store
     _executor_name = executor
-    _agent_id = agent_id if agent_id is not None else getattr(agent, "name", None)
+    _agent_id = agent_id if agent_id is not None else getattr(agent, "_name", None)
 
     # Short-term memory (mirrors chat_agent_for): default a served LlmAgent to a
     # process-scoped InMemorySaver when neither a checkpointer nor a durable
@@ -1125,6 +1125,7 @@ def compile_to_responses_agent(
             inputs={"input": [str(i) for i in request.input]},
             attributes={
                 AuditAttrs.OPERATION: "invoke",
+                AuditAttrs.AGENT_NAME: _agent_id,
                 AuditAttrs.MODEL_ENDPOINT: effective_model,
                 AuditAttrs.MODEL_INPUT_MESSAGES: len(request.input),
                 AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,
@@ -1321,6 +1322,7 @@ def compile_to_responses_agent(
             inputs={"input": [str(i) for i in request.input]},
             attributes={
                 AuditAttrs.OPERATION: "stream",
+                AuditAttrs.AGENT_NAME: _agent_id,
                 AuditAttrs.MODEL_ENDPOINT: effective_model,
                 AuditAttrs.MODEL_INPUT_MESSAGES: len(request.input),
                 AuditAttrs.USER_TOKEN_PROVIDED: user_token_provided,

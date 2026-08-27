@@ -1374,7 +1374,7 @@ dev = [
 name = "<APP_NAME>"
 description = "An apx-agent on Databricks Apps."
 model = "databricks-claude-sonnet-4-6"
-instructions = "You are a helpful assistant."
+<CATALOG_SCHEMA_CONFIG_BLOCK><REGISTERED_MODEL_CONFIG_BLOCK>instructions = "You are a helpful assistant."
 <KNOWLEDGE_LINE># ADK-style layout: the user's agent definition lives at top-level
 # ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
 # that imports + wraps it for the Databricks Apps runtime.
@@ -1575,7 +1575,7 @@ _invoke_fn, _stream_fn = compile_to_responses_agent(
     agent,
     model=MODEL,
     conversation_store=_conversation_store,
-    agent_id=_agent_config.name if _agent_config else None,
+    agent_id=_agent_config.name if _agent_config else os.environ.get("APX_AGENT_NAME"),
 )
 
 
@@ -1800,9 +1800,9 @@ variables:
     description: |
       UC registered-model version this app serves, when known BEFORE the
       deploy (e.g. a promote re-deploy: --var apx_model_version=7). The
-      first deploy of a version registers UC AFTER the app is live, so this
-      is usually empty and apx.git_sha is the correlation key.
-    default: ""
+      first deploy of a version registers UC AFTER the app is live, so
+      apx.git_sha is the correlation key until a version is known.
+    default: unregistered
 <CATALOG_SCHEMA_VARS_BLOCK>
 
 # ``artifacts.default.build`` packages the deploy bundle into ``./.build``.
@@ -1879,6 +1879,8 @@ resources:
             value: ${var.mlflow_experiment_id}
           - name: APX_AGENT_MLFLOW_AUTOLOG
             value: "1"
+          - name: APX_AGENT_NAME
+            value: <APP_NAME>
           - name: APX_GIT_SHA
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
@@ -3982,6 +3984,13 @@ def _scaffold_apps(
     catalog_schema_env_block = (
         _SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK if (catalog and schema) else ""
     )
+    catalog_schema_config_block = (
+        f'catalog = "{catalog}"\nschema = "{schema}"\n' if (catalog and schema) else ""
+    )
+    registered_model_config_block = (
+        f'registered_model = "{catalog}.{schema}.{name_slug}"\n'
+        if (catalog and schema) else ""
+    )
     trace_location_args = (
         f"catalog_name=\"{catalog}\", "
         f"schema_name=\"{schema}\", "
@@ -3993,6 +4002,8 @@ def _scaffold_apps(
         return (
             template.replace("<CATALOG_SCHEMA_VARS_BLOCK>\n", catalog_schema_vars_block)
             .replace("<CATALOG_SCHEMA_ENV_BLOCK>\n", catalog_schema_env_block)
+            .replace("<CATALOG_SCHEMA_CONFIG_BLOCK>", catalog_schema_config_block)
+            .replace("<REGISTERED_MODEL_CONFIG_BLOCK>", registered_model_config_block)
             .replace("<WORKSPACE_APP_NAME>", workspace_app_name)
             .replace("<APP_NAME>", name)
             .replace("<APP_NAME_SLUG>", name_slug)
@@ -8003,6 +8014,80 @@ def _grant_experiment_to_sp(
         return False
 
 
+def _quote_uc_part(name: str) -> str:
+    return "`" + name.replace("`", "``") + "`"
+
+
+def _grant_trace_uc_tables_to_sp(
+    experiment_id: str,
+    sp_client_id: str,
+    *,
+    profile: str | None,
+    warehouse_id: str | None = None,
+) -> bool:
+    wh_id = warehouse_id or os.environ.get("MLFLOW_TRACING_SQL_WAREHOUSE_ID")
+    if not wh_id:
+        click.echo(
+            "# skipping UC trace table grants: set MLFLOW_TRACING_SQL_WAREHOUSE_ID "
+            "so the app SP can write UC-backed traces",
+            err=True,
+        )
+        return False
+
+    get_proc = _run_databricks_cmd(
+        ["experiments", "get-experiment", experiment_id, "-o", "json"], profile=profile,
+    )
+    if get_proc.returncode != 0:
+        click.echo(
+            "# could not inspect tracing experiment for UC grants: "
+            f"{_tail_lines(get_proc.stderr or get_proc.stdout, 3)}",
+            err=True,
+        )
+        return False
+    try:
+        payload = json.loads(get_proc.stdout)
+        tags = payload.get("experiment", {}).get("tags") or []
+        dest = next(
+            (
+                t.get("value")
+                for t in tags
+                if t.get("key") == "mlflow.experiment.databricksTraceDestinationPath"
+            ),
+            "",
+        )
+        catalog, schema, prefix = str(dest).split(".", 2)
+    except Exception:
+        return False
+
+    principal = _quote_uc_part(sp_client_id)
+    statements = [
+        f"GRANT USE CATALOG ON CATALOG {_quote_uc_part(catalog)} TO {principal}",
+        f"GRANT USE SCHEMA ON SCHEMA {_quote_uc_part(catalog)}.{_quote_uc_part(schema)} TO {principal}",
+    ]
+    for suffix in ("otel_spans", "otel_logs", "otel_metrics", "otel_annotations"):
+        table = f"{prefix}_{suffix}"
+        statements.append(
+            "GRANT SELECT, MODIFY ON TABLE "
+            f"{_quote_uc_part(catalog)}.{_quote_uc_part(schema)}.{_quote_uc_part(table)} "
+            f"TO {principal}"
+        )
+
+    ok = True
+    for stmt in statements:
+        proc = _run_databricks_cmd(
+            ["experimental", "aitools", "tools", "query", "--warehouse", wh_id, stmt],
+            profile=profile,
+        )
+        if proc.returncode != 0:
+            ok = False
+            click.echo(
+                "# could not grant app SP UC trace permission: "
+                f"{_tail_lines(proc.stderr or proc.stdout, 2)}",
+                err=True,
+            )
+    return ok
+
+
 def _check_readyz(
     app_url: str,
     *,
@@ -8746,9 +8831,7 @@ def _register_apps_manifest_step(
 
     agent_name = config.get("name") or app_name
     old_profile = os.environ.get("DATABRICKS_CONFIG_PROFILE")
-    repair = "apx-agent agents register"
-    if uc_name_override:
-        repair += f" --uc-name {uc_name_override}"
+    repair = f"apx-agent agents register --uc-name {uc_name}"
     if profile:
         repair += f" --profile {profile}"
     try:
@@ -9077,9 +9160,10 @@ def _deploy_apps_impl(
                 resolved_exp_id = v.split("=", 1)[1].strip() or None
                 break
         if auto_experiment and resolved_exp_id is None:
+            bundle_name = ((doc.get("bundle") or {}).get("name") or bundle_key)
             eid = _ensure_experiment_id(
                 profile=profile,
-                bundle_name=app_name,
+                bundle_name=bundle_name,
                 bundle_target=bundle_target,
                 env_value=None,
             )
@@ -9187,6 +9271,8 @@ def _deploy_apps_impl(
             if sp and resolved_exp_id:
                 if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
                     log("  granted app SP CAN_MANAGE on tracing experiment")
+                if _grant_trace_uc_tables_to_sp(resolved_exp_id, sp, profile=profile):
+                    log("  granted app SP UC permissions on trace tables")
 
         # 6c. readyz gate: prove the app actually answers + traces, not just that
         # the container booted. A green deploy should mean "the agent works".
@@ -9269,9 +9355,9 @@ def _deploy_apps_impl(
                     raise click.exceptions.Exit(1)
                 raise click.ClickException(msg)
 
-        # 6d. Register a UC version manifest for the deployed App (best-effort).
-        # Runs after the App is live so a registration failure never blocks the
-        # deploy. Skips with a loud notice when no UC name / model is configured.
+        # 6d. Register a UC version manifest for the deployed App. Once a UC
+        # name resolves, this is part of the deploy contract: failure means the
+        # App is live but the governed version ledger is incomplete.
         registered_version: str | None = None
         if register_uc:
             registered_version = _register_apps_manifest_step(

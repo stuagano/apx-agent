@@ -135,10 +135,12 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     variables = parsed["variables"]
     assert "apx_git_sha" in variables
     assert "apx_model_version" in variables
+    assert variables["apx_model_version"]["default"] == "unregistered"
     env_entries = {
         e["name"]: e["value"]
         for e in parsed["resources"]["apps"]["my_agent"]["config"]["env"]
     }
+    assert env_entries["APX_AGENT_NAME"] == "my_agent"
     assert env_entries["APX_GIT_SHA"] == "${var.apx_git_sha}"
     assert env_entries["APX_MODEL_VERSION"] == "${var.apx_model_version}"
 
@@ -173,6 +175,11 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
     # minimum version. Search loosely so the version pin can move.
     assert any("mlflow[databricks]" in d for d in deps), deps
 
+    agent_cfg = parsed["tool"]["apx"]["agent"]
+    assert agent_cfg["catalog"] == "samples"
+    assert agent_cfg["schema"] == "tpch"
+    assert agent_cfg["registered_model"] == "samples.tpch.my_agent"
+
     # ``uv run quickstart`` is still the canonical bootstrap entry point.
     # ``start-server`` is gone — the deploy now uses uvicorn against
     # ``agent_server.start_server:app`` directly (see databricks.yml).
@@ -182,6 +189,25 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
 
     # Dev group powers scaffolded CI (``uv sync --group dev``).
     assert "pytest>=8.0" in parsed["dependency-groups"]["dev"]
+
+
+def test_scaffold_apps_base_omits_uc_registration_config(tmp_path: Path) -> None:
+    """Base Apps scaffolds have no UC data source, so no inferred ledger name."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "agents", "scaffold", "my_agent", "--target", "apps",
+            "--template", "base", "--dir", str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    parsed = tomllib.loads((tmp_path / "my_agent" / "pyproject.toml").read_text())
+    agent_cfg = parsed["tool"]["apx"]["agent"]
+    assert "catalog" not in agent_cfg
+    assert "schema" not in agent_cfg
+    assert "registered_model" not in agent_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +631,7 @@ def test_start_server_loads_agent_config_for_session(tmp_path: Path) -> None:
     # The config must be loaded from pyproject.toml and passed to resolve_conversation_store.
     assert "_load_agent_config" in start_server
     assert "resolve_conversation_store(_agent_config" in start_server
+    assert 'os.environ.get("APX_AGENT_NAME")' in start_server
 
 
 # ---------------------------------------------------------------------------

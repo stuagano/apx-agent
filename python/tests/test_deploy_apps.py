@@ -672,10 +672,18 @@ def test_bundle_key_and_app_name_can_differ(
         yaml.safe_dump(doc, default_flow_style=False, sort_keys=False),
     )
 
+    experiment_bundle_names = []
+    monkeypatch.setattr(
+        "apx_agent.cli._ensure_experiment_id",
+        lambda *, profile, bundle_name, bundle_target, env_value: (
+            experiment_bundle_names.append(bundle_name) or "123"
+        ),
+    )
     calls = _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code == 0, result.output
+    assert experiment_bundle_names == ["test-app"]
 
     run_calls = [c for c in calls if c[:2] == ["bundle", "run"]]
     assert run_calls
@@ -691,6 +699,38 @@ def test_bundle_key_and_app_name_can_differ(
     # apps get consumes the workspace app NAME — NOT the bundle key
     assert "entity-resolution-agent" in get_calls[0]
     assert "entity-resolution-agent-app" not in get_calls[0]
+
+
+def test_grant_trace_uc_tables_to_app_sp(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apx_agent.cli as cli
+
+    calls: list[list[str]] = []
+
+    def fake(args: list[str], profile: str | None = None) -> _FakeProc:
+        calls.append(args)
+        if args[:2] == ["experiments", "get-experiment"]:
+            return _FakeProc(
+                stdout=json.dumps({
+                    "experiment": {
+                        "tags": [
+                            {
+                                "key": "mlflow.experiment.databricksTraceDestinationPath",
+                                "value": "main.obs.apx_demo",
+                            }
+                        ]
+                    }
+                })
+            )
+        return _FakeProc(stdout="[]")
+
+    monkeypatch.setenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", "wh123")
+    monkeypatch.setattr(cli, "_run_databricks_cmd", fake)
+
+    assert cli._grant_trace_uc_tables_to_sp("exp1", "sp-123", profile="fevm")
+    sql = "\n".join(c[-1] for c in calls if c[:3] == ["experimental", "aitools", "tools"])
+    assert "GRANT USE CATALOG ON CATALOG `main` TO `sp-123`" in sql
+    assert "GRANT USE SCHEMA ON SCHEMA `main`.`obs` TO `sp-123`" in sql
+    assert "GRANT SELECT, MODIFY ON TABLE `main`.`obs`.`apx_demo_otel_spans` TO `sp-123`" in sql
 
 
 def test_json_output_on_error_path(
@@ -948,6 +988,31 @@ def test_register_uc_failure_is_fatal_when_configured(
     assert "UC registration failed" in result.output
     assert "App is live, but deploy is incomplete" in result.output
     assert "UC write denied" in result.output
+
+
+def test_register_uc_failure_is_fatal_when_inferred_from_catalog_schema(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Data-backed Apps default to a required inferred UC ledger."""
+    (scaffold / "pyproject.toml").write_text(
+        '[project]\nname = "test-app"\n\n'
+        '[tool.apx.agent]\n'
+        'model = "databricks-claude-sonnet-4-6"\n'
+        'catalog = "main"\n'
+        'schema = "agents"\n'
+    )
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("UC write denied")
+
+    monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _boom)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+    assert result.exit_code != 0, result.output
+    assert "main.agents.my_app" in result.output
+    assert "App is live, but deploy is incomplete" in result.output
 
 
 def test_no_register_uc_skips_the_step(

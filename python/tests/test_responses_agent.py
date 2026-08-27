@@ -194,6 +194,37 @@ class TestCompileShape:
 
 
 class TestInvoke:
+    def test_root_span_stamps_agent_name(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool], name="apps-agent")
+        non_streaming, _ = compile_to_responses_agent(agent, model="any")
+        seen: list[dict[str, Any]] = []
+
+        class Span:
+            def set_outputs(self, _value: Any) -> None:
+                pass
+
+        class Cm:
+            def __enter__(self) -> Span:
+                return Span()
+
+            def __exit__(self, *_args: Any) -> None:
+                return None
+
+        def fake_span(_name: str, **kwargs: Any) -> Cm:
+            seen.append(kwargs.get("attributes") or {})
+            return Cm()
+
+        with patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._responses_agent.compile_to_langgraph",
+            return_value=_make_fake_graph("final answer"),
+        ), patch("apx_agent._responses_agent.safe_span", side_effect=fake_span):
+            non_streaming(_user_request("hi"))
+
+        assert any(attrs.get("apx.agent.name") == "apps-agent" for attrs in seen)
+
     def test_returns_responses_agent_response_with_only_new_output(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
         non_streaming, _ = compile_to_responses_agent(agent, model="any")
