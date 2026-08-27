@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import importlib
+import os
 import subprocess
 import sys
 import textwrap
@@ -675,7 +676,7 @@ def test_bundle_key_and_app_name_can_differ(
     experiment_bundle_names = []
     monkeypatch.setattr(
         "apx_agent.cli._ensure_experiment_id",
-        lambda *, profile, bundle_name, bundle_target, env_value: (
+        lambda *, profile, bundle_name, bundle_target, env_value, **_kw: (
             experiment_bundle_names.append(bundle_name) or "123"
         ),
     )
@@ -735,6 +736,66 @@ def test_grant_trace_uc_tables_to_app_sp(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "GRANT SELECT ON TABLE `main`.`obs`.`apx_demo_trace_unified` TO `sp-123`" in sql
     assert "GRANT SELECT ON TABLE `main`.`obs`.`apx_agent_timeline` TO `sp-123`" in sql
     assert "GRANT SELECT, MODIFY ON TABLE `main`.`obs`.`apx_agent_events` TO `sp-123`" in sql
+
+
+def test_ensure_experiment_id_binds_uc_trace_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apx_agent.bootstrap as bootstrap
+    import apx_agent.cli as cli
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "stale-profile")
+    seen: dict[str, Any] = {}
+
+    def _fake_run(args: list[str], **_kw: Any) -> _FakeProc:
+        if args[:2] == ["databricks", "current-user"]:
+            return _FakeProc(
+                stdout=json.dumps({
+                    "emails": [{"primary": True, "value": "user@databricks.com"}],
+                }),
+            )
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    def _fake_ensure_experiment(
+        experiment_path: str,
+        tracking_uri: str,
+        *,
+        catalog_name: str | None = None,
+        schema_name: str | None = None,
+        table_prefix: str | None = None,
+    ) -> str:
+        seen.update(
+            env_profile=os.environ.get("DATABRICKS_CONFIG_PROFILE"),
+            experiment_path=experiment_path,
+            tracking_uri=tracking_uri,
+            catalog_name=catalog_name,
+            schema_name=schema_name,
+            table_prefix=table_prefix,
+        )
+        return "exp-uc"
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(bootstrap, "_ensure_experiment", _fake_ensure_experiment)
+
+    assert cli._ensure_experiment_id(
+        profile="fevm",
+        bundle_name="test-app",
+        bundle_target="prod",
+        env_value=None,
+        catalog_name="main",
+        schema_name="obs",
+        table_prefix="apx_test_app",
+    ) == "exp-uc"
+    assert seen == {
+        "env_profile": "fevm",
+        "experiment_path": "/Users/user@databricks.com/test-app-prod",
+        "tracking_uri": "databricks",
+        "catalog_name": "main",
+        "schema_name": "obs",
+        "table_prefix": "apx_test_app",
+    }
+    assert os.environ["DATABRICKS_CONFIG_PROFILE"] == "stale-profile"
 
 
 def test_json_output_on_error_path(
@@ -2104,8 +2165,67 @@ variables:
 """
 
 
+_DATABRICKS_YML_WITH_OBSERVABILITY_VARS = """\
+bundle:
+  name: test-app
+
+variables:
+  catalog:
+    default: main
+  schema:
+    default: obs
+  mlflow_experiment_id:
+    default: ""
+  mlflow_tracing_sql_warehouse_id:
+    default: ""
+
+resources:
+  apps:
+    my-app:
+      name: my-app
+      description: test
+      source_code_path: ./.build
+
+targets:
+  dev:
+    default: true
+    mode: development
+  prod:
+    mode: production
+    variables:
+      catalog: prod_main
+      schema: prod_obs
+"""
+
+
 def _bundle_deploy_call(calls: list[list[str]]) -> list[str]:
     return next(c for c in calls if c[:2] == ["bundle", "deploy"])
+
+
+def test_deploy_auto_experiment_binds_declared_uc_trace_storage(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When catalog/schema are declared, deploy's auto experiment is UC-backed."""
+    (scaffold / "databricks.yml").write_text(_DATABRICKS_YML_WITH_OBSERVABILITY_VARS)
+    seen: dict[str, Any] = {}
+
+    def _fake_ensure_experiment(**kwargs: Any) -> str:
+        seen.update(kwargs)
+        return "exp-uc"
+
+    monkeypatch.setattr("apx_agent.cli._ensure_experiment_id", _fake_ensure_experiment)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "prod",
+        "--no-run",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["catalog_name"] == "prod_main"
+    assert seen["schema_name"] == "prod_obs"
+    assert seen["table_prefix"] == "apx_test_app"
+    deploy_call = _bundle_deploy_call(calls)
+    assert "mlflow_experiment_id=exp-uc" in deploy_call
 
 
 def test_deploy_injects_trace_warehouse_var_and_uses_it_for_grants(

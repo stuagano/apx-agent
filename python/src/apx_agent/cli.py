@@ -3973,10 +3973,9 @@ def _scaffold_apps(
     instructions_arg = f", instructions={repr(instructions)}" if instructions else ""
     instructions_value = repr(instructions) if instructions else repr("You are a helpful assistant.")
 
-    import re as _re
-    name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
+    name_slug = _apx_name_slug(name)
     workspace_app_name = name_slug.replace("_", "-")
-    trace_table_prefix = f"apx_{name_slug}"
+    trace_table_prefix = _apx_trace_table_prefix(name)
 
     # Emit the knowledge knob iff the bundle is actually being written (manifest is not None).
     # This keeps pyproject.toml coherent: the knob resolves iff the bundle exists on disk.
@@ -7876,6 +7875,9 @@ def _ensure_experiment_id(
     bundle_name: str,
     bundle_target: str,
     env_value: str | None,
+    catalog_name: str | None = None,
+    schema_name: str | None = None,
+    table_prefix: str | None = None,
 ) -> str | None:
     """Resolve an MLflow experiment id for `--var mlflow_experiment_id=...`.
 
@@ -7883,7 +7885,8 @@ def _ensure_experiment_id(
       1. ``env_value`` (anything the caller already provided via --var)
       2. Local ``.env`` if it has ``MLFLOW_EXPERIMENT_ID``
       3. Look up by canonical path ``/Users/<user>/<bundle_name>-<target>``;
-         create it if missing.
+         create it if missing, binding UC trace storage when catalog/schema
+         are declared.
       4. Return ``None`` on failure (deploy proceeds without experiment).
     """
     import json as _json
@@ -7925,6 +7928,36 @@ def _ensure_experiment_id(
         return None
 
     exp_path = f"/Users/{email}/{bundle_name}-{bundle_target}"
+
+    if catalog_name and schema_name:
+        old_profile = os.environ.get("DATABRICKS_CONFIG_PROFILE")
+        try:
+            if profile:
+                os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+            from .bootstrap import _ensure_experiment
+            with contextlib.redirect_stdout(sys.stderr):
+                eid = _ensure_experiment(
+                    exp_path,
+                    "databricks",
+                    catalog_name=catalog_name,
+                    schema_name=schema_name,
+                    table_prefix=table_prefix,
+                )
+            click.echo(f"  using UC-backed experiment: {exp_path} (id={eid})", err=True)
+            return str(eid)
+        except (Exception, SystemExit) as exc:
+            click.echo(
+                "# could not bind MLflow experiment to UC trace storage "
+                f"{catalog_name}.{schema_name}: {exc}",
+                err=True,
+            )
+            return None
+        finally:
+            if profile:
+                if old_profile is None:
+                    os.environ.pop("DATABRICKS_CONFIG_PROFILE", None)
+                else:
+                    os.environ["DATABRICKS_CONFIG_PROFILE"] = old_profile
 
     # get-by-name (use --json to suppress the auto-error on miss)
     get_cmd = [
@@ -7972,6 +8005,44 @@ def _bundle_var_value(vars: tuple[str, ...], name: str) -> str | None:
         if value.startswith(prefix):
             return value.split("=", 1)[1].strip() or None
     return None
+
+
+def _bundle_declared_var_value(
+    doc: dict[str, Any],
+    bundle_target: str,
+    vars: tuple[str, ...],
+    name: str,
+) -> str | None:
+    explicit = _bundle_var_value(vars, name)
+    if explicit is not None:
+        return explicit
+    target = doc.get("targets")
+    if isinstance(target, dict):
+        target_vars = target.get(bundle_target)
+        if isinstance(target_vars, dict):
+            variables = target_vars.get("variables")
+            if isinstance(variables, dict) and name in variables:
+                value = variables[name]
+                if isinstance(value, dict):
+                    value = value.get("default")
+                if isinstance(value, str) and value.strip() and "${" not in value:
+                    return value.strip()
+    variables = doc.get("variables")
+    if isinstance(variables, dict):
+        value = variables.get(name)
+        if isinstance(value, dict):
+            value = value.get("default")
+        if isinstance(value, str) and value.strip() and "${" not in value:
+            return value.strip()
+    return None
+
+
+def _apx_name_slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
+
+
+def _apx_trace_table_prefix(name: str) -> str:
+    return f"apx_{_apx_name_slug(name)}"
 
 
 def _grant_experiment_to_sp(
@@ -9192,11 +9263,20 @@ def _deploy_apps_impl(
         ) or os.environ.get("MLFLOW_TRACING_SQL_WAREHOUSE_ID")
         if auto_experiment and resolved_exp_id is None:
             bundle_name = ((doc.get("bundle") or {}).get("name") or bundle_key)
+            catalog_name = _bundle_declared_var_value(
+                doc, bundle_target, vars, "catalog",
+            )
+            schema_name = _bundle_declared_var_value(
+                doc, bundle_target, vars, "schema",
+            )
             eid = _ensure_experiment_id(
                 profile=profile,
                 bundle_name=bundle_name,
                 bundle_target=bundle_target,
                 env_value=None,
+                catalog_name=catalog_name,
+                schema_name=schema_name,
+                table_prefix=_apx_trace_table_prefix(bundle_name),
             )
             if eid:
                 resolved_exp_id = eid
