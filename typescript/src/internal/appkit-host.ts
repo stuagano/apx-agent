@@ -26,35 +26,37 @@ import {
 import type { AgentConfig, AgentExports, AgentTool } from '../agent/index.js';
 import { toStrictSchema, zodToJsonSchema } from '../agent/index.js';
 
-export const APX_APPKIT_PLUGIN_NAME = 'apx';
+export const INTERNAL_APX_APPKIT_PLUGIN_NAME = 'apx';
 
-export type ApxAppKitPolicyAction = 'ALLOW' | 'DENY';
+export type InternalApxAppKitPolicyAction = 'ALLOW' | 'DENY';
 
-export interface ApxAppKitToolEvent {
+export interface InternalApxAppKitToolEvent {
   toolName: string;
   args: unknown;
   annotations?: ToolAnnotations;
 }
 
-export interface ApxAppKitAuditEvent extends ApxAppKitToolEvent {
-  action: ApxAppKitPolicyAction;
+export interface InternalApxAppKitAuditEvent extends InternalApxAppKitToolEvent {
+  action: InternalApxAppKitPolicyAction;
   reason: string | null;
   error?: string;
 }
 
-export interface ApxAppKitPolicyDecision {
-  action: ApxAppKitPolicyAction;
+export interface InternalApxAppKitPolicyDecision {
+  action: InternalApxAppKitPolicyAction;
   reason?: string | null;
 }
 
-export interface ApxAppKitGovernanceConfig extends BasePluginConfig {
+export interface InternalApxAppKitGovernanceConfig extends BasePluginConfig {
   agent?: AgentExports | (() => AgentExports);
   toolAnnotations?: Record<string, ToolAnnotations>;
-  policy?: (event: ApxAppKitToolEvent) => ApxAppKitPolicyDecision | Promise<ApxAppKitPolicyDecision>;
-  audit?: (event: ApxAppKitAuditEvent) => void | Promise<void>;
+  policy?: (
+    event: InternalApxAppKitToolEvent,
+  ) => InternalApxAppKitPolicyDecision | Promise<InternalApxAppKitPolicyDecision>;
+  audit?: (event: InternalApxAppKitAuditEvent) => void | Promise<void>;
 }
 
-export interface ApxAppKitAgentOptions {
+export interface InternalApxAppKitAgentOptions {
   default?: boolean;
   baseSystemPrompt?: AgentDefinition['baseSystemPrompt'];
   generationParams?: AgentDefinition['generationParams'];
@@ -105,16 +107,16 @@ function filterToolDefinitions(
   return defs.filter((def) => (!only || only.has(def.name)) && !except.has(def.name));
 }
 
-export class ApxAppKitGovernancePlugin
-  extends Plugin<ApxAppKitGovernanceConfig>
+export class InternalApxAppKitGovernancePlugin
+  extends Plugin<InternalApxAppKitGovernanceConfig>
   implements ToolProvider
 {
   static manifest = {
-    name: APX_APPKIT_PLUGIN_NAME,
+    name: INTERNAL_APX_APPKIT_PLUGIN_NAME,
     displayName: 'APX Governance',
-    description: 'APX governed agent declarations exposed as AppKit agent tools',
+    description: 'Internal APX governed agent declarations exposed as AppKit agent tools',
     resources: { required: [], optional: [] },
-  } satisfies PluginManifest<typeof APX_APPKIT_PLUGIN_NAME>;
+  } satisfies PluginManifest<typeof INTERNAL_APX_APPKIT_PLUGIN_NAME>;
 
   private get agentExports(): AgentExports {
     return requireAgentExports(this.config.agent);
@@ -131,14 +133,14 @@ export class ApxAppKitGovernancePlugin
   }
 
   toolkit(opts: ToolkitOptions = {}): Record<string, ToolkitEntry> {
-    const prefix = opts.prefix ?? `${APX_APPKIT_PLUGIN_NAME}.`;
+    const prefix = opts.prefix ?? `${INTERNAL_APX_APPKIT_PLUGIN_NAME}.`;
     const entries: Record<string, ToolkitEntry> = {};
 
     for (const def of filterToolDefinitions(this.getAgentTools(), opts)) {
       const key = opts.rename?.[def.name] ?? `${prefix}${def.name}`;
       entries[key] = {
         __toolkitRef: true,
-        pluginName: APX_APPKIT_PLUGIN_NAME,
+        pluginName: INTERNAL_APX_APPKIT_PLUGIN_NAME,
         localName: def.name,
         def,
         annotations: def.annotations,
@@ -153,7 +155,7 @@ export class ApxAppKitGovernancePlugin
     const tool = this.toolMap.get(name);
     if (!tool) throw new Error(`Unknown APX tool: ${name}`);
 
-    const event: ApxAppKitToolEvent = {
+    const event: InternalApxAppKitToolEvent = {
       toolName: name,
       args,
       annotations: toolAnnotations(tool, this.config.toolAnnotations),
@@ -182,11 +184,11 @@ export class ApxAppKitGovernancePlugin
   }
 }
 
-export const apxAppKitGovernance = toPlugin(ApxAppKitGovernancePlugin);
+export const internalApxAppKitGovernance = toPlugin(InternalApxAppKitGovernancePlugin);
 
-export function createApxAppKitAgentDefinition(
+export function createInternalApxAppKitAgentDefinition(
   agent: AgentExports | (() => AgentExports),
-  options: ApxAppKitAgentOptions = {},
+  options: InternalApxAppKitAgentOptions = {},
 ): AgentDefinition {
   const exports = resolveAgentExports(agent);
   const config: AgentConfig = exports.getConfig();
@@ -202,8 +204,8 @@ export function createApxAppKitAgentDefinition(
     ephemeral: options.ephemeral,
     tools(plugins) {
       return {
-        ...plugins[APX_APPKIT_PLUGIN_NAME].toolkit({
-          prefix: options.toolPrefix ?? `${APX_APPKIT_PLUGIN_NAME}.`,
+        ...plugins[INTERNAL_APX_APPKIT_PLUGIN_NAME].toolkit({
+          prefix: options.toolPrefix ?? `${INTERNAL_APX_APPKIT_PLUGIN_NAME}.`,
         }),
       };
     },

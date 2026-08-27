@@ -8,10 +8,10 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import {
-  APX_APPKIT_PLUGIN_NAME,
-  ApxAppKitGovernancePlugin,
-  createApxAppKitAgentDefinition,
-  type ApxAppKitAuditEvent,
+  INTERNAL_APX_APPKIT_PLUGIN_NAME,
+  InternalApxAppKitGovernancePlugin,
+  createInternalApxAppKitAgentDefinition,
+  type InternalApxAppKitAuditEvent,
 } from '../src/internal/appkit-host.js';
 import {
   createAgentPlugin,
@@ -46,10 +46,14 @@ describe('internal AppKit host', () => {
     expect(publicApi).not.toHaveProperty('ApxAppKitGovernancePlugin');
     expect(publicApi).not.toHaveProperty('apxAppKitGovernance');
     expect(publicApi).not.toHaveProperty('createApxAppKitAgentDefinition');
+    expect(publicApi).not.toHaveProperty('INTERNAL_APX_APPKIT_PLUGIN_NAME');
+    expect(publicApi).not.toHaveProperty('InternalApxAppKitGovernancePlugin');
+    expect(publicApi).not.toHaveProperty('internalApxAppKitGovernance');
+    expect(publicApi).not.toHaveProperty('createInternalApxAppKitAgentDefinition');
   });
 
   it('exposes APX tools as AppKit toolkit entries for agents()', () => {
-    const apx = new ApxAppKitGovernancePlugin({
+    const apx = new InternalApxAppKitGovernancePlugin({
       agent: makeAgentExports(),
       toolAnnotations: {
         apply_recommendation: { effect: 'update', requiresUserContext: true },
@@ -59,14 +63,14 @@ describe('internal AppKit host', () => {
     expect(apx.toolkit({ prefix: 'apx.' })).toMatchObject({
       'apx.lookup_policy': {
         __toolkitRef: true,
-        pluginName: APX_APPKIT_PLUGIN_NAME,
+        pluginName: INTERNAL_APX_APPKIT_PLUGIN_NAME,
         localName: 'lookup_policy',
         annotations: { effect: 'read', requiresUserContext: true },
         autoInheritable: true,
       },
       'apx.apply_recommendation': {
         __toolkitRef: true,
-        pluginName: APX_APPKIT_PLUGIN_NAME,
+        pluginName: INTERNAL_APX_APPKIT_PLUGIN_NAME,
         localName: 'apply_recommendation',
         annotations: { effect: 'update', requiresUserContext: true },
         autoInheritable: false,
@@ -75,14 +79,14 @@ describe('internal AppKit host', () => {
   });
 
   it('creates an AppKit AgentDefinition that pulls tools from the APX plugin', () => {
-    const agent = createApxAppKitAgentDefinition(makeAgentExports(), {
+    const agent = createInternalApxAppKitAgentDefinition(makeAgentExports(), {
       default: true,
       toolPrefix: 'apx.',
     });
-    const apx = new ApxAppKitGovernancePlugin({ agent: makeAgentExports() });
+    const apx = new InternalApxAppKitGovernancePlugin({ agent: makeAgentExports() });
 
     if (typeof agent.tools !== 'function') throw new Error('expected function-form tools');
-    const tools = agent.tools({ [APX_APPKIT_PLUGIN_NAME]: apx });
+    const tools = agent.tools({ [INTERNAL_APX_APPKIT_PLUGIN_NAME]: apx });
 
     expect(agent).toMatchObject({
       name: 'pricing-agent',
@@ -94,8 +98,8 @@ describe('internal AppKit host', () => {
   });
 
   it('enforces APX policy and records audit events around tool execution', async () => {
-    const audit: ApxAppKitAuditEvent[] = [];
-    const apx = new ApxAppKitGovernancePlugin({
+    const audit: InternalApxAppKitAuditEvent[] = [];
+    const apx = new InternalApxAppKitGovernancePlugin({
       agent: makeAgentExports(),
       policy: ({ toolName }) =>
         toolName === 'apply_recommendation'
@@ -126,12 +130,12 @@ describe('internal AppKit host', () => {
     setupDatabricksEnv();
     const serviceContext = mockServiceContext({ userId: 'alice@databricks.com' });
     const mock = createTestPluginContext();
-    const apx = await mock.attach(new ApxAppKitGovernancePlugin({ agent: makeAgentExports() }));
+    const apx = await mock.attach(new InternalApxAppKitGovernancePlugin({ agent: makeAgentExports() }));
 
     try {
       const result = await mock.ctx.executeTool(
         createMockRequest({ obo: { userId: 'alice@databricks.com' } }),
-        APX_APPKIT_PLUGIN_NAME,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
         'lookup_policy',
         { resource: 'main.sales.orders' },
       );
