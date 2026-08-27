@@ -43,6 +43,8 @@
     "@databricks/appkit": "^0.66.1",
     "@types/express": "^5.0.6",
     "@types/node": "^20.19.41",
+    "@typescript-eslint/parser": "^8.67.0",
+    "eslint": "^9.39.1",
     "express": "^5.2.1",
     "light-my-request": "^6.6.0",
     "tsdown": "^0.20.0",
