@@ -1684,6 +1684,8 @@ _SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK = '''\
             value: ${var.catalog}
           - name: APX_SCHEMA
             value: ${var.schema}
+          - name: MLFLOW_TRACING_SQL_WAREHOUSE_ID
+            value: ${var.mlflow_tracing_sql_warehouse_id}
 '''
 
 
@@ -1788,6 +1790,12 @@ variables:
     description: |
       MLflow experiment ID for tracing. Populated by scripts/quickstart.py
       into a local .env file and surfaced here for the app environment.
+    default: ""
+  mlflow_tracing_sql_warehouse_id:
+    description: |
+      SQL warehouse used for MLflow UC trace table grants and the generated
+      APX observability timeline. `apx-agent agents deploy --target apps`
+      auto-populates this from MLFLOW_TRACING_SQL_WAREHOUSE_ID when set.
     default: ""
   apx_git_sha:
     description: |
@@ -7958,6 +7966,14 @@ def _ensure_experiment_id(
     return None
 
 
+def _bundle_var_value(vars: tuple[str, ...], name: str) -> str | None:
+    prefix = f"{name}="
+    for value in vars:
+        if value.startswith(prefix):
+            return value.split("=", 1)[1].strip() or None
+    return None
+
+
 def _grant_experiment_to_sp(
     experiment_id: str,
     sp_client_id: str,
@@ -8071,6 +8087,21 @@ def _grant_trace_uc_tables_to_sp(
             f"{_quote_uc_part(catalog)}.{_quote_uc_part(schema)}.{_quote_uc_part(table)} "
             f"TO {principal}"
         )
+    for table in (
+        f"{prefix}_trace_metadata",
+        f"{prefix}_trace_unified",
+        "apx_agent_timeline",
+    ):
+        statements.append(
+            "GRANT SELECT ON TABLE "
+            f"{_quote_uc_part(catalog)}.{_quote_uc_part(schema)}.{_quote_uc_part(table)} "
+            f"TO {principal}"
+        )
+    statements.append(
+        "GRANT SELECT, MODIFY ON TABLE "
+        f"{_quote_uc_part(catalog)}.{_quote_uc_part(schema)}."
+        f"{_quote_uc_part('apx_agent_events')} TO {principal}"
+    )
 
     ok = True
     for stmt in statements:
@@ -9154,11 +9185,11 @@ def _deploy_apps_impl(
         # Track the experiment id we end up deploying with, from either the
         # caller's --var or our auto-create. Used post-poll to grant the app SP
         # access so tracing can land.
-        resolved_exp_id: str | None = None
-        for v in vars or ():
-            if v.startswith("mlflow_experiment_id="):
-                resolved_exp_id = v.split("=", 1)[1].strip() or None
-                break
+        resolved_exp_id = _bundle_var_value(vars, "mlflow_experiment_id")
+        declared_bundle_vars = doc.get("variables")
+        tracing_warehouse_id = _bundle_var_value(
+            vars, "mlflow_tracing_sql_warehouse_id",
+        ) or os.environ.get("MLFLOW_TRACING_SQL_WAREHOUSE_ID")
         if auto_experiment and resolved_exp_id is None:
             bundle_name = ((doc.get("bundle") or {}).get("name") or bundle_key)
             eid = _ensure_experiment_id(
@@ -9170,6 +9201,15 @@ def _deploy_apps_impl(
             if eid:
                 resolved_exp_id = eid
                 extra_vars.append(f"mlflow_experiment_id={eid}")
+        if (
+            tracing_warehouse_id
+            and isinstance(declared_bundle_vars, dict)
+            and "mlflow_tracing_sql_warehouse_id" in declared_bundle_vars
+            and _bundle_var_value(vars, "mlflow_tracing_sql_warehouse_id") is None
+        ):
+            extra_vars.append(
+                f"mlflow_tracing_sql_warehouse_id={tracing_warehouse_id}",
+            )
 
         # 2d. Version correlation (issue #404): pass the deploy commit into the
         # app container as APX_GIT_SHA so every trace carries an apx.git_sha tag
@@ -9181,7 +9221,6 @@ def _deploy_apps_impl(
         # `--var apx_git_sha=` always wins.
         from ._apps_registry import GIT_SHA_TAG
         correlation_sha = (extra_version_tags or {}).get(GIT_SHA_TAG)
-        declared_bundle_vars = doc.get("variables")
         if (
             correlation_sha
             and isinstance(declared_bundle_vars, dict)
@@ -9271,7 +9310,12 @@ def _deploy_apps_impl(
             if sp and resolved_exp_id:
                 if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
                     log("  granted app SP CAN_MANAGE on tracing experiment")
-                if _grant_trace_uc_tables_to_sp(resolved_exp_id, sp, profile=profile):
+                if _grant_trace_uc_tables_to_sp(
+                    resolved_exp_id,
+                    sp,
+                    profile=profile,
+                    warehouse_id=tracing_warehouse_id,
+                ):
                     log("  granted app SP UC permissions on trace tables")
 
         # 6c. readyz gate: prove the app actually answers + traces, not just that

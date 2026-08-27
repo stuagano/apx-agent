@@ -731,6 +731,10 @@ def test_grant_trace_uc_tables_to_app_sp(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "GRANT USE CATALOG ON CATALOG `main` TO `sp-123`" in sql
     assert "GRANT USE SCHEMA ON SCHEMA `main`.`obs` TO `sp-123`" in sql
     assert "GRANT SELECT, MODIFY ON TABLE `main`.`obs`.`apx_demo_otel_spans` TO `sp-123`" in sql
+    assert "GRANT SELECT ON TABLE `main`.`obs`.`apx_demo_trace_metadata` TO `sp-123`" in sql
+    assert "GRANT SELECT ON TABLE `main`.`obs`.`apx_demo_trace_unified` TO `sp-123`" in sql
+    assert "GRANT SELECT ON TABLE `main`.`obs`.`apx_agent_timeline` TO `sp-123`" in sql
+    assert "GRANT SELECT, MODIFY ON TABLE `main`.`obs`.`apx_agent_events` TO `sp-123`" in sql
 
 
 def test_json_output_on_error_path(
@@ -2093,8 +2097,63 @@ variables:
 """
 
 
+_DATABRICKS_YML_WITH_TRACE_WAREHOUSE_VAR = _DATABRICKS_YML + """
+variables:
+  mlflow_tracing_sql_warehouse_id:
+    default: ""
+"""
+
+
 def _bundle_deploy_call(calls: list[list[str]]) -> list[str]:
     return next(c for c in calls if c[:2] == ["bundle", "deploy"])
+
+
+def test_deploy_injects_trace_warehouse_var_and_uses_it_for_grants(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """New Apps scaffolds inherit the UC trace warehouse from the operator env.
+
+    That same warehouse is used for the post-deploy app-SP table grants, so
+    OTel rows, APX events, and the joined timeline are readable/writable by
+    the running Databricks App without hand-editing the bundle.
+    """
+    (scaffold / "databricks.yml").write_text(_DATABRICKS_YML_WITH_TRACE_WAREHOUSE_VAR)
+    monkeypatch.setenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", "wh123")
+    grant_calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "apx_agent.cli._grant_experiment_to_sp",
+        lambda experiment_id, sp, *, profile: True,
+    )
+    monkeypatch.setattr(
+        "apx_agent.cli._grant_trace_uc_tables_to_sp",
+        lambda experiment_id, sp, *, profile, warehouse_id=None: (
+            grant_calls.append((experiment_id, warehouse_id)) or True
+        ),
+    )
+    calls = _install_subprocess_mock(
+        monkeypatch,
+        get_payload=json.dumps({
+            "name": "my-app",
+            "url": "https://my-app.example.databricksapps.com",
+            "compute_status": {"state": "ACTIVE"},
+            "app_status": {"state": "RUNNING"},
+            "service_principal_client_id": "sp-123",
+        }),
+    )
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "dev",
+        "--var", "mlflow_experiment_id=exp1",
+    ])
+    assert result.exit_code == 0, result.output
+    deploy_call = _bundle_deploy_call(calls)
+    var_values = [
+        deploy_call[i + 1]
+        for i, a in enumerate(deploy_call)
+        if a == "--var"
+    ]
+    assert "mlflow_tracing_sql_warehouse_id=wh123" in var_values
+    assert grant_calls == [("exp1", "wh123")]
 
 
 def test_deploy_injects_apx_git_sha_var_when_bundle_declares_it(
