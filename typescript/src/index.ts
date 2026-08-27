@@ -41,6 +41,22 @@ export type { AgentToolOptions } from './agent/index.js';
 export { getRequestContext, runWithContext, withAutonomousTrace } from './agent/request-context.js';
 export type { RequestContext } from './agent/request-context.js';
 
+// AppKit adapter — APX governed declarations hosted by current AppKit agents()
+export {
+  APX_APPKIT_PLUGIN_NAME,
+  ApxAppKitGovernancePlugin,
+  apxAppKitGovernance,
+  createApxAppKitAgentDefinition,
+} from './appkit-adapter.js';
+export type {
+  ApxAppKitAgentOptions,
+  ApxAppKitAuditEvent,
+  ApxAppKitGovernanceConfig,
+  ApxAppKitPolicyAction,
+  ApxAppKitPolicyDecision,
+  ApxAppKitToolEvent,
+} from './appkit-adapter.js';
+
 // Discovery plugin — A2A card, registry auto-registration
 export { createDiscoveryPlugin } from './discovery/index.js';
 export type { DiscoveryConfig, AgentCard } from './discovery/index.js';

@@ -40,7 +40,7 @@
     "zod-to-json-schema": "^3.25.0"
   },
   "devDependencies": {
-    "@databricks/appkit": "^0.21.0",
+    "@databricks/appkit": "^0.66.1",
     "@types/express": "^5.0.6",
     "@types/node": "^20.19.41",
     "express": "^5.2.1",

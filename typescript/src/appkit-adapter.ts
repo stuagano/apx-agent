@@ -1,0 +1,210 @@
+/**
+ * AppKit adapter for APX-governed agents.
+ *
+ * This module keeps APX as the governed declaration layer while letting the
+ * Databricks AppKit `agents()` plugin own Apps routing, streaming, approval,
+ * and OBO-aware tool dispatch.
+ */
+
+import {
+  Plugin,
+  toPlugin,
+  type BasePluginConfig,
+  type PluginManifest,
+} from '@databricks/appkit';
+import {
+  createAgent,
+  type AgentDefinition,
+  type AgentToolDefinition,
+  type ToolAnnotations,
+  type ToolProvider,
+  type ToolkitEntry,
+  type ToolkitOptions,
+} from '@databricks/appkit/beta';
+
+import type { AgentConfig, AgentExports, AgentTool } from './agent/index.js';
+import { toStrictSchema, zodToJsonSchema } from './agent/index.js';
+
+export const APX_APPKIT_PLUGIN_NAME = 'apx';
+
+export type ApxAppKitPolicyAction = 'ALLOW' | 'DENY';
+
+export interface ApxAppKitToolEvent {
+  toolName: string;
+  args: unknown;
+  annotations?: ToolAnnotations;
+}
+
+export interface ApxAppKitAuditEvent extends ApxAppKitToolEvent {
+  action: ApxAppKitPolicyAction;
+  reason: string | null;
+  error?: string;
+}
+
+export interface ApxAppKitPolicyDecision {
+  action: ApxAppKitPolicyAction;
+  reason?: string | null;
+}
+
+export interface ApxAppKitGovernanceConfig extends BasePluginConfig {
+  agent?: AgentExports | (() => AgentExports);
+  toolAnnotations?: Record<string, ToolAnnotations>;
+  policy?: (event: ApxAppKitToolEvent) => ApxAppKitPolicyDecision | Promise<ApxAppKitPolicyDecision>;
+  audit?: (event: ApxAppKitAuditEvent) => void | Promise<void>;
+}
+
+export interface ApxAppKitAgentOptions {
+  default?: boolean;
+  baseSystemPrompt?: AgentDefinition['baseSystemPrompt'];
+  generationParams?: AgentDefinition['generationParams'];
+  maxSteps?: number;
+  maxTokens?: number;
+  ephemeral?: boolean;
+  toolPrefix?: string;
+}
+
+function resolveAgentExports(agent: AgentExports | (() => AgentExports)): AgentExports {
+  return typeof agent === 'function' ? agent() : agent;
+}
+
+function requireAgentExports(agent: AgentExports | (() => AgentExports) | undefined): AgentExports {
+  if (!agent) throw new Error('APX AppKit governance plugin requires an agent export');
+  return resolveAgentExports(agent);
+}
+
+function toolAnnotations(
+  tool: AgentTool,
+  overrides: Record<string, ToolAnnotations> | undefined,
+): ToolAnnotations {
+  return {
+    effect: 'read',
+    requiresUserContext: true,
+    ...overrides?.[tool.name],
+  };
+}
+
+function toAppKitToolDefinition(
+  tool: AgentTool,
+  overrides: Record<string, ToolAnnotations> | undefined,
+): AgentToolDefinition {
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: toStrictSchema(zodToJsonSchema(tool.parameters)),
+    annotations: toolAnnotations(tool, overrides),
+  };
+}
+
+function filterToolDefinitions(
+  defs: AgentToolDefinition[],
+  opts: ToolkitOptions,
+): AgentToolDefinition[] {
+  const only = opts.only ? new Set(opts.only) : null;
+  const except = new Set(opts.except ?? []);
+  return defs.filter((def) => (!only || only.has(def.name)) && !except.has(def.name));
+}
+
+export class ApxAppKitGovernancePlugin
+  extends Plugin<ApxAppKitGovernanceConfig>
+  implements ToolProvider
+{
+  static manifest = {
+    name: APX_APPKIT_PLUGIN_NAME,
+    displayName: 'APX Governance',
+    description: 'APX governed agent declarations exposed as AppKit agent tools',
+    resources: { required: [], optional: [] },
+  } satisfies PluginManifest<typeof APX_APPKIT_PLUGIN_NAME>;
+
+  private get agentExports(): AgentExports {
+    return requireAgentExports(this.config.agent);
+  }
+
+  private get toolMap(): Map<string, AgentTool> {
+    return new Map(this.agentExports.getTools().map((tool) => [tool.name, tool]));
+  }
+
+  getAgentTools(): AgentToolDefinition[] {
+    return this.agentExports
+      .getTools()
+      .map((tool) => toAppKitToolDefinition(tool, this.config.toolAnnotations));
+  }
+
+  toolkit(opts: ToolkitOptions = {}): Record<string, ToolkitEntry> {
+    const prefix = opts.prefix ?? `${APX_APPKIT_PLUGIN_NAME}.`;
+    const entries: Record<string, ToolkitEntry> = {};
+
+    for (const def of filterToolDefinitions(this.getAgentTools(), opts)) {
+      const key = opts.rename?.[def.name] ?? `${prefix}${def.name}`;
+      entries[key] = {
+        __toolkitRef: true,
+        pluginName: APX_APPKIT_PLUGIN_NAME,
+        localName: def.name,
+        def,
+        annotations: def.annotations,
+        autoInheritable: def.annotations?.effect === 'read',
+      };
+    }
+
+    return entries;
+  }
+
+  async executeAgentTool(name: string, args: unknown): Promise<unknown> {
+    const tool = this.toolMap.get(name);
+    if (!tool) throw new Error(`Unknown APX tool: ${name}`);
+
+    const event: ApxAppKitToolEvent = {
+      toolName: name,
+      args,
+      annotations: toolAnnotations(tool, this.config.toolAnnotations),
+    };
+    const decision = (await this.config.policy?.(event)) ?? { action: 'ALLOW' };
+    if (decision.action === 'DENY') {
+      const reason = decision.reason ?? `APX policy denied ${name}`;
+      await this.config.audit?.({ ...event, action: 'DENY', reason });
+      throw new Error(reason);
+    }
+
+    try {
+      const result = await tool.handler(args);
+      await this.config.audit?.({ ...event, action: 'ALLOW', reason: null });
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.config.audit?.({
+        ...event,
+        action: 'ALLOW',
+        reason: null,
+        error: message,
+      });
+      throw error;
+    }
+  }
+}
+
+export const apxAppKitGovernance = toPlugin(ApxAppKitGovernancePlugin);
+
+export function createApxAppKitAgentDefinition(
+  agent: AgentExports | (() => AgentExports),
+  options: ApxAppKitAgentOptions = {},
+): AgentDefinition {
+  const exports = resolveAgentExports(agent);
+  const config: AgentConfig = exports.getConfig();
+  return createAgent({
+    name: config.name,
+    instructions: config.instructions ?? '',
+    model: config.model,
+    default: options.default,
+    baseSystemPrompt: options.baseSystemPrompt,
+    generationParams: options.generationParams,
+    maxSteps: options.maxSteps ?? config.maxIterations,
+    maxTokens: options.maxTokens,
+    ephemeral: options.ephemeral,
+    tools(plugins) {
+      return {
+        ...plugins[APX_APPKIT_PLUGIN_NAME].toolkit({
+          prefix: options.toolPrefix ?? `${APX_APPKIT_PLUGIN_NAME}.`,
+        }),
+      };
+    },
+  });
+}
