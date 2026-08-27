@@ -5,7 +5,7 @@ resources:
   apps:
     basic-agent:
       name: basic-agent
-      description: "Basic AI agent built with appkit-agent TypeScript SDK"
+      description: "Basic AI agent built with apx-internal-runtime TypeScript SDK"
       source_code_path: .
 
       config:

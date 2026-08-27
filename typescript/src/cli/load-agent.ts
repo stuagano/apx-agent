@@ -25,7 +25,7 @@
  *
  * Both halves must be non-empty. `<module>` can be:
  *
- *   - A bare specifier  — `my-pkg/agent`, `appkit-agent`. Resolved via
+ *   - A bare specifier  — `my-pkg/agent`, `apx-internal-runtime`. Resolved via
  *     Node's normal resolution from the cwd.
  *   - A relative path   — `./agent.js`, `../foo/agent.mjs`. Resolved
  *     against `process.cwd()` and converted to a `file://` URL.

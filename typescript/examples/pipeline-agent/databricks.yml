@@ -5,7 +5,7 @@ resources:
   apps:
     pipeline-agent:
       name: pipeline-agent
-      description: "Data investigation pipeline built with appkit-agent TypeScript SDK"
+      description: "Data investigation pipeline built with apx-internal-runtime TypeScript SDK"
       source_code_path: .
 
       config:

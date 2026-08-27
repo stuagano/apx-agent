@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * apx — command-line interface for the appkit-agent (TypeScript starter).
+ * apx — command-line interface for the apx-internal-runtime (TypeScript starter).
  *
  * This is the TypeScript port of `python/src/apx_agent/cli.py`. The Python
  * CLI exposes ~21 commands; this starter ships the five that prove out the
@@ -12,7 +12,7 @@
  *
  *   - After `npm run build` the bundled entry lives at `dist/cli/index.mjs`
  *     and the `bin` field in `package.json` exposes it as the `apx`
- *     executable to anyone who `npm install`s `appkit-agent`.
+ *     executable to anyone who `npm install`s `apx-internal-runtime`.
  *   - From a checkout: `npx tsx src/cli/index.ts <command>`. Note that
  *     loading TS agent modules via dynamic `import()` still requires `tsx`
  *     at the user end too — see `./load-agent.ts` for details.

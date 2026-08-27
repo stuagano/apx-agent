@@ -65,9 +65,9 @@ describe('apx scaffold --target apps', () => {
         readFileSync(join(tmp, 'cool_app', 'package.json'), 'utf8'),
       );
       expect(pkg.name).toBe('cool_app');
-      // appkit-agent isn't published to npm yet — the scaffold must reference
-      // the local framework build, not a registry version that 404s.
-      expect(pkg.dependencies?.['appkit-agent']).toBe('file:..');
+      // apx-internal-runtime is APX-owned deploy machinery, not a public npm SDK.
+      // The scaffold must reference the local runtime build.
+      expect(pkg.dependencies?.['apx-internal-runtime']).toBe('file:..');
 
       const yml = readFileSync(join(tmp, 'cool_app', 'databricks.yml'), 'utf8');
       expect(yml).toContain('name: cool_app');
@@ -116,7 +116,7 @@ describe('apx scaffold --target apps', () => {
       const start = readFileSync(join(tmp, 'pp', 'agent_server/start.ts'), 'utf8');
       expect(start).toContain('mountResponsesAgent');
       expect(start).toContain('DATABRICKS_APP_PORT');
-      expect(start).toContain("from 'appkit-agent'");
+      expect(start).toContain("from 'apx-internal-runtime'");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

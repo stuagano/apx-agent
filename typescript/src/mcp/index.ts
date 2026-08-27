@@ -94,7 +94,7 @@ export function createMcpPlugin(config: McpConfig, agentExports: () => AgentExpo
     const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
 
     const server = new McpServer(
-      { name: 'appkit-agent', version: '1.0.0' },
+      { name: 'apx-internal-runtime', version: '1.0.0' },
       { capabilities: { tools: {} } },
     );
 

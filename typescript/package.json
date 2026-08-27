@@ -1,7 +1,8 @@
 {
-  "name": "appkit-agent",
+  "name": "apx-internal-runtime",
   "version": "0.3.0",
-  "description": "AppKit plugins for building AI agents on Databricks Apps — typed tools, A2A discovery, MCP server, dev UI",
+  "private": true,
+  "description": "Internal APX TypeScript runtime for generated Databricks Apps hosts",
   "type": "module",
   "main": "dist/index.mjs",
   "types": "dist/index.d.mts",
@@ -23,8 +24,8 @@
     "clean": "rm -rf dist"
   },
   "keywords": [
+    "apx",
     "databricks",
-    "appkit",
     "agent",
     "mcp",
     "a2a"

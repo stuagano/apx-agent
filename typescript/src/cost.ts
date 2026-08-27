@@ -24,7 +24,7 @@
  * pricing share, `totalUsd` is `null`.
  *
  * @example
- * import { costForEndpoint } from 'appkit-agent';
+ * import { costForEndpoint } from 'apx-internal-runtime';
  *
  * const breakdown = await costForEndpoint({
  *   endpoint: 'customer_triage',

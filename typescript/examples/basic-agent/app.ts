@@ -15,7 +15,7 @@ import {
   createMcpPlugin,
   createDevPlugin,
   defineTool,
-} from '@databricks/appkit-agent';
+} from 'apx-internal-runtime';
 
 // ---------------------------------------------------------------------------
 // Define tools

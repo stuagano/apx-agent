@@ -2,7 +2,7 @@
  * catalogTool, lineageTool, schemaTool — Unity Catalog tool factories.
  *
  * @example
- * import { catalogTool, lineageTool, schemaTool } from 'appkit-agent';
+ * import { catalogTool, lineageTool, schemaTool } from 'apx-internal-runtime';
  *
  * createAgentPlugin({
  *   tools: [

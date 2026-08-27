@@ -1,9 +1,12 @@
 /**
- * appkit-agent — AppKit plugins for building AI agents on Databricks Apps.
+ * apx-internal-runtime — internal APX runtime for generated Databricks hosts.
+ *
+ * This package is not a public authoring surface. Python APX declarations stay
+ * external; generated Apps/serving hosts consume this runtime internally.
  *
  * @example
  * import { createApp, server, genie } from '@databricks/appkit';
- * import { createAgentPlugin, createDiscoveryPlugin, createMcpPlugin, createDevPlugin, defineTool } from 'appkit-agent';
+ * import { createAgentPlugin, createDiscoveryPlugin, createMcpPlugin, createDevPlugin, defineTool } from 'apx-internal-runtime';
  * import { z } from 'zod';
  *
  * const getLineage = defineTool({
