@@ -11,26 +11,22 @@ from pathlib import Path
 from fastapi.responses import FileResponse, RedirectResponse
 
 from apx_agent import create_app
-from apx_agent._dev import build_dev_ui_router
 
 from agent import agent
 from api import router
 
 app = create_app(agent)
 app.include_router(router)
-app.include_router(build_dev_ui_router())
 
-# Locate client/dist.  CWD is the source root in Databricks Apps.
-# Fall back through __file__-relative parents for local editable-install runs.
-_here = Path(__file__).resolve()
-_candidates = [
-    Path.cwd() / "client" / "dist",
-    _here.parents[3] / "client" / "dist",
-    _here.parents[4] / "client" / "dist",
-    _here.parents[5] / "client" / "dist",
-    _here.parents[6] / "client" / "dist",
-]
-_CLIENT_DIST = next((c for c in _candidates if c.exists()), None)
+def _find_client_dist(here: Path, cwd: Path) -> Path | None:
+    candidates = [cwd / "client" / "dist"]
+    candidates.extend(parent / "client" / "dist" for parent in here.parents)
+    return next((candidate for candidate in candidates if candidate.exists()), None)
+
+
+# CWD is the staged source root in Databricks Apps. Parent fallbacks support
+# local editable installs without assuming a fixed checkout depth.
+_CLIENT_DIST = _find_client_dist(Path(__file__).resolve(), Path.cwd())
 
 if _CLIENT_DIST is not None:
     # Use explicit GET-only routes instead of app.mount("/", StaticFiles).

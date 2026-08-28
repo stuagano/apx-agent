@@ -7928,6 +7928,14 @@ def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
         )
     if not init_file.exists():
         init_file.write_text("")
+    start_host_file = agent_server_dir / "start_host.py"
+    if start_host_file.is_symlink():
+        raise click.ClickException(
+            f"refusing to write symlinked AppKit host selector: {start_host_file}"
+        )
+    from ._project_gen import _START_HOST_CONTENT
+
+    start_host_file.write_text(_START_HOST_CONTENT)
     start_server_file = agent_server_dir / "start_server.py"
     if start_server_file.is_symlink():
         raise click.ClickException(

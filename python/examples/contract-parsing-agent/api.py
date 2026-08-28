@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -15,6 +16,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB
+
+
+@router.get("/dev-ui", operation_id="devUi")
+def dev_ui():
+    return {"enabled": os.environ.get("APX_DEV_UI") != "0"}
 
 
 @router.get("/version", response_model=VersionOut, operation_id="version")

@@ -117,6 +117,7 @@ export interface InternalApxAppKitAgentOptions {
 }
 
 export interface InternalApxAppKitAgentsOptions {
+  [key: string]: unknown;
   approval: {
     requireForDestructive: boolean;
   };

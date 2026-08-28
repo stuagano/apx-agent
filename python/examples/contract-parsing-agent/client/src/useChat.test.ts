@@ -27,7 +27,7 @@ describe('useChat', () => {
     expect(result.current.messages[1]).toEqual({ role: 'assistant', content: 'Hello from agent!' })
     expect(result.current.isLoading).toBe(false)
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
-      '/responses',
+      '/invocations',
       expect.objectContaining({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

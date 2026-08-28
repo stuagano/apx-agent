@@ -2,8 +2,20 @@ from pathlib import Path
 import textwrap
 
 import pytest
+import yaml
 
 from config import Settings, load_settings
+
+
+def test_bundle_stages_repo_local_tools_core_wheel() -> None:
+    bundle = yaml.safe_load((Path(__file__).parents[1] / "databricks.yml").read_text())
+    build = bundle["artifacts"]["default"]["build"]
+
+    assert "rm -f .build/*.whl .build/requirements.txt" in build
+    assert "uv build --wheel -o .build/ ../databricks-tools-core" in build
+    assert "uv build --wheel -o .build/ ../.." in build
+    assert "databricks_tools_core-*.whl >> .build/requirements.txt" in build
+    assert "apx_agent-*.whl >> .build/requirements.txt" in build
 
 
 def test_load_settings_from_yaml(tmp_path: Path) -> None:
