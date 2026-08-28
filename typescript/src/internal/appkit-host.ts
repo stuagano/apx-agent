@@ -7,6 +7,8 @@
  * policy/audit hooks around tool execution.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import {
   Plugin,
   toPlugin,
@@ -27,6 +29,16 @@ import type { AgentConfig, AgentExports, AgentTool } from '../agent/index.js';
 import { toStrictSchema, zodToJsonSchema } from '../agent/index.js';
 
 export const INTERNAL_APX_APPKIT_PLUGIN_NAME = 'apx';
+
+const bridgeHeaderStorage = new AsyncLocalStorage<Record<string, string>>();
+const FORWARDED_HEADER_NAMES = [
+  'x-forwarded-host',
+  'x-forwarded-preferred-username',
+  'x-forwarded-user',
+  'x-forwarded-email',
+  'x-forwarded-access-token',
+  'x-request-id',
+] as const;
 
 export type InternalApxAppKitPolicyAction = 'ALLOW' | 'DENY';
 
@@ -77,6 +89,10 @@ export interface InternalApxAppsHostManifest {
 export interface InternalApxAppKitGovernanceConfig extends BasePluginConfig {
   agent?: AgentExports | (() => AgentExports);
   manifest?: InternalApxAppsHostManifest;
+  pythonBridge?: {
+    baseUrl: string;
+    headers?: Record<string, string>;
+  };
   toolAnnotations?: Record<string, ToolAnnotations>;
   policy?: (
     event: InternalApxAppKitToolEvent,
@@ -108,6 +124,15 @@ function requireAgentSource(config: InternalApxAppKitGovernanceConfig):
   | { kind: 'manifest'; value: InternalApxAppsHostManifest } {
   if (config.manifest) return { kind: 'manifest', value: config.manifest };
   return { kind: 'exports', value: requireAgentExports(config.agent) };
+}
+
+function bridgeHeadersFromRequest(req: Parameters<Plugin['asUser']>[0]): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const name of FORWARDED_HEADER_NAMES) {
+    const value = req.header(name)?.trim();
+    if (value) headers[name] = value;
+  }
+  return headers;
 }
 
 function toolAnnotations(
@@ -183,6 +208,18 @@ export class InternalApxAppKitGovernancePlugin
     return new Map(source.value.getTools().map((tool) => [tool.name, tool]));
   }
 
+  asUser(req: Parameters<Plugin['asUser']>[0]): this {
+    const scoped = super.asUser(req);
+    const headers = bridgeHeadersFromRequest(req);
+    return new Proxy(scoped, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]) => bridgeHeaderStorage.run(headers, () => value.apply(target, args));
+      },
+    });
+  }
+
   getAgentTools(): AgentToolDefinition[] {
     const source = requireAgentSource(this.config);
     if (source.kind === 'manifest') {
@@ -212,7 +249,7 @@ export class InternalApxAppKitGovernancePlugin
     return entries;
   }
 
-  async executeAgentTool(name: string, args: unknown): Promise<unknown> {
+  async executeAgentTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
     const tool = this.toolMap.get(name);
     const manifestTool = this.config.manifest?.tools?.find((candidate) => candidate.name === name);
     if (!tool && !manifestTool) throw new Error(`Unknown APX tool: ${name}`);
@@ -233,7 +270,34 @@ export class InternalApxAppKitGovernancePlugin
 
     try {
       if (!tool) {
-        throw new Error(`APX Python bridge is not wired for tool: ${name}`);
+        const bridge = this.config.pythonBridge;
+        if (!bridge) throw new Error(`APX Python bridge is not configured for tool: ${name}`);
+        const response = await fetch(
+          `${bridge.baseUrl.replace(/\/$/, '')}/_apx/internal/appkit/tools/${encodeURIComponent(name)}`,
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              ...bridge.headers,
+              ...bridgeHeaderStorage.getStore(),
+            },
+            body: JSON.stringify({ args }),
+            signal,
+          },
+        );
+        if (!response.ok) {
+          let detail = `${response.status} ${response.statusText}`;
+          try {
+            const payload = await response.json();
+            detail = typeof payload?.detail === 'string' ? payload.detail : detail;
+          } catch {
+            // Keep the status text when the bridge returns a non-JSON error.
+          }
+          throw new Error(`APX Python bridge failed for ${name}: ${detail}`);
+        }
+        const payload = await response.json();
+        await this.config.audit?.({ ...event, action: 'ALLOW', reason: null });
+        return payload.result;
       }
       const result = await tool.handler(args);
       await this.config.audit?.({ ...event, action: 'ALLOW', reason: null });

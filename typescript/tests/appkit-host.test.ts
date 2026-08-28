@@ -4,7 +4,7 @@ import {
   mockServiceContext,
   setupDatabricksEnv,
 } from '@databricks/appkit/testing';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
@@ -75,6 +75,10 @@ function makeManifest(): InternalApxAppsHostManifest {
 }
 
 describe('internal AppKit host', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('does not expose AppKit host symbols from the public package interface', () => {
     expect(publicApi).not.toHaveProperty('APX_APPKIT_PLUGIN_NAME');
     expect(publicApi).not.toHaveProperty('ApxAppKitGovernancePlugin');
@@ -183,6 +187,119 @@ describe('internal AppKit host', () => {
         reason: 'manual approval required',
       },
     ]);
+  });
+
+  it('executes manifest-backed Python tools through the configured bridge', async () => {
+    const audit: InternalApxAppKitAuditEvent[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ result: { policy: 'read-only' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const apx = new InternalApxAppKitGovernancePlugin({
+      manifest: makeManifest(),
+      pythonBridge: {
+        baseUrl: 'http://127.0.0.1:8000/',
+        headers: { 'x-apx-test': '1' },
+      },
+      audit: (event) => audit.push(event),
+    });
+
+    await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).resolves.toEqual({
+      policy: 'read-only',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/_apx/internal/appkit/tools/lookup_policy',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-apx-test': '1',
+        },
+        body: JSON.stringify({ args: { resource: 'main.sales.orders' } }),
+      }),
+    );
+    expect(audit).toMatchObject([
+      { toolName: 'lookup_policy', action: 'ALLOW', reason: null },
+    ]);
+  });
+
+  it('short-circuits manifest-backed tools when APX policy denies execution', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const apx = new InternalApxAppKitGovernancePlugin({
+      manifest: makeManifest(),
+      pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
+      policy: () => ({ action: 'DENY', reason: 'blocked' }),
+    });
+
+    await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).rejects.toThrow(
+      'blocked',
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('forwards AppKit OBO headers to manifest-backed Python tools', async () => {
+    setupDatabricksEnv();
+    const serviceContext = mockServiceContext({ userId: 'alice@databricks.com' });
+    const mock = createTestPluginContext();
+    await mock.attach(new InternalApxAppKitGovernancePlugin({
+      manifest: makeManifest(),
+      pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
+    }));
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ result: { policy: 'read-only' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    try {
+      await mock.ctx.executeTool(
+        createMockRequest({
+          obo: {
+            userId: 'alice@databricks.com',
+            token: 'alice-token',
+            email: 'alice@databricks.com',
+          },
+        }),
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'lookup_policy',
+        { resource: 'main.sales.orders' },
+      );
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://127.0.0.1:8000/_apx/internal/appkit/tools/lookup_policy',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'x-forwarded-user': 'alice@databricks.com',
+            'x-forwarded-email': 'alice@databricks.com',
+            'x-forwarded-access-token': 'alice-token',
+          }),
+        }),
+      );
+    } finally {
+      serviceContext.restore();
+    }
+  });
+
+  it('surfaces bridge error details for manifest-backed tools', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Unknown APX tool: lookup_policy' }), {
+        status: 404,
+        statusText: 'Not Found',
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const apx = new InternalApxAppKitGovernancePlugin({
+      manifest: makeManifest(),
+      pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
+    });
+
+    await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).rejects.toThrow(
+      'APX Python bridge failed for lookup_policy: Unknown APX tool: lookup_policy',
+    );
   });
 
   it('runs APX plugin tools through AppKit PluginContext OBO dispatch', async () => {

@@ -88,7 +88,10 @@ const apxManifest = manifest as InternalApxAppsHostManifest;
 await createApp({
   plugins: [
     server(),
-    internalApxAppKitGovernance({ manifest: apxManifest }),
+    internalApxAppKitGovernance({
+      manifest: apxManifest,
+      pythonBridge: { baseUrl: process.env.APX_PYTHON_BRIDGE_URL ?? 'http://127.0.0.1:8000' },
+    }),
     agents(),
   ],
 });

@@ -692,6 +692,10 @@ async def setup_agent(
 
     logger.info(f"Agent protocol enabled: {config.name} ({len(tools)} tools)")
 
+    from ._appkit_tool_bridge import build_appkit_tool_bridge_router
+
+    app.include_router(build_appkit_tool_bridge_router())
+
     # Per-tool FastAPI routes (live under {api_prefix}/tools/<name>)
     for router in agent.get_tool_routers():
         app.include_router(router, prefix=config.api_prefix)
