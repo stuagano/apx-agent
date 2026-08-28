@@ -7890,12 +7890,14 @@ def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
     for child in cwd.iterdir():
         if child.name in ignored_dirs or child.name.endswith(".egg-info"):
             continue
-        target = build_dir / child.name
-        if target.exists():
-            continue
         if child.is_symlink():
             raise click.ClickException(
                 f"refusing to stage symlinked AppKit bridge source: {child}"
+            )
+        target = build_dir / child.name
+        if target.is_symlink():
+            raise click.ClickException(
+                f"refusing to replace symlinked AppKit bridge target: {target}"
             )
         if child.is_file() and (
             child.suffix == ".py" or _is_appkit_bridge_resource_file(child)
@@ -7905,6 +7907,7 @@ def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
             shutil.copytree(
                 child,
                 target,
+                dirs_exist_ok=True,
                 ignore=shutil.ignore_patterns(
                     ".mypy_cache",
                     ".pytest_cache",

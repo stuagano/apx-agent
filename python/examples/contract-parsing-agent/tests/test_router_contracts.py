@@ -58,7 +58,7 @@ def test_list_contracts_coerces_types():
             "contract_type": "ppa",
             "effective_date": "2024-06-01",
             "expiry_date": "2029-06-01",
-            "term_years": "5",
+            "term_years": "5.0",
             "auto_renewal": "false",
         }
     ]

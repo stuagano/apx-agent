@@ -99,6 +99,21 @@ BRIDGE_TOOL_CASES = {
 }
 
 
+def test_python_bridge_staging_refreshes_existing_sources(tmp_path: Path) -> None:
+    from apx_agent.cli import _stage_internal_appkit_python_bridge
+
+    build_dir = tmp_path / ".build"
+    build_dir.mkdir()
+    source = tmp_path / "api.py"
+    source.write_text("VERSION = 1\n")
+    _stage_internal_appkit_python_bridge(tmp_path, build_dir)
+
+    source.write_text("VERSION = 2\n")
+    _stage_internal_appkit_python_bridge(tmp_path, build_dir)
+
+    assert (build_dir / "api.py").read_text() == "VERSION = 2\n"
+
+
 PROBE = textwrap.dedent(
     """
     from __future__ import annotations
