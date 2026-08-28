@@ -150,6 +150,7 @@ PROBE = textwrap.dedent(
     manifest = json.loads((host_dir / "apx-host-manifest.json").read_text())
     package = json.loads((host_dir / "package.json").read_text())
     start = (host_dir / "scripts" / "start.mjs").read_text()
+    server_src = (host_dir / "server" / "server.ts").read_text()
 
     assert (root / ".build" / "agent.py").exists()
     assert (bridge_dir / "__init__.py").exists()
@@ -172,6 +173,9 @@ PROBE = textwrap.dedent(
     assert "agent_server.appkit_bridge:app" in start
     assert "agent_server.start_server:app" not in start
     assert manifest["agent"]["name"]
+    assert "process.env.APX_DEV_UI !== '0'" in server_src
+    assert "app.get('/api/dev/config'" in server_src
+    assert "appkit.agents.register" in server_src
 
     agent = _load_finalized_agent("agent:agent")
     app = FastAPI()

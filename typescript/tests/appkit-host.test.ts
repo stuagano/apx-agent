@@ -12,6 +12,8 @@ import {
   InternalApxAppKitGovernancePlugin,
   createInternalApxAppKitAgentDefinition,
   createInternalApxAppKitAgentDefinitionFromManifest,
+  createInternalApxAppKitDevRuntime,
+  internalApxAppKitSystemPrompt,
   internalApxAppKitAgentsOptionsFromManifest,
   type InternalApxAppKitAuditEvent,
   type InternalApxAppsHostManifest,
@@ -162,6 +164,95 @@ describe('internal AppKit host', () => {
         autoInheritable: true,
       },
     });
+  });
+
+  it('rebuilds the actual AppKit definition from live dev overrides', () => {
+    const manifest = makeManifest();
+    const dev = createInternalApxAppKitDevRuntime(manifest);
+
+    expect(dev.snapshot()).toMatchObject({
+      agentName: 'pricing-agent',
+      model: 'databricks-claude-sonnet-4-5',
+      originalModel: 'databricks-claude-sonnet-4-5',
+      instructions: 'Use APX governed tools.',
+      instructionsOverridden: false,
+    });
+
+    dev.setModel('databricks-claude-sonnet-4-6');
+    dev.setInstructions('Prefer concise answers.');
+    expect(dev.definition()).toMatchObject({
+      model: 'databricks-claude-sonnet-4-6',
+      instructions: 'Prefer concise answers.',
+    });
+
+    dev.setInstructions(null);
+    expect(dev.definition()).toMatchObject({ instructions: 'Use APX governed tools.' });
+    expect(dev.snapshot().instructionsOverridden).toBe(false);
+  });
+
+  it('enables only selected manifest tools in the rebuilt AppKit definition', () => {
+    const manifest = makeManifest();
+    const dev = createInternalApxAppKitDevRuntime(manifest);
+    const apx = new InternalApxAppKitGovernancePlugin({ manifest });
+
+    dev.setToolEnabled('lookup_policy', false);
+    const agent = dev.definition();
+    if (typeof agent.tools !== 'function') throw new Error('expected function-form tools');
+
+    expect(agent.tools({ [INTERNAL_APX_APPKIT_PLUGIN_NAME]: apx })).not.toHaveProperty(
+      'apx.lookup_policy',
+    );
+    expect(dev.snapshot().tools).toEqual([
+      expect.objectContaining({ name: 'lookup_policy', enabled: false }),
+    ]);
+    expect(() => dev.setToolEnabled('missing', true)).toThrow('Unknown APX tool: missing');
+  });
+
+  it('adds bounded markdown skills as real read-only AppKit tools', async () => {
+    const manifest = makeManifest();
+    const dev = createInternalApxAppKitDevRuntime(manifest);
+    const apx = new InternalApxAppKitGovernancePlugin({ manifest });
+
+    dev.setSkill({
+      name: 'pricing_policy',
+      description: 'Load pricing policy guidance.',
+      content: '# Pricing policy\nNever invent a discount.',
+    });
+    const agent = dev.definition();
+    if (typeof agent.tools !== 'function') throw new Error('expected function-form tools');
+    const tools = agent.tools({ [INTERNAL_APX_APPKIT_PLUGIN_NAME]: apx });
+    const skill = tools['skill.pricing_policy'];
+
+    expect(skill).toMatchObject({
+      type: 'function',
+      annotations: { effect: 'read', requiresUserContext: false },
+    });
+    if (!('execute' in skill)) throw new Error('expected executable skill tool');
+    await expect(skill.execute({})).resolves.toBe(
+      '# Pricing policy\nNever invent a discount.',
+    );
+    expect(() => dev.setSkill({ name: '../bad', description: 'bad', content: 'bad' })).toThrow();
+    expect(() =>
+      dev.setSkill({ name: 'too_large', description: 'large', content: 'x'.repeat(20_001) }),
+    ).toThrow();
+  });
+
+  it('reports the exact system prompt configured on the rebuilt definition', () => {
+    const manifest = makeManifest();
+    const dev = createInternalApxAppKitDevRuntime(manifest);
+    const definition = dev.definition();
+    const context = {
+      agentName: 'pricing-agent',
+      pluginNames: [INTERNAL_APX_APPKIT_PLUGIN_NAME],
+      toolNames: ['apx.lookup_policy'],
+    };
+
+    expect(definition.baseSystemPrompt).toBe(
+      internalApxAppKitSystemPrompt('', context),
+    );
+    expect(dev.snapshot().systemPrompt).toBe(
+      internalApxAppKitSystemPrompt('Use APX governed tools.', context),
+    );
   });
 
   it('projects APX runtime limits into AppKit agents() options', () => {

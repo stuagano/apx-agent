@@ -30,7 +30,7 @@ def write_appkit_host_skeleton(
         )
         + "\n",
         "scripts/start.mjs": _start_mjs(),
-        "server/server.ts": _server_ts(),
+        "server/server.ts": _server_ts(agent_id),
         f"server/agents/{agent_id}/agent.ts": _agent_ts(),
     }
     for rel, content in files.items():
@@ -153,21 +153,26 @@ def _tsconfig_json() -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
-def _server_ts() -> str:
+def _server_ts(agent_id: str) -> str:
     return """\
 import { createApp, server, type IAppRouter } from '@databricks/appkit';
 import http from 'node:http';
 import { agents } from '@databricks/appkit/beta';
 import type { Request, Response } from 'express';
+import { z } from 'zod';
 
 import manifest from '../apx-host-manifest.json';
 import {
+  createInternalApxAppKitDevRuntime,
   internalApxAppKitAgentsOptionsFromManifest,
   internalApxAppKitGovernance,
   type InternalApxAppsHostManifest,
 } from 'apx-internal-runtime/internal/appkit-host';
 
 const apxManifest = manifest as InternalApxAppsHostManifest;
+const agentId = __APX_AGENT_ID__;
+const dev = createInternalApxAppKitDevRuntime(apxManifest);
+const devEnabled = process.env.APX_DEV_UI !== '0';
 const pythonBridgeUrl = process.env.APX_PYTHON_BRIDGE_URL ?? 'http://127.0.0.1:8000';
 const proxyPaths = (process.env.APX_PYTHON_BRIDGE_PROXY_PATHS ?? '')
   .split(',')
@@ -184,8 +189,71 @@ await createApp({
     agents(internalApxAppKitAgentsOptionsFromManifest(apxManifest)),
   ],
   onPluginsReady(appkit) {
-    if (proxyPaths.length === 0) return;
     appkit.server.extend((app: IAppRouter) => {
+      const applyDevChange = async (res: Response, change: () => void) => {
+        try {
+          change();
+          await appkit.agents.register(agentId, dev.definition());
+          res.json(dev.snapshot());
+        } catch (error) {
+          res.status(400).json({
+            detail: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
+
+      if (devEnabled) {
+        app.get('/api/dev/config', (_req: Request, res: Response) => res.json(dev.snapshot()));
+        app.patch('/api/dev/config', async (req: Request, res: Response) => {
+          const parsed = z.object({ model: z.string() }).safeParse(req.body);
+          if (!parsed.success) {
+            res.status(400).json({ detail: 'model is required' });
+            return;
+          }
+          await applyDevChange(res, () => dev.setModel(parsed.data.model));
+        });
+        app.get('/api/dev/instructions', (_req: Request, res: Response) => res.json(dev.snapshot()));
+        app.patch('/api/dev/instructions', async (req: Request, res: Response) => {
+          const parsed = z.object({ instructions: z.string() }).safeParse(req.body);
+          if (!parsed.success) {
+            res.status(400).json({ detail: 'instructions are required' });
+            return;
+          }
+          await applyDevChange(res, () => dev.setInstructions(parsed.data.instructions));
+        });
+        app.delete('/api/dev/instructions', async (_req: Request, res: Response) => {
+          await applyDevChange(res, () => dev.setInstructions(null));
+        });
+        app.get('/api/dev/tools', (_req: Request, res: Response) => res.json(dev.snapshot()));
+        app.patch('/api/dev/tools/:name', async (req: Request, res: Response) => {
+          const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+          if (!parsed.success) {
+            res.status(400).json({ detail: 'enabled must be a boolean' });
+            return;
+          }
+          await applyDevChange(res, () => dev.setToolEnabled(req.params.name, parsed.data.enabled));
+        });
+        app.put('/api/dev/skills/:name', async (req: Request, res: Response) => {
+          const parsed = z.object({
+            description: z.string(),
+            content: z.string(),
+          }).safeParse(req.body);
+          if (!parsed.success) {
+            res.status(400).json({ detail: 'description and content are required' });
+            return;
+          }
+          await applyDevChange(res, () => dev.setSkill({ name: req.params.name, ...parsed.data }));
+        });
+        app.delete('/api/dev/skills/:name', async (req: Request, res: Response) => {
+          await applyDevChange(res, () => {
+            if (!dev.deleteSkill(req.params.name)) throw new Error(`Unknown skill: ${req.params.name}`);
+          });
+        });
+        app.get('/api/dev/prompt', (_req: Request, res: Response) => {
+          res.json({ systemPrompt: dev.snapshot().systemPrompt });
+        });
+      }
+
       for (const prefix of proxyPaths) {
         app.use(prefix, (req: Request, res: Response) => {
           const target = new URL(req.originalUrl, pythonBridgeUrl);
@@ -204,7 +272,7 @@ await createApp({
     });
   },
 });
-"""
+""".replace("__APX_AGENT_ID__", repr(agent_id))
 
 
 def _agent_ts() -> str:

@@ -4,6 +4,7 @@ import { ContractTable } from './ContractTable'
 import { ChatPanel } from './ChatPanel'
 import { useChat } from './useChat'
 import { useUpload } from './useUpload'
+import { DevToolbar } from './DevToolbar'
 
 export default function App() {
   const [contracts, setContracts] = useState<Contract[]>([])
@@ -12,7 +13,7 @@ export default function App() {
   const [selected, setSelected] = useState<Contract | null>(null)
   const [pendingMessage, setPendingMessage] = useState('')
   const [devEnabled, setDevEnabled] = useState(true)
-  const { messages, isLoading, sendMessage } = useChat()
+  const { messages, isLoading, sendMessage, threadId, reset } = useChat()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleUploadSuccess = useCallback((filename: string, volumePath: string) => {
@@ -129,15 +130,7 @@ export default function App() {
         />
       </div>
       {devEnabled && (
-        <a
-          href="/_apx/agent"
-          target="_blank"
-          rel="noreferrer"
-          aria-label="Dev"
-          className="fixed bottom-4 right-4 z-50 rounded-full border border-row bg-panel px-3 py-2 text-xs font-semibold text-gray-300 shadow-lg hover:text-white"
-        >
-          ⚙ Dev
-        </a>
+        <DevToolbar threadId={threadId} onReset={reset} />
       )}
     </div>
   )
