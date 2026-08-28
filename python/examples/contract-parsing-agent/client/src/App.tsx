@@ -4,6 +4,7 @@ import { ContractTable } from './ContractTable'
 import { ChatPanel } from './ChatPanel'
 import { useChat } from './useChat'
 import { useUpload } from './useUpload'
+import { DevToolbar } from './DevToolbar'
 
 export default function App() {
   const [contracts, setContracts] = useState<Contract[]>([])
@@ -129,15 +130,7 @@ export default function App() {
         />
       </div>
       {devEnabled && (
-        <a
-          href="/_apx/agent"
-          target="_blank"
-          rel="noreferrer"
-          aria-label="Dev"
-          className="fixed bottom-4 right-4 z-50 rounded-full border border-row bg-panel px-3 py-2 text-xs font-semibold text-gray-300 shadow-lg hover:text-white"
-        >
-          ⚙ Dev
-        </a>
+        <DevToolbar threadId={null} onReset={() => undefined} />
       )}
     </div>
   )

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
 
 beforeAll(() => {
@@ -19,12 +19,21 @@ function mockAppFetch(devEnabled: boolean) {
 describe('developer launcher', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('is visible by default and opens the APX console', async () => {
+  it('is visible by default and opens the five-tab inline panel', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('unavailable'))))
     render(<App />)
 
-    const link = await screen.findByRole('link', { name: 'Dev' })
-    expect(link).toHaveAttribute('href', '/_apx/agent')
+    fireEvent.click(await screen.findByRole('button', { name: 'Dev' }))
+
+    expect(screen.getByRole('dialog', { name: 'Developer tools' })).toBeInTheDocument()
+    for (const tab of ['Config', 'Instructions', 'Tools', 'Sessions', 'Prompt']) {
+      expect(screen.getByRole('tab', { name: tab })).toBeInTheDocument()
+    }
+    expect(screen.getByRole('link', { name: 'APX console' })).toHaveAttribute(
+      'href',
+      '/_apx/agent',
+    )
+    expect(await screen.findByRole('status')).toHaveTextContent('unavailable')
   })
 
   it('is absent when the server explicitly disables it', async () => {
