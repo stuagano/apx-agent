@@ -1603,6 +1603,44 @@ if __name__ == "__main__":
 '''
 
 
+_INTERNAL_APPKIT_BRIDGE_SERVER = '''\
+"""Internal AppKit bridge entry point.
+
+This process is started only by the generated AppKit host. AppKit owns the
+Apps HTTP routes; this FastAPI app exposes only APX's local Python tool bridge.
+"""
+
+from __future__ import annotations
+
+from fastapi import FastAPI
+
+from apx_agent._appkit_tool_bridge import build_appkit_tool_bridge_router
+from apx_agent._defaults import _make_workspace_client
+from apx_agent._inspection import _load_agent_config
+from apx_agent._models import AgentCard, AgentContext
+from apx_agent._wiring import finalize_agent
+
+from agent import agent
+
+_ws = _make_workspace_client()
+_agent_config = _load_agent_config()
+finalize_agent(agent, _agent_config, ws=_ws)
+
+app = FastAPI()
+app.state.workspace_client = _ws
+app.state.agent_context = AgentContext(
+    config=_agent_config,
+    tools=[],
+    card=AgentCard(
+        name=_agent_config.name,
+        description=_agent_config.description,
+    ),
+    agent=agent,
+)
+app.include_router(build_appkit_tool_bridge_router())
+'''
+
+
 _SCAFFOLD_APPS_QUICKSTART = '''\
 """quickstart — one-shot setup for the <APP_NAME> Apps deploy.
 
@@ -7860,6 +7898,12 @@ def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
         )
     if not start_server_file.exists():
         start_server_file.write_text(_SCAFFOLD_APPS_START_SERVER)
+    appkit_bridge_file = agent_server_dir / "appkit_bridge.py"
+    if appkit_bridge_file.is_symlink():
+        raise click.ClickException(
+            f"refusing to write symlinked AppKit bridge file: {appkit_bridge_file}"
+        )
+    appkit_bridge_file.write_text(_INTERNAL_APPKIT_BRIDGE_SERVER)
 
 
 def _contains_python_source(path: Path) -> bool:

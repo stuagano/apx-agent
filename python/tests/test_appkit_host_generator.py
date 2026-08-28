@@ -30,7 +30,8 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
 
     assert host_dir == tmp_path / ".build" / "apx_appkit_host"
     start_mjs = (host_dir / "scripts" / "start.mjs").read_text()
-    assert "agent_server.start_server:app" in start_mjs
+    assert "agent_server.appkit_bridge:app" in start_mjs
+    assert "agent_server.start_server:app" not in start_mjs
     assert "APX_PYTHON_BRIDGE_PORT" in start_mjs
     assert "APX_PYTHON_BRIDGE_URL" in start_mjs
     assert "APX_PYTHON_BRIDGE_CWD" in start_mjs

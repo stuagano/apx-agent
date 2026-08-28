@@ -109,7 +109,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 start('APX Python bridge', process.env.PYTHON ?? 'python', [
   '-m',
   'uvicorn',
-  'agent_server.start_server:app',
+  'agent_server.appkit_bridge:app',
   '--host',
   '127.0.0.1',
   '--port',

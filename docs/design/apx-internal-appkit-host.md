@@ -38,9 +38,11 @@ The AppKit spike added a private TypeScript runtime path:
 - `typescript/src/internal/appkit-host.ts` contains the AppKit host module.
 - Public TypeScript exports intentionally do not expose AppKit host symbols.
 - Generated TypeScript scaffolds depend on `"apx-internal-runtime": "file:.."`.
+- The generated AppKit host starts a bridge-only Python FastAPI app at
+  `agent_server.appkit_bridge:app`; the old `agent_server.start_server:app`
+  remains the Python fallback host, not the AppKit-started Apps runtime.
 
-The missing piece is the Python Apps deploy compiler that stages that internal
-host automatically from a Python APX declaration.
+The current missing pieces are parity hardening and default cutover.
 
 ## Non-goals
 
@@ -180,7 +182,23 @@ Minimum preserved semantics:
 - mutating tools are visible to AppKit approval/HITL semantics
 - errors preserve enough context for APX diagnostics without leaking secrets
 
-### 4. Generated host layout
+### 4. AppKit ownership map
+
+AppKit should own generic Apps runtime mechanics. APX should own the declared
+governance layer and the compiler from Python declarations into that runtime.
+
+| Runtime surface | Owner in AppKit-hosted Apps | APX responsibility |
+|---|---|---|
+| HTTP server, `/health`, static serving, dev server lifecycle | AppKit `server()` | Generate the host and deployment config. |
+| `/invocations`, `/responses`, `/chat`, streaming transport | AppKit `agents()` | Preserve request/response parity through compiled declarations. |
+| Thread runtime, cancellation, stream ownership, runtime limits | AppKit `agents()` | Compile APX knobs into AppKit config where semantics match. |
+| OBO request context | AppKit execution context and `asUser(req)` | Forward the scoped context through the local Python bridge while Python tools remain external. |
+| HITL execution mechanics | AppKit approval flow | Compile APX tool annotations/policy into approval posture and audit the decision. |
+| Generic Databricks SQL/File/Genie/Jobs/Serving resource calls | AppKit plugins where equivalent | Keep APX domain wrappers only when they add governance or semantics. |
+| Python tool execution | APX bridge | Keep this local, internal, and minimal: execute the named APX tool under the governed context. |
+| APX policy, audit, provenance, trace projection | APX | Never let a tool execute outside this wrapper. |
+
+### 5. Generated host layout
 
 The Apps scaffold should continue showing `agent.py` as the user-owned file.
 Generated AppKit internals should live under generated/build paths, for example:
@@ -191,6 +209,7 @@ pyproject.toml                   # user-owned config
 databricks.yml                   # generated but editable deployment config
 agent_server/                    # generated framework files
 .build/apx_appkit_host/          # deploy-staged generated TypeScript host
+.build/agent_server/appkit_bridge.py
 ```
 
 The exact path can change, but the ownership rule is fixed:
@@ -199,7 +218,7 @@ The exact path can change, but the ownership rule is fixed:
 - APX owns generated AppKit host files
 - deploy rebuilds generated host files from source declarations
 
-### 5. Internal host cutover
+### 6. Internal host cutover
 
 Use a temporary internal gate while parity is incomplete:
 
@@ -310,16 +329,22 @@ implementation only when these deletion tests pass:
 - Prove the generated host can expose a trivial read-only tool.
 - Keep generated AppKit internals behind the temporary `APX_APPS_HOST` gate.
 
-### Phase 3 - Python tool bridge
+### Phase 3 - AppKit route ownership
 
-- Add same-container bridge for arbitrary Python tools.
-- Preserve dependency injection and OBO resolution.
-- Route every tool call through policy/audit wrappers.
-- Add integration tests for allow, deny, error, OBO, and async tool behavior.
+- Keep AppKit `server()` / `agents()` as the only owner of Apps-facing routes
+  in the AppKit-started path.
+- Start a bridge-only Python app at `agent_server.appkit_bridge:app`.
+- Keep `agent_server.start_server:app` as the Python fallback host only.
+- Add regression tests that the AppKit-started bridge does not compile the
+  ResponsesAgent host or mount MCP/readyz/dev UI routes.
 
-### Phase 4 - APX surfaces parity
+### Phase 4 - OBO, HITL, limits, and surfaces parity
 
-- Mount or proxy MCP, A2A discovery, dev UI, topology, and readyz.
+- Preserve dependency injection and OBO resolution through AppKit `asUser(req)`.
+- Route every Python tool call through policy/audit wrappers.
+- Compile APX tool annotations into AppKit approval posture.
+- Mount or proxy MCP, A2A discovery, dev UI, topology, and readyz only after
+  deciding whether those remain APX surfaces or become AppKit plugin surfaces.
 - Compare outputs against the current Python host on the same declaration.
 - Add a parity fixture to CI that runs both hosts locally where possible.
 

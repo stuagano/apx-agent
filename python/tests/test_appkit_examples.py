@@ -84,7 +84,7 @@ BRIDGE_TOOL_CASES = {
         "name": "recall",
         "args": {"query": "window seat", "k": 2},
         "headers": {"X-Forwarded-User": "alice"},
-        "result_contains": "window seats",
+        "result_contains": "alice",
     },
     Path("shortage-intelligence-agent"): {
         "name": "classify_shortage_severity",
@@ -155,12 +155,20 @@ PROBE = textwrap.dedent(
     assert (root / ".build" / "agent.py").exists()
     assert (bridge_dir / "__init__.py").exists()
     assert (bridge_dir / "start_server.py").exists()
+    bridge_entrypoint = bridge_dir / "appkit_bridge.py"
+    assert bridge_entrypoint.exists()
+    bridge_src = bridge_entrypoint.read_text()
+    assert "compile_to_responses_agent" not in bridge_src
+    assert "mount_mcp_endpoints" not in bridge_src
+    assert "mount_readyz" not in bridge_src
     if (root / "agent.config.yaml").exists():
         assert (root / ".build" / "agent.config.yaml").exists()
     assert package["dependencies"]["apx-internal-runtime"] == "file:../apx_internal_runtime"
     assert "zod" in package["dependencies"]
     assert "zod-to-json-schema" in package["dependencies"]
     assert "--preserve-symlinks" in start
+    assert "agent_server.appkit_bridge:app" in start
+    assert "agent_server.start_server:app" not in start
     assert manifest["agent"]["name"]
 
     agent = _load_finalized_agent("agent:agent")
