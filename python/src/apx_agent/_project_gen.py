@@ -250,8 +250,8 @@ from pathlib import Path
 
 
 def main() -> None:
-    host = os.environ.get("APX_APPS_HOST", "python").strip().lower()
-    if host != "appkit":
+    host = os.environ.get("APX_APPS_HOST", "appkit").strip().lower()
+    if host == "python":
         os.execvp(
             "uvicorn",
             [
@@ -263,6 +263,8 @@ def main() -> None:
                 os.environ["DATABRICKS_APP_PORT"],
             ],
         )
+    if host != "appkit":
+        raise SystemExit("APX_APPS_HOST must be 'appkit' or 'python' when set.")
 
     source_root = Path(__file__).resolve().parents[1]
     appkit_dir = source_root / "apx_appkit_host"
@@ -761,7 +763,7 @@ resources:
           - name: APX_AGENT_MLFLOW_AUTOLOG
             value: "1"
           - name: APX_APPS_HOST
-            value: python
+            value: appkit
 
   jobs:
     {name}_keepalive:

@@ -1921,7 +1921,7 @@ resources:
           - name: APX_AGENT_NAME
             value: <APP_NAME>
           - name: APX_APPS_HOST
-            value: python
+            value: appkit
           - name: APX_GIT_SHA
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
@@ -7823,10 +7823,15 @@ def _stage_internal_appkit_host(
     bundle_key: str,
     log: Any,
 ) -> None:
-    """Stage generated AppKit internals when the private Apps host gate is on."""
-    host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "python")
-    if host.strip().lower() != "appkit":
+    """Stage generated AppKit internals unless the legacy Python host is requested."""
+    host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "appkit")
+    host = host.strip().lower()
+    if host == "python":
         return
+    if host != "appkit":
+        raise click.ClickException(
+            "APX_APPS_HOST must be 'appkit' or 'python' when set."
+        )
 
     build_dir = cwd / ".build"
     if not build_dir.is_dir():

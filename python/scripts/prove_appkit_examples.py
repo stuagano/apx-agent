@@ -203,7 +203,6 @@ def env(
     values.update(
         {
             "APX_AGENT_MLFLOW_AUTOLOG": "0",
-            "APX_APPS_HOST": "appkit",
             "APX_SMOKE_MODE": "1",
             "DATABRICKS_CONFIG_FILE": os.devnull,
             "DATABRICKS_HOST": f"http://127.0.0.1:{FAKE_DATABRICKS_PORT}",
@@ -243,7 +242,7 @@ def copy_example(src: Path, dst: Path) -> None:
     )
 
 
-def enable_appkit(workdir: Path) -> None:
+def use_default_apps_host(workdir: Path) -> None:
     doc = yaml.safe_load((workdir / "databricks.yml").read_text()) or {}
     apps = (doc.get("resources") or {}).get("apps") or {}
     if not apps:
@@ -251,12 +250,11 @@ def enable_appkit(workdir: Path) -> None:
     bundle_key = next(iter(apps))
     config = apps[bundle_key].setdefault("config", {})
     env_list = config.setdefault("env", [])
-    for item in env_list:
-        if isinstance(item, dict) and item.get("name") == "APX_APPS_HOST":
-            item["value"] = "appkit"
-            break
-    else:
-        env_list.append({"name": "APX_APPS_HOST", "value": "appkit"})
+    config["env"] = [
+        item
+        for item in env_list
+        if not (isinstance(item, dict) and item.get("name") == "APX_APPS_HOST")
+    ]
     (workdir / "databricks.yml").write_text(yaml.safe_dump(doc, sort_keys=False))
 
 
@@ -403,7 +401,7 @@ def verify_example(
     source = EXAMPLES_ROOT / rel
     workdir = tmp / "examples" / rel
     copy_example(source, workdir)
-    enable_appkit(workdir)
+    use_default_apps_host(workdir)
     stage_example(workdir, python, tmp)
 
     build_dir = workdir / ".build"

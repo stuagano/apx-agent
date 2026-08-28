@@ -187,6 +187,10 @@ def _install_subprocess_mock(
         "apx_agent.cli._maybe_write_deploy_state",
         lambda *_a, **_kw: None,
     )
+    monkeypatch.setattr(
+        "apx_agent.cli._run_bundle_artifacts",
+        lambda cwd: (Path(cwd) / ".build").mkdir(exist_ok=True),
+    )
     # The Databricks-CLI presence preflight (`shutil.which("databricks")`) is
     # exercised separately in test_deploy_blocks_when_cli_missing; here we
     # simulate the CLI being installed so these tests are deterministic in CI,
@@ -299,7 +303,7 @@ def test_no_run_skips_bundle_run(
     assert "databricks bundle run" in result.output
 
 
-def test_appkit_gate_stages_internal_host(
+def test_appkit_default_stages_internal_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     databricks_yml = yaml.safe_load(_DATABRICKS_YML)
@@ -312,9 +316,7 @@ def test_appkit_gate_stages_internal_host(
             )
         }
     }
-    databricks_yml["resources"]["apps"]["my-app"]["config"] = {
-        "env": [{"name": "APX_APPS_HOST", "value": "appkit"}],
-    }
+    databricks_yml["resources"]["apps"]["my-app"]["config"] = {"env": []}
     (tmp_path / "databricks.yml").write_text(
         yaml.safe_dump(databricks_yml, default_flow_style=False, sort_keys=False),
     )
@@ -356,6 +358,54 @@ def test_appkit_gate_stages_internal_host(
     assert package_json["dependencies"]["apx-internal-runtime"] == (
         "file:../apx_internal_runtime"
     )
+
+
+def test_python_host_escape_hatch_skips_internal_appkit_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    databricks_yml = yaml.safe_load(_DATABRICKS_YML)
+    databricks_yml["artifacts"] = {
+        "default": {
+            "build": (
+                "mkdir -p .build\n"
+                "cp agent.py pyproject.toml .build/\n"
+                "cp -r agent_server .build/\n"
+            )
+        }
+    }
+    databricks_yml["resources"]["apps"]["my-app"]["config"] = {
+        "env": [{"name": "APX_APPS_HOST", "value": "python"}],
+    }
+    (tmp_path / "databricks.yml").write_text(
+        yaml.safe_dump(databricks_yml, default_flow_style=False, sort_keys=False),
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "test-app"\n\n'
+        "[tool.apx.agent]\n"
+        'name = "test-app"\n'
+        'model = "databricks-claude-sonnet-4-6"\n'
+        'module = "agent:agent"\n'
+    )
+    (tmp_path / "agent.py").write_text(
+        "from apx_agent import LlmAgent\n\n"
+        "agent = LlmAgent(name='test-app')\n"
+    )
+    server = tmp_path / "agent_server"
+    server.mkdir()
+    (server / "__init__.py").write_text("")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(
+        main,
+        ["agents", "deploy", "--target", "apps", "--no-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".build" / "apx_appkit_host" / "package.json").exists()
 
 
 def test_auto_update_yml_adds_missing_resources(
@@ -918,6 +968,10 @@ def test_profile_is_passed_through(
     # Simulate the Databricks CLI being installed (CI has no `databricks`
     # binary); the presence preflight is covered by test_deploy_blocks_when_cli_missing.
     monkeypatch.setattr("apx_agent.cli._preflight_databricks_cli", lambda: None)
+    monkeypatch.setattr(
+        "apx_agent.cli._run_bundle_artifacts",
+        lambda cwd: (Path(cwd) / ".build").mkdir(exist_ok=True),
+    )
     # Stub the readyz gate (default ON) so this test stays focused on profile
     # threading through the bundle/apps subprocess calls.
     monkeypatch.setattr(
@@ -1121,6 +1175,7 @@ def test_register_uc_failure_is_fatal_when_inferred_from_catalog_schema(
     (scaffold / "pyproject.toml").write_text(
         '[project]\nname = "test-app"\n\n'
         '[tool.apx.agent]\n'
+        'name = "my-app"\n'
         'model = "databricks-claude-sonnet-4-6"\n'
         'catalog = "main"\n'
         'schema = "agents"\n'
