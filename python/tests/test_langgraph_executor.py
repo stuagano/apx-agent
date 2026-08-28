@@ -12,7 +12,7 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -70,6 +70,11 @@ def _make_fake_graph(final_text: str = "hi") -> MockCompiledGraph:
     :returns: A configured :class:`MockCompiledGraph` instance.
     """
     return MockCompiledGraph(final_text=final_text)
+
+
+def _runtime_tool(query: str) -> str:
+    """Runtime tool."""
+    return query
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +211,39 @@ class TestCompiledGraphCached:
         # Both turns should have succeeded.
         for events in (events1, events2):
             assert any(isinstance(e, TurnComplete) for e in events)
+
+    @pytest.mark.asyncio
+    async def test_tool_mutation_invalidates_cache(self) -> None:
+        """A runtime tool change triggers a fresh compile for the same model."""
+        agent = LlmAgent(tools=[])
+        seen_tool_names: list[list[str]] = []
+
+        def _compile_spy(agent_arg: LlmAgent, **kwargs: Any) -> MockCompiledGraph:
+            seen_tool_names.append([fn.__name__ for fn in agent_arg._tool_fns])
+            return _make_fake_graph("ok")
+
+        with patch("apx_agent._compile.compile_to_langgraph", side_effect=_compile_spy):
+            executor = LangGraphExecutor(agent, ws=None, model="cached-model")
+
+            await _drain(
+                executor.run_turn(
+                    messages=[],
+                    tools=[],
+                    system_prompt="",
+                    config=None,
+                )
+            )
+            agent.register_tool(_runtime_tool)
+            await _drain(
+                executor.run_turn(
+                    messages=[],
+                    tools=[],
+                    system_prompt="",
+                    config=None,
+                )
+            )
+
+        assert seen_tool_names == [[], ["_runtime_tool"]]
 
     @pytest.mark.asyncio
     async def test_different_models_compile_separately(self) -> None:
