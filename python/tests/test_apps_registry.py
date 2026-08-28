@@ -51,17 +51,34 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     Returns a dict capturing what each stub saw, so tests can assert on it.
     """
-    captured: dict[str, Any] = {"log_model": None, "set_uc_tags": None}
+    captured: dict[str, Any] = {
+        "log_model": None,
+        "set_uc_tags": None,
+        "start_run": None,
+    }
 
     # mlflow.start_run() must be a context manager; create a stub mlflow module
     # path is real (it's installed), so just patch the attribute.
     import mlflow
     import mlflow.pyfunc
 
-    monkeypatch.setattr(mlflow, "start_run", lambda *a, **k: contextlib.nullcontext())
+    def _fake_start_run(*args: Any, **kw: Any) -> Any:
+        captured["start_run"] = {
+            "args": args,
+            "kwargs": kw,
+            "tracking_uri": mlflow.get_tracking_uri(),
+            "registry_uri": mlflow.get_registry_uri(),
+        }
+        return contextlib.nullcontext()
+
+    monkeypatch.setattr(mlflow, "start_run", _fake_start_run)
 
     def _fake_log_model(**kw: Any) -> Any:
-        captured["log_model"] = kw
+        captured["log_model"] = {
+            **kw,
+            "tracking_uri": mlflow.get_tracking_uri(),
+            "registry_uri": mlflow.get_registry_uri(),
+        }
         return _FakeModelInfo("7")
 
     def _fake_set_uc_tags(agent: Any, *, registered_model_name: str, model: str | None, name: str | None) -> dict:
@@ -130,6 +147,23 @@ def test_register_calls_set_uc_tags_with_resolved_name(patched: dict[str, Any]) 
     assert patched["set_uc_tags"]["uc_name"] == "main.agents.my_app"
     assert patched["set_uc_tags"]["name"] == "Friendly"
     assert patched["set_uc_tags"]["registry_uri"] == "databricks-uc"
+
+
+def test_register_uses_explicit_profile_uris(patched: dict[str, Any]) -> None:
+    register_apps_manifest(
+        object(),
+        uc_name="main.agents.my_app",
+        model="m",
+        app_name="my-app",
+        bundle_target="dev",
+        mlflow_client=_FakeMlflowClient(),
+        profile="fevm",
+    )
+    assert patched["start_run"]["tracking_uri"] == "databricks://fevm"
+    assert patched["start_run"]["registry_uri"] == "databricks-uc://fevm"
+    assert patched["log_model"]["tracking_uri"] == "databricks://fevm"
+    assert patched["log_model"]["registry_uri"] == "databricks-uc://fevm"
+    assert patched["set_uc_tags"]["registry_uri"] == "databricks-uc://fevm"
 
 
 def test_register_never_imports_databricks_agents(

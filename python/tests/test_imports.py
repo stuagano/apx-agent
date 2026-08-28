@@ -9,7 +9,20 @@ them.
 
 from __future__ import annotations
 
+from pathlib import Path
+import tomllib
+
 import pytest
+
+
+def test_mlflow_extras_include_databricks_uc_dependencies() -> None:
+    """The local eval/align extras must match deployed Apps' MLflow contract."""
+    pyproject = tomllib.loads(
+        Path(__file__).parents[1].joinpath("pyproject.toml").read_text()
+    )
+    extras = pyproject["project"]["optional-dependencies"]
+    assert "mlflow[databricks]>=3.14,<3.15" in extras["eval"]
+    assert "mlflow[databricks]>=3.14,<3.15" in extras["align"]
 
 
 def test_langgraph_runtime_exposes_execution_info() -> None:

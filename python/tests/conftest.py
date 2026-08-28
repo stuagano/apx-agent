@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Annotated, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,6 +11,9 @@ from fastapi import Depends, Request, params
 from pydantic import BaseModel
 
 from apx_agent import LlmAgent, AgentConfig, AgentContext, AgentTool, Dependencies, Message
+
+
+os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 
 # ---------------------------------------------------------------------------

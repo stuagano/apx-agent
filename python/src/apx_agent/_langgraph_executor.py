@@ -191,8 +191,7 @@ class LangGraphExecutor:
         self._ws = ws
         self._model = model
         self._checkpointer = checkpointer
-        # Cache: model_key (str) -> compiled graph
-        self._compiled_cache: dict[str, Any] = {}
+        self._compiled_cache: dict[tuple[str, int], Any] = {}
 
     def handles_tools_internally(self) -> bool:
         """Return ``True`` — LangGraph's ToolNode dispatches tool calls internally.
@@ -222,16 +221,17 @@ class LangGraphExecutor:
         :returns: A LangGraph ``CompiledStateGraph`` (or equivalent mock in
             tests).
         """
-        if model not in self._compiled_cache:
+        cache_key = (model, getattr(self._agent, "tools_version", 0))
+        if cache_key not in self._compiled_cache:
             # Lazy import — MUST stay inside this method so tests can patch
             # ``apx_agent._compile.compile_to_langgraph`` at the module level
             # and have the patch visible here.
             from ._compile import compile_to_langgraph
 
-            self._compiled_cache[model] = compile_to_langgraph(
+            self._compiled_cache[cache_key] = compile_to_langgraph(
                 self._agent, ws=self._ws, model=model, checkpointer=self._checkpointer
             )
-        return self._compiled_cache[model]
+        return self._compiled_cache[cache_key]
 
     async def run_turn(
         self,

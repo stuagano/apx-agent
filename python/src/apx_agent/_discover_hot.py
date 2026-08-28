@@ -13,7 +13,7 @@ from typing import Any
 
 from ._agents import LlmAgent
 from ._env import resolve_env_var
-from ._models import A2ASkill, AgentCard, AgentContext, AgentTool
+from ._models import A2ASkill, AgentCard, AgentContext
 from ._topology import _iter_child_agents
 from ._ui_probe import validate_wire_peer_url
 
@@ -82,10 +82,7 @@ async def refresh_agent_context(ctx: AgentContext) -> None:
 
 
 def _unregister_tool(leaf: LlmAgent, tool_name: str) -> bool:
-    before = len(leaf._tool_fns)
-    leaf._tool_fns = [fn for fn in leaf._tool_fns if fn.__name__ != tool_name]
-    leaf._analyzed = [row for row in leaf._analyzed if row[0].__name__ != tool_name]
-    return len(leaf._tool_fns) < before
+    return leaf.unregister_tool(tool_name)
 
 
 def _unregister_sub_agent_by_url(leaf: LlmAgent, base_url: str) -> None:
