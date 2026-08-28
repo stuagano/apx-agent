@@ -7822,7 +7822,9 @@ def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
             raise click.ClickException(
                 f"refusing to stage symlinked AppKit bridge source: {child}"
             )
-        if child.is_file() and child.suffix == ".py":
+        if child.is_file() and (
+            child.suffix == ".py" or _is_appkit_bridge_resource_file(child)
+        ):
             shutil.copy2(child, target)
         elif child.is_dir() and _contains_python_source(child):
             shutil.copytree(
@@ -7862,6 +7864,10 @@ def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
 
 def _contains_python_source(path: Path) -> bool:
     return any(child.is_file() for child in path.rglob("*.py"))
+
+
+def _is_appkit_bridge_resource_file(path: Path) -> bool:
+    return path.suffix in {".json", ".md", ".toml", ".txt", ".yaml", ".yml"}
 
 
 def _internal_appkit_runtime_source() -> Path:

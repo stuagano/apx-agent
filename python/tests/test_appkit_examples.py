@@ -82,7 +82,7 @@ BRIDGE_TOOL_CASES = {
     },
     Path("memory_demo"): {
         "name": "recall",
-        "args": {"query": "window seat", "k": 1},
+        "args": {"query": "window seat", "k": 2},
         "headers": {"X-Forwarded-User": "alice"},
         "result_contains": "window seats",
     },
@@ -105,6 +105,8 @@ PROBE = textwrap.dedent(
 
     import json
     import os
+    import subprocess
+    import sys
     from pathlib import Path
 
     import yaml
@@ -153,6 +155,8 @@ PROBE = textwrap.dedent(
     assert (root / ".build" / "agent.py").exists()
     assert (bridge_dir / "__init__.py").exists()
     assert (bridge_dir / "start_server.py").exists()
+    if (root / "agent.config.yaml").exists():
+        assert (root / ".build" / "agent.config.yaml").exists()
     assert package["dependencies"]["apx-internal-runtime"] == "file:../apx_internal_runtime"
     assert "zod" in package["dependencies"]
     assert "zod-to-json-schema" in package["dependencies"]
@@ -186,6 +190,26 @@ PROBE = textwrap.dedent(
     )
     assert response.status_code == 404
     assert response.json()["detail"] == "Unknown APX tool: __missing__"
+
+    bridge_env = dict(os.environ)
+    bridge_pythonpath_parts = [str(root / ".build")]
+    if bridge_env.get("PYTHONPATH"):
+        bridge_pythonpath_parts.append(bridge_env["PYTHONPATH"])
+    bridge_env["PYTHONPATH"] = os.pathsep.join(bridge_pythonpath_parts)
+    bridge_boot = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from apx_agent.cli import _load_finalized_agent; _load_finalized_agent('agent:agent')",
+        ],
+        cwd=root / ".build",
+        env=bridge_env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert bridge_boot.returncode == 0, bridge_boot.stderr + bridge_boot.stdout
 
     executed_tool = None
     tool_case_raw = os.environ.get("APX_APPKIT_TOOL_CASE")
