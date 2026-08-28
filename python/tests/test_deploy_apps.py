@@ -2276,6 +2276,45 @@ def test_deploy_injects_trace_warehouse_var_and_uses_it_for_grants(
     assert grant_calls == [("exp1", "wh123")]
 
 
+def test_deploy_uses_declared_trace_warehouse_default_for_grants(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    yml = _DATABRICKS_YML_WITH_TRACE_WAREHOUSE_VAR.replace(
+        'default: ""',
+        'default: wh-from-yml',
+    )
+    (scaffold / "databricks.yml").write_text(yml)
+    grant_calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "apx_agent.cli._grant_experiment_to_sp",
+        lambda experiment_id, sp, *, profile: True,
+    )
+    monkeypatch.setattr(
+        "apx_agent.cli._grant_trace_uc_tables_to_sp",
+        lambda experiment_id, sp, *, profile, warehouse_id=None: (
+            grant_calls.append((experiment_id, warehouse_id)) or True
+        ),
+    )
+    _install_subprocess_mock(
+        monkeypatch,
+        get_payload=json.dumps({
+            "name": "my-app",
+            "url": "https://my-app.example.databricksapps.com",
+            "compute_status": {"state": "ACTIVE"},
+            "app_status": {"state": "RUNNING"},
+            "service_principal_client_id": "sp-123",
+        }),
+    )
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "dev",
+        "--var", "mlflow_experiment_id=exp1",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert grant_calls == [("exp1", "wh-from-yml")]
+
+
 def test_deploy_injects_apx_git_sha_var_when_bundle_declares_it(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

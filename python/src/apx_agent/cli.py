@@ -9256,7 +9256,11 @@ def _deploy_apps_impl(
         declared_bundle_vars = doc.get("variables")
         tracing_warehouse_id = _bundle_var_value(
             vars, "mlflow_tracing_sql_warehouse_id",
-        ) or os.environ.get("MLFLOW_TRACING_SQL_WAREHOUSE_ID")
+        ) or os.environ.get(
+            "MLFLOW_TRACING_SQL_WAREHOUSE_ID",
+        ) or _bundle_declared_var_value(
+            doc, bundle_target, vars, "mlflow_tracing_sql_warehouse_id",
+        )
         if auto_experiment and resolved_exp_id is None:
             bundle_name = ((doc.get("bundle") or {}).get("name") or bundle_key)
             catalog_name = _bundle_declared_var_value(
