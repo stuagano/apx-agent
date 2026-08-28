@@ -468,6 +468,7 @@ def test_start_server_exists(tmp_path: Path, coworker_config: AgentConfig) -> No
     """agent_server/start_server.py must exist."""
     generate_project(coworker_config, tmp_path)
     assert (tmp_path / "agent_server" / "start_server.py").exists()
+    assert (tmp_path / "agent_server" / "start_host.py").exists()
     assert (tmp_path / "agent_server" / "__init__.py").exists()
 
 
@@ -486,7 +487,7 @@ def test_databricks_yml_contains_agent_name(tmp_path: Path, coworker_config: Age
     assert "payroll-coworker" in str(data), "agent name not found in databricks.yml"
     app = data["resources"]["apps"]["payroll-coworker"]
     assert ".build/apx_appkit_host" in data["artifacts"]["default"]["build"]
-    assert app["config"]["command"][:2] == ["uvicorn", "agent_server.start_server:app"]
+    assert app["config"]["command"] == ["python", "-m", "agent_server.start_host"]
     env = {item["name"]: item["value"] for item in app["config"]["env"]}
     assert env["APX_APPS_HOST"] == "python"
 

@@ -1528,8 +1528,7 @@ agent lives. This file wires it into the Databricks Apps runtime:
   * Mounts the Dev UI at ``/_apx/*`` (Chat, Discover, Edit, Probe, …) via
     ``mount_mcp_endpoints`` — available on deployed Apps behind SSO.
 
-Run via ``uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT``
-(driven by ``databricks.yml`` on deploy).
+Run via ``python -m agent_server.start_host`` (driven by ``databricks.yml`` on deploy).
 """
 
 from __future__ import annotations
@@ -1865,12 +1864,9 @@ resources:
       # warns about unknown keys, so keep this aligned.
       config:
         command:
-          - uvicorn
-          - agent_server.start_server:app
-          - --host
-          - 0.0.0.0
-          - --port
-          - $DATABRICKS_APP_PORT
+          - python
+          - -m
+          - agent_server.start_host
         env:
           - name: APX_MODEL
             value: ${var.llm_endpoint_name}
@@ -4035,6 +4031,8 @@ def _scaffold_apps(
     memory_block = _SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else ""
     pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT + session_block + memory_block)
 
+    from ._project_gen import _START_HOST_CONTENT
+
     files: dict[str, str] = {
         "pyproject.toml": pyproject,
         "databricks.yml": _sub(_SCAFFOLD_APPS_DATABRICKS_YML),
@@ -4048,6 +4046,7 @@ def _scaffold_apps(
             else _sub(_SCAFFOLD_APPS_AGENT_COWORKER if template == "coworker" else _SCAFFOLD_APPS_AGENT)
         ),
         "agent_server/__init__.py": "",
+        "agent_server/start_host.py": _START_HOST_CONTENT,
         "agent_server/start_server.py": _SCAFFOLD_APPS_START_SERVER,
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
@@ -7729,6 +7728,86 @@ def _run_bundle_artifacts(cwd: Path) -> None:
         )
 
 
+def _apps_config_env_value(
+    doc: dict[str, Any], bundle_key: str, name: str,
+) -> str | None:
+    apps = ((doc.get("resources") or {}).get("apps") or {})
+    app_block = apps.get(bundle_key) if isinstance(apps, dict) else None
+    config = app_block.get("config") if isinstance(app_block, dict) else None
+    env = config.get("env") if isinstance(config, dict) else None
+    if not isinstance(env, list):
+        return None
+    for item in env:
+        if not isinstance(item, dict) or item.get("name") != name:
+            continue
+        value = item.get("value")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _stage_internal_appkit_host(
+    cwd: Path,
+    *,
+    module: str,
+    doc: dict[str, Any],
+    bundle_key: str,
+    log: Any,
+) -> None:
+    """Stage generated AppKit internals when the private Apps host gate is on."""
+    host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "python")
+    if host.strip().lower() != "appkit":
+        return
+
+    build_dir = cwd / ".build"
+    if not build_dir.is_dir():
+        raise click.ClickException(
+            "APX_APPS_HOST=appkit requires .build to exist after bundle artifact staging."
+        )
+
+    source = _internal_appkit_runtime_source()
+    if not (source / "dist" / "internal" / "appkit-host.mjs").exists():
+        raise click.ClickException(
+            "APX_APPS_HOST=appkit requires a built internal TypeScript runtime. "
+            "Run `cd typescript && npm run build` from the apx-agent checkout."
+        )
+    runtime_dir = build_dir / "apx_internal_runtime"
+    if runtime_dir.exists():
+        if runtime_dir.is_symlink():
+            raise click.ClickException(
+                f"refusing to replace symlinked internal AppKit runtime: {runtime_dir}"
+            )
+        shutil.rmtree(runtime_dir)
+    shutil.copytree(
+        source,
+        runtime_dir,
+        ignore=shutil.ignore_patterns("node_modules", ".git", "coverage"),
+    )
+
+    from ._appkit_host_generator import write_appkit_host_skeleton
+    from ._apps_host_manifest import compile_apps_host_manifest
+    from ._inspection import _load_agent_config
+
+    agent = _load_finalized_agent(module)
+    manifest = compile_apps_host_manifest(agent, _load_agent_config(pyproject_path=None))
+    host_dir = write_appkit_host_skeleton(
+        cwd,
+        manifest,
+        runtime_dependency="file:../apx_internal_runtime",
+    )
+    log(f"  staged internal AppKit host: {host_dir.relative_to(cwd)}")
+
+
+def _internal_appkit_runtime_source() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "typescript"
+        if (candidate / "package.json").exists():
+            return candidate
+    raise click.ClickException(
+        "APX_APPS_HOST=appkit requires the internal TypeScript runtime to be "
+        "available next to the apx-agent source checkout."
+    )
+
+
 def _stage_build_manifest(
     build_dir: Path, wheel_path: Path | None,
 ) -> None:
@@ -9120,6 +9199,14 @@ def _deploy_apps_impl(
                 log(f"  built apx-agent wheel: {wheel_path}")
             _run_bundle_artifacts(cwd)
             log("  populated .build/")
+            current_doc = _read_databricks_yml(cwd)
+            _stage_internal_appkit_host(
+                cwd,
+                module=module,
+                doc=current_doc,
+                bundle_key=bundle_key,
+                log=log,
+            )
             # Stage the dependency manifest into .build/. The artifacts script
             # omits pyproject.toml/uv.lock by design — without them the Apps
             # container has no manifest and falls back to base-image packages

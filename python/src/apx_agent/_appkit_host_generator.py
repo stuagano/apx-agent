@@ -71,6 +71,7 @@ let shuttingDown = false;
 
 function start(label, command, args, env = {}) {
   const child = spawn(command, args, {
+    cwd: env.APX_PROCESS_CWD ?? process.cwd(),
     env: { ...process.env, ...env },
     stdio: 'inherit',
   });
@@ -111,7 +112,9 @@ start('APX Python bridge', process.env.PYTHON ?? 'python', [
   '127.0.0.1',
   '--port',
   bridgePort,
-]);
+], {
+  APX_PROCESS_CWD: process.env.APX_PYTHON_BRIDGE_CWD ?? '..',
+});
 
 start('APX AppKit host', process.execPath, ['--import', 'tsx', 'server/server.ts'], {
   APX_PYTHON_BRIDGE_URL: bridgeUrl,

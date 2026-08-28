@@ -33,6 +33,7 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert "agent_server.start_server:app" in start_mjs
     assert "APX_PYTHON_BRIDGE_PORT" in start_mjs
     assert "APX_PYTHON_BRIDGE_URL" in start_mjs
+    assert "APX_PYTHON_BRIDGE_CWD" in start_mjs
     assert "server/server.ts" in start_mjs
     assert "'127.0.0.1'" in start_mjs
     assert (host_dir / "server" / "server.ts").read_text() == (

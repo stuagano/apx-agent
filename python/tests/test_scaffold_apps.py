@@ -44,6 +44,7 @@ APPS_EXPECTED_FILES: tuple[str, ...] = (
     # ADK-style: user content at top level, framework boilerplate under agent_server/.
     "agent.py",
     "agent_server/__init__.py",
+    "agent_server/start_host.py",
     "agent_server/start_server.py",
     "scripts/__init__.py",
     "scripts/quickstart.py",
@@ -116,9 +117,10 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     build_script = parsed["artifacts"]["default"]["build"]
     assert "cp agent.py" in build_script, build_script
     assert ".build/apx_appkit_host" in build_script, build_script
-    assert apps["my_agent"]["config"]["command"][:2] == [
-        "uvicorn",
-        "agent_server.start_server:app",
+    assert apps["my_agent"]["config"]["command"] == [
+        "python",
+        "-m",
+        "agent_server.start_host",
     ]
     env = {
         item["name"]: item["value"]
@@ -333,6 +335,11 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     # And wires the standard compile + register + MCP-mount stack.
     assert "compile_to_responses_agent" in start_src
     assert "mount_mcp_endpoints" in start_src
+    start_host_src = (tmp_path / "my_agent" / "agent_server" / "start_host.py").read_text()
+    ast.parse(start_host_src)
+    assert "APX_APPS_HOST" in start_host_src
+    assert "agent_server.start_server:app" in start_host_src
+    assert "apx_appkit_host" in start_host_src
 
     quickstart_src = (tmp_path / "my_agent" / "scripts" / "quickstart.py").read_text()
     ast.parse(quickstart_src)

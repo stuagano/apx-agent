@@ -239,6 +239,50 @@ config = _load_agent_config()
 app = create_app(agent=agent, config=config)
 '''
 
+_START_HOST_CONTENT = '''\
+"""Databricks Apps host selector — framework boilerplate, do not edit."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> None:
+    host = os.environ.get("APX_APPS_HOST", "python").strip().lower()
+    if host != "appkit":
+        os.execvp(
+            "uvicorn",
+            [
+                "uvicorn",
+                "agent_server.start_server:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                os.environ["DATABRICKS_APP_PORT"],
+            ],
+        )
+
+    source_root = Path(__file__).resolve().parents[1]
+    appkit_dir = source_root / "apx_appkit_host"
+    if not (appkit_dir / "package.json").exists():
+        raise SystemExit(f"generated AppKit host not found at {appkit_dir}")
+
+    env = {
+        **os.environ,
+        "PYTHON": sys.executable,
+        "APX_PYTHON_BRIDGE_CWD": str(source_root),
+    }
+    subprocess.run(["npm", "install", "--omit=dev"], cwd=appkit_dir, env=env, check=True)
+    os.chdir(appkit_dir)
+    os.execvpe("npm", ["npm", "start"], env)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
 # name -> (import module, class). Built-in templates whose ``build()`` is a pure
 # spec->constructor forward, so the generated agent.py reproduces the same agent.
 _TEMPLATE_TARGETS = {
@@ -704,12 +748,9 @@ resources:
             permission: CAN_QUERY
       config:
         command:
-          - uvicorn
-          - agent_server.start_server:app
-          - --host
-          - 0.0.0.0
-          - --port
-          - $DATABRICKS_APP_PORT
+          - python
+          - -m
+          - agent_server.start_host
         env:
           - name: APX_MODEL
             value: ${{var.llm_endpoint_name}}
@@ -761,12 +802,9 @@ def _build_app_yml(config: "AgentConfig") -> str:
     """Build app.yml compute config for *config*."""
     return """\
 command:
-  - uvicorn
-  - agent_server.start_server:app
-  - --host
-  - 0.0.0.0
-  - --port
-  - $DATABRICKS_APP_PORT
+  - python
+  - -m
+  - agent_server.start_host
 env:
   - name: MLFLOW_TRACKING_URI
     value: databricks
@@ -824,6 +862,7 @@ def generate_project(
     agent_server_dir.mkdir(exist_ok=True)
     (agent_server_dir / "__init__.py").write_text("")
     (agent_server_dir / "start_server.py").write_text(_START_SERVER_CONTENT)
+    (agent_server_dir / "start_host.py").write_text(_START_HOST_CONTENT)
     (agent_server_dir / "keepalive.py").write_text(_KEEPALIVE_CONTENT)
 
     # databricks.yml
