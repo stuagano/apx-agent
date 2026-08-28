@@ -126,7 +126,7 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
         item["name"]: item["value"]
         for item in apps["my_agent"]["config"]["env"]
     }
-    assert env["APX_APPS_HOST"] == "python"
+    assert env["APX_APPS_HOST"] == "appkit"
 
     assert "experiments" not in parsed["resources"]
     experiment_resource = apps["my_agent"]["resources"][0]["experiment"]
@@ -384,6 +384,7 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     start_host_src = (tmp_path / "my_agent" / "agent_server" / "start_host.py").read_text()
     ast.parse(start_host_src)
     assert "APX_APPS_HOST" in start_host_src
+    assert 'os.environ.get("APX_APPS_HOST", "appkit")' in start_host_src
     assert "agent_server.start_server:app" in start_host_src
     assert "apx_appkit_host" in start_host_src
 

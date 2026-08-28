@@ -129,12 +129,11 @@ PROBE = textwrap.dedent(
     app = apps[bundle_key]
     config = app.setdefault("config", {})
     env = config.setdefault("env", [])
-    for item in env:
-        if isinstance(item, dict) and item.get("name") == "APX_APPS_HOST":
-            item["value"] = "appkit"
-            break
-    else:
-        env.append({"name": "APX_APPS_HOST", "value": "appkit"})
+    config["env"] = [
+        item
+        for item in env
+        if not (isinstance(item, dict) and item.get("name") == "APX_APPS_HOST")
+    ]
 
     (root / ".build").mkdir(exist_ok=True)
     logs = []
