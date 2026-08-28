@@ -7770,6 +7770,7 @@ def _stage_internal_appkit_host(
             "APX_APPS_HOST=appkit requires a built internal TypeScript runtime. "
             "Run `cd typescript && npm run build` from the apx-agent checkout."
         )
+    _stage_internal_appkit_python_bridge(cwd, build_dir)
     runtime_dir = build_dir / "apx_internal_runtime"
     if runtime_dir.exists():
         if runtime_dir.is_symlink():
@@ -7795,6 +7796,72 @@ def _stage_internal_appkit_host(
         runtime_dependency="file:../apx_internal_runtime",
     )
     log(f"  staged internal AppKit host: {host_dir.relative_to(cwd)}")
+
+
+def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
+    """Ensure the generated AppKit host has the Python bridge it starts."""
+    ignored_dirs = {
+        ".build",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".venv",
+        "__pycache__",
+        "client",
+        "dist",
+        "node_modules",
+        "tests",
+    }
+    for child in cwd.iterdir():
+        if child.name in ignored_dirs or child.name.endswith(".egg-info"):
+            continue
+        target = build_dir / child.name
+        if target.exists():
+            continue
+        if child.is_symlink():
+            raise click.ClickException(
+                f"refusing to stage symlinked AppKit bridge source: {child}"
+            )
+        if child.is_file() and child.suffix == ".py":
+            shutil.copy2(child, target)
+        elif child.is_dir() and _contains_python_source(child):
+            shutil.copytree(
+                child,
+                target,
+                ignore=shutil.ignore_patterns(
+                    ".mypy_cache",
+                    ".pytest_cache",
+                    "__pycache__",
+                    "*.egg-info",
+                    "*.pyc",
+                    "tests",
+                ),
+            )
+
+    agent_server_dir = build_dir / "agent_server"
+    if agent_server_dir.is_symlink():
+        raise click.ClickException(
+            f"refusing to write symlinked AppKit bridge package: {agent_server_dir}"
+        )
+    agent_server_dir.mkdir(exist_ok=True)
+    init_file = agent_server_dir / "__init__.py"
+    if init_file.is_symlink():
+        raise click.ClickException(
+            f"refusing to write symlinked AppKit bridge file: {init_file}"
+        )
+    if not init_file.exists():
+        init_file.write_text("")
+    start_server_file = agent_server_dir / "start_server.py"
+    if start_server_file.is_symlink():
+        raise click.ClickException(
+            f"refusing to write symlinked AppKit bridge file: {start_server_file}"
+        )
+    if not start_server_file.exists():
+        start_server_file.write_text(_SCAFFOLD_APPS_START_SERVER)
+
+
+def _contains_python_source(path: Path) -> bool:
+    return any(child.is_file() for child in path.rglob("*.py"))
 
 
 def _internal_appkit_runtime_source() -> Path:
