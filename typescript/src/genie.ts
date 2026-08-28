@@ -2,7 +2,7 @@
  * genieTool — wrap a Genie space as a registered apx-agent tool.
  *
  * @example
- * import { genieTool } from 'appkit-agent';
+ * import { genieTool } from 'apx-internal-runtime';
  *
  * const agent = createAgentPlugin({
  *   model: 'databricks-claude-sonnet-4-6',

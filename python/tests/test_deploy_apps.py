@@ -299,6 +299,65 @@ def test_no_run_skips_bundle_run(
     assert "databricks bundle run" in result.output
 
 
+def test_appkit_gate_stages_internal_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    databricks_yml = yaml.safe_load(_DATABRICKS_YML)
+    databricks_yml["artifacts"] = {
+        "default": {
+            "build": (
+                "mkdir -p .build\n"
+                "cp agent.py pyproject.toml .build/\n"
+                "cp -r agent_server .build/\n"
+            )
+        }
+    }
+    databricks_yml["resources"]["apps"]["my-app"]["config"] = {
+        "env": [{"name": "APX_APPS_HOST", "value": "appkit"}],
+    }
+    (tmp_path / "databricks.yml").write_text(
+        yaml.safe_dump(databricks_yml, default_flow_style=False, sort_keys=False),
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "test-app"\n\n'
+        "[tool.apx.agent]\n"
+        'name = "test-app"\n'
+        'model = "databricks-claude-sonnet-4-6"\n'
+        'module = "agent:agent"\n'
+    )
+    (tmp_path / "agent.py").write_text(
+        "from apx_agent import LlmAgent\n\n"
+        "def lookup_policy(resource: str) -> str:\n"
+        "    return resource\n\n"
+        "agent = LlmAgent(name='test-app', tools=[lookup_policy])\n"
+    )
+    server = tmp_path / "agent_server"
+    server.mkdir()
+    (server / "__init__.py").write_text("")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(
+        main,
+        ["agents", "deploy", "--target", "apps", "--no-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    host = tmp_path / ".build" / "apx_appkit_host"
+    runtime = tmp_path / ".build" / "apx_internal_runtime"
+    assert (host / "package.json").exists()
+    assert (host / "server" / "server.ts").exists()
+    assert (runtime / "package.json").exists()
+    assert (runtime / "dist" / "internal" / "appkit-host.mjs").exists()
+    package_json = json.loads((host / "package.json").read_text())
+    assert package_json["dependencies"]["apx-internal-runtime"] == (
+        "file:../apx_internal_runtime"
+    )
+
+
 def test_auto_update_yml_adds_missing_resources(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

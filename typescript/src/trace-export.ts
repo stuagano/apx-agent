@@ -35,7 +35,7 @@
  * a mock, an alternate warehouse driver, etc.).
  *
  * @example
- * import { exportTraces } from 'appkit-agent';
+ * import { exportTraces } from 'apx-internal-runtime';
  *
  * const result = await exportTraces({
  *   experimentName: '/my/exp',

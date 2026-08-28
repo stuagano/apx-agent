@@ -1,8 +1,8 @@
 /**
- * eval — Eval bridge and harness for appkit-agent /responses endpoints.
+ * eval — Eval bridge and harness for apx-internal-runtime /responses endpoints.
  *
  * @example
- * import { createPredictFn, runEval } from 'appkit-agent/eval';
+ * import { createPredictFn, runEval } from 'apx-internal-runtime/eval';
  *
  * const predict = createPredictFn('http://localhost:8000', { token: process.env.AGENT_TOKEN });
  *

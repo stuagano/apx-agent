@@ -169,7 +169,7 @@ export async function discoverMcpTools(url: string, auth?: McpAuthOptions): Prom
 
   // Connect to list tools
   const discoverClient = new Client(
-    { name: 'appkit-agent-discovery', version: '1.0.0' },
+    { name: 'apx-internal-runtime-discovery', version: '1.0.0' },
     { capabilities: {} },
   );
 
@@ -209,7 +209,7 @@ export async function discoverMcpTools(url: string, auth?: McpAuthOptions): Prom
       handler: async (args: unknown): Promise<unknown> => {
         // Fresh client per call — stateless, matches Databricks managed MCP pattern
         const callClient = new Client(
-          { name: 'appkit-agent', version: '1.0.0' },
+          { name: 'apx-internal-runtime', version: '1.0.0' },
           { capabilities: {} },
         );
 

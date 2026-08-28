@@ -12,7 +12,7 @@
  * view of the multi-agent estate.
  *
  * @example
- * import { discoverTopology, renderTopology } from 'appkit-agent';
+ * import { discoverTopology, renderTopology } from 'apx-internal-runtime';
  *
  * const topo = await discoverTopology({ registeredModelsClient: myClient });
  * console.log(renderTopology(topo, { format: 'mermaid' }));

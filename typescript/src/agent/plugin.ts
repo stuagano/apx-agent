@@ -6,7 +6,7 @@
  *
  * Usage:
  *   import { createApp, server } from '@databricks/appkit';
- *   import { createAgentPlugin } from 'appkit-agent';
+ *   import { createAgentPlugin } from 'apx-internal-runtime';
  *
  *   createApp({
  *     plugins: [

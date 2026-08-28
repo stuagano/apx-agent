@@ -20,8 +20,8 @@ import {
   createMcpPlugin,
   SequentialAgent,
   AgentState,
-} from '@databricks/appkit-agent';
-import type { Runnable, Message } from '@databricks/appkit-agent';
+} from 'apx-internal-runtime';
+import type { Runnable, Message } from 'apx-internal-runtime';
 
 // ---------------------------------------------------------------------------
 // Step agents — each has an output_key so its result is stored in state

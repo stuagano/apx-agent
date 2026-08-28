@@ -16,7 +16,7 @@
  * @example
  * import { serve } from 'inngest/next';
  * import { Inngest } from 'inngest';
- * import { InngestEngine, EvolutionaryAgent } from 'appkit-agent';
+ * import { InngestEngine, EvolutionaryAgent } from 'apx-internal-runtime';
  *
  * const inngest = new Inngest({ id: 'my-app' });
  *

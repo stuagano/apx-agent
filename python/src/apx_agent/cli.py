@@ -1528,8 +1528,7 @@ agent lives. This file wires it into the Databricks Apps runtime:
   * Mounts the Dev UI at ``/_apx/*`` (Chat, Discover, Edit, Probe, …) via
     ``mount_mcp_endpoints`` — available on deployed Apps behind SSO.
 
-Run via ``uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT``
-(driven by ``databricks.yml`` on deploy).
+Run via ``python -m agent_server.start_host`` (driven by ``databricks.yml`` on deploy).
 """
 
 from __future__ import annotations
@@ -1601,6 +1600,44 @@ app.state.conversation_store = _conversation_store
 
 if __name__ == "__main__":
     server.run("agent_server.start_server:app")
+'''
+
+
+_INTERNAL_APPKIT_BRIDGE_SERVER = '''\
+"""Internal AppKit bridge entry point.
+
+This process is started only by the generated AppKit host. AppKit owns the
+Apps HTTP routes; this FastAPI app exposes only APX's local Python tool bridge.
+"""
+
+from __future__ import annotations
+
+from fastapi import FastAPI
+
+from apx_agent._appkit_tool_bridge import build_appkit_tool_bridge_router
+from apx_agent._defaults import _make_workspace_client
+from apx_agent._inspection import _load_agent_config
+from apx_agent._models import AgentCard, AgentContext
+from apx_agent._wiring import finalize_agent
+
+from agent import agent
+
+_ws = _make_workspace_client()
+_agent_config = _load_agent_config()
+finalize_agent(agent, _agent_config, ws=_ws)
+
+app = FastAPI()
+app.state.workspace_client = _ws
+app.state.agent_context = AgentContext(
+    config=_agent_config,
+    tools=[],
+    card=AgentCard(
+        name=_agent_config.name,
+        description=_agent_config.description,
+    ),
+    agent=agent,
+)
+app.include_router(build_appkit_tool_bridge_router())
 '''
 
 
@@ -1823,6 +1860,7 @@ artifacts:
   default:
     build: |
       mkdir -p .build
+      mkdir -p .build/apx_appkit_host
       # User-authored: top-level agent.py (+ optional tools.py, sub_agents/).
       cp agent.py .build/ 2>/dev/null || true
       cp tools.py .build/ 2>/dev/null || true
@@ -1868,12 +1906,9 @@ resources:
       # warns about unknown keys, so keep this aligned.
       config:
         command:
-          - uvicorn
-          - agent_server.start_server:app
-          - --host
-          - 0.0.0.0
-          - --port
-          - $DATABRICKS_APP_PORT
+          - python
+          - -m
+          - agent_server.start_host
         env:
           - name: APX_MODEL
             value: ${var.llm_endpoint_name}
@@ -1885,6 +1920,8 @@ resources:
             value: "1"
           - name: APX_AGENT_NAME
             value: <APP_NAME>
+          - name: APX_APPS_HOST
+            value: python
           - name: APX_GIT_SHA
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
@@ -4062,6 +4099,8 @@ def _scaffold_apps(
     memory_block = _SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else ""
     pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT + session_block + memory_block)
 
+    from ._project_gen import _START_HOST_CONTENT
+
     files: dict[str, str] = {
         "pyproject.toml": pyproject,
         "databricks.yml": _sub(_SCAFFOLD_APPS_DATABRICKS_YML),
@@ -4075,6 +4114,7 @@ def _scaffold_apps(
             else _sub(_SCAFFOLD_APPS_AGENT_COWORKER if template == "coworker" else _SCAFFOLD_APPS_AGENT)
         ),
         "agent_server/__init__.py": "",
+        "agent_server/start_host.py": _START_HOST_CONTENT,
         "agent_server/start_server.py": _SCAFFOLD_APPS_START_SERVER,
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
@@ -7758,6 +7798,165 @@ def _run_bundle_artifacts(cwd: Path) -> None:
         )
 
 
+def _apps_config_env_value(
+    doc: dict[str, Any], bundle_key: str, name: str,
+) -> str | None:
+    apps = ((doc.get("resources") or {}).get("apps") or {})
+    app_block = apps.get(bundle_key) if isinstance(apps, dict) else None
+    config = app_block.get("config") if isinstance(app_block, dict) else None
+    env = config.get("env") if isinstance(config, dict) else None
+    if not isinstance(env, list):
+        return None
+    for item in env:
+        if not isinstance(item, dict) or item.get("name") != name:
+            continue
+        value = item.get("value")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _stage_internal_appkit_host(
+    cwd: Path,
+    *,
+    module: str,
+    doc: dict[str, Any],
+    bundle_key: str,
+    log: Any,
+) -> None:
+    """Stage generated AppKit internals when the private Apps host gate is on."""
+    host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "python")
+    if host.strip().lower() != "appkit":
+        return
+
+    build_dir = cwd / ".build"
+    if not build_dir.is_dir():
+        raise click.ClickException(
+            "APX_APPS_HOST=appkit requires .build to exist after bundle artifact staging."
+        )
+
+    source = _internal_appkit_runtime_source()
+    if not (source / "dist" / "internal" / "appkit-host.mjs").exists():
+        raise click.ClickException(
+            "APX_APPS_HOST=appkit requires a built internal TypeScript runtime. "
+            "Run `cd typescript && npm run build` from the apx-agent checkout."
+        )
+    _stage_internal_appkit_python_bridge(cwd, build_dir)
+    runtime_dir = build_dir / "apx_internal_runtime"
+    if runtime_dir.exists():
+        if runtime_dir.is_symlink():
+            raise click.ClickException(
+                f"refusing to replace symlinked internal AppKit runtime: {runtime_dir}"
+            )
+        shutil.rmtree(runtime_dir)
+    shutil.copytree(
+        source,
+        runtime_dir,
+        ignore=shutil.ignore_patterns("node_modules", ".git", "coverage"),
+    )
+
+    from ._appkit_host_generator import write_appkit_host_skeleton
+    from ._apps_host_manifest import compile_apps_host_manifest
+    from ._inspection import _load_agent_config
+
+    agent = _load_finalized_agent(module)
+    manifest = compile_apps_host_manifest(agent, _load_agent_config(pyproject_path=None))
+    host_dir = write_appkit_host_skeleton(
+        cwd,
+        manifest,
+        runtime_dependency="file:../apx_internal_runtime",
+    )
+    log(f"  staged internal AppKit host: {host_dir.relative_to(cwd)}")
+
+
+def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
+    """Ensure the generated AppKit host has the Python bridge it starts."""
+    ignored_dirs = {
+        ".build",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".venv",
+        "__pycache__",
+        "client",
+        "dist",
+        "node_modules",
+        "tests",
+    }
+    for child in cwd.iterdir():
+        if child.name in ignored_dirs or child.name.endswith(".egg-info"):
+            continue
+        target = build_dir / child.name
+        if target.exists():
+            continue
+        if child.is_symlink():
+            raise click.ClickException(
+                f"refusing to stage symlinked AppKit bridge source: {child}"
+            )
+        if child.is_file() and (
+            child.suffix == ".py" or _is_appkit_bridge_resource_file(child)
+        ):
+            shutil.copy2(child, target)
+        elif child.is_dir() and _contains_python_source(child):
+            shutil.copytree(
+                child,
+                target,
+                ignore=shutil.ignore_patterns(
+                    ".mypy_cache",
+                    ".pytest_cache",
+                    "__pycache__",
+                    "*.egg-info",
+                    "*.pyc",
+                    "tests",
+                ),
+            )
+
+    agent_server_dir = build_dir / "agent_server"
+    if agent_server_dir.is_symlink():
+        raise click.ClickException(
+            f"refusing to write symlinked AppKit bridge package: {agent_server_dir}"
+        )
+    agent_server_dir.mkdir(exist_ok=True)
+    init_file = agent_server_dir / "__init__.py"
+    if init_file.is_symlink():
+        raise click.ClickException(
+            f"refusing to write symlinked AppKit bridge file: {init_file}"
+        )
+    if not init_file.exists():
+        init_file.write_text("")
+    start_server_file = agent_server_dir / "start_server.py"
+    if start_server_file.is_symlink():
+        raise click.ClickException(
+            f"refusing to write symlinked AppKit bridge file: {start_server_file}"
+        )
+    if not start_server_file.exists():
+        start_server_file.write_text(_SCAFFOLD_APPS_START_SERVER)
+    appkit_bridge_file = agent_server_dir / "appkit_bridge.py"
+    if appkit_bridge_file.is_symlink():
+        raise click.ClickException(
+            f"refusing to write symlinked AppKit bridge file: {appkit_bridge_file}"
+        )
+    appkit_bridge_file.write_text(_INTERNAL_APPKIT_BRIDGE_SERVER)
+
+
+def _contains_python_source(path: Path) -> bool:
+    return any(child.is_file() for child in path.rglob("*.py"))
+
+
+def _is_appkit_bridge_resource_file(path: Path) -> bool:
+    return path.suffix in {".json", ".md", ".toml", ".txt", ".yaml", ".yml"}
+
+
+def _internal_appkit_runtime_source() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "typescript"
+        if (candidate / "package.json").exists():
+            return candidate
+    raise click.ClickException(
+        "APX_APPS_HOST=appkit requires the internal TypeScript runtime to be "
+        "available next to the apx-agent source checkout."
+    )
+
+
 def _stage_build_manifest(
     build_dir: Path, wheel_path: Path | None,
 ) -> None:
@@ -9245,6 +9444,14 @@ def _deploy_apps_impl(
                 log(f"  built apx-agent wheel: {wheel_path}")
             _run_bundle_artifacts(cwd)
             log("  populated .build/")
+            current_doc = _read_databricks_yml(cwd)
+            _stage_internal_appkit_host(
+                cwd,
+                module=module,
+                doc=current_doc,
+                bundle_key=bundle_key,
+                log=log,
+            )
             # Stage the dependency manifest into .build/. The artifacts script
             # omits pyproject.toml/uv.lock by design — without them the Apps
             # container has no manifest and falls back to base-image packages

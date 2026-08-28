@@ -1,5 +1,5 @@
 /**
- * apx version — print the installed appkit-agent package version.
+ * apx version — print the installed apx-internal-runtime package version.
  *
  * Reads `package.json` next to the bundled CLI entry point. Falls back to a
  * literal `"dev"` if the file can't be read (e.g. running from source via
@@ -36,7 +36,7 @@ function resolvePackageVersion(): string {
 export function registerVersionCommand(program: Command): void {
   program
     .command('version')
-    .description('Print the installed appkit-agent version.')
+    .description('Print the installed apx-internal-runtime version.')
     .action(() => {
       // Use console.log so test spies can capture it.
       // eslint-disable-next-line no-console

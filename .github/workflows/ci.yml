@@ -85,6 +85,19 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: uv sync --group dev --all-extras  # incl. langgraph/eval/uc/lakebase so their tests run, not skip
 
+      - name: Setup Node.js
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Build internal TypeScript runtime
+        if: needs.changes.outputs.code == 'true'
+        working-directory: typescript
+        run: |
+          npm ci
+          npm run build
+
       - name: Run tests
         if: needs.changes.outputs.code == 'true'
         # -n auto runs the suite across the runner's CPUs (~2x faster); the
