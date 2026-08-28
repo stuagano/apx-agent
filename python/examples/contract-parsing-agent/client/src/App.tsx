@@ -13,7 +13,7 @@ export default function App() {
   const [selected, setSelected] = useState<Contract | null>(null)
   const [pendingMessage, setPendingMessage] = useState('')
   const [devEnabled, setDevEnabled] = useState(true)
-  const { messages, isLoading, sendMessage } = useChat()
+  const { messages, isLoading, sendMessage, threadId, reset } = useChat()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleUploadSuccess = useCallback((filename: string, volumePath: string) => {
@@ -130,7 +130,7 @@ export default function App() {
         />
       </div>
       {devEnabled && (
-        <DevToolbar threadId={null} onReset={() => undefined} />
+        <DevToolbar threadId={threadId} onReset={reset} />
       )}
     </div>
   )

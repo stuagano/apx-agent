@@ -4,6 +4,12 @@ import type { Message } from './types'
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [threadId, setThreadId] = useState<string | null>(null)
+
+  const reset = useCallback(() => {
+    setMessages([])
+    setThreadId(null)
+  }, [])
 
   const sendMessage = useCallback(async (text: string) => {
     const userMsg: Message = { role: 'user', content: text }
@@ -20,6 +26,7 @@ export function useChat() {
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const data = await resp.json()
+      if (typeof data?.thread_id === 'string') setThreadId(data.thread_id)
       const outputText: string =
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         data?.output?.find((o: any) => o.type === 'message')
@@ -35,5 +42,5 @@ export function useChat() {
     }
   }, [messages])
 
-  return { messages, isLoading, sendMessage }
+  return { messages, isLoading, sendMessage, threadId, reset }
 }

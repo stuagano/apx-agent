@@ -4,6 +4,7 @@ import { useChat } from './useChat'
 describe('useChat', () => {
   it('appends user and assistant messages on successful send', async () => {
     const mockResponse = {
+      thread_id: 'thread-123',
       output: [
         {
           type: 'message',
@@ -26,6 +27,11 @@ describe('useChat', () => {
     expect(result.current.messages[0]).toEqual({ role: 'user', content: 'Hi' })
     expect(result.current.messages[1]).toEqual({ role: 'assistant', content: 'Hello from agent!' })
     expect(result.current.isLoading).toBe(false)
+    expect(result.current.threadId).toBe('thread-123')
+
+    act(() => result.current.reset())
+    expect(result.current.messages).toEqual([])
+    expect(result.current.threadId).toBeNull()
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
       '/invocations',
       expect.objectContaining({
