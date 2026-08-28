@@ -53,6 +53,8 @@ def _package_json(name: str, runtime_dependency: str) -> str:
             "@databricks/appkit": "^0.66.1",
             "apx-internal-runtime": runtime_dependency,
             "tsx": "^4.20.0",
+            "zod": "^4.0.0",
+            "zod-to-json-schema": "^3.25.0",
         },
         "devDependencies": {"typescript": "~5.9.0"},
     }
@@ -119,6 +121,7 @@ start('APX Python bridge', process.env.PYTHON ?? 'python', [
 start('APX AppKit host', process.execPath, ['--import', 'tsx', 'server/server.ts'], {
   APX_PYTHON_BRIDGE_URL: bridgeUrl,
   DATABRICKS_APP_PORT: appPort,
+  NODE_OPTIONS: [process.env.NODE_OPTIONS, '--preserve-symlinks'].filter(Boolean).join(' '),
   PORT: appPort,
 });
 """

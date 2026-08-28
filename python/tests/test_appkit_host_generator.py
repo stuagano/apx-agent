@@ -34,6 +34,7 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert "APX_PYTHON_BRIDGE_PORT" in start_mjs
     assert "APX_PYTHON_BRIDGE_URL" in start_mjs
     assert "APX_PYTHON_BRIDGE_CWD" in start_mjs
+    assert "--preserve-symlinks" in start_mjs
     assert "server/server.ts" in start_mjs
     assert "'127.0.0.1'" in start_mjs
     assert (host_dir / "server" / "server.ts").read_text() == (
@@ -68,6 +69,8 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
         package_json["dependencies"]["apx-internal-runtime"] == "file:/repo/typescript"
     )
     assert package_json["dependencies"]["tsx"] == "^4.20.0"
+    assert package_json["dependencies"]["zod"] == "^4.0.0"
+    assert package_json["dependencies"]["zod-to-json-schema"] == "^3.25.0"
     assert package_json["scripts"]["build"] == "tsc --noEmit"
     assert package_json["scripts"]["start"] == "node scripts/start.mjs"
 
