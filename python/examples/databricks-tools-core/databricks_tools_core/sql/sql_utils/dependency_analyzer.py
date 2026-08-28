@@ -10,7 +10,6 @@ from typing import Dict, List, Optional, Set
 
 import sqlglot
 from sqlglot import exp
-from sqlfluff.core import Linter
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,12 @@ class SQLDependencyAnalyzer:
         self.dialect = dialect
         self.created_tables: Dict[str, int] = {}  # table_name -> query_index
         self.query_dependencies: Dict[int, Set[str]] = {}  # query_index -> referenced tables
-        self._linter = Linter(dialect=self.dialect)
+        try:
+            from sqlfluff.core import Linter
+
+            self._linter = Linter(dialect=self.dialect)
+        except ImportError:
+            self._linter = None
 
     def parse_sql_content(self, sql_content: str) -> List[str]:
         """
@@ -155,6 +159,8 @@ class SQLDependencyAnalyzer:
 
     def _strip_comments(self, sql: str) -> str:
         """Strip comments using sqlfluff, preserving line structure."""
+        if self._linter is None:
+            return sql
         try:
             parsed = self._linter.parse_string(sql)
             if not parsed or not parsed.tree:
@@ -245,7 +251,7 @@ class SQLDependencyAnalyzer:
 
         # Exclude INSERT target from dependencies
         if isinstance(root, exp.Insert):
-            target = getattr(root, "this", None)
+            target = root.this
             if isinstance(target, exp.Table):
                 target_bare = self._bare(target)
                 if target_bare:
@@ -259,9 +265,9 @@ class SQLDependencyAnalyzer:
         with_clause = root.args.get("with")
         if isinstance(with_clause, exp.With):
             for cte in with_clause.expressions or []:
-                alias = getattr(cte, "alias", None)
+                alias = cte.alias
                 if alias:
-                    ident = getattr(alias, "this", None)
+                    ident = alias.this
                     if isinstance(ident, exp.Identifier):
                         names.add(ident.this.lower())
         return names
@@ -271,14 +277,18 @@ class SQLDependencyAnalyzer:
         if table_exp is None:
             return None
         if isinstance(table_exp, exp.Table):
-            name = table_exp.name or ""
+            name = table_exp.name
+            if name is None:
+                return None
             return name.strip('`"').lower() or None
         if hasattr(table_exp, "name"):
             name = table_exp.name
             if isinstance(name, str):
                 return name.strip('`"').lower() or None
         if hasattr(table_exp, "this") and isinstance(table_exp.this, exp.Table):
-            name = table_exp.this.name or ""
+            name = table_exp.this.name
+            if name is None:
+                return None
             return name.strip('`"').lower() or None
         return None
 

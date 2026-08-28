@@ -15,14 +15,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-import fitz  # PyMuPDF
-
 logger = logging.getLogger(__name__)
 
 
 def read_pdf_text(path: Path, min_chars: int = 100) -> str:
     """Extract text from a PDF. Raises if the file looks like a scanned image
     (i.e., yields too little text — we don't OCR in this build)."""
+    import fitz  # PyMuPDF
+
     doc = fitz.open(str(path))
     try:
         text = "\n".join(page.get_text() for page in doc)
