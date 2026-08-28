@@ -54,6 +54,23 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     server_ts = (host_dir / "server" / "server.ts").read_text()
     assert "APX_APPKIT_STATIC_PATH" in server_ts
     assert "APX_PYTHON_BRIDGE_PROXY_PATHS" in server_ts
+    assert "const devEnabled = process.env.APX_DEV_UI !== '0';" in server_ts
+    assert "createInternalApxAppKitDevRuntime" in server_ts
+    assert "app.get('/api/dev/config'" in server_ts
+    assert "app.patch('/api/dev/config'" in server_ts
+    assert "app.get('/api/dev/instructions'" in server_ts
+    assert "app.patch('/api/dev/instructions'" in server_ts
+    assert "app.delete('/api/dev/instructions'" in server_ts
+    assert "app.get('/api/dev/tools'" in server_ts
+    assert "app.patch('/api/dev/tools/:name'" in server_ts
+    assert "app.put('/api/dev/skills/:name'" in server_ts
+    assert "app.delete('/api/dev/skills/:name'" in server_ts
+    assert "app.get('/api/dev/prompt'" in server_ts
+    assert "const agentId = 'pricing-agent';" in server_ts
+    assert "await appkit.agents.register(agentId, dev.definition())" in server_ts
+    assert server_ts.index("app.get('/api/dev/config'") < server_ts.index(
+        "for (const prefix of proxyPaths)"
+    )
     assert "appkit.server.extend" in server_ts
     assert "http.request" in server_ts
     assert server_ts.startswith(
@@ -61,6 +78,7 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
         "import http from 'node:http';\n"
         "import { agents } from '@databricks/appkit/beta';\n"
         "import type { Request, Response } from 'express';\n"
+        "import { z } from 'zod';\n"
     )
     assert "server({ staticPath: process.env.APX_APPKIT_STATIC_PATH || undefined })" in server_ts
     assert "  plugins: [\n" in server_ts
