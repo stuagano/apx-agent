@@ -17,13 +17,17 @@ import {
 } from '@databricks/appkit';
 import {
   createAgent,
+  tool,
   type AgentDefinition,
+  type AgentTool as AppKitAgentTool,
   type AgentToolDefinition,
+  type PromptContext,
   type ToolAnnotations,
   type ToolProvider,
   type ToolkitEntry,
   type ToolkitOptions,
 } from '@databricks/appkit/beta';
+import { z } from 'zod';
 
 import type { AgentConfig, AgentExports, AgentTool } from '../agent/index.js';
 import { toStrictSchema, zodToJsonSchema } from '../agent/index.js';
@@ -127,6 +131,71 @@ export interface InternalApxAppKitAgentsOptions {
     maxSubAgentDepth?: number;
     toolCallTimeoutMs?: number;
   };
+}
+
+export interface InternalApxAppKitDevSkill {
+  name: string;
+  description: string;
+  content: string;
+}
+
+export interface InternalApxAppKitDevSnapshot {
+  agentName: string;
+  model: string;
+  originalModel: string;
+  instructions: string;
+  instructionsOverridden: boolean;
+  tools: Array<{
+    name: string;
+    description: string;
+    enabled: boolean;
+    annotations: ToolAnnotations;
+  }>;
+  skills: InternalApxAppKitDevSkill[];
+  systemPrompt: string;
+  overridesEphemeral: true;
+}
+
+export interface InternalApxAppKitDevRuntime {
+  snapshot(): InternalApxAppKitDevSnapshot;
+  definition(): AgentDefinition;
+  setModel(model: string): void;
+  setInstructions(instructions: string | null): void;
+  setToolEnabled(name: string, enabled: boolean): void;
+  setSkill(skill: InternalApxAppKitDevSkill): void;
+  deleteSkill(name: string): boolean;
+}
+
+const devModelSchema = z.string().trim().min(1).max(256);
+const devInstructionsSchema = z.string().max(64_000);
+const devSkillSchema = z.object({
+  name: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/),
+  description: z.string().max(500),
+  content: z.string().min(1).max(20_000),
+});
+
+function internalApxAppKitBaseSystemPrompt(context: PromptContext): string {
+  const lines = ['You are an AI assistant running on Databricks AppKit.'];
+  if (context.pluginNames.length > 0) {
+    lines.push('', `Active AppKit plugins: ${context.pluginNames.join(', ')}`);
+  }
+  lines.push(
+    '',
+    'Guidelines:',
+    '- Be concise: for large or noisy tool output, summarize what matters and how to go deeper instead of pasting everything.',
+    '- Use each tool as defined: pass required arguments and use the syntax, dialect, or path rules the target system expects (see each tool’s description and schema).',
+    '- If a tool call fails, explain the error in plain language and suggest a fix or next step.',
+    '- Respect tool metadata and app policy: read-only vs destructive tools, user/identity context, and any approval or safety flows the app provides.',
+  );
+  return lines.join('\n');
+}
+
+export function internalApxAppKitSystemPrompt(
+  instructions: string,
+  context: PromptContext,
+): string {
+  const base = internalApxAppKitBaseSystemPrompt(context);
+  return instructions ? `${base}\n\n${instructions}` : base;
 }
 
 function resolveAgentExports(agent: AgentExports | (() => AgentExports)): AgentExports {
@@ -399,4 +468,101 @@ export function createInternalApxAppKitAgentDefinitionFromManifest(
       };
     },
   });
+}
+
+export function createInternalApxAppKitDevRuntime(
+  manifest: InternalApxAppsHostManifest,
+): InternalApxAppKitDevRuntime {
+  let model = manifest.agent.model;
+  let instructionsOverride: string | null = null;
+  const enabledTools = new Set((manifest.tools ?? []).map((candidate) => candidate.name));
+  const skills = new Map<string, InternalApxAppKitDevSkill>();
+  const prefix = manifest.appkit?.tool_prefix ?? `${INTERNAL_APX_APPKIT_PLUGIN_NAME}.`;
+
+  const instructions = () => instructionsOverride ?? manifest.agent.instructions ?? '';
+  const promptContext = (): PromptContext => ({
+    agentName: manifest.agent.name,
+    pluginNames: [INTERNAL_APX_APPKIT_PLUGIN_NAME],
+    toolNames: [
+      ...(manifest.tools ?? [])
+        .filter((candidate) => enabledTools.has(candidate.name))
+        .map((candidate) => `${prefix}${candidate.name}`),
+      ...[...skills.keys()].map((name) => `skill.${name}`),
+    ],
+  });
+
+  return {
+    snapshot() {
+      return {
+        agentName: manifest.agent.name,
+        model,
+        originalModel: manifest.agent.model,
+        instructions: instructions(),
+        instructionsOverridden: instructionsOverride !== null,
+        tools: (manifest.tools ?? []).map((candidate) => ({
+          name: candidate.name,
+          description: candidate.description ?? '',
+          enabled: enabledTools.has(candidate.name),
+          annotations: manifestToolAnnotations(candidate),
+        })),
+        skills: [...skills.values()],
+        systemPrompt: internalApxAppKitSystemPrompt(instructions(), promptContext()),
+        overridesEphemeral: true,
+      };
+    },
+    definition() {
+      const baseSystemPrompt = internalApxAppKitSystemPrompt('', promptContext());
+      return createAgent({
+        name: manifest.agent.name,
+        instructions: instructions(),
+        model,
+        default: manifest.appkit?.default,
+        baseSystemPrompt,
+        generationParams: manifest.appkit?.generation_params ?? undefined,
+        maxSteps: manifest.appkit?.max_steps ?? manifest.agent.max_iterations,
+        maxTokens: manifest.appkit?.max_tokens ?? manifest.agent.max_tokens ?? undefined,
+        ephemeral: manifest.appkit?.ephemeral ?? undefined,
+        tools(plugins) {
+          const skillTools: Record<string, AppKitAgentTool> = {};
+          for (const skill of skills.values()) {
+            skillTools[`skill.${skill.name}`] = tool({
+              description: skill.description,
+              schema: z.object({}),
+              annotations: { effect: 'read', requiresUserContext: false },
+              execute: async () => skill.content,
+            });
+          }
+          return {
+            ...plugins[INTERNAL_APX_APPKIT_PLUGIN_NAME].toolkit({
+              prefix,
+              only: [...enabledTools],
+            }),
+            ...skillTools,
+          };
+        },
+      });
+    },
+    setModel(nextModel) {
+      model = devModelSchema.parse(nextModel);
+    },
+    setInstructions(nextInstructions) {
+      instructionsOverride = nextInstructions === null
+        ? null
+        : devInstructionsSchema.parse(nextInstructions);
+    },
+    setToolEnabled(name, enabled) {
+      if (!(manifest.tools ?? []).some((candidate) => candidate.name === name)) {
+        throw new Error(`Unknown APX tool: ${name}`);
+      }
+      if (enabled) enabledTools.add(name);
+      else enabledTools.delete(name);
+    },
+    setSkill(skill) {
+      const parsed = devSkillSchema.parse(skill);
+      skills.set(parsed.name, parsed);
+    },
+    deleteSkill(name) {
+      return skills.delete(name);
+    },
+  };
 }
