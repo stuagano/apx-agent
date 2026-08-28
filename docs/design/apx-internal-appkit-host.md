@@ -6,6 +6,8 @@ APX's external authoring surface stays Python. Users declare agents, tools,
 resources, memory, policies, and deploy intent through `apx_agent` and
 `apx-agent agents *`. AppKit is allowed inside the Apps deploy implementation,
 but must not become an APX product interface or a second SDK users import.
+AppKit remains internal even after it becomes the Apps implementation; there is
+no future state where APX users choose or author against an AppKit adapter.
 
 The goal is not "APX users write AppKit." The goal is:
 
@@ -74,7 +76,7 @@ The Apps deploy target may compile that declaration to either host internally:
 | Host | Role | Visibility |
 |---|---|---|
 | Python ResponsesAgent host | Current fallback / parity baseline | generated boilerplate |
-| AppKit host | Future default Apps implementation | generated/internal only |
+| AppKit host | Target Apps implementation | generated/internal only |
 
 The seam is **APX Apps host compilation**, not a new authoring interface.
 
@@ -197,7 +199,7 @@ The exact path can change, but the ownership rule is fixed:
 - APX owns generated AppKit host files
 - deploy rebuilds generated host files from source declarations
 
-### 5. Deploy selection
+### 5. Internal host cutover
 
 Use a temporary internal gate while parity is incomplete:
 
@@ -206,20 +208,21 @@ APX_APPS_HOST=python   # current behavior, fallback
 APX_APPS_HOST=appkit   # generated AppKit host
 ```
 
-After parity gates pass, flip the default:
+After parity gates pass, the same public deployment command stages the AppKit
+implementation by default:
 
 ```text
-default Apps host = appkit
-fallback = python
+apx-agent agents deploy --target apps
+-> generated internal AppKit host
 ```
 
-The gate should be internal/experimental. It is a migration guard, not a new
-supported product mode.
+The gate is internal/experimental. It is a migration guard, not a supported
+product mode or public adapter choice.
 
 ## Parity gates
 
-AppKit cannot become the Apps default until all gates pass against the same
-Python declaration.
+AppKit cannot become the internal Apps implementation until all gates pass
+against the same Python declaration.
 
 ### Identity / OBO
 
@@ -269,8 +272,8 @@ Python declaration.
 
 ## Deletion tests
 
-Do not keep both hosts indefinitely. The AppKit path earns default status only
-when these deletion tests pass:
+Do not keep both hosts indefinitely. The AppKit path becomes the internal Apps
+implementation only when these deletion tests pass:
 
 1. Delete the public AppKit adapter export surface: already done.
 2. Delete public `appkit-agent` package identity: already done.
@@ -279,7 +282,7 @@ when these deletion tests pass:
 4. Run the same Apps smoke fixture against Python host and AppKit host; compare
    identity, trace, audit, tool results, session persistence, MCP, A2A card, and
    readyz output.
-5. Flip default Apps host to AppKit behind a fallback gate.
+5. Cut the internal Apps implementation to AppKit behind a fallback gate.
 6. After at least one release window with fallback unused for known-good
    fixtures, delete the Python Apps host scaffold path or demote it to legacy
    migration code with an explicit removal issue.
@@ -305,7 +308,7 @@ when these deletion tests pass:
 - Generate TypeScript host files into `.build/apx_appkit_host/`.
 - Build the generated host with `apx-internal-runtime`.
 - Prove the generated host can expose a trivial read-only tool.
-- Keep `APX_APPS_HOST=python` as default.
+- Keep generated AppKit internals behind the temporary `APX_APPS_HOST` gate.
 
 ### Phase 3 - Python tool bridge
 
@@ -320,11 +323,13 @@ when these deletion tests pass:
 - Compare outputs against the current Python host on the same declaration.
 - Add a parity fixture to CI that runs both hosts locally where possible.
 
-### Phase 5 - Apps default flip
+### Phase 5 - Internal Apps cutover
 
-- Make AppKit the default Apps host.
+- Make generated AppKit internals the implementation behind
+  `apx-agent agents deploy --target apps`.
 - Keep Python host fallback for one release window.
-- Document fallback only as migration/debug escape hatch.
+- Document fallback only as migration/debug escape hatch, not as a public
+  adapter choice.
 
 ### Phase 6 - Remove legacy host
 
@@ -342,7 +347,7 @@ when these deletion tests pass:
 | Python bridge becomes public API | Bind only to generated host/local container; no docs, no external route contract. |
 | Generated TS host adds deploy flake | Build generated host during deploy plan/dry-run before bundle deploy. |
 | AppKit approval semantics do not match APX policy | Treat AppKit HITL as presentation/execution control, APX policy as authoritative gate. |
-| Dev UI/MCP/A2A surfaces lag | Phase 4 blocks default flip. |
+| Dev UI/MCP/A2A surfaces lag | Phase 4 blocks internal cutover. |
 
 ## Open questions
 
