@@ -191,7 +191,7 @@ governance layer and the compiler from Python declarations into that runtime.
 |---|---|---|
 | HTTP server, `/health`, static serving, dev server lifecycle | AppKit `server()` | Generate the host and deployment config. |
 | `/invocations`, `/responses`, `/chat`, streaming transport | AppKit `agents()` | Preserve request/response parity through compiled declarations. |
-| Thread runtime, cancellation, stream ownership, runtime limits | AppKit `agents()` | Compile APX knobs into AppKit config where semantics match. |
+| Thread runtime, cancellation, stream ownership, runtime limits | AppKit `agents()` | Compile APX knobs into AppKit config; `max_iterations` currently feeds AppKit `maxToolCalls`. |
 | OBO request context | AppKit execution context and `asUser(req)` | Forward the scoped context through the local Python bridge while Python tools remain external. |
 | HITL execution mechanics | AppKit approval flow | Compile APX tool annotations/policy into approval posture and audit the decision. |
 | Generic Databricks SQL/File/Genie/Jobs/Serving resource calls | AppKit plugins where equivalent | Keep APX domain wrappers only when they add governance or semantics. |
@@ -343,6 +343,7 @@ implementation only when these deletion tests pass:
 - Preserve dependency injection and OBO resolution through AppKit `asUser(req)`.
 - Route every Python tool call through policy/audit wrappers.
 - Compile APX tool annotations into AppKit approval posture.
+- Compile APX `max_iterations` into AppKit `limits.maxToolCalls`.
 - Mount or proxy MCP, A2A discovery, dev UI, topology, and readyz only after
   deciding whether those remain APX surfaces or become AppKit plugin surfaces.
 - Compare outputs against the current Python host on the same declaration.

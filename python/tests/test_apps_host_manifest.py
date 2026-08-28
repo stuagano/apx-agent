@@ -55,6 +55,7 @@ def test_manifest_projects_agent_tools_resources_and_scopes() -> None:
     assert manifest.appkit.default is True
     assert manifest.appkit.tool_prefix == "apx."
     assert manifest.appkit.max_steps == 4
+    assert manifest.appkit.limits.max_tool_calls == 4
     assert manifest.tools[0].parameters["properties"]["query"]["type"] == "string"
     assert manifest.tools[0].parameters["properties"]["limit"]["default"] == 10
     assert manifest.tools[0].annotations.effect == "read"

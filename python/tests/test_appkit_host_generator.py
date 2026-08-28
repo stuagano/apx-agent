@@ -44,6 +44,7 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
         "\n"
         "import manifest from '../apx-host-manifest.json';\n"
         "import {\n"
+        "  internalApxAppKitAgentsOptionsFromManifest,\n"
         "  internalApxAppKitGovernance,\n"
         "  type InternalApxAppsHostManifest,\n"
         "} from 'apx-internal-runtime/internal/appkit-host';\n"
@@ -57,7 +58,7 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
         "      manifest: apxManifest,\n"
         "      pythonBridge: { baseUrl: process.env.APX_PYTHON_BRIDGE_URL ?? 'http://127.0.0.1:8000' },\n"
         "    }),\n"
-        "    agents(),\n"
+        "    agents(internalApxAppKitAgentsOptionsFromManifest(apxManifest)),\n"
         "  ],\n"
         "});\n"
     )

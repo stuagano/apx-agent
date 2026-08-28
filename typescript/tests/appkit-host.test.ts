@@ -12,6 +12,7 @@ import {
   InternalApxAppKitGovernancePlugin,
   createInternalApxAppKitAgentDefinition,
   createInternalApxAppKitAgentDefinitionFromManifest,
+  internalApxAppKitAgentsOptionsFromManifest,
   type InternalApxAppKitAuditEvent,
   type InternalApxAppsHostManifest,
 } from '../src/internal/appkit-host.js';
@@ -54,6 +55,9 @@ function makeManifest(): InternalApxAppsHostManifest {
       default: true,
       tool_prefix: 'apx.',
       max_steps: 8,
+      limits: {
+        max_tool_calls: 8,
+      },
     },
     tools: [
       {
@@ -156,6 +160,31 @@ describe('internal AppKit host', () => {
         localName: 'lookup_policy',
         annotations: { effect: 'read', requiresUserContext: true },
         autoInheritable: true,
+      },
+    });
+  });
+
+  it('projects APX runtime limits into AppKit agents() options', () => {
+    const options = internalApxAppKitAgentsOptionsFromManifest({
+      ...makeManifest(),
+      appkit: {
+        ...makeManifest().appkit,
+        limits: {
+          max_tool_calls: 8,
+          max_concurrent_streams_per_user: 2,
+          max_sub_agent_depth: 1,
+          tool_call_timeout_ms: 15_000,
+        },
+      },
+    });
+
+    expect(options).toEqual({
+      approval: { requireForDestructive: true },
+      limits: {
+        maxToolCalls: 8,
+        maxConcurrentStreamsPerUser: 2,
+        maxSubAgentDepth: 1,
+        toolCallTimeoutMs: 15_000,
       },
     });
   });

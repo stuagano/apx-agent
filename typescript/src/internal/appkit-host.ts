@@ -72,6 +72,12 @@ export interface InternalApxAppsHostManifest {
     tool_prefix?: string;
     max_steps?: number;
     max_tokens?: number | null;
+    limits?: {
+      max_tool_calls?: number;
+      max_concurrent_streams_per_user?: number;
+      max_sub_agent_depth?: number;
+      tool_call_timeout_ms?: number;
+    };
     ephemeral?: boolean | null;
     generation_params?: AgentDefinition['generationParams'] | null;
   };
@@ -108,6 +114,18 @@ export interface InternalApxAppKitAgentOptions {
   maxTokens?: number;
   ephemeral?: boolean;
   toolPrefix?: string;
+}
+
+export interface InternalApxAppKitAgentsOptions {
+  approval: {
+    requireForDestructive: boolean;
+  };
+  limits: {
+    maxToolCalls?: number;
+    maxConcurrentStreamsPerUser?: number;
+    maxSubAgentDepth?: number;
+    toolCallTimeoutMs?: number;
+  };
 }
 
 function resolveAgentExports(agent: AgentExports | (() => AgentExports)): AgentExports {
@@ -316,6 +334,21 @@ export class InternalApxAppKitGovernancePlugin
 }
 
 export const internalApxAppKitGovernance = toPlugin(InternalApxAppKitGovernancePlugin);
+
+export function internalApxAppKitAgentsOptionsFromManifest(
+  manifest: InternalApxAppsHostManifest,
+): InternalApxAppKitAgentsOptions {
+  const limits = manifest.appkit?.limits ?? {};
+  return {
+    approval: { requireForDestructive: true },
+    limits: {
+      maxToolCalls: limits.max_tool_calls ?? manifest.appkit?.max_steps ?? manifest.agent.max_iterations,
+      maxConcurrentStreamsPerUser: limits.max_concurrent_streams_per_user,
+      maxSubAgentDepth: limits.max_sub_agent_depth,
+      toolCallTimeoutMs: limits.tool_call_timeout_ms,
+    },
+  };
+}
 
 export function createInternalApxAppKitAgentDefinition(
   agent: AgentExports | (() => AgentExports),

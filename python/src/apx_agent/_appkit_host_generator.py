@@ -152,6 +152,7 @@ import { agents } from '@databricks/appkit/beta';
 
 import manifest from '../apx-host-manifest.json';
 import {
+  internalApxAppKitAgentsOptionsFromManifest,
   internalApxAppKitGovernance,
   type InternalApxAppsHostManifest,
 } from 'apx-internal-runtime/internal/appkit-host';
@@ -165,7 +166,7 @@ await createApp({
       manifest: apxManifest,
       pythonBridge: { baseUrl: process.env.APX_PYTHON_BRIDGE_URL ?? 'http://127.0.0.1:8000' },
     }),
-    agents(),
+    agents(internalApxAppKitAgentsOptionsFromManifest(apxManifest)),
   ],
 });
 """

@@ -71,6 +71,12 @@ class AppsHostTool(BaseModel):
     user_api_scopes: list[str] = Field(default_factory=list)
 
 
+class AppsHostAppKitLimits(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_tool_calls: int
+
+
 class AppsHostAppKit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -78,6 +84,7 @@ class AppsHostAppKit(BaseModel):
     tool_prefix: str = "apx."
     max_steps: int
     max_tokens: int | None = None
+    limits: AppsHostAppKitLimits
     ephemeral: bool | None = None
     generation_params: dict[str, Any] | None = None
 
@@ -133,6 +140,7 @@ def compile_apps_host_manifest(
         appkit=AppsHostAppKit(
             max_steps=effective.max_iterations,
             max_tokens=effective.max_tokens,
+            limits=AppsHostAppKitLimits(max_tool_calls=effective.max_iterations),
         ),
         tools=[_tool_manifest(fn) for fn in _iter_tool_fns(agent)],
         resources=[_resource_manifest(spec) for spec in resources],
