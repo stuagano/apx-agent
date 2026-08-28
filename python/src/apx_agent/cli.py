@@ -1788,15 +1788,15 @@ variables:
     default: databricks-claude-sonnet-4-6
   mlflow_experiment_id:
     description: |
-      MLflow experiment ID for tracing. Populated by scripts/quickstart.py
-      into a local .env file and surfaced here for the app environment.
+      MLflow experiment ID for tracing. quickstart/deploy resolve it once and
+      bind the same experiment to the App resource and runtime environment.
     default: ""
   mlflow_tracing_sql_warehouse_id:
     description: |
       SQL warehouse used for MLflow UC trace table grants and the generated
-      APX observability timeline. `apx-agent agents deploy --target apps`
-      auto-populates this from MLFLOW_TRACING_SQL_WAREHOUSE_ID when set.
-    default: ""
+      APX observability timeline. Filled from MLFLOW_TRACING_SQL_WAREHOUSE_ID
+      or a workspace warehouse when scaffold can discover one.
+    default: "<TRACE_WAREHOUSE_DEFAULT>"
   apx_git_sha:
     description: |
       Git commit the deploy was cut from. Injected automatically by
@@ -1929,7 +1929,7 @@ apx-agent project targeting Databricks Apps.
 ## Setup
 ```bash
 uv sync --group dev
-uv run quickstart  # creates the MLflow experiment + UC trace location, applies observability SQL when MLFLOW_TRACING_SQL_WAREHOUSE_ID is set, writes .env
+uv run quickstart  # creates the MLflow experiment + UC trace location, applies observability SQL when a trace warehouse is declared, writes .env
 ```
 
 ## Local dev
@@ -1948,9 +1948,11 @@ uv run apx-agent agents deploy --target apps  # validates, deploys, runs the bun
 
 ## Lakehouse Observability
 Data/coworker scaffolds write `.apx/sql/apx_agent_timeline.sql`. `uv run quickstart`
-applies it automatically when `MLFLOW_TRACING_SQL_WAREHOUSE_ID` is set. It creates
+applies it automatically when `mlflow_tracing_sql_warehouse_id` is set in
+`databricks.yml` or `MLFLOW_TRACING_SQL_WAREHOUSE_ID` is set locally. It creates
 `apx_agent_events` and the joined `apx_agent_timeline` view beside the MLflow
-`<prefix>_trace_unified` view in the same UC schema.
+`<prefix>_trace_unified` view in the same UC schema. The App resource and runtime
+environment both point at the same `mlflow_experiment_id`.
 
 ## Promoting to another environment
 `databricks.yml` ships `dev` (default), `staging`, and `prod` targets. All
@@ -2175,6 +2177,30 @@ def _make_ws_for_scaffold(profile: str | None):
     except Exception as exc:
         click.echo(f"  (warning: could not connect to the workspace — {exc})", err=True)
         return None
+
+
+def _scaffold_trace_warehouse_default(ws) -> str:
+    env_value = os.environ.get("MLFLOW_TRACING_SQL_WAREHOUSE_ID")
+    env_value = env_value.strip() if env_value is not None else ""
+    if env_value:
+        return env_value
+    if ws is None:
+        return ""
+    try:
+        warehouses = list(ws.warehouses.list())
+    except Exception:
+        return ""
+    for warehouse in warehouses:
+        state = getattr(warehouse, "state", "")
+        state_name = str(getattr(state, "name", state)).upper()
+        warehouse_id = getattr(warehouse, "id", "") or ""
+        if state_name == "RUNNING" and warehouse_id:
+            return str(warehouse_id)
+    for warehouse in warehouses:
+        warehouse_id = getattr(warehouse, "id", "") or ""
+        if warehouse_id:
+            return str(warehouse_id)
+    return ""
 
 
 def _ws_is_connected(ws) -> bool:
@@ -3922,6 +3948,7 @@ def _scaffold_apps(
     join_key: str | None = None, lakebase: bool = True,
     instructions: str | None = None,
     ci: CiProvider | None = "github",
+    trace_warehouse_default: str | None = None,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -4013,6 +4040,7 @@ def _scaffold_apps(
             .replace("<SCHEMA>", schema)
             .replace("<TRACE_LOCATION_ARGS>", trace_location_args)
             .replace("<TRACE_TABLE_PREFIX>", trace_table_prefix)
+            .replace("<TRACE_WAREHOUSE_DEFAULT>", trace_warehouse_default or "")
             .replace("<EXAMPLE_TOOL>", prelude)
             .replace("<EXTRA_TOOLS>", extra_tools)
             .replace("<PERSONA_ARG>", persona_arg)
@@ -4518,10 +4546,12 @@ def scaffold(
         ci: CiProvider | None = None
         if ci_provider in ("github", "gitlab"):
             ci = cast(CiProvider, ci_provider)
+        trace_warehouse_default = _scaffold_trace_warehouse_default(_scaffold_ws())
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
             template=scaffold_template, persona=persona, objective=objective,
             join_key=join_key, lakebase=lakebase, instructions=instructions, ci=ci,
+            trace_warehouse_default=trace_warehouse_default,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
