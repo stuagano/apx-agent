@@ -502,7 +502,7 @@ def test_json_output_enriched_with_uc_version_provenance_readyz(
     (scaffold / "uv.lock").write_text("version = 1\n")
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="3", app_name=app_name)
 
@@ -940,7 +940,7 @@ def test_register_uc_runs_once_when_configured(
     calls: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         calls.append({
             "uc_name": uc_name, "model": model,
             "app_name": app_name, "bundle_target": bundle_target,
@@ -979,7 +979,7 @@ def test_successful_apps_deploy_records_local_history(
     monkeypatch.setattr(
         "apx_agent._apps_registry.register_apps_manifest",
         lambda agent, *, uc_name, model, app_name, bundle_target,
-               agent_name=None, extra_version_tags=None, experiment_id=None:
+               agent_name=None, extra_version_tags=None, experiment_id=None, profile=None:
             AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name),
     )
 
@@ -1129,7 +1129,7 @@ def test_register_uc_forwards_extra_version_tags(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -1307,7 +1307,7 @@ def test_agents_register_backfills_manifest(
     calls: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         calls.append({
             "uc_name": uc_name, "model": model, "app_name": app_name,
             "bundle_target": bundle_target, "agent_name": agent_name,
@@ -1346,7 +1346,7 @@ def test_agents_register_json_output(
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="9", app_name=app_name)
 
@@ -1435,7 +1435,7 @@ def test_readyz_failure_registers_manifest_with_failed_tag(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="7", app_name=app_name)
@@ -1575,7 +1575,7 @@ def test_canary_deploy_apps_registers_role_tag_end_to_end(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen.update(tags=extra_version_tags, app_name=app_name,
                     uc_name=uc_name, bundle_target=bundle_target)
         from apx_agent._apps_registry import AppsManifestResult
@@ -1606,7 +1606,7 @@ def test_canary_deploy_apps_stamps_git_sha_end_to_end(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -1635,7 +1635,7 @@ def test_canary_deploy_apps_no_git_sha_still_succeeds(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -1687,7 +1687,7 @@ def _setup_promote_mocks(
     monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: dirty)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         captured["registered"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="5", app_name=app_name)
@@ -1835,7 +1835,7 @@ def _setup_rollback_mocks(
     monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: False)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         captured["registered"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="8", app_name=app_name)
@@ -2001,7 +2001,7 @@ def test_plain_deploy_threads_provenance_to_registrar(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="9", app_name=app_name)
@@ -2096,7 +2096,7 @@ def test_no_run_skips_readiness_poll_and_still_registers_manifest(
     registered: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         registered.append({"uc_name": uc_name, "app_name": app_name})
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)

@@ -8947,6 +8947,7 @@ def _register_apps_manifest_step(
                 agent_name=agent_name,
                 extra_version_tags=extra_version_tags,
                 experiment_id=experiment_id,
+                profile=profile,
             )
         if profile:
             if old_profile is None:
@@ -12189,6 +12190,7 @@ def register_agent_cmd(
                 bundle_target=bundle_target,
                 agent_name=config.get("name") or app_name,
                 extra_version_tags=_provenance_version_tags(cwd),
+                profile=profile,
             )
         except Exception as exc:
             raise click.ClickException(
