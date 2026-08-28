@@ -1,0 +1,23 @@
+[
+  {"name": "Donor Management", "engine": "A",
+   "description": "Configurable CRM for donors, gifts, and relationships (ClickUp-style flexible objects).",
+   "config_outline": ["objects", "fields", "views", "labels"]},
+  {"name": "Volunteer Management", "engine": "A",
+   "description": "Shift/role scheduling, hour tracking, reminders for pickups/deliveries/markets.",
+   "config_outline": ["shift_types", "roles", "locations", "reminders"]},
+  {"name": "Program & Case Management", "engine": "A",
+   "description": "Client intake, service tracking, outcomes for direct-service programs.",
+   "config_outline": ["client_fields", "services", "outcomes"]},
+  {"name": "Food-Logistics & Routing", "engine": "A",
+   "description": "Donor pickups, route/driver coordination, distribution to markets.",
+   "config_outline": ["donors", "routes", "vehicles", "distribution_sites"]},
+  {"name": "Finance & Impact Reporting", "engine": "B",
+   "description": "Ingest financials (e.g. QuickBooks) to the lakehouse; dashboards for lbs rescued, meals served, funder reports.",
+   "config_outline": ["source", "delta_target", "dashboard_ref"]},
+  {"name": "Grants Pipeline", "engine": "A",
+   "description": "Track grant applications, deadlines, and post-award reporting.",
+   "config_outline": ["stages", "deadlines", "reporting_fields"]},
+  {"name": "Board & Governance", "engine": "A",
+   "description": "Meetings, documents, and votes for boards (an accessibility desert for small orgs).",
+   "config_outline": ["meetings", "documents", "votes"]}
+]

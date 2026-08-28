@@ -7903,7 +7903,7 @@ def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
             child.suffix == ".py" or _is_appkit_bridge_resource_file(child)
         ):
             shutil.copy2(child, target)
-        elif child.is_dir() and _contains_python_source(child):
+        elif child.is_dir() and _contains_appkit_bridge_source(child):
             shutil.copytree(
                 child,
                 target,
@@ -7954,8 +7954,12 @@ def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
     appkit_bridge_file.write_text(_INTERNAL_APPKIT_BRIDGE_SERVER)
 
 
-def _contains_python_source(path: Path) -> bool:
-    return any(child.is_file() for child in path.rglob("*.py"))
+def _contains_appkit_bridge_source(path: Path) -> bool:
+    return any(
+        child.is_file()
+        and (child.suffix == ".py" or _is_appkit_bridge_resource_file(child))
+        for child in path.rglob("*")
+    )
 
 
 def _is_appkit_bridge_resource_file(path: Path) -> bool:

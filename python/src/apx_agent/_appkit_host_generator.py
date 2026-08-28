@@ -223,6 +223,7 @@ await createApp({
   ],
   onPluginsReady(appkit) {
     appkit.server.extend((app: IAppRouter) => {
+      app.get('/api/dev-ui', (_req: Request, res: Response) => res.json({ enabled: devEnabled }));
       const applyDevChange = async (res: Response, change: () => void) => {
         try {
           change();
