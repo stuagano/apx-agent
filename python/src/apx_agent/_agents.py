@@ -213,6 +213,8 @@ class LlmAgent(BaseAgent):
             plain_params, dep_names = _inspect_tool_fn(fn)
             input_model = _make_input_model(fn, plain_params)
             self._analyzed.append((fn, plain_params, dep_names, input_model))
+        # Monotonic counter bumped whenever the runtime callable tool set changes.
+        self._tools_version = 0
 
     async def _apply_input_guardrails(self, messages: list[Message]) -> str | None:
         for guard in self._input_guardrails:
@@ -300,6 +302,36 @@ class LlmAgent(BaseAgent):
         plain_params, dep_names = _inspect_tool_fn(fn)
         input_model = _make_input_model(fn, plain_params)
         self._analyzed.append((fn, plain_params, dep_names, input_model))
+        self._tools_version += 1
+
+    @property
+    def tools_version(self) -> int:
+        """Monotonic version of the runtime callable tool set."""
+        return self._tools_version
+
+    def register_tool(self, fn: _ToolFn) -> None:
+        """Add or replace a tool on a live agent, post-construction."""
+        name = getattr(fn, "__name__", None)
+        if name is not None:
+            self._tool_fns = [
+                existing for existing in self._tool_fns
+                if existing.__name__ != name
+            ]
+            self._analyzed = [
+                row for row in self._analyzed
+                if row[0].__name__ != name
+            ]
+        self._register_tool(fn)
+
+    def unregister_tool(self, name: str) -> bool:
+        """Remove a tool by name. Returns True when a tool was removed."""
+        before = len(self._tool_fns)
+        self._tool_fns = [fn for fn in self._tool_fns if fn.__name__ != name]
+        self._analyzed = [row for row in self._analyzed if row[0].__name__ != name]
+        removed = len(self._tool_fns) < before
+        if removed:
+            self._tools_version += 1
+        return removed
 
     def collect_tools(self) -> list[AgentTool]:
         return [
