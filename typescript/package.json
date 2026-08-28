@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs"
+    },
+    "./internal/appkit-host": {
+      "types": "./dist/internal/appkit-host.d.mts",
+      "import": "./dist/internal/appkit-host.mjs"
     }
   },
   "bin": {

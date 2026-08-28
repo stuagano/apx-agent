@@ -1815,6 +1815,7 @@ artifacts:
   default:
     build: |
       mkdir -p .build
+      mkdir -p .build/apx_appkit_host
       # User-authored: top-level agent.py (+ optional tools.py, sub_agents/).
       cp agent.py .build/ 2>/dev/null || true
       cp tools.py .build/ 2>/dev/null || true
@@ -1881,6 +1882,8 @@ resources:
             value: "1"
           - name: APX_AGENT_NAME
             value: <APP_NAME>
+          - name: APX_APPS_HOST
+            value: python
           - name: APX_GIT_SHA
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION

@@ -115,6 +115,16 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     # startup. Regression guard for the layout migration.
     build_script = parsed["artifacts"]["default"]["build"]
     assert "cp agent.py" in build_script, build_script
+    assert ".build/apx_appkit_host" in build_script, build_script
+    assert apps["my_agent"]["config"]["command"][:2] == [
+        "uvicorn",
+        "agent_server.start_server:app",
+    ]
+    env = {
+        item["name"]: item["value"]
+        for item in apps["my_agent"]["config"]["env"]
+    }
+    assert env["APX_APPS_HOST"] == "python"
 
     experiments = parsed["resources"]["experiments"]
     assert "my_agent_experiment" in experiments

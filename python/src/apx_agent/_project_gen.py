@@ -670,6 +670,7 @@ artifacts:
   default:
     build: |
       mkdir -p .build
+      mkdir -p .build/apx_appkit_host
       cp agent.py .build/ 2>/dev/null || true
       cp tools.py .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true
@@ -718,6 +719,8 @@ resources:
             value: ${{var.mlflow_experiment_id}}
           - name: APX_AGENT_MLFLOW_AUTOLOG
             value: "1"
+          - name: APX_APPS_HOST
+            value: python
 
   jobs:
     {name}_keepalive:

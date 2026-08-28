@@ -484,6 +484,11 @@ def test_databricks_yml_contains_agent_name(tmp_path: Path, coworker_config: Age
 
     data = yaml.safe_load(dab.read_text())
     assert "payroll-coworker" in str(data), "agent name not found in databricks.yml"
+    app = data["resources"]["apps"]["payroll-coworker"]
+    assert ".build/apx_appkit_host" in data["artifacts"]["default"]["build"]
+    assert app["config"]["command"][:2] == ["uvicorn", "agent_server.start_server:app"]
+    env = {item["name"]: item["value"] for item in app["config"]["env"]}
+    assert env["APX_APPS_HOST"] == "python"
 
 
 # ---------------------------------------------------------------------------

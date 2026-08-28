@@ -11,7 +11,9 @@ import {
   INTERNAL_APX_APPKIT_PLUGIN_NAME,
   InternalApxAppKitGovernancePlugin,
   createInternalApxAppKitAgentDefinition,
+  createInternalApxAppKitAgentDefinitionFromManifest,
   type InternalApxAppKitAuditEvent,
+  type InternalApxAppsHostManifest,
 } from '../src/internal/appkit-host.js';
 import {
   createAgentPlugin,
@@ -38,6 +40,38 @@ function makeAgentExports() {
     instructions: 'Use APX governed tools.',
     tools: [lookupPolicy, applyRecommendation],
   }).exports();
+}
+
+function makeManifest(): InternalApxAppsHostManifest {
+  return {
+    agent: {
+      name: 'pricing-agent',
+      model: 'databricks-claude-sonnet-4-5',
+      instructions: 'Use APX governed tools.',
+      max_iterations: 8,
+    },
+    appkit: {
+      default: true,
+      tool_prefix: 'apx.',
+      max_steps: 8,
+    },
+    tools: [
+      {
+        name: 'lookup_policy',
+        description: 'Return the policy attached to a governed APX resource.',
+        parameters: {
+          type: 'object',
+          properties: { resource: { type: 'string' } },
+          required: ['resource'],
+          additionalProperties: false,
+        },
+        annotations: {
+          effect: 'read',
+          requires_user_context: true,
+        },
+      },
+    ],
+  };
 }
 
 describe('internal AppKit host', () => {
@@ -95,6 +129,31 @@ describe('internal AppKit host', () => {
       default: true,
     });
     expect(tools).toHaveProperty('apx.lookup_policy');
+  });
+
+  it('creates an AppKit AgentDefinition from an APX host manifest', () => {
+    const manifest = makeManifest();
+    const agent = createInternalApxAppKitAgentDefinitionFromManifest(manifest);
+    const apx = new InternalApxAppKitGovernancePlugin({ manifest });
+
+    if (typeof agent.tools !== 'function') throw new Error('expected function-form tools');
+    const tools = agent.tools({ [INTERNAL_APX_APPKIT_PLUGIN_NAME]: apx });
+
+    expect(agent).toMatchObject({
+      name: 'pricing-agent',
+      instructions: 'Use APX governed tools.',
+      model: 'databricks-claude-sonnet-4-5',
+      default: true,
+      maxSteps: 8,
+    });
+    expect(tools).toMatchObject({
+      'apx.lookup_policy': {
+        pluginName: INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        localName: 'lookup_policy',
+        annotations: { effect: 'read', requiresUserContext: true },
+        autoInheritable: true,
+      },
+    });
   });
 
   it('enforces APX policy and records audit events around tool execution', async () => {

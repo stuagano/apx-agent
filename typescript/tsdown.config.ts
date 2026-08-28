@@ -15,6 +15,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'cli/index': 'src/cli/index.ts',
+    'internal/appkit-host': 'src/internal/appkit-host.ts',
   },
   outDir: 'dist',
   format: 'esm',

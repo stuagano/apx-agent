@@ -47,8 +47,36 @@ export interface InternalApxAppKitPolicyDecision {
   reason?: string | null;
 }
 
+export interface InternalApxAppsHostManifest {
+  agent: {
+    name: string;
+    model: string;
+    instructions?: string;
+    max_iterations?: number;
+    max_tokens?: number | null;
+  };
+  appkit?: {
+    default?: boolean;
+    tool_prefix?: string;
+    max_steps?: number;
+    max_tokens?: number | null;
+    ephemeral?: boolean | null;
+    generation_params?: AgentDefinition['generationParams'] | null;
+  };
+  tools?: Array<{
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+    annotations?: {
+      effect?: ToolAnnotations['effect'];
+      requires_user_context?: boolean;
+    };
+  }>;
+}
+
 export interface InternalApxAppKitGovernanceConfig extends BasePluginConfig {
   agent?: AgentExports | (() => AgentExports);
+  manifest?: InternalApxAppsHostManifest;
   toolAnnotations?: Record<string, ToolAnnotations>;
   policy?: (
     event: InternalApxAppKitToolEvent,
@@ -75,6 +103,13 @@ function requireAgentExports(agent: AgentExports | (() => AgentExports) | undefi
   return resolveAgentExports(agent);
 }
 
+function requireAgentSource(config: InternalApxAppKitGovernanceConfig):
+  | { kind: 'exports'; value: AgentExports }
+  | { kind: 'manifest'; value: InternalApxAppsHostManifest } {
+  if (config.manifest) return { kind: 'manifest', value: config.manifest };
+  return { kind: 'exports', value: requireAgentExports(config.agent) };
+}
+
 function toolAnnotations(
   tool: AgentTool,
   overrides: Record<string, ToolAnnotations> | undefined,
@@ -83,6 +118,15 @@ function toolAnnotations(
     effect: 'read',
     requiresUserContext: true,
     ...overrides?.[tool.name],
+  };
+}
+
+function manifestToolAnnotations(
+  tool: NonNullable<InternalApxAppsHostManifest['tools']>[number],
+): ToolAnnotations {
+  return {
+    effect: tool.annotations?.effect ?? 'read',
+    requiresUserContext: tool.annotations?.requires_user_context ?? true,
   };
 }
 
@@ -95,6 +139,17 @@ function toAppKitToolDefinition(
     description: tool.description,
     parameters: toStrictSchema(zodToJsonSchema(tool.parameters)),
     annotations: toolAnnotations(tool, overrides),
+  };
+}
+
+function toAppKitManifestToolDefinition(
+  tool: NonNullable<InternalApxAppsHostManifest['tools']>[number],
+): AgentToolDefinition {
+  return {
+    name: tool.name,
+    description: tool.description ?? '',
+    parameters: toStrictSchema(tool.parameters),
+    annotations: manifestToolAnnotations(tool),
   };
 }
 
@@ -123,11 +178,17 @@ export class InternalApxAppKitGovernancePlugin
   }
 
   private get toolMap(): Map<string, AgentTool> {
-    return new Map(this.agentExports.getTools().map((tool) => [tool.name, tool]));
+    const source = requireAgentSource(this.config);
+    if (source.kind === 'manifest') return new Map();
+    return new Map(source.value.getTools().map((tool) => [tool.name, tool]));
   }
 
   getAgentTools(): AgentToolDefinition[] {
-    return this.agentExports
+    const source = requireAgentSource(this.config);
+    if (source.kind === 'manifest') {
+      return (source.value.tools ?? []).map((tool) => toAppKitManifestToolDefinition(tool));
+    }
+    return source.value
       .getTools()
       .map((tool) => toAppKitToolDefinition(tool, this.config.toolAnnotations));
   }
@@ -153,12 +214,15 @@ export class InternalApxAppKitGovernancePlugin
 
   async executeAgentTool(name: string, args: unknown): Promise<unknown> {
     const tool = this.toolMap.get(name);
-    if (!tool) throw new Error(`Unknown APX tool: ${name}`);
+    const manifestTool = this.config.manifest?.tools?.find((candidate) => candidate.name === name);
+    if (!tool && !manifestTool) throw new Error(`Unknown APX tool: ${name}`);
 
     const event: InternalApxAppKitToolEvent = {
       toolName: name,
       args,
-      annotations: toolAnnotations(tool, this.config.toolAnnotations),
+      annotations: tool
+        ? toolAnnotations(tool, this.config.toolAnnotations)
+        : manifestToolAnnotations(manifestTool!),
     };
     const decision = (await this.config.policy?.(event)) ?? { action: 'ALLOW' };
     if (decision.action === 'DENY') {
@@ -168,6 +232,9 @@ export class InternalApxAppKitGovernancePlugin
     }
 
     try {
+      if (!tool) {
+        throw new Error(`APX Python bridge is not wired for tool: ${name}`);
+      }
       const result = await tool.handler(args);
       await this.config.audit?.({ ...event, action: 'ALLOW', reason: null });
       return result;
@@ -206,6 +273,30 @@ export function createInternalApxAppKitAgentDefinition(
       return {
         ...plugins[INTERNAL_APX_APPKIT_PLUGIN_NAME].toolkit({
           prefix: options.toolPrefix ?? `${INTERNAL_APX_APPKIT_PLUGIN_NAME}.`,
+        }),
+      };
+    },
+  });
+}
+
+export function createInternalApxAppKitAgentDefinitionFromManifest(
+  manifest: InternalApxAppsHostManifest,
+  options: InternalApxAppKitAgentOptions = {},
+): AgentDefinition {
+  return createAgent({
+    name: manifest.agent.name,
+    instructions: manifest.agent.instructions ?? '',
+    model: manifest.agent.model,
+    default: options.default ?? manifest.appkit?.default,
+    baseSystemPrompt: options.baseSystemPrompt,
+    generationParams: options.generationParams ?? manifest.appkit?.generation_params ?? undefined,
+    maxSteps: options.maxSteps ?? manifest.appkit?.max_steps ?? manifest.agent.max_iterations,
+    maxTokens: options.maxTokens ?? manifest.appkit?.max_tokens ?? manifest.agent.max_tokens ?? undefined,
+    ephemeral: options.ephemeral ?? manifest.appkit?.ephemeral ?? undefined,
+    tools(plugins) {
+      return {
+        ...plugins[INTERNAL_APX_APPKIT_PLUGIN_NAME].toolkit({
+          prefix: options.toolPrefix ?? manifest.appkit?.tool_prefix ?? `${INTERNAL_APX_APPKIT_PLUGIN_NAME}.`,
         }),
       };
     },
