@@ -1,0 +1,13 @@
+node_modules/
+.venv/
+__pycache__/
+dist/
+build/
+*.pyc
+.env
+.DS_Store
+*.egg-info/
+.pytest_cache/
+.isaac/
+mlflow.db
+mlruns/

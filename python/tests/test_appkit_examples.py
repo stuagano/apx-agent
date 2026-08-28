@@ -16,7 +16,9 @@ EXAMPLES_ROOT = PYTHON_ROOT / "examples"
 EXAMPLE_DIRS = tuple(
     sorted(
         path
-        for path in (agent_file.parent for agent_file in EXAMPLES_ROOT.rglob("agent.py"))
+        for path in (
+            agent_file.parent for agent_file in EXAMPLES_ROOT.rglob("agent.py")
+        )
         if (path / "agent.py").exists() and (path / "databricks.yml").exists()
     )
 )
@@ -106,12 +108,16 @@ def test_python_bridge_staging_refreshes_existing_sources(tmp_path: Path) -> Non
     build_dir.mkdir()
     source = tmp_path / "api.py"
     source.write_text("VERSION = 1\n")
+    prompt = tmp_path / "prompts" / "skill.md"
+    prompt.parent.mkdir()
+    prompt.write_text("# Runtime skill\n")
     _stage_internal_appkit_python_bridge(tmp_path, build_dir)
 
     source.write_text("VERSION = 2\n")
     _stage_internal_appkit_python_bridge(tmp_path, build_dir)
 
     assert (build_dir / "api.py").read_text() == "VERSION = 2\n"
+    assert (build_dir / "prompts" / "skill.md").read_text() == "# Runtime skill\n"
 
 
 PROBE = textwrap.dedent(
@@ -350,6 +356,4 @@ def test_example_agent_stages_internal_appkit_host(
     assert payload["agent"]
     if tool_case is not None:
         assert payload["executed_tool"] == tool_case["name"]
-    assert payload["logs"] == [
-        "  staged internal AppKit host: .build/apx_appkit_host"
-    ]
+    assert payload["logs"] == ["  staged internal AppKit host: .build/apx_appkit_host"]

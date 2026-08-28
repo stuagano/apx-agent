@@ -64,6 +64,7 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert "APX_APPKIT_STATIC_PATH" in server_ts
     assert "APX_PYTHON_BRIDGE_PROXY_PATHS" in server_ts
     assert "const devEnabled = process.env.APX_DEV_UI !== '0';" in server_ts
+    assert "app.get('/api/dev-ui'" in server_ts
     assert "createInternalApxAppKitDevRuntime" in server_ts
     assert "app.get('/api/dev/config'" in server_ts
     assert "app.patch('/api/dev/config'" in server_ts
@@ -89,7 +90,10 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
         "import type { Request, Response } from 'express';\n"
         "import { z } from 'zod';\n"
     )
-    assert "server({ staticPath: process.env.APX_APPKIT_STATIC_PATH || undefined })" in server_ts
+    assert (
+        "server({ staticPath: process.env.APX_APPKIT_STATIC_PATH || undefined })"
+        in server_ts
+    )
     assert "  plugins: [\n" in server_ts
     assert (
         "    server({ staticPath: process.env.APX_APPKIT_STATIC_PATH || undefined }),\n"
