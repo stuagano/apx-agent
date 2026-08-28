@@ -116,8 +116,9 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     build_script = parsed["artifacts"]["default"]["build"]
     assert "cp agent.py" in build_script, build_script
 
-    experiments = parsed["resources"]["experiments"]
-    assert "my_agent_experiment" in experiments
+    assert "experiments" not in parsed["resources"]
+    experiment_resource = apps["my_agent"]["resources"][0]["experiment"]
+    assert experiment_resource["experiment_id"] == "${var.mlflow_experiment_id}"
 
     # Targets are pre-wired for laptop ``dev`` + CI ``staging`` / ``prod``.
     assert "dev" in parsed["targets"]

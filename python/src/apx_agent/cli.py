@@ -1803,7 +1803,7 @@ variables:
       `apx-agent agents deploy --target apps` so every trace the app emits carries
       an apx.git_sha tag and `canary analyze` can attribute traffic per
       version (issue #404). Leave the default.
-    default: ""
+    default: unversioned
   apx_model_version:
     description: |
       UC registered-model version this app serves, when known BEFORE the
@@ -1837,10 +1837,6 @@ artifacts:
       # overwrite the rewritten versions.
 
 resources:
-  experiments:
-    <APP_NAME>_experiment:
-      name: /Users/${var.workspace_user}/${bundle.name}-${bundle.target}
-
   apps:
     <APP_NAME>:
       name: <WORKSPACE_APP_NAME>
@@ -1857,7 +1853,7 @@ resources:
       resources:
         - name: experiment
           experiment:
-            experiment_id: ${resources.experiments.<APP_NAME>_experiment.id}
+            experiment_id: ${var.mlflow_experiment_id}
             permission: CAN_MANAGE
         # apx-agent agents deploy --target apps will auto-add resources from the agent's
         # ResourceSpec list. For now, list any extras here manually:
@@ -2026,9 +2022,8 @@ Define your agent + tools in `agent.py` (top-level). The
 imports your agent and wires it into the Databricks Apps runtime — you
 shouldn't need to edit it.
 
-> Tip: use underscore/snake_case for `<APP_NAME>` — Databricks bundle
-> resource references like `${resources.experiments.<APP_NAME>_experiment.id}`
-> are easier to read with snake_case names.
+> Tip: use underscore/snake_case for `<APP_NAME>` if you plan to inspect
+> generated UC object names; APX derives trace table prefixes from it.
 '''
 
 

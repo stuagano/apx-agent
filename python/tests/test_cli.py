@@ -4022,6 +4022,9 @@ def test_scaffold_apps_databricks_yml_enables_autolog_env() -> None:
     assert "APX_AGENT_MLFLOW_AUTOLOG" in _SCAFFOLD_APPS_DATABRICKS_YML
     assert "mlflow_tracing_sql_warehouse_id" in _SCAFFOLD_APPS_DATABRICKS_YML
     assert "MLFLOW_TRACING_SQL_WAREHOUSE_ID" in _SCAFFOLD_APPS_DATABRICKS_YML
+    assert "default: unversioned" in _SCAFFOLD_APPS_DATABRICKS_YML
+    assert "experiment_id: ${var.mlflow_experiment_id}" in _SCAFFOLD_APPS_DATABRICKS_YML
+    assert "${resources.experiments." not in _SCAFFOLD_APPS_DATABRICKS_YML
 
 
 def test_apps_databricks_yml_has_staging_target_for_all_templates(tmp_path):
