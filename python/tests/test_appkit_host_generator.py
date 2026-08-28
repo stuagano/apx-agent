@@ -29,6 +29,12 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     )
 
     assert host_dir == tmp_path / ".build" / "apx_appkit_host"
+    start_mjs = (host_dir / "scripts" / "start.mjs").read_text()
+    assert "agent_server.start_server:app" in start_mjs
+    assert "APX_PYTHON_BRIDGE_PORT" in start_mjs
+    assert "APX_PYTHON_BRIDGE_URL" in start_mjs
+    assert "server/server.ts" in start_mjs
+    assert "'127.0.0.1'" in start_mjs
     assert (host_dir / "server" / "server.ts").read_text() == (
         "import { createApp, server } from '@databricks/appkit';\n"
         "import { agents } from '@databricks/appkit/beta';\n"
@@ -60,7 +66,9 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert (
         package_json["dependencies"]["apx-internal-runtime"] == "file:/repo/typescript"
     )
+    assert package_json["dependencies"]["tsx"] == "^4.20.0"
     assert package_json["scripts"]["build"] == "tsc --noEmit"
+    assert package_json["scripts"]["start"] == "node scripts/start.mjs"
 
     manifest_json = read_json(host_dir / "apx-host-manifest.json")
     assert manifest_json["agent"]["name"] == "Pricing Agent"

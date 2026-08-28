@@ -25,6 +25,7 @@ def write_appkit_host_skeleton(
             manifest.model_dump(mode="json"), indent=2, sort_keys=True
         )
         + "\n",
+        "scripts/start.mjs": _start_mjs(),
         "server/server.ts": _server_ts(),
         f"server/agents/{agent_id}/agent.ts": _agent_ts(),
     }
@@ -44,14 +45,80 @@ def _package_json(name: str, runtime_dependency: str) -> str:
         "name": f"{_agent_id(name)}-apx-appkit-host",
         "private": True,
         "type": "module",
-        "scripts": {"build": "tsc --noEmit"},
+        "scripts": {
+            "build": "tsc --noEmit",
+            "start": "node scripts/start.mjs",
+        },
         "dependencies": {
             "@databricks/appkit": "^0.66.1",
             "apx-internal-runtime": runtime_dependency,
+            "tsx": "^4.20.0",
         },
         "devDependencies": {"typescript": "~5.9.0"},
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def _start_mjs() -> str:
+    return """\
+import { spawn } from 'node:child_process';
+
+const appPort = process.env.DATABRICKS_APP_PORT ?? process.env.PORT ?? '3000';
+const bridgePort = process.env.APX_PYTHON_BRIDGE_PORT ?? '8000';
+const bridgeUrl = process.env.APX_PYTHON_BRIDGE_URL ?? `http://127.0.0.1:${bridgePort}`;
+const children = [];
+let shuttingDown = false;
+
+function start(label, command, args, env = {}) {
+  const child = spawn(command, args, {
+    env: { ...process.env, ...env },
+    stdio: 'inherit',
+  });
+  children.push(child);
+  child.on('exit', (code, signal) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    for (const other of children) {
+      if (other !== child) {
+        other.kill('SIGTERM');
+      }
+    }
+    console.error(`${label} exited`, signal ?? code ?? 1);
+    process.exit(code ?? 1);
+  });
+  return child;
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    for (const child of children) {
+      child.kill(signal);
+    }
+  });
+}
+
+start('APX Python bridge', process.env.PYTHON ?? 'python', [
+  '-m',
+  'uvicorn',
+  'agent_server.start_server:app',
+  '--host',
+  '127.0.0.1',
+  '--port',
+  bridgePort,
+]);
+
+start('APX AppKit host', process.execPath, ['--import', 'tsx', 'server/server.ts'], {
+  APX_PYTHON_BRIDGE_URL: bridgeUrl,
+  DATABRICKS_APP_PORT: appPort,
+  PORT: appPort,
+});
+"""
 
 
 def _tsconfig_json() -> str:
