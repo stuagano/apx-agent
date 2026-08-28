@@ -26,9 +26,27 @@ resources:
       name: "contract-parsing-agent"
       description: "contract-parsing-agent created with apx"
       source_code_path: ./.build
+      user_api_scopes:
+        - sql
+        - serving.serving-endpoints
+      resources:
+        - name: experiment
+          experiment:
+            experiment_id: ${var.mlflow_experiment_id}
+            permission: CAN_MANAGE
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.sql_warehouse_id}
+            permission: CAN_USE
+        - name: llm-endpoint
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
       config:
         command: ["python", "-m", "agent_server.start_host"]
         env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
           - name: CATALOG
             value: ${var.catalog}
           - name: SCHEMA
@@ -45,6 +63,16 @@ resources:
             value: /api,/_apx
           - name: APX_APPKIT_STATIC_PATH
             value: ../client/dist
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
+          - name: MLFLOW_TRACING_SQL_WAREHOUSE_ID
+            value: ${var.sql_warehouse_id}
+          - name: MLFLOW_TRACING_DESTINATION
+            value: ${var.catalog}.${var.schema}
+          - name: APX_AGENT_MLFLOW_AUTOLOG
+            value: "1"
 
 variables:
   catalog:
@@ -55,6 +83,12 @@ variables:
     description: Full UC volume path for raw contract PDFs
   volumes_uploads:
     description: Full UC volume path for uploaded contracts
+  mlflow_experiment_id:
+    description: MLflow experiment ID for AppKit and APX traces
+  sql_warehouse_id:
+    description: SQL warehouse used by contract tools and trace queries
+  llm_endpoint_name:
+    description: Foundation model serving endpoint used by the agent
 
 targets:
   dev:
@@ -65,3 +99,6 @@ targets:
       schema: ""
       volumes_raw: ""
       volumes_uploads: ""
+      mlflow_experiment_id: ""
+      sql_warehouse_id: ""
+      llm_endpoint_name: "databricks-claude-sonnet-4-6"

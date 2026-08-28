@@ -75,7 +75,7 @@ def list_contracts(ws: Dependencies.Client):
             row["auto_renewal"] = row["auto_renewal"] in ("true", "True", "1", True)
         if row.get("term_years") is not None:
             try:
-                row["term_years"] = int(row["term_years"])
+                row["term_years"] = int(float(row["term_years"]))
             except (ValueError, TypeError):
                 row["term_years"] = None
     return rows

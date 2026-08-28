@@ -51,6 +51,15 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert "--preserve-symlinks" in start_mjs
     assert "server/server.ts" in start_mjs
     assert "'127.0.0.1'" in start_mjs
+    assert "createWorkspaceClient" in start_mjs
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" in start_mjs
+    assert "/api/2.0/otel" in start_mjs
+    assert "OTEL_EXPORTER_OTLP_TRACES_HEADERS" in start_mjs
+    assert "OTEL_EXPORTER_OTLP_METRICS_HEADERS" in start_mjs
+    assert "OTEL_EXPORTER_OTLP_LOGS_HEADERS" in start_mjs
+    assert "mlflow_experiment_trace_otel_spans" in start_mjs
+    assert "mlflow_experiment_trace_otel_metrics" in start_mjs
+    assert "mlflow_experiment_trace_otel_logs" in start_mjs
     server_ts = (host_dir / "server" / "server.ts").read_text()
     assert "APX_APPKIT_STATIC_PATH" in server_ts
     assert "APX_PYTHON_BRIDGE_PROXY_PATHS" in server_ts

@@ -71,6 +71,7 @@ def _package_json(name: str, runtime_dependency: str) -> str:
 def _start_mjs() -> str:
     return """\
 import { spawn } from 'node:child_process';
+import { createWorkspaceClient } from '@databricks/appkit';
 
 const appPort = process.env.DATABRICKS_APP_PORT ?? process.env.PORT ?? '3000';
 const bridgePort = process.env.APX_PYTHON_BRIDGE_PORT ?? (appPort === '8000' ? '8001' : '8000');
@@ -78,6 +79,37 @@ const bridgeUrl = process.env.APX_PYTHON_BRIDGE_URL ?? `http://127.0.0.1:${bridg
 const bridgeApp = process.env.APX_PYTHON_BRIDGE_APP ?? 'agent_server.appkit_bridge:app';
 const children = [];
 let shuttingDown = false;
+
+async function appKitTelemetryEnv() {
+  const destination = process.env.MLFLOW_TRACING_DESTINATION?.trim();
+  if (!destination) {
+    return {};
+  }
+  const client = createWorkspaceClient();
+  await client.config.ensureResolved();
+  const host = client.config.host?.replace(/[/]+$/, '');
+  const headers = new Headers();
+  await client.config.authenticate(headers);
+  const authorization = headers.get('authorization');
+  if (!host || !authorization) {
+    throw new Error('MLflow UC tracing requires an authenticated Databricks workspace client');
+  }
+  const signalHeaders = (table) => [
+    `Authorization=${encodeURIComponent(authorization)}`,
+    `X-Databricks-UC-Table-Name=${encodeURIComponent(`${destination}.${table}`)}`,
+  ].join(',');
+  return {
+    OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? `${host}/api/2.0/otel`,
+    OTEL_EXPORTER_OTLP_TRACES_HEADERS: process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS
+      ?? signalHeaders('mlflow_experiment_trace_otel_spans'),
+    OTEL_EXPORTER_OTLP_METRICS_HEADERS: process.env.OTEL_EXPORTER_OTLP_METRICS_HEADERS
+      ?? signalHeaders('mlflow_experiment_trace_otel_metrics'),
+    OTEL_EXPORTER_OTLP_LOGS_HEADERS: process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS
+      ?? signalHeaders('mlflow_experiment_trace_otel_logs'),
+  };
+}
+
+const telemetryEnv = await appKitTelemetryEnv();
 
 function start(label, command, args, env = {}) {
   const child = spawn(command, args, {
@@ -127,6 +159,7 @@ start('APX Python bridge', process.env.PYTHON ?? 'python', [
 });
 
 start('APX AppKit host', process.execPath, ['--import', 'tsx', 'server/server.ts'], {
+  ...telemetryEnv,
   APX_PYTHON_BRIDGE_URL: bridgeUrl,
   DATABRICKS_APP_PORT: appPort,
   NODE_OPTIONS: [process.env.NODE_OPTIONS, '--preserve-symlinks'].filter(Boolean).join(' '),
