@@ -116,8 +116,9 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     build_script = parsed["artifacts"]["default"]["build"]
     assert "cp agent.py" in build_script, build_script
 
-    experiments = parsed["resources"]["experiments"]
-    assert "my_agent_experiment" in experiments
+    assert "experiments" not in parsed["resources"]
+    experiment_resource = apps["my_agent"]["resources"][0]["experiment"]
+    assert experiment_resource["experiment_id"] == "${var.mlflow_experiment_id}"
 
     # Targets are pre-wired for laptop ``dev`` + CI ``staging`` / ``prod``.
     assert "dev" in parsed["targets"]
@@ -135,14 +136,59 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
     variables = parsed["variables"]
     assert "apx_git_sha" in variables
     assert "apx_model_version" in variables
+    assert variables["mlflow_experiment_id"]["default"] == ""
+    assert variables["mlflow_tracing_sql_warehouse_id"]["default"] == ""
     assert variables["apx_model_version"]["default"] == "unregistered"
     env_entries = {
         e["name"]: e["value"]
         for e in parsed["resources"]["apps"]["my_agent"]["config"]["env"]
     }
     assert env_entries["APX_AGENT_NAME"] == "my_agent"
+    assert env_entries["MLFLOW_EXPERIMENT_ID"] == "${var.mlflow_experiment_id}"
+    assert env_entries["MLFLOW_TRACING_SQL_WAREHOUSE_ID"] == "${var.mlflow_tracing_sql_warehouse_id}"
     assert env_entries["APX_GIT_SHA"] == "${var.apx_git_sha}"
     assert env_entries["APX_MODEL_VERSION"] == "${var.apx_model_version}"
+
+
+def test_scaffold_apps_can_declare_trace_warehouse_default(tmp_path: Path) -> None:
+    import apx_agent.cli as cli
+
+    target = tmp_path / "my_agent"
+    cli._scaffold_apps(
+        target, "my_agent", False, "samples", "tpch",
+        trace_warehouse_default="wh123",
+    )
+
+    parsed = yaml.safe_load((target / "databricks.yml").read_text())
+    assert parsed["variables"]["mlflow_tracing_sql_warehouse_id"]["default"] == "wh123"
+
+
+def test_scaffold_trace_warehouse_default_prefers_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apx_agent.cli as cli
+
+    monkeypatch.setenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", "env-wh")
+    assert cli._scaffold_trace_warehouse_default(None) == "env-wh"
+
+
+def test_scaffold_trace_warehouse_default_picks_running_warehouse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apx_agent.cli as cli
+
+    monkeypatch.delenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", raising=False)
+
+    class Warehouses:
+        @staticmethod
+        def list() -> list[Any]:
+            return [
+                type("Warehouse", (), {"id": "stopped-wh", "state": "STOPPED"})(),
+                type("Warehouse", (), {"id": "running-wh", "state": "RUNNING"})(),
+            ]
+
+    ws = type("WS", (), {"warehouses": Warehouses})()
+    assert cli._scaffold_trace_warehouse_default(ws) == "running-wh"
 
 
 # ---------------------------------------------------------------------------

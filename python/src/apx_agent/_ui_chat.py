@@ -872,6 +872,13 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
   .msg.assistant p {{ margin: 6px 0; }}
   .msg.assistant > :first-child {{ margin-top: 0; }}
   .msg.assistant > :last-child {{ margin-bottom: 0; }}
+  .trace-inline {{ align-self: flex-start; display: flex; align-items: center; gap: 8px;
+                   margin: -8px 0 4px; font-size: 11px; color: #6b7280; }}
+  .trace-inline button, .trace-inline a {{ background: transparent; border: 1px solid #1e3a5f;
+                                           border-radius: 5px; color: #60b0ff; cursor: pointer;
+                                           font: inherit; padding: 3px 8px; text-decoration: none; }}
+  .trace-inline button:hover, .trace-inline a:hover {{ background: #0d1f38; }}
+  .trace-inline code {{ color: #93c5fd; font-family: ui-monospace, monospace; }}
   @keyframes blink {{ 50% {{ opacity: 0; }} }}
 
   /* Inline tool call pills */
@@ -2189,6 +2196,26 @@ function addMsg(role, text, streaming) {{
   return div;
 }}
 
+function attachAssistantTrace(afterEl, traceId, status) {{
+  if (!traceId || !afterEl) return;
+  const prior = afterEl.nextElementSibling;
+  if (prior && prior.classList.contains('trace-inline')) prior.remove();
+  const row = document.createElement('div');
+  row.className = 'trace-inline';
+  const shortId = traceId.length > 18 ? traceId.slice(0, 18) + '...' : traceId;
+  const state = status === 'error' ? 'errored' : 'captured';
+  row.innerHTML =
+    `<span>MLflow trace ${{state}}</span>` +
+    `<button type="button" title="Show this trace in the APX trace panel">` +
+    `<code>${{escHtml(shortId)}}</code></button>` +
+    `<a href="/_apx/traces/${{encodeURIComponent(traceId)}}" target="_blank" title="Open full trace">full</a>`;
+  row.querySelector('button').onclick = () => {{
+    switchTab('trace', document.querySelectorAll('.panel-tabs button')[2]);
+    finalizeTrace(traceId, status, {{ emitEvents: false }});
+  }};
+  afterEl.after(row);
+}}
+
 // ── Trace tab: live span bubbles ──
 const traceBody = document.getElementById('trace-body');
 const traceStatusEl = document.getElementById('trace-status');
@@ -2260,7 +2287,7 @@ async function finalizeTrace(traceId, status, opts) {{
   }}
   if (!traceId) {{
     traceBody.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">No trace found.</div>';
-    return;
+    return null;
   }}
   traceLinkEl.href = `/_apx/traces/${{traceId}}`;
   traceLinkEl.style.display = 'inline';
@@ -2279,7 +2306,7 @@ async function finalizeTrace(traceId, status, opts) {{
     }}
     if (data.error || !data.spans || !data.spans.length) {{
       traceBody.innerHTML = `<div style="color:#555;font-size:12px;padding:8px 0">${{data.error || 'No spans.'}}</div>`;
-      return;
+      return traceId;
     }}
     traceBody.innerHTML = '';
     const SPAN_COLORS = {{LLM:'#22d3ee',TOOL:'#facc15',CHAIN:'#a78bfa',AGENT:'#60b0ff',OTHER:'#94a3b8'}};
@@ -2434,6 +2461,7 @@ async function finalizeTrace(traceId, status, opts) {{
   }} catch(e) {{
     traceBody.innerHTML = `<div style="color:#f87171;font-size:12px">${{escHtml(e.message)}}</div>`;
   }}
+  return traceId;
 }}
 
 function addToolPills(trace) {{
@@ -2640,6 +2668,7 @@ form.addEventListener('submit', async e => {{
       body: JSON.stringify({{ input: history, stream: true, custom_inputs: {{ thread_id: devThreadId }} }}),
     }});
     if (!res.ok) throw new Error(`${{res.status}} ${{await res.text()}}`);
+    traceId = res.headers.get('x-apx-trace-id') || traceId;
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -2734,7 +2763,8 @@ form.addEventListener('submit', async e => {{
   assistantDiv.classList.remove('streaming');
   addEvent('assistant', full.slice(0, 80) + (full.length > 80 ? '…' : ''), null, {{ content: full }});
   history.push({{ role: 'assistant', content: full }});
-  finalizeTrace(traceId, traceStatus, {{ emitEvents: !toolEventsFromStream }});
+  traceId = await finalizeTrace(traceId, traceStatus, {{ emitEvents: !toolEventsFromStream }});
+  attachAssistantTrace(assistantDiv, traceId, traceStatus);
   sendBtn.disabled = false;
   inputEl.focus();
   // Refresh history list so the new/updated conversation appears.

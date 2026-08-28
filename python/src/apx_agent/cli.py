@@ -1684,6 +1684,8 @@ _SCAFFOLD_CATALOG_SCHEMA_ENV_BLOCK = '''\
             value: ${var.catalog}
           - name: APX_SCHEMA
             value: ${var.schema}
+          - name: MLFLOW_TRACING_SQL_WAREHOUSE_ID
+            value: ${var.mlflow_tracing_sql_warehouse_id}
 '''
 
 
@@ -1786,16 +1788,22 @@ variables:
     default: databricks-claude-sonnet-4-6
   mlflow_experiment_id:
     description: |
-      MLflow experiment ID for tracing. Populated by scripts/quickstart.py
-      into a local .env file and surfaced here for the app environment.
+      MLflow experiment ID for tracing. quickstart/deploy resolve it once and
+      bind the same experiment to the App resource and runtime environment.
     default: ""
+  mlflow_tracing_sql_warehouse_id:
+    description: |
+      SQL warehouse used for MLflow UC trace table grants and the generated
+      APX observability timeline. Filled from MLFLOW_TRACING_SQL_WAREHOUSE_ID
+      or a workspace warehouse when scaffold can discover one.
+    default: "<TRACE_WAREHOUSE_DEFAULT>"
   apx_git_sha:
     description: |
       Git commit the deploy was cut from. Injected automatically by
       `apx-agent agents deploy --target apps` so every trace the app emits carries
       an apx.git_sha tag and `canary analyze` can attribute traffic per
       version (issue #404). Leave the default.
-    default: ""
+    default: unversioned
   apx_model_version:
     description: |
       UC registered-model version this app serves, when known BEFORE the
@@ -1829,10 +1837,6 @@ artifacts:
       # overwrite the rewritten versions.
 
 resources:
-  experiments:
-    <APP_NAME>_experiment:
-      name: /Users/${var.workspace_user}/${bundle.name}-${bundle.target}
-
   apps:
     <APP_NAME>:
       name: <WORKSPACE_APP_NAME>
@@ -1849,7 +1853,7 @@ resources:
       resources:
         - name: experiment
           experiment:
-            experiment_id: ${resources.experiments.<APP_NAME>_experiment.id}
+            experiment_id: ${var.mlflow_experiment_id}
             permission: CAN_MANAGE
         # apx-agent agents deploy --target apps will auto-add resources from the agent's
         # ResourceSpec list. For now, list any extras here manually:
@@ -1925,7 +1929,7 @@ apx-agent project targeting Databricks Apps.
 ## Setup
 ```bash
 uv sync --group dev
-uv run quickstart  # creates the MLflow experiment + UC trace location, applies observability SQL when MLFLOW_TRACING_SQL_WAREHOUSE_ID is set, writes .env
+uv run quickstart  # creates the MLflow experiment + UC trace location, applies observability SQL when a trace warehouse is declared, writes .env
 ```
 
 ## Local dev
@@ -1944,9 +1948,11 @@ uv run apx-agent agents deploy --target apps  # validates, deploys, runs the bun
 
 ## Lakehouse Observability
 Data/coworker scaffolds write `.apx/sql/apx_agent_timeline.sql`. `uv run quickstart`
-applies it automatically when `MLFLOW_TRACING_SQL_WAREHOUSE_ID` is set. It creates
+applies it automatically when `mlflow_tracing_sql_warehouse_id` is set in
+`databricks.yml` or `MLFLOW_TRACING_SQL_WAREHOUSE_ID` is set locally. It creates
 `apx_agent_events` and the joined `apx_agent_timeline` view beside the MLflow
-`<prefix>_trace_unified` view in the same UC schema.
+`<prefix>_trace_unified` view in the same UC schema. The App resource and runtime
+environment both point at the same `mlflow_experiment_id`.
 
 ## Promoting to another environment
 `databricks.yml` ships `dev` (default), `staging`, and `prod` targets. All
@@ -2018,9 +2024,8 @@ Define your agent + tools in `agent.py` (top-level). The
 imports your agent and wires it into the Databricks Apps runtime — you
 shouldn't need to edit it.
 
-> Tip: use underscore/snake_case for `<APP_NAME>` — Databricks bundle
-> resource references like `${resources.experiments.<APP_NAME>_experiment.id}`
-> are easier to read with snake_case names.
+> Tip: use underscore/snake_case for `<APP_NAME>` if you plan to inspect
+> generated UC object names; APX derives trace table prefixes from it.
 '''
 
 
@@ -2172,6 +2177,30 @@ def _make_ws_for_scaffold(profile: str | None):
     except Exception as exc:
         click.echo(f"  (warning: could not connect to the workspace — {exc})", err=True)
         return None
+
+
+def _scaffold_trace_warehouse_default(ws) -> str:
+    env_value = os.environ.get("MLFLOW_TRACING_SQL_WAREHOUSE_ID")
+    env_value = env_value.strip() if env_value is not None else ""
+    if env_value:
+        return env_value
+    if ws is None:
+        return ""
+    try:
+        warehouses = list(ws.warehouses.list())
+    except Exception:
+        return ""
+    for warehouse in warehouses:
+        state = getattr(warehouse, "state", "")
+        state_name = str(getattr(state, "name", state)).upper()
+        warehouse_id = getattr(warehouse, "id", "") or ""
+        if state_name == "RUNNING" and warehouse_id:
+            return str(warehouse_id)
+    for warehouse in warehouses:
+        warehouse_id = getattr(warehouse, "id", "") or ""
+        if warehouse_id:
+            return str(warehouse_id)
+    return ""
 
 
 def _ws_is_connected(ws) -> bool:
@@ -3919,6 +3948,7 @@ def _scaffold_apps(
     join_key: str | None = None, lakebase: bool = True,
     instructions: str | None = None,
     ci: CiProvider | None = "github",
+    trace_warehouse_default: str | None = None,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -3965,10 +3995,9 @@ def _scaffold_apps(
     instructions_arg = f", instructions={repr(instructions)}" if instructions else ""
     instructions_value = repr(instructions) if instructions else repr("You are a helpful assistant.")
 
-    import re as _re
-    name_slug = _re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
+    name_slug = _apx_name_slug(name)
     workspace_app_name = name_slug.replace("_", "-")
-    trace_table_prefix = f"apx_{name_slug}"
+    trace_table_prefix = _apx_trace_table_prefix(name)
 
     # Emit the knowledge knob iff the bundle is actually being written (manifest is not None).
     # This keeps pyproject.toml coherent: the knob resolves iff the bundle exists on disk.
@@ -4011,6 +4040,7 @@ def _scaffold_apps(
             .replace("<SCHEMA>", schema)
             .replace("<TRACE_LOCATION_ARGS>", trace_location_args)
             .replace("<TRACE_TABLE_PREFIX>", trace_table_prefix)
+            .replace("<TRACE_WAREHOUSE_DEFAULT>", trace_warehouse_default or "")
             .replace("<EXAMPLE_TOOL>", prelude)
             .replace("<EXTRA_TOOLS>", extra_tools)
             .replace("<PERSONA_ARG>", persona_arg)
@@ -4516,10 +4546,12 @@ def scaffold(
         ci: CiProvider | None = None
         if ci_provider in ("github", "gitlab"):
             ci = cast(CiProvider, ci_provider)
+        trace_warehouse_default = _scaffold_trace_warehouse_default(_scaffold_ws())
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
             template=scaffold_template, persona=persona, objective=objective,
             join_key=join_key, lakebase=lakebase, instructions=instructions, ci=ci,
+            trace_warehouse_default=trace_warehouse_default,
         )
     else:
         _scaffold_model_serving(target, project_name, force, catalog, schema, table)
@@ -7868,6 +7900,9 @@ def _ensure_experiment_id(
     bundle_name: str,
     bundle_target: str,
     env_value: str | None,
+    catalog_name: str | None = None,
+    schema_name: str | None = None,
+    table_prefix: str | None = None,
 ) -> str | None:
     """Resolve an MLflow experiment id for `--var mlflow_experiment_id=...`.
 
@@ -7875,7 +7910,8 @@ def _ensure_experiment_id(
       1. ``env_value`` (anything the caller already provided via --var)
       2. Local ``.env`` if it has ``MLFLOW_EXPERIMENT_ID``
       3. Look up by canonical path ``/Users/<user>/<bundle_name>-<target>``;
-         create it if missing.
+         create it if missing, binding UC trace storage when catalog/schema
+         are declared.
       4. Return ``None`` on failure (deploy proceeds without experiment).
     """
     import json as _json
@@ -7918,6 +7954,36 @@ def _ensure_experiment_id(
 
     exp_path = f"/Users/{email}/{bundle_name}-{bundle_target}"
 
+    if catalog_name and schema_name:
+        old_profile = os.environ.get("DATABRICKS_CONFIG_PROFILE")
+        try:
+            if profile:
+                os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
+            from .bootstrap import _ensure_experiment
+            with contextlib.redirect_stdout(sys.stderr):
+                eid = _ensure_experiment(
+                    exp_path,
+                    "databricks",
+                    catalog_name=catalog_name,
+                    schema_name=schema_name,
+                    table_prefix=table_prefix,
+                )
+            click.echo(f"  using UC-backed experiment: {exp_path} (id={eid})", err=True)
+            return str(eid)
+        except (Exception, SystemExit) as exc:
+            click.echo(
+                "# could not bind MLflow experiment to UC trace storage "
+                f"{catalog_name}.{schema_name}: {exc}",
+                err=True,
+            )
+            return None
+        finally:
+            if profile:
+                if old_profile is None:
+                    os.environ.pop("DATABRICKS_CONFIG_PROFILE", None)
+                else:
+                    os.environ["DATABRICKS_CONFIG_PROFILE"] = old_profile
+
     # get-by-name (use --json to suppress the auto-error on miss)
     get_cmd = [
         "databricks", "experiments", "get-by-name", exp_path, "--output", "json",
@@ -7956,6 +8022,52 @@ def _ensure_experiment_id(
     except Exception:
         pass
     return None
+
+
+def _bundle_var_value(vars: tuple[str, ...], name: str) -> str | None:
+    prefix = f"{name}="
+    for value in vars:
+        if value.startswith(prefix):
+            return value.split("=", 1)[1].strip() or None
+    return None
+
+
+def _bundle_declared_var_value(
+    doc: dict[str, Any],
+    bundle_target: str,
+    vars: tuple[str, ...],
+    name: str,
+) -> str | None:
+    explicit = _bundle_var_value(vars, name)
+    if explicit is not None:
+        return explicit
+    target = doc.get("targets")
+    if isinstance(target, dict):
+        target_vars = target.get(bundle_target)
+        if isinstance(target_vars, dict):
+            variables = target_vars.get("variables")
+            if isinstance(variables, dict) and name in variables:
+                value = variables[name]
+                if isinstance(value, dict):
+                    value = value.get("default")
+                if isinstance(value, str) and value.strip() and "${" not in value:
+                    return value.strip()
+    variables = doc.get("variables")
+    if isinstance(variables, dict):
+        value = variables.get(name)
+        if isinstance(value, dict):
+            value = value.get("default")
+        if isinstance(value, str) and value.strip() and "${" not in value:
+            return value.strip()
+    return None
+
+
+def _apx_name_slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_") or "agent"
+
+
+def _apx_trace_table_prefix(name: str) -> str:
+    return f"apx_{_apx_name_slug(name)}"
 
 
 def _grant_experiment_to_sp(
@@ -8071,6 +8183,21 @@ def _grant_trace_uc_tables_to_sp(
             f"{_quote_uc_part(catalog)}.{_quote_uc_part(schema)}.{_quote_uc_part(table)} "
             f"TO {principal}"
         )
+    for table in (
+        f"{prefix}_trace_metadata",
+        f"{prefix}_trace_unified",
+        "apx_agent_timeline",
+    ):
+        statements.append(
+            "GRANT SELECT ON TABLE "
+            f"{_quote_uc_part(catalog)}.{_quote_uc_part(schema)}.{_quote_uc_part(table)} "
+            f"TO {principal}"
+        )
+    statements.append(
+        "GRANT SELECT, MODIFY ON TABLE "
+        f"{_quote_uc_part(catalog)}.{_quote_uc_part(schema)}."
+        f"{_quote_uc_part('apx_agent_events')} TO {principal}"
+    )
 
     ok = True
     for stmt in statements:
@@ -8850,6 +8977,7 @@ def _register_apps_manifest_step(
                 agent_name=agent_name,
                 extra_version_tags=extra_version_tags,
                 experiment_id=experiment_id,
+                profile=profile,
             )
         if profile:
             if old_profile is None:
@@ -9154,22 +9282,44 @@ def _deploy_apps_impl(
         # Track the experiment id we end up deploying with, from either the
         # caller's --var or our auto-create. Used post-poll to grant the app SP
         # access so tracing can land.
-        resolved_exp_id: str | None = None
-        for v in vars or ():
-            if v.startswith("mlflow_experiment_id="):
-                resolved_exp_id = v.split("=", 1)[1].strip() or None
-                break
+        resolved_exp_id = _bundle_var_value(vars, "mlflow_experiment_id")
+        declared_bundle_vars = doc.get("variables")
+        tracing_warehouse_id = _bundle_var_value(
+            vars, "mlflow_tracing_sql_warehouse_id",
+        ) or os.environ.get(
+            "MLFLOW_TRACING_SQL_WAREHOUSE_ID",
+        ) or _bundle_declared_var_value(
+            doc, bundle_target, vars, "mlflow_tracing_sql_warehouse_id",
+        )
         if auto_experiment and resolved_exp_id is None:
             bundle_name = ((doc.get("bundle") or {}).get("name") or bundle_key)
+            catalog_name = _bundle_declared_var_value(
+                doc, bundle_target, vars, "catalog",
+            )
+            schema_name = _bundle_declared_var_value(
+                doc, bundle_target, vars, "schema",
+            )
             eid = _ensure_experiment_id(
                 profile=profile,
                 bundle_name=bundle_name,
                 bundle_target=bundle_target,
                 env_value=None,
+                catalog_name=catalog_name,
+                schema_name=schema_name,
+                table_prefix=_apx_trace_table_prefix(bundle_name),
             )
             if eid:
                 resolved_exp_id = eid
                 extra_vars.append(f"mlflow_experiment_id={eid}")
+        if (
+            tracing_warehouse_id
+            and isinstance(declared_bundle_vars, dict)
+            and "mlflow_tracing_sql_warehouse_id" in declared_bundle_vars
+            and _bundle_var_value(vars, "mlflow_tracing_sql_warehouse_id") is None
+        ):
+            extra_vars.append(
+                f"mlflow_tracing_sql_warehouse_id={tracing_warehouse_id}",
+            )
 
         # 2d. Version correlation (issue #404): pass the deploy commit into the
         # app container as APX_GIT_SHA so every trace carries an apx.git_sha tag
@@ -9181,7 +9331,6 @@ def _deploy_apps_impl(
         # `--var apx_git_sha=` always wins.
         from ._apps_registry import GIT_SHA_TAG
         correlation_sha = (extra_version_tags or {}).get(GIT_SHA_TAG)
-        declared_bundle_vars = doc.get("variables")
         if (
             correlation_sha
             and isinstance(declared_bundle_vars, dict)
@@ -9271,7 +9420,12 @@ def _deploy_apps_impl(
             if sp and resolved_exp_id:
                 if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
                     log("  granted app SP CAN_MANAGE on tracing experiment")
-                if _grant_trace_uc_tables_to_sp(resolved_exp_id, sp, profile=profile):
+                if _grant_trace_uc_tables_to_sp(
+                    resolved_exp_id,
+                    sp,
+                    profile=profile,
+                    warehouse_id=tracing_warehouse_id,
+                ):
                     log("  granted app SP UC permissions on trace tables")
 
         # 6c. readyz gate: prove the app actually answers + traces, not just that
@@ -12070,6 +12224,7 @@ def register_agent_cmd(
                 bundle_target=bundle_target,
                 agent_name=config.get("name") or app_name,
                 extra_version_tags=_provenance_version_tags(cwd),
+                profile=profile,
             )
         except Exception as exc:
             raise click.ClickException(

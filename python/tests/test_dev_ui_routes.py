@@ -335,6 +335,15 @@ class TestLandingRender:
         assert 'class="starter-chips"' in html and "Hi there" in html
         assert 'class="cap-cards"' not in html
 
+    def test_chat_turn_surfaces_mlflow_trace_identity(self):
+        from apx_agent._ui_chat import _render_agent_ui
+        html = _render_agent_ui(self._ctx(tools=[], examples=[]))
+        assert "'x-return-trace-id': 'true'" in html
+        assert "res.headers.get('x-apx-trace-id')" in html
+        assert "MLflow trace" in html
+        assert "attachAssistantTrace(assistantDiv, traceId, traceStatus)" in html
+        assert "fetch(`/_apx/traces/${traceId}?fmt=json`)" in html
+
 
 class TestTraceDetailSpanEvents:
     def test_render_trace_detail_shows_span_events(self):

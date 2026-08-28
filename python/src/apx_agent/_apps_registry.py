@@ -67,13 +67,15 @@ PROD_ALIAS = "prod"
 
 
 @contextlib.contextmanager
-def _uc_registry_context():
+def _uc_registry_context(profile: str | None = None):
     import mlflow
 
     old_tracking_uri = mlflow.get_tracking_uri()
     old_registry_uri = mlflow.get_registry_uri()
-    mlflow.set_tracking_uri("databricks")
-    mlflow.set_registry_uri("databricks-uc")
+    tracking_uri = f"databricks://{profile}" if profile else "databricks"
+    registry_uri = f"databricks-uc://{profile}" if profile else "databricks-uc"
+    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_registry_uri(registry_uri)
     try:
         yield
     finally:
@@ -133,6 +135,7 @@ def register_apps_manifest(
     extra_version_tags: dict[str, str] | None = None,
     experiment_id: str | None = None,
     mlflow_client: Any | None = None,
+    profile: str | None = None,
 ) -> AppsManifestResult:
     """Log + register ``agent`` as a UC version manifest for a deployed App.
 
@@ -159,6 +162,9 @@ def register_apps_manifest(
         experiment_id: Optional Databricks MLflow experiment id for the
             manifest run. When omitted, ``MLFLOW_EXPERIMENT_ID`` is honored.
         mlflow_client: Optional ``MlflowClient`` (injected in tests).
+        profile: Optional Databricks CLI profile for MLflow tracking/registry
+            auth. When set, MLflow uses ``databricks://<profile>`` and
+            ``databricks-uc://<profile>`` instead of ambient credentials.
 
     Returns:
         An ``AppsManifestResult`` with the registered version.
@@ -190,8 +196,10 @@ def register_apps_manifest(
             ColSpec("string", "apx.serving"),
         ]),
     )
-    mlflow.set_tracking_uri("databricks")
-    mlflow.set_registry_uri("databricks-uc")
+    tracking_uri = f"databricks://{profile}" if profile else "databricks"
+    registry_uri = f"databricks-uc://{profile}" if profile else "databricks-uc"
+    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_registry_uri(registry_uri)
     try:
         with mlflow.start_run(
             experiment_id=experiment_id or os.environ.get("MLFLOW_EXPERIMENT_ID"),

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import importlib
+import os
 import subprocess
 import sys
 import textwrap
@@ -501,7 +502,7 @@ def test_json_output_enriched_with_uc_version_provenance_readyz(
     (scaffold / "uv.lock").write_text("version = 1\n")
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="3", app_name=app_name)
 
@@ -675,7 +676,7 @@ def test_bundle_key_and_app_name_can_differ(
     experiment_bundle_names = []
     monkeypatch.setattr(
         "apx_agent.cli._ensure_experiment_id",
-        lambda *, profile, bundle_name, bundle_target, env_value: (
+        lambda *, profile, bundle_name, bundle_target, env_value, **_kw: (
             experiment_bundle_names.append(bundle_name) or "123"
         ),
     )
@@ -731,6 +732,70 @@ def test_grant_trace_uc_tables_to_app_sp(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "GRANT USE CATALOG ON CATALOG `main` TO `sp-123`" in sql
     assert "GRANT USE SCHEMA ON SCHEMA `main`.`obs` TO `sp-123`" in sql
     assert "GRANT SELECT, MODIFY ON TABLE `main`.`obs`.`apx_demo_otel_spans` TO `sp-123`" in sql
+    assert "GRANT SELECT ON TABLE `main`.`obs`.`apx_demo_trace_metadata` TO `sp-123`" in sql
+    assert "GRANT SELECT ON TABLE `main`.`obs`.`apx_demo_trace_unified` TO `sp-123`" in sql
+    assert "GRANT SELECT ON TABLE `main`.`obs`.`apx_agent_timeline` TO `sp-123`" in sql
+    assert "GRANT SELECT, MODIFY ON TABLE `main`.`obs`.`apx_agent_events` TO `sp-123`" in sql
+
+
+def test_ensure_experiment_id_binds_uc_trace_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apx_agent.bootstrap as bootstrap
+    import apx_agent.cli as cli
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "stale-profile")
+    seen: dict[str, Any] = {}
+
+    def _fake_run(args: list[str], **_kw: Any) -> _FakeProc:
+        if args[:2] == ["databricks", "current-user"]:
+            return _FakeProc(
+                stdout=json.dumps({
+                    "emails": [{"primary": True, "value": "user@databricks.com"}],
+                }),
+            )
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    def _fake_ensure_experiment(
+        experiment_path: str,
+        tracking_uri: str,
+        *,
+        catalog_name: str | None = None,
+        schema_name: str | None = None,
+        table_prefix: str | None = None,
+    ) -> str:
+        seen.update(
+            env_profile=os.environ.get("DATABRICKS_CONFIG_PROFILE"),
+            experiment_path=experiment_path,
+            tracking_uri=tracking_uri,
+            catalog_name=catalog_name,
+            schema_name=schema_name,
+            table_prefix=table_prefix,
+        )
+        return "exp-uc"
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(bootstrap, "_ensure_experiment", _fake_ensure_experiment)
+
+    assert cli._ensure_experiment_id(
+        profile="fevm",
+        bundle_name="test-app",
+        bundle_target="prod",
+        env_value=None,
+        catalog_name="main",
+        schema_name="obs",
+        table_prefix="apx_test_app",
+    ) == "exp-uc"
+    assert seen == {
+        "env_profile": "fevm",
+        "experiment_path": "/Users/user@databricks.com/test-app-prod",
+        "tracking_uri": "databricks",
+        "catalog_name": "main",
+        "schema_name": "obs",
+        "table_prefix": "apx_test_app",
+    }
+    assert os.environ["DATABRICKS_CONFIG_PROFILE"] == "stale-profile"
 
 
 def test_json_output_on_error_path(
@@ -875,7 +940,7 @@ def test_register_uc_runs_once_when_configured(
     calls: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         calls.append({
             "uc_name": uc_name, "model": model,
             "app_name": app_name, "bundle_target": bundle_target,
@@ -914,7 +979,7 @@ def test_successful_apps_deploy_records_local_history(
     monkeypatch.setattr(
         "apx_agent._apps_registry.register_apps_manifest",
         lambda agent, *, uc_name, model, app_name, bundle_target,
-               agent_name=None, extra_version_tags=None, experiment_id=None:
+               agent_name=None, extra_version_tags=None, experiment_id=None, profile=None:
             AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name),
     )
 
@@ -1064,7 +1129,7 @@ def test_register_uc_forwards_extra_version_tags(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -1242,7 +1307,7 @@ def test_agents_register_backfills_manifest(
     calls: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         calls.append({
             "uc_name": uc_name, "model": model, "app_name": app_name,
             "bundle_target": bundle_target, "agent_name": agent_name,
@@ -1281,7 +1346,7 @@ def test_agents_register_json_output(
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="9", app_name=app_name)
 
@@ -1370,7 +1435,7 @@ def test_readyz_failure_registers_manifest_with_failed_tag(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="7", app_name=app_name)
@@ -1510,7 +1575,7 @@ def test_canary_deploy_apps_registers_role_tag_end_to_end(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen.update(tags=extra_version_tags, app_name=app_name,
                     uc_name=uc_name, bundle_target=bundle_target)
         from apx_agent._apps_registry import AppsManifestResult
@@ -1541,7 +1606,7 @@ def test_canary_deploy_apps_stamps_git_sha_end_to_end(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -1570,7 +1635,7 @@ def test_canary_deploy_apps_no_git_sha_still_succeeds(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -1622,7 +1687,7 @@ def _setup_promote_mocks(
     monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: dirty)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         captured["registered"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="5", app_name=app_name)
@@ -1770,7 +1835,7 @@ def _setup_rollback_mocks(
     monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: False)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         captured["registered"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="8", app_name=app_name)
@@ -1936,7 +2001,7 @@ def test_plain_deploy_threads_provenance_to_registrar(
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         seen["tags"] = extra_version_tags
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="9", app_name=app_name)
@@ -2031,7 +2096,7 @@ def test_no_run_skips_readiness_poll_and_still_registers_manifest(
     registered: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
-                        agent_name=None, extra_version_tags=None, experiment_id=None):
+                        agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
         registered.append({"uc_name": uc_name, "app_name": app_name})
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
@@ -2093,8 +2158,161 @@ variables:
 """
 
 
+_DATABRICKS_YML_WITH_TRACE_WAREHOUSE_VAR = _DATABRICKS_YML + """
+variables:
+  mlflow_tracing_sql_warehouse_id:
+    default: ""
+"""
+
+
+_DATABRICKS_YML_WITH_OBSERVABILITY_VARS = """\
+bundle:
+  name: test-app
+
+variables:
+  catalog:
+    default: main
+  schema:
+    default: obs
+  mlflow_experiment_id:
+    default: ""
+  mlflow_tracing_sql_warehouse_id:
+    default: ""
+
+resources:
+  apps:
+    my-app:
+      name: my-app
+      description: test
+      source_code_path: ./.build
+
+targets:
+  dev:
+    default: true
+    mode: development
+  prod:
+    mode: production
+    variables:
+      catalog: prod_main
+      schema: prod_obs
+"""
+
+
 def _bundle_deploy_call(calls: list[list[str]]) -> list[str]:
     return next(c for c in calls if c[:2] == ["bundle", "deploy"])
+
+
+def test_deploy_auto_experiment_binds_declared_uc_trace_storage(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When catalog/schema are declared, deploy's auto experiment is UC-backed."""
+    (scaffold / "databricks.yml").write_text(_DATABRICKS_YML_WITH_OBSERVABILITY_VARS)
+    seen: dict[str, Any] = {}
+
+    def _fake_ensure_experiment(**kwargs: Any) -> str:
+        seen.update(kwargs)
+        return "exp-uc"
+
+    monkeypatch.setattr("apx_agent.cli._ensure_experiment_id", _fake_ensure_experiment)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "prod",
+        "--no-run",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["catalog_name"] == "prod_main"
+    assert seen["schema_name"] == "prod_obs"
+    assert seen["table_prefix"] == "apx_test_app"
+    deploy_call = _bundle_deploy_call(calls)
+    assert "mlflow_experiment_id=exp-uc" in deploy_call
+
+
+def test_deploy_injects_trace_warehouse_var_and_uses_it_for_grants(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """New Apps scaffolds inherit the UC trace warehouse from the operator env.
+
+    That same warehouse is used for the post-deploy app-SP table grants, so
+    OTel rows, APX events, and the joined timeline are readable/writable by
+    the running Databricks App without hand-editing the bundle.
+    """
+    (scaffold / "databricks.yml").write_text(_DATABRICKS_YML_WITH_TRACE_WAREHOUSE_VAR)
+    monkeypatch.setenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", "wh123")
+    grant_calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "apx_agent.cli._grant_experiment_to_sp",
+        lambda experiment_id, sp, *, profile: True,
+    )
+    monkeypatch.setattr(
+        "apx_agent.cli._grant_trace_uc_tables_to_sp",
+        lambda experiment_id, sp, *, profile, warehouse_id=None: (
+            grant_calls.append((experiment_id, warehouse_id)) or True
+        ),
+    )
+    calls = _install_subprocess_mock(
+        monkeypatch,
+        get_payload=json.dumps({
+            "name": "my-app",
+            "url": "https://my-app.example.databricksapps.com",
+            "compute_status": {"state": "ACTIVE"},
+            "app_status": {"state": "RUNNING"},
+            "service_principal_client_id": "sp-123",
+        }),
+    )
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "dev",
+        "--var", "mlflow_experiment_id=exp1",
+    ])
+    assert result.exit_code == 0, result.output
+    deploy_call = _bundle_deploy_call(calls)
+    var_values = [
+        deploy_call[i + 1]
+        for i, a in enumerate(deploy_call)
+        if a == "--var"
+    ]
+    assert "mlflow_tracing_sql_warehouse_id=wh123" in var_values
+    assert grant_calls == [("exp1", "wh123")]
+
+
+def test_deploy_uses_declared_trace_warehouse_default_for_grants(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    yml = _DATABRICKS_YML_WITH_TRACE_WAREHOUSE_VAR.replace(
+        'default: ""',
+        'default: wh-from-yml',
+    )
+    (scaffold / "databricks.yml").write_text(yml)
+    grant_calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "apx_agent.cli._grant_experiment_to_sp",
+        lambda experiment_id, sp, *, profile: True,
+    )
+    monkeypatch.setattr(
+        "apx_agent.cli._grant_trace_uc_tables_to_sp",
+        lambda experiment_id, sp, *, profile, warehouse_id=None: (
+            grant_calls.append((experiment_id, warehouse_id)) or True
+        ),
+    )
+    _install_subprocess_mock(
+        monkeypatch,
+        get_payload=json.dumps({
+            "name": "my-app",
+            "url": "https://my-app.example.databricksapps.com",
+            "compute_status": {"state": "ACTIVE"},
+            "app_status": {"state": "RUNNING"},
+            "service_principal_client_id": "sp-123",
+        }),
+    )
+
+    result = CliRunner().invoke(main, [
+        "agents", "deploy", "--target", "apps", "--bundle-target", "dev",
+        "--var", "mlflow_experiment_id=exp1",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert grant_calls == [("exp1", "wh-from-yml")]
 
 
 def test_deploy_injects_apx_git_sha_var_when_bundle_declares_it(
