@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 from ._apps_host_manifest import AppsHostManifest
@@ -17,6 +18,9 @@ def write_appkit_host_skeleton(
 ) -> Path:
     """Write `.build/apx_appkit_host` and return the host directory."""
     host_dir = project_root / ".build" / "apx_appkit_host"
+    agents_dir = host_dir / "server" / "agents"
+    if agents_dir.exists():
+        shutil.rmtree(agents_dir)
     agent_id = _agent_id(manifest.agent.name)
     files = {
         "package.json": _package_json(manifest.agent.name, runtime_dependency),
@@ -56,7 +60,10 @@ def _package_json(name: str, runtime_dependency: str) -> str:
             "zod": "^4.0.0",
             "zod-to-json-schema": "^3.25.0",
         },
-        "devDependencies": {"typescript": "~5.9.0"},
+        "devDependencies": {
+            "@types/express": "^4.17.25",
+            "typescript": "~5.9.0",
+        },
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
@@ -66,8 +73,9 @@ def _start_mjs() -> str:
 import { spawn } from 'node:child_process';
 
 const appPort = process.env.DATABRICKS_APP_PORT ?? process.env.PORT ?? '3000';
-const bridgePort = process.env.APX_PYTHON_BRIDGE_PORT ?? '8000';
+const bridgePort = process.env.APX_PYTHON_BRIDGE_PORT ?? (appPort === '8000' ? '8001' : '8000');
 const bridgeUrl = process.env.APX_PYTHON_BRIDGE_URL ?? `http://127.0.0.1:${bridgePort}`;
+const bridgeApp = process.env.APX_PYTHON_BRIDGE_APP ?? 'agent_server.appkit_bridge:app';
 const children = [];
 let shuttingDown = false;
 
@@ -109,7 +117,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 start('APX Python bridge', process.env.PYTHON ?? 'python', [
   '-m',
   'uvicorn',
-  'agent_server.appkit_bridge:app',
+  bridgeApp,
   '--host',
   '127.0.0.1',
   '--port',
@@ -147,8 +155,10 @@ def _tsconfig_json() -> str:
 
 def _server_ts() -> str:
     return """\
-import { createApp, server } from '@databricks/appkit';
+import { createApp, server, type IAppRouter } from '@databricks/appkit';
+import http from 'node:http';
 import { agents } from '@databricks/appkit/beta';
+import type { Request, Response } from 'express';
 
 import manifest from '../apx-host-manifest.json';
 import {
@@ -158,16 +168,41 @@ import {
 } from 'apx-internal-runtime/internal/appkit-host';
 
 const apxManifest = manifest as InternalApxAppsHostManifest;
+const pythonBridgeUrl = process.env.APX_PYTHON_BRIDGE_URL ?? 'http://127.0.0.1:8000';
+const proxyPaths = (process.env.APX_PYTHON_BRIDGE_PROXY_PATHS ?? '')
+  .split(',')
+  .map((path) => path.trim())
+  .filter(Boolean);
 
 await createApp({
   plugins: [
-    server(),
+    server({ staticPath: process.env.APX_APPKIT_STATIC_PATH || undefined }),
     internalApxAppKitGovernance({
       manifest: apxManifest,
-      pythonBridge: { baseUrl: process.env.APX_PYTHON_BRIDGE_URL ?? 'http://127.0.0.1:8000' },
+      pythonBridge: { baseUrl: pythonBridgeUrl },
     }),
     agents(internalApxAppKitAgentsOptionsFromManifest(apxManifest)),
   ],
+  onPluginsReady(appkit) {
+    if (proxyPaths.length === 0) return;
+    appkit.server.extend((app: IAppRouter) => {
+      for (const prefix of proxyPaths) {
+        app.use(prefix, (req: Request, res: Response) => {
+          const target = new URL(req.originalUrl, pythonBridgeUrl);
+          const headers = { ...req.headers };
+          delete headers.host;
+          const upstream = http.request(target, { method: req.method, headers }, (response) => {
+            res.writeHead(response.statusCode ?? 502, response.headers);
+            response.pipe(res);
+          });
+          upstream.on('error', () => {
+            if (!res.headersSent) res.status(502).json({ detail: 'APX Python bridge unavailable' });
+          });
+          req.pipe(upstream);
+        });
+      }
+    });
+  },
 });
 """
 

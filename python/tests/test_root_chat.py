@@ -94,3 +94,16 @@ async def test_root_chat_and_dev_ui_both_ship_in_apps_runtime(monkeypatch):
     assert "/" in paths, "root chat must ship in the Apps runtime"
     assert "/_apx/agent" in paths, "Dev UI (incl. Discover) must mount on Apps"
     assert "/_apx/discover" in paths, "Discover must be available on deployed Apps"
+
+
+@pytest.mark.asyncio
+async def test_explicit_dev_ui_disable_removes_developer_routes(monkeypatch):
+    monkeypatch.setenv("APX_DEV_UI", "0")
+    from apx_agent._wiring import mount_mcp_endpoints
+
+    app = FastAPI()
+    mount_mcp_endpoints(app, LlmAgent(tools=[get_weather]), AgentConfig(name="t"))
+    paths = [r.path for r in app.routes]
+    assert "/" in paths
+    assert "/_apx/agent" not in paths
+    assert "/_apx/discover" not in paths

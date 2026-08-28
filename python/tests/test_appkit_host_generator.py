@@ -21,6 +21,17 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
         LlmAgent(name="Pricing Agent", tools=[lookup_policy]),
         AgentConfig(name="Pricing Agent", model="databricks-claude-sonnet-4-5"),
     )
+    stale_agent = (
+        tmp_path
+        / ".build"
+        / "apx_appkit_host"
+        / "server"
+        / "agents"
+        / "stale-agent"
+        / "agent.ts"
+    )
+    stale_agent.parent.mkdir(parents=True)
+    stale_agent.write_text("stale")
 
     host_dir = write_appkit_host_skeleton(
         tmp_path,
@@ -31,39 +42,40 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert host_dir == tmp_path / ".build" / "apx_appkit_host"
     start_mjs = (host_dir / "scripts" / "start.mjs").read_text()
     assert "agent_server.appkit_bridge:app" in start_mjs
+    assert "APX_PYTHON_BRIDGE_APP" in start_mjs
     assert "agent_server.start_server:app" not in start_mjs
     assert "APX_PYTHON_BRIDGE_PORT" in start_mjs
     assert "APX_PYTHON_BRIDGE_URL" in start_mjs
+    assert "appPort === '8000' ? '8001' : '8000'" in start_mjs
     assert "APX_PYTHON_BRIDGE_CWD" in start_mjs
     assert "--preserve-symlinks" in start_mjs
     assert "server/server.ts" in start_mjs
     assert "'127.0.0.1'" in start_mjs
-    assert (host_dir / "server" / "server.ts").read_text() == (
-        "import { createApp, server } from '@databricks/appkit';\n"
+    server_ts = (host_dir / "server" / "server.ts").read_text()
+    assert "APX_APPKIT_STATIC_PATH" in server_ts
+    assert "APX_PYTHON_BRIDGE_PROXY_PATHS" in server_ts
+    assert "appkit.server.extend" in server_ts
+    assert "http.request" in server_ts
+    assert server_ts.startswith(
+        "import { createApp, server, type IAppRouter } from '@databricks/appkit';\n"
+        "import http from 'node:http';\n"
         "import { agents } from '@databricks/appkit/beta';\n"
-        "\n"
-        "import manifest from '../apx-host-manifest.json';\n"
-        "import {\n"
-        "  internalApxAppKitAgentsOptionsFromManifest,\n"
-        "  internalApxAppKitGovernance,\n"
-        "  type InternalApxAppsHostManifest,\n"
-        "} from 'apx-internal-runtime/internal/appkit-host';\n"
-        "\n"
-        "const apxManifest = manifest as InternalApxAppsHostManifest;\n"
-        "\n"
-        "await createApp({\n"
-        "  plugins: [\n"
-        "    server(),\n"
+        "import type { Request, Response } from 'express';\n"
+    )
+    assert "server({ staticPath: process.env.APX_APPKIT_STATIC_PATH || undefined })" in server_ts
+    assert "  plugins: [\n" in server_ts
+    assert (
+        "    server({ staticPath: process.env.APX_APPKIT_STATIC_PATH || undefined }),\n"
         "    internalApxAppKitGovernance({\n"
         "      manifest: apxManifest,\n"
-        "      pythonBridge: { baseUrl: process.env.APX_PYTHON_BRIDGE_URL ?? 'http://127.0.0.1:8000' },\n"
+        "      pythonBridge: { baseUrl: pythonBridgeUrl },\n"
         "    }),\n"
         "    agents(internalApxAppKitAgentsOptionsFromManifest(apxManifest)),\n"
         "  ],\n"
-        "});\n"
-    )
+    ) in server_ts
     agent_ts = host_dir / "server" / "agents" / "pricing-agent" / "agent.ts"
     assert "createInternalApxAppKitAgentDefinitionFromManifest" in agent_ts.read_text()
+    assert not stale_agent.exists()
 
     package_json = read_json(host_dir / "package.json")
     assert package_json["private"] is True
@@ -73,6 +85,7 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert package_json["dependencies"]["tsx"] == "^4.20.0"
     assert package_json["dependencies"]["zod"] == "^4.0.0"
     assert package_json["dependencies"]["zod-to-json-schema"] == "^3.25.0"
+    assert package_json["devDependencies"]["@types/express"] == "^4.17.25"
     assert package_json["scripts"]["build"] == "tsc --noEmit"
     assert package_json["scripts"]["start"] == "node scripts/start.mjs"
 

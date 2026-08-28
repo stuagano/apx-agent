@@ -11,7 +11,7 @@ export function useChat() {
     setIsLoading(true)
     try {
       const fullHistory = [...messages, userMsg]
-      const resp = await fetch('/responses', {
+      const resp = await fetch('/invocations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -7,7 +7,18 @@ sync:
 
 artifacts:
   default:
-    build: uv build --wheel -o .build/ && ls .build/*.whl | xargs basename > .build/requirements.txt && mkdir -p .build/client && cp -r client/dist .build/client/dist
+    build: |
+      set -e
+      mkdir -p .build
+      rm -f .build/*.whl .build/requirements.txt
+      uv build --wheel -o .build/ ../databricks-tools-core
+      uv build --wheel -o .build/ ../..
+      uv build --wheel -o .build/
+      basename .build/contract_parsing_agent-*.whl > .build/requirements.txt
+      basename .build/databricks_tools_core-*.whl >> .build/requirements.txt
+      basename .build/apx_agent-*.whl >> .build/requirements.txt
+      mkdir -p .build/client/dist
+      cp -r client/dist/. .build/client/dist/
 
 resources:
   apps:
@@ -16,7 +27,8 @@ resources:
       description: "contract-parsing-agent created with apx"
       source_code_path: ./.build
       config:
-        env_variables:
+        command: ["python", "-m", "agent_server.start_host"]
+        env:
           - name: CATALOG
             value: ${var.catalog}
           - name: SCHEMA
@@ -25,6 +37,14 @@ resources:
             value: ${var.volumes_raw}
           - name: VOLUMES_UPLOADS
             value: ${var.volumes_uploads}
+          - name: APX_APPS_HOST
+            value: appkit
+          - name: APX_PYTHON_BRIDGE_APP
+            value: app:app
+          - name: APX_PYTHON_BRIDGE_PROXY_PATHS
+            value: /api,/_apx
+          - name: APX_APPKIT_STATIC_PATH
+            value: ../client/dist
 
 variables:
   catalog:

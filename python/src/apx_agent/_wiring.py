@@ -714,14 +714,15 @@ async def setup_agent(
     # Dev UI (optional). The app must still serve if this fails, so the failure
     # is swallowed — but recorded on app.state for local diagnosis, not hidden.
     app.state.dev_ui_mount_error = None
-    try:
-        from ._dev import build_dev_ui_router
+    if os.environ.get("APX_DEV_UI") != "0":
+        try:
+            from ._dev import build_dev_ui_router
 
-        app.include_router(build_dev_ui_router(config.api_prefix))
-        logger.info("Dev UI mounted at /_apx/*")
-    except Exception as e:
-        app.state.dev_ui_mount_error = str(e)
-        logger.info("Dev UI not mounted (%s: %s)", type(e).__name__, e)
+            app.include_router(build_dev_ui_router(config.api_prefix))
+            logger.info("Dev UI mounted at /_apx/*")
+        except Exception as e:
+            app.state.dev_ui_mount_error = str(e)
+            logger.info("Dev UI not mounted (%s: %s)", type(e).__name__, e)
 
     # Auto-register with agent registry (if configured)
     if config.registry:
@@ -1212,14 +1213,15 @@ def mount_mcp_endpoints(
     # Discover wire/unwire additionally requires ``APX_DEV_UI_TOKEN`` on Apps
     # (#611 — shared live-agent mutation). See ``_dev._enforce_dev_write_auth``.
     app.state.dev_ui_mount_error = None
-    try:
-        from ._dev import build_dev_ui_router
+    if os.environ.get("APX_DEV_UI") != "0":
+        try:
+            from ._dev import build_dev_ui_router
 
-        app.include_router(build_dev_ui_router())
-        logger.info("Dev UI mounted at /_apx/*")
-    except Exception as exc:  # pragma: no cover — optional dep
-        app.state.dev_ui_mount_error = str(exc)
-        logger.info("Dev UI not mounted (%s: %s)", type(exc).__name__, exc)
+            app.include_router(build_dev_ui_router())
+            logger.info("Dev UI mounted at /_apx/*")
+        except Exception as exc:  # pragma: no cover — optional dep
+            app.state.dev_ui_mount_error = str(exc)
+            logger.info("Dev UI not mounted (%s: %s)", type(exc).__name__, exc)
 
     # Track the in-flight MCP lifecycle so shutdown can close it cleanly.
     _state_key = "_apx_mount_state"

@@ -153,6 +153,9 @@ PROBE = textwrap.dedent(
 
     assert (root / ".build" / "agent.py").exists()
     assert (bridge_dir / "__init__.py").exists()
+    start_host = bridge_dir / "start_host.py"
+    assert start_host.exists()
+    assert "npm" in start_host.read_text()
     assert (bridge_dir / "start_server.py").exists()
     bridge_entrypoint = bridge_dir / "appkit_bridge.py"
     assert bridge_entrypoint.exists()

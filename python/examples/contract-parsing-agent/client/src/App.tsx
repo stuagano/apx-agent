@@ -11,6 +11,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Contract | null>(null)
   const [pendingMessage, setPendingMessage] = useState('')
+  const [devEnabled, setDevEnabled] = useState(true)
   const { messages, isLoading, sendMessage } = useChat()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -42,6 +43,15 @@ export default function App() {
       .then(setContracts)
       .catch((e: Error) => setContractsError(e.message))
       .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
+    fetch('/api/dev-ui')
+      .then(r => r.ok ? r.json() as Promise<{ enabled: boolean }> : null)
+      .then(config => {
+        if (config?.enabled === false) setDevEnabled(false)
+      })
+      .catch(() => undefined)
   }, [])
 
   const handleSelectContract = useCallback((c: Contract) => {
@@ -118,6 +128,17 @@ export default function App() {
           pendingMessage={pendingMessage}
         />
       </div>
+      {devEnabled && (
+        <a
+          href="/_apx/agent"
+          target="_blank"
+          rel="noreferrer"
+          aria-label="Dev"
+          className="fixed bottom-4 right-4 z-50 rounded-full border border-row bg-panel px-3 py-2 text-xs font-semibold text-gray-300 shadow-lg hover:text-white"
+        >
+          ⚙ Dev
+        </a>
+      )}
     </div>
   )
 }
