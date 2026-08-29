@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import inspect
 from unittest.mock import MagicMock
 
@@ -52,8 +53,9 @@ class TestCatalogToolFactory:
 
     def test_description_contains_catalog_and_schema(self):
         tool = catalog_tool("main", "sales")
-        assert "main" in (tool.__doc__ or "")
-        assert "sales" in (tool.__doc__ or "")
+        assert tool.__doc__ is not None
+        assert "main" in tool.__doc__
+        assert "sales" in tool.__doc__
 
     def test_custom_description(self):
         tool = catalog_tool("main", "sales", description="List my tables")
@@ -259,7 +261,8 @@ class TestUcFunctionToolFactory:
 
     def test_function_name_in_default_description(self):
         tool = uc_function_tool("main.tools.classify_intent")
-        assert "main.tools.classify_intent" in (tool.__doc__ or "")
+        assert tool.__doc__ is not None
+        assert "main.tools.classify_intent" in tool.__doc__
 
     def test_custom_description(self):
         tool = uc_function_tool("main.tools.fn", description="My custom desc")
@@ -322,6 +325,42 @@ class TestUcFunctionToolFactory:
         await tool(params={"x": "b"}, ws=ws)
         # functions.get should only be called once
         assert ws.functions.get.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_baked_signature_avoids_runtime_metadata_lookup(
+        self, tmp_path, monkeypatch
+    ):
+        apx = tmp_path / ".apx"
+        apx.mkdir()
+        (apx / "schema.json").write_text(json.dumps({
+            "catalog": "main",
+            "schema": "tools",
+            "tables": {},
+            "functions": {
+                "main.tools.classify_intent": {
+                    "comment": "Classify a customer request.",
+                    "data_type": "STRING",
+                    "parameters": [
+                        {"name": "text", "position": 0, "type_name": "STRING"},
+                    ],
+                },
+            },
+        }))
+        monkeypatch.chdir(tmp_path)
+        ws = MagicMock()
+        ws.functions.get.side_effect = AssertionError("runtime metadata lookup")
+        from apx_agent import catalog as cat_module
+        monkeypatch.setattr(
+            cat_module,
+            "run_sql",
+            lambda ws, sql, **kw: [{"classify_intent": sql}],
+        )
+
+        tool = uc_function_tool("main.tools.classify_intent", ws=ws)
+        result = await tool(params={"text": "hello"}, ws=ws)
+
+        assert result == "SELECT main.tools.classify_intent('hello')"
+        ws.functions.get.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_returns_table_result_for_multi_row(self):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -122,6 +123,31 @@ class TestLateWorkspaceBinding:
     def test_uc_functions_absent_without_ws(self):
         # include_functions defaults True; with no ws the UC functions can't wire yet.
         assert "classify" not in self._names(DataAgent("main", "sales"))
+
+    def test_baked_functions_need_no_late_metadata_binding(self, tmp_path, monkeypatch):
+        apx = tmp_path / ".apx"
+        apx.mkdir()
+        (apx / "schema.json").write_text(json.dumps({
+            "catalog": "main",
+            "schema": "sales",
+            "tables": {"orders": ["id(INT)"]},
+            "functions": {
+                "main.sales.classify": {
+                    "comment": "Classify an order.",
+                    "data_type": "STRING",
+                    "parameters": [],
+                },
+            },
+        }))
+        monkeypatch.chdir(tmp_path)
+        agent = DataAgent("main", "sales")
+        ws = _ws_with_schema({}, functions=[])
+        ws.functions.list.side_effect = AssertionError("runtime metadata lookup")
+
+        agent.bind_workspace(ws)
+
+        assert "classify" in self._names(agent)
+        ws.functions.list.assert_not_called()
 
     def test_bind_workspace_wires_uc_functions(self):
         a = DataAgent("main", "sales")

@@ -175,7 +175,21 @@ def okf_manifest(okf_root: "Path | str") -> "dict | None":
             doc = OKFDocument.parse(table_md.read_text())
             name = doc.frontmatter.get("title") or table_md.stem
             tables[name] = parse_schema_columns(doc.body)  # [] when no # Schema (name still kept)
-        return {"catalog": catalog, "schema": schema, "tables": tables}
+        manifest = {"catalog": catalog, "schema": schema, "tables": tables}
+        cache = root.parent / "schema.json"
+        if cache.is_file():
+            try:
+                cached = json.loads(cache.read_text())
+            except Exception:
+                cached = None
+            if (
+                isinstance(cached, dict)
+                and cached.get("catalog") == catalog
+                and cached.get("schema") == schema
+                and isinstance(cached.get("functions"), dict)
+            ):
+                manifest["functions"] = cached["functions"]
+        return manifest
     except Exception:
         return None
 

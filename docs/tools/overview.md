@@ -187,7 +187,7 @@ agent = Agent(tools=[
 ])
 ```
 
-The function's `COMMENT` becomes the tool description; parameter types become the tool schema. The user's grants on `main.tools.classify_intent` apply at runtime.
+The function's `COMMENT` becomes the tool description; parameter types become the tool schema. Scaffold, deploy, and `apx-agent agents refresh-schema` bake those signatures into `.apx/schema.json`, so deployed Apps execute known functions through SQL without a request-time Unity Catalog metadata lookup. Projects without a baked signature fall back to live metadata discovery. The user's grants on `main.tools.classify_intent` still apply at runtime.
 
 When the data team has curated an entire schema of agent-facing functions, register the whole toolkit at once:
 

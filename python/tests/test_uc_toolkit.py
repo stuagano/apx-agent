@@ -18,6 +18,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -91,18 +92,21 @@ def test_uc_function_tool_falls_back_when_comment_empty() -> None:
         "main.tools.fn": SimpleNamespace(comment=None),
     })
     tool_fn = uc_function_tool("main.tools.fn", ws=ws)
-    assert "Execute the Unity Catalog function" in (tool_fn.__doc__ or "")
+    assert tool_fn.__doc__ is not None
+    assert "Execute the Unity Catalog function" in tool_fn.__doc__
 
 
 def test_uc_function_tool_falls_back_when_fetch_fails() -> None:
     ws = _make_ws(get_raises=RuntimeError("no UC access"))
     tool_fn = uc_function_tool("main.tools.fn", ws=ws)
-    assert "Execute the Unity Catalog function" in (tool_fn.__doc__ or "")
+    assert tool_fn.__doc__ is not None
+    assert "Execute the Unity Catalog function" in tool_fn.__doc__
 
 
 def test_uc_function_tool_without_ws_uses_generic_description() -> None:
     tool_fn = uc_function_tool("main.tools.fn")
-    assert "Execute the Unity Catalog function" in (tool_fn.__doc__ or "")
+    assert tool_fn.__doc__ is not None
+    assert "Execute the Unity Catalog function" in tool_fn.__doc__
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +153,38 @@ def test_toolkit_enumerates_all_functions() -> None:
     assert tools[2].__name__ == "format_address"
 
 
+def test_toolkit_enumerates_baked_functions_without_runtime_metadata(
+    tmp_path, monkeypatch
+) -> None:
+    apx = tmp_path / ".apx"
+    apx.mkdir()
+    (apx / "schema.json").write_text(json.dumps({
+        "catalog": "main",
+        "schema": "tools",
+        "tables": {},
+        "functions": {
+            "main.tools.classify_intent": {
+                "comment": "Classify a customer request.",
+                "data_type": "STRING",
+                "parameters": [],
+            },
+            "other.tools.notify": {
+                "comment": "Notify another system.",
+                "data_type": "STRING",
+                "parameters": [],
+            },
+        },
+    }))
+    monkeypatch.chdir(tmp_path)
+    ws = _make_ws(list_raises=AssertionError("runtime metadata lookup"))
+
+    tools = uc_function_toolkit("main.tools", ws=ws)
+
+    assert [tool.__name__ for tool in tools] == ["classify_intent"]
+    assert tools[0].__doc__ == "Classify a customer request."
+    ws.functions.list.assert_not_called()
+
+
 def test_toolkit_propagates_comments_as_descriptions() -> None:
     ws = _make_ws(functions_in_schema=[
         _fn_info("classify_intent", "Classify a customer query."),
@@ -159,7 +195,8 @@ def test_toolkit_propagates_comments_as_descriptions() -> None:
 
     assert tools[0].__doc__ == "Classify a customer query."
     # No comment → generic fallback
-    assert "Execute the Unity Catalog function" in (tools[1].__doc__ or "")
+    assert tools[1].__doc__ is not None
+    assert "Execute the Unity Catalog function" in tools[1].__doc__
 
 
 def test_toolkit_attaches_uc_function_resource_per_tool() -> None:

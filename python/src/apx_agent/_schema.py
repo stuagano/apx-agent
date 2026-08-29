@@ -183,6 +183,71 @@ def introspect_schema_columns(
     return result
 
 
+def _introspect_function_signature(ws: Any, full_name: str) -> "dict | None":
+    try:
+        function = ws.functions.get(full_name)
+    except Exception as error:
+        logger.warning("Could not bake UC function %s: %s", full_name, error)
+        return None
+    parameters = [
+        {
+            "name": parameter.name,
+            "position": parameter.position if parameter.position is not None else 0,
+            "type_name": str(
+                parameter.type_name
+                if parameter.type_name is not None
+                else "STRING"
+            ),
+        }
+        for parameter in (
+            function.input_params.parameters if function.input_params else []
+        )
+        if parameter.name
+    ]
+    comment = function.comment
+    data_type = function.data_type
+    return {
+        "comment": str(comment).strip() if comment else None,
+        "data_type": str(data_type) if data_type is not None else None,
+        "parameters": sorted(parameters, key=lambda parameter: parameter["position"]),
+    }
+
+
+def introspect_named_function_signatures(
+    ws: Any, function_names: list[str]
+) -> dict[str, dict]:
+    """Return signatures for explicitly declared UC function resources."""
+    result: dict[str, dict] = {}
+    for full_name in function_names:
+        signature = _introspect_function_signature(ws, full_name)
+        if signature is not None:
+            result[full_name] = signature
+    return result
+
+
+def introspect_function_signatures(
+    ws: Any, catalog: str, schema: str
+) -> "dict[str, dict] | None":
+    """Return deploy-time UC function signatures, or ``None`` if listing fails."""
+    if not (ws and catalog and schema):
+        return None
+    try:
+        listed = list(ws.functions.list(catalog_name=catalog, schema_name=schema))
+    except Exception:
+        return None
+    result: dict[str, dict] = {}
+    for listed_function in listed:
+        name = listed_function.name
+        if not name:
+            continue
+        full_name = listed_function.full_name or f"{catalog}.{schema}.{name}"
+        signature = _introspect_function_signature(ws, full_name)
+        if signature is None:
+            return None
+        result[full_name] = signature
+    return result
+
+
 def _format_schema_block(
     tables: dict[str, list[str]], max_cols: int = 12, max_tables: int = 20
 ) -> str:
