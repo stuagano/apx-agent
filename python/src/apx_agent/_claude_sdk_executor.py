@@ -425,7 +425,12 @@ class ClaudeSDKExecutor:
                         }
 
                 full_text = "".join(text_parts)
-                tool_calls_raw = [tool_calls_by_index[k] for k in sorted(tool_calls_by_index)]
+                tool_calls_raw = [
+                    tool_calls_by_index[k] for k in sorted(tool_calls_by_index)
+                ]
+                for tool_call in tool_calls_raw:
+                    if not tool_call["function"]["arguments"].strip():
+                        tool_call["function"]["arguments"] = "{}"
 
                 if not tool_calls_raw:
                     # No tool calls requested — the turn is done

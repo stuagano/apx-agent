@@ -129,6 +129,7 @@ class FakeCompletions:
         """
         self._queue: list[list[Any]] = list(call_chunks)
         self.call_count: int = 0
+        self.calls: list[dict[str, Any]] = []
 
     async def create(self, **kwargs: Any):
         """Return an async generator for the next queued chunk list.
@@ -140,6 +141,7 @@ class FakeCompletions:
             chunk lists.
         """
         self.call_count += 1
+        self.calls.append(kwargs)
         chunks = self._queue.pop(0)
         return _async_chunks(chunks)
 
@@ -285,6 +287,11 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
+def ping() -> str:
+    """Return a pong without accepting arguments."""
+    return "pong"
+
+
 # Module-level DI tool — must be at module scope so that
 # ``typing.get_type_hints`` can resolve the ``Annotated[...]``
 # annotation via this module's ``__globals__`` dict.  A locally-scoped
@@ -366,6 +373,38 @@ class TestToolCallTurn:
 
         assert len(turn_completes) == 1
         assert turn_completes[0].response == "The answer is 3"
+
+    async def test_no_argument_tool_call_echoes_json_object_arguments(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The follow-up assistant message uses valid JSON for an empty call."""
+        round1 = [
+            _tool_call_fragment(0, call_id="call_ping", fn_name="ping"),
+            _finish_chunk(),
+        ]
+        round2 = [_text_chunk("pong"), _finish_chunk()]
+        fake_client = _make_fake_client([round1, round2])
+        monkeypatch.setattr(
+            "apx_agent._claude_sdk_executor._make_client",
+            lambda ws=None: fake_client,
+        )
+
+        executor = ClaudeSDKExecutor(model="test-model", tools=[ping])
+        events = await _drain(
+            executor,
+            messages=[{"role": "user", "content": "Ping."}],
+            tools=[],
+            system_prompt="",
+            config=None,
+        )
+
+        second_call_messages = fake_client.chat.completions.calls[1]["messages"]
+        assistant_tool_call = second_call_messages[1]["tool_calls"][0]
+        assert assistant_tool_call["function"]["arguments"] == "{}"
+        assert any(
+            isinstance(event, TurnComplete) and event.response == "pong"
+            for event in events
+        )
 
 
 # ---------------------------------------------------------------------------
