@@ -179,6 +179,145 @@ def test_bake_schema_writes_manifest(
     assert baked["tables"] == {"orders": ["id(int)"]}
 
 
+def test_deploy_bake_includes_schema_and_declared_functions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    from types import SimpleNamespace
+
+    import apx_agent.cli as cli
+    from apx_agent import Agent, uc_function_tool
+
+    apx = tmp_path / ".apx"
+    apx.mkdir()
+    (apx / "schema.json").write_text(json.dumps({
+        "catalog": "main",
+        "schema": "sales",
+        "tables": {"orders": ["id(int)"]},
+    }))
+    listed = [SimpleNamespace(name="score", full_name="main.sales.score")]
+    functions = {
+        "main.sales.score": SimpleNamespace(
+            comment="Score an order.", data_type="DOUBLE",
+            input_params=SimpleNamespace(parameters=[]),
+        ),
+        "other.tools.notify": SimpleNamespace(
+            comment=None, data_type="STRING",
+            input_params=SimpleNamespace(parameters=[]),
+        ),
+    }
+    ws = SimpleNamespace(functions=SimpleNamespace(
+        list=lambda **kwargs: listed,
+        get=lambda name: functions[name],
+    ))
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: ws)
+    agent = Agent(tools=[uc_function_tool("other.tools.notify")])
+
+    assert cli._bake_deploy_function_signatures(
+        tmp_path, agent=agent, profile="test", log=lambda message: None,
+    ) is True
+
+    baked = json.loads((apx / "schema.json").read_text())
+    assert set(baked["functions"]) == {"main.sales.score", "other.tools.notify"}
+
+
+def test_deploy_bake_refuses_partial_schema_signatures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    from types import SimpleNamespace
+
+    import click
+    import apx_agent.cli as cli
+    from apx_agent import Agent
+
+    apx = tmp_path / ".apx"
+    apx.mkdir()
+    original = {
+        "catalog": "main",
+        "schema": "sales",
+        "tables": {"orders": ["id(int)"]},
+        "functions": {
+            "main.sales.score": {
+                "comment": "Score an order.",
+                "data_type": "DOUBLE",
+                "parameters": [],
+            },
+        },
+    }
+    (apx / "schema.json").write_text(json.dumps(original))
+    listed = [
+        SimpleNamespace(name="score", full_name="main.sales.score"),
+        SimpleNamespace(name="new_score", full_name="main.sales.new_score"),
+    ]
+
+    def get_function(name):
+        if name == "main.sales.new_score":
+            raise RuntimeError("metadata unavailable")
+        return SimpleNamespace(
+            comment="Score an order.", data_type="DOUBLE",
+            input_params=SimpleNamespace(parameters=[]),
+        )
+
+    ws = SimpleNamespace(functions=SimpleNamespace(
+        list=lambda **kwargs: listed,
+        get=get_function,
+    ))
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: ws)
+
+    with pytest.raises(click.ClickException, match="could not bake every UC function"):
+        cli._bake_deploy_function_signatures(
+            tmp_path, agent=Agent(), profile="test", log=lambda message: None,
+        )
+
+    assert json.loads((apx / "schema.json").read_text()) == original
+
+
+def test_deploy_bake_requires_author_client_for_uc_functions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    import click
+    import apx_agent.cli as cli
+    from apx_agent import Agent
+
+    apx = tmp_path / ".apx"
+    apx.mkdir()
+    original = {
+        "catalog": "main",
+        "schema": "sales",
+        "tables": {"orders": ["id(int)"]},
+        "functions": {},
+    }
+    (apx / "schema.json").write_text(json.dumps(original))
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
+
+    with pytest.raises(click.ClickException, match="Databricks author client"):
+        cli._bake_deploy_function_signatures(
+            tmp_path, agent=Agent(), profile="test", log=lambda message: None,
+        )
+
+    assert json.loads((apx / "schema.json").read_text()) == original
+
+
+def test_deploy_bake_skips_project_without_uc_functions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import apx_agent.cli as cli
+    from apx_agent import Agent
+
+    monkeypatch.setattr(
+        cli,
+        "_make_ws_for_scaffold",
+        lambda profile: (_ for _ in ()).throw(AssertionError("client created")),
+    )
+
+    assert cli._bake_deploy_function_signatures(
+        tmp_path, agent=Agent(), profile="test", log=lambda message: None,
+    ) is False
+
+
 def test_bake_schema_skips_placeholder_catalog(tmp_path: Path) -> None:
     # Unresolved $CATALOG/$SCHEMA → no introspection, no file (agent falls back).
     from types import SimpleNamespace
@@ -4245,6 +4384,7 @@ def _drive_deploy_to_gate(tmp_path, monkeypatch, *, readyz_gate, check_result):
     Returns the list of _check_readyz call args (empty if never called).
     Raises whatever _deploy_apps_impl raises (e.g. ClickException at the gate).
     """
+    from apx_agent import Agent
     from apx_agent.cli import _deploy_apps_impl
 
     (tmp_path / "databricks.yml").write_text(textwrap.dedent("""
@@ -4266,6 +4406,7 @@ def _drive_deploy_to_gate(tmp_path, monkeypatch, *, readyz_gate, check_result):
     with patch("apx_agent.cli._preflight_databricks_cli", return_value=None), \
          patch("apx_agent.cli._preflight_apps", return_value=None), \
          patch("apx_agent.cli._validate_responses_agent_compiler", return_value=None), \
+         patch("apx_agent.cli._load_finalized_agent", return_value=Agent()), \
          patch(
              "apx_agent.cli._run_databricks_cmd",
              return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
@@ -4939,7 +5080,10 @@ class TestScaffoldSchemaManifest:
         from apx_agent import cli
         monkeypatch.setattr(
             cli, "introspect_schema_columns",
-            lambda ws, c, s: {"customer": ["c_custkey(bigint)"]},
+            lambda ws, catalog, schema: {"customer": ["c_custkey(bigint)"]},
+        )
+        monkeypatch.setattr(
+            cli, "introspect_function_signatures", lambda ws, catalog, schema: {},
         )
         # _make_ws_for_scaffold returns a dummy; introspection is what we stubbed
         monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: object())
@@ -4947,12 +5091,60 @@ class TestScaffoldSchemaManifest:
         assert m == {
             "catalog": "samples", "schema": "tpch",
             "tables": {"customer": ["c_custkey(bigint)"]},
+            "functions": {},
+        }
+
+    def test_manifest_bakes_function_signatures(self, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(
+            cli,
+            "introspect_schema_columns",
+            lambda ws, catalog, schema: {"customer": []},
+        )
+        monkeypatch.setattr(
+            cli,
+            "introspect_function_signatures",
+            lambda ws, catalog, schema: {
+                "samples.tpch.lookup": {
+                    "comment": "Look up a customer.",
+                    "data_type": "STRING",
+                    "parameters": [],
+                },
+            },
+        )
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: object())
+
+        manifest = cli._schema_manifest_for_scaffold("samples", "tpch", profile=None)
+
+        assert manifest["functions"] == {
+            "samples.tpch.lookup": {
+                "comment": "Look up a customer.",
+                "data_type": "STRING",
+                "parameters": [],
+            },
         }
 
     def test_manifest_none_when_empty(self, monkeypatch):
         from apx_agent import cli
-        monkeypatch.setattr(cli, "introspect_schema_columns", lambda ws, c, s: {})
+        monkeypatch.setattr(
+            cli, "introspect_schema_columns", lambda ws, catalog, schema: {}
+        )
+        monkeypatch.setattr(
+            cli, "introspect_function_signatures", lambda ws, catalog, schema: {},
+        )
         monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: object())
+        assert cli._schema_manifest_for_scaffold("c", "s", profile=None) is None
+
+    def test_manifest_none_when_function_introspection_fails(self, monkeypatch):
+        from apx_agent import cli
+        monkeypatch.setattr(
+            cli, "introspect_schema_columns", lambda ws, catalog, schema: {"t": []},
+        )
+        monkeypatch.setattr(
+            cli, "introspect_function_signatures", lambda ws, catalog, schema: None,
+        )
+        monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: object())
+
         assert cli._schema_manifest_for_scaffold("c", "s", profile=None) is None
 
     def test_manifest_none_when_no_ws(self, monkeypatch):
@@ -4963,14 +5155,43 @@ class TestScaffoldSchemaManifest:
     def test_apps_scaffold_writes_manifest(self, tmp_path, monkeypatch):
         import json
         from apx_agent import cli
+        profiles = []
+
+        def manifest_for_scaffold(catalog, schema, profile=None):
+            profiles.append(profile)
+            return {"catalog": catalog, "schema": schema, "tables": {"t": ["a(int)"]}}
+
         monkeypatch.setattr(
-            cli, "_schema_manifest_for_scaffold",
-            lambda c, s, profile=None: {"catalog": c, "schema": s, "tables": {"t": ["a(int)"]}},
+            cli, "_schema_manifest_for_scaffold", manifest_for_scaffold,
         )
-        cli._scaffold_apps(tmp_path, "demo", force=True, catalog="samples", schema="tpch", table="t")
+        cli._scaffold_apps(
+            tmp_path, "demo", force=True, catalog="samples", schema="tpch",
+            table="t", profile="author",
+        )
         manifest = tmp_path / ".apx" / "schema.json"
         assert manifest.is_file()
         assert json.loads(manifest.read_text())["tables"] == {"t": ["a(int)"]}
+        assert profiles == ["author"]
+
+    def test_model_serving_scaffold_uses_author_profile(self, tmp_path, monkeypatch):
+        from apx_agent import cli
+        profiles = []
+
+        def manifest_for_scaffold(catalog, schema, profile=None):
+            profiles.append(profile)
+
+        monkeypatch.setattr(
+            cli,
+            "_schema_manifest_for_scaffold",
+            manifest_for_scaffold,
+        )
+
+        cli._scaffold_model_serving(
+            tmp_path, "demo", force=True, catalog="samples", schema="tpch",
+            profile="author",
+        )
+
+        assert profiles == ["author"]
 
     def test_apps_scaffold_no_manifest_when_none(self, tmp_path, monkeypatch):
         from apx_agent import cli
@@ -7395,6 +7616,38 @@ class TestMigrateToOKF:
 
 
 class TestRefreshSchemaPreservesOKF:
+    def test_refresh_refuses_to_erase_signatures_after_metadata_failure(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+        from click.testing import CliRunner
+        from apx_agent import cli
+        from apx_agent.cli import agents
+
+        apx = tmp_path / ".apx"
+        apx.mkdir()
+        original = {
+            "catalog": "c",
+            "schema": "s",
+            "tables": {"pay_runs": ["id(int)"]},
+            "functions": {"c.s.lookup": {"parameters": [], "data_type": "STRING"}},
+        }
+        (apx / "schema.json").write_text(json.dumps(original))
+        monkeypatch.setattr(
+            cli,
+            "_schema_manifest_for_scaffold",
+            lambda *args, **kwargs: {
+                "catalog": "c", "schema": "s", "tables": {"pay_runs": ["id(bigint)"]},
+            },
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(agents, ["refresh-schema"])
+
+        assert result.exit_code != 0
+        assert "function signatures" in result.output
+        assert json.loads((apx / "schema.json").read_text()) == original
+
     def test_refresh_preserves_enriched_body_and_updates_cache(self, tmp_path, monkeypatch):
         import json
         from click.testing import CliRunner
@@ -7403,7 +7656,17 @@ class TestRefreshSchemaPreservesOKF:
         from apx_agent._okf import write_okf_bundle
 
         apx = tmp_path / ".apx"
-        m = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]}}
+        external_signature = {
+            "parameters": [],
+            "data_type": "STRING",
+            "comment": "Notify another system.",
+        }
+        m = {
+            "catalog": "c",
+            "schema": "s",
+            "tables": {"pay_runs": ["gross_pay(decimal(6,2))"]},
+            "functions": {"other.tools.notify": external_signature},
+        }
         write_okf_bundle(m, apx / "okf", timestamp="z")
         (apx / "okf" / "tables" / "pay_runs.md").write_text(
             "---\ntype: Unity Catalog Table\ntitle: pay_runs\ndescription: d\ntimestamp: z\n---\n\n"
@@ -7412,7 +7675,18 @@ class TestRefreshSchemaPreservesOKF:
         )
         (apx / "schema.json").write_text(json.dumps(m))
         # live introspection now reports a wider type
-        updated = {"catalog": "c", "schema": "s", "tables": {"pay_runs": ["gross_pay(decimal(10,2))"]}}
+        updated = {
+            "catalog": "c",
+            "schema": "s",
+            "tables": {"pay_runs": ["gross_pay(decimal(10,2))"]},
+            "functions": {
+                "c.s.lookup": {
+                    "comment": "Look up a pay run.",
+                    "data_type": "STRING",
+                    "parameters": [],
+                },
+            },
+        }
         monkeypatch.setattr(cli, "_schema_manifest_for_scaffold", lambda *a, **k: updated)
         monkeypatch.chdir(tmp_path)
 
@@ -7421,7 +7695,12 @@ class TestRefreshSchemaPreservesOKF:
         body = (apx / "okf" / "tables" / "pay_runs.md").read_text()
         assert "Enriched narrative." in body          # body preserved
         assert "decimal(10,2)" in body                # schema refreshed
-        assert json.loads((apx / "schema.json").read_text())["tables"]["pay_runs"] == ["gross_pay(decimal(10,2))"]
+        cache = json.loads((apx / "schema.json").read_text())
+        assert cache["tables"]["pay_runs"] == ["gross_pay(decimal(10,2))"]
+        assert cache["functions"] == {
+            **updated["functions"],
+            "other.tools.notify": external_signature,
+        }
 
     def _two_table_bundle(self, tmp_path):
         from apx_agent._okf import write_okf_bundle

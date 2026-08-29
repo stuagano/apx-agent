@@ -72,7 +72,7 @@ from ._deploy_state import (
     utc_now_iso,
 )
 from ._meta import compare_pinned_sha, discover_framework_sha
-from ._schema import introspect_schema_columns, APX_DIR
+from ._schema import introspect_function_signatures, introspect_schema_columns, APX_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -2392,7 +2392,7 @@ def _schema_manifest_for_scaffold(
     catalog: str, schema: str, profile: str | None = None
 ) -> "dict | None":
     """Introspect ``catalog.schema`` via the Tables API and return a manifest
-    dict ``{catalog, schema, tables}``, or ``None`` when nothing is readable.
+    with tables and UC function signatures, or ``None`` when nothing is readable.
 
     Calls the module-level ``introspect_schema_columns`` (so tests can stub it).
     """
@@ -2400,9 +2400,17 @@ def _schema_manifest_for_scaffold(
     if ws is None:
         return None
     tables = introspect_schema_columns(ws, catalog, schema)
-    if not tables:
+    functions = introspect_function_signatures(ws, catalog, schema)
+    if functions is None:
         return None
-    return {"catalog": catalog, "schema": schema, "tables": tables}
+    if not tables and not functions:
+        return None
+    return {
+        "catalog": catalog,
+        "schema": schema,
+        "tables": tables,
+        "functions": functions,
+    }
 
 
 def _bake_schema_into_project(
@@ -2434,6 +2442,78 @@ def _bake_schema_into_project(
     apx_dir = project_dir / ".apx"
     apx_dir.mkdir(parents=True, exist_ok=True)
     (apx_dir / "schema.json").write_text(dump_schema_cache(manifest))
+    return True
+
+
+def _bake_deploy_function_signatures(
+    project_dir: Path,
+    *,
+    agent: Any | None,
+    profile: str | None,
+    log: Any,
+) -> bool:
+    """Refresh schema and explicitly declared UC functions before deployment."""
+    from ._okf import dump_schema_cache
+    from ._resources import collect_resource_specs
+    from ._schema import (
+        introspect_named_function_signatures,
+        load_baked_schema,
+    )
+
+    manifest = load_baked_schema(project_dir)
+    if manifest is None:
+        from .data_agent import DataAgent
+        manifest = {
+            "catalog": agent.catalog if isinstance(agent, DataAgent) else None,
+            "schema": agent.schema if isinstance(agent, DataAgent) else None,
+            "tables": {},
+        }
+    catalog = manifest.get("catalog")
+    schema = manifest.get("schema")
+    has_schema = isinstance(catalog, str) and isinstance(schema, str)
+    declared = sorted({
+        spec.identifier
+        for spec in (collect_resource_specs(agent) if agent is not None else [])
+        if spec.kind == "uc_function"
+    })
+    if not has_schema and not declared:
+        return False
+    ws = _make_ws_for_scaffold(profile)
+    if ws is None:
+        raise click.ClickException(
+            "could not create a Databricks author client to bake UC function "
+            "signatures"
+        )
+    functions = introspect_function_signatures(ws, catalog, schema) if has_schema else {}
+    if has_schema and functions is None:
+        raise click.ClickException(
+            f"could not bake every UC function in {catalog}.{schema}; "
+            "deployment stopped before replacing the existing signatures"
+        )
+    declared_signatures = introspect_named_function_signatures(ws, declared)
+    existing_functions = dict(manifest.get("functions") or {})
+    unresolved = [
+        name for name in declared
+        if name not in declared_signatures
+        and name not in functions
+        and name not in existing_functions
+    ]
+    if unresolved:
+        raise click.ClickException(
+            "could not bake declared UC function signature(s): "
+            + ", ".join(unresolved)
+        )
+    for name in declared:
+        if name not in declared_signatures and name in existing_functions:
+            functions[name] = existing_functions[name]
+    functions.update(declared_signatures)
+    if not functions and not declared and catalog is None:
+        return False
+    manifest["functions"] = functions
+    apx_dir = project_dir / APX_DIR
+    apx_dir.mkdir(parents=True, exist_ok=True)
+    (apx_dir / "schema.json").write_text(dump_schema_cache(manifest))
+    log(f"# function signatures: baked {len(functions)} into .apx/schema.json")
     return True
 
 
@@ -3880,6 +3960,7 @@ def _write_okf_bundle_for_scaffold(target: Path, manifest: dict, *, force: bool)
 def _scaffold_model_serving(
     target: Path, name: str, force: bool, catalog: str, schema: str,
     table: str | None = None,
+    profile: str | None = None,
 ) -> None:
     """Write the original Model Serving project layout into ``target``.
 
@@ -3887,7 +3968,7 @@ def _scaffold_model_serving(
     """
     prelude, extra_tools = _example_tool_block(catalog, schema, table)
 
-    manifest = _schema_manifest_for_scaffold(catalog, schema)
+    manifest = _schema_manifest_for_scaffold(catalog, schema, profile)
     knowledge_line = 'knowledge = "./.apx/okf"\n' if manifest is not None else ""
     knowledge_arg = ', knowledge="./.apx/okf"' if manifest is not None else ""
     files = {
@@ -3986,6 +4067,7 @@ def _scaffold_apps(
     instructions: str | None = None,
     ci: CiProvider | None = "github",
     trace_warehouse_default: str | None = None,
+    profile: str | None = None,
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
@@ -3998,7 +4080,7 @@ def _scaffold_apps(
         manifest = None
     else:
         prelude, extra_tools = _example_tool_block(catalog, schema, table)
-        manifest = _schema_manifest_for_scaffold(catalog, schema)
+        manifest = _schema_manifest_for_scaffold(catalog, schema, profile)
 
     # Pick the apx-agent install ref that will let ``uv sync`` succeed from
     # this scaffold directory. Inside the framework repo, use the editable
@@ -4592,9 +4674,12 @@ def scaffold(
             template=scaffold_template, persona=persona, objective=objective,
             join_key=join_key, lakebase=lakebase, instructions=instructions, ci=ci,
             trace_warehouse_default=trace_warehouse_default,
+            profile=profile,
         )
     else:
-        _scaffold_model_serving(target, project_name, force, catalog, schema, table)
+        _scaffold_model_serving(
+            target, project_name, force, catalog, schema, table, profile=profile,
+        )
 
     _echo_scaffold_next_steps(
         name, target, scaffold_target,
@@ -4667,7 +4752,7 @@ def refresh_schema(profile: str | None, prune_missing_tables: bool) -> None:
 
     Run inside a scaffolded project. Reads the existing manifest to learn which
     catalog/schema to refresh, re-introspects via the Tables API, and updates the
-    manifest so the agent's grounding + landing card reflect the live schema.
+    manifest so table grounding and function signatures reflect the live schema.
 
     Non-destructive by default: each table's enriched body (Overview/Joins/etc.)
     is preserved and local-only tables not in the live schema are kept. Pass
@@ -4694,6 +4779,20 @@ def refresh_schema(profile: str | None, prune_missing_tables: bool) -> None:
             f"could not read tables for {catalog}.{schema} — check your profile "
             f"and Unity Catalog grants."
         )
+    if isinstance(existing.get("functions"), dict) and not isinstance(
+        manifest.get("functions"), dict
+    ):
+        raise click.ClickException(
+            "could not refresh function signatures; existing .apx/schema.json "
+            "was preserved"
+        )
+    existing_functions = existing.get("functions")
+    refreshed_functions = manifest.get("functions")
+    if isinstance(existing_functions, dict) and isinstance(refreshed_functions, dict):
+        primary_prefix = f"{catalog}.{schema}."
+        for name, signature in existing_functions.items():
+            if not name.startswith(primary_prefix):
+                refreshed_functions.setdefault(name, signature)
     apx = Path.cwd() / APX_DIR
     okf_root = apx / "okf"
     if okf_root.is_dir():
@@ -4706,6 +4805,8 @@ def refresh_schema(profile: str | None, prune_missing_tables: bool) -> None:
         )
         regen = okf_manifest(okf_root)
         if regen is not None:
+            if isinstance(manifest.get("functions"), dict):
+                regen["functions"] = manifest["functions"]
             (apx / SCHEMA_MANIFEST_NAME).write_text(dump_schema_cache(regen))
         n = len(regen["tables"]) if regen else 0
         click.echo(f"refreshed {okf_root} (+ schema.json cache) — {n} table{'s' if n != 1 else ''} from {catalog}.{schema}")
@@ -9419,6 +9520,11 @@ def _deploy_apps_impl(
     else:
         log(f"# resolved app_name: {resolved_app_name}")
 
+    agent = _load_finalized_agent(module)
+    _bake_deploy_function_signatures(
+        cwd, agent=agent, profile=profile, log=log,
+    )
+
     # 2. Reconcile the OBO scopes / resources the agent's tools need against
     #    databricks.yml. --auto-update-yml MERGES them in (never clobbering);
     #    without it (the default) we still CHECK and warn about any missing OBO
@@ -9428,7 +9534,8 @@ def _deploy_apps_impl(
     #    path, not only under the opt-in flag (#563).
     if auto_update_yml:
         log("# auto-update-yml: merging agent ResourceSpec + OBO scopes into databricks.yml")
-        agent = _load_finalized_agent(module)
+        if agent is None:
+            agent = _load_finalized_agent(module)
         _auto_update_databricks_yml(
             cwd, agent=agent, bundle_key=bundle_key, log=log,
         )

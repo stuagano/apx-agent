@@ -223,9 +223,9 @@ def uc_function_tool(
 ) -> Any:
     """Return a tool that executes a Unity Catalog function via SQL.
 
-    The function definition is fetched from UC on the first call and cached —
-    parameter names, types, and order are derived automatically so the SQL
-    call is always correct.
+    Parameter names, types, and order come from the baked ``.apx/schema.json``
+    signature when available. Local projects without a baked signature fall
+    back to one live UC lookup on the first call.
 
     Usage::
 
@@ -237,8 +237,8 @@ def uc_function_tool(
 
     Description policy — in order of precedence:
       1. ``description`` argument, when set.
-      2. The UC function's ``comment``, fetched at factory time when ``ws``
-         is provided.
+      2. The UC function's baked ``comment`` or, when ``ws`` is provided,
+         the live comment fetched at factory time.
       3. A generic ``"Execute the Unity Catalog function ..."`` fallback.
 
     Pass ``ws`` to get the data team's documentation (the function's UC
@@ -261,12 +261,24 @@ def uc_function_tool(
     _short_name = function_name.rsplit(".", 1)[-1]
     _tool_name = name or _short_name
 
-    # Mutable cache — populated on first call using the live workspace client.
-    # Keys: "parameters" (list ordered by position), "data_type" (str), "desc" (str).
+    # Mutable cache — populated from the baked manifest or on first live call.
+    # Key: "parameters" (list ordered by position).
     _cache: dict[str, Any] = {}
 
-    _comment_desc: str | None = None
-    if ws is not None and description is None:
+    from ._schema import load_baked_schema
+    _baked = load_baked_schema()
+    _signature = (
+        (_baked.get("functions") or {}).get(function_name)
+        if isinstance(_baked, dict) else None
+    )
+    if isinstance(_signature, dict) and isinstance(_signature.get("parameters"), list):
+        _cache["parameters"] = sorted(
+            _signature["parameters"], key=lambda parameter: parameter.get("position", 0)
+        )
+
+    baked_comment = _signature.get("comment") if isinstance(_signature, dict) else None
+    _comment_desc = str(baked_comment).strip() if baked_comment else None
+    if ws is not None and description is None and _signature is None:
         try:
             func_info = ws.functions.get(function_name)
             comment = getattr(func_info, "comment", None)
@@ -298,7 +310,11 @@ def uc_function_tool(
                 func_info = ws.functions.get(function_name)
             except DatabricksError as e:
                 # Unknown function / denied access is a finding, not a 500 (#562).
-                raise ToolError(f"UC function {function_name!r} lookup failed: {e}") from e
+                raise ToolError(
+                    f"UC function {function_name!r} lookup failed: {e}. "
+                    "Bake function signatures with `apx-agent agents refresh-schema` "
+                    "or grant the runtime token the `unity-catalog` scope."
+                ) from e
             raw_params = getattr(getattr(func_info, "input_params", None), "parameters", None) or []
             _cache["parameters"] = sorted(
                 [
@@ -311,7 +327,6 @@ def uc_function_tool(
                 ],
                 key=lambda p: p["position"],
             )
-            _cache["data_type"] = str(getattr(func_info, "data_type", "") or "")
 
         # Build positional SQL args from param dict
         cached_params: list[dict[str, Any]] = _cache["parameters"]
@@ -400,18 +415,40 @@ def uc_function_toolkit(
         )
     catalog, schema = catalog_schema.split(".")
 
-    if ws is None:
-        from databricks.sdk import WorkspaceClient
-        ws = WorkspaceClient()
-
-    try:
-        function_infos = list(ws.functions.list(catalog_name=catalog, schema_name=schema))
-    except Exception as e:
-        logger.warning(
-            "uc_function_toolkit: failed to list functions in %s.%s: %s",
-            catalog, schema, e,
-        )
-        return []
+    from ._schema import load_baked_schema
+    baked = load_baked_schema()
+    baked_functions = (
+        baked.get("functions")
+        if isinstance(baked, dict)
+        and baked.get("catalog") == catalog
+        and baked.get("schema") == schema
+        and isinstance(baked.get("functions"), dict)
+        else None
+    )
+    if baked_functions is not None:
+        from types import SimpleNamespace
+        function_infos = [
+            SimpleNamespace(
+                name=full_name.rsplit(".", 1)[-1],
+                full_name=full_name,
+                comment=signature.get("comment"),
+            )
+            for full_name, signature in baked_functions.items()
+            if isinstance(signature, dict)
+            and full_name.startswith(f"{catalog}.{schema}.")
+        ]
+    else:
+        if ws is None:
+            from databricks.sdk import WorkspaceClient
+            ws = WorkspaceClient()
+        try:
+            function_infos = list(ws.functions.list(catalog_name=catalog, schema_name=schema))
+        except Exception as e:
+            logger.warning(
+                "uc_function_toolkit: failed to list functions in %s.%s: %s",
+                catalog, schema, e,
+            )
+            return []
 
     include_set = set(include) if include else None
     exclude_set = set(exclude) if exclude else set()

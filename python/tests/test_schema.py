@@ -69,6 +69,37 @@ class TestIntrospectViaTablesApi:
         assert introspect_schema_columns(None, "c", "s") == {}
 
 
+class TestIntrospectFunctionSignatures:
+    def test_builds_baked_function_manifest(self):
+        from types import SimpleNamespace
+        from apx_agent._schema import introspect_function_signatures
+
+        listed = [SimpleNamespace(name="classify", full_name="main.tools.classify")]
+        function = SimpleNamespace(
+            comment="Classify a request.",
+            data_type="STRING",
+            input_params=SimpleNamespace(parameters=[
+                SimpleNamespace(name="threshold", position=1, type_name="DOUBLE"),
+                SimpleNamespace(name="text", position=0, type_name="STRING"),
+            ]),
+        )
+        ws = SimpleNamespace(functions=SimpleNamespace(
+            list=lambda **kwargs: listed,
+            get=lambda name: function,
+        ))
+
+        assert introspect_function_signatures(ws, "main", "tools") == {
+            "main.tools.classify": {
+                "comment": "Classify a request.",
+                "data_type": "STRING",
+                "parameters": [
+                    {"name": "text", "position": 0, "type_name": "STRING"},
+                    {"name": "threshold", "position": 1, "type_name": "DOUBLE"},
+                ],
+            },
+        }
+
+
 class TestBuildInstructions:
     DISCOVERY = "call the SQL tool to confirm what tables and columns are available"
 
@@ -145,6 +176,35 @@ class TestLoadBakedSchemaOKF:
         _write_manifest(tmp_path, stale)
         fresh = {"catalog": "c", "schema": "s", "tables": {"new": ["y(int)"]}}
         self._write_okf(tmp_path, fresh)
+        assert load_baked_schema(tmp_path) == fresh
+
+    def test_okf_tables_keep_baked_function_signatures(self, tmp_path):
+        cache = {
+            "catalog": "c",
+            "schema": "s",
+            "tables": {"old": ["x(int)"]},
+            "functions": {
+                "c.s.lookup": {
+                    "comment": "Look up a value.",
+                    "data_type": "STRING",
+                    "parameters": [],
+                },
+            },
+        }
+        _write_manifest(tmp_path, cache)
+        fresh = {"catalog": "c", "schema": "s", "tables": {"new": ["y(int)"]}}
+        self._write_okf(tmp_path, fresh)
+
+        assert load_baked_schema(tmp_path) == {
+            **fresh,
+            "functions": cache["functions"],
+        }
+
+    def test_valid_okf_ignores_corrupt_supplemental_cache(self, tmp_path):
+        fresh = {"catalog": "c", "schema": "s", "tables": {"new": ["y(int)"]}}
+        self._write_okf(tmp_path, fresh)
+        (tmp_path / ".apx" / "schema.json").write_text("{bad json")
+
         assert load_baked_schema(tmp_path) == fresh
 
     def test_falls_back_to_schema_json_when_okf_malformed(self, tmp_path):
