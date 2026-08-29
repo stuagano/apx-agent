@@ -2484,12 +2484,15 @@ def _bake_deploy_function_signatures(
             "could not create a Databricks author client to bake UC function "
             "signatures"
         )
-    functions = introspect_function_signatures(ws, catalog, schema) if has_schema else {}
-    if has_schema and functions is None:
-        raise click.ClickException(
-            f"could not bake every UC function in {catalog}.{schema}; "
-            "deployment stopped before replacing the existing signatures"
-        )
+    if isinstance(catalog, str) and isinstance(schema, str):
+        functions = introspect_function_signatures(ws, catalog, schema)
+        if functions is None:
+            raise click.ClickException(
+                f"could not bake every UC function in {catalog}.{schema}; "
+                "deployment stopped before replacing the existing signatures"
+            )
+    else:
+        functions = {}
     declared_signatures = introspect_named_function_signatures(ws, declared)
     existing_functions = dict(manifest.get("functions") or {})
     unresolved = [
