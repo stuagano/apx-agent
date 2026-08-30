@@ -1,0 +1,182 @@
+"""Trace-linked human feedback over MLflow 3.14 assessment APIs."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+FeedbackValue = bool | int | float | str
+AssessmentValue = FeedbackValue | dict[str, FeedbackValue] | list[FeedbackValue] | None
+
+IDEMPOTENCY_METADATA_KEY = "apx.feedback.idempotency_key"
+DEFAULT_SOURCE_ID = "apx.trace_feedback"
+
+
+class TraceFeedbackError(ValueError):
+    """Raised when trace feedback cannot be validated or read."""
+
+
+@dataclass(frozen=True)
+class TraceFeedback:
+    trace_id: str
+    name: str
+    value: FeedbackValue
+    comment: str | None = None
+    source: str | None = None
+    idempotency_key: str | None = None
+    evidence: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class TraceFeedbackResult:
+    trace_id: str
+    feedback_id: str | None
+    name: str
+    created: bool
+
+
+@dataclass(frozen=True)
+class TraceAssessment:
+    assessment_id: str | None
+    name: str | None
+    kind: str
+    value: AssessmentValue
+    rationale: str | None
+    source_type: str | None
+    source_id: str | None
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TraceFeedbackView:
+    trace_id: str
+    tags: dict[str, str]
+    assessments: list[TraceAssessment]
+
+
+def _default_mlflow_api() -> Any:
+    try:
+        import mlflow
+    except ImportError as exc:  # pragma: no cover - depends on optional install
+        raise TraceFeedbackError(
+            "trace feedback requires mlflow; install 'apx-agent[eval]'"
+        ) from exc
+    return mlflow
+
+
+def _validate_feedback(feedback: TraceFeedback) -> None:
+    if not feedback.trace_id.strip():
+        raise TraceFeedbackError("trace_id must be non-empty")
+    if not feedback.name.strip():
+        raise TraceFeedbackError("name must be non-empty")
+    if type(feedback.value) not in (bool, int, float, str):
+        raise TraceFeedbackError("value must be bool, int, float, or str")
+    if feedback.source is not None and not feedback.source.strip():
+        raise TraceFeedbackError("source must be non-empty when provided")
+    if feedback.idempotency_key is not None and not feedback.idempotency_key.strip():
+        raise TraceFeedbackError("idempotency_key must be non-empty when provided")
+    if feedback.evidence is not None and not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in feedback.evidence.items()
+    ):
+        raise TraceFeedbackError("evidence keys and values must be strings")
+
+
+def _assessment_dict(assessment: Any) -> dict[str, Any]:
+    if isinstance(assessment, dict):
+        return assessment
+    value = assessment.to_dictionary()
+    if isinstance(value, dict):
+        return value
+    raise TraceFeedbackError("MLflow returned an unsupported assessment shape")
+
+
+def _normalize_assessment(assessment: Any) -> TraceAssessment:
+    raw = _assessment_dict(assessment)
+    source = raw.get("source")
+    source = source if isinstance(source, dict) else {}
+    metadata = raw.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+
+    kind = "unknown"
+    value: AssessmentValue = None
+    for candidate in ("feedback", "expectation"):
+        payload = raw.get(candidate)
+        if isinstance(payload, dict):
+            kind = candidate
+            value = payload.get("value")
+            break
+
+    return TraceAssessment(
+        assessment_id=raw.get("assessment_id"),
+        name=raw.get("assessment_name") or raw.get("name"),
+        kind=kind,
+        value=value,
+        rationale=raw.get("rationale"),
+        source_type=source.get("source_type"),
+        source_id=source.get("source_id"),
+        metadata={str(key): str(item) for key, item in metadata.items()},
+    )
+
+
+def get_feedback_view(trace_id: str, *, mlflow_api: Any = None) -> TraceFeedbackView:
+    """Return tags and normalized assessments for one MLflow trace."""
+    trace_id = trace_id.strip()
+    if not trace_id:
+        raise TraceFeedbackError("trace_id must be non-empty")
+    api = mlflow_api or _default_mlflow_api()
+    trace = api.get_trace(trace_id)
+    if trace is None:
+        raise TraceFeedbackError(f"MLflow trace {trace_id!r} not found")
+    info = trace.info
+    return TraceFeedbackView(
+        trace_id=str(info.trace_id),
+        tags=dict(info.tags or {}),
+        assessments=[_normalize_assessment(item) for item in info.assessments or []],
+    )
+
+
+def attach_feedback(
+    feedback: TraceFeedback, *, mlflow_api: Any = None
+) -> TraceFeedbackResult:
+    """Attach HUMAN feedback to a trace with best-effort replay protection."""
+    _validate_feedback(feedback)
+    api = mlflow_api or _default_mlflow_api()
+    trace_id = feedback.trace_id.strip()
+    name = feedback.name.strip()
+
+    if feedback.idempotency_key is not None:
+        idempotency_key = feedback.idempotency_key.strip()
+        existing = get_feedback_view(trace_id, mlflow_api=api)
+        for assessment in existing.assessments:
+            if assessment.metadata.get(IDEMPOTENCY_METADATA_KEY) == idempotency_key:
+                return TraceFeedbackResult(
+                    trace_id=trace_id,
+                    feedback_id=assessment.assessment_id,
+                    name=name,
+                    created=False,
+                )
+
+    from mlflow.entities import AssessmentSource, AssessmentSourceType
+
+    metadata = dict(feedback.evidence or {})
+    if feedback.idempotency_key is not None:
+        metadata[IDEMPOTENCY_METADATA_KEY] = feedback.idempotency_key.strip()
+    created = api.log_feedback(
+        trace_id=trace_id,
+        name=name,
+        value=feedback.value,
+        rationale=feedback.comment,
+        source=AssessmentSource(
+            source_type=AssessmentSourceType.HUMAN,
+            source_id=(feedback.source or DEFAULT_SOURCE_ID).strip(),
+        ),
+        metadata=metadata or None,
+    )
+    return TraceFeedbackResult(
+        trace_id=trace_id,
+        feedback_id=created.assessment_id,
+        name=name,
+        created=True,
+    )
