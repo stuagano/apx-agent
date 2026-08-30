@@ -22,16 +22,18 @@ Apply these to every change:
 Use the narrowest useful command while iterating, then run the full gate before
 claiming a change works:
 
+On a fresh worktree, run `cd typescript && npm ci && npm run build` before the
+Python gate so the ignored internal AppKit runtime exists.
+
 ```bash
 make check
-cd python && uv run pytest
-cd python && uv run pytest -k NAME
-pre-commit run --all-files
+cd python && uv run --frozen pytest
+cd python && uv run --frozen pytest -k NAME
 ```
 
 `make check` is the read-after-write gate. It runs the full pytest suite,
-including the `*_reality_ctk.py` tests, and then sanitizes the Python lockfile
-registry metadata.
+including the `*_reality_ctk.py` tests, auto-fixes the Python lockfile registry
+metadata before testing, and verifies it again afterward.
 
 The lint suite is configured in `.pre-commit-config.yaml` and enforces local
 style constraints such as no skipped tests, no empty-string default coercion, no
