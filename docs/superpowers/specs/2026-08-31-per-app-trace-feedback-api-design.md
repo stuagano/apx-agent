@@ -146,6 +146,7 @@ Responses use these categories:
 - `403` when MLflow denies the authenticated caller access
 - `404` when the requested trace does not exist
 - `422` for malformed JSON, unknown fields, or invalid feedback values
+- `503` when the optional MLflow feedback dependency is unavailable
 - `502` for other sanitized MLflow failures
 
 Error responses and logs never include access tokens, authorization headers, or
@@ -165,6 +166,10 @@ tested to prove the routes exist:
 The implementation must not add separate per-constructor feedback behavior.
 If repeated setup can occur on the same FastAPI instance, inclusion is guarded
 by one app-state marker so routes are not registered twice.
+
+Router construction does not import MLflow. A core-only APX installation can
+therefore start normally and returns the sanitized `503` only if a caller uses
+the feedback endpoint without the `eval` extra installed.
 
 ## Testing
 
