@@ -579,6 +579,15 @@ def resolve_agent(
 _resolve_env_var = resolve_env_var
 
 
+def _mount_trace_feedback_routes(app: FastAPI) -> None:
+    if getattr(app.state, "trace_feedback_routes_mounted", False):
+        return
+    from ._trace_feedback_api import build_trace_feedback_router
+
+    app.include_router(build_trace_feedback_router())
+    app.state.trace_feedback_routes_mounted = True
+
+
 async def setup_agent(
     app: FastAPI,
     agent: "BaseAgent | None",
@@ -598,6 +607,7 @@ async def setup_agent(
     after ``setup_agent`` runs (depends on the eval/mlflow extra).
     Returns the ``AgentContext``, or ``None`` if config is missing.
     """
+    _mount_trace_feedback_routes(app)
     if config is None:
         config = _load_agent_config(pyproject_path=pyproject_path)
     if config is None:
