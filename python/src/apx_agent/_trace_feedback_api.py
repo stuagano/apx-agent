@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, NoReturn
 
 from fastapi import APIRouter, HTTPException, Request
@@ -59,7 +60,7 @@ class _OBOTraceFeedbackApi:
         from mlflow.exceptions import MlflowException
 
         try:
-            return self._store.get_trace(trace_id)
+            return SimpleNamespace(info=self._store.get_trace_info(trace_id))
         except MlflowException as exc:
             if exc.get_http_status_code() == 404:
                 return None

@@ -12,7 +12,11 @@ from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import NOT_FOUND, PERMISSION_DENIED
 
 from apx_agent import _trace_feedback_api
-from apx_agent._trace_feedback import TraceFeedbackResult, TraceFeedbackView
+from apx_agent._trace_feedback import (
+    IDEMPOTENCY_METADATA_KEY,
+    TraceFeedbackResult,
+    TraceFeedbackView,
+)
 
 
 @pytest.mark.unit
@@ -84,6 +88,9 @@ def test_obo_api_converts_store_not_found_to_none() -> None:
             pass
 
         def get_trace(self, trace_id):
+            raise AssertionError("get_trace fetches spans and is unsupported")
+
+        def get_trace_info(self, trace_id):
             raise MlflowException("missing", error_code=NOT_FOUND)
 
     with patch(
@@ -96,6 +103,60 @@ def test_obo_api_converts_store_not_found_to_none() -> None:
         )
 
     assert api.get_trace("tr-missing") is None
+
+
+@pytest.mark.unit
+def test_obo_api_reads_trace_info_without_fetching_spans() -> None:
+    info = SimpleNamespace(trace_id="tr-1", tags={}, assessments=[])
+    calls = []
+
+    class FakeStore:
+        def __init__(self, get_host_creds):
+            pass
+
+        def get_trace(self, trace_id):
+            raise AssertionError("get_trace fetches spans and is unsupported")
+
+        def get_trace_info(self, trace_id):
+            calls.append(trace_id)
+            return info
+
+    with patch(
+        "mlflow.store.tracking.databricks_rest_store.DatabricksTracingRestStore",
+        FakeStore,
+    ):
+        api = _trace_feedback_api._OBOTraceFeedbackApi(
+            host="https://workspace.example",
+            token="user-token",
+        )
+
+    assert api.get_trace("tr-1").info is info
+    assert calls == ["tr-1"]
+
+
+@pytest.mark.unit
+def test_obo_api_propagates_trace_info_errors() -> None:
+    class FakeStore:
+        def __init__(self, get_host_creds):
+            pass
+
+        def get_trace(self, trace_id):
+            raise AssertionError("get_trace fetches spans and is unsupported")
+
+        def get_trace_info(self, trace_id):
+            raise MlflowException("denied", error_code=PERMISSION_DENIED)
+
+    with patch(
+        "mlflow.store.tracking.databricks_rest_store.DatabricksTracingRestStore",
+        FakeStore,
+    ):
+        api = _trace_feedback_api._OBOTraceFeedbackApi(
+            host="https://workspace.example",
+            token="user-token",
+        )
+
+    with pytest.raises(MlflowException, match="denied"):
+        api.get_trace("tr-1")
 
 
 def _feedback_app() -> FastAPI:
@@ -189,6 +250,84 @@ async def test_deployed_feedback_uses_trusted_host_and_forwarded_email(
     assert captured["host"] == "https://trusted.example"
     assert captured["token"] == "user-token"
     assert captured["write"]["source"].source_id == "reviewer@example.com"
+
+
+@pytest.mark.asyncio
+async def test_deployed_feedback_reads_and_replays_with_request_scoped_trace_info(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "feedback-app")
+    monkeypatch.setenv("DATABRICKS_HOST", "https://trusted.example")
+    captured = {"creds": [], "reads": [], "writes": []}
+    info = SimpleNamespace(
+        trace_id="tr-1",
+        tags={"team": "claims"},
+        assessments=[
+            {
+                "assessment_id": "a-existing",
+                "assessment_name": "quality",
+                "feedback": {"value": 4},
+                "source": {
+                    "source_type": "HUMAN",
+                    "source_id": "reviewer@example.com",
+                },
+                "metadata": {IDEMPOTENCY_METADATA_KEY: "req-1"},
+            }
+        ],
+    )
+
+    class FakeStore:
+        def __init__(self, get_host_creds):
+            captured["creds"].append(get_host_creds())
+
+        def get_trace(self, trace_id):
+            raise AssertionError("get_trace fetches spans and is unsupported")
+
+        def get_trace_info(self, trace_id):
+            captured["reads"].append(trace_id)
+            return info
+
+        def create_assessment(self, assessment):
+            captured["writes"].append(assessment)
+            return assessment
+
+    with patch(
+        "mlflow.store.tracking.databricks_rest_store.DatabricksTracingRestStore",
+        FakeStore,
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=_feedback_app()),
+            base_url="http://test",
+            headers={
+                "X-Forwarded-Access-Token": "user-token",
+                "X-Forwarded-Email": "reviewer@example.com",
+            },
+        ) as client:
+            loaded = await client.get("/_apx/feedback/tr-1")
+            replayed = await client.post(
+                "/_apx/feedback",
+                json={
+                    "trace_id": "tr-1",
+                    "name": "quality",
+                    "value": 4,
+                    "idempotency_key": "req-1",
+                },
+            )
+
+    assert loaded.status_code == 200
+    assert loaded.json()["tags"] == {"team": "claims"}
+    assert loaded.json()["assessments"][0]["assessment_id"] == "a-existing"
+    assert replayed.status_code == 200
+    assert replayed.json() == {
+        "trace_id": "tr-1",
+        "feedback_id": "a-existing",
+        "name": "quality",
+        "created": False,
+    }
+    assert captured["reads"] == ["tr-1", "tr-1"]
+    assert captured["writes"] == []
+    assert all(creds.host == "https://trusted.example" for creds in captured["creds"])
+    assert all(creds.token == "user-token" for creds in captured["creds"])
 
 
 @pytest.mark.asyncio
