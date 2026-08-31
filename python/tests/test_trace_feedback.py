@@ -152,6 +152,23 @@ def test_attach_feedback_rejects_invalid_input(field: str, value) -> None:
 
 
 @pytest.mark.unit
+def test_attach_feedback_rejects_reserved_idempotency_evidence_key() -> None:
+    with pytest.raises(
+        _trace_feedback.TraceFeedbackError,
+        match=_trace_feedback.IDEMPOTENCY_METADATA_KEY,
+    ):
+        _trace_feedback.attach_feedback(
+            _trace_feedback.TraceFeedback(
+                trace_id="tr-1",
+                name="quality",
+                value=True,
+                evidence={_trace_feedback.IDEMPOTENCY_METADATA_KEY: "caller-value"},
+            ),
+            mlflow_api=SimpleNamespace(),
+        )
+
+
+@pytest.mark.unit
 def test_get_feedback_view_rejects_missing_trace() -> None:
     api = SimpleNamespace(get_trace=lambda trace_id: None)
     with pytest.raises(_trace_feedback.TraceFeedbackError, match="not found"):
