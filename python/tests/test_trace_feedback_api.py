@@ -124,6 +124,36 @@ async def test_deployed_feedback_requires_obo_and_human_identity(monkeypatch) ->
 
 
 @pytest.mark.asyncio
+async def test_deployed_feedback_maps_missing_mlflow_adapter_to_503(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "feedback-app")
+    monkeypatch.setenv("DATABRICKS_HOST", "https://trusted.example")
+    with patch.dict(
+        "sys.modules",
+        {"mlflow.store.tracking.databricks_rest_store": None},
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=_feedback_app(),
+                raise_app_exceptions=False,
+            ),
+            base_url="http://test",
+        ) as client:
+            response = await client.get(
+                "/_apx/feedback/tr-1",
+                headers={
+                    "X-Forwarded-Access-Token": "user-token",
+                    "X-Forwarded-Email": "reviewer@example.com",
+                },
+            )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Trace feedback requires the APX eval extra."}
+    assert "user-token" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_deployed_feedback_uses_trusted_host_and_forwarded_email(
     monkeypatch,
 ) -> None:

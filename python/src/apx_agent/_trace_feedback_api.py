@@ -99,9 +99,11 @@ def _request_feedback_context(request: Request) -> _TraceFeedbackContext:
 
 
 def _raise_http_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, HTTPException):
+        raise exc
     if isinstance(exc, TraceNotFoundError):
         raise HTTPException(status_code=404, detail="Trace not found.") from exc
-    if isinstance(exc, TraceFeedbackUnavailableError):
+    if isinstance(exc, (ImportError, TraceFeedbackUnavailableError)):
         raise HTTPException(
             status_code=503,
             detail="Trace feedback requires the APX eval extra.",
@@ -133,8 +135,8 @@ def build_trace_feedback_router() -> APIRouter:
 
     @router.post("")
     def post_feedback(body: _TraceFeedbackRequest, request: Request) -> Any:
-        context = _request_feedback_context(request)
         try:
+            context = _request_feedback_context(request)
             return attach_feedback(
                 TraceFeedback(
                     trace_id=body.trace_id,
@@ -152,8 +154,8 @@ def build_trace_feedback_router() -> APIRouter:
 
     @router.get("/{trace_id:path}")
     def get_feedback(trace_id: str, request: Request) -> Any:
-        context = _request_feedback_context(request)
         try:
+            context = _request_feedback_context(request)
             return get_feedback_view(trace_id, mlflow_api=context.mlflow_api)
         except Exception as exc:
             _raise_http_error(exc)

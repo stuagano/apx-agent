@@ -601,7 +601,9 @@ async def setup_agent(
       * ``GET /.well-known/agent.json`` (A2A discovery)
       * ``GET /health``
       * MCP transports at ``/mcp`` and ``/mcp/sse`` (when ``mcp`` extra installed)
-      * Dev UI at ``/_apx/*`` (when ``_dev`` module loadable)
+      * trace feedback at ``POST /_apx/feedback`` and
+        ``GET /_apx/feedback/{trace_id:path}`` (always)
+      * other Dev UI routes at ``/_apx/*`` (when ``_dev`` module loadable)
 
     The ``POST /invocations`` route is mounted separately by ``create_app``
     after ``setup_agent`` runs (depends on the eval/mlflow extra).
