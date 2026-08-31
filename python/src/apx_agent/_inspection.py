@@ -254,6 +254,12 @@ def _load_agent_config(
     fields = _config_fields(resolved)
     if fields is None:
         return None
+    runtime_name = os.environ.get("APX_AGENT_NAME")
+    if runtime_name is not None:
+        runtime_name = runtime_name.strip()
+        if not runtime_name:
+            raise ValueError("APX_AGENT_NAME must not be blank")
+        fields["name"] = runtime_name
     config = AgentConfig(**fields)
     logging.getLogger(__name__).info(
         "[%s] loaded from %s (name=%s)", ".".join(section_path), resolved, config.name

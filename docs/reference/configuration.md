@@ -29,6 +29,15 @@ createAgentPlugin({
 
 Environment variable references (`$VAR` or `${VAR}`) are resolved at startup.
 
+### Runtime identity for Apps
+
+`APX_AGENT_NAME` overrides `[tool.apx.agent].name` for the running process.
+Generated Databricks Apps configurations set this variable so one source tree
+can serve multiple Apps with distinct identities. The runtime name is used
+consistently for discovery, A2A metadata, conversation history, tracing, and UI
+filtering; the committed name remains the fallback when the variable is unset.
+A blank value is rejected.
+
 ## Declarative tools — `[[tool.apx.tools]]`
 
 > Python only. The TypeScript plugin has no `[[tool.apx.tools]]` equivalent — declare tools in code via the `tools` option.

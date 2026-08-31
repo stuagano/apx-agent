@@ -206,6 +206,24 @@ class TestLoadAgentConfig:
         assert config.name == "cwd-project"
         assert config.model == "some-model"
 
+    def test_runtime_agent_name_overrides_committed_name(self, tmp_path, monkeypatch):
+        toml = tmp_path / "pyproject.toml"
+        toml.write_text('[tool.apx.agent]\nname = "shared-agent"\n')
+        monkeypatch.setenv("APX_AGENT_NAME", "pricing-agent")
+
+        config = _load_agent_config(pyproject_path=toml)
+
+        assert config is not None
+        assert config.name == "pricing-agent"
+
+    def test_blank_runtime_agent_name_is_rejected(self, tmp_path, monkeypatch):
+        toml = tmp_path / "pyproject.toml"
+        toml.write_text('[tool.apx.agent]\nname = "shared-agent"\n')
+        monkeypatch.setenv("APX_AGENT_NAME", "  ")
+
+        with pytest.raises(ValueError, match="APX_AGENT_NAME must not be blank"):
+            _load_agent_config(pyproject_path=toml)
+
     def test_returns_none_for_missing_section(self, tmp_path, monkeypatch):
         (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
         monkeypatch.chdir(tmp_path)
