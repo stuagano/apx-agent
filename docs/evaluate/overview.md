@@ -221,3 +221,119 @@ Choose acceptance thresholds before inspecting results. Promote the new judge
 only when it improves the target decision without a material held-out or
 segment regression. Keep the original judge registered until the replacement
 has passed its production observation window.
+
+## Sampled production scoring
+
+MLflow `3.14` can run a registered scorer asynchronously against sampled
+production traces. Use that native lifecycle instead of creating a separate APX
+scheduler or replaying the agent in a Lakeflow Job. The scorer evaluates the
+outputs already recorded on each selected trace and writes its assessment back
+to that trace.
+
+Start with a small sampling rate and one calibrated decision. The process that
+runs this setup must be authenticated to the intended Databricks workspace; APX
+does not choose a profile or deploy monitoring on your behalf.
+
+```python
+import mlflow
+from mlflow.genai.scorers import ScorerSamplingConfig, get_scorer
+from mlflow.tracing import set_databricks_monitoring_sql_warehouse_id
+
+experiment = mlflow.set_experiment("/Shared/claims-agent-production")
+
+set_databricks_monitoring_sql_warehouse_id(
+    "0123456789abcdef",
+    experiment_id=experiment.experiment_id,
+)
+
+# `label align --new-version domain_quality-v2` registered this scorer.
+scorer = get_scorer(
+    name="domain_quality-v2",
+    experiment_id=experiment.experiment_id,
+)
+active_scorer = scorer.start(
+    experiment_id=experiment.experiment_id,
+    sampling_config=ScorerSamplingConfig(
+        sample_rate=0.10,
+        filter_string=(
+            "attributes.status = 'OK' AND "
+            "tags.`apx.agent.name` = 'claims-agent'"
+        ),
+    ),
+)
+print(active_scorer.sampling_config)
+```
+
+Both `register()` and `start()` are required for a new scorer. The example uses
+`get_scorer()` because the calibration flow already registered a versioned
+judge. `start()` is experimental in MLflow `3.14`; keep the APX-supported
+`mlflow>=3.14,<3.15` boundary and revalidate this setup before upgrading.
+
+The authenticated principal needs `CAN USE` on the monitoring SQL warehouse
+and `CAN EDIT` on the experiment. Scorer registration may create or update
+Databricks-managed monitoring resources, so run setup as the intended operator,
+not from an end-user request path.
+
+### Verify and roll back
+
+Confirm the scorer is registered with the intended sample rate, then inspect a
+sampled trace for the assessment named `domain_quality-v2`:
+
+```python
+from mlflow.genai.scorers import get_scorer, list_scorers
+
+for registered in list_scorers(experiment_id=experiment.experiment_id):
+    print(registered.name, registered.sampling_config)
+
+current = get_scorer(
+    name="domain_quality-v2",
+    experiment_id=experiment.experiment_id,
+)
+```
+
+```bash
+apx-agent traces feedback-view TRACE_ID --format json
+```
+
+Registration alone does not prove that production scoring is active. Verify
+that new eligible traces receive the assessment and record the delay before
+increasing the sample rate. To stop new scoring without deleting the registered
+judge:
+
+```python
+current.stop(experiment_id=experiment.experiment_id)
+```
+
+Stopping preserves the scorer for inspection or restart and does not remove
+assessments already attached to traces.
+
+### Production scorecard
+
+Review a fixed observation window and record the numerator and denominator for
+every rate. Do not describe the scorer as production-ready from an aggregate
+judge score alone.
+
+| Signal | Calculation | Required evidence |
+| --- | --- | --- |
+| Coverage | Eligible traces with the scorer assessment / eligible traces | The same time window and trace filter used by the scorer |
+| Human-validated false-positive rate | Judge-flagged traces marked non-actionable by a human / judge-flagged traces reviewed by a human | Reviewer feedback using the same decision boundary and judge-compatible name |
+| Agent latency | Trace `execution_time_ms`, reported separately from scoring | Median and tail latency for eligible scored and unscored traces |
+| Scoring delay | Time from trace completion to scorer assessment, when available | Assessment and trace timestamps from the same workspace |
+| Cost | Observed Databricks usage attributable to the scorer during the window | Billing records or a documented `unknown`; never infer exact per-trace cost from the sample rate |
+
+False-positive rate is unknown until humans review judge-flagged traces. Use
+`traces feedback` or the per-app feedback API to record those decisions; do not
+treat missing human feedback as agreement. Compare latency between scored and
+unscored traces to verify that asynchronous scoring did not change request-path
+latency.
+
+`apx-agent agents cost` reports the agent serving endpoint's usage. It is useful
+request-path context but is not proof of the monitoring scorer's cost. Attribute
+monitoring cost from workspace billing data when possible, otherwise report it
+as unavailable rather than folding it into endpoint cost.
+
+Promote the sample rate only after coverage is stable, the human-reviewed
+false-positive rate meets the threshold chosen during calibration, latency has
+not regressed, and cost is understood. This pattern schedules scoring and
+records assessments; it does not create alerts, a dashboard, issue tickets, or
+autonomous remediation.
