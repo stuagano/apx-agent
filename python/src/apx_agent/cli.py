@@ -936,7 +936,7 @@ def service_policies(spec_path: Path, action: str, profile: str | None) -> None:
 
 @main.group(cls=_ApxGroup)
 def traces() -> None:
-    """Inspect and export MLflow traces."""
+    """Inspect, annotate, and export MLflow traces."""
 
 
 @main.group("eval", cls=_ApxGroup)
@@ -11426,6 +11426,106 @@ def traces_get_cmd(trace_id: str, fmt: str) -> None:
     ]
     for root in roots:
         _print_span(root, 0)
+
+
+# ---------------------------------------------------------------------------
+# traces feedback — attach and inspect trace-linked human feedback
+# ---------------------------------------------------------------------------
+
+
+@traces.command("feedback")
+@click.argument("trace_id")
+@click.option("--name", required=True, help="Assessment or judge-compatible name.")
+@click.option("--value", required=True, help="Boolean, number, or string value.")
+@click.option("--comment", default=None, help="Reviewer rationale or comment.")
+@click.option("--source", default=None, help="Reviewer or review application source.")
+@click.option("--idempotency-key", default=None, help="Best-effort replay key.")
+@click.option(
+    "--evidence", "evidence_items", multiple=True, metavar="KEY=VALUE",
+    help="Evidence metadata (repeatable).",
+)
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def traces_feedback_cmd(
+    trace_id: str,
+    name: str,
+    value: str,
+    comment: str | None,
+    source: str | None,
+    idempotency_key: str | None,
+    evidence_items: tuple[str, ...],
+    fmt: str,
+) -> None:
+    """Attach human feedback to an existing TRACE_ID."""
+    from dataclasses import asdict
+
+    from ._trace_feedback import TraceFeedback, attach_feedback
+
+    evidence: dict[str, str] = {}
+    for item in evidence_items:
+        if "=" not in item:
+            raise click.UsageError(f"--evidence value must be KEY=VALUE, got: {item!r}")
+        key, evidence_value = item.split("=", 1)
+        if not key.strip():
+            raise click.UsageError("--evidence KEY must be non-empty")
+        evidence[key.strip()] = evidence_value.strip()
+
+    try:
+        parsed_value = json.loads(value)
+    except json.JSONDecodeError:
+        parsed_value = value
+
+    try:
+        result = attach_feedback(TraceFeedback(
+            trace_id=trace_id,
+            name=name,
+            value=parsed_value,
+            comment=comment,
+            source=source,
+            idempotency_key=idempotency_key,
+            evidence=evidence or None,
+        ))
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if fmt == "json":
+        click.echo(json.dumps(asdict(result), indent=2, sort_keys=True))
+        return
+    action = "created" if result.created else "reused"
+    click.echo(
+        f"Feedback {action}: trace={result.trace_id} name={result.name} "
+        f"id={result.feedback_id or '-'}"
+    )
+
+
+@traces.command("feedback-view")
+@click.argument("trace_id")
+@click.option(
+    "--format", "fmt", type=click.Choice(["text", "json"]),
+    default="text", help="Output format.",
+)
+def traces_feedback_view_cmd(trace_id: str, fmt: str) -> None:
+    """Show normalized assessments attached to TRACE_ID."""
+    from dataclasses import asdict
+
+    from ._trace_feedback import get_feedback_view
+
+    try:
+        view = get_feedback_view(trace_id)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if fmt == "json":
+        click.echo(json.dumps(asdict(view), indent=2, sort_keys=True))
+        return
+    click.echo(f"trace: {view.trace_id}")
+    for assessment in view.assessments:
+        click.echo(
+            f"{assessment.kind}: {assessment.name or '-'}={assessment.value} "
+            f"source={assessment.source_id or '-'}"
+        )
 
 
 # ---------------------------------------------------------------------------
