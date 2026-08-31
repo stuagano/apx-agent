@@ -23,6 +23,10 @@ apx-agent agents describe                   # introspect tools, sub-agents, decl
 apx-agent eval lint                         # static checks: instructions, docstrings, env vars, model names
 apx-agent eval test --prompt "what's the lineage?"  # local smoke test against a sample prompt
 apx-agent traces list --agent customer_triage       # recent MLflow traces, filtered by apx.* attrs
+apx-agent traces feedback tr-123 --name domain_quality --value 4 \
+          --comment "Correct answer, weak rationale" --source review-app \
+          --idempotency-key review-row-123 --evidence screenshot_uri=s3://bucket/review.png
+apx-agent traces feedback-view tr-123 --format json  # trace tags + normalized assessments
 apx-agent agents list                       # discover deployed apx-agents via UC tag scan
 apx-agent agents cost --agent customer_triage --hours 24 # DBU + $ over a lookback window
 apx-agent traces export --table main.agents.traces --hours 24    # MLflow traces → Delta
@@ -50,6 +54,8 @@ apx-agent memory remember --principal-id user:alice --content "..." --importance
 apx-agent examples find --agent-id triage --query "why is my bill high?" -k 5
 apx-agent examples save --agent-id triage --input "..." --output "..." --score 0.9
 ```
+
+Trace feedback commands require the `eval` extra and use the active MLflow tracking configuration. See [Trace-linked human feedback](../evaluate/overview.md#trace-linked-human-feedback) for the external-review workflow, authentication expectations, and idempotency behavior.
 
 Commands that load the agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`): the `agents run`, `agents deploy`, `agents describe`, `agents publish`, and `agents advertise` commands; the `uc publish` / `uc mcp-config` commands; and the `eval run` / `eval lint` / `eval test` / `eval chain` commands. (Commands like `agents scaffold`, `agents cost`, and the `agents pull-comments` / `agents migrate-to-okf` / `agents refresh-schema` OKF commands don't take `--module`.)
 
