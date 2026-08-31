@@ -6115,6 +6115,124 @@ class TestTracesGet:
 
 
 # ---------------------------------------------------------------------------
+# `apx-agent traces feedback` / `feedback-view`
+# ---------------------------------------------------------------------------
+
+
+class TestTracesFeedback:
+    def test_feedback_delegates_parsed_value_and_evidence(self):
+        from apx_agent._trace_feedback import TraceFeedback, TraceFeedbackResult
+
+        received = []
+
+        def _attach(feedback):
+            received.append(feedback)
+            return TraceFeedbackResult(
+                trace_id="tr-1",
+                feedback_id="a-1",
+                name="quality",
+                created=True,
+            )
+
+        with patch("apx_agent._trace_feedback.attach_feedback", _attach):
+            result = CliRunner().invoke(main, [
+                "traces", "feedback", "tr-1",
+                "--name", "quality",
+                "--value", "4",
+                "--comment", "Correct answer",
+                "--source", "review-app",
+                "--idempotency-key", "row-123",
+                "--evidence", "feature=claims",
+                "--evidence", "screenshot_uri=s3://bucket/image.png",
+                "--format", "json",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert received == [TraceFeedback(
+            trace_id="tr-1",
+            name="quality",
+            value=4,
+            comment="Correct answer",
+            source="review-app",
+            idempotency_key="row-123",
+            evidence={
+                "feature": "claims",
+                "screenshot_uri": "s3://bucket/image.png",
+            },
+        )]
+        assert json.loads(result.output) == {
+            "created": True,
+            "feedback_id": "a-1",
+            "name": "quality",
+            "trace_id": "tr-1",
+        }
+
+    def test_feedback_rejects_malformed_evidence(self):
+        result = CliRunner().invoke(main, [
+            "traces", "feedback", "tr-1",
+            "--name", "quality",
+            "--value", "approved",
+            "--evidence", "missing-equals",
+        ])
+
+        assert result.exit_code != 0
+        assert "KEY=VALUE" in result.output
+
+    def test_feedback_reports_mlflow_failure(self):
+        with patch(
+            "apx_agent._trace_feedback.attach_feedback",
+            side_effect=RuntimeError("permission denied"),
+        ):
+            result = CliRunner().invoke(main, [
+                "traces", "feedback", "tr-1",
+                "--name", "quality",
+                "--value", "approved",
+            ])
+
+        assert result.exit_code != 0
+        assert "permission denied" in result.output
+
+    def test_feedback_view_outputs_normalized_json(self):
+        from apx_agent._trace_feedback import TraceAssessment, TraceFeedbackView
+
+        view = TraceFeedbackView(
+            trace_id="tr-1",
+            tags={"apx.agent.name": "claims"},
+            assessments=[TraceAssessment(
+                assessment_id="a-1",
+                name="quality",
+                kind="feedback",
+                value=4,
+                rationale="Correct",
+                source_type="HUMAN",
+                source_id="review-app",
+                metadata={"feature": "claims"},
+            )],
+        )
+        with patch("apx_agent._trace_feedback.get_feedback_view", return_value=view):
+            result = CliRunner().invoke(
+                main,
+                ["traces", "feedback-view", "tr-1", "--format", "json"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == {
+            "trace_id": "tr-1",
+            "tags": {"apx.agent.name": "claims"},
+            "assessments": [{
+                "assessment_id": "a-1",
+                "name": "quality",
+                "kind": "feedback",
+                "value": 4,
+                "rationale": "Correct",
+                "source_type": "HUMAN",
+                "source_id": "review-app",
+                "metadata": {"feature": "claims"},
+            }],
+        }
+
+
+# ---------------------------------------------------------------------------
 # `apx-agent traces delete`
 # ---------------------------------------------------------------------------
 
