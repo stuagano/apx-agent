@@ -1120,9 +1120,10 @@ def test_deploy_model_serving_json_output_failure(
     assert payload["steps"]["log"] == "ok"
 
 
+_TEST_PROXY_HOST = "pypi-proxy.example.databricks.com"
 _POISONED_LOCK = (
-    'source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }\n'
-    'url = "https://pypi-proxy.dev.databricks.com/packages/ab/cd/foo-1.0-py3-none-any.whl"\n'
+    f'source = {{ registry = "https://{_TEST_PROXY_HOST}/simple" }}\n'
+    f'url = "https://{_TEST_PROXY_HOST}/packages/ab/cd/foo-1.0-py3-none-any.whl"\n'
 )
 
 
@@ -1157,7 +1158,7 @@ def test_deploy_success_keeps_sanitized_uv_lock_and_says_so(
 
     assert result.exit_code == 0, result.output
     text = (tmp_path / "uv.lock").read_text()
-    assert "pypi-proxy.dev.databricks.com" not in text
+    assert _TEST_PROXY_HOST not in text
     assert 'registry = "https://pypi.org/simple"' in text
     assert "rewrote uv.lock in place" in result.output
 
@@ -3698,52 +3699,48 @@ def test_sanitize_uv_lock_rewrites_internal_index(tmp_path: Path) -> None:
 
     lock = tmp_path / "uv.lock"
     lock.write_text(
-        'source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }\n'
+        f'source = {{ registry = "https://{_TEST_PROXY_HOST}/simple" }}\n'
         'url = "https://files.pythonhosted.org/x/foo-1.0-py3-none-any.whl"\n'
     )
     assert _sanitize_uv_lock(lock) is True
     text = lock.read_text()
-    assert "pypi-proxy.dev.databricks.com" not in text
+    assert _TEST_PROXY_HOST not in text
     assert 'registry = "https://pypi.org/simple"' in text
     assert "files.pythonhosted.org/x/foo-1.0-py3-none-any.whl" in text  # untouched
     assert _sanitize_uv_lock(lock) is False  # idempotent
 
 
 def test_sanitize_uv_lock_rewrites_proxy_package_urls(tmp_path: Path) -> None:
-    """Some proxies (pypi-proxy.dev.databricks.com) also serve the wheel files
-    themselves; those /packages/ URLs are unreachable from a deployed App and
-    must be re-pointed at files.pythonhosted.org (same path layout)."""
+    """Recognized mirrors can also serve wheel files themselves; those
+    /packages/ URLs must be re-pointed when they use PyPI's path layout."""
     from apx_agent.cli import _sanitize_uv_lock
 
     lock = tmp_path / "uv.lock"
     lock.write_text(
-        'source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }\n'
-        'url = "https://pypi-proxy.dev.databricks.com/packages/09/7d/abc/scipy-1.17.1.whl"\n'
+        f'source = {{ registry = "https://{_TEST_PROXY_HOST}/simple" }}\n'
+        f'url = "https://{_TEST_PROXY_HOST}/packages/09/7d/abc/scipy-1.17.1.whl"\n'
     )
     assert _sanitize_uv_lock(lock) is True
     text = lock.read_text()
-    assert "pypi-proxy.dev.databricks.com" not in text
+    assert _TEST_PROXY_HOST not in text
     assert (
         "https://files.pythonhosted.org/packages/09/7d/abc/scipy-1.17.1.whl" in text
     )
 
 
-def test_sanitize_uv_lock_rewrites_cloud_proxy_variant(tmp_path: Path) -> None:
-    """Not just the dev proxy: pypi-proxy.cloud.databricks.com (and any other
-    env variant) mirrors PyPI too and must be rewritten, or the deployed
-    container's `uv sync` 404s on it. Regression for the graph-App deploy that
-    failed to download databricks-connect from the cloud proxy."""
+def test_sanitize_uv_lock_rewrites_another_proxy_variant(tmp_path: Path) -> None:
+    """Every recognized proxy environment must be rewritten."""
     from apx_agent.cli import _sanitize_uv_lock
 
     lock = tmp_path / "uv.lock"
     lock.write_text(
-        'source = { registry = "https://pypi-proxy.cloud.databricks.com/simple" }\n'
-        'url = "https://pypi-proxy.cloud.databricks.com/packages/d1/5d/ae8c/'
+        'source = { registry = "https://pypi-proxy.example2.databricks.com/simple" }\n'
+        'url = "https://pypi-proxy.example2.databricks.com/packages/d1/5d/ae8c/'
         'databricks_connect-16.1.7-py2.py3-none-any.whl"\n'
     )
     assert _sanitize_uv_lock(lock) is True
     text = lock.read_text()
-    assert "pypi-proxy.cloud.databricks.com" not in text
+    assert "pypi-proxy.example2.databricks.com" not in text
     assert 'registry = "https://pypi.org/simple"' in text
     assert (
         "https://files.pythonhosted.org/packages/d1/5d/ae8c/"
@@ -3808,7 +3805,7 @@ def test_stage_build_manifest_no_wheel_stages_and_sanitizes(tmp_path: Path) -> N
         'git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"]\n'
     )
     (proj / "uv.lock").write_text(
-        'source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }\n'
+        f'source = {{ registry = "https://{_TEST_PROXY_HOST}/simple" }}\n'
         'url = "https://files.pythonhosted.org/x/foo-1.0-py3-none-any.whl"\n'
     )
 
@@ -3821,7 +3818,7 @@ def test_stage_build_manifest_no_wheel_stages_and_sanitizes(tmp_path: Path) -> N
     # Source pyproject copied verbatim (no wheel rewrite in this path).
     assert "git+https://github.com/stuagano/apx-agent.git" in staged_pyproject.read_text()
     # Staged lock sanitized away from the internal proxy.
-    assert "pypi-proxy.dev.databricks.com" not in staged_lock.read_text()
+    assert _TEST_PROXY_HOST not in staged_lock.read_text()
     assert 'registry = "https://pypi.org/simple"' in staged_lock.read_text()
 
 

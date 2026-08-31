@@ -56,6 +56,9 @@ def _clear_index_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+_TEST_PROXY_HOST = "pypi-proxy.example.databricks.com"
+
+
 def test_pypi_index_ok_clean_env(monkeypatch, tmp_path: Path):
     _clear_index_env(monkeypatch)
     c = doctor.check_pypi_index(tmp_path)
@@ -66,7 +69,7 @@ def test_pypi_index_ok_clean_env(monkeypatch, tmp_path: Path):
 def test_pypi_index_poisoned_lock_is_fail(monkeypatch, tmp_path: Path):
     _clear_index_env(monkeypatch)
     (tmp_path / "uv.lock").write_text(
-        'source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }\n'
+        f'source = {{ registry = "https://{_TEST_PROXY_HOST}/simple" }}\n'
     )
     c = doctor.check_pypi_index(tmp_path)
     assert c.status is doctor.Status.FAIL
@@ -76,17 +79,35 @@ def test_pypi_index_poisoned_lock_is_fail(monkeypatch, tmp_path: Path):
 
 def test_pypi_index_env_var_is_warn(monkeypatch, tmp_path: Path):
     _clear_index_env(monkeypatch)
-    monkeypatch.setenv("UV_INDEX_URL", "https://pypi-proxy.dev.databricks.com/simple")
+    monkeypatch.setenv("UV_INDEX_URL", f"https://{_TEST_PROXY_HOST}/simple")
     c = doctor.check_pypi_index(tmp_path)  # no lock present
     assert c.status is doctor.Status.WARN
     assert "UV_INDEX_URL" in c.detail
     assert "UV_INDEX_URL" in c.fix
 
 
+def test_pypi_index_unknown_nonpublic_env_var_is_warn(monkeypatch, tmp_path: Path):
+    _clear_index_env(monkeypatch)
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.example.invalid/simple")
+    c = doctor.check_pypi_index(tmp_path)
+    assert c.status is doctor.Status.WARN
+    assert "UV_DEFAULT_INDEX" in c.detail
+    assert "mirror.example.invalid" not in c.detail
+
+
+def test_pypi_index_public_env_var_is_ok(monkeypatch, tmp_path: Path):
+    _clear_index_env(monkeypatch)
+    monkeypatch.setenv("PIP_INDEX_URL", "https://pypi.org/simple")
+    c = doctor.check_pypi_index(tmp_path)
+    assert c.status is doctor.Status.OK
+
+
 def test_pypi_index_poisoned_lock_outranks_env(monkeypatch, tmp_path: Path):
     _clear_index_env(monkeypatch)
-    monkeypatch.setenv("UV_INDEX_URL", "https://pypi-proxy.dev.databricks.com/simple")
-    (tmp_path / "uv.lock").write_text("pypi-proxy.dev.databricks.com")
+    monkeypatch.setenv("UV_INDEX_URL", f"https://{_TEST_PROXY_HOST}/simple")
+    (tmp_path / "uv.lock").write_text(
+        f'source = {{ registry = "https://{_TEST_PROXY_HOST}/simple" }}\n'
+    )
     c = doctor.check_pypi_index(tmp_path)
     assert c.status is doctor.Status.FAIL  # the on-disk lock is the blocking case
 

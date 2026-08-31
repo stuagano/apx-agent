@@ -19,23 +19,26 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 MIN_PYTHON = (3, 11)
 
-# The internal Databricks PyPI proxy. Unreachable for external users and for
-# deployed Apps/serving endpoints, so a uv.lock pinned to it — or an index env
-# var pointed at it (which re-poisons the lock on the next `uv sync`) — breaks
-# fresh installs and deploys. Mirrors cli._sanitize_uv_lock and the
-# scripts/check-uv-lock-registry.sh CI guard.
-_PYPI_PROXY_HOST = "pypi-proxy.dev.databricks.com"
 _INDEX_ENV_VARS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "PIP_INDEX_URL")
-_MISSING_ENV_VALUE = ""  # env vars not set compare as empty when checking for proxy host
 
 # The only hosts a public-PyPI uv.lock resolves packages from. Anything else
 # in an index (`registry = ...`) or package-download (`url = ...`) entry is a
 # mirror `cli._sanitize_uv_lock` has no rewrite rule for (#416).
 _PUBLIC_PYPI_HOSTS = frozenset({"pypi.org", "files.pythonhosted.org"})
 _LOCK_URL_RE = re.compile(r'(?:registry|url) = "https://([^/"]+)')
+_PYPI_PROXY_HOST_RE = re.compile(
+    r"pypi-proxy\.[A-Za-z0-9-]+\.databricks\.com"
+)
+
+
+def _is_nonpublic_index(value: str | None) -> bool:
+    if not value:
+        return False
+    return urlparse(value).hostname not in _PUBLIC_PYPI_HOSTS
 
 
 def nonpublic_lock_hosts(lock_text: str) -> list[str]:
@@ -252,57 +255,59 @@ def check_uv() -> Check:
 def check_pypi_index(cwd: Path) -> Check:
     """Flag non-public package hosts in uv.lock or an index env var.
 
-    A `uv.lock` pinned to ``pypi-proxy.dev.databricks.com`` fails ``uv sync``
+    A `uv.lock` pinned to a recognized organization proxy fails ``uv sync``
     for external users and deployed Apps (the blocking case) — FAIL, and
     ``apx-agent deploy`` sanitizes it. Any *other* non-public registry/download
-    host (Artifactory, a corp mirror) has no rewrite rule, so a deployed
-    container's ``uv sync`` will likely fail — WARN, not FAIL, since the mirror
-    may be reachable for this user (#416). Absent both, an index env var
-    pointed at the proxy silently re-records it on the next ``uv sync`` (the
-    about-to-break case). See ``cli._sanitize_uv_lock`` and the
-    ``scripts/check-uv-lock-registry.sh`` CI guard.
+    host may be reachable for the target environment, so it is a WARN. A
+    non-public index environment variable is also a WARN: local proxy access
+    is valid, but the committed lock must remain portable.
     """
     lock = cwd / "uv.lock"
     try:
         if lock.exists():
             lock_text = lock.read_text()
-            if _PYPI_PROXY_HOST in lock_text:
+            lock_hosts = nonpublic_lock_hosts(lock_text)
+            if any(_PYPI_PROXY_HOST_RE.fullmatch(host) for host in lock_hosts):
                 return Check(
                     "PyPI index",
                     Status.FAIL,
-                    f"uv.lock pins packages to the internal proxy "
-                    f"({_PYPI_PROXY_HOST}) — unreachable for external users and "
+                    "uv.lock pins packages to a recognized internal proxy — "
+                    "the endpoint is intentionally omitted; it is unreachable for "
+                    "external users and "
                     "deployed Apps, so `uv sync`/deploy will fail off the corp network",
-                    "Unset the proxy index env var, then `uv lock` to re-resolve "
-                    "from public PyPI (`apx-agent deploy` also sanitizes the lock before "
-                    "bundling).",
+                    "Use the organization-approved proxy only for local resolution "
+                    "and keep the committed uv.lock on public PyPI (`apx-agent deploy` "
+                    "also sanitizes recognized mirrors before bundling).",
                 )
-            unknown = nonpublic_lock_hosts(lock_text)
-            if unknown:
+            if lock_hosts:
                 return Check(
                     "PyPI index",
                     Status.WARN,
                     "uv.lock resolves packages from non-public host(s): "
-                    f"{', '.join(unknown)} — a deployed container's `uv sync` "
+                    f"{', '.join(lock_hosts)} — a deployed container's `uv sync` "
                     "will fail unless it can reach them, and `apx-agent deploy` "
-                    "only rewrites the known Databricks proxy",
+                    "only rewrites recognized mirrors",
                     "Re-point the lock at public PyPI: unset any custom index "
                     "env vars, then `uv lock` to re-resolve.",
                 )
     except OSError:
         pass
 
-    leaked = next(
-        (v for v in _INDEX_ENV_VARS if _PYPI_PROXY_HOST in os.environ.get(v, _MISSING_ENV_VALUE)),
+    nonpublic_env = next(
+        (
+            variable for variable in _INDEX_ENV_VARS
+            if _is_nonpublic_index(os.environ.get(variable))
+        ),
         None,
     )
-    if leaked:
+    if nonpublic_env:
         return Check(
             "PyPI index",
             Status.WARN,
-            f"{leaked} points at the internal proxy ({_PYPI_PROXY_HOST}) — "
-            "`uv sync` will re-poison uv.lock, breaking external installs",
-            f"unset {leaked}  (or point it at https://pypi.org/simple).",
+            f"{nonpublic_env} points at a non-public package index — valid for "
+            "local access, but committed uv.lock files must remain on public PyPI",
+            f"Use {nonpublic_env} only for local resolution; do not commit its "
+            "endpoint in pyproject.toml or uv.lock.",
         )
 
     return Check("PyPI index", Status.OK, "public PyPI", None)

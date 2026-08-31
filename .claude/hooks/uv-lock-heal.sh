@@ -21,10 +21,5 @@ repo_root="${CLAUDE_PROJECT_DIR:-$PWD}"
 fixer="$repo_root/scripts/check-uv-lock-registry.sh"
 [ -x "$fixer" ] || exit 0
 
-# Only bother if the lock is actually dirty with the proxy host.
-lock="$repo_root/python/uv.lock"
-[ -f "$lock" ] || exit 0
-grep -q "pypi-proxy.dev.databricks.com" "$lock" 2>/dev/null || exit 0
-
 "$fixer" --fix >/dev/null 2>&1 || true
 exit 0
