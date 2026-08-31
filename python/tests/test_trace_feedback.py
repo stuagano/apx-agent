@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -171,5 +172,15 @@ def test_attach_feedback_rejects_reserved_idempotency_evidence_key() -> None:
 @pytest.mark.unit
 def test_get_feedback_view_rejects_missing_trace() -> None:
     api = SimpleNamespace(get_trace=lambda trace_id: None)
-    with pytest.raises(_trace_feedback.TraceFeedbackError, match="not found"):
+    with pytest.raises(_trace_feedback.TraceNotFoundError, match="not found"):
         _trace_feedback.get_feedback_view("tr-missing", mlflow_api=api)
+
+
+@pytest.mark.unit
+def test_default_mlflow_api_reports_unavailable_dependency() -> None:
+    with patch.dict("sys.modules", {"mlflow": None}):
+        with pytest.raises(
+            _trace_feedback.TraceFeedbackUnavailableError,
+            match="requires mlflow",
+        ):
+            _trace_feedback._default_mlflow_api()

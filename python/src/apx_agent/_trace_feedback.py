@@ -17,6 +17,14 @@ class TraceFeedbackError(ValueError):
     """Raised when trace feedback cannot be validated or read."""
 
 
+class TraceNotFoundError(TraceFeedbackError):
+    """Raised when an MLflow trace does not exist."""
+
+
+class TraceFeedbackUnavailableError(TraceFeedbackError):
+    """Raised when optional MLflow feedback support is unavailable."""
+
+
 @dataclass(frozen=True)
 class TraceFeedback:
     trace_id: str
@@ -59,7 +67,7 @@ def _default_mlflow_api() -> Any:
     try:
         import mlflow
     except ImportError as exc:  # pragma: no cover - depends on optional install
-        raise TraceFeedbackError(
+        raise TraceFeedbackUnavailableError(
             "trace feedback requires mlflow; install 'apx-agent[eval]'"
         ) from exc
     return mlflow
@@ -132,7 +140,7 @@ def get_feedback_view(trace_id: str, *, mlflow_api: Any = None) -> TraceFeedback
     api = mlflow_api or _default_mlflow_api()
     trace = api.get_trace(trace_id)
     if trace is None:
-        raise TraceFeedbackError(f"MLflow trace {trace_id!r} not found")
+        raise TraceNotFoundError(f"MLflow trace {trace_id!r} not found")
     info = trace.info
     return TraceFeedbackView(
         trace_id=str(info.trace_id),

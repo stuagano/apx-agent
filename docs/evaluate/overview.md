@@ -79,6 +79,41 @@ apx-agent traces feedback tr-123 \
 apx-agent traces feedback-view tr-123 --format json
 ```
 
+### Per-app HTTP API
+
+Every APX FastAPI application exposes the same trace-feedback routes after it
+upgrades and redeploys:
+
+```http
+POST /_apx/feedback
+Content-Type: application/json
+
+{
+  "trace_id": "tr-123",
+  "name": "domain_quality",
+  "value": 4,
+  "comment": "Correct answer, weak rationale",
+  "idempotency_key": "review-row-123",
+  "evidence": {
+    "screenshot_uri": "s3://bucket/review.png",
+    "feature": "claims_search"
+  }
+}
+```
+
+```http
+GET /_apx/feedback/tr-123
+```
+
+Call these routes through the Databricks Apps gateway as a signed-in user. The
+gateway supplies the OBO token and user identity; APX writes and reads MLflow as
+that user. The JSON body cannot select a source identity, workspace host, or
+service principal. Missing OBO fails closed, and `APX_DEV_UI_TOKEN` does not
+authorize this API.
+
+The endpoints remain available when `APX_DEV_UI=0`. Existing deployments must
+upgrade APX and redeploy before they expose the routes.
+
 The write command accepts boolean, integer, float, or string values. Each `--evidence KEY=VALUE` entry is stored as string metadata; it can reference an external screenshot or artifact, but APX does not upload or manage that artifact. `feedback-view` returns the trace tags plus normalized feedback and expectation assessments.
 
 ### Runtime and access
