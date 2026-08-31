@@ -156,6 +156,11 @@ Every trace sent through `label start` must already carry the selected judge's
 baseline assessment. Run the judge over the candidate traces first, then create
 the review session with a narrow MLflow filter and an explicit limit:
 
+These examples use `--experiment` plus `--agent-name` to address an
+Apps-deployed agent that is not fleet-discoverable. For a Unity Catalog
+registered fleet agent, use `--uc-name catalog.schema.agent` instead; both
+addressing forms are supported.
+
 ```bash
 apx-agent label start \
   --experiment 123456789 \
@@ -337,3 +342,137 @@ false-positive rate meets the threshold chosen during calibration, latency has
 not regressed, and cost is understood. This pattern schedules scoring and
 records assessments; it does not create alerts, a dashboard, issue tickets, or
 autonomous remediation.
+
+## Human issue triage
+
+Treat a low or failing judge assessment as a review candidate, not as a defect
+or remediation instruction. The judge ranks evidence; a human decides whether
+the trace represents an actionable issue. Keep the first loop to one issue
+class and one bounded review batch.
+
+### 1. Define one issue class
+
+Write the decision before selecting traces:
+
+| Field | Example |
+| --- | --- |
+| Issue class | `unsupported_claim` |
+| Scorer and version | `domain_quality-v2` |
+| Candidate condition | Judge value below the calibrated acceptance threshold |
+| Known positive | A confirmed trace where the answer invents a policy requirement |
+| Known exclusion | A correct answer that explicitly says the source data is incomplete |
+| Impact signal | Affected workflow, user segment, or governed data operation |
+| Human outcome | `actionable` or `not_actionable`, with rationale |
+| Owner | The team that can investigate the underlying agent behavior |
+
+Do not combine unrelated failure modes under a generic `bad_response` class.
+If reviewers need different evidence or remediation owners, use separate issue
+classes.
+
+### 2. Select and rank candidates
+
+Start from traces that carry the configured scorer assessment. Use the same
+experiment, scorer version, time window, and eligibility filter as the
+production scorecard. Exclude traces already reviewed for this issue class
+unless they are deliberate rechecks.
+
+Rank a small candidate batch with explicit ordered criteria:
+
+1. Higher business, permission, safety, or data-integrity impact first.
+2. More severe judge failures before borderline failures.
+3. Repeated patterns before isolated examples when the impact is comparable.
+4. Novel failures before duplicates once recurrence is established.
+
+Keep known positives and known exclusions in the batch as controls. Do not hide
+them from reviewers or use a proprietary combined priority score: the ordering
+should remain inspectable and adjustable for each issue class.
+
+`apx-agent traces list --format json` supplies trace IDs and request-path
+metadata for initial narrowing. Inspect the scorer and prior human assessments
+on a candidate before routing it:
+
+```bash
+apx-agent traces list \
+  --experiment 123456789 \
+  --agent claims-agent \
+  --limit 100 \
+  --format json
+
+apx-agent traces feedback-view TRACE_ID --format json
+```
+
+The list command does not interpret judge-specific values or compute a
+universal priority. Rank with the issue definition in the existing review
+workflow or MLflow trace view, where the team already owns its taxonomy and
+business-impact data.
+
+### 3. Route a bounded review batch
+
+Use the existing review surface rather than creating an APX triage UI:
+
+- If the candidate selection is expressible as an MLflow trace filter, route a
+  bounded batch through `apx-agent label start --filter ... --limit ...`.
+- If a customer review application already selected explicit trace IDs, keep
+  assignment and ordering there and use the APX feedback adapter for write-back.
+
+For the MLflow Review App path:
+
+```bash
+apx-agent label start \
+  --experiment 123456789 \
+  --agent-name claims-agent \
+  --judge domain_quality-v2 \
+  --scale 1-5 \
+  --filter "attributes.status = 'OK'" \
+  --limit 25 \
+  --assignee reviewer@example.com
+```
+
+The filter and limit define eligibility, not severity ordering. Use this path
+only when its selected set matches the issue-class batch. Otherwise route the
+explicit ranked IDs through the existing review application instead of
+claiming that `label start` preserved an ordering it does not implement.
+
+### 4. Record the human decision
+
+Write the review back to the original trace. Keep the human feedback name
+judge-compatible when it validates that judge's decision boundary, and include
+the issue class in evidence metadata so later analysis can separate failure
+modes:
+
+```bash
+apx-agent traces feedback TRACE_ID \
+  --name domain_quality-v2 \
+  --value not_actionable \
+  --comment "The answer correctly discloses that the source is incomplete." \
+  --source claims-review \
+  --idempotency-key claims-review-row-481 \
+  --evidence issue_class=unsupported_claim
+```
+
+Use a new idempotency key for a corrected decision. Reviewer identity, source,
+rationale, and supporting references remain attached to the trace; do not copy
+screenshots or customer workflow data into APX unless the existing application
+already exposes an approved reference.
+
+### 5. Validate before opening an issue
+
+For each observation window, record:
+
+- candidate count and reviewed count;
+- actionable count and human-validated false-positive rate;
+- recurrence across workflows, users, tools, and data segments;
+- representative trace IDs for confirmed positives and exclusions;
+- the scorer version, threshold, and issue-class definition used.
+
+Open or route an engineering issue only when a human confirms an actionable
+class with reproducible evidence, an affected behavior, and an owner. Include
+the smallest safe reproduction and representative trace IDs according to the
+team's data-handling policy. A high judge score count without human validation
+is a monitoring signal, not a confirmed issue.
+
+If reviewers reject most candidates, refine the rubric, threshold, or issue
+definition and repeat a small batch. If confirmed examples expose judge drift,
+feed the resolved labels back into the calibration workflow. APX does not
+create tickets, assign remediation, change prompts, or redeploy agents from
+triage results.
