@@ -60,3 +60,38 @@ Requires the `eval` extra (mlflow). apx-agent isn't on PyPI yet — from a git c
 cd apx-agent/python
 pip install -e '.[eval]'
 ```
+
+## Trace-linked human feedback
+
+Use trace feedback when reviewers already work in an existing annotation or review application. The review backend keeps its own UI and workflow; APX only writes the resulting human assessment to the original MLflow trace and reads it back in a stable shape.
+
+```bash
+apx-agent traces feedback tr-123 \
+  --name domain_quality \
+  --value 4 \
+  --comment "Correct answer, weak rationale" \
+  --source review-app \
+  --idempotency-key review-row-123 \
+  --evidence screenshot_uri=s3://bucket/review.png \
+  --evidence feature=claims_search \
+  --format json
+
+apx-agent traces feedback-view tr-123 --format json
+```
+
+The write command accepts boolean, integer, float, or string values. Each `--evidence KEY=VALUE` entry is stored as string metadata; it can reference an external screenshot or artifact, but APX does not upload or manage that artifact. `feedback-view` returns the trace tags plus normalized feedback and expectation assessments.
+
+### Runtime and access
+
+- Install `apx-agent[eval]`. The current supported boundary is MLflow `>=3.14,<3.15`; APX writes with `mlflow.log_feedback` and reads with `mlflow.get_trace`.
+- The commands use MLflow's active tracking configuration and do not choose a Databricks CLI profile. For Databricks-hosted MLflow, authenticate the process against the intended workspace before invoking them.
+- The authenticated principal must be able to read the target trace and write an assessment to it. APX does not bypass workspace permissions or substitute another identity.
+- Feedback is recorded with MLflow `HUMAN` provenance. `--source` becomes the assessment source identifier; when omitted, APX uses `apx.trace_feedback`.
+
+### Replay and correction behavior
+
+`--idempotency-key` provides best-effort duplicate prevention. APX first reads the trace assessments and reuses the assessment carrying the same key instead of writing another one. Use a stable key that is unique per external review record and trace. Without a key, every invocation creates a new assessment.
+
+The metadata key `apx.feedback.idempotency_key` is reserved and cannot be supplied through `--evidence`. APX does not currently update or delete an existing assessment: submitting a corrected review requires a new idempotency key, while retrying the old key returns the original assessment.
+
+This path complements the MLflow Review App workflow exposed by `apx-agent label start` and `label align`; it does not create a replacement review UI, schedule production scoring, or perform autonomous remediation.
