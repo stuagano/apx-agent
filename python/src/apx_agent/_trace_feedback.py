@@ -81,6 +81,10 @@ def _validate_feedback(feedback: TraceFeedback) -> None:
         for key, value in feedback.evidence.items()
     ):
         raise TraceFeedbackError("evidence keys and values must be strings")
+    if feedback.evidence is not None and IDEMPOTENCY_METADATA_KEY in feedback.evidence:
+        raise TraceFeedbackError(
+            f"evidence key {IDEMPOTENCY_METADATA_KEY!r} is reserved"
+        )
 
 
 def _assessment_dict(assessment: Any) -> dict[str, Any]:
