@@ -150,6 +150,11 @@ def compile_authorization_plan(
             tuple(sorted(operation.user_api_scopes)),
         ),
     ))
+    names: set[str] = set()
+    for operation in operations:
+        if operation.name in names:
+            raise ValueError(f"Duplicate reachable operation name {operation.name!r}.")
+        names.add(operation.name)
     user_resources: set[ResourceSpec] = set()
     service_resources: set[ResourceSpec] = {
         ResourceSpec("serving_endpoint", model),

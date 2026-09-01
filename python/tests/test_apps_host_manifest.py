@@ -155,8 +155,14 @@ def test_manifest_projects_explicit_effect_and_defaults_plain_tools() -> None:
 
     manifest = compile_apps_host_manifest(LlmAgent(tools=[lookup, apply]))
     effects = {item.name: item.annotations.effect for item in manifest.tools}
+    apply_annotations = next(
+        item.annotations for item in manifest.tools if item.name == "apply"
+    )
 
     assert effects == {"lookup": "read", "apply": "update"}
+    assert apply_annotations.execution_identity == "service"
+    assert apply_annotations.requires_request_context is False
+    assert apply_annotations.requires_user_context is False
 
 
 def test_manifest_uses_instance_defaults_without_config() -> None:

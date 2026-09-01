@@ -195,6 +195,26 @@ def test_compile_rejects_raw_user_scope_on_service_operation() -> None:
         compile_authorization_plan(Agent(tools=[background_telemetry]), model="model")
 
 
+def test_compile_rejects_duplicate_reachable_operation_names() -> None:
+    def user_lookup(ws: Dependencies.UserClient) -> str:
+        return "ok"
+
+    @tool(execution="service")
+    def service_lookup() -> str:
+        return "ok"
+
+    user_lookup.__name__ = "duplicate"
+    service_lookup.__name__ = "duplicate"
+
+    from apx_agent import Agent
+
+    with pytest.raises(ValueError, match="Duplicate reachable operation name 'duplicate'"):
+        compile_authorization_plan(
+            Agent(tools=[user_lookup, service_lookup]),
+            model="model",
+        )
+
+
 def test_compile_output_order_is_independent_of_tool_order() -> None:
     @tool(execution="user")
     def z_lookup() -> str:
