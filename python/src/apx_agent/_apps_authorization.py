@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse
 
@@ -32,10 +34,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AppDependency",
+    "AppFamilyPermissions",
     "AuthorizationPlan",
     "OperationAuthorization",
+    "ResolvedAppDependency",
     "compile_authorization_plan",
     "infer_operation_authorization",
+    "read_app_family_permissions",
 ]
 
 
@@ -58,6 +63,23 @@ class AppDependency:
 
 
 @dataclass(frozen=True)
+class ResolvedAppDependency:
+    """Immutable workspace identity for one exact App dependency match."""
+
+    id: str
+    name: str
+    url: str
+
+
+@dataclass(frozen=True)
+class AppFamilyPermissions:
+    """Group-only permissions shared by an App family."""
+
+    can_use_groups: tuple[str, ...] = ()
+    can_manage_groups: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class AuthorizationPlan:
     """Identity-partitioned Apps authorization requirements for an agent."""
 
@@ -74,6 +96,41 @@ _REQUEST_CONTEXT_DEPENDENCIES = frozenset({
     _get_principal,
     _get_request,
 })
+
+
+def read_app_family_permissions(pyproject_path: Path) -> AppFamilyPermissions:
+    """Read only ``[tool.apx.apps.permissions]`` from a deployment project."""
+    if not pyproject_path.is_file():
+        return AppFamilyPermissions()
+
+    data = tomllib.loads(pyproject_path.read_text())
+    section: Any = data
+    for key in ("tool", "apx", "apps", "permissions"):
+        if not isinstance(section, dict):
+            raise ValueError(
+                "[tool.apx.apps.permissions] must be a TOML table."
+            )
+        if key not in section:
+            return AppFamilyPermissions()
+        section = section[key]
+    if not isinstance(section, dict):
+        raise ValueError("[tool.apx.apps.permissions] must be a TOML table.")
+
+    def groups(key: str) -> list[str]:
+        raw = section.get(key, [])
+        if not isinstance(raw, list) or any(
+            not isinstance(name, str) or not name.strip()
+            for name in raw
+        ):
+            raise ValueError(
+                f"[tool.apx.apps.permissions].{key} must contain non-empty group names."
+            )
+        return sorted(set(raw))
+
+    return AppFamilyPermissions(
+        can_use_groups=tuple(groups("can_use_groups")),
+        can_manage_groups=tuple(groups("can_manage_groups")),
+    )
 
 
 def infer_operation_authorization(fn: Callable[..., Any]) -> OperationAuthorization:

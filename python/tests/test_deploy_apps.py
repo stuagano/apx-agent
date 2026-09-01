@@ -26,13 +26,16 @@ import sys
 import textwrap
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 import yaml
 from click.testing import CliRunner
-from unittest.mock import MagicMock, patch
 
+from apx_agent._apps_authorization import AppDependency, ResolvedAppDependency
 from apx_agent.cli import main
 
 
@@ -161,6 +164,173 @@ class _FakeProc:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+def test_resolve_app_dependencies_matches_exact_url_with_explicit_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    apps = [
+        SimpleNamespace(
+            id="app-id",
+            name="peer-app",
+            url="https://peer.cloud.databricksapps.com",
+            client_secret="must-not-appear",
+        ),
+        SimpleNamespace(
+            id="guessed-id",
+            name="peer",
+            url="https://peer.databricksapps.com",
+        ),
+    ]
+    constructed: list[dict[str, Any]] = []
+
+    class FakeWorkspaceClient:
+        def __init__(self, **kwargs: Any) -> None:
+            constructed.append(kwargs)
+            self.apps = SimpleNamespace(list=lambda: iter(apps))
+
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "ambient-must-not-win")
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", FakeWorkspaceClient)
+
+    resolved = cli_mod._resolve_app_dependencies(
+        (AppDependency("https://peer.cloud.databricksapps.com/"),),
+        profile="explicit-profile",
+    )
+
+    assert resolved == [
+        ResolvedAppDependency(
+            id="app-id",
+            name="peer-app",
+            url="https://peer.cloud.databricksapps.com",
+        ),
+    ]
+    assert constructed == [{"profile": "explicit-profile"}]
+    assert "must-not-appear" not in repr(resolved)
+
+
+@pytest.mark.parametrize(
+    "apps, expected_match",
+    [
+        ([], "no exact workspace App"),
+        (
+            [
+                SimpleNamespace(
+                    id="first-id",
+                    name="first",
+                    url="https://peer.cloud.databricksapps.com",
+                ),
+                SimpleNamespace(
+                    id="second-id",
+                    name="second",
+                    url="https://peer.cloud.databricksapps.com/",
+                ),
+            ],
+            "multiple exact workspace Apps",
+        ),
+    ],
+)
+def test_resolve_app_dependencies_fails_closed_for_non_unique_match(
+    monkeypatch: pytest.MonkeyPatch,
+    apps: list[Any],
+    expected_match: str,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    fake_ws = SimpleNamespace(apps=SimpleNamespace(list=lambda: iter(apps)))
+    constructed: list[dict[str, Any]] = []
+
+    def workspace_client(**kwargs: Any) -> Any:
+        constructed.append(kwargs)
+        return fake_ws
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", workspace_client)
+
+    with pytest.raises(click.ClickException, match=expected_match) as exc_info:
+        cli_mod._resolve_app_dependencies(
+            (AppDependency("https://peer.cloud.databricksapps.com"),),
+            profile="explicit-profile",
+        )
+
+    error = str(exc_info.value)
+    assert constructed == [{"profile": "explicit-profile"}]
+    assert "first-id" not in error
+    assert "second-id" not in error
+
+
+def test_resolve_app_dependencies_does_not_guess_app_from_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    guessed = SimpleNamespace(
+        id="guessed-id",
+        name="peer",
+        url="https://different.cloud.databricksapps.com",
+    )
+    fake_ws = SimpleNamespace(apps=SimpleNamespace(list=lambda: iter([guessed])))
+    constructed: list[dict[str, Any]] = []
+
+    def workspace_client(**kwargs: Any) -> Any:
+        constructed.append(kwargs)
+        return fake_ws
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", workspace_client)
+
+    with pytest.raises(click.ClickException, match="no exact workspace App"):
+        cli_mod._resolve_app_dependencies(
+            (AppDependency("https://peer.cloud.databricksapps.com"),),
+            profile="explicit-profile",
+        )
+    assert constructed == [{"profile": "explicit-profile"}]
+
+
+def test_resolve_app_dependencies_requires_explicit_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    def unexpected_client(**_kwargs: Any) -> Any:
+        raise AssertionError("WorkspaceClient must not be constructed")
+
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "ambient-must-not-win")
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", unexpected_client)
+
+    with pytest.raises(click.ClickException, match="explicit --profile"):
+        cli_mod._resolve_app_dependencies(
+            (AppDependency("https://peer.cloud.databricksapps.com"),),
+            profile=None,
+        )
+
+
+def test_resolve_app_dependencies_sanitizes_sdk_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    constructed: list[dict[str, Any]] = []
+
+    def failing_list() -> Any:
+        raise RuntimeError("token=must-not-appear client_secret=must-not-appear")
+
+    def workspace_client(**kwargs: Any) -> Any:
+        constructed.append(kwargs)
+        return SimpleNamespace(apps=SimpleNamespace(list=failing_list))
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", workspace_client)
+
+    with pytest.raises(click.ClickException) as exc_info:
+        cli_mod._resolve_app_dependencies(
+            (AppDependency("https://peer.cloud.databricksapps.com"),),
+            profile="explicit-profile",
+        )
+
+    error = str(exc_info.value)
+    assert constructed == [{"profile": "explicit-profile"}]
+    assert "must-not-appear" not in error
+    assert "token=" not in error
+    assert "client_secret" not in error
 
 
 def _ready_payload(url: str = "https://my-app.example.databricksapps.com") -> str:

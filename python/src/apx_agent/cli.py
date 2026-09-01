@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 import click
 
 if TYPE_CHECKING:
+    from ._apps_authorization import AppDependency, ResolvedAppDependency
     from ._models import AgentConfig
 
 # Suppress noisy third-party deprecation warnings that users can't act on.
@@ -8915,6 +8916,65 @@ def _scrub_plaintext_env_from_databricks_yml(
     )
 
 
+def _resolve_app_dependencies(
+    dependencies: tuple["AppDependency", ...],
+    *,
+    profile: str | None,
+) -> list["ResolvedAppDependency"]:
+    """Resolve declared App URLs to exact workspace App identities."""
+    if not dependencies:
+        return []
+    if not profile:
+        raise click.ClickException(
+            "App-to-App authorization requires an explicit --profile; "
+            "ambient profile selection is not allowed."
+        )
+
+    from databricks.sdk import WorkspaceClient
+
+    try:
+        workspace_apps = tuple(WorkspaceClient(profile=profile).apps.list())
+    except Exception:
+        raise click.ClickException(
+            "Could not list workspace Apps for App-to-App authorization. "
+            "Verify the explicit --profile and its Apps read access."
+        ) from None
+
+    from ._apps_authorization import ResolvedAppDependency
+
+    resolved: list[ResolvedAppDependency] = []
+    for index, dependency in enumerate(dependencies, 1):
+        expected_url = dependency.url.rstrip("/")
+        matches = [
+            app
+            for app in workspace_apps
+            if isinstance(getattr(app, "url", None), str)
+            and app.url.rstrip("/") == expected_url
+        ]
+        if not matches:
+            raise click.ClickException(
+                f"App dependency {index} has no exact workspace App URL match. "
+                "Deploy the peer App or correct its declared URL."
+            )
+        if len(matches) > 1:
+            raise click.ClickException(
+                f"App dependency {index} matches multiple exact workspace Apps. "
+                "Remove the duplicate workspace App identities before deploying."
+            )
+        match = matches[0]
+        app_id = getattr(match, "id", None)
+        app_name = getattr(match, "name", None)
+        app_url = getattr(match, "url", None)
+        if not all(
+            isinstance(value, str) and value
+            for value in (app_id, app_name, app_url)
+        ):
+            raise click.ClickException(
+                f"Exact workspace App match for dependency {index} is missing "
+                "an immutable id, name, or URL."
+            )
+        resolved.append(ResolvedAppDependency(app_id, app_name, app_url))
+    return resolved
 
 
 def _auto_update_databricks_yml(
