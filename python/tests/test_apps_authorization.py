@@ -11,6 +11,10 @@ from apx_agent import Dependencies, ResourceSpec, require_user_api_scopes, tool
 from apx_agent._apps_authorization import (
     AppDependency,
     AppFamilyPermissions,
+    AuthorizationPlan,
+    OperationAuthorization,
+    ResolvedAppDependency,
+    authorization_summary_lines,
     compile_authorization_plan,
     infer_operation_authorization,
     read_app_family_permissions,
@@ -362,3 +366,76 @@ def test_read_app_family_permissions_rejects_invalid_group_shapes(
         read_app_family_permissions(pyproject)
 
     assert len(str(exc_info.value)) < 200
+
+
+def test_read_app_family_permissions_rejects_group_in_both_roles(
+    tmp_path: Path,
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.apx.apps.permissions]\n"
+        'can_use_groups = ["operators"]\n'
+        'can_manage_groups = ["operators"]\n',
+    )
+
+    with pytest.raises(ValueError, match="both CAN_USE and CAN_MANAGE"):
+        read_app_family_permissions(pyproject)
+
+
+def test_authorization_summary_is_deterministic_and_complete() -> None:
+    user_operation = OperationAuthorization(
+        name="z_user_lookup",
+        execution_identity="user",
+        requires_request_context=True,
+        resources=(ResourceSpec("uc_table", "main.sales.orders"),),
+        user_api_scopes=(),
+    )
+    service_operation = OperationAuthorization(
+        name="a_background_job",
+        execution_identity="service",
+        requires_request_context=False,
+        resources=(ResourceSpec("job", "job-123"),),
+        user_api_scopes=(),
+    )
+    plan = AuthorizationPlan(
+        operations=(user_operation, service_operation),
+        user_resources=(ResourceSpec("uc_table", "main.sales.orders"),),
+        service_resources=(
+            ResourceSpec("job", "job-123"),
+            ResourceSpec("serving_endpoint", "model-endpoint"),
+        ),
+        user_api_scopes=("sql",),
+        app_dependencies=(
+            AppDependency("https://peer.cloud.databricksapps.com"),
+        ),
+    )
+    resolved = [
+        ResolvedAppDependency(
+            id="app-id-123",
+            name="peer-app",
+            url="https://peer.cloud.databricksapps.com",
+        ),
+    ]
+    policy = AppFamilyPermissions(
+        can_use_groups=("audience-b", "audience-a"),
+        can_manage_groups=("admins",),
+    )
+
+    assert authorization_summary_lines(plan, resolved, policy) == [
+        "User operations:",
+        "  - z_user_lookup",
+        "Service operations:",
+        "  - a_background_job",
+        "User scopes:",
+        "  - sql",
+        "Service resources:",
+        "  - job job-123: CAN_MANAGE_RUN",
+        "  - serving_endpoint model-endpoint: CAN_QUERY",
+        "App-to-App dependencies:",
+        "  - https://peer.cloud.databricksapps.com -> peer-app (id: app-id-123)",
+        "Audience groups:",
+        "  - audience-a: CAN_USE",
+        "  - audience-b: CAN_USE",
+        "Admin groups:",
+        "  - admins: CAN_MANAGE",
+    ]

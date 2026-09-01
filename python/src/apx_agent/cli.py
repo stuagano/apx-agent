@@ -47,7 +47,12 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 import click
 
 if TYPE_CHECKING:
-    from ._apps_authorization import AppDependency, ResolvedAppDependency
+    from ._apps_authorization import (
+        AppDependency,
+        AppFamilyPermissions,
+        AuthorizationPlan,
+        ResolvedAppDependency,
+    )
     from ._models import AgentConfig
 
 # Suppress noisy third-party deprecation warnings that users can't act on.
@@ -91,11 +96,6 @@ class _AppNameResolution(NamedTuple):
 class _ReadyzResult(NamedTuple):
     is_ready: bool
     checks: dict[str, Any]
-
-
-class _BundleUpdateResult(NamedTuple):
-    added: list[str]
-    skipped: list[str]
 
 
 class _SplitOnboardingResponse(NamedTuple):
@@ -6314,10 +6314,9 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 )
 @click.option(
     "--auto-update-yml", is_flag=True, default=False,
-    help="Walk the agent's resource tree and merge missing ResourceSpec "
-         "entries into databricks.yml under resources.apps.<app>.resources. "
-         "User-added resources with a matching name are NEVER clobbered. "
-         "Only used by --target apps.",
+    help="Compatibility flag. Apps authorization reconciliation is automatic "
+         "on every --target apps deploy. Existing resources, scopes, and "
+         "permissions are preserved.",
 )
 @click.option(
     "--auto-build-wheel/--no-auto-build-wheel", default=True,
@@ -8945,12 +8944,14 @@ def _resolve_app_dependencies(
     resolved: list[ResolvedAppDependency] = []
     for index, dependency in enumerate(dependencies, 1):
         expected_url = dependency.url.rstrip("/")
-        matches = [
-            app
-            for app in workspace_apps
-            if isinstance(getattr(app, "url", None), str)
-            and app.url.rstrip("/") == expected_url
-        ]
+        matches = []
+        for app in workspace_apps:
+            candidate_url = getattr(app, "url", None)
+            if (
+                isinstance(candidate_url, str)
+                and candidate_url.rstrip("/") == expected_url
+            ):
+                matches.append(app)
         if not matches:
             raise click.ClickException(
                 f"App dependency {index} has no exact workspace App URL match. "
@@ -8965,9 +8966,13 @@ def _resolve_app_dependencies(
         app_id = getattr(match, "id", None)
         app_name = getattr(match, "name", None)
         app_url = getattr(match, "url", None)
-        if not all(
-            isinstance(value, str) and value
-            for value in (app_id, app_name, app_url)
+        if (
+            not isinstance(app_id, str)
+            or not app_id
+            or not isinstance(app_name, str)
+            or not app_name
+            or not isinstance(app_url, str)
+            or not app_url
         ):
             raise click.ClickException(
                 f"Exact workspace App match for dependency {index} is missing "
@@ -8977,40 +8982,91 @@ def _resolve_app_dependencies(
     return resolved
 
 
-def _auto_update_databricks_yml(
+def _reconcile_apps_authorization(
     cwd: Path,
     *,
-    agent: Any,
+    plan: "AuthorizationPlan",
+    resolved_dependencies: list["ResolvedAppDependency"],
+    family_permissions: "AppFamilyPermissions",
     bundle_key: str,
     log: Any,
-) -> _BundleUpdateResult:
-    """Merge missing ResourceSpec entries into databricks.yml.
-
-    Returns added_names and skipped_names. The bundle document is read,
-    each ResourceSpec is mapped to a DAB resource entry via
-    ``resources_to_databricks_yml``, and any entry whose typed natural resource
-    identity is not already present in
-    ``resources.apps.<bundle_key>.resources`` is appended. Existing custom or
-    legacy handles are preserved.
-    """
+) -> bool:
+    """Add the compiled authorization plan to ``databricks.yml`` and validate it."""
     from apx_agent._resources import (
-        collect_resource_specs,
-        collect_user_api_scopes,
+        ResourceSpec,
+        _KNOWN_USER_API_SCOPES,
         resources_to_databricks_yml,
-        user_api_scopes_for,
     )
+
+    unknown_scopes = sorted(
+        set(plan.user_api_scopes) - set(_KNOWN_USER_API_SCOPES)
+    )
+    if unknown_scopes:
+        raise click.ClickException(
+            "Authorization plan contains unknown generated user API scope(s): "
+            f"{', '.join(unknown_scopes)}. Correct the tool declaration before deploying."
+        )
+
+    planned_urls = [dependency.url.rstrip("/") for dependency in plan.app_dependencies]
+    resolved_urls = [
+        dependency.url.rstrip("/") for dependency in resolved_dependencies
+    ]
+    if (
+        len(planned_urls) != len(set(planned_urls))
+        or len(resolved_urls) != len(set(resolved_urls))
+        or set(planned_urls) != set(resolved_urls)
+    ):
+        raise click.ClickException(
+            "The resolved App dependencies do not match the compiled authorization "
+            "plan. Resolve every declared App URL exactly before deploying."
+        )
+    if any(
+        not dependency.id or not dependency.name or not dependency.url
+        for dependency in resolved_dependencies
+    ):
+        raise click.ClickException(
+            "A resolved App dependency is missing its immutable id, name, or URL."
+        )
+
+    overlap = sorted(
+        set(family_permissions.can_use_groups)
+        & set(family_permissions.can_manage_groups)
+    )
+    if overlap:
+        raise click.ClickException(
+            "App family group policy grants both CAN_USE and CAN_MANAGE to: "
+            f"{', '.join(overlap)}. Keep each group in one policy list."
+        )
 
     path = cwd / "databricks.yml"
     yml, doc = _load_databricks_yml_roundtrip(cwd)
-
-    apps_block = doc.setdefault("resources", {}).setdefault("apps", {})
+    resources_block = doc.get("resources")
+    if resources_block is None:
+        resources_block = {}
+        doc["resources"] = resources_block
+    if not isinstance(resources_block, dict):
+        raise click.ClickException("databricks.yml resources must be a mapping.")
+    apps_block = resources_block.get("apps")
+    if apps_block is None:
+        apps_block = {}
+        resources_block["apps"] = apps_block
+    if not isinstance(apps_block, dict):
+        raise click.ClickException("databricks.yml resources.apps must be a mapping.")
     if bundle_key not in apps_block or not isinstance(apps_block[bundle_key], dict):
         raise click.ClickException(
             f"databricks.yml has no resources.apps.{bundle_key} block — "
-            "cannot auto-update."
+            "cannot reconcile authorization."
         )
     app_block = apps_block[bundle_key]
-    existing: list[dict[str, Any]] = app_block.get("resources") or []
+    existing_raw = app_block.get("resources")
+    if existing_raw is None:
+        existing: list[dict[str, Any]] = []
+    elif isinstance(existing_raw, list):
+        existing = existing_raw
+    else:
+        raise click.ClickException(
+            f"resources.apps.{bundle_key}.resources must be a list."
+        )
 
     def _entry_name(entry: dict[str, Any]) -> str | None:
         """Extract the ``name`` from a DAB resource entry.
@@ -9057,128 +9113,169 @@ def _auto_update_databricks_yml(
                 return json.dumps([resource_type, identifier], separators=(",", ":"))
         return None
 
-    existing_names = {
-        n for n in (_entry_name(e) for e in existing) if n is not None
-    }
-    existing_by_identity = {
-        identity: _entry_name(entry)
-        for entry in existing
-        if (identity := _entry_identity(entry)) is not None
-    }
+    def _entry_permission(entry: dict[str, Any]) -> str | None:
+        for resource_type, body in entry.items():
+            if resource_type in {"name", "description"} or not isinstance(body, dict):
+                continue
+            permission = body.get("permission")
+            return permission if isinstance(permission, str) else None
+        return None
 
-    specs = collect_resource_specs(agent)
-    added: list[str] = []
-    skipped: list[str] = []
-    for spec in specs:
-        # Render one entry at a time so the test of "merge with existing"
-        # works on the same shape as a full render.
-        rendered = resources_to_databricks_yml([spec])
-        if not rendered:
-            continue
-        entry = rendered[0]
-        name = _entry_name(entry)
-        if name is None:
-            # Unexpected shape — skip rather than crash.
+    existing_names = {
+        name for name in (_entry_name(entry) for entry in existing) if name is not None
+    }
+    existing_by_identity: dict[str, list[dict[str, Any]]] = {}
+    for entry in existing:
+        if not isinstance(entry, dict):
             continue
         identity = _entry_identity(entry)
-        if identity is not None and identity in existing_by_identity:
-            skipped.append(existing_by_identity[identity] or name)
+        if identity is not None:
+            existing_by_identity.setdefault(identity, []).append(entry)
+
+    required_specs = [
+        *plan.service_resources,
+        *(ResourceSpec("app", dependency.name) for dependency in resolved_dependencies),
+    ]
+    generated = resources_to_databricks_yml(required_specs)
+    required_by_identity: dict[str, dict[str, Any]] = {}
+    for entry in generated:
+        identity = _entry_identity(entry)
+        name = _entry_name(entry)
+        permission = _entry_permission(entry)
+        if identity is None or name is None or permission is None:
+            raise click.ClickException(
+                "Could not project a service resource into the supported Apps bundle shape."
+            )
+        prior = required_by_identity.get(identity)
+        if prior is not None and _entry_permission(prior) != permission:
+            raise click.ClickException(
+                "The authorization plan generated conflicting permissions for one resource."
+            )
+        required_by_identity[identity] = entry
+
+    changed = False
+    added: list[str] = []
+    skipped: list[str] = []
+    for identity, entry in required_by_identity.items():
+        name = _entry_name(entry)
+        permission = _entry_permission(entry)
+        if name is None or permission is None:  # pragma: no cover - checked above
+            raise click.ClickException(
+                "Could not validate a generated Apps service resource."
+            )
+        matches = existing_by_identity.get(identity, [])
+        if matches:
+            if any(_entry_permission(match) != permission for match in matches):
+                raise click.ClickException(
+                    "The effective authorization mismatch for resource "
+                    f"{name!r}: an explicit entry has a different permission than "
+                    f"required {permission}. Preserve it and correct the conflict manually."
+                )
+            skipped.append(_entry_name(matches[0]) or name or identity)
             continue
-        if identity is None and name in existing_names:
-            skipped.append(name)
-            continue
+        if name in existing_names:
+            raise click.ClickException(
+                f"Generated resource handle {name!r} already identifies a different "
+                "resource. Rename the explicit handle before deploying."
+            )
         existing.append(entry)
         existing_names.add(name)
-        if identity is not None:
-            existing_by_identity[identity] = name
+        existing_by_identity[identity] = [entry]
         added.append(name)
-
-    app_block["resources"] = existing
-
-    # Union the OBO scopes the agent's tools need onto the existing baseline
-    # (the scaffold ships sql + serving; this adds dashboards.genie / vectorsearch
-    # etc. when the agent actually uses those tools). Two sources: scopes derived
-    # from ResourceSpecs, plus scopes a tool declared directly via
-    # require_user_api_scopes for API surfaces with no securable to derive from —
-    # e.g. unity-catalog for UC metadata/discovery calls (#563). Never drops
-    # existing scopes.
-    derived_scopes = user_api_scopes_for(specs)
-    tool_declared_scopes = collect_user_api_scopes(agent)
-    existing_scopes = app_block.get("user_api_scopes") or []
-    merged_scopes = sorted(
-        set(existing_scopes) | set(derived_scopes) | set(tool_declared_scopes)
-    )
-    new_scopes = sorted(set(merged_scopes) - set(existing_scopes))
-    if merged_scopes:
-        app_block["user_api_scopes"] = merged_scopes
-
-    with path.open("w") as f:
-        yml.dump(doc, f)
-
-    if new_scopes:
-        log(f"  added {len(new_scopes)} OBO scope(s): {', '.join(new_scopes)}")
+        changed = True
     if added:
-        log(f"  auto-added {len(added)} resources: {', '.join(added)}")
+        app_block["resources"] = existing
+
+    existing_scopes_raw = app_block.get("user_api_scopes")
+    if existing_scopes_raw is None:
+        existing_scopes: list[str] = []
+    elif isinstance(existing_scopes_raw, list) and all(
+        isinstance(scope, str) for scope in existing_scopes_raw
+    ):
+        existing_scopes = existing_scopes_raw
+    else:
+        raise click.ClickException(
+            f"resources.apps.{bundle_key}.user_api_scopes must be a list of strings."
+        )
+    merged_scopes = sorted(set(existing_scopes) | set(plan.user_api_scopes))
+    new_scopes = sorted(set(plan.user_api_scopes) - set(existing_scopes))
+    if merged_scopes != list(existing_scopes):
+        app_block["user_api_scopes"] = merged_scopes
+        changed = True
+
+    desired_group_permissions = [
+        *((group, "CAN_USE") for group in family_permissions.can_use_groups),
+        *((group, "CAN_MANAGE") for group in family_permissions.can_manage_groups),
+    ]
+    permissions_raw = app_block.get("permissions")
+    if permissions_raw is None:
+        permissions: list[dict[str, Any]] = []
+    elif isinstance(permissions_raw, list):
+        permissions = permissions_raw
+    else:
+        raise click.ClickException(
+            f"resources.apps.{bundle_key}.permissions must be a list."
+        )
+    added_groups: list[str] = []
+    for group, level in desired_group_permissions:
+        matches = [
+            entry for entry in permissions
+            if isinstance(entry, dict) and entry.get("group_name") == group
+        ]
+        if matches:
+            explicit_levels = {entry.get("level") for entry in matches}
+            if explicit_levels != {level}:
+                raise click.ClickException(
+                    f"Generated group {group!r} at {level} conflicts with existing "
+                    f"level(s): {', '.join(sorted(map(str, explicit_levels)))}."
+                )
+            continue
+        permissions.append({"group_name": group, "level": level})
+        added_groups.append(group)
+        changed = True
+    if added_groups:
+        app_block["permissions"] = permissions
+
+    for identity, required in required_by_identity.items():
+        required_permission = _entry_permission(required)
+        effective = existing_by_identity.get(identity, [])
+        if not effective or any(
+            _entry_permission(entry) != required_permission for entry in effective
+        ):
+            raise click.ClickException(
+                "The effective authorization mismatch remains after resource reconciliation."
+            )
+    if not set(plan.user_api_scopes).issubset(set(merged_scopes)):
+        raise click.ClickException(
+            "The effective authorization mismatch remains after scope reconciliation."
+        )
+    for group, level in desired_group_permissions:
+        if not any(
+            isinstance(entry, dict)
+            and entry.get("group_name") == group
+            and entry.get("level") == level
+            for entry in permissions
+        ):
+            raise click.ClickException(
+                "The effective authorization mismatch remains after group reconciliation."
+            )
+
+    if not changed:
+        log("  Apps authorization already matches the compiled plan")
+        return False
+    with path.open("w") as stream:
+        yml.dump(doc, stream)
+    log(
+        "  reconciled Apps authorization: "
+        f"{len(added)} resource(s), {len(new_scopes)} scope(s), "
+        f"{len(added_groups)} group permission(s) added"
+    )
     if skipped:
-        log(f"  skipped {len(skipped)} resources already declared: "
-            f"{', '.join(skipped)}")
-    if not added and not skipped:
-        log("  no resources to merge (agent declared none)")
-    return _BundleUpdateResult(added=added, skipped=skipped)
-
-
-def _warn_missing_user_api_scopes(
-    doc: dict[str, Any], *, module: str, bundle_key: str, log: Any,
-) -> list[str]:
-    """Deploy-time check: warn when a tool needs an OBO scope databricks.yml omits.
-
-    Turns a runtime "does not have required scopes" 500 into a deploy-time
-    warning (#563). ``--auto-update-yml`` MERGES the needed scopes in and is the
-    fix; but that flag is off by default, so without this check the scope
-    derivation never runs on the common ``deploy`` / ``redeploy`` path and a tool
-    that needs e.g. ``unity-catalog`` ships with stale ``user_api_scopes`` and
-    403s at runtime with nothing catching it.
-
-    The needed set is the SAME union the merge would write —
-    ``user_api_scopes_for(collect_resource_specs) ∪ collect_user_api_scopes``.
-    This only compares and warns; it NEVER mutates the operator's file (that
-    stays opt-in behind ``--auto-update-yml``). Best-effort: any failure to load
-    or introspect the agent skips the check rather than aborting the deploy —
-    the real agent load happens later on the deploy path, where errors surface.
-
-    Returns the sorted missing scopes (empty if none / on skip) for testability.
-    """
-    try:
-        from apx_agent._resources import (
-            collect_resource_specs,
-            collect_user_api_scopes,
-            user_api_scopes_for,
-        )
-
-        agent = _load_finalized_agent(module)
-        needed = set(user_api_scopes_for(collect_resource_specs(agent))) | set(
-            collect_user_api_scopes(agent)
-        )
-        if not needed:
-            return []
-        resources = doc.get("resources") if isinstance(doc, dict) else None
-        apps = resources.get("apps") if isinstance(resources, dict) else None
-        app_block = apps.get(bundle_key) if isinstance(apps, dict) else None
-        declared_raw = app_block.get("user_api_scopes") if isinstance(app_block, dict) else None
-        declared = set(declared_raw or [])
-        missing = sorted(needed - declared)
-    except Exception as exc:  # best-effort — never block a deploy on the check
-        logger.debug("user_api_scopes pre-check skipped: %s", exc)
-        return []
-    if missing:
         log(
-            f"# WARNING: agent tools need OBO scope(s) not declared in "
-            f"databricks.yml: {', '.join(missing)}. Without them the deployed "
-            f"app 403s at runtime (\"does not have required scopes\"). Add them "
-            f"to resources.apps.{bundle_key}.user_api_scopes, or re-run deploy "
-            f"with --auto-update-yml to merge them automatically."
+            f"  preserved {len(skipped)} matching explicit resource(s): "
+            f"{', '.join(skipped)}"
         )
-    return missing
+    return True
 
 
 def _poll_app_ready(
@@ -9600,22 +9697,50 @@ def _deploy_apps_impl(
         cwd, agent=agent, profile=profile, log=log,
     )
 
-    # 2. Reconcile the OBO scopes / resources the agent's tools need against
-    #    databricks.yml. --auto-update-yml MERGES them in (never clobbering);
-    #    without it (the default) we still CHECK and warn about any missing OBO
-    #    scope, so a tool that needs e.g. `unity-catalog` surfaces as a
-    #    deploy-time warning instead of a runtime "does not have required
-    #    scopes" 500 — the derivation now fires on the common deploy/redeploy
-    #    path, not only under the opt-in flag (#563).
-    if auto_update_yml:
-        log("# auto-update-yml: merging agent ResourceSpec + OBO scopes into databricks.yml")
-        if agent is None:
-            agent = _load_finalized_agent(module)
-        _auto_update_databricks_yml(
-            cwd, agent=agent, bundle_key=bundle_key, log=log,
+    # 2. Compile and reconcile the complete Apps authorization contract on every
+    #    deploy. The compatibility flag is accepted but no longer gates this.
+    from ._apps_authorization import (
+        authorization_summary_lines,
+        compile_authorization_plan,
+        read_app_family_permissions,
+    )
+    from ._inspection import _load_agent_config
+
+    effective_config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    effective_model = (
+        effective_config.model if effective_config is not None else _APPS_DEFAULT_MODEL
+    )
+    try:
+        authorization_plan = compile_authorization_plan(
+            agent,
+            model=effective_model,
         )
-    else:
-        _warn_missing_user_api_scopes(doc, module=module, bundle_key=bundle_key, log=log)
+        family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    resolved_dependencies = _resolve_app_dependencies(
+        authorization_plan.app_dependencies,
+        profile=profile,
+    )
+
+    log("# Apps authorization summary")
+    for line in authorization_summary_lines(
+        authorization_plan,
+        resolved_dependencies,
+        family_permissions,
+    ):
+        log(line)
+    if auto_update_yml:
+        log("# --auto-update-yml: reconciliation is already automatic")
+    log("# Apps authorization reconciliation")
+    _reconcile_apps_authorization(
+        cwd,
+        plan=authorization_plan,
+        resolved_dependencies=resolved_dependencies,
+        family_permissions=family_permissions,
+        bundle_key=bundle_key,
+        log=log,
+    )
 
     # 2a. --env / --secret-env (issue #415): merge caller-supplied runtime
     # env into resources.apps.<key>.config.env before the bundle deploy.

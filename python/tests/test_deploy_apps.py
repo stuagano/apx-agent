@@ -35,7 +35,14 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from apx_agent._apps_authorization import AppDependency, ResolvedAppDependency
+from apx_agent import ResourceSpec
+from apx_agent._apps_authorization import (
+    AppDependency,
+    AppFamilyPermissions,
+    AuthorizationPlan,
+    OperationAuthorization,
+    ResolvedAppDependency,
+)
 from apx_agent.cli import main
 
 
@@ -164,6 +171,260 @@ class _FakeProc:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+def _authorization_plan(
+    *,
+    user_api_scopes: tuple[str, ...] = ("catalog.tables:read", "sql"),
+    app_dependencies: tuple[AppDependency, ...] = (
+        AppDependency("https://peer.cloud.databricksapps.com"),
+    ),
+) -> AuthorizationPlan:
+    user_resource = ResourceSpec("uc_table", "main.private.orders")
+    return AuthorizationPlan(
+        operations=(
+            OperationAuthorization(
+                name="inspect_orders",
+                execution_identity="user",
+                requires_request_context=True,
+                resources=(user_resource,),
+                user_api_scopes=("catalog.tables:read",),
+            ),
+            OperationAuthorization(
+                name="run_job",
+                execution_identity="service",
+                requires_request_context=False,
+                resources=(ResourceSpec("job", "job-123"),),
+                user_api_scopes=(),
+            ),
+        ),
+        user_resources=(user_resource,),
+        service_resources=(
+            ResourceSpec("job", "job-123"),
+            ResourceSpec("serving_endpoint", "model-endpoint"),
+            ResourceSpec("uc_table", "main.sales.orders"),
+        ),
+        user_api_scopes=user_api_scopes,
+        app_dependencies=app_dependencies,
+    )
+
+
+def test_reconcile_apps_authorization_is_complete_additive_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    from apx_agent.cli import _reconcile_apps_authorization
+
+    yml_path = tmp_path / "databricks.yml"
+    yml_path.write_text(textwrap.dedent("""\
+        # preserved comment
+        resources:
+          apps:
+            my-app:
+              name: my-app
+              user_api_scopes:
+                - sql
+                - operator.custom-scope
+              resources:
+                - job:
+                    name: custom-job-handle
+                    id: job-123
+                    permission: CAN_MANAGE_RUN
+                - uc_securable:
+                    name: archived-orders
+                    securable_full_name: archive.sales.orders
+                    securable_type: TABLE
+                    permission: SELECT
+                - serving_endpoint:
+                    name: operator-endpoint
+                    endpoint_name: operator-endpoint
+                    permission: CAN_QUERY
+              permissions:
+                - user_name: owner@example.com
+                  level: CAN_MANAGE
+                - service_principal_name: external-client-id
+                  level: CAN_USE
+                - group_name: existing-audience
+                  level: CAN_USE
+        """))
+    plan = _authorization_plan()
+    resolved = [
+        ResolvedAppDependency(
+            id="app-id-123",
+            name="peer-app",
+            url="https://peer.cloud.databricksapps.com",
+        ),
+    ]
+    policy = AppFamilyPermissions(
+        can_use_groups=("existing-audience", "new-audience"),
+        can_manage_groups=("app-admins",),
+    )
+    logs: list[str] = []
+
+    assert _reconcile_apps_authorization(
+        tmp_path,
+        plan=plan,
+        resolved_dependencies=resolved,
+        family_permissions=policy,
+        bundle_key="my-app",
+        log=logs.append,
+    ) is True
+
+    first_text = yml_path.read_text()
+    doc = yaml.safe_load(first_text)
+    app = doc["resources"]["apps"]["my-app"]
+    assert app["user_api_scopes"] == [
+        "catalog.tables:read",
+        "operator.custom-scope",
+        "sql",
+    ]
+    resources = app["resources"]
+    assert any(
+        entry.get("job", {}).get("name") == "custom-job-handle"
+        for entry in resources
+    )
+    assert sum(
+        entry.get("job", {}).get("id") == "job-123"
+        for entry in resources
+    ) == 1
+    assert {
+        entry.get("uc_securable", {}).get("securable_full_name")
+        for entry in resources
+    } >= {"archive.sales.orders", "main.sales.orders"}
+    assert not any(
+        entry.get("uc_securable", {}).get("securable_full_name")
+        == "main.private.orders"
+        for entry in resources
+    )
+    assert any(
+        entry.get("serving_endpoint", {}).get("endpoint_name")
+        == "model-endpoint"
+        and entry["serving_endpoint"]["permission"] == "CAN_QUERY"
+        for entry in resources
+    )
+    assert {entry.get("app", {}).get("name") for entry in resources} >= {"peer-app"}
+    assert any(
+        entry.get("app") == {"name": "peer-app", "permission": "CAN_USE"}
+        for entry in resources
+    )
+    assert {tuple(sorted(entry.items())) for entry in app["permissions"]} >= {
+        (("level", "CAN_MANAGE"), ("user_name", "owner@example.com")),
+        (("level", "CAN_USE"), ("service_principal_name", "external-client-id")),
+        (("group_name", "existing-audience"), ("level", "CAN_USE")),
+        (("group_name", "new-audience"), ("level", "CAN_USE")),
+        (("group_name", "app-admins"), ("level", "CAN_MANAGE")),
+    }
+    assert "# preserved comment" in first_text
+    assert any("reconciled Apps authorization" in message for message in logs)
+
+    assert _reconcile_apps_authorization(
+        tmp_path,
+        plan=plan,
+        resolved_dependencies=resolved,
+        family_permissions=policy,
+        bundle_key="my-app",
+        log=logs.append,
+    ) is False
+    assert yml_path.read_text() == first_text
+
+
+@pytest.mark.parametrize(
+    ("plan", "resolved", "match"),
+    [
+        (
+            _authorization_plan(
+                user_api_scopes=("unknown.generated-scope",),
+                app_dependencies=(),
+            ),
+            [],
+            "unknown generated user API scope",
+        ),
+        (
+            _authorization_plan(),
+            [],
+            "resolved App dependencies do not match",
+        ),
+    ],
+)
+def test_reconcile_apps_authorization_fails_closed_before_write(
+    tmp_path: Path,
+    plan: AuthorizationPlan,
+    resolved: list[ResolvedAppDependency],
+    match: str,
+) -> None:
+    from apx_agent.cli import _reconcile_apps_authorization
+
+    yml_path = tmp_path / "databricks.yml"
+    original = "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+    yml_path.write_text(original)
+
+    with pytest.raises(click.ClickException, match=match):
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=plan,
+            resolved_dependencies=resolved,
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-app",
+            log=lambda _message: None,
+        )
+
+    assert yml_path.read_text() == original
+
+
+@pytest.mark.parametrize(
+    ("resource_block", "family_permissions", "match"),
+    [
+        (
+            """\
+              resources:
+                - job:
+                    name: existing-job
+                    id: job-123
+                    permission: CAN_VIEW
+            """,
+            AppFamilyPermissions(),
+            "effective authorization mismatch",
+        ),
+        (
+            """\
+              permissions:
+                - group_name: operators
+                  level: CAN_MANAGE
+            """,
+            AppFamilyPermissions(can_use_groups=("operators",)),
+            "conflicts with existing level",
+        ),
+    ],
+)
+def test_reconcile_apps_authorization_rejects_explicit_conflicts(
+    tmp_path: Path,
+    resource_block: str,
+    family_permissions: AppFamilyPermissions,
+    match: str,
+) -> None:
+    from apx_agent.cli import _reconcile_apps_authorization
+
+    yml_path = tmp_path / "databricks.yml"
+    original = (
+        "resources:\n"
+        "  apps:\n"
+        "    my-app:\n"
+        "      name: my-app\n"
+        + textwrap.indent(textwrap.dedent(resource_block), "      ")
+    )
+    yml_path.write_text(original)
+    plan = _authorization_plan(app_dependencies=())
+
+    with pytest.raises(click.ClickException, match=match):
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=plan,
+            resolved_dependencies=[],
+            family_permissions=family_permissions,
+            bundle_key="my-app",
+            log=lambda _message: None,
+        )
+
+    assert yml_path.read_text() == original
 
 
 def test_resolve_app_dependencies_matches_exact_url_with_explicit_profile(
@@ -797,14 +1058,15 @@ def test_python_default_skips_internal_appkit_host(
     assert not (tmp_path / ".build" / "apx_appkit_host" / "package.json").exists()
 
 
-def test_auto_update_yml_adds_missing_resources(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("legacy_flag", [False, True])
+def test_apps_deploy_reconciles_resources_without_legacy_flag(
+    scaffold: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    legacy_flag: bool,
 ) -> None:
-    """--auto-update-yml merges ResourceSpec entries into databricks.yml."""
-    # Override the stub agent (top-level agent.py per the ADK-style layout)
-    # with one that declares a ResourceSpec.
+    """Every Apps deploy reconciles the plan; the legacy flag is a no-op."""
     (scaffold / "agent.py").write_text(textwrap.dedent("""\
-        from apx_agent._resources import ResourceSpec
+        from apx_agent import Dependencies, ResourceSpec
 
         class _StubAgent:
             def __init__(self):
@@ -812,7 +1074,7 @@ def test_auto_update_yml_adds_missing_resources(
                 self._sub_agent_urls = []
 
         def _make_tool():
-            def t(): return "ok"
+            def t(ws: Dependencies.Client): return "ok"
             t._apx_resources = [
                 ResourceSpec("serving_endpoint", "claude-3-5"),
                 ResourceSpec("sql_warehouse", "abc123"),
@@ -833,9 +1095,10 @@ def test_auto_update_yml_adds_missing_resources(
     )
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "agents", "deploy", "--target", "apps", "--auto-update-yml",
-    ])
+    args = ["agents", "deploy", "--target", "apps"]
+    if legacy_flag:
+        args.append("--auto-update-yml")
+    result = runner.invoke(main, args)
     assert result.exit_code == 0, result.output
     doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
     resources = doc["resources"]["apps"]["my-app"]["resources"]
@@ -849,21 +1112,21 @@ def test_auto_update_yml_adds_missing_resources(
     assert endpoint_block["serving_endpoint"]["endpoint_name"] == "claude-3-5"
     warehouse_block = next(r for r in resources if "sql_warehouse" in r)
     assert warehouse_block["sql_warehouse"]["id"] == "abc123"
+    assert "# Apps authorization summary" in result.output
+    if legacy_flag:
+        assert "already automatic" in result.output
 
 
-def test_auto_update_yml_preserves_user_added_resources(
+def test_apps_deploy_preserves_matching_custom_resource_handle(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """User-added resources with matching names are NOT clobbered."""
-    # Pre-populate the bundle with an explicit resource that uses the
-    # same auto-derived name we'd generate. The DAB shape is
-    # {"<resource_type>": {"name": "...", ...}} — name is NESTED.
+    """An exact existing identity is preserved without adding a duplicate."""
     doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
     doc["resources"]["apps"]["my-app"]["resources"] = [
         {
             "serving_endpoint": {
-                "name": "claude-3-5-endpoint",  # matches the auto-derived name
-                "endpoint_name": "USER-OVERRIDE-claude",
+                "name": "custom-claude-handle",
+                "endpoint_name": "claude-3-5",
                 "permission": "CAN_QUERY",
             },
         },
@@ -873,7 +1136,7 @@ def test_auto_update_yml_preserves_user_added_resources(
     )
 
     (scaffold / "agent.py").write_text(textwrap.dedent("""\
-        from apx_agent._resources import ResourceSpec
+        from apx_agent import Dependencies, ResourceSpec
 
         class _StubAgent:
             def __init__(self):
@@ -881,7 +1144,7 @@ def test_auto_update_yml_preserves_user_added_resources(
                 self._sub_agent_urls = []
 
         def _make_tool():
-            def t(): return "ok"
+            def t(ws: Dependencies.Client): return "ok"
             t._apx_resources = [
                 ResourceSpec("serving_endpoint", "claude-3-5"),
             ]
@@ -900,23 +1163,98 @@ def test_auto_update_yml_preserves_user_added_resources(
     )
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "agents", "deploy", "--target", "apps", "--auto-update-yml",
-    ])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code == 0, result.output
 
     updated = yaml.safe_load((scaffold / "databricks.yml").read_text())
     resources = updated["resources"]["apps"]["my-app"]["resources"]
-    # Exactly one entry with that name — the user's, untouched.
-    def _name(e: dict) -> str:
-        for v in e.values():
-            if isinstance(v, dict) and isinstance(v.get("name"), str):
-                return v["name"]
-        return ""
-    matching = [r for r in resources if _name(r) == "claude-3-5-endpoint"]
+    matching = [
+        resource
+        for resource in resources
+        if resource.get("serving_endpoint", {}).get("endpoint_name")
+        == "claude-3-5"
+    ]
     assert len(matching) == 1
-    # The user's override is preserved verbatim.
-    assert matching[0]["serving_endpoint"]["endpoint_name"] == "USER-OVERRIDE-claude"
+    assert matching[0]["serving_endpoint"]["name"] == "custom-claude-handle"
+
+
+def test_apps_deploy_unknown_generated_scope_fails_before_bundle_deploy(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scope that bypassed declaration validation still fails closed."""
+    (scaffold / "agent.py").write_text(textwrap.dedent("""\
+        class _StubAgent:
+            def __init__(self):
+                self._tool_fns = [_make_tool()]
+
+        def _make_tool():
+            def t(): return "ok"
+            t._apx_user_api_scopes = ["unknown.generated-scope"]
+            return t
+
+        agent = _StubAgent()
+        """))
+    sys.modules.pop("agent", None)
+    monkeypatch.setattr(
+        "apx_agent._resources._iter_tool_fns",
+        lambda agent: iter(agent._tool_fns),
+    )
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+
+    assert result.exit_code != 0
+    assert "unknown generated user API scope" in result.output
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+
+
+def test_apps_deploy_unresolved_a2a_fails_before_bundle_deploy(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer App cannot be resolved from an ambient workspace profile."""
+    (scaffold / "agent.py").write_text(textwrap.dedent("""\
+        from apx_agent import Agent
+
+        agent = Agent(
+            tools=[],
+            sub_agents=["https://peer.cloud.databricksapps.com"],
+        )
+        """))
+    sys.modules.pop("agent", None)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+
+    assert result.exit_code != 0
+    assert "requires an explicit --profile" in result.output
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+
+
+def test_apps_deploy_group_conflict_fails_before_bundle_deploy(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generated family policy never replaces an explicit group permission."""
+    (scaffold / "pyproject.toml").write_text(textwrap.dedent("""\
+        [project]
+        name = "test-app"
+
+        [tool.apx.apps.permissions]
+        can_use_groups = ["operators"]
+        """))
+    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    doc["resources"]["apps"]["my-app"]["permissions"] = [
+        {"group_name": "operators", "level": "CAN_MANAGE"},
+    ]
+    original = yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
+    (scaffold / "databricks.yml").write_text(original)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+
+    assert result.exit_code != 0
+    assert "conflicts with existing level" in result.output
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+    assert (scaffold / "databricks.yml").read_text() == original
 
 
 def test_polling_stops_on_active_running(
