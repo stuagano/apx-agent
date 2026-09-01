@@ -79,6 +79,39 @@ function makeManifest(): InternalApxAppsHostManifest {
   };
 }
 
+function makeSupportedSurfaceManifest(): InternalApxAppsHostManifest {
+  return {
+    ...makeManifest(),
+    tools: [
+      {
+        name: 'who_am_i',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        annotations: { effect: 'read', requires_user_context: true },
+      },
+      {
+        name: 'apply_change',
+        parameters: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+          required: ['value'],
+          additionalProperties: false,
+        },
+        annotations: { effect: 'update', requires_user_context: true },
+      },
+      {
+        name: 'remember',
+        parameters: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+          required: ['value'],
+          additionalProperties: false,
+        },
+        annotations: { effect: 'update', requires_user_context: true },
+      },
+    ],
+  };
+}
+
 describe('internal AppKit host', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -334,37 +367,70 @@ describe('internal AppKit host', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards AppKit OBO headers to manifest-backed Python tools', async () => {
+  it('proves the supported manifest surface through the real AppKit context', async () => {
     setupDatabricksEnv();
     const serviceContext = mockServiceContext({ userId: 'alice@databricks.com' });
     const mock = createTestPluginContext();
+    const manifest = makeSupportedSurfaceManifest();
     await mock.attach(new InternalApxAppKitGovernancePlugin({
-      manifest: makeManifest(),
+      manifest,
       pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
     }));
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ result: { policy: 'read-only' } }), {
+    const definition = createInternalApxAppKitAgentDefinitionFromManifest(manifest);
+    const apx = new InternalApxAppKitGovernancePlugin({ manifest });
+    if (typeof definition.tools !== 'function') throw new Error('expected function-form tools');
+    expect(definition.tools({ [INTERNAL_APX_APPKIT_PLUGIN_NAME]: apx })).toMatchObject({
+      'apx.who_am_i': { annotations: { effect: 'read' } },
+      'apx.apply_change': { annotations: { effect: 'update' } },
+      'apx.remember': { annotations: { effect: 'update' } },
+    });
+
+    let forwardedSignal: AbortSignal | null = null;
+    const executed: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const args = JSON.parse(String(init?.body)).args;
+      forwardedSignal = init?.signal as AbortSignal;
+      if (url.endsWith('/apply_change') && args.value === 'deny') {
+        return new Response(JSON.stringify({ detail: 'Tool execution is denied' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/remember')) {
+        return new Response(JSON.stringify({
+          detail: 'APX AppKit bridge cannot execute stateful tool: remember',
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      executed.push(url.split('/').at(-1) ?? 'missing');
+      return new Response(JSON.stringify({ result: 'alice@databricks.com' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
-      }),
-    );
+      });
+    });
+    const request = createMockRequest({
+      obo: {
+        userId: 'alice@databricks.com',
+        token: 'alice-token',
+        email: 'alice@databricks.com',
+      },
+    });
+    const cancellation = new AbortController();
 
     try {
-      await mock.ctx.executeTool(
-        createMockRequest({
-          obo: {
-            userId: 'alice@databricks.com',
-            token: 'alice-token',
-            email: 'alice@databricks.com',
-          },
-        }),
+      await expect(mock.ctx.executeTool(
+        request,
         INTERNAL_APX_APPKIT_PLUGIN_NAME,
-        'lookup_policy',
-        { resource: 'main.sales.orders' },
-      );
+        'who_am_i',
+        {},
+        cancellation.signal,
+      )).resolves.toBe('alice@databricks.com');
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://127.0.0.1:8000/_apx/internal/appkit/tools/lookup_policy',
+        'http://127.0.0.1:8000/_apx/internal/appkit/tools/who_am_i',
         expect.objectContaining({
           headers: expect.objectContaining({
             'x-forwarded-user': 'alice@databricks.com',
@@ -373,27 +439,34 @@ describe('internal AppKit host', () => {
           }),
         }),
       );
+      expect(forwardedSignal).toBeInstanceOf(AbortSignal);
+      cancellation.abort();
+      expect(forwardedSignal?.aborted).toBe(true);
+
+      const denied = mock.ctx.executeTool(
+        request,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'apply_change',
+        { value: 'deny' },
+      );
+      await expect(denied).rejects.toThrow(
+        'APX Python bridge failed for apply_change: Tool execution is denied',
+      );
+      await expect(denied).rejects.not.toThrow(/approval|retry/i);
+
+      await expect(mock.ctx.executeTool(
+        request,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'remember',
+        { value: 'never' },
+      )).rejects.toThrow(
+        'APX Python bridge failed for remember: '
+          + 'APX AppKit bridge cannot execute stateful tool: remember',
+      );
+      expect(executed).toEqual(['who_am_i']);
     } finally {
       serviceContext.restore();
     }
-  });
-
-  it('surfaces bridge error details for manifest-backed tools', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ detail: 'Unknown APX tool: lookup_policy' }), {
-        status: 404,
-        statusText: 'Not Found',
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-    const apx = new InternalApxAppKitGovernancePlugin({
-      manifest: makeManifest(),
-      pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
-    });
-
-    await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).rejects.toThrow(
-      'APX Python bridge failed for lookup_policy: Unknown APX tool: lookup_policy',
-    );
   });
 
   it('runs APX plugin tools through AppKit PluginContext OBO dispatch', async () => {

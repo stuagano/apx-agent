@@ -72,6 +72,39 @@ agent = _StubAgent()
 """
 
 
+_APPKIT_SUPPORTED_SURFACE_AGENT = """\
+from apx_agent import Dependencies, LlmAgent, tool
+
+successful_calls = []
+
+@tool(effect="read")
+def who_am_i(headers: Dependencies.Headers) -> str:
+    return headers.user_id or "missing"
+
+@tool(effect="update")
+def apply_change(value: str) -> str:
+    return f"applied:{value}"
+
+def remember(value: str, state: Dependencies.State) -> str:
+    state["value"] = value
+    return value
+
+def before_tool(name, args):
+    if name == "apply_change" and args == {"value": "deny"}:
+        raise PermissionError("blocked")
+
+def after_tool(name, args, output):
+    successful_calls.append((name, args, output))
+
+agent = LlmAgent(
+    name="supported-surface",
+    tools=[who_am_i, apply_change, remember],
+    before_tool=before_tool,
+    after_tool=after_tool,
+)
+"""
+
+
 def _write_scaffold(tmp_path: Path, *, with_yml: bool = True) -> Path:
     """Write a minimal Apps-shaped project under ``tmp_path``.
 
@@ -330,18 +363,14 @@ def test_appkit_opt_in_stages_internal_host(
         'model = "databricks-claude-sonnet-4-6"\n'
         'module = "agent:agent"\n'
     )
-    (tmp_path / "agent.py").write_text(
-        "from apx_agent import LlmAgent\n\n"
-        "def lookup_policy(resource: str) -> str:\n"
-        "    return resource\n\n"
-        "agent = LlmAgent(name='test-app', tools=[lookup_policy])\n"
-    )
+    (tmp_path / "agent.py").write_text(_APPKIT_SUPPORTED_SURFACE_AGENT)
     server = tmp_path / "agent_server"
     server.mkdir()
     (server / "__init__.py").write_text("")
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("agent", None)
     _install_subprocess_mock(monkeypatch)
 
     result = CliRunner().invoke(
@@ -360,6 +389,63 @@ def test_appkit_opt_in_stages_internal_host(
     assert package_json["dependencies"]["apx-internal-runtime"] == (
         "file:../apx_internal_runtime"
     )
+    manifest = json.loads((host / "apx-host-manifest.json").read_text())
+    assert {
+        item["name"]: item["annotations"]["effect"] for item in manifest["tools"]
+    } == {
+        "who_am_i": "read",
+        "apply_change": "update",
+        "remember": "update",
+    }
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from apx_agent import AgentConfig
+    from apx_agent._appkit_tool_bridge import build_appkit_tool_bridge_router
+    from apx_agent._models import AgentCard, AgentContext
+
+    agent_module = importlib.import_module("agent")
+    bridge = FastAPI()
+    bridge.state.agent_context = AgentContext(
+        config=AgentConfig(name="supported-surface"),
+        tools=[],
+        card=AgentCard(name="supported-surface", description="Supported surface"),
+        agent=agent_module.agent,
+    )
+    monkeypatch.setattr(
+        "apx_agent._appkit_tool_bridge._obo_ws_from_headers", lambda _headers: None
+    )
+    bridge.include_router(build_appkit_tool_bridge_router())
+    client = TestClient(bridge)
+    identity = client.post(
+        "/_apx/internal/appkit/tools/who_am_i",
+        json={"args": {}},
+        headers={"X-Forwarded-User": "alice"},
+    )
+    denied = client.post(
+        "/_apx/internal/appkit/tools/apply_change",
+        json={"args": {"value": "deny"}},
+    )
+    applied = client.post(
+        "/_apx/internal/appkit/tools/apply_change",
+        json={"args": {"value": "ok"}},
+    )
+    calls_before_stateful = list(agent_module.successful_calls)
+    stateful = client.post(
+        "/_apx/internal/appkit/tools/remember",
+        json={"args": {"value": "never"}},
+    )
+
+    assert identity.json() == {"result": "alice"}
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": "blocked"}
+    assert applied.json() == {"result": "applied:ok"}
+    assert [call[0] for call in calls_before_stateful] == ["who_am_i", "apply_change"]
+    assert stateful.status_code == 400
+    assert stateful.json() == {
+        "detail": "APX AppKit bridge cannot execute stateful tool: remember"
+    }
+    assert agent_module.successful_calls == calls_before_stateful
 
 
 def test_python_default_skips_internal_appkit_host(

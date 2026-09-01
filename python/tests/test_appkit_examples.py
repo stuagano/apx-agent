@@ -3,12 +3,20 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import textwrap
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from typing import NamedTuple
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 import pytest
+import yaml
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -249,7 +257,7 @@ PROBE = textwrap.dedent(
         env=bridge_env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=60,
         check=False,
     )
     assert bridge_boot.returncode == 0, bridge_boot.stderr + bridge_boot.stdout
@@ -263,7 +271,7 @@ PROBE = textwrap.dedent(
         env=bridge_env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=60,
         check=False,
     )
     assert bridge_import.returncode == 0, bridge_import.stderr + bridge_import.stdout
@@ -618,6 +626,266 @@ def _copy_example(src: Path, dst: Path) -> None:
     )
 
 
+def _free_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+class _HttpResult(NamedTuple):
+    status: int
+    body: bytes
+
+
+def _wait_http(
+    url: str,
+    *,
+    timeout: float = 90,
+    process: subprocess.Popen[str] | None = None,
+    process_log: Path | None = None,
+) -> _HttpResult:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            output = process_log.read_text() if process_log is not None else ""
+            raise AssertionError(f"generated host exited early:\n{output}")
+        try:
+            with urlopen(url, timeout=1) as response:
+                return _HttpResult(response.status, response.read())
+        except HTTPError as exc:
+            return _HttpResult(exc.code, exc.read())
+        except (TimeoutError, URLError):
+            time.sleep(0.1)
+    raise AssertionError(f"timed out waiting for {url}")
+
+
+def _wait_pid_file(path: Path, *, timeout: float = 10) -> int:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return int(path.read_text())
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for child pid: {path}")
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_pid_exit(pid: int, *, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_is_running(pid):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"child process {pid} did not exit")
+
+
+def test_generated_appkit_host_build_and_supervisor_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apx_agent.cli import _stage_internal_appkit_host
+
+    workdir = tmp_path / "customer_triage"
+    _copy_example(EXAMPLES_ROOT / "customer_triage", workdir)
+    doc = yaml.safe_load((workdir / "databricks.yml").read_text())
+    apps = doc["resources"]["apps"]
+    bundle_key = next(iter(apps))
+    apps[bundle_key].setdefault("config", {})["env"] = [
+        {"name": "APX_APPS_HOST", "value": "appkit"}
+    ]
+    (workdir / "databricks.yml").write_text(
+        yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
+    )
+    (workdir / ".build").mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.syspath_prepend(str(workdir))
+    sys.modules.pop("agent", None)
+    _stage_internal_appkit_host(
+        workdir,
+        module="agent:agent",
+        doc=doc,
+        bundle_key=bundle_key,
+        log=lambda _message: None,
+    )
+    host_dir = workdir / ".build" / "apx_appkit_host"
+
+    package = json.loads((host_dir / "package.json").read_text())
+    lock = json.loads((PYTHON_ROOT.parent / "typescript" / "package-lock.json").read_text())
+    lock["name"] = package["name"]
+    lock["packages"][""] = {
+        "name": package["name"],
+        "dependencies": package["dependencies"],
+        "devDependencies": package["devDependencies"],
+    }
+    (host_dir / "package-lock.json").write_text(json.dumps(lock))
+    npm_env = {
+        **os.environ,
+        "npm_config_fetch_retries": "1",
+        "npm_config_fetch_timeout": "20000",
+        "npm_config_offline": "true",
+    }
+    install = subprocess.run(
+        ["npm", "install", "--ignore-scripts"],
+        cwd=host_dir,
+        env=npm_env,
+        text=True,
+        capture_output=True,
+        timeout=180,
+        check=False,
+    )
+    if install.returncode != 0 and "ENOTCACHED" in install.stderr:
+        npm_env.pop("npm_config_offline")
+        install = subprocess.run(
+            ["npm", "install", "--ignore-scripts"],
+            cwd=host_dir,
+            env=npm_env,
+            text=True,
+            capture_output=True,
+            timeout=180,
+            check=False,
+        )
+    assert install.returncode == 0, install.stderr + install.stdout
+    build = subprocess.run(
+        ["npm", "run", "build"],
+        cwd=host_dir,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr + build.stdout
+
+    python_pid_file = tmp_path / "python-child.pid"
+    appkit_pid_file = tmp_path / "appkit-child.pid"
+    python_wrapper = tmp_path / "python-wrapper"
+    python_wrapper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['APX_PYTHON_PID_FILE']).write_text(str(os.getpid()))\n"
+        "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+    )
+    python_wrapper.chmod(0o755)
+    node_preload = tmp_path / "record-appkit-pid.mjs"
+    node_preload.write_text(
+        "import { writeFileSync } from 'node:fs';\n"
+        "if (process.argv.some((arg) => arg.endsWith('server/server.ts'))) {\n"
+        "  writeFileSync(process.env.APX_APPKIT_PID_FILE, String(process.pid));\n"
+        "}\n"
+    )
+    app_port = _free_port()
+    bridge_port = _free_port()
+
+    class WorkspaceStub(BaseHTTPRequestHandler):
+        def log_message(self, _format, *_args):
+            pass
+
+        def _respond(self) -> None:
+            payload = b'{"id":"local-user","userName":"local@example.com"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        do_GET = _respond
+        do_POST = _respond
+
+    workspace = ThreadingHTTPServer(("127.0.0.1", 0), WorkspaceStub)
+    workspace_thread = Thread(target=workspace.serve_forever, daemon=True)
+    workspace_thread.start()
+    env = {
+        **os.environ,
+        "APX_AGENT_MLFLOW_AUTOLOG": "0",
+        "APX_APPKIT_PID_FILE": str(appkit_pid_file),
+        "APX_PYTHON_BRIDGE_PORT": str(bridge_port),
+        "APX_PYTHON_PID_FILE": str(python_pid_file),
+        "APX_SMOKE_MODE": "1",
+        "DATABRICKS_APP_PORT": str(app_port),
+        "DATABRICKS_CONFIG_FILE": os.devnull,
+        "DATABRICKS_HOST": f"http://127.0.0.1:{workspace.server_port}",
+        "DATABRICKS_TOKEN": "local-test-token",
+        "DATABRICKS_WORKSPACE_ID": "local-test-workspace",
+        "DEMO_MODE": "true",
+        "MLFLOW_TRACKING_URI": f"file:{tmp_path / 'mlruns'}",
+        "NODE_OPTIONS": f"--import={node_preload}",
+        "PYTHON": str(python_wrapper),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    env.pop("DATABRICKS_CONFIG_PROFILE", None)
+    supervisor_log_path = tmp_path / "supervisor.log"
+    supervisor_log = supervisor_log_path.open("w")
+    supervisor = subprocess.Popen(
+        ["node", "scripts/start.mjs"],
+        cwd=host_dir,
+        env=env,
+        text=True,
+        stdout=supervisor_log,
+        stderr=subprocess.STDOUT,
+    )
+    try:
+        health_status, health_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/health",
+            process=supervisor,
+            process_log=supervisor_log_path,
+        )
+        assert health_status == 200, health_body
+        assert json.loads(health_body) == {"status": "ok"}
+        bridge_health_status, bridge_health_body = _wait_http(
+            f"http://127.0.0.1:{bridge_port}/health"
+        )
+        assert bridge_health_status == 200, bridge_health_body
+        readyz_status, readyz_body = _wait_http(f"http://127.0.0.1:{app_port}/readyz")
+        assert readyz_status in {200, 503}, readyz_body
+        assert json.loads(readyz_body)["status"] in {"ready", "degraded"}
+        python_pid = _wait_pid_file(python_pid_file)
+        appkit_pid = _wait_pid_file(appkit_pid_file)
+
+        supervisor.terminate()
+        supervisor.wait(timeout=15)
+        _wait_pid_exit(python_pid)
+        _wait_pid_exit(appkit_pid)
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+            supervisor.wait(timeout=5)
+        supervisor_log.close()
+        for pid_file in (python_pid_file, appkit_pid_file):
+            if pid_file.exists() and _pid_is_running(int(pid_file.read_text())):
+                os.kill(int(pid_file.read_text()), 15)
+        workspace.shutdown()
+        workspace.server_close()
+        workspace_thread.join(timeout=5)
+
+    failed_env = {
+        **env,
+        "APX_APPKIT_PID_FILE": str(tmp_path / "failed-appkit-child.pid"),
+        "APX_PYTHON_BRIDGE_APP": "missing_appkit_bridge:app",
+        "APX_PYTHON_BRIDGE_PORT": str(_free_port()),
+        "APX_PYTHON_PID_FILE": str(tmp_path / "failed-python-child.pid"),
+        "DATABRICKS_APP_PORT": str(_free_port()),
+    }
+    failed = subprocess.run(
+        ["node", "scripts/start.mjs"],
+        cwd=host_dir,
+        env=failed_env,
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    assert failed.returncode != 0
+    assert "APX Python bridge exited" in failed.stderr + failed.stdout
+    failed_appkit_pid_file = Path(failed_env["APX_APPKIT_PID_FILE"])
+    if failed_appkit_pid_file.exists():
+        _wait_pid_exit(int(failed_appkit_pid_file.read_text()))
+
+
 @pytest.mark.parametrize(
     "example_dir",
     EXAMPLE_DIRS,
@@ -667,7 +935,7 @@ def test_example_agent_stages_internal_appkit_host(
         env=env,
         text=True,
         capture_output=True,
-        timeout=90,
+        timeout=180,
         check=False,
     )
 
