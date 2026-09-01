@@ -1,6 +1,6 @@
 # Apps Authorization Compiler Design
 
-**Status:** Approved; implementation planned
+**Status:** Approved; implemented locally on `codex/apps-auth-compiler`; live `fevm` validation pending
 
 **Date:** 2026-09-01
 
@@ -9,6 +9,14 @@
 **Live validation profile:** `fevm` (explicitly selected by the user)
 
 **Related design:** `docs/superpowers/specs/2026-09-01-appkit-runtime-parity-design.md`
+
+> **Implementation status (2026-09-01):** Tasks 1–7 implement this approved
+> design locally. The compiler now infers and validates tool identities,
+> dispatches Apps tools under distinct user/service credentials, reconciles the
+> generated bundle additively on every Apps deploy, resolves A2A peers under an
+> explicit profile, and prints a deterministic authorization summary before
+> mutation. The separately consented live `fevm` user-only/App-only proof has
+> not run; this is not a production-verification claim.
 
 ## Decision
 
@@ -66,7 +74,11 @@ not service-principal credentials.
   dynamic APX `ASK`, and durable APX conversation storage remain governed by
   the approved runtime-parity design.
 
-## Existing System and Confirmed Defects
+## Pre-implementation Baseline and Confirmed Defects
+
+This section records the state that motivated the approved decision. The
+implementation-status note above records which of these gaps are now addressed
+locally; it does not change the approved design or claim live validation.
 
 APX already supplies most mechanical primitives:
 
