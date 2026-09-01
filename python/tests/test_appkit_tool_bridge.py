@@ -137,5 +137,8 @@ def test_bridge_returns_bounded_403_when_before_tool_requires_approval(monkeypat
     )
 
     assert response.status_code == 403
-    assert set(response.json()) == {"detail"}
+    assert response.json() == {"detail": "Tool execution is denied"}
+    assert approval.id not in response.text
+    assert "approval" not in response.text.lower()
+    assert "retry" not in response.text.lower()
     assert called is False

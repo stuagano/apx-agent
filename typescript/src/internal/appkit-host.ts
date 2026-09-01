@@ -204,7 +204,7 @@ function toolAnnotations(
   overrides: Record<string, ToolAnnotations> | undefined,
 ): ToolAnnotations {
   return {
-    effect: 'read',
+    effect: 'update',
     requiresUserContext: true,
     ...overrides?.[tool.name],
   };
@@ -214,7 +214,7 @@ function manifestToolAnnotations(
   tool: NonNullable<InternalApxAppsHostManifest['tools']>[number],
 ): ToolAnnotations {
   return {
-    effect: tool.annotations?.effect ?? 'read',
+    effect: tool.annotations?.effect ?? 'update',
     requiresUserContext: tool.annotations?.requires_user_context ?? true,
   };
 }

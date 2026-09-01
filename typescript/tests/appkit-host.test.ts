@@ -108,8 +108,8 @@ describe('internal AppKit host', () => {
         __toolkitRef: true,
         pluginName: INTERNAL_APX_APPKIT_PLUGIN_NAME,
         localName: 'lookup_policy',
-        annotations: { effect: 'read', requiresUserContext: true },
-        autoInheritable: true,
+        annotations: { effect: 'update', requiresUserContext: true },
+        autoInheritable: false,
       },
       'apx.apply_recommendation': {
         __toolkitRef: true,
@@ -161,6 +161,20 @@ describe('internal AppKit host', () => {
         localName: 'lookup_policy',
         annotations: { effect: 'read', requiresUserContext: true },
         autoInheritable: true,
+      },
+    });
+  });
+
+  it('treats undeclared manifest tool effects as updates', () => {
+    const manifest = makeManifest();
+    if (!manifest.tools) throw new Error('expected manifest tools');
+    manifest.tools[0].annotations = {};
+    const apx = new InternalApxAppKitGovernancePlugin({ manifest });
+
+    expect(apx.toolkit({ prefix: 'apx.' })).toMatchObject({
+      'apx.lookup_policy': {
+        annotations: { effect: 'update', requiresUserContext: true },
+        autoInheritable: false,
       },
     });
   });

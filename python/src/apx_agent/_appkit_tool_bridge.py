@@ -14,6 +14,7 @@ from ._callbacks import build_callback_handler
 from ._compile import CompileContext, _make_langchain_tool
 from ._defaults import DatabricksAppsHeaders, _obo_ws_from_headers
 from ._inspection import _state_param_name
+from ._policy import ApprovalRequired
 from ._topology import _iter_child_agents
 
 
@@ -65,6 +66,8 @@ def build_appkit_tool_bridge_router() -> APIRouter:
         config = {"callbacks": [handler]} if handler is not None else None
         try:
             result = await lc_tool.ainvoke(body.args, config=config)
+        except ApprovalRequired as exc:
+            raise HTTPException(status_code=403, detail="Tool execution is denied") from exc
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         return {"result": result}
