@@ -20,6 +20,8 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
+import appsHostManifestFixture from './fixtures/apps-host-manifest.json';
+
 import {
   INTERNAL_APX_APPKIT_PLUGIN_NAME,
   InternalApxAppKitGovernancePlugin,
@@ -183,10 +185,78 @@ function makeSupportedSurfaceManifest(): InternalApxAppsHostManifest {
   };
 }
 
-function acceptPythonManifest(
-  manifest: InternalApxAppsHostManifest,
-): InternalApxAppsHostManifest {
-  return manifest;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isResourceList(value: unknown): boolean {
+  return Array.isArray(value) && value.every(
+    (resource) => isRecord(resource)
+      && typeof resource['kind'] === 'string'
+      && typeof resource['identifier'] === 'string',
+  );
+}
+
+function assertAppsHostManifest(
+  value: unknown,
+): asserts value is InternalApxAppsHostManifest {
+  const agent = isRecord(value) ? value['agent'] : null;
+  const appkit = isRecord(value) ? value['appkit'] : null;
+  if (!isRecord(value)
+    || value['kind'] !== 'apx.apps_host_manifest'
+    || value['version'] !== 1
+    || !isRecord(agent)
+    || typeof agent['name'] !== 'string'
+    || typeof agent['description'] !== 'string'
+    || typeof agent['model'] !== 'string'
+    || typeof agent['instructions'] !== 'string'
+    || !(agent['temperature'] === null || typeof agent['temperature'] === 'number')
+    || !(agent['max_tokens'] === null || typeof agent['max_tokens'] === 'number')
+    || typeof agent['max_iterations'] !== 'number'
+    || !isRecord(appkit)
+    || typeof appkit['default'] !== 'boolean'
+    || typeof appkit['tool_prefix'] !== 'string'
+    || typeof appkit['max_steps'] !== 'number'
+    || !(appkit['max_tokens'] === null || typeof appkit['max_tokens'] === 'number')
+    || !isRecord(appkit['limits'])
+    || typeof appkit['limits']['max_tool_calls'] !== 'number'
+    || !(appkit['ephemeral'] === null || typeof appkit['ephemeral'] === 'boolean')
+    || !(appkit['generation_params'] === null || isRecord(appkit['generation_params']))
+    || !Array.isArray(value['tools'])
+    || !isResourceList(value['resources'])
+    || !isResourceList(value['user_resources'])
+    || !isResourceList(value['service_resources'])
+    || !Array.isArray(value['user_api_scopes'])
+    || !value['user_api_scopes'].every((scope) => typeof scope === 'string')
+    || !Array.isArray(value['app_to_app_permissions'])
+    || !value['app_to_app_permissions'].every(
+      (permission) => isRecord(permission)
+        && typeof permission['url'] === 'string'
+        && permission['permission'] === 'CAN_USE',
+    )) {
+    throw new Error('invalid APX Apps host manifest envelope');
+  }
+  for (const candidate of value['tools']) {
+    if (!isRecord(candidate)
+      || typeof candidate['name'] !== 'string'
+      || typeof candidate['description'] !== 'string'
+      || candidate['runtime'] !== 'python'
+      || !isRecord(candidate['parameters'])
+      || !(candidate['output_schema'] === null || isRecord(candidate['output_schema']))
+      || !isRecord(candidate['annotations'])
+      || typeof candidate['annotations']['effect'] !== 'string'
+      || !['user', 'service'].includes(String(candidate['annotations']['execution_identity']))
+      || typeof candidate['annotations']['requires_request_context'] !== 'boolean'
+      || typeof candidate['annotations']['requires_user_context'] !== 'boolean'
+      || !isRecord(candidate['handler'])
+      || candidate['handler']['kind'] !== 'python'
+      || typeof candidate['handler']['ref'] !== 'string'
+      || !isResourceList(candidate['resources'])
+      || !Array.isArray(candidate['user_api_scopes'])
+      || !candidate['user_api_scopes'].every((scope) => typeof scope === 'string')) {
+      throw new Error('invalid APX Apps host manifest tool');
+    }
+  }
 }
 
 async function waitForSseEvent(
@@ -290,6 +360,20 @@ describe('internal AppKit host', () => {
         autoInheritable: true,
       },
     });
+  });
+
+  it('narrows Python generation parameters only at the AppKit adapter seam', () => {
+    const manifest = makeManifest();
+    manifest.appkit.generation_params = {
+      temperature: 0.2,
+      stop: ['DONE'],
+    };
+
+    expect(createInternalApxAppKitAgentDefinitionFromManifest(manifest))
+      .toMatchObject({ generationParams: { temperature: 0.2, stop: ['DONE'] } });
+
+    manifest.appkit.generation_params = { provider_extension: true };
+    expect(() => createInternalApxAppKitAgentDefinitionFromManifest(manifest)).toThrow();
   });
 
   it('treats undeclared manifest tool effects as updates', () => {
@@ -485,77 +569,32 @@ describe('internal AppKit host', () => {
   });
 
   it('accepts and round-trips the complete Python authorization manifest shape', () => {
-    const manifest = acceptPythonManifest({
-      kind: 'apx.apps_host_manifest',
-      version: 1,
-      agent: {
-        name: 'raw-python-agent',
-        description: 'Serialized by AppsHostManifest.',
-        model: 'databricks-claude-sonnet-4-5',
-        instructions: 'Use governed tools.',
-        temperature: 0.2,
-        max_tokens: 2_048,
-        max_iterations: 6,
-      },
-      appkit: {
-        default: true,
-        tool_prefix: 'apx.',
-        max_steps: 6,
-        max_tokens: 2_048,
-        limits: { max_tool_calls: 6 },
-        ephemeral: false,
-        generation_params: { temperature: 0.2 },
-      },
-      tools: [{
-        name: 'search_orders',
-        description: 'Search governed orders.',
-        runtime: 'python',
-        parameters: {
-          type: 'object',
-          properties: { query: { type: 'string' } },
-          required: ['query'],
-          additionalProperties: false,
-        },
-        output_schema: { type: 'array', items: { type: 'object' } },
-        annotations: {
-          effect: 'read',
-          execution_identity: 'user',
-          requires_request_context: true,
-          requires_user_context: true,
-        },
-        handler: { kind: 'python', ref: 'agent_tools:search_orders' },
-        resources: [{ kind: 'uc_table', identifier: 'main.sales.orders' }],
-        user_api_scopes: ['sql', 'catalog.tables:read'],
-      }],
-      resources: [
-        { kind: 'serving_endpoint', identifier: 'model-a' },
-        { kind: 'uc_table', identifier: 'main.sales.orders' },
-      ],
-      user_resources: [{ kind: 'uc_table', identifier: 'main.sales.orders' }],
-      service_resources: [{ kind: 'serving_endpoint', identifier: 'model-a' }],
-      app_to_app_permissions: [
-        { url: 'https://peer.cloud.databricksapps.com', permission: 'CAN_USE' },
-      ],
-      user_api_scopes: ['catalog.tables:read', 'sql'],
-    });
+    const rawManifest: unknown = appsHostManifestFixture;
+    assertAppsHostManifest(rawManifest);
+    const manifest = rawManifest;
     const roundTripped = JSON.parse(JSON.stringify(manifest));
+    assertAppsHostManifest(roundTripped);
     const apx = new InternalApxAppKitGovernancePlugin({ manifest: roundTripped });
 
-    expect(roundTripped).toEqual(manifest);
+    expect(roundTripped).toEqual(appsHostManifestFixture);
     expect(roundTripped.tools[0]).toMatchObject({
       runtime: 'python',
-      output_schema: { type: 'array', items: { type: 'object' } },
-      handler: { kind: 'python', ref: 'agent_tools:search_orders' },
+      output_schema: { type: 'string' },
+      handler: { kind: 'python', ref: 'tests.test_apps_host_manifest:search_orders' },
       resources: [{ kind: 'uc_table', identifier: 'main.sales.orders' }],
-      user_api_scopes: ['sql', 'catalog.tables:read'],
+      user_api_scopes: ['sql'],
     });
-    expect(apx.getAgentTools()).toMatchObject([{
+    expect(apx.getAgentTools()[0]).toMatchObject({
       name: 'search_orders',
-      annotations: { effect: 'read', requiresUserContext: true },
-    }]);
+      annotations: { effect: 'update', requiresUserContext: true },
+    });
     expect(InternalApxAppKitGovernancePlugin.getResourceRequirements({
       manifest: roundTripped,
     })).toEqual([
+      expect.objectContaining({
+        type: ResourceType.JOB,
+        fields: { id: expect.objectContaining({ value: 'telemetry-job' }) },
+      }),
       expect.objectContaining({
         type: ResourceType.SERVING_ENDPOINT,
         fields: { name: expect.objectContaining({ value: 'model-a' }) },
@@ -610,6 +649,8 @@ describe('internal AppKit host', () => {
         headers: {
           'x-apx-test': '1',
           'X-Forwarded-Access-Token': 'configured-service-token',
+          'X-Forwarded-User': 'configured-user@databricks.com',
+          'X-Request-ID': 'configured-request-id',
         },
       },
     }));
@@ -650,6 +691,8 @@ describe('internal AppKit host', () => {
           headers: {
             'content-type': 'application/json',
             'x-apx-test': '1',
+            'x-forwarded-user': 'configured-user@databricks.com',
+            'x-request-id': 'configured-request-id',
           },
         }),
       );
@@ -665,6 +708,9 @@ describe('internal AppKit host', () => {
       expect(serviceHeaders['x-request-id']).toBe('request-123');
       expect(serviceHeaders['x-forwarded-user']).toBe('alice@databricks.com');
       expect(serviceHeaders['x-forwarded-email']).toBe('alice@databricks.com');
+      expect(Object.keys(serviceHeaders).filter(
+        (name) => name.toLowerCase() === 'x-forwarded-user',
+      )).toEqual(['x-forwarded-user']);
       expect(Object.keys(serviceHeaders).map((name) => name.toLowerCase()))
         .not.toContain('x-forwarded-access-token');
       expect(serviceHeaders).not.toHaveProperty('x-not-forwarded');
@@ -688,6 +734,9 @@ describe('internal AppKit host', () => {
       expect(appKitAsUser).toHaveBeenCalledTimes(2);
       const userHeaders = fetchMock.mock.calls.at(-1)?.[1]?.headers as Record<string, string>;
       expect(userHeaders['x-forwarded-access-token']).toBe('alice-token');
+      expect(Object.keys(userHeaders).filter(
+        (name) => name.toLowerCase() === 'x-forwarded-access-token',
+      )).toEqual(['x-forwarded-access-token']);
     } finally {
       serviceContext.restore();
     }

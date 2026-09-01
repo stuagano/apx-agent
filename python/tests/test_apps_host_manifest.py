@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -16,29 +17,42 @@ from apx_agent import (
 from apx_agent._apps_authorization import compile_authorization_plan
 from apx_agent._apps_host_manifest import compile_apps_host_manifest
 
+_APPS_HOST_MANIFEST_FIXTURE = (
+    Path(__file__).parents[2]
+    / "typescript"
+    / "tests"
+    / "fixtures"
+    / "apps-host-manifest.json"
+)
 
-def test_manifest_projects_agent_tools_resources_and_scopes() -> None:
-    def search_orders(
-        ws: Dependencies.UserClient,
-        query: str,
-        limit: int = 10,
-    ) -> str:
-        """Search governed orders."""
-        return query[:limit]
 
-    def list_catalogs() -> str:
-        """List visible catalogs."""
-        return "main"
+def search_orders(
+    ws: Dependencies.UserClient,
+    query: str,
+    limit: int = 10,
+) -> str:
+    """Search governed orders."""
+    return query[:limit]
 
-    @tool(execution="service")
-    def refresh_telemetry(request: Dependencies.Request) -> str:
-        """Refresh telemetry using the app identity."""
-        return "ok"
 
-    attach_resources(search_orders, [ResourceSpec("uc_table", "main.sales.orders")])
-    require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
-    attach_resources(refresh_telemetry, [ResourceSpec("job", "telemetry-job")])
-    agent = LlmAgent(
+def list_catalogs() -> str:
+    """List visible catalogs."""
+    return "main"
+
+
+@tool(execution="service")
+def refresh_telemetry(request: Dependencies.Request) -> str:
+    """Refresh telemetry using the app identity."""
+    return "ok"
+
+
+attach_resources(search_orders, [ResourceSpec("uc_table", "main.sales.orders")])
+require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
+attach_resources(refresh_telemetry, [ResourceSpec("job", "telemetry-job")])
+
+
+def _canonical_agent() -> LlmAgent:
+    return LlmAgent(
         name="orders",
         description="Order helper",
         instructions="Use governed data.",
@@ -48,20 +62,24 @@ def test_manifest_projects_agent_tools_resources_and_scopes() -> None:
         max_iterations=4,
         sub_agents=["https://peer.cloud.databricksapps.com"],
     )
-    plan = compile_authorization_plan(agent, model="model-a")
 
-    manifest = compile_apps_host_manifest(
-        agent,
-        AgentConfig(
-            name="orders",
-            description="Order helper",
-            model="model-a",
-            instructions="Use governed data.",
-            temperature=0.2,
-            max_tokens=512,
-            max_iterations=4,
-        ),
+
+def _canonical_config() -> AgentConfig:
+    return AgentConfig(
+        name="orders",
+        description="Order helper",
+        model="model-a",
+        instructions="Use governed data.",
+        temperature=0.2,
+        max_tokens=512,
+        max_iterations=4,
     )
+
+
+def test_manifest_projects_agent_tools_resources_and_scopes() -> None:
+    agent = _canonical_agent()
+    plan = compile_authorization_plan(agent, model="model-a")
+    manifest = compile_apps_host_manifest(agent, _canonical_config())
 
     assert manifest.kind == "apx.apps_host_manifest"
     assert manifest.version == 1
@@ -81,8 +99,9 @@ def test_manifest_projects_agent_tools_resources_and_scopes() -> None:
     assert tools["search_orders"].parameters["properties"]["limit"]["default"] == 10
     assert tools["search_orders"].annotations.effect == "update"
     assert tools["search_orders"].handler.kind == "python"
-    assert tools["search_orders"].handler.ref.endswith(
-        "test_apps_host_manifest:test_manifest_projects_agent_tools_resources_and_scopes.<locals>.search_orders"
+    assert (
+        tools["search_orders"].handler.ref
+        == "tests.test_apps_host_manifest:search_orders"
     )
     assert [r.model_dump() for r in tools["search_orders"].resources] == [
         {"kind": "uc_table", "identifier": "main.sales.orders"}
@@ -116,14 +135,23 @@ def test_manifest_projects_agent_tools_resources_and_scopes() -> None:
     ]
     serialized = json.dumps(manifest.model_dump(mode="json"), sort_keys=True).lower()
     for forbidden in (
-        "\"access_token\":",
-        "\"token\":",
-        "\"client_secret\":",
-        "\"secret\":",
-        "\"authorization\":",
-        "\"headers\":",
+        '"access_token":',
+        '"token":',
+        '"client_secret":',
+        '"secret":',
+        '"authorization":',
+        '"headers":',
     ):
         assert forbidden not in serialized
+
+
+def test_serialized_manifest_matches_shared_typescript_fixture() -> None:
+    actual = compile_apps_host_manifest(
+        _canonical_agent(),
+        _canonical_config(),
+    ).model_dump(mode="json")
+
+    assert actual == json.loads(_APPS_HOST_MANIFEST_FIXTURE.read_text())
 
 
 def test_manifest_compiles_one_authorization_plan(
