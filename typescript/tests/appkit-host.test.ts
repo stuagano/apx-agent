@@ -1,4 +1,8 @@
 import {
+  Plugin,
+  ResourceType,
+} from '@databricks/appkit';
+import {
   createMockRequest,
   createMockResponse,
   createMockRouter,
@@ -81,9 +85,21 @@ function makeManifest(): InternalApxAppsHostManifest {
         },
         annotations: {
           effect: 'read',
+          execution_identity: 'user',
+          requires_request_context: true,
           requires_user_context: true,
         },
       },
+    ],
+    resources: [
+      { kind: 'job', identifier: 'telemetry-job' },
+      { kind: 'serving_endpoint', identifier: 'model-a' },
+    ],
+    user_resources: [{ kind: 'serving_endpoint', identifier: 'model-a' }],
+    service_resources: [{ kind: 'job', identifier: 'telemetry-job' }],
+    user_api_scopes: ['serving.serving-endpoints'],
+    app_to_app_permissions: [
+      { url: 'https://peer.cloud.databricksapps.com', permission: 'CAN_USE' },
     ],
   };
 }
@@ -95,7 +111,12 @@ function makeSupportedSurfaceManifest(): InternalApxAppsHostManifest {
       {
         name: 'who_am_i',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
-        annotations: { effect: 'read', requires_user_context: true },
+        annotations: {
+          effect: 'read',
+          execution_identity: 'user',
+          requires_request_context: true,
+          requires_user_context: true,
+        },
       },
       {
         name: 'apply_change',
@@ -105,7 +126,12 @@ function makeSupportedSurfaceManifest(): InternalApxAppsHostManifest {
           required: ['value'],
           additionalProperties: false,
         },
-        annotations: { effect: 'update', requires_user_context: true },
+        annotations: {
+          effect: 'update',
+          execution_identity: 'service',
+          requires_request_context: false,
+          requires_user_context: false,
+        },
       },
       {
         name: 'remember',
@@ -115,7 +141,12 @@ function makeSupportedSurfaceManifest(): InternalApxAppsHostManifest {
           required: ['value'],
           additionalProperties: false,
         },
-        annotations: { effect: 'update', requires_user_context: true },
+        annotations: {
+          effect: 'update',
+          execution_identity: 'service',
+          requires_request_context: true,
+          requires_user_context: false,
+        },
       },
     ],
   };
@@ -391,6 +422,124 @@ describe('internal AppKit host', () => {
       }),
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('derives AppKit resource requirements from the authorization manifest', () => {
+    const manifest = makeManifest();
+
+    expect(InternalApxAppKitGovernancePlugin.getResourceRequirements({ manifest })).toEqual([
+      expect.objectContaining({
+        type: ResourceType.JOB,
+        permission: 'CAN_MANAGE_RUN',
+        fields: { id: expect.objectContaining({ value: 'telemetry-job' }) },
+        required: true,
+      }),
+    ]);
+    expect(manifest).toMatchObject({
+      user_resources: [{ kind: 'serving_endpoint', identifier: 'model-a' }],
+      service_resources: [{ kind: 'job', identifier: 'telemetry-job' }],
+      user_api_scopes: ['serving.serving-endpoints'],
+      app_to_app_permissions: [
+        { url: 'https://peer.cloud.databricksapps.com', permission: 'CAN_USE' },
+      ],
+    });
+    manifest.service_resources.push({ kind: 'uc_table', identifier: 'main.sales.orders' });
+    expect(() => InternalApxAppKitGovernancePlugin.getResourceRequirements({ manifest }))
+      .toThrow('Unsupported APX AppKit service resource kind: uc_table');
+  });
+
+  it('dispatches manifest tools by identity without duplicating the bridge path', async () => {
+    setupDatabricksEnv();
+    const serviceContext = mockServiceContext({ userId: 'alice@databricks.com' });
+    const mock = createTestPluginContext();
+    const manifest = makeManifest();
+    manifest.tools = [
+      ...(manifest.tools ?? []),
+      {
+        name: 'service_health',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        annotations: {
+          effect: 'read',
+          execution_identity: 'service',
+          requires_request_context: false,
+          requires_user_context: false,
+        },
+      },
+      {
+        name: 'service_audit',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        annotations: {
+          effect: 'update',
+          execution_identity: 'service',
+          requires_request_context: true,
+          requires_user_context: false,
+        },
+      },
+    ];
+    await mock.attach(new InternalApxAppKitGovernancePlugin({
+      manifest,
+      pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
+    }));
+    const appKitAsUser = vi.spyOn(Plugin.prototype, 'asUser');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => (
+      new Response(JSON.stringify({ result: String(input).split('/').at(-1) }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ));
+    const tokenlessRequest = createMockRequest({
+      headers: {
+        'x-forwarded-user': 'alice@databricks.com',
+        'x-request-id': 'request-123',
+        'x-not-forwarded': 'secret-metadata',
+      },
+    });
+
+    try {
+      await expect(mock.ctx.executeTool(
+        tokenlessRequest,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'service_health',
+        {},
+      )).resolves.toBe('service_health');
+      expect(appKitAsUser).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        expect.stringMatching(/service_health$/),
+        expect.objectContaining({
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+      await expect(mock.ctx.executeTool(
+        tokenlessRequest,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'service_audit',
+        {},
+      )).resolves.toBe('service_audit');
+      expect(appKitAsUser).not.toHaveBeenCalled();
+      const serviceHeaders = fetchMock.mock.calls.at(-1)?.[1]?.headers as Record<string, string>;
+      expect(serviceHeaders['x-request-id']).toBe('request-123');
+      expect(serviceHeaders).not.toHaveProperty('x-not-forwarded');
+
+      await expect(mock.ctx.executeTool(
+        tokenlessRequest,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'lookup_policy',
+        { resource: 'main.sales.orders' },
+      )).rejects.toThrow(/user token/i);
+      expect(appKitAsUser).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      await expect(mock.ctx.executeTool(
+        createMockRequest({ obo: { userId: 'alice@databricks.com', token: 'alice-token' } }),
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'lookup_policy',
+        { resource: 'main.sales.orders' },
+      )).resolves.toBe('lookup_policy');
+      expect(appKitAsUser).toHaveBeenCalledTimes(2);
+    } finally {
+      serviceContext.restore();
+    }
   });
 
   it('proves the supported manifest surface through the real AppKit context', async () => {
