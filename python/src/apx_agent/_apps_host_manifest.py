@@ -15,6 +15,7 @@ from ._inspection import (
     _schema_for_return,
 )
 from ._models import AgentConfig
+from ._tool import ToolEffect, get_tool_metadata
 from ._resources import (
     ResourceSpec,
     _iter_sub_agents,
@@ -44,7 +45,7 @@ class AppsHostAppPermission(BaseModel):
 class AppsHostToolAnnotations(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    effect: str = "read"
+    effect: ToolEffect = "update"
     requires_user_context: bool = True
 
 
@@ -175,11 +176,14 @@ def _tool_manifest(fn: Any) -> AppsHostTool:
             *get_user_api_scopes(fn),
         }
     )
+    metadata = get_tool_metadata(fn)
+    effect = metadata.effect if metadata and metadata.effect is not None else "update"
     return AppsHostTool(
         name=fn.__name__,
         description=(fn.__doc__ or "").strip(),
         parameters=_schema_for_model(input_model),
         output_schema=_schema_for_return(fn),
+        annotations=AppsHostToolAnnotations(effect=effect),
         handler=AppsHostToolHandler(ref=f"{fn.__module__}:{fn.__qualname__}"),
         resources=[_resource_manifest(spec) for spec in resources],
         user_api_scopes=scopes,

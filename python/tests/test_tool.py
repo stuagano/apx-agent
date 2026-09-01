@@ -17,7 +17,7 @@ Covers the design rules locked at the framework level:
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 import pytest
 from fastapi import Depends
@@ -68,6 +68,31 @@ def test_bare_tool_does_not_attach_uc_resource() -> None:
     assert get_resources(upper) == []
 
 
+def test_tool_records_appkit_effect() -> None:
+    @tool(effect="read")
+    def lookup(value: str) -> str:
+        return value
+
+    assert get_tool_metadata(lookup).effect == "read"
+
+
+def test_tool_without_effect_keeps_metadata_unspecified() -> None:
+    @tool
+    def apply(value: str) -> str:
+        return value
+
+    assert get_tool_metadata(apply).effect is None
+
+
+@pytest.mark.parametrize("effect", ["invalid", "delete", "READ"])
+def test_tool_rejects_invalid_effect(effect: str) -> None:
+    with pytest.raises(ValueError, match="read.*write.*update.*destructive"):
+
+        @tool(effect=effect)  # type: ignore[arg-type]
+        def fn(value: str) -> str:
+            return value
+
+
 # ---------------------------------------------------------------------------
 # Rule 2 — UC name validation
 # ---------------------------------------------------------------------------
@@ -75,6 +100,7 @@ def test_bare_tool_does_not_attach_uc_resource() -> None:
 
 def test_uc_requires_three_parts() -> None:
     with pytest.raises(ValueError, match="three-part UC name"):
+
         @tool(uc="too.short")
         def fn(x: str) -> str:
             """doc"""
@@ -83,6 +109,7 @@ def test_uc_requires_three_parts() -> None:
 
 def test_uc_rejects_more_than_three_parts() -> None:
     with pytest.raises(ValueError, match="three-part UC name"):
+
         @tool(uc="a.b.c.d")
         def fn(x: str) -> str:
             """doc"""
@@ -91,6 +118,7 @@ def test_uc_rejects_more_than_three_parts() -> None:
 
 def test_uc_rejects_empty_segment() -> None:
     with pytest.raises(ValueError, match="empty segment"):
+
         @tool(uc="main..fn")
         def fn(x: str) -> str:
             """doc"""
@@ -104,6 +132,7 @@ def test_uc_rejects_empty_segment() -> None:
 
 def test_uc_rejects_function_with_dependencies() -> None:
     with pytest.raises(ValueError, match="Dependencies"):
+
         @tool(uc="main.tools.needs_ws")
         def needs_ws(x: str, dep: FakeDep) -> str:  # type: ignore[valid-type]
             """doc"""
@@ -128,6 +157,7 @@ def test_uc_allowed_on_pure_function() -> None:
 
 def test_grant_without_uc_raises() -> None:
     with pytest.raises(ValueError, match="grants only apply when"):
+
         @tool(grant=["agent_consumers"])
         def fn(x: str) -> str:
             """doc"""

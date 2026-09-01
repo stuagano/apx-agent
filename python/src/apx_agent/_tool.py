@@ -39,12 +39,14 @@ Design rules locked at the framework level:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, TypeVar, overload
+from typing import Any, Callable, Iterable, Literal, TypeVar, overload
 
 from ._inspection import _inspect_tool_fn
 from ._resources import ResourceSpec, attach_resources
 
 _F = TypeVar("_F", bound=Callable[..., Any])
+ToolEffect = Literal["read", "write", "update", "destructive"]
+_TOOL_EFFECTS = frozenset({"read", "write", "update", "destructive"})
 
 
 # ---------------------------------------------------------------------------
@@ -71,12 +73,15 @@ class ToolMetadata:
             overriding the function's ``__doc__``. ``None`` if absent.
         name_override: Tool name supplied to the decorator, overriding the
             Python function name. ``None`` if absent.
+        effect: AppKit tool effect annotation. ``None`` means the AppKit
+            manifest conservatively uses ``update``.
     """
 
     uc_name: str | None = None
     grants: tuple[str, ...] = field(default_factory=tuple)
     description_override: str | None = None
     name_override: str | None = None
+    effect: ToolEffect | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +135,7 @@ def tool(
     description: str | None = ...,
     uc: str | None = ...,
     grant: Iterable[str] | None = ...,
+    effect: ToolEffect | None = ...,
 ) -> Callable[[_F], _F]: ...
 
 
@@ -140,6 +146,7 @@ def tool(
     description: str | None = None,
     uc: str | None = None,
     grant: Iterable[str] | None = None,
+    effect: ToolEffect | None = None,
 ) -> Any:
     """Mark a function as an apx-agent tool.
 
@@ -173,11 +180,19 @@ def tool(
             for tools that use ``Dependencies.*`` parameters.
         grant: UC principals that should have ``EXECUTE`` on the synced
             function. Only meaningful when ``uc`` is set. Empty by default.
+        effect: AppKit effect annotation. If omitted, the manifest uses the
+            conservative ``update`` effect.
 
     Returns:
         The decorated function with ``_apx_tool`` metadata attached. Pass it
         to ``Agent(tools=[...])`` like any other tool.
     """
+
+    if effect is not None and effect not in _TOOL_EFFECTS:
+        raise ValueError(
+            "@tool(effect=...) must be one of read, write, update, destructive; "
+            f"got {effect!r}"
+        )
 
     grants_tuple = tuple(grant) if grant else ()
 
@@ -205,6 +220,7 @@ def tool(
             grants=grants_tuple,
             description_override=description,
             name_override=name,
+            effect=effect,
         )
         target._apx_tool = metadata  # type: ignore[attr-defined]
 
