@@ -98,6 +98,7 @@ Available injected types:
 |-------|-------------|
 | `Dependencies.Workspace` | `WorkspaceClient` authenticated as the **current user** (OBO token) |
 | `Dependencies.Client` | `WorkspaceClient` using the app's service principal |
+| `Dependencies.UserClient` | `WorkspaceClient` authenticated as the **current user** (OBO token) |
 | `Dependencies.Sql` | SQL runner bound to the current user |
 | `Dependencies.Principal` | Current user's username string, or `None` in local dev |
 | `Dependencies.Progress` | Callable to emit a progress marker into the trace |
@@ -105,6 +106,28 @@ Available injected types:
 | `Dependencies.State` | Dict-like state shared by tools and composition steps in this invocation |
 
 `Dependencies.Workspace` is the most common choice — it passes the calling user's identity through to UC, SQL warehouses, and Genie spaces.
+
+### Apps execution identity
+
+For Apps deployments, APX compiles each tool to exactly one credential
+identity. `Dependencies.Client` selects the App's platform-created service
+principal; `Dependencies.UserClient`, `Dependencies.Workspace`, and
+`Dependencies.Sql` select the requesting user's OBO credentials. The App has
+one persistent platform-created service principal; an App family can share
+access-group policy but never service-principal credentials.
+
+Use `execution="user"` or `execution="service"` on `@tool` when a closure or
+background operation cannot reveal its credential use in the function
+signature. `build_tool(..., execution=...)` accepts the same override. An
+override must agree with an injected credential dependency, and a tool that
+mixes user and service credential dependencies is rejected; split it into two
+auditable tools instead.
+
+Request context is independent of credential identity. `Dependencies.Headers`,
+`Dependencies.Principal`, and `Dependencies.Request` can provide request or
+audit context to a service tool without converting its Databricks credentials
+to OBO. `Dependencies.Progress` and `Dependencies.State` select neither
+identity.
 
 ### Share state within an invocation
 

@@ -36,6 +36,9 @@ protocol (#631):
 4. **FMAPI uses the callee app's own identity.** When app A calls app B, B's
    internal LLM calls use B's own SP token, not A's.
 
+Each App keeps its own persistent platform-created service principal. An App
+family may share `CAN_USE`/`CAN_MANAGE` group policy, never credentials.
+
 The A2A JSON-RPC surface is `POST /` on the App. Inside the Apps runtime,
 apx-agent **also fails closed** when a request reaches that handler with
 neither `X-Forwarded-Access-Token` nor `Authorization: Bearer` — a belt-and-
@@ -48,37 +51,27 @@ Tool/MCP/dev-UI routes under `/api/` (`api_prefix`) also accept bearer tokens
 via the gateway; `/invocations` and `/responses` mount only at their natural
 paths (no `/api/` mirror).
 
-```bash
-# 1. Mint an OAuth secret for each app's SP
-databricks api post /api/2.0/accounts/servicePrincipals/<SP_ID>/credentials/secrets \
-  --profile <profile> --json '{}'
+For APX Apps deployments, declare the peer's exact HTTPS Apps URL in
+`sub_agents` and deploy with an explicit `--profile`. Before mutation, APX
+lists Apps under that profile and requires exactly one URL match with an App
+ID, name, and URL. Zero or multiple matches fail closed. It then emits the
+resolved App **name** as a native bundle resource with `CAN_USE`; operators do
+not need to hand-maintain a matching permission patch or App ID. The
+authorization summary shows the resolved name and immutable ID without
+credentials.
 
-# 2. Set credentials in each app.yaml
-env:
-  - name: DATABRICKS_CLIENT_ID
-    value: "<app-sp-client-id>"
-  - name: DATABRICKS_CLIENT_SECRET
-    value: "<secret-from-step-1>"
-
-# 3. Grant the orchestrator's SP CAN_USE on each sub-agent app
-databricks api patch /api/2.0/permissions/apps/<sub-agent-name> \
-  --profile <profile> --json '{
-    "access_control_list": [{
-      "service_principal_name": "<orchestrator-sp-client-id>",
-      "permission_level": "CAN_USE"
-    }]
-  }'
-```
+This automatic reconciliation is additive only: it preserves existing bundle
+resources and permissions and never deletes or downgrades grants. The legacy
+`--auto-update-yml` flag remains accepted, but it no longer gates this work.
 
 **Common pitfalls:**
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | 302 redirect (HTML login page) | SSO gateway intercepted an unauthenticated call | Send a bearer token; A2A JSON-RPC is `POST /` on the App URL |
-| 401 Unauthorized (gateway) | Caller's SP lacks CAN_USE on callee | Grant via permissions API |
+| 401 Unauthorized (gateway) | Caller lacks `CAN_USE` on callee | Verify the declared URL resolves uniquely and redeploy with the intended explicit profile; inspect the authorization summary and resulting bundle permission |
 | 401 from apx-agent on Apps (`#631`) | Request reached `POST /` without proxy/bearer headers | Call through the Apps gateway (or set `APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true` only if intentional) |
-| FMAPI 401 inside sub-agent | Sub-agent using caller's OBO for LLM calls | Set `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET` on the sub-agent |
-| `invalid_client` on M2M | Wrong SP secret (app recreated, SP changed) | Mint a new secret for the current SP |
+| FMAPI 401 inside sub-agent | Callee service identity lacks its required model/resource permission | Declare the callee's service resource and redeploy; the caller's OBO token is not reused for the callee's LLM call |
 
 For user-scoped multi-agent across boundaries, prefer a Model Serving deployment when the
 Databricks caller supplies identity passthrough. Apps still require explicit app-to-app OAuth
