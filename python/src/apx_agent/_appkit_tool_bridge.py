@@ -63,7 +63,11 @@ def build_appkit_tool_bridge_router() -> APIRouter:
         )
         handler = build_callback_handler(target.owner)
         config = {"callbacks": [handler]} if handler is not None else None
-        return {"result": await lc_tool.ainvoke(body.args, config=config)}
+        try:
+            result = await lc_tool.ainvoke(body.args, config=config)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return {"result": result}
 
     return router
 

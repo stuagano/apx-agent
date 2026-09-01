@@ -3,8 +3,7 @@
  *
  * APX's external interface stays the Python/declaration layer. This module is
  * Apps deploy-target machinery: it lets Databricks AppKit `agents()` own Apps
- * routing, streaming, approval, and OBO-aware tool dispatch while APX keeps
- * policy/audit hooks around tool execution.
+ * routing, streaming, approval, and OBO-aware tool dispatch.
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -43,25 +42,6 @@ const FORWARDED_HEADER_NAMES = [
   'x-forwarded-access-token',
   'x-request-id',
 ] as const;
-
-export type InternalApxAppKitPolicyAction = 'ALLOW' | 'DENY';
-
-export interface InternalApxAppKitToolEvent {
-  toolName: string;
-  args: unknown;
-  annotations?: ToolAnnotations;
-}
-
-export interface InternalApxAppKitAuditEvent extends InternalApxAppKitToolEvent {
-  action: InternalApxAppKitPolicyAction;
-  reason: string | null;
-  error?: string;
-}
-
-export interface InternalApxAppKitPolicyDecision {
-  action: InternalApxAppKitPolicyAction;
-  reason?: string | null;
-}
 
 export interface InternalApxAppsHostManifest {
   agent: {
@@ -104,10 +84,6 @@ export interface InternalApxAppKitGovernanceConfig extends BasePluginConfig {
     headers?: Record<string, string>;
   };
   toolAnnotations?: Record<string, ToolAnnotations>;
-  policy?: (
-    event: InternalApxAppKitToolEvent,
-  ) => InternalApxAppKitPolicyDecision | Promise<InternalApxAppKitPolicyDecision>;
-  audit?: (event: InternalApxAppKitAuditEvent) => void | Promise<void>;
 }
 
 export interface InternalApxAppKitAgentOptions {
@@ -342,64 +318,36 @@ export class InternalApxAppKitGovernancePlugin
     const manifestTool = this.config.manifest?.tools?.find((candidate) => candidate.name === name);
     if (!tool && !manifestTool) throw new Error(`Unknown APX tool: ${name}`);
 
-    const event: InternalApxAppKitToolEvent = {
-      toolName: name,
-      args,
-      annotations: tool
-        ? toolAnnotations(tool, this.config.toolAnnotations)
-        : manifestToolAnnotations(manifestTool!),
-    };
-    const decision = (await this.config.policy?.(event)) ?? { action: 'ALLOW' };
-    if (decision.action === 'DENY') {
-      const reason = decision.reason ?? `APX policy denied ${name}`;
-      await this.config.audit?.({ ...event, action: 'DENY', reason });
-      throw new Error(reason);
-    }
-
-    try {
-      if (!tool) {
-        const bridge = this.config.pythonBridge;
-        if (!bridge) throw new Error(`APX Python bridge is not configured for tool: ${name}`);
-        const response = await fetch(
-          `${bridge.baseUrl.replace(/\/$/, '')}/_apx/internal/appkit/tools/${encodeURIComponent(name)}`,
-          {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              ...bridge.headers,
-              ...bridgeHeaderStorage.getStore(),
-            },
-            body: JSON.stringify({ args }),
-            signal,
+    if (!tool) {
+      const bridge = this.config.pythonBridge;
+      if (!bridge) throw new Error(`APX Python bridge is not configured for tool: ${name}`);
+      const response = await fetch(
+        `${bridge.baseUrl.replace(/\/$/, '')}/_apx/internal/appkit/tools/${encodeURIComponent(name)}`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...bridge.headers,
+            ...bridgeHeaderStorage.getStore(),
           },
-        );
-        if (!response.ok) {
-          let detail = `${response.status} ${response.statusText}`;
-          try {
-            const payload = await response.json();
-            detail = typeof payload?.detail === 'string' ? payload.detail : detail;
-          } catch {
-            // Keep the status text when the bridge returns a non-JSON error.
-          }
-          throw new Error(`APX Python bridge failed for ${name}: ${detail}`);
+          body: JSON.stringify({ args }),
+          signal,
+        },
+      );
+      if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try {
+          const payload = await response.json();
+          detail = typeof payload?.detail === 'string' ? payload.detail : detail;
+        } catch {
+          // Keep the status text when the bridge returns a non-JSON error.
         }
-        const payload = await response.json();
-        await this.config.audit?.({ ...event, action: 'ALLOW', reason: null });
-        return payload.result;
+        throw new Error(`APX Python bridge failed for ${name}: ${detail}`);
       }
-      const result = await tool.handler(args);
-      await this.config.audit?.({ ...event, action: 'ALLOW', reason: null });
-      return result;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await this.config.audit?.({
-        ...event,
-        action: 'ALLOW',
-        reason: null,
-        error: message,
-      });
-      throw error;
+      const payload = await response.json();
+      return payload.result;
     }
+    return tool.handler(args);
   }
 }
 

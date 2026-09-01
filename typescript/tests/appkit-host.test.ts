@@ -15,7 +15,6 @@ import {
   createInternalApxAppKitDevRuntime,
   internalApxAppKitSystemPrompt,
   internalApxAppKitAgentsOptionsFromManifest,
-  type InternalApxAppKitAuditEvent,
   type InternalApxAppsHostManifest,
 } from '../src/internal/appkit-host.js';
 import {
@@ -280,37 +279,15 @@ describe('internal AppKit host', () => {
     });
   });
 
-  it('enforces APX policy and records audit events around tool execution', async () => {
-    const audit: InternalApxAppKitAuditEvent[] = [];
-    const apx = new InternalApxAppKitGovernancePlugin({
-      agent: makeAgentExports(),
-      policy: ({ toolName }) =>
-        toolName === 'apply_recommendation'
-          ? { action: 'DENY', reason: 'manual approval required' }
-          : { action: 'ALLOW' },
-      audit: (event) => audit.push(event),
-    });
-
+  it('does not add a second policy layer around APX tool execution', async () => {
+    const apx = new InternalApxAppKitGovernancePlugin({ agent: makeAgentExports() });
     await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).resolves.toEqual({
       resource: 'main.sales.orders',
       policy: 'read-only',
     });
-    await expect(
-      apx.executeAgentTool('apply_recommendation', { recommendation_id: 'rec-1' }),
-    ).rejects.toThrow('manual approval required');
-
-    expect(audit).toMatchObject([
-      { toolName: 'lookup_policy', action: 'ALLOW', reason: null },
-      {
-        toolName: 'apply_recommendation',
-        action: 'DENY',
-        reason: 'manual approval required',
-      },
-    ]);
   });
 
   it('executes manifest-backed Python tools through the configured bridge', async () => {
-    const audit: InternalApxAppKitAuditEvent[] = [];
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ result: { policy: 'read-only' } }), {
         status: 200,
@@ -323,7 +300,6 @@ describe('internal AppKit host', () => {
         baseUrl: 'http://127.0.0.1:8000/',
         headers: { 'x-apx-test': '1' },
       },
-      audit: (event) => audit.push(event),
     });
 
     await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).resolves.toEqual({
@@ -341,23 +317,7 @@ describe('internal AppKit host', () => {
         body: JSON.stringify({ args: { resource: 'main.sales.orders' } }),
       }),
     );
-    expect(audit).toMatchObject([
-      { toolName: 'lookup_policy', action: 'ALLOW', reason: null },
-    ]);
-  });
-
-  it('short-circuits manifest-backed tools when APX policy denies execution', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch');
-    const apx = new InternalApxAppKitGovernancePlugin({
-      manifest: makeManifest(),
-      pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
-      policy: () => ({ action: 'DENY', reason: 'blocked' }),
-    });
-
-    await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).rejects.toThrow(
-      'blocked',
-    );
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('forwards AppKit OBO headers to manifest-backed Python tools', async () => {
