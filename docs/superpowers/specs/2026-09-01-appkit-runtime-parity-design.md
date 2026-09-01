@@ -1,6 +1,6 @@
 # AppKit Runtime Parity Design
 
-**Status:** Proposed for written review
+**Status:** Approved
 
 **Date:** 2026-09-01
 
@@ -21,8 +21,8 @@ parity gates pass. AppKit remains available through explicit
 
 ## Goals
 
-1. Make AppKit the transport and agent-loop owner without weakening APX
-   governance or identity behavior.
+1. Make AppKit the transport and agent-loop owner while enforcing the APX
+   governance and identity behavior that AppKit can represent.
 2. Give Python and AppKit hosts one governed Python tool-execution path.
 3. Preserve APX state, durable conversations, MCP/A2A, feedback, topology,
    development, tracing, health, and readiness behavior.
@@ -38,6 +38,8 @@ parity gates pass. AppKit remains available through explicit
   semantics in TypeScript.
 - Adding a general-purpose cross-language RPC framework or a public sidecar API.
 - Preserving compatibility with the incomplete internal bridge.
+- Adapting APX's argument-dependent `ASK` flow to AppKit's static approval
+  gate. The AppKit host supports AppKit's declared effect-based HITL only.
 - Keeping the current live `contract-parsing-agent` deployment available during
   parity validation; the user explicitly approved breaking it.
 
@@ -47,7 +49,7 @@ parity gates pass. AppKit remains available through explicit
 | --- | --- | --- |
 | `/invocations`, `/responses`, `/chat` | AppKit | Native Responses API, SSE, agent loop, limits, cancellation, and statically declared HITL |
 | Thread HTTP routes and message history | AppKit API backed by APX storage | Preserve AppKit's contract and APX durability |
-| Tool policy, dynamic ASK approval, execution, callbacks, audit, injected dependencies, state | Shared Python APX executor | One governance implementation for both hosts |
+| Tool policy, execution, callbacks, audit, injected dependencies, state | Shared Python APX executor | One governance implementation for both hosts |
 | User identity and token forwarding | AppKit request scope to Python executor | Preserve Databricks Apps OBO identity end to end |
 | MCP/A2A, feedback, topology, development, traces, health/readiness | Existing Python APX routes | Reuse shipped behavior instead of recreating it |
 | Static assets and server lifecycle | AppKit | Native generated Apps host behavior |
@@ -74,8 +76,8 @@ Execution order is fixed:
 4. Load declared dependencies and the current APX state snapshot.
 5. Run `before_tool` policy. A missing decision, exception, or unknown action is
    an error, never `ALLOW`.
-6. Return `DENY` without invoking the tool, or preserve APX's existing `ASK`
-   pause and one-shot ApprovalStore retry without invoking the tool.
+6. Return `DENY` without invoking the tool. Under the AppKit host, an APX `ASK`
+   is an unsupported fail-closed denial, not a second approval flow.
 7. Invoke the sync or async Python tool with the same dependency injection used
    by the Python host.
 8. Atomically persist the state delta only after successful execution.
@@ -85,8 +87,8 @@ Execution order is fixed:
 The private request is a small JSON contract containing `tool_name`, `args`,
 `thread_id`, and `tool_call_id`. Identity and request correlation continue to
 travel in the existing forwarded headers. The response is either a tool result,
-an APX approval-required decision, a denial, or a normalized error. These are
-data shapes at the private boundary, not new public Python classes.
+a denial, or a normalized error. These are data shapes at the private boundary,
+not new public Python classes.
 
 The raw `_make_langchain_tool(...).ainvoke()` AppKit bridge is removed as an
 execution boundary after the shared executor is in use.
@@ -105,28 +107,24 @@ not grant permission.
 - AppKit approval is necessary but not sufficient for a statically declared
   mutating tool: after approval, the Python executor still evaluates APX policy.
 - APX `DENY` always wins.
-- APX `ASK` keeps the existing APX turn-boundary flow: Python records a pending
-  approval bound to the user, tool, and arguments; the proxied APX approval
-  route records the decision; and an identical later call consumes an approval
-  once. Denial and expiry do not execute the tool.
+- APX `ASK` is not adapted into a second approval system. Under the AppKit host,
+  it fails closed without invoking the tool; AppKit approval remains driven only
+  by static effect metadata.
 - AppKit documents that non-streaming `/invocations` and `/responses` cannot
   complete its native HITL. Requests whose statically declared tools require
   AppKit approval retain AppKit's explicit `400` behavior; they are not silently
-  executed. APX `ASK` remains representable as an ordinary governed tool result
-  on those transports and is resumed through the existing APX approval route.
+  executed.
 
 Approval decisions are scoped to the initiating user, stream, tool call, and
 arguments. An approval cannot be replayed for a different call.
 
-This split is deliberate rather than an adapter convenience. AppKit evaluates
-its approval gate before `ToolProvider.executeAgentTool`, but APX can compute an
+This exception follows AppKit's actual contract. AppKit evaluates its approval
+gate before `ToolProvider.executeAgentTool`, but APX can compute an
 argument-dependent `ASK` only inside that callback. AppKit exposes neither a
-policy-preflight hook nor approval context to the provider. Treating arrival at
-the provider as proof of approval, or marking every policy-capable read tool as
-mutating, would change policy semantics. Patching AppKit is outside this package
-and is not required for parity. If AppKit later adds a preflight authorization
-hook, APX `ASK` can move into its native card without changing the Python policy
-contract.
+policy-preflight hook nor approval context to the provider. This package does
+not add an adapter, duplicate approval system, or AppKit fork to bridge that
+gap. If AppKit later adds a preflight authorization hook, APX `ASK` can be
+reconsidered separately.
 
 ## Identity and OBO
 
@@ -225,12 +223,12 @@ One declaration is exercised through both Python and AppKit hosts for:
 - sync and async tools
 - argument validation and JSON-safe results
 - read, update, and destructive annotations
-- policy allow, deny, ask/approve, ask/deny, and missing-policy failure
+- policy allow, deny, unsupported `ASK`, and missing-policy failure
 - OBO identity present, missing, and downstream failure
 - injected dependencies
 - state read/write across turns, failed-call rollback, and concurrent isolation
 - durable thread create/get/list/add/delete and process restart
-- streaming events, cancellation, AppKit static HITL, and APX dynamic ASK
+- streaming events, cancellation, and AppKit static HITL
 - MCP and A2A
 - feedback
 - topology and development routes
@@ -255,7 +253,7 @@ The proof records:
 2. Authenticated browser access.
 3. OBO SQL execution as the signed-in user.
 4. A read-only tool call and a statically mutating fixture through AppKit HITL.
-5. AppKit approve/deny and argument-dependent APX ASK approve/deny behavior.
+5. AppKit approve/deny behavior and fail-closed APX `ASK` behavior.
 6. Multi-turn thread and `Dependencies.State` persistence.
 7. Feedback submission.
 8. MCP/A2A, topology/development, trace, health, and readiness routes.
@@ -283,8 +281,8 @@ AppKit parity is complete only when all of the following are true:
   hosts for every row in the local matrix.
 - Stateful tools work across durable AppKit threads without process-local state.
 - No tool can execute because policy metadata or identity context was missing.
-- AppKit static HITL and APX dynamic ASK compose without bypass or double
-  execution.
+- AppKit static HITL composes with APX `ALLOW`/`DENY`, and unsupported APX
+  `ASK` fails closed without execution.
 - Required APX routes and readiness behavior remain reachable through the Node
   listener.
 - Generated AppKit build/start and the full repository gate pass.
