@@ -126,9 +126,15 @@ PROBE = textwrap.dedent(
 
     import json
     import os
+    import socket
     import subprocess
     import sys
     from pathlib import Path
+    from threading import Thread
+    from time import sleep
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
 
     import yaml
 
@@ -182,9 +188,10 @@ PROBE = textwrap.dedent(
     bridge_entrypoint = bridge_dir / "appkit_bridge.py"
     assert bridge_entrypoint.exists()
     bridge_src = bridge_entrypoint.read_text()
-    assert "compile_to_responses_agent" not in bridge_src
-    assert "mount_mcp_endpoints" not in bridge_src
-    assert "mount_readyz" not in bridge_src
+    assert "from apx_agent import create_app" in bridge_src
+    assert "app = create_app(agent)" in bridge_src
+    assert "FastAPI()" not in bridge_src
+    assert "finalize_agent(" not in bridge_src
     if (root / "agent.config.yaml").exists():
         assert (root / ".build" / "agent.config.yaml").exists()
     assert package["dependencies"]["apx-internal-runtime"] == "file:../apx_internal_runtime"
@@ -245,6 +252,177 @@ PROBE = textwrap.dedent(
         check=False,
     )
     assert bridge_boot.returncode == 0, bridge_boot.stderr + bridge_boot.stdout
+
+    if os.environ.get("APX_APPKIT_PROXY_PROBE") == "1":
+        observed = {}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def log_message(self, _format, *_args):
+                pass
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path.startswith("/api/"):
+                    payload = b'{"id":"test-user","userName":"tester@example.com"}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                observed["json"] = {
+                    "body": json.loads(body),
+                    "method": self.command,
+                    "path": self.path,
+                    "user": self.headers.get("X-Forwarded-User"),
+                }
+                payload = b'{"proxied":true}'
+                self.send_response(201)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_GET(self):
+                if self.path.startswith("/api/"):
+                    payload = b'{"id":"test-user","userName":"tester@example.com"}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                observed["stream"] = {
+                    "method": self.command,
+                    "path": self.path,
+                    "user": self.headers.get("X-Forwarded-User"),
+                }
+                payload = b"data: one\\n\\ndata: two\\n\\n"
+                self.send_response(206)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload[:10])
+                self.wfile.flush()
+                self.wfile.write(payload[10:])
+
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        upstream_thread = Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            host_port = listener.getsockname()[1]
+
+        node_modules = host_dir / "node_modules"
+        node_modules.mkdir()
+        runtime_node_modules = Path(os.environ["APX_APPKIT_RUNTIME_NODE_MODULES"])
+        for package in ("@databricks", "tsx", "zod", "zod-to-json-schema"):
+            os.symlink(
+                runtime_node_modules / package,
+                node_modules / package,
+                target_is_directory=True,
+            )
+        os.symlink(
+            host_dir.parent / "apx_internal_runtime",
+            node_modules / "apx-internal-runtime",
+            target_is_directory=True,
+        )
+        os.symlink(node_modules, host_dir.parent / "node_modules", target_is_directory=True)
+
+        host_env = {
+            **os.environ,
+            "APX_PYTHON_BRIDGE_URL": f"http://127.0.0.1:{upstream.server_port}",
+            "DATABRICKS_HOST": f"http://127.0.0.1:{upstream.server_port}",
+            "DATABRICKS_TOKEN": "local-test-token",
+            "DATABRICKS_APP_PORT": str(host_port),
+        }
+        for name in (
+            "DATABRICKS_CONFIG_FILE",
+            "DATABRICKS_CONFIG_PROFILE",
+        ):
+            host_env.pop(name, None)
+        host = subprocess.Popen(
+            [
+                "node",
+                "--import",
+                str(runtime_node_modules / "tsx" / "dist" / "loader.mjs"),
+                "server/server.ts",
+            ],
+            cwd=host_dir,
+            env=host_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            for _ in range(100):
+                if host.poll() is not None:
+                    stdout, stderr = host.communicate()
+                    raise AssertionError(stdout + stderr)
+                try:
+                    with urlopen(
+                        f"http://127.0.0.1:{host_port}/api/dev-ui", timeout=0.2
+                    ) as response:
+                        if response.status == 200:
+                            break
+                except URLError:
+                    sleep(0.1)
+            else:
+                raise AssertionError("generated AppKit host did not start")
+
+            request = Request(
+                f"http://127.0.0.1:{host_port}/?request_id=abc",
+                data=b'{"question":"status"}',
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Forwarded-User": "user:alice",
+                },
+                method="POST",
+            )
+            with urlopen(request, timeout=5) as response:
+                assert response.status == 201
+                assert response.headers["Content-Type"] == "application/json"
+                assert response.read() == b'{"proxied":true}'
+            assert observed["json"] == {
+                "body": {"question": "status"},
+                "method": "POST",
+                "path": "/?request_id=abc",
+                "user": "user:alice",
+            }
+
+            with urlopen(
+                Request(
+                    f"http://127.0.0.1:{host_port}/_apx/stream?mode=sse",
+                    headers={"X-Forwarded-User": "user:alice"},
+                ),
+                timeout=5,
+            ) as response:
+                assert response.status == 206
+                assert response.headers["Content-Type"] == "text/event-stream"
+                assert response.read() == b"data: one\\n\\ndata: two\\n\\n"
+            assert observed["stream"] == {
+                "method": "GET",
+                "path": "/_apx/stream?mode=sse",
+                "user": "user:alice",
+            }
+
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+            try:
+                urlopen(f"http://127.0.0.1:{host_port}/readyz", timeout=5)
+            except HTTPError as error:
+                assert error.code == 502
+                assert error.read() == b'{"detail":"APX Python bridge unavailable"}'
+            else:
+                raise AssertionError("stopped Python bridge did not return 502")
+        finally:
+            if upstream_thread.is_alive():
+                upstream.shutdown()
+                upstream.server_close()
+                upstream_thread.join(timeout=5)
+            host.terminate()
+            host.communicate(timeout=10)
 
     executed_tool = None
     tool_case_raw = os.environ.get("APX_APPKIT_TOOL_CASE")
@@ -334,6 +512,11 @@ def test_example_agent_stages_internal_appkit_host(
     tool_case = BRIDGE_TOOL_CASES.get(rel)
     if tool_case is not None:
         env["APX_APPKIT_TOOL_CASE"] = json.dumps(tool_case)
+    if rel == Path("customer_triage"):
+        env["APX_APPKIT_PROXY_PROBE"] = "1"
+        env["APX_APPKIT_RUNTIME_NODE_MODULES"] = str(
+            PYTHON_ROOT.parent / "typescript" / "node_modules"
+        )
     env.pop("DATABRICKS_CONFIG_PROFILE", None)
 
     result = subprocess.run(

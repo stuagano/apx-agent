@@ -62,7 +62,21 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert "mlflow_experiment_trace_otel_logs" in start_mjs
     server_ts = (host_dir / "server" / "server.ts").read_text()
     assert "APX_APPKIT_STATIC_PATH" in server_ts
-    assert "APX_PYTHON_BRIDGE_PROXY_PATHS" in server_ts
+    assert "APX_PYTHON_BRIDGE_PROXY_PATHS" not in server_ts
+    assert "app.use('/_apx', proxyToPython)" in server_ts
+    assert "app.use('/mcp', proxyToPython)" in server_ts
+    assert "app.get('/.well-known/agent.json', proxyToPython)" in server_ts
+    assert "app.post('/', proxyToPython)" in server_ts
+    assert "app.get('/readyz', proxyToPython)" in server_ts
+    for path in ("/health", "/chat", "/responses", "/invocations"):
+        assert f"'{path}', proxyToPython" not in server_ts
+    for header in ("host", "connection"):
+        assert server_ts.count(f"delete headers.{header}") == 2
+    for header in ("transfer-encoding", "content-length"):
+        assert server_ts.count(f"delete headers['{header}']") == 2
+    assert "if (body !== undefined) upstream.end(body);" in server_ts
+    assert "else req.pipe(upstream);" in server_ts
+    assert '{ detail: \'APX Python bridge unavailable\' }' in server_ts
     assert "const devEnabled = process.env.APX_DEV_UI !== '0';" in server_ts
     assert "app.get('/api/dev-ui'" in server_ts
     assert "createInternalApxAppKitDevRuntime" in server_ts
@@ -79,7 +93,7 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert "const agentId = 'pricing-agent';" in server_ts
     assert "await appkit.agents.register(agentId, dev.definition())" in server_ts
     assert server_ts.index("app.get('/api/dev/config'") < server_ts.index(
-        "for (const prefix of proxyPaths)"
+        "app.use('/_apx', proxyToPython)"
     )
     assert "appkit.server.extend" in server_ts
     assert "http.request" in server_ts

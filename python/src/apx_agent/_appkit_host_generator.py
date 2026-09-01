@@ -207,10 +207,6 @@ const agentId = __APX_AGENT_ID__;
 const dev = createInternalApxAppKitDevRuntime(apxManifest);
 const devEnabled = process.env.APX_DEV_UI !== '0';
 const pythonBridgeUrl = process.env.APX_PYTHON_BRIDGE_URL ?? 'http://127.0.0.1:8000';
-const proxyPaths = (process.env.APX_PYTHON_BRIDGE_PROXY_PATHS ?? '')
-  .split(',')
-  .map((path) => path.trim())
-  .filter(Boolean);
 
 await createApp({
   plugins: [
@@ -288,21 +284,37 @@ await createApp({
         });
       }
 
-      for (const prefix of proxyPaths) {
-        app.use(prefix, (req: Request, res: Response) => {
-          const target = new URL(req.originalUrl, pythonBridgeUrl);
-          const headers = { ...req.headers };
+      const proxyToPython = (req: Request, res: Response) => {
+        const target = new URL(req.originalUrl, pythonBridgeUrl);
+        const headers = { ...req.headers };
+        delete headers.host;
+        delete headers.connection;
+        delete headers['transfer-encoding'];
+        delete headers['content-length'];
+        const body = req.readableEnded && req.body !== undefined
+          ? JSON.stringify(req.body)
+          : undefined;
+        if (body !== undefined) headers['content-length'] = Buffer.byteLength(body).toString();
+        const upstream = http.request(target, { method: req.method, headers }, (response) => {
+          const headers = { ...response.headers };
           delete headers.host;
-          const upstream = http.request(target, { method: req.method, headers }, (response) => {
-            res.writeHead(response.statusCode ?? 502, response.headers);
-            response.pipe(res);
-          });
-          upstream.on('error', () => {
-            if (!res.headersSent) res.status(502).json({ detail: 'APX Python bridge unavailable' });
-          });
-          req.pipe(upstream);
+          delete headers.connection;
+          delete headers['transfer-encoding'];
+          delete headers['content-length'];
+          res.writeHead(response.statusCode ?? 502, headers);
+          response.pipe(res);
         });
-      }
+        upstream.on('error', () => {
+          if (!res.headersSent) res.status(502).json({ detail: 'APX Python bridge unavailable' });
+        });
+        if (body !== undefined) upstream.end(body);
+        else req.pipe(upstream);
+      };
+      app.use('/_apx', proxyToPython);
+      app.use('/mcp', proxyToPython);
+      app.get('/.well-known/agent.json', proxyToPython);
+      app.post('/', proxyToPython);
+      app.get('/readyz', proxyToPython);
     });
   },
 });
