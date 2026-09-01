@@ -152,7 +152,7 @@ from ._resources import (
 )
 
 # @tool decorator and UC publishing
-from ._tool import ToolMetadata, get_tool_metadata, tool
+from ._tool import ExecutionIdentity, ToolMetadata, get_tool_metadata, tool
 from ._tool_factory import build_tool, resolve_description
 from ._tool_publish import PublishResult, publish_tools_to_uc
 
@@ -556,6 +556,7 @@ __all__ = [
     "build_tool",
     "resolve_description",
     "ToolMetadata",
+    "ExecutionIdentity",
     "get_tool_metadata",
     "publish_tools_to_uc",
     "PublishResult",
