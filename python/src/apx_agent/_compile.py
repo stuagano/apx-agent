@@ -28,9 +28,7 @@ import inspect
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, get_args, get_type_hints
-
-from fastapi import params
+from typing import TYPE_CHECKING, Any
 
 # Hoisted so TypedDicts defined inside compile functions (e.g. LoopState) can
 # reference ``Annotated[list, add_messages]``. ``get_type_hints`` evaluates the
@@ -68,6 +66,7 @@ from ._inspection import (
     _inspect_tool_fn,
     _make_input_model,
     _state_param_name,
+    _tool_dependency_callables,
 )
 from ._state_tool import _make_stateful_langchain_tool
 
@@ -126,29 +125,10 @@ def _make_dep_resolvers(ctx: CompileContext) -> dict[Any, Any]:
 
 def _resolve_deps_for_fn(fn: Any, ctx: CompileContext) -> dict[str, Any]:
     """Resolve all FastAPI dependency parameters of ``fn`` against ``ctx``."""
-    try:
-        hints = get_type_hints(fn, include_extras=True)
-    except Exception:
-        hints = {}
-    _, dep_names = _inspect_tool_fn(fn)
     resolvers = _make_dep_resolvers(ctx)
 
     resolved: dict[str, Any] = {}
-    for dep_name in dep_names:
-        annotation = hints.get(dep_name)
-        if annotation is None:
-            raise ValueError(
-                f"Cannot resolve {dep_name!r}: missing type hint on tool {fn.__name__!r}"
-            )
-        depends_obj = next(
-            (arg for arg in get_args(annotation) if isinstance(arg, params.Depends)),
-            None,
-        )
-        if depends_obj is None or depends_obj.dependency is None:
-            raise ValueError(
-                f"Parameter {dep_name!r} of {fn.__name__!r} is not a FastAPI dependency"
-            )
-        target = depends_obj.dependency
+    for dep_name, target in _tool_dependency_callables(fn).items():
         if target not in resolvers:
             raise ValueError(
                 f"No compile-time resolver registered for {target.__qualname__!r} "

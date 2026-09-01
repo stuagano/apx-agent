@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, NamedTuple, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Callable, get_args, get_origin, get_type_hints
 
 from fastapi import params
 from pydantic import BaseModel, ConfigDict, create_model
@@ -13,9 +14,17 @@ from ._models import AgentConfig, _ToolFn
 from ._state_marker import _STATE_DEP
 
 
-class ToolSignature(NamedTuple):
+@dataclass(frozen=True)
+class ToolSignature:
+    """Tool parameters and the FastAPI callables that inject dependencies."""
+
     plain_params: dict[str, tuple[Any, Any]]
     dep_param_names: list[str]
+    dependency_callables: dict[str, Callable[..., Any]]
+
+    def __iter__(self):
+        yield self.plain_params
+        yield self.dep_param_names
 
 
 def _is_fastapi_dependency(annotation: Any) -> bool:
@@ -59,6 +68,7 @@ def _inspect_tool_fn(fn: _ToolFn) -> ToolSignature:
     sig = inspect.signature(fn)
     plain_params: dict[str, tuple[Any, Any]] = {}
     dep_param_names: list[str] = []
+    dependency_callables: dict[str, Callable[..., Any]] = {}
 
     for name, param in sig.parameters.items():
         annotation = hints.get(name, Any)
@@ -66,11 +76,32 @@ def _inspect_tool_fn(fn: _ToolFn) -> ToolSignature:
             continue                            # injected per-call, not in schema/deps
         if _is_fastapi_dependency(annotation):
             dep_param_names.append(name)
+            depends = next(
+                (arg for arg in get_args(annotation) if isinstance(arg, params.Depends)),
+                None,
+            )
+            if depends is not None and callable(depends.dependency):
+                dependency_callables[name] = depends.dependency
         else:
             default = param.default if param.default is not inspect.Parameter.empty else ...
             plain_params[name] = (annotation, default)
 
-    return ToolSignature(plain_params=plain_params, dep_param_names=dep_param_names)
+    return ToolSignature(
+        plain_params=plain_params,
+        dep_param_names=dep_param_names,
+        dependency_callables=dependency_callables,
+    )
+
+
+def _tool_dependency_callables(fn: _ToolFn) -> dict[str, Callable[..., Any]]:
+    """Return the FastAPI dependency callable for each inspected tool parameter."""
+    signature = _inspect_tool_fn(fn)
+    for name in signature.dep_param_names:
+        if name not in signature.dependency_callables:
+            raise ValueError(
+                f"Parameter {name!r} of {fn.__name__!r} is not a FastAPI dependency"
+            )
+    return signature.dependency_callables
 
 
 class _EmptyToolInput(BaseModel):
