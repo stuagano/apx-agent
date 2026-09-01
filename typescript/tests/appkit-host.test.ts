@@ -1,9 +1,18 @@
 import {
   createMockRequest,
+  createMockResponse,
+  createMockRouter,
   createTestPluginContext,
+  expectStream,
   mockServiceContext,
   setupDatabricksEnv,
 } from '@databricks/appkit/testing';
+import {
+  agents,
+  createAgent,
+  tool,
+  type AgentAdapter,
+} from '@databricks/appkit/beta';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -110,6 +119,23 @@ function makeSupportedSurfaceManifest(): InternalApxAppsHostManifest {
       },
     ],
   };
+}
+
+async function waitForSseEvent(
+  response: ReturnType<typeof createMockResponse>,
+  eventType: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const body = response.write.mock.calls.map((call) => String(call[0])).join('');
+    for (const line of body.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const event = JSON.parse(line.slice('data: '.length)) as Record<string, unknown>;
+      if (event.type === eventType) return event;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Timed out waiting for SSE event: ${eventType}`);
 }
 
 describe('internal AppKit host', () => {
@@ -386,11 +412,30 @@ describe('internal AppKit host', () => {
     });
 
     let forwardedSignal: AbortSignal | null = null;
+    let cancellationObserved = false;
+    let cancelledExecutionCompleted = false;
+    let releaseInFlightFetch: (() => void) | undefined;
+    const inFlightFetchStarted = new Promise<void>((resolve) => {
+      releaseInFlightFetch = resolve;
+    });
+    let identityCalls = 0;
     const executed: string[] = [];
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       const args = JSON.parse(String(init?.body)).args;
       forwardedSignal = init?.signal as AbortSignal;
+      if (url.endsWith('/who_am_i')) {
+        identityCalls += 1;
+        if (identityCalls === 2) {
+          releaseInFlightFetch?.();
+          return await new Promise<Response>((_resolve, reject) => {
+            forwardedSignal?.addEventListener('abort', () => {
+              cancellationObserved = true;
+              reject(new DOMException('AppKit tool dispatch aborted', 'AbortError'));
+            }, { once: true });
+          });
+        }
+      }
       if (url.endsWith('/apply_change') && args.value === 'deny') {
         return new Response(JSON.stringify({ detail: 'Tool execution is denied' }), {
           status: 403,
@@ -418,7 +463,6 @@ describe('internal AppKit host', () => {
         email: 'alice@databricks.com',
       },
     });
-    const cancellation = new AbortController();
 
     try {
       await expect(mock.ctx.executeTool(
@@ -426,7 +470,6 @@ describe('internal AppKit host', () => {
         INTERNAL_APX_APPKIT_PLUGIN_NAME,
         'who_am_i',
         {},
-        cancellation.signal,
       )).resolves.toBe('alice@databricks.com');
 
       expect(fetchMock).toHaveBeenCalledWith(
@@ -440,7 +483,34 @@ describe('internal AppKit host', () => {
         }),
       );
       expect(forwardedSignal).toBeInstanceOf(AbortSignal);
+
+      const tokenlessRequest = createMockRequest({
+        headers: { 'x-forwarded-user': 'alice@databricks.com' },
+      });
+      await expect(mock.ctx.executeTool(
+        tokenlessRequest,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'who_am_i',
+        {},
+      )).rejects.toThrow(/user token/i);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      const cancellation = new AbortController();
+      const cancelled = mock.ctx.executeTool(
+        request,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'who_am_i',
+        {},
+        cancellation.signal,
+      ).then(() => {
+        cancelledExecutionCompleted = true;
+      });
+      await inFlightFetchStarted;
+      expect(cancelledExecutionCompleted).toBe(false);
       cancellation.abort();
+      await expect(cancelled).rejects.toThrow(/aborted/i);
+      expect(cancellationObserved).toBe(true);
+      expect(cancelledExecutionCompleted).toBe(false);
       expect(forwardedSignal?.aborted).toBe(true);
 
       const denied = mock.ctx.executeTool(
@@ -465,6 +535,124 @@ describe('internal AppKit host', () => {
       );
       expect(executed).toEqual(['who_am_i']);
     } finally {
+      serviceContext.restore();
+    }
+  });
+
+  it('uses the native AppKit approval gate for mutating tools', async () => {
+    setupDatabricksEnv();
+    const serviceContext = mockServiceContext({ userId: 'alice@databricks.com' });
+    const executions: string[] = [];
+    const adapterResults: unknown[] = [];
+    const adapter: AgentAdapter = {
+      async *run(_input, context) {
+        yield {
+          type: 'tool_call',
+          callId: 'apply-1',
+          name: 'apply_change',
+          args: { value: 'approved' },
+        };
+        const result = await context.executeTool('apply_change', { value: 'approved' });
+        adapterResults.push(result);
+        yield { type: 'message', content: String(result) };
+      },
+    };
+    const descriptor = agents({
+      agents: {
+        governed: createAgent({
+          name: 'governed',
+          default: true,
+          instructions: 'Apply the requested governed change.',
+          model: adapter,
+          tools: {
+            apply_change: tool({
+              description: 'Apply one governed change after approval.',
+              schema: z.object({ value: z.string() }),
+              annotations: { effect: 'update' },
+              execute: async ({ value }) => {
+                executions.push(value);
+                return `applied:${value}`;
+              },
+            }),
+          },
+        }),
+      },
+      approval: { requireForDestructive: true, timeoutMs: 1_000 },
+    });
+    const plugin = new descriptor.plugin(descriptor.config);
+    const context = createTestPluginContext();
+    const router = createMockRouter();
+
+    try {
+      await context.attach(plugin);
+      await plugin.setup();
+      plugin.injectRoutes(router.router);
+      const chat = router.getHandler('post', '/chat');
+      const approve = router.getHandler('post', '/approve');
+      const invoke = context.routes.find(
+        (route) => route.method === 'post' && route.path === '/invocations',
+      )?.handlers[0];
+      expect(chat).toBeTypeOf('function');
+      expect(approve).toBeTypeOf('function');
+      expect(invoke).toBeTypeOf('function');
+
+      const nonStreamingResponse = createMockResponse();
+      await invoke?.(
+        createMockRequest({ obo: true, body: { input: 'apply it' } }),
+        nonStreamingResponse,
+        () => undefined,
+      );
+      expect(nonStreamingResponse.status).toHaveBeenCalledWith(400);
+      expect(nonStreamingResponse.json).toHaveBeenCalledWith(expect.objectContaining({
+        error: expect.stringMatching(/non-streaming and cannot run HITL/),
+      }));
+
+      const decide = async (decision: 'approve' | 'deny') => {
+        const streamResponse = createMockResponse();
+        const stream = chat(
+          createMockRequest({
+            obo: { userId: 'alice@databricks.com', token: 'alice-token' },
+            body: { message: 'apply it', agent: 'governed' },
+          }),
+          streamResponse,
+        );
+        const pending = await waitForSseEvent(streamResponse, 'appkit.approval_pending');
+        expect(executions).toHaveLength(0);
+
+        const decisionResponse = createMockResponse();
+        await approve(
+          createMockRequest({
+            obo: { userId: 'alice@databricks.com', token: 'alice-token' },
+            body: {
+              streamId: pending.stream_id,
+              approvalId: pending.approval_id,
+              decision,
+            },
+          }),
+          decisionResponse,
+        );
+        expect(decisionResponse.json).toHaveBeenCalledWith({ decision });
+        await stream;
+        await expectStream(streamResponse).toEmit(
+          'appkit.approval_pending',
+          'response.completed',
+        );
+      };
+
+      await decide('deny');
+      expect(adapterResults).toEqual([
+        'Tool execution denied by user approval gate (tool: apply_change).',
+      ]);
+      expect(executions).toEqual([]);
+
+      await decide('approve');
+      expect(adapterResults).toEqual([
+        'Tool execution denied by user approval gate (tool: apply_change).',
+        'applied:approved',
+      ]);
+      expect(executions).toEqual(['approved']);
+    } finally {
+      await plugin.shutdown();
       serviceContext.restore();
     }
   });

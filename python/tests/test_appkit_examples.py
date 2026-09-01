@@ -13,7 +13,7 @@ from pathlib import Path
 from threading import Thread
 from typing import NamedTuple
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 import yaml
@@ -641,6 +641,7 @@ def _wait_http(
     url: str,
     *,
     timeout: float = 90,
+    headers: dict[str, str] | None = None,
     process: subprocess.Popen[str] | None = None,
     process_log: Path | None = None,
 ) -> _HttpResult:
@@ -650,7 +651,7 @@ def _wait_http(
             output = process_log.read_text() if process_log is not None else ""
             raise AssertionError(f"generated host exited early:\n{output}")
         try:
-            with urlopen(url, timeout=1) as response:
+            with urlopen(Request(url, headers=headers or {}), timeout=1) as response:
                 return _HttpResult(response.status, response.read())
         except HTTPError as exc:
             return _HttpResult(exc.code, exc.read())
@@ -713,6 +714,7 @@ def test_generated_appkit_host_build_and_supervisor_lifecycle(
         log=lambda _message: None,
     )
     host_dir = workdir / ".build" / "apx_appkit_host"
+    host_manifest = json.loads((host_dir / "apx-host-manifest.json").read_text())
 
     package = json.loads((host_dir / "package.json").read_text())
     lock = json.loads((PYTHON_ROOT.parent / "typescript" / "package-lock.json").read_text())
@@ -786,7 +788,32 @@ def test_generated_appkit_host_build_and_supervisor_lifecycle(
             pass
 
         def _respond(self) -> None:
-            payload = b'{"id":"local-user","userName":"local@example.com"}'
+            if "/serving-endpoints/" in self.path:
+                payload = json.dumps(
+                    {
+                        "id": "local-completion",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "local-ready-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "ready",
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                        },
+                    }
+                ).encode()
+            else:
+                payload = b'{"id":"local-user","userName":"local@example.com"}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -806,6 +833,7 @@ def test_generated_appkit_host_build_and_supervisor_lifecycle(
         "APX_PYTHON_BRIDGE_PORT": str(bridge_port),
         "APX_PYTHON_PID_FILE": str(python_pid_file),
         "APX_SMOKE_MODE": "1",
+        "DATABRICKS_APP_NAME": "local-appkit-test",
         "DATABRICKS_APP_PORT": str(app_port),
         "DATABRICKS_CONFIG_FILE": os.devnull,
         "DATABRICKS_HOST": f"http://127.0.0.1:{workspace.server_port}",
@@ -840,9 +868,38 @@ def test_generated_appkit_host_build_and_supervisor_lifecycle(
             f"http://127.0.0.1:{bridge_port}/health"
         )
         assert bridge_health_status == 200, bridge_health_body
-        readyz_status, readyz_body = _wait_http(f"http://127.0.0.1:{app_port}/readyz")
-        assert readyz_status in {200, 503}, readyz_body
-        assert json.loads(readyz_body)["status"] in {"ready", "degraded"}
+        readyz_status, readyz_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/readyz",
+            headers={
+                "X-Forwarded-Access-Token": "local-user-token",
+                "X-Forwarded-Email": "local@example.com",
+                "X-Forwarded-User": "local-user",
+            },
+        )
+        assert readyz_status == 200, readyz_body
+        assert json.loads(readyz_body)["status"] == "ready"
+
+        dev_status, dev_body = _wait_http(f"http://127.0.0.1:{app_port}/api/dev/config")
+        assert dev_status == 200, dev_body
+        assert json.loads(dev_body)["agentName"] == host_manifest["agent"]["name"]
+        topology_status, topology_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/_apx/topology.json"
+        )
+        assert topology_status == 200, topology_body
+        assert set(json.loads(topology_body)) >= {"nodes", "edges"}
+        probe_status, probe_body = _wait_http(f"http://127.0.0.1:{app_port}/_apx/probe")
+        assert probe_status == 200, probe_body
+        assert b"Probe" in probe_body
+        feedback_status, feedback_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/_apx/feedback/missing-trace"
+        )
+        assert feedback_status == 401, feedback_body
+        assert set(json.loads(feedback_body)) == {"detail"}
+        traces_status, traces_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/_apx/traces?fmt=json"
+        )
+        assert traces_status == 403, traces_body
+        assert "signed-in Databricks Apps user" in json.loads(traces_body)["detail"]
         python_pid = _wait_pid_file(python_pid_file)
         appkit_pid = _wait_pid_file(appkit_pid_file)
 

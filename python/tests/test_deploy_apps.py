@@ -73,9 +73,12 @@ agent = _StubAgent()
 
 
 _APPKIT_SUPPORTED_SURFACE_AGENT = """\
+import asyncio
+
 from apx_agent import Dependencies, LlmAgent, tool
 
 successful_calls = []
+stateful_calls = []
 
 @tool(effect="read")
 def who_am_i(headers: Dependencies.Headers) -> str:
@@ -85,7 +88,16 @@ def who_am_i(headers: Dependencies.Headers) -> str:
 def apply_change(value: str) -> str:
     return f"applied:{value}"
 
+@tool(effect="read")
+async def analyze_values(values: list[int]) -> dict[str, list[int] | dict[str, int]]:
+    await asyncio.sleep(0)
+    return {
+        "values": values,
+        "summary": {"count": len(values), "total": sum(values)},
+    }
+
 def remember(value: str, state: Dependencies.State) -> str:
+    stateful_calls.append(value)
     state["value"] = value
     return value
 
@@ -98,7 +110,7 @@ def after_tool(name, args, output):
 
 agent = LlmAgent(
     name="supported-surface",
-    tools=[who_am_i, apply_change, remember],
+    tools=[who_am_i, apply_change, analyze_values, remember],
     before_tool=before_tool,
     after_tool=after_tool,
 )
@@ -395,6 +407,7 @@ def test_appkit_opt_in_stages_internal_host(
     } == {
         "who_am_i": "read",
         "apply_change": "update",
+        "analyze_values": "read",
         "remember": "update",
     }
 
@@ -403,6 +416,7 @@ def test_appkit_opt_in_stages_internal_host(
     from apx_agent import AgentConfig
     from apx_agent._appkit_tool_bridge import build_appkit_tool_bridge_router
     from apx_agent._models import AgentCard, AgentContext
+    from apx_agent._obo import ApxIdentityError
 
     agent_module = importlib.import_module("agent")
     bridge = FastAPI()
@@ -412,40 +426,81 @@ def test_appkit_opt_in_stages_internal_host(
         card=AgentCard(name="supported-surface", description="Supported surface"),
         agent=agent_module.agent,
     )
-    monkeypatch.setattr(
-        "apx_agent._appkit_tool_bridge._obo_ws_from_headers", lambda _headers: None
-    )
     bridge.include_router(build_appkit_tool_bridge_router())
     client = TestClient(bridge)
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "local-appkit-test")
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", os.devnull)
+    monkeypatch.setenv("DATABRICKS_HOST", "https://fake.cloud.databricks.com")
+    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    token_headers = {
+        "X-Forwarded-Access-Token": "local-user-token",
+        "X-Forwarded-User": "alice",
+    }
+    with pytest.raises(ApxIdentityError, match="no OBO user token"):
+        client.post(
+            "/_apx/internal/appkit/tools/who_am_i",
+            json={"args": {}},
+            headers={"X-Forwarded-User": "alice"},
+        )
+    monkeypatch.setattr(
+        "databricks.sdk.config.Config._resolve_host_metadata",
+        lambda _self: None,
+    )
     identity = client.post(
         "/_apx/internal/appkit/tools/who_am_i",
         json={"args": {}},
-        headers={"X-Forwarded-User": "alice"},
+        headers=token_headers,
     )
     denied = client.post(
         "/_apx/internal/appkit/tools/apply_change",
         json={"args": {"value": "deny"}},
+        headers=token_headers,
     )
     applied = client.post(
         "/_apx/internal/appkit/tools/apply_change",
         json={"args": {"value": "ok"}},
+        headers=token_headers,
+    )
+    analyzed = client.post(
+        "/_apx/internal/appkit/tools/analyze_values",
+        json={"args": {"values": [2, 3, 5]}},
+        headers=token_headers,
+    )
+    invalid = client.post(
+        "/_apx/internal/appkit/tools/analyze_values",
+        json={"args": {"values": [2, 3, 5]}, "unexpected": True},
+        headers=token_headers,
     )
     calls_before_stateful = list(agent_module.successful_calls)
     stateful = client.post(
         "/_apx/internal/appkit/tools/remember",
         json={"args": {"value": "never"}},
+        headers=token_headers,
     )
 
     assert identity.json() == {"result": "alice"}
     assert denied.status_code == 403
     assert denied.json() == {"detail": "blocked"}
     assert applied.json() == {"result": "applied:ok"}
-    assert [call[0] for call in calls_before_stateful] == ["who_am_i", "apply_change"]
+    assert analyzed.json() == {
+        "result": {
+            "values": [2, 3, 5],
+            "summary": {"count": 3, "total": 10},
+        }
+    }
+    assert invalid.status_code == 422
+    assert [call[0] for call in calls_before_stateful] == [
+        "who_am_i",
+        "apply_change",
+        "analyze_values",
+    ]
     assert stateful.status_code == 400
     assert stateful.json() == {
         "detail": "APX AppKit bridge cannot execute stateful tool: remember"
     }
     assert agent_module.successful_calls == calls_before_stateful
+    assert agent_module.stateful_calls == []
 
 
 def test_python_default_skips_internal_appkit_host(
