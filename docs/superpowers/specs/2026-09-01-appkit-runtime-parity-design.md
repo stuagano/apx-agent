@@ -1,4 +1,4 @@
-# AppKit Runtime Parity Design
+# AppKit Runtime Cutover Design
 
 **Status:** Approved
 
@@ -6,286 +6,161 @@
 
 **Live validation target:** Databricks profile `fevm`, app `contract-parsing-agent`
 
-## Problem
+## Decision
 
-APX can generate a Databricks AppKit host, but that host is not yet a safe
-replacement for the Python Apps host. The current bridge executes a Python
-LangChain tool directly, defaults missing policy to `ALLOW`, rejects stateful
-tools, uses AppKit's in-memory thread store, and does not expose the complete
-APX route and lifecycle surface. Making that path the default would silently
-drop governance, identity, persistence, protocol, and operational behavior.
+The generated Databricks Apps host will use the behavior AppKit natively
+supports. APX will not build adapters to reproduce Python-host behavior that
+AppKit does not expose.
 
-Commit `15657d09` keeps the Python host as the default until this design's
-parity gates pass. AppKit remains available through explicit
-`APX_APPS_HOST=appkit` selection during implementation and validation.
+Commit `15657d09` keeps Python as the default while this supported surface is
+implemented and verified. The final cutover changes the missing
+`APX_APPS_HOST` default to AppKit. `APX_APPS_HOST=python` remains a rollback
+option for one release.
 
-## Goals
+## AppKit-Owned Surface
 
-1. Make AppKit the transport and agent-loop owner while enforcing the APX
-   governance and identity behavior that AppKit can represent.
-2. Give Python and AppKit hosts one governed Python tool-execution path.
-3. Preserve APX state, durable conversations, MCP/A2A, feedback, topology,
-   development, tracing, health, and readiness behavior.
-4. Prove parity locally and against the existing `contract-parsing-agent` app
-   on the explicitly selected `fevm` profile.
-5. Cut over the generated default only after the proof is recorded in tests.
+AppKit owns:
 
-## Non-goals
+- `/invocations`, `/responses`, and `/chat`
+- the model/tool loop
+- SSE streaming and cancellation
+- AppKit thread storage and thread routes
+- static effect-based HITL approval
+- AppKit telemetry
+- static assets and the public server lifecycle
 
-- Reimplementing the AppKit model loop, streaming protocol, cancellation, or
-  approval UI in Python.
-- Reimplementing APX policy, audit, callbacks, dependency injection, or state
-  semantics in TypeScript.
-- Adding a general-purpose cross-language RPC framework or a public sidecar API.
-- Preserving compatibility with the incomplete internal bridge.
-- Adapting APX's argument-dependent `ASK` flow to AppKit's static approval
-  gate. The AppKit host supports AppKit's declared effect-based HITL only.
-- Keeping the current live `contract-parsing-agent` deployment available during
-  parity validation; the user explicitly approved breaking it.
+APX does not add a custom `ThreadStore`, approval adapter, model-loop wrapper,
+or AppKit fork.
 
-## Ownership Boundary
+## Python Bridge Surface
 
-| Surface | Owner | Reason |
-| --- | --- | --- |
-| `/invocations`, `/responses`, `/chat` | AppKit | Native Responses API, SSE, agent loop, limits, cancellation, and statically declared HITL |
-| Thread HTTP routes and message history | AppKit API backed by APX storage | Preserve AppKit's contract and APX durability |
-| Tool policy, execution, callbacks, audit, injected dependencies, state | Shared Python APX executor | One governance implementation for both hosts |
-| User identity and token forwarding | AppKit request scope to Python executor | Preserve Databricks Apps OBO identity end to end |
-| MCP/A2A, feedback, topology, development, traces, health/readiness | Existing Python APX routes | Reuse shipped behavior instead of recreating it |
-| Static assets and server lifecycle | AppKit | Native generated Apps host behavior |
+The private Python process remains a loopback-only sidecar. It owns:
 
-The Node process is the public listener. It starts the private Python runtime,
-waits for its readiness endpoint, mounts AppKit, and proxies only the named
-APX-owned routes. The Python runtime binds to loopback on an ephemeral or
-generated private port and is not independently exposed by the Databricks App.
-If the sidecar exits or never becomes ready, AppKit readiness fails and tool or
-APX route calls fail closed.
+- execution of declared Python tools
+- dependency injection and Databricks Apps OBO clients
+- existing `before_tool` and `after_tool` hooks
+- existing APX MCP, A2A, feedback, topology/development, trace, and readiness
+  routes
 
-## Shared Governed Tool Executor
+The sidecar uses the normal APX application wiring so these existing routes are
+mounted once. The Node host proxies an explicit path allowlist to it. There is
+no configurable empty proxy list and no catch-all proxy.
 
-The existing Python host and the private AppKit route must call the same APX
-executor. That executor is extracted from the current agent/tool path; it is not
-a second policy engine or an AppKit-specific tool wrapper.
+The current manifest-backed tool call remains a small private JSON request with
+`args`. Databricks Apps identity, token, host, and request correlation stay in
+forwarded headers and are never copied into response bodies or logs.
 
-Execution order is fixed:
+## Tool Effects and Approval
 
-1. Resolve the declared tool by its APX name.
-2. Validate arguments with the declared schema.
-3. Resolve the authenticated user, forwarded token, conversation/thread ID,
-   request ID, and tool-call ID from the request context.
-4. Load declared dependencies and the current APX state snapshot.
-5. Run `before_tool` policy. A missing decision, exception, or unknown action is
-   an error, never `ALLOW`.
-6. Return `DENY` without invoking the tool. Under the AppKit host, an APX `ASK`
-   is an unsupported fail-closed denial, not a second approval flow.
-7. Invoke the sync or async Python tool with the same dependency injection used
-   by the Python host.
-8. Atomically persist the state delta only after successful execution.
-9. Run callbacks and audit recording with the result or normalized failure.
-10. Return a JSON-safe result to AppKit.
+APX reuses its existing `@tool` metadata object to carry AppKit's native
+`effect` value: `read`, `write`, `update`, or `destructive`. No new metadata
+class or policy vocabulary is introduced.
 
-The private request is a small JSON contract containing `tool_name`, `args`,
-`thread_id`, and `tool_call_id`. Identity and request correlation continue to
-travel in the existing forwarded headers. The response is either a tool result,
-a denial, or a normalized error. These are data shapes at the private boundary,
-not new public Python classes.
+- `@tool(effect="read")` opts a tool out of AppKit mutation approval.
+- Other explicit effects map directly to AppKit.
+- Undecorated tools and `@tool` declarations without an effect default to
+  `update`, because an unknown Python function must not be assumed read-only.
+- AppKit's native approval gate is the only approval flow in the AppKit host.
+- Python `before_tool` hooks still run and may deny execution.
+- An argument-dependent APX `ASK` is unsupported in the AppKit host and fails
+  closed without executing the tool. The package does not add a second approval
+  store or preflight protocol.
+- AppKit's documented non-streaming behavior remains unchanged: a request with
+  tools requiring native approval receives its normal `400` response.
 
-The raw `_make_langchain_tool(...).ainvoke()` AppKit bridge is removed as an
-execution boundary after the shared executor is in use.
+## Explicitly Unsupported Under AppKit
 
-## Tool Metadata and Approval
+The following Python-host behavior is not part of this cutover:
 
-APX remains authoritative for policy. AppKit annotations are transport hints
-that allow its UI to pause before a statically declared mutating call; they do
-not grant permission.
+- `Dependencies.State` tools
+- APX argument-dependent `ASK` approval and resume
+- APX conversation storage as AppKit thread storage
+- Python-host thread/checkpoint resume semantics
 
-- APX read-only tools map to AppKit `effect: "read"`.
-- APX mutating tools map to the narrowest supported AppKit value among
-  `write`, `update`, and `destructive`.
-- A Python tool without trustworthy effect metadata is treated as mutating.
-- `requires_user_context` remains true when the APX declaration requires OBO.
-- AppKit approval is necessary but not sufficient for a statically declared
-  mutating tool: after approval, the Python executor still evaluates APX policy.
-- APX `DENY` always wins.
-- APX `ASK` is not adapted into a second approval system. Under the AppKit host,
-  it fails closed without invoking the tool; AppKit approval remains driven only
-  by static effect metadata.
-- AppKit documents that non-streaming `/invocations` and `/responses` cannot
-  complete its native HITL. Requests whose statically declared tools require
-  AppKit approval retain AppKit's explicit `400` behavior; they are not silently
-  executed.
+The bridge returns a bounded, explicit unsupported error for a stateful tool;
+it never runs it without state. Users needing these behaviors can select
+`APX_APPS_HOST=python` during the rollback period.
 
-Approval decisions are scoped to the initiating user, stream, tool call, and
-arguments. An approval cannot be replayed for a different call.
+## Route Proxy and Readiness
 
-This exception follows AppKit's actual contract. AppKit evaluates its approval
-gate before `ToolProvider.executeAgentTool`, but APX can compute an
-argument-dependent `ASK` only inside that callback. AppKit exposes neither a
-policy-preflight hook nor approval context to the provider. This package does
-not add an adapter, duplicate approval system, or AppKit fork to bridge that
-gap. If AppKit later adds a preflight authorization hook, APX `ASK` can be
-reconsidered separately.
+The generated Node host proxies only the exact APX auxiliary prefixes mounted
+by the sidecar, including MCP, A2A discovery/transport, feedback,
+topology/development, traces, and `/readyz`. Agent transport and AppKit thread
+routes are never proxied.
 
-## Identity and OBO
+The proxy preserves method, query, body streaming, response status, content
+type, forwarded identity, and request correlation. It removes hop-by-hop and
+host headers. Upstream errors return a bounded `502` without credentials or
+sidecar internals.
 
-The Node bridge forwards only the existing Databricks Apps identity, access
-token, host, and request-correlation headers. It does not log token values or
-place them in JSON bodies. The Python executor constructs dependencies exactly
-as the Python host does today.
+The public `/readyz` is the sidecar readiness result. AppKit process liveness is
+already implied because Node serves the response; if the sidecar is unavailable,
+readiness fails.
 
-In a deployed app, a tool declared as requiring user context fails closed when
-the forwarded user or access token is missing. Local tests may inject explicit
-fake headers; there is no production service-principal fallback for a missing
-user token. The live proof must show that an OBO SQL action executes as the
-signed-in `fevm` user.
+## Generated Lifecycle
 
-## Thread and State Model
+The existing supervisor script starts the loopback Python sidecar and AppKit
+server, forwards termination, and exits non-zero when either child fails. The
+cutover does not add a process manager, RPC dependency, storage service, or
+second public listener.
 
-AppKit's `ThreadStore` is replaced with a minimal adapter over the existing APX
-conversation store. The adapter implements AppKit's five required operations:
-`create`, `get`, `list`, `addMessage`, and `delete`. AppKit thread IDs are APX
-conversation IDs. User ownership checks remain enforced on every operation.
+The generated build/start contract remains:
 
-AppKit does not pass a thread ID to `ToolProvider.executeAgentTool`. The public
-request therefore enters one AsyncLocalStorage context containing a mutable
-request-scoped record. The custom `ThreadStore` writes the resolved or newly
-created thread ID into that record before the model loop begins. The tool bridge
-reads it when calling Python. This context is per request, so concurrent requests
-from the same user do not share thread state.
-
-APX state is stored with the conversation and loaded by the shared executor.
-Each tool receives the existing `Dependencies.State` proxy over a snapshot. On
-success, only its delta is committed atomically. Denial, approval timeout,
-cancellation, validation failure, and tool failure commit no delta. Updates for
-one conversation are serialized to prevent lost writes; no process-global state
-map is added.
-
-`/chat` supports multi-turn state because it accepts a thread ID. A client may
-create a thread through AppKit's thread route or use the ID returned by the first
-chat. `/invocations` remains an AppKit one-shot thread operation and returns its
-generated `thread_id`; it is not used as a substitute for multi-turn chat.
-
-## APX Route Proxy
-
-The Node host proxies an explicit allowlist of existing APX-owned paths to the
-private Python runtime. The implementation derives the exact list from the
-current Python route registration and generated-host contract, including:
-
-- MCP and A2A surfaces
-- feedback
-- topology and development surfaces
-- trace access
-- health and readiness
-
-Agent transport and AppKit thread routes are never proxied. There is no catch-all
-proxy and no configurable empty default path. Request method, status, content
-type, streaming body, identity headers, and correlation headers are preserved.
-Hop-by-hop headers are removed. Proxy errors return a bounded error without
-sidecar internals or credentials.
-
-`/readyz` is composed: it succeeds only when both the AppKit host and the Python
-runtime are ready. Liveness remains process-local so a temporary downstream
-failure does not force a restart loop.
-
-## Errors, Cancellation, and Observability
-
-The private executor uses stable categories for validation, authentication,
-policy denial, approval required, cancellation, tool failure, and internal
-failure. User-facing messages stay bounded; full exceptions are recorded through
-the existing APX tracing/audit path with secrets redacted.
-
-AppKit's abort signal cancels the private HTTP request. The Python route stops
-awaiting the tool and propagates cancellation where the existing tool contract
-allows it. A completed tool is never reported as cancelled, and a cancelled or
-failed tool does not commit state.
-
-AppKit owns model- and stream-level telemetry. APX owns policy and tool audit
-events. Request ID, AppKit thread ID, tool-call ID, and MLflow trace ID are
-carried across the boundary so the two records can be correlated without a new
-tracing backend.
-
-## Generated Host Lifecycle
-
-Generated AppKit projects keep the existing build and start entry points. The
-start command launches the private Python runtime and the AppKit server under one
-supervisor process. Shutdown forwards termination, waits a bounded interval, and
-reaps both children. Startup failure from either child exits non-zero.
-
-The runtime uses package artifacts already present in the generated project. No
-new production dependency or external service is introduced.
+- TypeScript host validation with `tsc --noEmit`
+- Node start through `scripts/start.mjs`
+- Python sidecar through the generated `agent_server.appkit_bridge:app`
 
 ## Verification
 
-### Local parity matrix
+### Local supported-surface matrix
 
-One declaration is exercised through both Python and AppKit hosts for:
+Tests cover:
 
-- sync and async tools
+- sync and async stateless Python tools
 - argument validation and JSON-safe results
-- read, update, and destructive annotations
-- policy allow, deny, unsupported `ASK`, and missing-policy failure
-- OBO identity present, missing, and downstream failure
-- injected dependencies
-- state read/write across turns, failed-call rollback, and concurrent isolation
-- durable thread create/get/list/add/delete and process restart
-- streaming events, cancellation, and AppKit static HITL
-- MCP and A2A
-- feedback
-- topology and development routes
-- trace/audit correlation and secret redaction
-- health and composed readiness
-- generated build and start behavior
+- OBO identity forwarding and missing-token failure
+- `before_tool` allow/deny and `after_tool` callbacks
+- fail-closed APX `ASK`
+- explicit and conservative-default AppKit effects
+- AppKit approve and deny behavior
+- explicit stateful-tool rejection
+- streaming and cancellation
+- MCP and A2A routes
+- feedback, topology/development, and trace routes
+- proxied `/readyz` success and sidecar-unavailable failure
+- generated build/start and child-process failure behavior
+- missing `APX_APPS_HOST` selecting AppKit and explicit `python` rollback
 
-Tests use AppKit's real testing context for tool dispatch and OBO behavior, not a
-mocked direct method call. The repository gate remains `make check`, preceded on
-a fresh worktree by `cd typescript && npm ci && npm run build` as required by the
-repository instructions.
+Use AppKit's real testing context for OBO/tool dispatch. Run the repository's
+required gates:
+
+```bash
+cd typescript && npm ci && npm run build
+make check
+cd python && uv run --frozen pytest
+```
 
 ### Live `fevm` proof
 
-The existing `contract-parsing-agent` app is the disposable validation target.
-Every Databricks CLI command passes `--profile fevm`; ambient
-`DATABRICKS_CONFIG_PROFILE` is ignored.
+The existing `contract-parsing-agent` app is a disposable target. Every
+Databricks CLI command passes `--profile fevm`; the ambient profile is ignored.
 
 The proof records:
 
-1. Generated AppKit build and successful app start.
+1. Generated AppKit build and successful start.
 2. Authenticated browser access.
 3. OBO SQL execution as the signed-in user.
-4. A read-only tool call and a statically mutating fixture through AppKit HITL.
-5. AppKit approve/deny behavior and fail-closed APX `ASK` behavior.
-6. Multi-turn thread and `Dependencies.State` persistence.
-7. Feedback submission.
-8. MCP/A2A, topology/development, trace, health, and readiness routes.
-9. Correlated AppKit/APX trace and audit records.
-10. Application logs free of forwarded tokens and other secrets.
+4. One explicit read tool and one mutating tool through AppKit approval.
+5. Approval deny and approval allow behavior.
+6. MCP/A2A, feedback, topology/development, trace, and readiness routes.
+7. Correlated AppKit/APX telemetry sufficient to diagnose a tool call.
+8. Application logs free of forwarded tokens and other secrets.
 
-## Cutover and Removal
+## Cutover Gate
 
-Implementation lands in independently testable slices while Python remains the
-default. The generated default changes to AppKit only in the final slice, after
-the local parity matrix and live `fevm` proof pass. The same change updates the
-design status and tests the missing-environment default.
+AppKit becomes the missing-environment default only after the local matrix,
+full repository gates, and live `--profile fevm` proof pass. The same commit
+updates generated templates, deployment staging, tests, and documentation.
 
-The explicit Python host selector remains as a rollback path for one release.
-Removal of the Python transport is a separate decision based on adoption and
-rollback evidence; it is not part of this parity change. The obsolete direct
-tool bridge and duplicate AppKit policy/audit hooks are deleted during cutover so
-there is only one governed executor.
-
-## Acceptance Criteria
-
-AppKit parity is complete only when all of the following are true:
-
-- The same APX declaration produces equivalent governed behavior through both
-  hosts for every row in the local matrix.
-- Stateful tools work across durable AppKit threads without process-local state.
-- No tool can execute because policy metadata or identity context was missing.
-- AppKit static HITL composes with APX `ALLOW`/`DENY`, and unsupported APX
-  `ASK` fails closed without execution.
-- Required APX routes and readiness behavior remain reachable through the Node
-  listener.
-- Generated AppKit build/start and the full repository gate pass.
-- The `contract-parsing-agent` live proof passes on `--profile fevm` and its logs
-  show no credential leakage.
-- Only then does missing `APX_APPS_HOST` select AppKit.
+Stateful tools, APX dynamic approval, and durable AppKit threads are accepted
+differences, not hidden parity claims. They do not block cutover.
