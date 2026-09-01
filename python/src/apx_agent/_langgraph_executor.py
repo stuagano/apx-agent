@@ -153,6 +153,9 @@ class LangGraphExecutor:
 
     :param agent: The apx-agent :class:`~apx_agent._agents.BaseAgent` to wrap.
         This is the declarative agent spec — not a compiled graph.
+    :param ws: User-only compatibility alias for ``user_ws``. It never
+        populates ``service_ws`` and cannot be combined with a non-``None``
+        ``user_ws``.
     :param user_ws: The per-request OBO client for user dependency closures.
         ``None`` fails closed when a tool declares a user dependency.
     :param service_ws: The app service client for service dependency closures.
@@ -174,15 +177,18 @@ class LangGraphExecutor:
     def __init__(
         self,
         agent: "BaseAgent",
+        ws: "WorkspaceClient | None" = None,
         *,
-        user_ws: "WorkspaceClient | None",
-        service_ws: "WorkspaceClient | None",
+        user_ws: "WorkspaceClient | None" = None,
+        service_ws: "WorkspaceClient | None" = None,
         model: str | None = None,
         checkpointer: Any | None = None,
     ) -> None:
         """Initialise a LangGraphExecutor without compiling the graph yet.
 
         :param agent: The declarative apx-agent spec to compile on first use.
+        :param ws: User-only compatibility alias for ``user_ws``. Never used
+            as the service client.
         :param user_ws: Per-request OBO client, or ``None`` when no forwarded
             identity is available.
         :param service_ws: App service client, or ``None`` when unavailable.
@@ -193,8 +199,10 @@ class LangGraphExecutor:
             per-request executors) to persist across turns; when set, each
             :meth:`run_turn` requires a ``thread_id`` in its config.
         """
+        if ws is not None and user_ws is not None:
+            raise ValueError("ws and user_ws cannot both be provided")
         self._agent = agent
-        self._user_ws = user_ws
+        self._user_ws = user_ws if user_ws is not None else ws
         self._service_ws = service_ws
         self._model = model
         self._checkpointer = checkpointer

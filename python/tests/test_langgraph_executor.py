@@ -83,6 +83,35 @@ def _runtime_tool(query: str) -> str:
 
 
 class TestHandlesToolsInternally:
+    def test_legacy_ws_compiles_as_user_only_identity(self) -> None:
+        agent = LlmAgent(tools=[])
+        user_ws = MagicMock(name="legacy_user_ws")
+        compiled = MagicMock(name="compiled")
+
+        with patch(
+            "apx_agent._compile.compile_to_langgraph", return_value=compiled
+        ) as mock_compile:
+            executor = LangGraphExecutor(agent, ws=user_ws, model="any-model")
+            assert executor._get_compiled("any-model") is compiled
+
+        assert executor._user_ws is user_ws
+        assert executor._service_ws is None
+        mock_compile.assert_called_once_with(
+            agent,
+            ws=user_ws,
+            service_ws=None,
+            model="any-model",
+            checkpointer=None,
+        )
+
+    def test_conflicting_legacy_and_explicit_user_clients_are_rejected(self) -> None:
+        with pytest.raises(ValueError, match="ws.*user_ws"):
+            LangGraphExecutor(
+                LlmAgent(tools=[]),
+                ws=MagicMock(name="legacy_user_ws"),
+                user_ws=MagicMock(name="explicit_user_ws"),
+            )
+
     def test_compile_receives_distinct_user_and_service_clients(self) -> None:
         agent = LlmAgent(tools=[])
         user_ws = MagicMock(name="user_ws")
