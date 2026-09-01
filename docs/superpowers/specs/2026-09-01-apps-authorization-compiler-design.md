@@ -298,7 +298,9 @@ field name from stale training data.
 
 ## App-Family Permissions
 
-APX adds one group-only Apps permission block:
+Operators declare one group-only Apps permission block in the deployment
+project's `pyproject.toml`; APX compiles that configured policy. APX does not
+create or generate this TOML block:
 
 ```toml
 [tool.apx.apps.permissions]
@@ -306,7 +308,7 @@ can_use_groups = ["apx-app-users"]
 can_manage_groups = ["apx-app-admins"]
 ```
 
-It compiles to native App permissions:
+APX compiles the configured groups to native App permissions:
 
 ```yaml
 permissions:
