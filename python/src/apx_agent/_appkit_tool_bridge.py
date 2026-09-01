@@ -7,14 +7,17 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
-from databricks.sdk import WorkspaceClient
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from ._agents import BaseAgent, LlmAgent
 from ._apps_authorization import infer_operation_authorization
 from ._callbacks import build_callback_handler
 from ._compile import CompileContext, _make_langchain_tool
-from ._defaults import DatabricksAppsHeaders, _obo_ws_from_headers
+from ._defaults import (
+    DatabricksAppsHeaders,
+    _make_workspace_client,
+    _obo_ws_from_headers,
+)
 from ._inspection import _state_param_name
 from ._policy import ApprovalRequired
 from ._topology import _iter_child_agents
@@ -74,12 +77,12 @@ def build_appkit_tool_bridge_router() -> APIRouter:
                 status_code=401,
                 detail=f"APX tool {tool_name!r} requires forwarded user identity",
             )
-        service_ws = WorkspaceClient()
-        user_ws = (
-            _obo_ws_from_headers(headers)
-            if authorization.execution_identity == "user" and headers is not None
-            else None
-        )
+        if authorization.execution_identity == "user":
+            service_ws = None
+            user_ws = _obo_ws_from_headers(headers)
+        else:
+            service_ws = _make_workspace_client()
+            user_ws = None
         lc_tool = _make_langchain_tool(
             target.fn,
             CompileContext(

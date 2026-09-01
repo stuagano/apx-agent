@@ -68,6 +68,19 @@ def test_config_guardrails_are_detected(guardrails: GuardrailsConfig) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_langgraph_executor_receives_distinct_clients() -> None:
+    agent = LlmAgent(tools=[])
+    config = AgentConfig(name="a", model="m")
+    user_ws = object()
+    service_ws = object()
+
+    executor = create_executor(agent, config, ws=user_ws, service_ws=service_ws)
+
+    assert isinstance(executor, LangGraphExecutor)
+    assert executor._user_ws is user_ws
+    assert executor._service_ws is service_ws
+
+
 def test_claude_sdk_with_governance_falls_back_to_langgraph() -> None:
     """A guarded agent asking for claude-sdk must run the GOVERNED path."""
     agent = LlmAgent(tools=[], before_tool=_noop)

@@ -114,7 +114,13 @@ class TestExecutorThreadId:
     async def test_checkpointer_without_thread_id_raises(self) -> None:
         """A compiled-in checkpointer requires a thread_id, or LangGraph blows
         up mid-turn — the executor must couple them with a clear error."""
-        ex = LangGraphExecutor(_agent(), ws=_ws(), model="m", checkpointer=InMemorySaver())
+        ex = LangGraphExecutor(
+            _agent(),
+            user_ws=_ws(),
+            service_ws=None,
+            model="m",
+            checkpointer=InMemorySaver(),
+        )
         with pytest.raises(ValueError, match="thread_id"):
             async for _ in ex.run_turn(
                 [Message(role="user", content="hi")], [], "", ExecutorConfig()
@@ -124,7 +130,9 @@ class TestExecutorThreadId:
     @pytest.mark.asyncio
     async def test_no_checkpointer_runs_stateless_without_thread_id(self) -> None:
         """Default path is unchanged: no checkpointer → no thread_id needed."""
-        ex = LangGraphExecutor(_agent(), ws=_ws(), model="m")
+        ex = LangGraphExecutor(
+            _agent(), user_ws=_ws(), service_ws=None, model="m"
+        )
         events = [
             e
             async for e in ex.run_turn(
@@ -141,12 +149,24 @@ class TestExecutorThreadId:
         agent, ws = _agent(), _ws()
         cfg = ExecutorConfig(thread_id="T")
 
-        ex1 = LangGraphExecutor(agent, ws=ws, model="m", checkpointer=saver)
+        ex1 = LangGraphExecutor(
+            agent,
+            user_ws=ws,
+            service_ws=None,
+            model="m",
+            checkpointer=saver,
+        )
         async for _ in ex1.run_turn(
             [Message(role="user", content="my name is Zara")], [], "", cfg
         ):
             pass
-        ex2 = LangGraphExecutor(agent, ws=ws, model="m", checkpointer=saver)
+        ex2 = LangGraphExecutor(
+            agent,
+            user_ws=ws,
+            service_ws=None,
+            model="m",
+            checkpointer=saver,
+        )
         async for _ in ex2.run_turn(
             [Message(role="user", content="what is my name")], [], "", cfg
         ):
