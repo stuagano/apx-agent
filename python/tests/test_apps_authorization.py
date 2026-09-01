@@ -324,3 +324,41 @@ def test_read_app_family_permissions_rejects_malformed_owned_block(
 
     with pytest.raises(ValueError, match=r"tool\.apx\.apps\.permissions"):
         read_app_family_permissions(pyproject)
+
+
+def test_read_app_family_permissions_sanitizes_malformed_toml(
+    tmp_path: Path,
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    marker = "configured-text-must-not-leak"
+    pyproject.write_text(
+        "[tool.apx.apps.permissions]\n"
+        f'can_use_groups = ["{marker}"\n',
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        read_app_family_permissions(pyproject)
+
+    error = str(exc_info.value)
+    assert len(error) < 200
+    assert marker not in error
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['"not-an-array"', '["valid-group", 7]'],
+    ids=["non-array", "non-string-member"],
+)
+def test_read_app_family_permissions_rejects_invalid_group_shapes(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f"[tool.apx.apps.permissions]\ncan_use_groups = {value}\n",
+    )
+
+    with pytest.raises(ValueError, match="can_use_groups") as exc_info:
+        read_app_family_permissions(pyproject)
+
+    assert len(str(exc_info.value)) < 200
