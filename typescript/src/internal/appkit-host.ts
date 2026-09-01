@@ -50,39 +50,52 @@ const FORWARDED_HEADER_NAMES = [
   'x-forwarded-access-token',
   'x-request-id',
 ] as const;
+const FORWARDED_ACCESS_TOKEN_HEADER = 'x-forwarded-access-token';
 
 export interface InternalApxAppsHostManifest {
+  kind: 'apx.apps_host_manifest';
+  version: 1;
   agent: {
     name: string;
+    description: string;
     model: string;
-    instructions?: string;
-    max_iterations?: number;
-    max_tokens?: number | null;
+    instructions: string;
+    temperature: number | null;
+    max_tokens: number | null;
+    max_iterations: number;
   };
-  appkit?: {
-    default?: boolean;
-    tool_prefix?: string;
-    max_steps?: number;
-    max_tokens?: number | null;
-    limits?: {
-      max_tool_calls?: number;
+  appkit: {
+    default: boolean;
+    tool_prefix: string;
+    max_steps: number;
+    max_tokens: number | null;
+    limits: {
+      max_tool_calls: number;
       max_concurrent_streams_per_user?: number;
       max_sub_agent_depth?: number;
       tool_call_timeout_ms?: number;
     };
-    ephemeral?: boolean | null;
-    generation_params?: AgentDefinition['generationParams'] | null;
+    ephemeral: boolean | null;
+    generation_params: AgentDefinition['generationParams'] | null;
   };
-  tools?: Array<{
+  tools: Array<{
     name: string;
-    description?: string;
+    description: string;
+    runtime: 'python';
     parameters: Record<string, unknown>;
-    annotations?: {
-      effect?: ToolAnnotations['effect'];
-      execution_identity?: 'user' | 'service';
-      requires_request_context?: boolean;
-      requires_user_context?: boolean;
+    output_schema: Record<string, unknown> | null;
+    annotations: {
+      effect: NonNullable<ToolAnnotations['effect']>;
+      execution_identity: 'user' | 'service';
+      requires_request_context: boolean;
+      requires_user_context: boolean;
     };
+    handler: {
+      kind: 'python';
+      ref: string;
+    };
+    resources: InternalApxAppsHostResource[];
+    user_api_scopes: string[];
   }>;
   resources: InternalApxAppsHostResource[];
   user_resources: InternalApxAppsHostResource[];
@@ -208,13 +221,29 @@ function requireAgentSource(config: InternalApxAppKitGovernanceConfig):
   return { kind: 'exports', value: requireAgentExports(config.agent) };
 }
 
-function bridgeHeadersFromRequest(req: Parameters<Plugin['asUser']>[0]): Record<string, string> {
+function bridgeHeadersFromRequest(
+  req: Parameters<Plugin['asUser']>[0],
+  identity: 'user' | 'service',
+): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const name of FORWARDED_HEADER_NAMES) {
+    if (identity === 'service' && name === FORWARDED_ACCESS_TOKEN_HEADER) continue;
     const value = req.header(name)?.trim();
     if (value) headers[name] = value;
   }
   return headers;
+}
+
+function bridgeConfigHeaders(
+  headers: Record<string, string> | undefined,
+  identity: 'user' | 'service',
+): Record<string, string> {
+  if (identity === 'user') return headers ?? {};
+  return Object.fromEntries(
+    Object.entries(headers ?? {}).filter(
+      ([name]) => name.toLowerCase() !== FORWARDED_ACCESS_TOKEN_HEADER,
+    ),
+  );
 }
 
 function manifestToolExecutionIdentity(
@@ -371,7 +400,7 @@ export class InternalApxAppKitGovernancePlugin
           const needsRequest = identity === 'user'
             || manifestTool?.annotations?.requires_request_context === true;
           return needsRequest
-            ? bridgeHeaderStorage.run(bridgeHeadersFromRequest(req), invoke)
+            ? bridgeHeaderStorage.run(bridgeHeadersFromRequest(req, identity), invoke)
             : invoke();
         };
       },
@@ -415,13 +444,14 @@ export class InternalApxAppKitGovernancePlugin
     if (!tool) {
       const bridge = this.config.pythonBridge;
       if (!bridge) throw new Error(`APX Python bridge is not configured for tool: ${name}`);
+      const identity = manifestToolExecutionIdentity(manifestTool);
       const response = await fetch(
         `${bridge.baseUrl.replace(/\/$/, '')}/_apx/internal/appkit/tools/${encodeURIComponent(name)}`,
         {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            ...bridge.headers,
+            ...bridgeConfigHeaders(bridge.headers, identity),
             ...bridgeHeaderStorage.getStore(),
           },
           body: JSON.stringify({ args }),
