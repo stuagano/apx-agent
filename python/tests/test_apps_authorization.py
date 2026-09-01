@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -9,8 +10,10 @@ import pytest
 from apx_agent import Dependencies, ResourceSpec, require_user_api_scopes, tool
 from apx_agent._apps_authorization import (
     AppDependency,
+    AppFamilyPermissions,
     compile_authorization_plan,
     infer_operation_authorization,
+    read_app_family_permissions,
 )
 from apx_agent._defaults import _get_workspace_client
 from apx_agent._resources import attach_resources
@@ -253,3 +256,71 @@ def test_compile_resolves_environment_backed_app_dependency(
     assert plan.app_dependencies == (
         AppDependency("https://peer.cloud.databricksapps.com"),
     )
+
+
+def test_read_app_family_permissions_reads_only_group_policy(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    original = """\
+[project]
+name = "kept"
+
+[tool.apx.agent]
+model = "kept-model"
+
+[tool.apx.apps.permissions]
+can_use_groups = ["z-users", "a-users", "z-users"]
+can_manage_groups = ["operators", "operators"]
+"""
+    pyproject.write_text(original)
+
+    permissions = read_app_family_permissions(pyproject)
+
+    assert permissions == AppFamilyPermissions(
+        can_use_groups=("a-users", "z-users"),
+        can_manage_groups=("operators",),
+    )
+    assert pyproject.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "[project]\nname = 'no-apx'\n",
+        "[tool.apx.agent]\nname = 'no-apps-policy'\n",
+        "[tool.apx.apps]\nname = 'no-permissions'\n",
+    ],
+)
+def test_read_app_family_permissions_missing_blocks_are_empty(
+    tmp_path: Path,
+    content: str,
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(content)
+
+    assert read_app_family_permissions(pyproject) == AppFamilyPermissions()
+
+
+@pytest.mark.parametrize("key", ["can_use_groups", "can_manage_groups"])
+@pytest.mark.parametrize("empty_name", ["", "   "])
+def test_read_app_family_permissions_rejects_empty_group_names(
+    tmp_path: Path,
+    key: str,
+    empty_name: str,
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f"[tool.apx.apps.permissions]\n{key} = [{empty_name!r}]\n",
+    )
+
+    with pytest.raises(ValueError, match=key):
+        read_app_family_permissions(pyproject)
+
+
+def test_read_app_family_permissions_rejects_malformed_owned_block(
+    tmp_path: Path,
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[tool.apx.apps]\npermissions = "not-a-table"\n')
+
+    with pytest.raises(ValueError, match=r"tool\.apx\.apps\.permissions"):
+        read_app_family_permissions(pyproject)
