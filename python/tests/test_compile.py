@@ -131,6 +131,21 @@ class TestCompileLlmAgent:
         lc_tool.invoke({"lookback_hours": 48})
         fake_ws.dummy_call.assert_called_once_with(48)
 
+    def test_dependency_resolution_uses_inspection_callables(
+        self, fake_ws: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apx_agent._compile import CompileContext, _resolve_deps_for_fn
+        from apx_agent._defaults import _get_workspace_client
+
+        monkeypatch.setattr(
+            "apx_agent._compile._tool_dependency_callables",
+            lambda _fn: {"ws": _get_workspace_client},
+        )
+
+        assert _resolve_deps_for_fn(scan_demand, CompileContext(ws=fake_ws, model="any")) == {
+            "ws": fake_ws
+        }
+
     def test_dependency_params_excluded_from_input_schema(
         self, fake_ws: MagicMock
     ) -> None:

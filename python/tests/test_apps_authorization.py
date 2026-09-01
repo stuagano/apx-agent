@@ -8,6 +8,7 @@ import pytest
 
 from apx_agent import Dependencies, ResourceSpec, require_user_api_scopes, tool
 from apx_agent._apps_authorization import infer_operation_authorization
+from apx_agent._defaults import _get_workspace_client
 from apx_agent._resources import attach_resources
 
 
@@ -19,6 +20,18 @@ def test_client_dependency_uses_service_identity() -> None:
 
     assert authorization.execution_identity == "service"
     assert authorization.requires_request_context is False
+
+
+def test_inference_uses_inspection_dependency_callables(monkeypatch: pytest.MonkeyPatch) -> None:
+    def lookup() -> str:
+        return "ok"
+
+    monkeypatch.setattr(
+        "apx_agent._apps_authorization._tool_dependency_callables",
+        lambda _fn: {"ws": _get_workspace_client},
+    )
+
+    assert infer_operation_authorization(lookup).execution_identity == "service"
 
 
 @pytest.mark.parametrize("dependency", [Dependencies.UserClient, Dependencies.Workspace, Dependencies.Sql])

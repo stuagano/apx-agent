@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, get_args, get_type_hints
-
-from fastapi import params
+from typing import Any, Callable
 
 from ._defaults import (
     _get_principal,
@@ -16,7 +14,7 @@ from ._defaults import (
     _get_workspace_client,
     get_databricks_headers,
 )
-from ._inspection import _inspect_tool_fn
+from ._inspection import _tool_dependency_callables
 from ._resources import ResourceSpec, get_resources, get_user_api_scopes
 from ._tool import ExecutionIdentity, get_tool_metadata
 
@@ -42,23 +40,6 @@ _REQUEST_CONTEXT_DEPENDENCIES = frozenset({
 })
 
 
-def _dependency_callables(
-    fn: Callable[..., Any],
-    dependency_names: list[str],
-) -> set[Callable[..., Any]]:
-    """Resolve the dependency callables for parameters `_inspect_tool_fn` identified."""
-    try:
-        hints = get_type_hints(fn, include_extras=True)
-    except Exception:
-        hints = {}
-    dependencies: set[Callable[..., Any]] = set()
-    for name in dependency_names:
-        for part in get_args(hints.get(name, Any)):
-            if isinstance(part, params.Depends) and callable(part.dependency):
-                dependencies.add(part.dependency)
-    return dependencies
-
-
 def infer_operation_authorization(fn: Callable[..., Any]) -> OperationAuthorization:
     """Infer one tool's execution identity from its declared dependencies.
 
@@ -68,8 +49,7 @@ def infer_operation_authorization(fn: Callable[..., Any]) -> OperationAuthorizat
     """
     resources = tuple(get_resources(fn))
     user_api_scopes = tuple(get_user_api_scopes(fn))
-    _, dependency_names = _inspect_tool_fn(fn)
-    dependencies = _dependency_callables(fn, dependency_names)
+    dependencies = set(_tool_dependency_callables(fn).values())
 
     identities: set[ExecutionIdentity] = set()
     if _get_workspace_client in dependencies:
