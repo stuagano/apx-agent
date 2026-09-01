@@ -33,6 +33,7 @@ declare its raw OBO scope directly via ``require_user_api_scopes`` (#563);
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable
@@ -59,6 +60,8 @@ _VALID_KINDS = frozenset({
     "uc_table",
     "uc_connection",
     "lakebase_instance",
+    "job",
+    "app",
 })
 
 
@@ -72,7 +75,8 @@ class ResourceSpec:
     Args:
         kind: One of ``"uc_function"``, ``"genie_space"``,
             ``"serving_endpoint"``, ``"sql_warehouse"``,
-            ``"vector_search_index"``, ``"uc_table"``.
+            ``"vector_search_index"``, ``"uc_table"``, ``"uc_connection"``,
+            ``"lakebase_instance"``, ``"job"``, ``"app"``.
         identifier: The natural identifier for the kind — function name,
             space ID, endpoint name, warehouse ID, index name, table name.
     """
@@ -125,23 +129,16 @@ def get_resources(fn: Any) -> list[ResourceSpec]:
 
 # The raw Databricks OBO scopes a tool may declare directly. Kept as a closed
 # set so a typo becomes a deploy-time error instead of another prod-only
-# "missing scopes" 500 (#563). These are the currently supported Databricks
-# Apps API scopes; SDK scopes also accept the documented ``:read`` modifier.
+# "missing scopes" 500 (#563).
 _KNOWN_USER_API_SCOPES = frozenset({
     "sql",
-    "sql:restricted-query",
-    "genie",
-    "files",
-    "model-serving",
-    "postgres",
-    "apps",
-    "ai-gateway",
-    "vector-search",
-    "catalog.catalogs",
-    "catalog.connections",
-    "catalog.schemas",
-    "catalog.tables",
-    "workspace.workspace",
+    "dashboards.genie",
+    "serving.serving-endpoints",
+    "vectorsearch.vector-search-endpoints",
+    "catalog.catalogs:read",
+    "catalog.connections:read",
+    "catalog.schemas:read",
+    "catalog.tables:read",
 })
 
 
@@ -166,18 +163,7 @@ def require_user_api_scopes(fn: Any, scopes: Iterable[str]) -> Any:
     an unknown scope string so a typo fails fast rather than silently.
     """
     cleaned = [s for s in scopes if s]
-    sdk_read_scopes = {
-        "catalog.catalogs",
-        "catalog.connections",
-        "catalog.schemas",
-        "catalog.tables",
-        "workspace.workspace",
-    }
-    unknown = [
-        s for s in cleaned
-        if s not in _KNOWN_USER_API_SCOPES
-        and not (s.endswith(":read") and s[:-5] in sdk_read_scopes)
-    ]
+    unknown = [s for s in cleaned if s not in _KNOWN_USER_API_SCOPES]
     if unknown:
         raise ValueError(
             f"Unknown user_api_scope(s) {unknown}. "
@@ -437,6 +423,8 @@ _DAB_KIND_SUFFIX: dict[str, str] = {
     "uc_table": "table",
     "uc_connection": "connection",
     "lakebase_instance": "lakebase",
+    "job": "job",
+    "app": "app",
 }
 
 
@@ -463,7 +451,8 @@ def _slugify(identifier: str, kind: str) -> str:
     while "--" in slug:
         slug = slug.replace("--", "-")
     suffix = _DAB_KIND_SUFFIX.get(kind, kind)
-    return f"{slug}-{suffix}"
+    digest = hashlib.sha256(f"{kind}:{identifier}".encode()).hexdigest()[:8]
+    return f"{slug}-{suffix}-{digest}"
 
 
 def _spec_to_yml_entry(spec: "ResourceSpec") -> dict[str, Any] | None:
@@ -519,6 +508,23 @@ def _spec_to_yml_entry(spec: "ResourceSpec") -> dict[str, Any] | None:
             "sql_warehouse": {
                 "name": name,
                 "id": spec.identifier,
+                "permission": "CAN_USE",
+            }
+        }
+
+    if spec.kind == "job":
+        return {
+            "job": {
+                "name": name,
+                "id": spec.identifier,
+                "permission": "CAN_MANAGE_RUN",
+            }
+        }
+
+    if spec.kind == "app":
+        return {
+            "app": {
+                "name": spec.identifier,
                 "permission": "CAN_USE",
             }
         }
@@ -620,9 +626,9 @@ _KIND_TO_SCOPE: dict[str, str] = {
     "uc_table": "sql",
     "uc_function": "sql",
     "uc_connection": "sql",
-    "serving_endpoint": "model-serving",
-    "genie_space": "genie",
-    "vector_search_index": "vector-search",
+    "serving_endpoint": "serving.serving-endpoints",
+    "genie_space": "dashboards.genie",
+    "vector_search_index": "vectorsearch.vector-search-endpoints",
 }
 
 
