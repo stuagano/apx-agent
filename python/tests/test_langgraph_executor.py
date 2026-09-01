@@ -12,7 +12,7 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -83,10 +83,37 @@ def _runtime_tool(query: str) -> str:
 
 
 class TestHandlesToolsInternally:
+    def test_compile_receives_distinct_user_and_service_clients(self) -> None:
+        agent = LlmAgent(tools=[])
+        user_ws = MagicMock(name="user_ws")
+        service_ws = MagicMock(name="service_ws")
+        compiled = MagicMock(name="compiled")
+
+        with patch(
+            "apx_agent._compile.compile_to_langgraph", return_value=compiled
+        ) as mock_compile:
+            executor = LangGraphExecutor(
+                agent,
+                user_ws=user_ws,
+                service_ws=service_ws,
+                model="any-model",
+            )
+            assert executor._get_compiled("any-model") is compiled
+
+        mock_compile.assert_called_once_with(
+            agent,
+            ws=user_ws,
+            service_ws=service_ws,
+            model="any-model",
+            checkpointer=None,
+        )
+
     def test_handles_tools_internally(self) -> None:
         """LangGraphExecutor.handles_tools_internally() returns True."""
         agent = LlmAgent(tools=[])
-        executor = LangGraphExecutor(agent, ws=None, model="any-model")
+        executor = LangGraphExecutor(
+            agent, user_ws=None, service_ws=None, model="any-model"
+        )
         assert executor.handles_tools_internally() is True
 
 
@@ -111,7 +138,9 @@ class TestRunTurnYieldsTurnComplete:
             "apx_agent._compile.compile_to_langgraph",
             return_value=fake_graph,
         ):
-            executor = LangGraphExecutor(agent, ws=None, model="test-model")
+            executor = LangGraphExecutor(
+                agent, user_ws=None, service_ws=None, model="test-model"
+            )
             events = [
                 e
                 async for e in executor.run_turn(
@@ -142,7 +171,9 @@ class TestRunTurnYieldsTurnComplete:
             "apx_agent._compile.compile_to_langgraph",
             return_value=fake_graph,
         ):
-            executor = LangGraphExecutor(agent, ws=None, model="test-model")
+            executor = LangGraphExecutor(
+                agent, user_ws=None, service_ws=None, model="test-model"
+            )
             events = [
                 e
                 async for e in executor.run_turn(
@@ -182,7 +213,9 @@ class TestCompiledGraphCached:
             return fake_graph
 
         with patch("apx_agent._compile.compile_to_langgraph", side_effect=_compile_spy):
-            executor = LangGraphExecutor(agent, ws=None, model="cached-model")
+            executor = LangGraphExecutor(
+                agent, user_ws=None, service_ws=None, model="cached-model"
+            )
 
             # First turn — should trigger compilation.
             events1 = [
@@ -223,7 +256,9 @@ class TestCompiledGraphCached:
             return _make_fake_graph("ok")
 
         with patch("apx_agent._compile.compile_to_langgraph", side_effect=_compile_spy):
-            executor = LangGraphExecutor(agent, ws=None, model="cached-model")
+            executor = LangGraphExecutor(
+                agent, user_ws=None, service_ws=None, model="cached-model"
+            )
 
             await _drain(
                 executor.run_turn(
@@ -264,7 +299,9 @@ class TestCompiledGraphCached:
         from apx_agent._executor import ExecutorConfig
 
         with patch("apx_agent._compile.compile_to_langgraph", side_effect=_compile_spy):
-            executor = LangGraphExecutor(agent, ws=None, model="model-a")
+            executor = LangGraphExecutor(
+                agent, user_ws=None, service_ws=None, model="model-a"
+            )
 
             await _drain(
                 executor.run_turn(

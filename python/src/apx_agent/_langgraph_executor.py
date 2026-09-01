@@ -153,16 +153,20 @@ class LangGraphExecutor:
 
     :param agent: The apx-agent :class:`~apx_agent._agents.BaseAgent` to wrap.
         This is the declarative agent spec — not a compiled graph.
-    :param ws: The per-request :class:`~databricks.sdk.WorkspaceClient` to
-        bind into tool closures during compilation.  Pass ``None`` to use the
-        default SDK auth chain.
+    :param user_ws: The per-request OBO client for user dependency closures.
+        ``None`` fails closed when a tool declares a user dependency.
+    :param service_ws: The app service client for service dependency closures.
+        ``None`` fails closed when a tool declares ``Dependencies.Client``.
     :param model: Default model endpoint name.  May be overridden per turn via
         :attr:`~apx_agent._executor.ExecutorConfig.model`.
 
     Example::
 
         from apx_agent import LlmAgent
-        executor = LangGraphExecutor(LlmAgent(), ws=None, model="databricks-claude-sonnet-4-6")
+        executor = LangGraphExecutor(
+            LlmAgent(), user_ws=None, service_ws=None,
+            model="databricks-claude-sonnet-4-6",
+        )
         async for event in executor.run_turn([Message(role="user", content="hi")], [], "", None):
             print(event)
     """
@@ -170,16 +174,18 @@ class LangGraphExecutor:
     def __init__(
         self,
         agent: "BaseAgent",
-        ws: "WorkspaceClient | None",
+        *,
+        user_ws: "WorkspaceClient | None",
+        service_ws: "WorkspaceClient | None",
         model: str | None = None,
         checkpointer: Any | None = None,
     ) -> None:
         """Initialise a LangGraphExecutor without compiling the graph yet.
 
         :param agent: The declarative apx-agent spec to compile on first use.
-        :param ws: Per-request WorkspaceClient for OBO auth.  ``None`` falls
-            back to the SDK default auth chain inside
-            :func:`~apx_agent._compile.compile_to_langgraph`.
+        :param user_ws: Per-request OBO client, or ``None`` when no forwarded
+            identity is available.
+        :param service_ws: App service client, or ``None`` when unavailable.
         :param model: Default model endpoint name.  Overridable per-turn via
             :class:`~apx_agent._executor.ExecutorConfig`.
         :param checkpointer: Optional LangGraph checkpointer for thread-scoped
@@ -188,7 +194,8 @@ class LangGraphExecutor:
             :meth:`run_turn` requires a ``thread_id`` in its config.
         """
         self._agent = agent
-        self._ws = ws
+        self._user_ws = user_ws
+        self._service_ws = service_ws
         self._model = model
         self._checkpointer = checkpointer
         self._compiled_cache: dict[tuple[str, int], Any] = {}
@@ -229,7 +236,11 @@ class LangGraphExecutor:
             from ._compile import compile_to_langgraph
 
             self._compiled_cache[cache_key] = compile_to_langgraph(
-                self._agent, ws=self._ws, model=model, checkpointer=self._checkpointer
+                self._agent,
+                ws=self._user_ws,
+                service_ws=self._service_ws,
+                model=model,
+                checkpointer=self._checkpointer,
             )
         return self._compiled_cache[cache_key]
 

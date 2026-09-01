@@ -24,10 +24,9 @@ The legacy ``run_via_sdk`` / ``stream_via_sdk`` functions in ``_runner.py``
 stay exported for callers that explicitly want the SDK path; this module is
 what the agent classes themselves use by default.
 
-OBO auth is preserved: ``_resolve_request_ws`` reads
-``X-Forwarded-Access-Token`` from the request headers when available and
-builds a per-request user-scoped ``WorkspaceClient``; otherwise falls back to
-the app-level SP client at ``request.app.state.workspace_client``.
+OBO auth is preserved separately from the app service identity. A forwarded
+token builds the per-request user client; without one the user client is
+``None``. The initialized app client remains the service client in both cases.
 """
 
 from __future__ import annotations
@@ -49,12 +48,12 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Per-request WorkspaceClient resolver
+# Per-request WorkspaceClient resolvers
 # ---------------------------------------------------------------------------
 
 
-def _resolve_request_ws(request: "Request") -> "WorkspaceClient":
-    """Build a WorkspaceClient for this request — OBO if available, else SP.
+def _resolve_request_user_ws(request: "Request") -> "WorkspaceClient | None":
+    """Build the request's OBO user client, or return ``None`` without a token.
 
     Mirrors ``_defaults._get_user_client`` but works with the raw request
     object instead of FastAPI's DI system (since the agent ``.run()`` API
@@ -72,8 +71,14 @@ def _resolve_request_ws(request: "Request") -> "WorkspaceClient":
         if token:
             host = os.environ.get("DATABRICKS_HOST")
             return _make_workspace_client(token=token, host=host)
+    return None
 
-    # SP path — app-level workspace client set by lifespan
+
+def _resolve_request_service_ws(request: "Request") -> "WorkspaceClient":
+    """Return the initialized app service client or the default service client."""
+
+    from ._defaults import _make_workspace_client
+
     try:
         ws = request.app.state.workspace_client
         if ws is not None:
@@ -81,7 +86,6 @@ def _resolve_request_ws(request: "Request") -> "WorkspaceClient":
     except Exception:
         pass
 
-    # Last resort — default auth chain (CLI for local dev)
     return _make_workspace_client()
 
 
@@ -141,7 +145,8 @@ async def run_via_compile(
 
     Args:
         agent: The apx-agent ``BaseAgent`` to run. Compiled fresh per call so
-            the tool closures bind to THIS request's WorkspaceClient.
+            tool closures bind to this request's distinct user and service
+            clients.
         input_messages: The conversation so far in apx-agent's ``Message`` shape.
         request: The FastAPI request — provides app state (model endpoint,
             SP client) and OBO headers (user-scoped client).
@@ -168,9 +173,12 @@ async def run_via_compile(
     from ._langgraph_executor import LangGraphExecutor
 
     model = _get_model(request)
-    ws = _resolve_request_ws(request)
+    user_ws = _resolve_request_user_ws(request)
+    service_ws = _resolve_request_service_ws(request)
 
-    executor = LangGraphExecutor(agent, ws=ws, model=model)
+    executor = LangGraphExecutor(
+        agent, user_ws=user_ws, service_ws=service_ws, model=model
+    )
     final = ""
     async for event in executor.run_turn(
         messages=input_messages,
@@ -204,9 +212,12 @@ async def stream_via_compile(
     from ._langgraph_executor import LangGraphExecutor
 
     model = _get_model(request)
-    ws = _resolve_request_ws(request)
+    user_ws = _resolve_request_user_ws(request)
+    service_ws = _resolve_request_service_ws(request)
 
-    executor = LangGraphExecutor(agent, ws=ws, model=model)
+    executor = LangGraphExecutor(
+        agent, user_ws=user_ws, service_ws=service_ws, model=model
+    )
     async for _event in executor.run_turn(
         messages=input_messages,
         tools=[],

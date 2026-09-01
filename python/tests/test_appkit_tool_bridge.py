@@ -24,12 +24,14 @@ def _app(agent: LlmAgent, monkeypatch) -> FastAPI:
     ws = MagicMock(name="obo_ws")
     ws.config.host = "https://fake.cloud.databricks.com"
     monkeypatch.setattr(_appkit_tool_bridge, "_obo_ws_from_headers", lambda _: ws)
-    monkeypatch.setattr(_appkit_tool_bridge, "WorkspaceClient", MagicMock)
+    monkeypatch.setattr(_appkit_tool_bridge, "_make_workspace_client", MagicMock)
     app.include_router(build_appkit_tool_bridge_router())
     return app
 
 
 def test_bridge_executes_tool_with_dependencies_and_hooks(monkeypatch) -> None:
+    from apx_agent import _appkit_tool_bridge
+
     seen: list[tuple] = []
 
     def lookup(
@@ -49,7 +51,12 @@ def test_bridge_executes_tool_with_dependencies_and_hooks(monkeypatch) -> None:
         before_tool=lambda name, args: seen.append(("before", name, args)),
         after_tool=lambda name, args, output: seen.append(("after", name, args, output)),
     )
-    client = TestClient(_app(agent, monkeypatch))
+    app = _app(agent, monkeypatch)
+    service_factory = MagicMock(
+        side_effect=AssertionError("user tool constructed service credentials")
+    )
+    monkeypatch.setattr(_appkit_tool_bridge, "_make_workspace_client", service_factory)
+    client = TestClient(app)
 
     response = client.post(
         "/_apx/internal/appkit/tools/lookup",
@@ -68,6 +75,7 @@ def test_bridge_executes_tool_with_dependencies_and_hooks(monkeypatch) -> None:
     }
     assert seen[0] == ("before", "lookup", {"resource": "main.sales.orders"})
     assert seen[1][0:3] == ("after", "lookup", {"resource": "main.sales.orders"})
+    service_factory.assert_not_called()
 
 
 def test_bridge_uses_ambient_client_for_tokenless_service_tool(monkeypatch) -> None:
@@ -84,7 +92,9 @@ def test_bridge_uses_ambient_client_for_tokenless_service_tool(monkeypatch) -> N
         return ws.config.host
 
     app = _app(LlmAgent(tools=[lookup]), monkeypatch)
-    monkeypatch.setattr(_appkit_tool_bridge, "WorkspaceClient", lambda: service_ws)
+    monkeypatch.setattr(
+        _appkit_tool_bridge, "_make_workspace_client", lambda: service_ws
+    )
     monkeypatch.setattr(_appkit_tool_bridge, "_obo_ws_from_headers", obo)
     response = TestClient(app).post(
         "/_apx/internal/appkit/tools/lookup",
@@ -130,7 +140,9 @@ def test_bridge_service_metadata_excludes_forwarded_bearer_token(monkeypatch) ->
         }
 
     app = _app(LlmAgent(tools=[lookup]), monkeypatch)
-    monkeypatch.setattr(_appkit_tool_bridge, "WorkspaceClient", lambda: service_ws)
+    monkeypatch.setattr(
+        _appkit_tool_bridge, "_make_workspace_client", lambda: service_ws
+    )
     monkeypatch.setattr(_appkit_tool_bridge, "_obo_ws_from_headers", obo)
     response = TestClient(app).post(
         "/_apx/internal/appkit/tools/lookup",
