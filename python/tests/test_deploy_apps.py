@@ -1504,6 +1504,8 @@ def test_apps_deploy_non_bijective_a2a_fails_before_bundle_deploy(
         lambda cwd, **_kwargs: bake_calls.append(cwd) or False,
     )
     calls = _install_subprocess_mock(monkeypatch)
+    bundle_path = scaffold / "databricks.yml"
+    original_bundle = bundle_path.read_bytes()
 
     result = CliRunner().invoke(
         main,
@@ -1514,6 +1516,7 @@ def test_apps_deploy_non_bijective_a2a_fails_before_bundle_deploy(
     assert match in result.output
     assert bake_calls == []
     assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+    assert bundle_path.read_bytes() == original_bundle
 
 
 def test_apps_deploy_invalid_authorization_precedes_signature_bake(
@@ -1551,14 +1554,23 @@ def test_apps_deploy_invalid_authorization_precedes_signature_bake(
         "apx_agent.cli._make_ws_for_scaffold",
         unexpected_workspace,
     )
+    bake_calls: list[Path] = []
+    monkeypatch.setattr(
+        "apx_agent.cli._bake_deploy_function_signatures",
+        lambda cwd, **_kwargs: bake_calls.append(cwd) or False,
+    )
     calls = _install_subprocess_mock(monkeypatch)
+    bundle_path = scaffold / "databricks.yml"
+    original_bundle = bundle_path.read_bytes()
 
     result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
 
     assert result.exit_code != 0
     assert "unknown generated user API scope" in result.output
+    assert bake_calls == []
     assert workspace_calls == []
     assert schema_path.read_bytes() == original_schema
+    assert bundle_path.read_bytes() == original_bundle
     assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
 
 
