@@ -38,6 +38,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import warnings
 from collections.abc import Iterator
@@ -8982,20 +8983,15 @@ def _resolve_app_dependencies(
     return resolved
 
 
-def _reconcile_apps_authorization(
-    cwd: Path,
-    *,
+def _validate_apps_authorization_plan(
     plan: "AuthorizationPlan",
-    resolved_dependencies: list["ResolvedAppDependency"],
     family_permissions: "AppFamilyPermissions",
-    bundle_key: str,
-    log: Any,
-) -> bool:
-    """Add the compiled authorization plan to ``databricks.yml`` and validate it."""
+) -> None:
+    """Fail closed on contradictions that require no workspace or file I/O."""
     from apx_agent._resources import (
-        ResourceSpec,
         _KNOWN_USER_API_SCOPES,
         resources_to_databricks_yml,
+        user_api_scopes_for,
     )
 
     unknown_scopes = sorted(
@@ -9006,14 +9002,105 @@ def _reconcile_apps_authorization(
             "Authorization plan contains unknown generated user API scope(s): "
             f"{', '.join(unknown_scopes)}. Correct the tool declaration before deploying."
         )
+    if len(plan.user_api_scopes) != len(set(plan.user_api_scopes)):
+        raise click.ClickException(
+            "Authorization plan contains duplicate generated user API scopes."
+        )
+    operation_names = [operation.name for operation in plan.operations]
+    if len(operation_names) != len(set(operation_names)):
+        raise click.ClickException(
+            "Authorization plan contains duplicate reachable operation names."
+        )
+    operation_user_resources = {
+        resource
+        for operation in plan.operations
+        if operation.execution_identity == "user"
+        for resource in operation.resources
+    }
+    if set(plan.user_resources) != operation_user_resources:
+        raise click.ClickException(
+            "Authorization plan user resources contradict the reachable user "
+            "operations."
+        )
+    operation_service_resources = {
+        resource
+        for operation in plan.operations
+        if operation.execution_identity == "service"
+        for resource in operation.resources
+    }
+    if not operation_service_resources.issubset(set(plan.service_resources)):
+        raise click.ClickException(
+            "Authorization plan service resources omit a reachable service operation "
+            "resource."
+        )
+    if any(
+        operation.user_api_scopes
+        for operation in plan.operations
+        if operation.execution_identity == "service"
+    ):
+        raise click.ClickException(
+            "Authorization plan assigns a user API scope to a service operation."
+        )
+    required_user_scopes = {
+        *user_api_scopes_for(plan.user_resources),
+        *(
+            scope
+            for operation in plan.operations
+            if operation.execution_identity == "user"
+            for scope in operation.user_api_scopes
+        ),
+    }
+    if set(plan.user_api_scopes) != required_user_scopes:
+        raise click.ClickException(
+            "Authorization plan user API scopes contradict the reachable user "
+            "operations and resources."
+        )
+    if len(plan.user_resources) != len(set(plan.user_resources)):
+        raise click.ClickException(
+            "Authorization plan contains duplicate user resources."
+        )
+    if len(plan.service_resources) != len(set(plan.service_resources)):
+        raise click.ClickException(
+            "Authorization plan contains duplicate service resources."
+        )
+    if len(resources_to_databricks_yml(plan.service_resources)) != len(
+        plan.service_resources
+    ):
+        raise click.ClickException(
+            "Authorization plan contains a service resource that cannot be projected "
+            "into the Apps bundle schema."
+        )
 
+    normalized_urls = [
+        dependency.url.rstrip("/") for dependency in plan.app_dependencies
+    ]
+    if len(normalized_urls) != len(set(normalized_urls)):
+        raise click.ClickException(
+            "Authorization plan contains duplicate normalized App dependency URLs."
+        )
+
+    overlap = sorted(
+        set(family_permissions.can_use_groups)
+        & set(family_permissions.can_manage_groups)
+    )
+    if overlap:
+        raise click.ClickException(
+            "App family group policy grants both CAN_USE and CAN_MANAGE to: "
+            f"{', '.join(overlap)}. Keep each group in one policy list."
+        )
+
+
+def _validate_resolved_app_dependencies(
+    plan: "AuthorizationPlan",
+    resolved_dependencies: list["ResolvedAppDependency"],
+) -> None:
+    """Require a one-to-one mapping from declared URLs to workspace Apps."""
     planned_urls = [dependency.url.rstrip("/") for dependency in plan.app_dependencies]
     resolved_urls = [
         dependency.url.rstrip("/") for dependency in resolved_dependencies
     ]
     if (
-        len(planned_urls) != len(set(planned_urls))
-        or len(resolved_urls) != len(set(resolved_urls))
+        len(resolved_urls) != len(set(resolved_urls))
         or set(planned_urls) != set(resolved_urls)
     ):
         raise click.ClickException(
@@ -9027,18 +9114,73 @@ def _reconcile_apps_authorization(
         raise click.ClickException(
             "A resolved App dependency is missing its immutable id, name, or URL."
         )
-
-    overlap = sorted(
-        set(family_permissions.can_use_groups)
-        & set(family_permissions.can_manage_groups)
-    )
-    if overlap:
+    resolved_ids = [dependency.id for dependency in resolved_dependencies]
+    if len(resolved_ids) != len(set(resolved_ids)):
         raise click.ClickException(
-            "App family group policy grants both CAN_USE and CAN_MANAGE to: "
-            f"{', '.join(overlap)}. Keep each group in one policy list."
+            "Resolved App dependencies contain a duplicate immutable App id."
+        )
+    resolved_names = [dependency.name for dependency in resolved_dependencies]
+    if len(resolved_names) != len(set(resolved_names)):
+        raise click.ClickException(
+            "Resolved App dependencies contain a duplicate workspace App name."
         )
 
+
+def _write_databricks_yml_atomic(path: Path, yml: Any, doc: Any) -> None:
+    """Replace ``databricks.yml`` atomically without exposing partial output."""
+    temporary_path: Path | None = None
+    try:
+        mode = path.stat().st_mode & 0o777
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            yml.dump(doc, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, path)
+    except Exception as exc:
+        raise click.ClickException(
+            "Could not atomically write databricks.yml; the original file was preserved."
+        ) from exc
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _reconcile_apps_authorization(
+    cwd: Path,
+    *,
+    plan: "AuthorizationPlan",
+    resolved_dependencies: list["ResolvedAppDependency"],
+    family_permissions: "AppFamilyPermissions",
+    bundle_key: str,
+    log: Any,
+) -> bool:
+    """Add the compiled authorization plan to ``databricks.yml`` and validate it."""
+    from apx_agent._resources import (
+        ResourceSpec,
+        resources_to_databricks_yml,
+    )
+
+    _validate_apps_authorization_plan(plan, family_permissions)
+    _validate_resolved_app_dependencies(plan, resolved_dependencies)
+
     path = cwd / "databricks.yml"
+    if path.is_symlink():
+        raise click.ClickException(
+            "Refusing to reconcile a symlinked databricks.yml; use a regular bundle "
+            "file so authorization updates cannot follow an unexpected target."
+        )
     yml, doc = _load_databricks_yml_roundtrip(cwd)
     resources_block = doc.get("resources")
     if resources_block is None:
@@ -9132,11 +9274,27 @@ def _reconcile_apps_authorization(
         if identity is not None:
             existing_by_identity.setdefault(identity, []).append(entry)
 
-    required_specs = [
-        *plan.service_resources,
-        *(ResourceSpec("app", dependency.name) for dependency in resolved_dependencies),
+    app_bindings = resources_to_databricks_yml(
+        ResourceSpec("app", dependency.name)
+        for dependency in resolved_dependencies
+    )
+    if len(app_bindings) != len(resolved_dependencies):
+        raise click.ClickException(
+            "The projected App binding count does not match the resolved App "
+            "dependency count."
+        )
+    app_binding_identities = [_entry_identity(entry) for entry in app_bindings]
+    if (
+        any(identity is None for identity in app_binding_identities)
+        or len(set(app_binding_identities)) != len(resolved_dependencies)
+    ):
+        raise click.ClickException(
+            "Resolved App dependencies did not project to distinct App bindings."
+        )
+    generated = [
+        *resources_to_databricks_yml(plan.service_resources),
+        *app_bindings,
     ]
-    generated = resources_to_databricks_yml(required_specs)
     required_by_identity: dict[str, dict[str, Any]] = {}
     for entry in generated:
         identity = _entry_identity(entry)
@@ -9263,8 +9421,7 @@ def _reconcile_apps_authorization(
     if not changed:
         log("  Apps authorization already matches the compiled plan")
         return False
-    with path.open("w") as stream:
-        yml.dump(doc, stream)
+    _write_databricks_yml_atomic(path, yml, doc)
     log(
         "  reconciled Apps authorization: "
         f"{len(added)} resource(s), {len(new_scopes)} scope(s), "
@@ -9693,12 +9850,10 @@ def _deploy_apps_impl(
         log(f"# resolved app_name: {resolved_app_name}")
 
     agent = _load_finalized_agent(module)
-    _bake_deploy_function_signatures(
-        cwd, agent=agent, profile=profile, log=log,
-    )
 
     # 2. Compile and reconcile the complete Apps authorization contract on every
-    #    deploy. The compatibility flag is accepted but no longer gates this.
+    #    deploy before signature baking can read the workspace or mutate schema.
+    #    The compatibility flag is accepted but no longer gates this.
     from ._apps_authorization import (
         authorization_summary_lines,
         compile_authorization_plan,
@@ -9718,9 +9873,17 @@ def _deploy_apps_impl(
         family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    _validate_apps_authorization_plan(
+        authorization_plan,
+        family_permissions,
+    )
     resolved_dependencies = _resolve_app_dependencies(
         authorization_plan.app_dependencies,
         profile=profile,
+    )
+    _validate_resolved_app_dependencies(
+        authorization_plan,
+        resolved_dependencies,
     )
 
     log("# Apps authorization summary")
@@ -9740,6 +9903,9 @@ def _deploy_apps_impl(
         family_permissions=family_permissions,
         bundle_key=bundle_key,
         log=log,
+    )
+    _bake_deploy_function_signatures(
+        cwd, agent=agent, profile=profile, log=log,
     )
 
     # 2a. --env / --secret-env (issue #415): merge caller-supplied runtime
