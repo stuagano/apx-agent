@@ -85,6 +85,8 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
     assert "connection.split(',')" in server_ts
     assert "delete headers[name.trim().toLowerCase()]" in server_ts
     assert "upstream.setTimeout(5_000, fail);" in server_ts
+    assert "upstream.setTimeout(0);" in server_ts
+    assert server_ts.index("upstream.setTimeout(0);") < server_ts.index("res.writeHead(")
     assert "response.once('aborted', fail);" in server_ts
     assert "response.once('error', fail);" in server_ts
     assert "if (body !== undefined) upstream.end(body);" in server_ts

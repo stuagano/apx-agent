@@ -306,6 +306,7 @@ await createApp({
           : undefined;
         if (body !== undefined) headers['content-length'] = Buffer.byteLength(body).toString();
         const upstream = http.request(target, { method: req.method, headers }, (response) => {
+          upstream.setTimeout(0);
           const headers = { ...response.headers };
           const connection = Array.isArray(headers.connection)
             ? headers.connection.join(',')

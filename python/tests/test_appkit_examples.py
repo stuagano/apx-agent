@@ -301,8 +301,9 @@ PROBE = textwrap.dedent(
                 observed["json"] = {
                     "body": json.loads(body),
                     "identity": {
-                        name: bool(self.headers.get(name))
+                        name: self.headers.get(name)
                         for name in (
+                            "X-Databricks-Host",
                             "X-Databricks-Token",
                             "X-Databricks-User",
                             "X-Forwarded-User",
@@ -359,6 +360,7 @@ PROBE = textwrap.dedent(
                     self.end_headers()
                     self.wfile.write(payload[:10])
                     self.wfile.flush()
+                    sleep(6)
                     self.wfile.write(payload[10:])
                     return
                 payload = b'{"proxied":true}'
@@ -449,6 +451,7 @@ PROBE = textwrap.dedent(
                     "TE": "trailers",
                     "Trailer": "X-Trailer",
                     "Upgrade": "websocket",
+                    "X-Databricks-Host": "https://workspace-sentinel",
                     "X-Databricks-Token": "token-sentinel",
                     "X-Databricks-User": "user:alice",
                     "X-Forwarded-User": "user:alice",
@@ -476,10 +479,11 @@ PROBE = textwrap.dedent(
             assert observed["json"] == {
                 "body": {"question": "status"},
                 "identity": {
-                    "X-Databricks-Token": True,
-                    "X-Databricks-User": True,
-                    "X-Forwarded-User": True,
-                    "X-Request-Id": True,
+                    "X-Databricks-Host": "https://workspace-sentinel",
+                    "X-Databricks-Token": "token-sentinel",
+                    "X-Databricks-User": "user:alice",
+                    "X-Forwarded-User": "user:alice",
+                    "X-Request-Id": "request-sentinel",
                 },
                 "method": "POST",
                 "path": "/?request_id=abc",
@@ -499,7 +503,7 @@ PROBE = textwrap.dedent(
                     f"http://127.0.0.1:{host_port}/_apx/stream?mode=sse",
                     headers={"X-Forwarded-User": "user:alice"},
                 ),
-                timeout=5,
+                timeout=7,
             ) as response:
                 assert response.status == 206
                 assert response.headers["Content-Type"] == "text/event-stream"
