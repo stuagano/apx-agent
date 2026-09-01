@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+from urllib.parse import urlparse
 
 from ._defaults import (
     _get_principal,
@@ -14,10 +15,27 @@ from ._defaults import (
     get_databricks_headers,
 )
 from ._inspection import _tool_dependency_callables
-from ._resources import ResourceSpec, get_resources, get_user_api_scopes
+from ._resources import (
+    ResourceSpec,
+    _iter_sub_agents,
+    _iter_tool_fns,
+    _sub_agent_to_endpoint,
+    get_resources,
+    get_user_api_scopes,
+    user_api_scopes_for,
+)
 from ._tool import ExecutionIdentity, get_tool_metadata
 
-__all__ = ["OperationAuthorization", "infer_operation_authorization"]
+if TYPE_CHECKING:
+    from ._agents import BaseAgent
+
+__all__ = [
+    "AppDependency",
+    "AuthorizationPlan",
+    "OperationAuthorization",
+    "compile_authorization_plan",
+    "infer_operation_authorization",
+]
 
 
 @dataclass(frozen=True)
@@ -29,6 +47,24 @@ class OperationAuthorization:
     requires_request_context: bool
     resources: tuple[ResourceSpec, ...]
     user_api_scopes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AppDependency:
+    """One Databricks App peer that requires service A2A authorization."""
+
+    url: str
+
+
+@dataclass(frozen=True)
+class AuthorizationPlan:
+    """Identity-partitioned Apps authorization requirements for an agent."""
+
+    operations: tuple[OperationAuthorization, ...]
+    user_resources: tuple[ResourceSpec, ...]
+    service_resources: tuple[ResourceSpec, ...]
+    user_api_scopes: tuple[str, ...]
+    app_dependencies: tuple[AppDependency, ...]
 
 
 _USER_DEPENDENCIES = frozenset({_get_user_client, _get_sql_runner})
@@ -91,4 +127,84 @@ def infer_operation_authorization(fn: Callable[..., Any]) -> OperationAuthorizat
         ),
         resources=resources,
         user_api_scopes=user_api_scopes,
+    )
+
+
+def compile_authorization_plan(
+    agent: "BaseAgent",
+    *,
+    model: str,
+) -> AuthorizationPlan:
+    """Compile operation declarations into user and service authorization."""
+    operations = tuple(sorted(
+        (infer_operation_authorization(fn) for fn in _iter_tool_fns(agent)),
+        key=lambda operation: (
+            operation.name,
+            operation.execution_identity,
+            operation.requires_request_context,
+            tuple(sorted(
+                (resource.kind, resource.identifier)
+                for resource in operation.resources
+            )),
+            tuple(sorted(operation.user_api_scopes)),
+        ),
+    ))
+    user_resources: set[ResourceSpec] = set()
+    service_resources: set[ResourceSpec] = {
+        ResourceSpec("serving_endpoint", model),
+    }
+    raw_user_scopes: set[str] = set()
+
+    for operation in operations:
+        if operation.execution_identity == "user":
+            user_resources.update(operation.resources)
+            raw_user_scopes.update(operation.user_api_scopes)
+            continue
+        if operation.user_api_scopes:
+            scopes = ", ".join(sorted(operation.user_api_scopes))
+            raise ValueError(
+                f"Tool {operation.name!r} executes as service and cannot declare "
+                f"user API scopes: {scopes}."
+            )
+        service_resources.update(operation.resources)
+
+    app_dependencies: set[AppDependency] = set()
+    for raw in _iter_sub_agents(agent):
+        if _is_apps_https_url(raw):
+            app_dependencies.add(AppDependency(raw))
+            continue
+        endpoint = _sub_agent_to_endpoint(raw)
+        if endpoint is not None:
+            service_resources.add(endpoint)
+
+    ordered_user_resources = tuple(sorted(
+        user_resources,
+        key=lambda resource: (resource.kind, resource.identifier),
+    ))
+    ordered_service_resources = tuple(sorted(
+        service_resources,
+        key=lambda resource: (resource.kind, resource.identifier),
+    ))
+    user_api_scopes = tuple(sorted({
+        *user_api_scopes_for(ordered_user_resources),
+        *raw_user_scopes,
+    }))
+    return AuthorizationPlan(
+        operations=operations,
+        user_resources=ordered_user_resources,
+        service_resources=ordered_service_resources,
+        user_api_scopes=user_api_scopes,
+        app_dependencies=tuple(sorted(
+            app_dependencies,
+            key=lambda dependency: dependency.url,
+        )),
+    )
+
+
+def _is_apps_https_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return (
+        parsed.scheme == "https"
+        and (host == "databricksapps.com" or host.endswith(".databricksapps.com"))
     )

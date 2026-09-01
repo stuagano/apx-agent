@@ -7,7 +7,11 @@ from typing import Any
 import pytest
 
 from apx_agent import Dependencies, ResourceSpec, require_user_api_scopes, tool
-from apx_agent._apps_authorization import infer_operation_authorization
+from apx_agent._apps_authorization import (
+    AppDependency,
+    compile_authorization_plan,
+    infer_operation_authorization,
+)
 from apx_agent._defaults import _get_workspace_client
 from apx_agent._resources import attach_resources
 
@@ -128,3 +132,84 @@ def test_pure_tool_uses_service_without_request_context() -> None:
     assert authorization.requires_request_context is False
     assert authorization.resources == ()
     assert authorization.user_api_scopes == ()
+
+
+def test_compile_partitions_resources_scopes_and_structural_dependencies() -> None:
+    def user_orders(ws: Dependencies.UserClient) -> str:
+        return "ok"
+
+    attach_resources(user_orders, [
+        ResourceSpec("uc_table", "main.sales.orders"),
+        ResourceSpec("uc_table", "main.shared.accounts"),
+    ])
+    require_user_api_scopes(user_orders, ["catalog.tables:read"])
+
+    @tool(execution="service")
+    def background_telemetry() -> str:
+        return "ok"
+
+    attach_resources(background_telemetry, [
+        ResourceSpec("job", "telemetry-job"),
+        ResourceSpec("uc_table", "main.shared.accounts"),
+    ])
+
+    from apx_agent import Agent
+
+    plan = compile_authorization_plan(
+        Agent(
+            tools=[background_telemetry, user_orders],
+            sub_agents=["https://peer.cloud.databricksapps.com"],
+        ),
+        model="databricks-claude-sonnet-4-6",
+    )
+
+    assert [operation.name for operation in plan.operations] == [
+        "background_telemetry",
+        "user_orders",
+    ]
+    assert plan.user_resources == (
+        ResourceSpec("uc_table", "main.sales.orders"),
+        ResourceSpec("uc_table", "main.shared.accounts"),
+    )
+    assert plan.service_resources == (
+        ResourceSpec("job", "telemetry-job"),
+        ResourceSpec("serving_endpoint", "databricks-claude-sonnet-4-6"),
+        ResourceSpec("uc_table", "main.shared.accounts"),
+    )
+    assert plan.user_api_scopes == ("catalog.tables:read", "sql")
+    assert plan.app_dependencies == (
+        AppDependency("https://peer.cloud.databricksapps.com"),
+    )
+
+
+def test_compile_rejects_raw_user_scope_on_service_operation() -> None:
+    @tool(execution="service")
+    def background_telemetry() -> str:
+        return "ok"
+
+    require_user_api_scopes(background_telemetry, ["catalog.tables:read"])
+
+    from apx_agent import Agent
+
+    with pytest.raises(ValueError, match="background_telemetry.*service.*catalog.tables:read"):
+        compile_authorization_plan(Agent(tools=[background_telemetry]), model="model")
+
+
+def test_compile_output_order_is_independent_of_tool_order() -> None:
+    @tool(execution="user")
+    def z_lookup() -> str:
+        return "ok"
+
+    @tool(execution="service")
+    def a_refresh() -> str:
+        return "ok"
+
+    attach_resources(z_lookup, [ResourceSpec("uc_table", "other.sales.orders")])
+    attach_resources(a_refresh, [ResourceSpec("job", "refresh")])
+
+    from apx_agent import Agent
+
+    forward = compile_authorization_plan(Agent(tools=[z_lookup, a_refresh]), model="model")
+    reverse = compile_authorization_plan(Agent(tools=[a_refresh, z_lookup]), model="model")
+
+    assert forward == reverse
