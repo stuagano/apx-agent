@@ -7,12 +7,15 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 
 import {
   Plugin,
+  ResourceType,
   toPlugin,
   type BasePluginConfig,
   type PluginManifest,
+  type ResourceRequirement,
 } from '@databricks/appkit';
 import {
   createAgent,
@@ -32,6 +35,11 @@ import type { AgentConfig, AgentExports, AgentTool } from '../agent/index.js';
 import { toStrictSchema, zodToJsonSchema } from '../agent/index.js';
 
 export const INTERNAL_APX_APPKIT_PLUGIN_NAME = 'apx';
+
+interface InternalApxAppsHostResource {
+  kind: string;
+  identifier: string;
+}
 
 const bridgeHeaderStorage = new AsyncLocalStorage<Record<string, string>>();
 const FORWARDED_HEADER_NAMES = [
@@ -71,8 +79,18 @@ export interface InternalApxAppsHostManifest {
     parameters: Record<string, unknown>;
     annotations?: {
       effect?: ToolAnnotations['effect'];
+      execution_identity?: 'user' | 'service';
+      requires_request_context?: boolean;
       requires_user_context?: boolean;
     };
+  }>;
+  resources: InternalApxAppsHostResource[];
+  user_resources: InternalApxAppsHostResource[];
+  service_resources: InternalApxAppsHostResource[];
+  user_api_scopes: string[];
+  app_to_app_permissions: Array<{
+    url: string;
+    permission: 'CAN_USE';
   }>;
 }
 
@@ -199,6 +217,60 @@ function bridgeHeadersFromRequest(req: Parameters<Plugin['asUser']>[0]): Record<
   return headers;
 }
 
+function manifestToolExecutionIdentity(
+  tool: NonNullable<InternalApxAppsHostManifest['tools']>[number] | undefined,
+): 'user' | 'service' {
+  if (tool?.annotations?.execution_identity) return tool.annotations.execution_identity;
+  return tool?.annotations?.requires_user_context === false ? 'service' : 'user';
+}
+
+function appKitResourceRequirement(
+  resource: InternalApxAppsHostResource,
+): ResourceRequirement {
+  const resourceKey = `apx-${resource.kind.replaceAll('_', '-')}-${createHash('sha256')
+    .update(`${resource.kind}:${resource.identifier}`)
+    .digest('hex')
+    .slice(0, 8)}`;
+  const base = {
+    alias: `${resource.kind}: ${resource.identifier}`,
+    resourceKey,
+    description: `APX-declared ${resource.kind} resource`,
+    required: true,
+  };
+  const field = (name: string) => ({ [name]: { value: resource.identifier } });
+
+  switch (resource.kind) {
+    case 'job':
+      return { ...base, type: ResourceType.JOB, permission: 'CAN_MANAGE_RUN', fields: field('id') };
+    case 'serving_endpoint':
+      return { ...base, type: ResourceType.SERVING_ENDPOINT, permission: 'CAN_QUERY', fields: field('name') };
+    case 'sql_warehouse':
+      return { ...base, type: ResourceType.SQL_WAREHOUSE, permission: 'CAN_USE', fields: field('id') };
+    case 'vector_search_index':
+      return { ...base, type: ResourceType.VECTOR_SEARCH_INDEX, permission: 'SELECT', fields: field('name') };
+    case 'uc_function':
+      return { ...base, type: ResourceType.UC_FUNCTION, permission: 'EXECUTE', fields: field('name') };
+    case 'uc_connection':
+      return { ...base, type: ResourceType.UC_CONNECTION, permission: 'USE_CONNECTION', fields: field('name') };
+    case 'genie_space':
+      return { ...base, type: ResourceType.GENIE_SPACE, permission: 'CAN_RUN', fields: field('id') };
+    case 'lakebase_instance':
+      return {
+        ...base,
+        type: ResourceType.DATABASE,
+        permission: 'CAN_CONNECT_AND_CREATE',
+        fields: {
+          instance_name: { value: resource.identifier },
+          database_name: { value: 'databricks_postgres' },
+        },
+      };
+    case 'app':
+      return { ...base, type: ResourceType.APP, permission: 'CAN_USE', fields: field('name') };
+    default:
+      throw new Error(`Unsupported APX AppKit service resource kind: ${resource.kind}`);
+  }
+}
+
 function toolAnnotations(
   tool: AgentTool,
   overrides: Record<string, ToolAnnotations> | undefined,
@@ -215,7 +287,7 @@ function manifestToolAnnotations(
 ): ToolAnnotations {
   return {
     effect: tool.annotations?.effect ?? 'update',
-    requiresUserContext: tool.annotations?.requires_user_context ?? true,
+    requiresUserContext: manifestToolExecutionIdentity(tool) === 'user',
   };
 }
 
@@ -262,6 +334,12 @@ export class InternalApxAppKitGovernancePlugin
     resources: { required: [], optional: [] },
   } satisfies PluginManifest<typeof INTERNAL_APX_APPKIT_PLUGIN_NAME>;
 
+  static getResourceRequirements(
+    config: InternalApxAppKitGovernanceConfig,
+  ): ResourceRequirement[] {
+    return (config.manifest?.service_resources ?? []).map(appKitResourceRequirement);
+  }
+
   private get agentExports(): AgentExports {
     return requireAgentExports(this.config.agent);
   }
@@ -273,13 +351,29 @@ export class InternalApxAppKitGovernancePlugin
   }
 
   asUser(req: Parameters<Plugin['asUser']>[0]): this {
-    const scoped = super.asUser(req);
-    const headers = bridgeHeadersFromRequest(req);
-    return new Proxy(scoped, {
+    const executeAsUser = (name: string, args: unknown, signal?: AbortSignal) => (
+      super.asUser(req).executeAgentTool(name, args, signal)
+    );
+    return new Proxy(this, {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
-        if (typeof value !== 'function') return value;
-        return (...args: unknown[]) => bridgeHeaderStorage.run(headers, () => value.apply(target, args));
+        if (prop !== 'executeAgentTool' || typeof value !== 'function') return value;
+        return (name: string, args: unknown, signal?: AbortSignal) => {
+          const manifestTool = target.config.manifest?.tools?.find(
+            (candidate) => candidate.name === name,
+          );
+          const identity = manifestToolExecutionIdentity(manifestTool);
+          const invoke = () => (
+            identity === 'user'
+              ? executeAsUser(name, args, signal)
+              : target.executeAgentTool(name, args, signal)
+          );
+          const needsRequest = identity === 'user'
+            || manifestTool?.annotations?.requires_request_context === true;
+          return needsRequest
+            ? bridgeHeaderStorage.run(bridgeHeadersFromRequest(req), invoke)
+            : invoke();
+        };
       },
     });
   }
