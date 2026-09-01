@@ -7,9 +7,11 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
+from databricks.sdk import WorkspaceClient
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from ._agents import BaseAgent, LlmAgent
+from ._apps_authorization import infer_operation_authorization
 from ._callbacks import build_callback_handler
 from ._compile import CompileContext, _make_langchain_tool
 from ._defaults import DatabricksAppsHeaders, _obo_ws_from_headers
@@ -56,11 +58,36 @@ def build_appkit_tool_bridge_router() -> APIRouter:
                 detail=f"APX AppKit bridge cannot execute stateful tool: {tool_name}",
             )
 
-        headers = _headers_from_request(request)
-        ws = _obo_ws_from_headers(headers)
+        authorization = infer_operation_authorization(target.fn)
+        headers = (
+            _headers_from_request(
+                request,
+                include_token=authorization.execution_identity == "user",
+            )
+            if authorization.requires_request_context
+            else None
+        )
+        if authorization.execution_identity == "user" and (
+            headers is None or headers.token is None
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail=f"APX tool {tool_name!r} requires forwarded user identity",
+            )
+        service_ws = WorkspaceClient()
+        user_ws = (
+            _obo_ws_from_headers(headers)
+            if authorization.execution_identity == "user" and headers is not None
+            else None
+        )
         lc_tool = _make_langchain_tool(
             target.fn,
-            CompileContext(ws=ws, model=ctx.config.model, headers=headers),
+            CompileContext(
+                service_ws=service_ws,
+                user_ws=user_ws,
+                model=ctx.config.model,
+                headers=headers,
+            ),
         )
         handler = build_callback_handler(target.owner)
         config = {"callbacks": [handler]} if handler is not None else None
@@ -91,7 +118,11 @@ def _find_tool(agent: BaseAgent, name: str) -> _ToolTarget:
     return _ToolTarget(None, None)
 
 
-def _headers_from_request(request: Request) -> DatabricksAppsHeaders:
+def _headers_from_request(
+    request: Request,
+    *,
+    include_token: bool,
+) -> DatabricksAppsHeaders:
     raw_request_id = request.headers.get("X-Request-Id")
     return DatabricksAppsHeaders(
         host=request.headers.get("X-Forwarded-Host"),
@@ -101,7 +132,7 @@ def _headers_from_request(request: Request) -> DatabricksAppsHeaders:
         request_id=UUID(raw_request_id) if raw_request_id else None,
         token=(
             SecretStr(request.headers["X-Forwarded-Access-Token"])
-            if request.headers.get("X-Forwarded-Access-Token")
+            if include_token and request.headers.get("X-Forwarded-Access-Token")
             else None
         ),
     )

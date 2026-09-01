@@ -12,6 +12,8 @@ from apx_agent._policy import ApprovalRequired, ApprovalStore
 
 
 def _app(agent: LlmAgent, monkeypatch) -> FastAPI:
+    from apx_agent import _appkit_tool_bridge
+
     app = FastAPI()
     app.state.agent_context = AgentContext(
         config=AgentConfig(name="bridge-agent", model="databricks-claude-sonnet-4-5"),
@@ -21,7 +23,8 @@ def _app(agent: LlmAgent, monkeypatch) -> FastAPI:
     )
     ws = MagicMock(name="obo_ws")
     ws.config.host = "https://fake.cloud.databricks.com"
-    monkeypatch.setattr("apx_agent._appkit_tool_bridge._obo_ws_from_headers", lambda _: ws)
+    monkeypatch.setattr(_appkit_tool_bridge, "_obo_ws_from_headers", lambda _: ws)
+    monkeypatch.setattr(_appkit_tool_bridge, "WorkspaceClient", MagicMock)
     app.include_router(build_appkit_tool_bridge_router())
     return app
 
@@ -65,6 +68,100 @@ def test_bridge_executes_tool_with_dependencies_and_hooks(monkeypatch) -> None:
     }
     assert seen[0] == ("before", "lookup", {"resource": "main.sales.orders"})
     assert seen[1][0:3] == ("after", "lookup", {"resource": "main.sales.orders"})
+
+
+def test_bridge_uses_ambient_client_for_tokenless_service_tool(monkeypatch) -> None:
+    from apx_agent import _appkit_tool_bridge
+
+    service_ws = MagicMock(name="service_ws")
+    service_ws.config.host = "https://service.cloud.databricks.com"
+    obo = MagicMock(
+        side_effect=AssertionError("service tool requested OBO credentials")
+    )
+
+    def lookup(ws: Dependencies.Client) -> str:
+        """Use service credentials."""
+        return ws.config.host
+
+    app = _app(LlmAgent(tools=[lookup]), monkeypatch)
+    monkeypatch.setattr(_appkit_tool_bridge, "WorkspaceClient", lambda: service_ws)
+    monkeypatch.setattr(_appkit_tool_bridge, "_obo_ws_from_headers", obo)
+    response = TestClient(app).post(
+        "/_apx/internal/appkit/tools/lookup",
+        json={"args": {}},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"result": "https://service.cloud.databricks.com"}
+    obo.assert_not_called()
+
+
+def test_bridge_runs_pure_tool_without_forwarded_token(monkeypatch) -> None:
+    def ping() -> str:
+        """Return pong."""
+        return "pong"
+
+    response = TestClient(_app(LlmAgent(tools=[ping]), monkeypatch)).post(
+        "/_apx/internal/appkit/tools/ping",
+        json={"args": {}},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"result": "pong"}
+
+
+def test_bridge_service_metadata_excludes_forwarded_bearer_token(monkeypatch) -> None:
+    from apx_agent import _appkit_tool_bridge
+
+    service_ws = MagicMock(name="service_ws")
+    obo = MagicMock(
+        side_effect=AssertionError("service tool requested OBO credentials")
+    )
+
+    def lookup(
+        ws: Dependencies.Client,
+        headers: Dependencies.Headers,
+    ) -> dict[str, str | bool | None]:
+        """Use service credentials with request metadata."""
+        return {
+            "service": ws is service_ws,
+            "user": headers.user_id,
+            "has_token": headers.token is not None,
+        }
+
+    app = _app(LlmAgent(tools=[lookup]), monkeypatch)
+    monkeypatch.setattr(_appkit_tool_bridge, "WorkspaceClient", lambda: service_ws)
+    monkeypatch.setattr(_appkit_tool_bridge, "_obo_ws_from_headers", obo)
+    response = TestClient(app).post(
+        "/_apx/internal/appkit/tools/lookup",
+        json={"args": {}},
+        headers={
+            "X-Forwarded-User": "alice",
+            "X-Forwarded-Access-Token": "must-not-be-read",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "result": {"service": True, "user": "alice", "has_token": False}
+    }
+    obo.assert_not_called()
+
+
+def test_bridge_rejects_user_tool_without_forwarded_identity(monkeypatch) -> None:
+    def lookup(ws: Dependencies.UserClient) -> str:
+        """Use user credentials."""
+        return ws.config.host
+
+    response = TestClient(_app(LlmAgent(tools=[lookup]), monkeypatch)).post(
+        "/_apx/internal/appkit/tools/lookup",
+        json={"args": {}},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "APX tool 'lookup' requires forwarded user identity"
+    }
 
 
 def test_bridge_returns_404_for_unknown_tool(monkeypatch) -> None:

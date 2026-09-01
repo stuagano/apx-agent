@@ -42,7 +42,12 @@ def _compile_capturing_config(
             return self
 
     monkeypatch.setattr(_la, "create_agent", lambda **_k: _Runnable())
-    ctx = CompileContext(ws=MagicMock(), model="databricks-claude-sonnet-4-6", headers=None)
+    ctx = CompileContext(
+        service_ws=None,
+        user_ws=None,
+        model="databricks-claude-sonnet-4-6",
+        headers=None,
+    )
     agent = LlmAgent(
         tools=[],
         name="cap",
@@ -83,7 +88,12 @@ def test_max_iterations_none_does_not_set_recursion_limit(
             return self
 
     monkeypatch.setattr(_la, "create_agent", lambda **_k: _Runnable())
-    ctx = CompileContext(ws=MagicMock(), model="databricks-claude-sonnet-4-6", headers=None)
+    ctx = CompileContext(
+        service_ws=None,
+        user_ws=None,
+        model="databricks-claude-sonnet-4-6",
+        headers=None,
+    )
     _compile_llm_agent(
         LlmAgent(tools=[], name="uncapped", instructions="Help.", max_iterations=None),
         ctx,

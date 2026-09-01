@@ -6,9 +6,9 @@ expressed as plain typed Python functions are adapted into langchain
 StructuredTools; FastAPI ``Dependencies.*`` parameters are resolved at compile
 time and captured in closures so the LLM never sees them.
 
-User-scoped OBO auth is preserved by passing a per-request WorkspaceClient into
-``compile_to_langgraph``. Every compiled tool closes over that ws, so
-downstream Databricks calls run as the calling user.
+User-scoped OBO auth is preserved separately from the ambient App service
+client. Compiled tools close over the client selected by their declared
+dependency, so downstream Databricks calls run under the intended identity.
 
 Supported agent types and their LangGraph topologies:
 
@@ -83,15 +83,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CompileContext:
-    """Per-compile context — bound to a single user/request.
+    """Per-compile context with distinct service and user credentials.
 
-    Build one per request (with the user's OBO WorkspaceClient), then call
-    ``compile_to_langgraph(agent, ctx)`` to produce a CompiledStateGraph whose
-    tools close over that ws. This is the closure pattern that preserves
-    user-scoped auth through LangGraph's execution model.
+    The user client is absent when no forwarded identity is available. Tools
+    close over the client selected by their declared dependency; a missing
+    user client never falls back to the service client.
     """
 
-    ws: "WorkspaceClient"
+    service_ws: "WorkspaceClient | None"
+    user_ws: "WorkspaceClient | None"
     model: str
     headers: Any | None = None  # DatabricksAppsHeaders or None for local dev
     checkpointer: Any | None = None
@@ -111,10 +111,10 @@ def _make_dep_resolvers(ctx: CompileContext) -> dict[Any, Any]:
     from ._sql import run_sql
 
     return {
-        _get_workspace_client: ctx.ws,
-        _get_user_client: ctx.ws,
+        _get_workspace_client: ctx.service_ws,
+        _get_user_client: ctx.user_ws,
         get_databricks_headers: ctx.headers,
-        _get_sql_runner: (lambda q: run_sql(ctx.ws, q)),
+        _get_sql_runner: (lambda q: run_sql(ctx.user_ws, q)),
         _get_principal: (ctx.headers.user_id if ctx.headers else None),  # E3b
         _get_progress: emit_progress,  # tool progress → trace span events
         # _get_request intentionally omitted: no FastAPI Request inside a
@@ -129,6 +129,16 @@ def _resolve_deps_for_fn(fn: Any, ctx: CompileContext) -> dict[str, Any]:
 
     resolved: dict[str, Any] = {}
     for dep_name, target in _tool_dependency_callables(fn).items():
+        if target is _get_workspace_client and ctx.service_ws is None:
+            raise ValueError(
+                f"Tool {fn.__name__!r} requires a service WorkspaceClient for "
+                f"dependency {dep_name!r}, but none was provided."
+            )
+        if target in {_get_user_client, _get_sql_runner} and ctx.user_ws is None:
+            raise ValueError(
+                f"Tool {fn.__name__!r} requires a user WorkspaceClient for "
+                f"dependency {dep_name!r}, but none was provided."
+            )
         if target not in resolvers:
             raise ValueError(
                 f"No compile-time resolver registered for {target.__qualname__!r} "
@@ -992,6 +1002,7 @@ def compile_to_langgraph(
     agent: BaseAgent,
     *,
     ws: "WorkspaceClient | None",
+    service_ws: "WorkspaceClient | None" = None,
     model: str,
     headers: Any | None = None,
     checkpointer: Any | None = None,
@@ -1001,11 +1012,15 @@ def compile_to_langgraph(
     Args:
         agent: The apx-agent ``BaseAgent`` to compile (currently ``LlmAgent``
             or ``SequentialAgent``; more types coming).
-        ws: A ``WorkspaceClient`` that compiled tools will close over. For
-            user-scoped auth, build per request from the OBO header
-            (``X-Forwarded-Access-Token``). For service-principal scope, pass
-            the default app SP client. This is the auth seam — what you pass
-            here determines what identity the tools execute as.
+        ws: The user-scoped ``WorkspaceClient`` that ``Dependencies.UserClient``,
+            ``Dependencies.Workspace``, and ``Dependencies.Sql`` close over.
+            Build it per request from the OBO header
+            (``X-Forwarded-Access-Token``). ``None`` never falls back to service
+            credentials.
+        service_ws: The App service-principal ``WorkspaceClient`` that
+            ``Dependencies.Client`` closes over. Direct callers that declare a
+            service-client tool must pass this explicitly; it is never inferred
+            from ``ws`` or created during compilation.
         model: A Databricks serving endpoint (e.g.
             ``"databricks-claude-sonnet-4-6"``).
         headers: Optional ``DatabricksAppsHeaders``, surfaced to tools that
@@ -1032,16 +1047,12 @@ def compile_to_langgraph(
             ...
         ])
 
-        # ws is the per-request OBO client — see _defaults._get_user_client
+        # ws is user-only — see _defaults._get_user_client
         graph = compile_to_langgraph(
             pipeline, ws=ws, model="databricks-claude-sonnet-4-6"
         )
         result = graph.invoke({"messages": [HumanMessage(content=prompt)]})
     """
-    if ws is None:
-        from ._defaults import _make_workspace_client
-
-        ws = _make_workspace_client()
     if checkpointer is not None and not isinstance(agent, LlmAgent):
         # Scope: thread-scoped short-term memory is wired only on the LlmAgent
         # (create_agent) path for now. Composite agents (Sequential/Parallel/
@@ -1051,5 +1062,11 @@ def compile_to_langgraph(
             "checkpointer (short-term memory) is currently supported only for "
             f"LlmAgent, not {type(agent).__name__}."
         )
-    ctx = CompileContext(ws=ws, model=model, headers=headers, checkpointer=checkpointer)
+    ctx = CompileContext(
+        service_ws=service_ws,
+        user_ws=ws,
+        model=model,
+        headers=headers,
+        checkpointer=checkpointer,
+    )
     return _compile_any(agent, ctx)
