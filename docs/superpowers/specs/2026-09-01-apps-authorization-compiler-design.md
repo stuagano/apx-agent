@@ -1,6 +1,6 @@
 # Apps Authorization Compiler Design
 
-**Status:** Approved in conversation; pending written-spec review
+**Status:** Approved; implementation planned
 
 **Date:** 2026-09-01
 
