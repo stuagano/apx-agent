@@ -72,7 +72,9 @@ def _compile_handoff(specialist_descriptions: bool) -> HandoffAgent:
         ),
     }
     handoff = HandoffAgent(agents=agents, start="triage")
-    _compile_handoff_agent(handoff, CompileContext(ws=MagicMock(), model="any"))
+    _compile_handoff_agent(
+        handoff, CompileContext(service_ws=None, user_ws=None, model="any")
+    )
     return handoff
 
 

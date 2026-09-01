@@ -158,7 +158,7 @@ class TestObOClosurePreserved:
         )
         from apx_agent._compile import CompileContext, _make_langchain_tool
 
-        ctx = CompileContext(ws=fake_user_ws, model="any")
+        ctx = CompileContext(service_ws=None, user_ws=fake_user_ws, model="any")
 
         for fn in (
             scan_demand_clusters,

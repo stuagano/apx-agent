@@ -22,7 +22,9 @@ def _make_headers(user_id: str | None = None) -> Any:
 def _make_ctx(user_id: str | None = None) -> Any:
     from apx_agent._compile import CompileContext
     ws = MagicMock()
-    ctx = CompileContext(ws=ws, model="test", headers=_make_headers(user_id))
+    ctx = CompileContext(
+        service_ws=None, user_ws=ws, model="test", headers=_make_headers(user_id)
+    )
     return ctx
 
 
@@ -387,7 +389,9 @@ class TestEndToEndIsolation:
             headers = MagicMock()
             headers.user_id = user_id
             headers.token = None
-            return CompileContext(ws=ws, model="m", headers=headers)
+            return CompileContext(
+                service_ws=None, user_ws=ws, model="m", headers=headers
+            )
 
         agent = agent_with_memory
         recall_fn = next(fn for fn in agent._tool_fns if fn.__name__ == "recall")
