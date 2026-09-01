@@ -25,6 +25,7 @@ from ._resources import (
     _sub_agent_to_endpoint,
     get_resources,
     get_user_api_scopes,
+    resources_to_databricks_yml,
     user_api_scopes_for,
 )
 from ._tool import ExecutionIdentity, get_tool_metadata
@@ -38,6 +39,7 @@ __all__ = [
     "AuthorizationPlan",
     "OperationAuthorization",
     "ResolvedAppDependency",
+    "authorization_summary_lines",
     "compile_authorization_plan",
     "infer_operation_authorization",
     "read_app_family_permissions",
@@ -127,10 +129,97 @@ def read_app_family_permissions(pyproject_path: Path) -> AppFamilyPermissions:
             )
         return sorted(set(raw))
 
+    can_use_groups = groups("can_use_groups")
+    can_manage_groups = groups("can_manage_groups")
+    overlap = sorted(set(can_use_groups) & set(can_manage_groups))
+    if overlap:
+        raise ValueError(
+            "[tool.apx.apps.permissions] cannot grant the same group both "
+            f"CAN_USE and CAN_MANAGE: {', '.join(overlap)}."
+        )
     return AppFamilyPermissions(
-        can_use_groups=tuple(groups("can_use_groups")),
-        can_manage_groups=tuple(groups("can_manage_groups")),
+        can_use_groups=tuple(can_use_groups),
+        can_manage_groups=tuple(can_manage_groups),
     )
+
+
+def authorization_summary_lines(
+    plan: AuthorizationPlan,
+    resolved_dependencies: list[ResolvedAppDependency],
+    family_permissions: AppFamilyPermissions,
+) -> list[str]:
+    """Render the deterministic, credential-free Apps authorization summary."""
+    sections = (
+        (
+            "User operations:",
+            sorted(
+                operation.name
+                for operation in plan.operations
+                if operation.execution_identity == "user"
+            ),
+        ),
+        (
+            "Service operations:",
+            sorted(
+                operation.name
+                for operation in plan.operations
+                if operation.execution_identity == "service"
+            ),
+        ),
+        ("User scopes:", sorted(plan.user_api_scopes)),
+        (
+            "Service resources:",
+            [
+                f"{resource.kind} {resource.identifier}: {_resource_permission(resource)}"
+                for resource in sorted(
+                    plan.service_resources,
+                    key=lambda item: (item.kind, item.identifier),
+                )
+            ],
+        ),
+        (
+            "App-to-App dependencies:",
+            [
+                f"{dependency.url} -> {dependency.name} (id: {dependency.id})"
+                for dependency in sorted(
+                    resolved_dependencies,
+                    key=lambda item: (item.url, item.name, item.id),
+                )
+            ],
+        ),
+        (
+            "Audience groups:",
+            [
+                f"{group}: CAN_USE"
+                for group in sorted(family_permissions.can_use_groups)
+            ],
+        ),
+        (
+            "Admin groups:",
+            [
+                f"{group}: CAN_MANAGE"
+                for group in sorted(family_permissions.can_manage_groups)
+            ],
+        ),
+    )
+    lines: list[str] = []
+    for heading, entries in sections:
+        lines.append(heading)
+        lines.extend(f"  - {entry}" for entry in entries)
+        if not entries:
+            lines.append("  - (none)")
+    return lines
+
+
+def _resource_permission(resource: ResourceSpec) -> str:
+    [entry] = resources_to_databricks_yml([resource])
+    [body] = entry.values()
+    permission = body.get("permission")
+    if not isinstance(permission, str):  # pragma: no cover - closed renderer table
+        raise ValueError(
+            f"Resource {resource.kind!r} has no generated Apps permission."
+        )
+    return permission
 
 
 def infer_operation_authorization(fn: Callable[..., Any]) -> OperationAuthorization:
