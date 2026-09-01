@@ -76,7 +76,7 @@ export interface InternalApxAppsHostManifest {
       tool_call_timeout_ms?: number;
     };
     ephemeral: boolean | null;
-    generation_params: AgentDefinition['generationParams'] | null;
+    generation_params: Record<string, unknown> | null;
   };
   tools: Array<{
     name: string;
@@ -175,6 +175,13 @@ export interface InternalApxAppKitDevRuntime {
 
 const devModelSchema = z.string().trim().min(1).max(256);
 const devInstructionsSchema = z.string().max(64_000);
+const appKitGenerationParamsSchema = z.object({
+  temperature: z.number().optional(),
+  top_p: z.number().optional(),
+  stop: z.union([z.string(), z.array(z.string())]).optional(),
+  frequency_penalty: z.number().optional(),
+  presence_penalty: z.number().optional(),
+}).strict();
 const devSkillSchema = z.object({
   name: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/),
   description: z.string().max(500),
@@ -238,12 +245,19 @@ function bridgeConfigHeaders(
   headers: Record<string, string> | undefined,
   identity: 'user' | 'service',
 ): Record<string, string> {
-  if (identity === 'user') return headers ?? {};
-  return Object.fromEntries(
-    Object.entries(headers ?? {}).filter(
-      ([name]) => name.toLowerCase() !== FORWARDED_ACCESS_TOKEN_HEADER,
-    ),
-  );
+  const normalized: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    const normalizedName = name.toLowerCase();
+    if (identity === 'service' && normalizedName === FORWARDED_ACCESS_TOKEN_HEADER) continue;
+    normalized[normalizedName] = value;
+  }
+  return normalized;
+}
+
+function appKitGenerationParams(
+  params: Record<string, unknown> | null | undefined,
+): AgentDefinition['generationParams'] | undefined {
+  return params == null ? undefined : appKitGenerationParamsSchema.parse(params);
 }
 
 function manifestToolExecutionIdentity(
@@ -528,7 +542,8 @@ export function createInternalApxAppKitAgentDefinitionFromManifest(
     model: manifest.agent.model,
     default: options.default ?? manifest.appkit?.default,
     baseSystemPrompt: options.baseSystemPrompt,
-    generationParams: options.generationParams ?? manifest.appkit?.generation_params ?? undefined,
+    generationParams: options.generationParams
+      ?? appKitGenerationParams(manifest.appkit?.generation_params),
     maxSteps: options.maxSteps ?? manifest.appkit?.max_steps ?? manifest.agent.max_iterations,
     maxTokens: options.maxTokens ?? manifest.appkit?.max_tokens ?? manifest.agent.max_tokens ?? undefined,
     ephemeral: options.ephemeral ?? manifest.appkit?.ephemeral ?? undefined,
@@ -590,7 +605,7 @@ export function createInternalApxAppKitDevRuntime(
         model,
         default: manifest.appkit?.default,
         baseSystemPrompt,
-        generationParams: manifest.appkit?.generation_params ?? undefined,
+        generationParams: appKitGenerationParams(manifest.appkit?.generation_params),
         maxSteps: manifest.appkit?.max_steps ?? manifest.agent.max_iterations,
         maxTokens: manifest.appkit?.max_tokens ?? manifest.agent.max_tokens ?? undefined,
         ephemeral: manifest.appkit?.ephemeral ?? undefined,

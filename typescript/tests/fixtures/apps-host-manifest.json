@@ -1,0 +1,168 @@
+{
+  "agent": {
+    "description": "Order helper",
+    "instructions": "Use governed data.",
+    "max_iterations": 4,
+    "max_tokens": 512,
+    "model": "model-a",
+    "name": "orders",
+    "temperature": 0.2
+  },
+  "app_to_app_permissions": [
+    {
+      "permission": "CAN_USE",
+      "url": "https://peer.cloud.databricksapps.com"
+    }
+  ],
+  "appkit": {
+    "default": true,
+    "ephemeral": null,
+    "generation_params": null,
+    "limits": {
+      "max_tool_calls": 4
+    },
+    "max_steps": 4,
+    "max_tokens": 512,
+    "tool_prefix": "apx."
+  },
+  "kind": "apx.apps_host_manifest",
+  "resources": [
+    {
+      "identifier": "telemetry-job",
+      "kind": "job"
+    },
+    {
+      "identifier": "model-a",
+      "kind": "serving_endpoint"
+    },
+    {
+      "identifier": "main.sales.orders",
+      "kind": "uc_table"
+    }
+  ],
+  "service_resources": [
+    {
+      "identifier": "telemetry-job",
+      "kind": "job"
+    },
+    {
+      "identifier": "model-a",
+      "kind": "serving_endpoint"
+    }
+  ],
+  "tools": [
+    {
+      "annotations": {
+        "effect": "update",
+        "execution_identity": "user",
+        "requires_request_context": true,
+        "requires_user_context": true
+      },
+      "description": "Search governed orders.",
+      "handler": {
+        "kind": "python",
+        "ref": "tests.test_apps_host_manifest:search_orders"
+      },
+      "name": "search_orders",
+      "output_schema": {
+        "type": "string"
+      },
+      "parameters": {
+        "properties": {
+          "limit": {
+            "default": 10,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "search_orders_input",
+        "type": "object"
+      },
+      "resources": [
+        {
+          "identifier": "main.sales.orders",
+          "kind": "uc_table"
+        }
+      ],
+      "runtime": "python",
+      "user_api_scopes": [
+        "sql"
+      ]
+    },
+    {
+      "annotations": {
+        "effect": "update",
+        "execution_identity": "user",
+        "requires_request_context": true,
+        "requires_user_context": true
+      },
+      "description": "List visible catalogs.",
+      "handler": {
+        "kind": "python",
+        "ref": "tests.test_apps_host_manifest:list_catalogs"
+      },
+      "name": "list_catalogs",
+      "output_schema": {
+        "type": "string"
+      },
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "resources": [],
+      "runtime": "python",
+      "user_api_scopes": [
+        "catalog.catalogs:read"
+      ]
+    },
+    {
+      "annotations": {
+        "effect": "update",
+        "execution_identity": "service",
+        "requires_request_context": true,
+        "requires_user_context": false
+      },
+      "description": "Refresh telemetry using the app identity.",
+      "handler": {
+        "kind": "python",
+        "ref": "tests.test_apps_host_manifest:refresh_telemetry"
+      },
+      "name": "refresh_telemetry",
+      "output_schema": {
+        "type": "string"
+      },
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "resources": [
+        {
+          "identifier": "telemetry-job",
+          "kind": "job"
+        }
+      ],
+      "runtime": "python",
+      "user_api_scopes": []
+    }
+  ],
+  "user_api_scopes": [
+    "catalog.catalogs:read",
+    "sql"
+  ],
+  "user_resources": [
+    {
+      "identifier": "main.sales.orders",
+      "kind": "uc_table"
+    }
+  ],
+  "version": 1
+}
