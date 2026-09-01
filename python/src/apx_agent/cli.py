@@ -1921,7 +1921,7 @@ resources:
           - name: APX_AGENT_NAME
             value: <APP_NAME>
           - name: APX_APPS_HOST
-            value: appkit
+            value: python
           - name: APX_GIT_SHA
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
@@ -7927,8 +7927,8 @@ def _stage_internal_appkit_host(
     bundle_key: str,
     log: Any,
 ) -> None:
-    """Stage generated AppKit internals unless the legacy Python host is requested."""
-    host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "appkit")
+    """Stage generated AppKit internals only when the AppKit host is requested."""
+    host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "python")
     host = host.strip().lower()
     if host == "python":
         return

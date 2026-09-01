@@ -154,7 +154,7 @@ PROBE = textwrap.dedent(
         item
         for item in env
         if not (isinstance(item, dict) and item.get("name") == "APX_APPS_HOST")
-    ]
+    ] + [{"name": "APX_APPS_HOST", "value": "appkit"}]
 
     (root / ".build").mkdir(exist_ok=True)
     logs = []

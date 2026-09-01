@@ -250,7 +250,7 @@ from pathlib import Path
 
 
 def main() -> None:
-    host = os.environ.get("APX_APPS_HOST", "appkit").strip().lower()
+    host = os.environ.get("APX_APPS_HOST", "python").strip().lower()
     if host == "python":
         os.execvp(
             "uvicorn",
@@ -763,7 +763,7 @@ resources:
           - name: APX_AGENT_MLFLOW_AUTOLOG
             value: "1"
           - name: APX_APPS_HOST
-            value: appkit
+            value: python
 
   jobs:
     {name}_keepalive:

@@ -303,7 +303,7 @@ def test_no_run_skips_bundle_run(
     assert "databricks bundle run" in result.output
 
 
-def test_appkit_default_stages_internal_host(
+def test_appkit_opt_in_stages_internal_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     databricks_yml = yaml.safe_load(_DATABRICKS_YML)
@@ -316,7 +316,9 @@ def test_appkit_default_stages_internal_host(
             )
         }
     }
-    databricks_yml["resources"]["apps"]["my-app"]["config"] = {"env": []}
+    databricks_yml["resources"]["apps"]["my-app"]["config"] = {
+        "env": [{"name": "APX_APPS_HOST", "value": "appkit"}],
+    }
     (tmp_path / "databricks.yml").write_text(
         yaml.safe_dump(databricks_yml, default_flow_style=False, sort_keys=False),
     )
@@ -360,7 +362,7 @@ def test_appkit_default_stages_internal_host(
     )
 
 
-def test_python_host_escape_hatch_skips_internal_appkit_host(
+def test_python_default_skips_internal_appkit_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     databricks_yml = yaml.safe_load(_DATABRICKS_YML)
@@ -373,9 +375,7 @@ def test_python_host_escape_hatch_skips_internal_appkit_host(
             )
         }
     }
-    databricks_yml["resources"]["apps"]["my-app"]["config"] = {
-        "env": [{"name": "APX_APPS_HOST", "value": "python"}],
-    }
+    databricks_yml["resources"]["apps"]["my-app"]["config"] = {"env": []}
     (tmp_path / "databricks.yml").write_text(
         yaml.safe_dump(databricks_yml, default_flow_style=False, sort_keys=False),
     )
