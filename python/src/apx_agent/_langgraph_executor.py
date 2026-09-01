@@ -156,12 +156,14 @@ class LangGraphExecutor:
     :param ws: User-only compatibility alias for ``user_ws``. It never
         populates ``service_ws`` and cannot be combined with a non-``None``
         ``user_ws``.
+    :param model: Default model endpoint name.  May be overridden per turn via
+        :attr:`~apx_agent._executor.ExecutorConfig.model`.
+    :param checkpointer: Optional LangGraph checkpointer for thread-scoped
+        short-term memory.
     :param user_ws: The per-request OBO client for user dependency closures.
         ``None`` fails closed when a tool declares a user dependency.
     :param service_ws: The app service client for service dependency closures.
         ``None`` fails closed when a tool declares ``Dependencies.Client``.
-    :param model: Default model endpoint name.  May be overridden per turn via
-        :attr:`~apx_agent._executor.ExecutorConfig.model`.
 
     Example::
 
@@ -178,26 +180,26 @@ class LangGraphExecutor:
         self,
         agent: "BaseAgent",
         ws: "WorkspaceClient | None" = None,
+        model: str | None = None,
+        checkpointer: Any | None = None,
         *,
         user_ws: "WorkspaceClient | None" = None,
         service_ws: "WorkspaceClient | None" = None,
-        model: str | None = None,
-        checkpointer: Any | None = None,
     ) -> None:
         """Initialise a LangGraphExecutor without compiling the graph yet.
 
         :param agent: The declarative apx-agent spec to compile on first use.
         :param ws: User-only compatibility alias for ``user_ws``. Never used
             as the service client.
-        :param user_ws: Per-request OBO client, or ``None`` when no forwarded
-            identity is available.
-        :param service_ws: App service client, or ``None`` when unavailable.
         :param model: Default model endpoint name.  Overridable per-turn via
             :class:`~apx_agent._executor.ExecutorConfig`.
         :param checkpointer: Optional LangGraph checkpointer for thread-scoped
             short-term memory.  Must be **process-scoped** (shared across
             per-request executors) to persist across turns; when set, each
             :meth:`run_turn` requires a ``thread_id`` in its config.
+        :param user_ws: Per-request OBO client, or ``None`` when no forwarded
+            identity is available.
+        :param service_ws: App service client, or ``None`` when unavailable.
         """
         if ws is not None and user_ws is not None:
             raise ValueError("ws and user_ws cannot both be provided")

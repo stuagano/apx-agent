@@ -83,6 +83,32 @@ def _runtime_tool(query: str) -> str:
 
 
 class TestHandlesToolsInternally:
+    def test_complete_legacy_positional_constructor_is_preserved(self) -> None:
+        agent = LlmAgent(tools=[])
+        user_ws = MagicMock(name="legacy_user_ws")
+        checkpointer = MagicMock(name="checkpointer")
+        compiled = MagicMock(name="compiled")
+
+        with patch(
+            "apx_agent._compile.compile_to_langgraph", return_value=compiled
+        ) as mock_compile:
+            executor = LangGraphExecutor(
+                agent, user_ws, "legacy-model", checkpointer
+            )
+            assert executor._get_compiled("legacy-model") is compiled
+
+        assert executor._user_ws is user_ws
+        assert executor._service_ws is None
+        assert executor._model == "legacy-model"
+        assert executor._checkpointer is checkpointer
+        mock_compile.assert_called_once_with(
+            agent,
+            ws=user_ws,
+            service_ws=None,
+            model="legacy-model",
+            checkpointer=checkpointer,
+        )
+
     def test_legacy_ws_compiles_as_user_only_identity(self) -> None:
         agent = LlmAgent(tools=[])
         user_ws = MagicMock(name="legacy_user_ws")
