@@ -287,9 +287,19 @@ await createApp({
       const proxyToPython = (req: Request, res: Response) => {
         const target = new URL(req.originalUrl, pythonBridgeUrl);
         const headers = { ...req.headers };
+        const connection = Array.isArray(headers.connection)
+          ? headers.connection.join(',')
+          : headers.connection ?? '';
+        for (const name of connection.split(',')) delete headers[name.trim().toLowerCase()];
         delete headers.host;
         delete headers.connection;
+        delete headers['keep-alive'];
+        delete headers['proxy-authenticate'];
+        delete headers['proxy-authorization'];
+        delete headers.te;
+        delete headers.trailer;
         delete headers['transfer-encoding'];
+        delete headers.upgrade;
         delete headers['content-length'];
         const body = req.readableEnded && req.body !== undefined
           ? JSON.stringify(req.body)
@@ -297,16 +307,35 @@ await createApp({
         if (body !== undefined) headers['content-length'] = Buffer.byteLength(body).toString();
         const upstream = http.request(target, { method: req.method, headers }, (response) => {
           const headers = { ...response.headers };
+          const connection = Array.isArray(headers.connection)
+            ? headers.connection.join(',')
+            : headers.connection ?? '';
+          for (const name of connection.split(',')) delete headers[name.trim().toLowerCase()];
           delete headers.host;
           delete headers.connection;
+          delete headers['keep-alive'];
+          delete headers['proxy-authenticate'];
+          delete headers['proxy-authorization'];
+          delete headers.te;
+          delete headers.trailer;
           delete headers['transfer-encoding'];
+          delete headers.upgrade;
           delete headers['content-length'];
           res.writeHead(response.statusCode ?? 502, headers);
+          response.once('aborted', fail);
+          response.once('error', fail);
           response.pipe(res);
         });
-        upstream.on('error', () => {
+        let failed = false;
+        const fail = () => {
+          if (failed) return;
+          failed = true;
+          upstream.destroy();
           if (!res.headersSent) res.status(502).json({ detail: 'APX Python bridge unavailable' });
-        });
+          else res.destroy();
+        };
+        upstream.once('error', fail);
+        upstream.setTimeout(5_000, fail);
         if (body !== undefined) upstream.end(body);
         else req.pipe(upstream);
       };

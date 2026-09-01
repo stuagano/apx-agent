@@ -72,8 +72,21 @@ def test_writes_generated_appkit_host_skeleton(tmp_path: Path) -> None:
         assert f"'{path}', proxyToPython" not in server_ts
     for header in ("host", "connection"):
         assert server_ts.count(f"delete headers.{header}") == 2
-    for header in ("transfer-encoding", "content-length"):
+    for header in (
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "transfer-encoding",
+        "content-length",
+    ):
         assert server_ts.count(f"delete headers['{header}']") == 2
+    for header in ("te", "trailer", "upgrade"):
+        assert server_ts.count(f"delete headers.{header}") == 2
+    assert "connection.split(',')" in server_ts
+    assert "delete headers[name.trim().toLowerCase()]" in server_ts
+    assert "upstream.setTimeout(5_000, fail);" in server_ts
+    assert "response.once('aborted', fail);" in server_ts
+    assert "response.once('error', fail);" in server_ts
     assert "if (body !== undefined) upstream.end(body);" in server_ts
     assert "else req.pipe(upstream);" in server_ts
     assert '{ detail: \'APX Python bridge unavailable\' }' in server_ts

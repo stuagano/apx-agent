@@ -132,6 +132,7 @@ PROBE = textwrap.dedent(
     from pathlib import Path
     from threading import Thread
     from time import sleep
+    from http.client import HTTPConnection, IncompleteRead
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.error import HTTPError, URLError
     from urllib.request import Request, urlopen
@@ -252,32 +253,80 @@ PROBE = textwrap.dedent(
         check=False,
     )
     assert bridge_boot.returncode == 0, bridge_boot.stderr + bridge_boot.stdout
+    bridge_import = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from agent_server.appkit_bridge import app; assert app is not None",
+        ],
+        cwd=root / ".build",
+        env=bridge_env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert bridge_import.returncode == 0, bridge_import.stderr + bridge_import.stdout
 
     if os.environ.get("APX_APPKIT_PROXY_PROBE") == "1":
-        observed = {}
+        observed = {"routes": []}
 
         class Upstream(BaseHTTPRequestHandler):
             def log_message(self, _format, *_args):
                 pass
 
+            def _api_response(self):
+                payload = b'{"id":"test-user","userName":"tester@example.com"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def _hop_headers(self):
+                self.send_header("Connection", "X-Response-Hop")
+                self.send_header("Keep-Alive", "timeout=1")
+                self.send_header("Proxy-Authenticate", "Basic")
+                self.send_header("Proxy-Authorization", "secret")
+                self.send_header("TE", "trailers")
+                self.send_header("Trailer", "X-Trailer")
+                self.send_header("Upgrade", "websocket")
+                self.send_header("X-Response-Hop", "remove-me")
+
             def do_POST(self):
-                body = self.rfile.read(int(self.headers["Content-Length"]))
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 if self.path.startswith("/api/"):
-                    payload = b'{"id":"test-user","userName":"tester@example.com"}'
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
+                    self._api_response()
                     return
                 observed["json"] = {
                     "body": json.loads(body),
+                    "identity": {
+                        name: bool(self.headers.get(name))
+                        for name in (
+                            "X-Databricks-Token",
+                            "X-Databricks-User",
+                            "X-Forwarded-User",
+                            "X-Request-Id",
+                        )
+                    },
                     "method": self.command,
                     "path": self.path,
-                    "user": self.headers.get("X-Forwarded-User"),
+                    "removed": {
+                        name: self.headers.get(name) is None
+                        for name in (
+                            "Keep-Alive",
+                            "Proxy-Authenticate",
+                            "Proxy-Authorization",
+                            "TE",
+                            "Trailer",
+                            "Upgrade",
+                            "X-Request-Hop",
+                        )
+                    },
                 }
                 payload = b'{"proxied":true}'
                 self.send_response(201)
+                self._hop_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
@@ -285,28 +334,43 @@ PROBE = textwrap.dedent(
 
             def do_GET(self):
                 if self.path.startswith("/api/"):
-                    payload = b'{"id":"test-user","userName":"tester@example.com"}'
+                    self._api_response()
+                    return
+                observed["routes"].append((self.command, self.path))
+                if self.path == "/readyz?stall=1":
+                    sleep(6)
+                    return
+                if self.path == "/mcp?abort=1":
                     self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
+                    self._hop_headers()
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", "100")
+                    self.end_headers()
+                    self.wfile.write(b"partial")
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
+                if self.path == "/_apx/stream?mode=sse":
+                    payload = b"data: one\\n\\ndata: two\\n\\n"
+                    self.send_response(206)
+                    self._hop_headers()
+                    self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
-                    self.wfile.write(payload)
+                    self.wfile.write(payload[:10])
+                    self.wfile.flush()
+                    self.wfile.write(payload[10:])
                     return
-                observed["stream"] = {
-                    "method": self.command,
-                    "path": self.path,
-                    "user": self.headers.get("X-Forwarded-User"),
-                }
-                payload = b"data: one\\n\\ndata: two\\n\\n"
-                self.send_response(206)
-                self.send_header("Content-Type", "text/event-stream")
+                payload = b'{"proxied":true}'
+                self.send_response(200)
+                self._hop_headers()
+                self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
-                self.wfile.write(payload[:10])
-                self.wfile.flush()
-                self.wfile.write(payload[10:])
+                self.wfile.write(payload)
 
         upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        upstream.daemon_threads = True
         upstream_thread = Thread(target=upstream.serve_forever, daemon=True)
         upstream_thread.start()
         with socket.socket() as listener:
@@ -370,25 +434,65 @@ PROBE = textwrap.dedent(
             else:
                 raise AssertionError("generated AppKit host did not start")
 
-            request = Request(
-                f"http://127.0.0.1:{host_port}/?request_id=abc",
-                data=b'{"question":"status"}',
-                headers={
+            post_connection = HTTPConnection("127.0.0.1", host_port, timeout=5)
+            try:
+                post_connection.request(
+                    "POST",
+                    "/?request_id=abc",
+                    body=b'{"question":"status"}',
+                    headers={
                     "Content-Type": "application/json",
+                    "Connection": "X-Request-Hop",
+                    "Keep-Alive": "timeout=1",
+                    "Proxy-Authenticate": "Basic",
+                    "Proxy-Authorization": "secret",
+                    "TE": "trailers",
+                    "Trailer": "X-Trailer",
+                    "Upgrade": "websocket",
+                    "X-Databricks-Token": "token-sentinel",
+                    "X-Databricks-User": "user:alice",
                     "X-Forwarded-User": "user:alice",
-                },
-                method="POST",
-            )
-            with urlopen(request, timeout=5) as response:
+                    "X-Request-Id": "request-sentinel",
+                    "X-Request-Hop": "remove-me",
+                    },
+                )
+                response = post_connection.getresponse()
                 assert response.status == 201
                 assert response.headers["Content-Type"] == "application/json"
-                assert response.read() == b'{"proxied":true}'
+                for name, value in {
+                    "Keep-Alive": "timeout=1",
+                    "Proxy-Authenticate": "Basic",
+                    "Proxy-Authorization": "secret",
+                    "TE": "trailers",
+                    "Trailer": "X-Trailer",
+                    "Upgrade": "websocket",
+                    "X-Response-Hop": "remove-me",
+                }.items():
+                    assert response.headers.get(name) != value, name
+                body = response.read()
+                assert body == b'{"proxied":true}', body
+            finally:
+                post_connection.close()
             assert observed["json"] == {
                 "body": {"question": "status"},
+                "identity": {
+                    "X-Databricks-Token": True,
+                    "X-Databricks-User": True,
+                    "X-Forwarded-User": True,
+                    "X-Request-Id": True,
+                },
                 "method": "POST",
                 "path": "/?request_id=abc",
-                "user": "user:alice",
-            }
+                "removed": {
+                    "Keep-Alive": True,
+                    "Proxy-Authenticate": True,
+                    "Proxy-Authorization": True,
+                    "TE": True,
+                    "Trailer": True,
+                    "Upgrade": True,
+                    "X-Request-Hop": True,
+                },
+            }, observed["json"]
 
             with urlopen(
                 Request(
@@ -400,11 +504,45 @@ PROBE = textwrap.dedent(
                 assert response.status == 206
                 assert response.headers["Content-Type"] == "text/event-stream"
                 assert response.read() == b"data: one\\n\\ndata: two\\n\\n"
-            assert observed["stream"] == {
-                "method": "GET",
-                "path": "/_apx/stream?mode=sse",
-                "user": "user:alice",
+            for path in ("/mcp?transport=sse", "/.well-known/agent.json", "/readyz"):
+                with urlopen(f"http://127.0.0.1:{host_port}{path}", timeout=5) as response:
+                    assert response.status == 200
+                    assert response.read() == b'{"proxied":true}'
+            routes_before_appkit = list(observed["routes"])
+            with urlopen(f"http://127.0.0.1:{host_port}/health", timeout=5) as response:
+                assert response.status == 200
+                assert json.loads(response.read()) == {"status": "ok"}
+            with urlopen(f"http://127.0.0.1:{host_port}/api/dev-ui", timeout=5) as response:
+                assert response.status == 200
+            assert observed["routes"] == routes_before_appkit
+            assert set(observed["routes"]) >= {
+                ("GET", "/_apx/stream?mode=sse"),
+                ("GET", "/mcp?transport=sse"),
+                ("GET", "/.well-known/agent.json"),
+                ("GET", "/readyz"),
             }
+
+            connection = HTTPConnection("127.0.0.1", host_port, timeout=5)
+            try:
+                connection.request("GET", "/mcp?abort=1")
+                response = connection.getresponse()
+                assert response.status == 200
+                try:
+                    response.read()
+                except IncompleteRead:
+                    pass
+                else:
+                    raise AssertionError("aborted Python bridge response remained open")
+            finally:
+                connection.close()
+
+            try:
+                urlopen(f"http://127.0.0.1:{host_port}/readyz?stall=1", timeout=7)
+            except HTTPError as error:
+                assert error.code == 502
+                assert error.read() == b'{"detail":"APX Python bridge unavailable"}'
+            else:
+                raise AssertionError("stalled Python bridge did not return 502")
 
             upstream.shutdown()
             upstream.server_close()
