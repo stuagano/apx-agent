@@ -146,8 +146,8 @@ def require_user_api_scopes(fn: Any, scopes: Iterable[str]) -> Any:
     """Declare raw OBO ``user_api_scopes`` a tool needs. Returns ``fn``.
 
     Most scopes are *derived* from a tool's ``ResourceSpec``s (a Genie space
-    implies ``genie``; a serving endpoint implies ``model-serving`` — see
-    :func:`user_api_scopes_for`). Use this
+    implies ``dashboards.genie``; a serving endpoint implies
+    ``serving.serving-endpoints`` — see :func:`user_api_scopes_for`). Use this
     only for a tool that calls a Databricks API with **no securable** to point a
     ``ResourceSpec`` at. The UC metadata/discovery REST API is the motivating
     case: ``ws.catalogs.list()`` / ``ws.schemas.list()`` / ``ws.tables.get()``
@@ -595,12 +595,16 @@ def resources_to_databricks_yml(
       |                      | permission: CAN_CONNECT_AND_CREATE}}``         |
       | uc_table             | ``{uc_securable: {..., securable_type: TABLE,  |
       |                      | permission: SELECT}}``                         |
+      | job                  | ``{job: {name, id,                             |
+      |                      | permission: CAN_MANAGE_RUN}}``                 |
+      | app                  | ``{app: {name, permission: CAN_USE}}``         |
       +----------------------+------------------------------------------------+
 
     Each entry's ``name`` field is auto-derived from the resource identifier
-    via a slug-plus-kind-suffix scheme that's stable and unique within a
-    single app's resource list. Callers that need a stable name across edits
-    can post-process the returned list before merging it into the bundle.
+    via a readable slug plus a short hash of the complete kind and identifier,
+    except for ``app`` where the CLI schema uses ``name`` as the peer's natural
+    identifier. Callers that need a stable name across edits can post-process
+    the returned list before merging it into the bundle.
 
     Args:
         resources: Specs to project. Typically the output of
@@ -635,8 +639,8 @@ _KIND_TO_SCOPE: dict[str, str] = {
 def user_api_scopes_for(resources: Iterable["ResourceSpec"]) -> list[str]:
     """Derive the OBO ``user_api_scopes`` an Apps deploy needs from its resources.
 
-    e.g. a Genie space → ``genie``; a serving endpoint → ``model-serving``.
-    Returned sorted + de-duplicated. Note: a
+    e.g. a Genie space → ``dashboards.genie``; a serving endpoint →
+    ``serving.serving-endpoints``. Returned sorted + de-duplicated. Note: a
     ``sql_tool`` that auto-discovers its warehouse declares no SQL resource —
     that path uses :func:`require_user_api_scopes` for ``sql`` instead, and
     deploy unions both sources onto the scaffold baseline.

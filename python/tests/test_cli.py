@@ -4704,6 +4704,48 @@ class TestDatabricksYmlMergePreservesComments:
         assert "# inline comment" in out
         assert "# a note about this block" in out
 
+    def test_auto_update_yml_matches_identity_and_preserves_custom_handle(self, tmp_path):
+        import yaml as pyyaml
+
+        from apx_agent import Agent, ResourceSpec, attach_resources
+        from apx_agent.cli import _auto_update_databricks_yml
+
+        def search_orders() -> str:
+            return "ok"
+
+        attach_resources(
+            search_orders,
+            [ResourceSpec("uc_table", "main.sales.orders")],
+        )
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(
+            "resources:\n"
+            "  apps:\n"
+            "    my-agent:\n"
+            "      name: my-agent\n"
+            "      resources:\n"
+            "      - uc_securable:\n"
+            "          name: custom-orders-handle\n"
+            "          securable_full_name: main.sales.orders\n"
+            "          securable_type: TABLE\n"
+            "          permission: SELECT\n"
+        )
+
+        result = _auto_update_databricks_yml(
+            tmp_path,
+            agent=Agent(tools=[search_orders]),
+            bundle_key="my-agent",
+            log=lambda msg: None,
+        )
+
+        resources = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"][
+            "my-agent"
+        ]["resources"]
+        assert len(resources) == 1
+        assert resources[0]["uc_securable"]["name"] == "custom-orders-handle"
+        assert result.added == []
+        assert result.skipped == ["custom-orders-handle"]
+
     def test_auto_update_yml_unions_tool_declared_scope(self, tmp_path):
         # #563: a tool that declares a catalog scope via require_user_api_scopes
         # gets that scope unioned into databricks.yml at deploy time, even

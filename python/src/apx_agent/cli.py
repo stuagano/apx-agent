@@ -8928,9 +8928,10 @@ def _auto_update_databricks_yml(
 
     Returns added_names and skipped_names. The bundle document is read,
     each ResourceSpec is mapped to a DAB resource entry via
-    ``resources_to_databricks_yml``, and any entry whose ``name`` is not
-    already present in ``resources.apps.<bundle_key>.resources`` is appended.
-    User-added entries with the same name are NEVER clobbered.
+    ``resources_to_databricks_yml``, and any entry whose typed natural resource
+    identity is not already present in
+    ``resources.apps.<bundle_key>.resources`` is appended. Existing custom or
+    legacy handles are preserved.
     """
     from apx_agent._resources import (
         collect_resource_specs,
@@ -8968,8 +8969,41 @@ def _auto_update_databricks_yml(
                 return v["name"]
         return None
 
+    def _entry_identity(entry: dict[str, Any]) -> str | None:
+        """Return the DAB resource type plus its natural identifier."""
+        outer_name = entry.get("name")
+        for resource_type, body in entry.items():
+            if resource_type in {"name", "description"} or not isinstance(body, dict):
+                continue
+            identifier: Any = None
+            if resource_type == "serving_endpoint":
+                identifier = body.get("endpoint_name")
+                if identifier is None and isinstance(outer_name, str):
+                    identifier = body.get("name")
+            elif resource_type == "uc_securable":
+                securable_type = body.get("securable_type")
+                full_name = body.get("securable_full_name")
+                if securable_type is not None and full_name is not None:
+                    identifier = [securable_type, full_name]
+            elif resource_type == "genie_space":
+                identifier = body.get("space_id")
+            elif resource_type in {"sql_warehouse", "job"}:
+                identifier = body.get("id")
+            elif resource_type == "database":
+                identifier = body.get("instance_name")
+            elif resource_type == "app":
+                identifier = body.get("name")
+            if identifier is not None:
+                return json.dumps([resource_type, identifier], separators=(",", ":"))
+        return None
+
     existing_names = {
         n for n in (_entry_name(e) for e in existing) if n is not None
+    }
+    existing_by_identity = {
+        identity: _entry_name(entry)
+        for entry in existing
+        if (identity := _entry_identity(entry)) is not None
     }
 
     specs = collect_resource_specs(agent)
@@ -8986,11 +9020,17 @@ def _auto_update_databricks_yml(
         if name is None:
             # Unexpected shape — skip rather than crash.
             continue
-        if name in existing_names:
+        identity = _entry_identity(entry)
+        if identity is not None and identity in existing_by_identity:
+            skipped.append(existing_by_identity[identity] or name)
+            continue
+        if identity is None and name in existing_names:
             skipped.append(name)
             continue
         existing.append(entry)
         existing_names.add(name)
+        if identity is not None:
+            existing_by_identity[identity] = name
         added.append(name)
 
     app_block["resources"] = existing
