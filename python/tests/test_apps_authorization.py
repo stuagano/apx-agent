@@ -213,3 +213,23 @@ def test_compile_output_order_is_independent_of_tool_order() -> None:
     reverse = compile_authorization_plan(Agent(tools=[a_refresh, z_lookup]), model="model")
 
     assert forward == reverse
+
+
+def test_compile_resolves_environment_backed_app_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import Agent
+
+    monkeypatch.setenv(
+        "PEER_APP_URL",
+        "https://peer.cloud.databricksapps.com",
+    )
+
+    plan = compile_authorization_plan(
+        Agent(tools=[], sub_agents=["$PEER_APP_URL"]),
+        model="model",
+    )
+
+    assert plan.app_dependencies == (
+        AppDependency("https://peer.cloud.databricksapps.com"),
+    )

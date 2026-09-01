@@ -14,6 +14,7 @@ from ._defaults import (
     _get_workspace_client,
     get_databricks_headers,
 )
+from ._env import resolve_env_var
 from ._inspection import _tool_dependency_callables
 from ._resources import (
     ResourceSpec,
@@ -170,10 +171,13 @@ def compile_authorization_plan(
 
     app_dependencies: set[AppDependency] = set()
     for raw in _iter_sub_agents(agent):
-        if _is_apps_https_url(raw):
-            app_dependencies.add(AppDependency(raw))
+        resolved = resolve_env_var(raw)
+        if not resolved:
             continue
-        endpoint = _sub_agent_to_endpoint(raw)
+        if _is_apps_https_url(resolved):
+            app_dependencies.add(AppDependency(resolved))
+            continue
+        endpoint = _sub_agent_to_endpoint(resolved)
         if endpoint is not None:
             service_resources.add(endpoint)
 
