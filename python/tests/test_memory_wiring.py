@@ -477,14 +477,18 @@ class TestPredictSeamPrincipalThreading:
         fake_graph = self._make_fake_graph()
 
         captured: dict[str, Any] = {}
+        user_ws = MagicMock(name="user_ws")
+        service_ws = MagicMock(name="service_ws")
 
-        def _spy_compile(agent_arg, *, ws, model, headers=None):
+        def _spy_compile(agent_arg, *, ws, service_ws, model, headers=None):
+            captured["ws"] = ws
+            captured["service_ws"] = service_ws
             captured["headers"] = headers
             return fake_graph
 
         with patch(
             "apx_agent._defaults._make_workspace_client",
-            return_value=MagicMock(name="sp_ws"),
+            side_effect=[user_ws, service_ws],
         ), patch(
             "apx_agent._chat_agent.compile_to_langgraph",
             side_effect=_spy_compile,
@@ -500,6 +504,9 @@ class TestPredictSeamPrincipalThreading:
             "Memory tools will always get principal=None in production. "
             "Fix: build DatabricksAppsHeaders from obo and pass headers= to compile."
         )
+        assert captured["ws"] is user_ws
+        assert captured["service_ws"] is service_ws
+        assert captured["ws"] is not captured["service_ws"]
         assert headers.user_id == "alice", (
             f"headers.user_id should be 'alice' (from custom_inputs) but got {headers.user_id!r}"
         )
@@ -520,14 +527,18 @@ class TestPredictSeamPrincipalThreading:
         fake_graph = self._make_fake_graph()
 
         captured: dict[str, Any] = {}
+        user_ws = MagicMock(name="user_ws")
+        service_ws = MagicMock(name="service_ws")
 
-        def _spy_compile(agent_arg, *, ws, model, headers=None):
+        def _spy_compile(agent_arg, *, ws, service_ws, model, headers=None):
+            captured["ws"] = ws
+            captured["service_ws"] = service_ws
             captured["headers"] = headers
             return fake_graph
 
         with patch(
             "apx_agent._defaults._make_workspace_client",
-            return_value=MagicMock(name="sp_ws"),
+            side_effect=[user_ws, service_ws],
         ), patch(
             "apx_agent._chat_agent.compile_to_langgraph",
             side_effect=_spy_compile,
@@ -542,6 +553,9 @@ class TestPredictSeamPrincipalThreading:
             "SEAM BROKEN (stream): predict_stream did not pass headers= to compile_to_langgraph. "
             "Fix: mirror the predict fix in predict_stream."
         )
+        assert captured["ws"] is user_ws
+        assert captured["service_ws"] is service_ws
+        assert captured["ws"] is not captured["service_ws"]
         assert headers.user_id == "alice", (
             f"predict_stream: headers.user_id should be 'alice' but got {headers.user_id!r}"
         )
@@ -562,14 +576,18 @@ class TestPredictSeamPrincipalThreading:
         fake_graph = self._make_fake_graph()
 
         captured: dict[str, Any] = {}
+        user_ws = MagicMock(name="user_ws")
+        service_ws = MagicMock(name="service_ws")
 
-        def _spy_compile(agent_arg, *, ws, model, headers=None):
+        def _spy_compile(agent_arg, *, ws, service_ws, model, headers=None):
+            captured["ws"] = ws
+            captured["service_ws"] = service_ws
             captured["headers"] = headers
             return fake_graph
 
         with patch(
             "apx_agent._defaults._make_workspace_client",
-            return_value=MagicMock(name="sp_ws"),
+            side_effect=[user_ws, service_ws],
         ), patch(
             "apx_agent._chat_agent.compile_to_langgraph",
             side_effect=_spy_compile,
@@ -584,6 +602,9 @@ class TestPredictSeamPrincipalThreading:
             "No user_id in custom_inputs → headers must be None to preserve "
             "the existing null-principal behavior"
         )
+        assert captured["ws"] is user_ws
+        assert captured["service_ws"] is service_ws
+        assert captured["ws"] is not captured["service_ws"]
 
 
 class TestAgentCarriedConfig:
