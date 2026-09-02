@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -344,6 +344,26 @@ class TestStream:
         # The terminal completed event still arrives last.
         assert events[-1].type == "response.completed"
 
+    def test_threads_distinct_user_and_service_clients(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        _, streaming = compile_to_responses_agent(agent, model="any")
+        user_ws = MagicMock(name="user_ws")
+        service_ws = MagicMock(name="service_ws")
+
+        with patch(
+            "apx_agent._responses_agent._resolve_ws_and_headers_for_request",
+            return_value=SimpleNamespace(
+                user_ws=user_ws, service_ws=service_ws, headers=None
+            ),
+        ), patch(
+            "apx_agent._responses_agent.compile_to_langgraph",
+            return_value=_make_fake_graph("streamed!"),
+        ) as mock_compile:
+            list(streaming(_user_request("go")))
+
+        assert mock_compile.call_args.kwargs["ws"] is user_ws
+        assert mock_compile.call_args.kwargs["service_ws"] is service_ws
+
     def test_non_text_chunks_do_not_emit_deltas(self) -> None:
         """A tool-call argument chunk (empty content) must not emit a text delta;
         only visible token text streams."""
@@ -453,8 +473,11 @@ class TestUserScopeAuth:
 
         captured: dict[str, Any] = {}
 
-        def _spy_compile(agent_arg, *, ws, model, headers=None):  # noqa: ANN001
+        def _spy_compile(  # noqa: ANN001
+            agent_arg, *, ws, service_ws, model, headers=None
+        ):
             captured["ws"] = ws
+            captured["service_ws"] = service_ws
             captured["model"] = model
             return _make_fake_graph("answer")
 
@@ -464,8 +487,9 @@ class TestUserScopeAuth:
             "apx_agent._responses_agent.compile_to_langgraph",
             side_effect=_spy_compile,
         ):
-            sentinel = MagicMock(name="obo_ws")
-            mock_factory.return_value = sentinel
+            user_ws = MagicMock(name="user_ws")
+            service_ws = MagicMock(name="service_ws")
+            mock_factory.side_effect = [user_ws, service_ws]
 
             non_streaming(
                 _user_request(
@@ -478,11 +502,13 @@ class TestUserScopeAuth:
         # The factory was called with the OBO kwargs — i.e. user_token + host
         # made it from custom_inputs all the way through extract_obo_headers
         # to the WorkspaceClient construction.
-        mock_factory.assert_called_once_with(
-            token="tok-abc",
-            host="https://fake.cloud.databricks.com",
-        )
-        assert captured["ws"] is sentinel
+        assert mock_factory.call_args_list == [
+            call(token="tok-abc", host="https://fake.cloud.databricks.com"),
+            call(),
+        ]
+        assert captured["ws"] is user_ws
+        assert captured["service_ws"] is service_ws
+        assert captured["ws"] is not captured["service_ws"]
 
     def test_no_user_token_falls_back_to_default_workspace_client(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
@@ -494,11 +520,13 @@ class TestUserScopeAuth:
             "apx_agent._responses_agent.compile_to_langgraph",
             return_value=_make_fake_graph("answer"),
         ):
-            mock_factory.return_value = MagicMock(name="sp_ws")
+            user_ws = MagicMock(name="user_ws")
+            service_ws = MagicMock(name="service_ws")
+            mock_factory.side_effect = [user_ws, service_ws]
             non_streaming(_user_request("hi"))
 
-        # Default branch — no token/host kwargs.
-        mock_factory.assert_called_once_with()
+        # Local compatibility keeps the default chain, but the two slots do not alias.
+        assert mock_factory.call_args_list == [call(), call()]
 
 
 # ---------------------------------------------------------------------------
