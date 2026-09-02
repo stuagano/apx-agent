@@ -113,7 +113,7 @@ async def run_verified_query(
     match = _match_golden_query(question, golden_queries)
     if match is None:
         return {"matched": False, "rows": [],
-                "note": "No verified query matched; author SQL with run_sql instead."}
+                "note": "No verified query matched; use the agent's SQL tool instead."}
     try:
         bind = _bind_params(match, params or {})
     except ValueError as e:
@@ -160,7 +160,7 @@ def verified_query_tool(
         '{"threshold": "100"}; pass {} if none). Prefer this over authoring SQL '
         "when the question matches one of the agent's known questions — the SQL "
         "is trusted and exact. Returns `matched: false` if no verified query "
-        "fits; then author SQL yourself with run_sql."
+        "fits; then use the agent's SQL tool."
     )
 
     async def _verified_query(
