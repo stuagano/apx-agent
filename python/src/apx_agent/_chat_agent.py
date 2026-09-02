@@ -228,7 +228,8 @@ def _conv_items_to_chat_msgs(items: list[ConversationItem]) -> list["ChatAgentMe
 
 @dataclass(frozen=True)
 class _WsAndHeaders:
-    ws: Any
+    user_ws: Any
+    service_ws: Any
     headers: Any
 
 
@@ -257,13 +258,15 @@ class _ChatConvLoad:
 def _resolve_ws_and_headers(
     custom_inputs: dict[str, Any] | None,
 ) -> _WsAndHeaders:
-    """Resolve the per-request WorkspaceClient AND DatabricksAppsHeaders from
-    a single :func:`extract_obo_headers` call, so ws-identity and
-    memory-principal always come from the same source.
+    """Resolve distinct user/service clients and request identity headers.
+
+    User credentials and headers come from one :func:`extract_obo_headers`
+    call. The service client always uses the ambient App/default auth chain.
 
     Returns:
-        ``(ws, headers)`` where ``headers`` is a :class:`DatabricksAppsHeaders`
-        instance when ``custom_inputs`` carries a ``user_id``, else ``None``.
+        Separate user and service clients plus ``headers``. Headers are a
+        :class:`DatabricksAppsHeaders` instance when ``custom_inputs`` carries
+        a ``user_id``, else ``None``.
         Keeping ``headers=None`` when there is no identity preserves the
         existing null-principal behaviour for requests without a user context.
     """
@@ -277,7 +280,7 @@ def _resolve_ws_and_headers(
 
     # Build the per-request WorkspaceClient (same logic as _resolve_ws_for_request).
     if obo.get("user_token"):
-        ws = _make_workspace_client(
+        user_ws = _make_workspace_client(
             token=obo["user_token"],
             host=obo.get("workspace_host"),
         )
@@ -286,7 +289,9 @@ def _resolve_ws_and_headers(
         # explicitly opted in) instead of silently running as the app SP.
         from ._obo import resolve_no_obo_or_raise
         resolve_no_obo_or_raise()
-        ws = _make_workspace_client()
+        user_ws = _make_workspace_client()
+
+    service_ws = _make_workspace_client()
 
     # Build headers when we have a user_token OR a user_id. The token is the
     # load-bearing field — it's what A2A forwarding passes downstream — so a
@@ -307,7 +312,11 @@ def _resolve_ws_and_headers(
             token=SecretStr(token_raw) if token_raw else None,
         )
 
-    return _WsAndHeaders(ws=ws, headers=headers)
+    return _WsAndHeaders(
+        user_ws=user_ws,
+        service_ws=service_ws,
+        headers=headers,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +589,6 @@ def chat_agent_for(
     from mlflow.pyfunc import ChatAgent  # type: ignore[attr-defined]  # re-exported from mlflow.pyfunc.model; stub omits it
     from mlflow.types.agent import (
         ChatAgentChunk,
-        ChatAgentMessage,
         ChatAgentResponse,
     )
 
@@ -660,7 +668,10 @@ def chat_agent_for(
             lg_config = {"configurable": {"thread_id": thread_key}}
             auth = _resolve_ws_and_headers(custom_inputs)
             graph = compile_to_langgraph(
-                self._agent, ws=auth.ws, model=self._resolve_model(),
+                self._agent,
+                ws=auth.user_ws,
+                service_ws=auth.service_ws,
+                model=self._resolve_model(),
                 headers=auth.headers, checkpointer=self._checkpointer,
             )
             return _pending_interrupt(graph, lg_config)
@@ -843,7 +854,10 @@ def chat_agent_for(
                     attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
                 ):
                     graph = compile_to_langgraph(
-                        self._agent, ws=_auth.ws, model=effective_model,
+                        self._agent,
+                        ws=_auth.user_ws,
+                        service_ws=_auth.service_ws,
+                        model=effective_model,
                         headers=_auth.headers,
                         **({"checkpointer": checkpointer} if checkpointer else {}),
                     )
@@ -983,7 +997,10 @@ def chat_agent_for(
                     user_hash=user_hash(_auth.headers.user_id if _auth.headers else None),
                 )
                 graph = compile_to_langgraph(
-                    self._agent, ws=_auth.ws, model=effective_model,
+                    self._agent,
+                    ws=_auth.user_ws,
+                    service_ws=_auth.service_ws,
+                    model=effective_model,
                     headers=_auth.headers,
                     **({"checkpointer": checkpointer} if checkpointer else {}),
                 )
