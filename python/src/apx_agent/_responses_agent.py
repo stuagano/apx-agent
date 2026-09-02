@@ -97,9 +97,10 @@ class _ResponsesTypes:
 
 @dataclass(frozen=True)
 class _WsAuth:
-    """Per-request WorkspaceClient and optional identity headers."""
+    """Distinct user/service clients and optional request identity headers."""
 
-    ws: "WorkspaceClient"
+    user_ws: "WorkspaceClient"
+    service_ws: "WorkspaceClient"
     headers: Any  # DatabricksAppsHeaders | None
 
 
@@ -197,8 +198,7 @@ def _scope_session_by_principal(custom_inputs: dict[str, Any]) -> dict[str, Any]
 def _resolve_ws_and_headers_for_request(
     custom_inputs: dict[str, Any] | None,
 ) -> _WsAuth:
-    """Resolve both the per-request WorkspaceClient and DatabricksAppsHeaders
-    from a single :func:`extract_obo_headers` call.
+    """Resolve distinct user/service clients and request identity headers.
 
     For the Apps runtime (this module), identity can come from both
     ``custom_inputs`` (beats) and ``X-Forwarded-User`` HTTP headers injected by
@@ -206,8 +206,9 @@ def _resolve_ws_and_headers_for_request(
     precedence order so ws-identity and memory-principal are always consistent.
 
     Returns:
-        ``(ws, headers)`` where ``headers`` is a :class:`DatabricksAppsHeaders`
-        instance when a ``user_id`` is resolvable, else ``None``.
+        Separate user and service clients plus ``headers``. Headers are a
+        :class:`DatabricksAppsHeaders` instance when a ``user_id`` is
+        resolvable, else ``None``.
     """
     from pydantic import SecretStr
 
@@ -227,7 +228,7 @@ def _resolve_ws_and_headers_for_request(
     obo = extract_obo_headers(custom_inputs=custom_inputs, headers=http_headers)
 
     if obo.get("user_token"):
-        ws = _make_workspace_client(
+        user_ws = _make_workspace_client(
             token=obo["user_token"],
             host=obo.get("workspace_host"),
         )
@@ -236,7 +237,9 @@ def _resolve_ws_and_headers_for_request(
         # explicitly opted in) instead of silently running as the app SP.
         from ._obo import resolve_no_obo_or_raise
         resolve_no_obo_or_raise()
-        ws = _make_workspace_client()
+        user_ws = _make_workspace_client()
+
+    service_ws = _make_workspace_client()
 
     # Build headers when we have a user_token OR a user_id. The token is the
     # load-bearing field for A2A forwarding, so a request with a token but no
@@ -255,7 +258,11 @@ def _resolve_ws_and_headers_for_request(
             token=SecretStr(token_raw) if token_raw else None,
         )
 
-    return _WsAuth(ws=ws, headers=req_headers)
+    return _WsAuth(
+        user_ws=user_ws,
+        service_ws=service_ws,
+        headers=req_headers,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1139,7 +1146,11 @@ def compile_to_responses_agent(
                 span,
                 user_hash=user_hash(auth.headers.user_id if auth.headers else None),
             )
-            ws, req_headers = auth.ws, auth.headers
+            user_ws, service_ws, req_headers = (
+                auth.user_ws,
+                auth.service_ws,
+                auth.headers,
+            )
 
             # Short-term memory: when a checkpointer is active + a thread key is
             # present, it owns the transcript — send only the new turn (no
@@ -1184,7 +1195,7 @@ def compile_to_responses_agent(
                     model=effective_model,
                     tools=list(_agent._tool_fns),
                     instructions=_agent._instructions,
-                    ws=ws,
+                    ws=user_ws,
                 )
                 events = _run_executor_sync(_sdk_exec, _lc_to_openai_messages(graph_input))
                 output_items = _executor_events_to_items(events)
@@ -1195,7 +1206,11 @@ def compile_to_responses_agent(
                     attributes={AuditAttrs.MODEL_ENDPOINT: effective_model},
                 ):
                     graph = compile_to_langgraph(
-                        _agent, ws=ws, model=effective_model, headers=req_headers,
+                        _agent,
+                        ws=user_ws,
+                        service_ws=service_ws,
+                        model=effective_model,
+                        headers=req_headers,
                         **({"checkpointer": cp} if cp else {}),
                     )
                 input_count = len(graph_input)
@@ -1336,7 +1351,11 @@ def compile_to_responses_agent(
                 span,
                 user_hash=user_hash(auth.headers.user_id if auth.headers else None),
             )
-            ws, req_headers = auth.ws, auth.headers
+            user_ws, service_ws, req_headers = (
+                auth.user_ws,
+                auth.service_ws,
+                auth.headers,
+            )
 
             # Short-term memory (see non-streaming): checkpointer active + thread
             # key → send only the new turn, key state by thread_id. The stream's
@@ -1384,7 +1403,7 @@ def compile_to_responses_agent(
                     model=effective_model,
                     tools=list(_agent._tool_fns),
                     instructions=_agent._instructions,
-                    ws=ws,
+                    ws=user_ws,
                 )
                 events = _run_executor_sync(_sdk_exec, _lc_to_openai_messages(graph_input))
                 output_items = _executor_events_to_items(events)
@@ -1397,7 +1416,11 @@ def compile_to_responses_agent(
                     output_index += 1
             else:
                 graph = compile_to_langgraph(
-                    _agent, ws=ws, model=effective_model, headers=req_headers,
+                    _agent,
+                    ws=user_ws,
+                    service_ws=service_ws,
+                    model=effective_model,
+                    headers=req_headers,
                     **({"checkpointer": cp} if cp else {}),
                 )
                 # Approval resume: a checkpointed thread resends

@@ -129,6 +129,8 @@ def _build_data_tools_and_instructions(
     catalog: str,
     schema: str,
     warehouse_id: str | None,
+    sql_tool_name: str = "run_sql",
+    verified_query_tool_name: str = "verified_query",
     ws: Any | None,
     include_functions: bool,
     genie_space: str | None,
@@ -199,7 +201,7 @@ def _build_data_tools_and_instructions(
         )
     tables = resolved_tables
 
-    sql = sql_tool(warehouse_id=warehouse_id)
+    sql = sql_tool(warehouse_id=warehouse_id, name=sql_tool_name)
 
     # Startup warehouse check — surface missing warehouse in logs before any
     # user query, not silently on the first SQL call. Outcome is captured in
@@ -278,7 +280,11 @@ def _build_data_tools_and_instructions(
     if golden:
         from ._verified_query import verified_query_tool
         tools.append(verified_query_tool(
-            golden, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
+            golden,
+            warehouse_id=warehouse_id,
+            catalog=catalog,
+            schema=schema,
+            name=verified_query_tool_name,
         ))
 
     resolved_instructions = instructions or build_instructions_from_schema(
@@ -306,6 +312,12 @@ class DataAgent(LlmAgent):
         warehouse_id: SQL warehouse for the agent's ``sql_tool`` (and for schema
             introspection). When omitted, the warehouse is auto-discovered at
             call time.
+        sql_tool_name: Name for the agent's SQL tool. Defaults to ``"run_sql"``;
+            set an explicit unique name when composing multiple data agents.
+        verified_query_tool_name: Name for the agent's verified-query tool when
+            its grounding bundle contains golden queries. Defaults to
+            ``"verified_query"``; set an explicit unique name when composing
+            multiple data agents.
         ws: Optional workspace client. When provided, the schema is introspected
             at construction — tables become governed ``uc_table`` resources and
             ground the instructions, and the schema's UC functions are wired as
@@ -338,6 +350,8 @@ class DataAgent(LlmAgent):
         schema: str,
         *,
         warehouse_id: str | None = None,
+        sql_tool_name: str = "run_sql",
+        verified_query_tool_name: str = "verified_query",
         ws: Any | None = None,
         include_functions: bool = True,
         genie_space: str | None = None,
@@ -360,6 +374,8 @@ class DataAgent(LlmAgent):
             catalog=catalog,
             schema=schema,
             warehouse_id=warehouse_id,
+            sql_tool_name=sql_tool_name,
+            verified_query_tool_name=verified_query_tool_name,
             ws=ws,
             include_functions=include_functions,
             genie_space=genie_space,

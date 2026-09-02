@@ -5,9 +5,12 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from urllib.parse import urlparse
 
 from ._agents import BaseAgent
+from ._apps_authorization import (
+    OperationAuthorization,
+    compile_authorization_plan,
+)
 from ._inspection import (
     _inspect_tool_fn,
     _make_input_model,
@@ -15,17 +18,8 @@ from ._inspection import (
     _schema_for_return,
 )
 from ._models import AgentConfig
-from ._tool import ToolEffect, get_tool_metadata
-from ._resources import (
-    ResourceSpec,
-    _iter_sub_agents,
-    _iter_tool_fns,
-    collect_resource_specs,
-    collect_user_api_scopes,
-    get_resources,
-    get_user_api_scopes,
-    user_api_scopes_for,
-)
+from ._tool import ExecutionIdentity, ToolEffect, get_tool_metadata
+from ._resources import ResourceSpec, _iter_tool_fns, user_api_scopes_for
 
 
 class AppsHostResource(BaseModel):
@@ -46,6 +40,8 @@ class AppsHostToolAnnotations(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     effect: ToolEffect = "update"
+    execution_identity: ExecutionIdentity = "user"
+    requires_request_context: bool = True
     requires_user_context: bool = True
 
 
@@ -111,6 +107,8 @@ class AppsHostManifest(BaseModel):
     appkit: AppsHostAppKit
     tools: list[AppsHostTool]
     resources: list[AppsHostResource]
+    user_resources: list[AppsHostResource]
+    service_resources: list[AppsHostResource]
     app_to_app_permissions: list[AppsHostAppPermission] = Field(default_factory=list)
     user_api_scopes: list[str]
 
@@ -121,13 +119,9 @@ def compile_apps_host_manifest(
 ) -> AppsHostManifest:
     """Project a finalized APX agent into the internal Apps host manifest."""
     effective = config or _agent_config_from_instance(agent)
-    resources = collect_resource_specs(agent, model=effective.model)
-    scopes = sorted(
-        {
-            *user_api_scopes_for(resources),
-            *collect_user_api_scopes(agent),
-        }
-    )
+    plan = compile_authorization_plan(agent, model=effective.model)
+    operations = {operation.name: operation for operation in plan.operations}
+    resources = list(dict.fromkeys((*plan.service_resources, *plan.user_resources)))
     return AppsHostManifest(
         agent=AppsHostAgent(
             name=effective.name,
@@ -143,12 +137,16 @@ def compile_apps_host_manifest(
             max_tokens=effective.max_tokens,
             limits=AppsHostAppKitLimits(max_tool_calls=effective.max_iterations),
         ),
-        tools=[_tool_manifest(fn) for fn in _iter_tool_fns(agent)],
-        resources=[_resource_manifest(spec) for spec in resources],
-        app_to_app_permissions=[
-            _app_permission(url) for url in _iter_apps_peer_urls(agent)
+        tools=[
+            _tool_manifest(fn, operations[fn.__name__]) for fn in _iter_tool_fns(agent)
         ],
-        user_api_scopes=scopes,
+        resources=[_resource_manifest(spec) for spec in resources],
+        user_resources=[_resource_manifest(spec) for spec in plan.user_resources],
+        service_resources=[_resource_manifest(spec) for spec in plan.service_resources],
+        app_to_app_permissions=[
+            _app_permission(dependency.url) for dependency in plan.app_dependencies
+        ],
+        user_api_scopes=list(plan.user_api_scopes),
     )
 
 
@@ -166,16 +164,12 @@ def _agent_config_from_instance(agent: BaseAgent) -> AgentConfig:
     )
 
 
-def _tool_manifest(fn: Any) -> AppsHostTool:
+def _tool_manifest(
+    fn: Any,
+    authorization: OperationAuthorization,
+) -> AppsHostTool:
     plain_params, _dep_names = _inspect_tool_fn(fn)
     input_model = _make_input_model(fn, plain_params)
-    resources = get_resources(fn)
-    scopes = sorted(
-        {
-            *user_api_scopes_for(resources),
-            *get_user_api_scopes(fn),
-        }
-    )
     metadata = get_tool_metadata(fn)
     effect = metadata.effect if metadata and metadata.effect is not None else "update"
     return AppsHostTool(
@@ -183,37 +177,29 @@ def _tool_manifest(fn: Any) -> AppsHostTool:
         description=(fn.__doc__ or "").strip(),
         parameters=_schema_for_model(input_model),
         output_schema=_schema_for_return(fn),
-        annotations=AppsHostToolAnnotations(effect=effect),
+        annotations=AppsHostToolAnnotations(
+            effect=effect,
+            execution_identity=authorization.execution_identity,
+            requires_request_context=authorization.requires_request_context,
+            requires_user_context=authorization.execution_identity == "user",
+        ),
         handler=AppsHostToolHandler(ref=f"{fn.__module__}:{fn.__qualname__}"),
-        resources=[_resource_manifest(spec) for spec in resources],
-        user_api_scopes=scopes,
+        resources=[_resource_manifest(spec) for spec in authorization.resources],
+        user_api_scopes=(
+            sorted(
+                {
+                    *user_api_scopes_for(authorization.resources),
+                    *authorization.user_api_scopes,
+                }
+            )
+            if authorization.execution_identity == "user"
+            else []
+        ),
     )
 
 
 def _resource_manifest(spec: ResourceSpec) -> AppsHostResource:
     return AppsHostResource(kind=spec.kind, identifier=spec.identifier)
-
-
-def _iter_apps_peer_urls(agent: BaseAgent) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for raw in _iter_sub_agents(agent):
-        if not _is_apps_https_url(raw) or raw in seen:
-            continue
-        seen.add(raw)
-        out.append(raw)
-    return out
-
-
-def _is_apps_https_url(url: str) -> bool:
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return False
-    if parsed.scheme != "https":
-        return False
-    host = (parsed.hostname or "").lower()
-    return host == "databricksapps.com" or host.endswith(".databricksapps.com")
 
 
 def _app_permission(url: str) -> AppsHostAppPermission:

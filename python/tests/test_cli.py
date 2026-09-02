@@ -4166,9 +4166,14 @@ def test_scaffold_apps_databricks_yml_enables_autolog_env() -> None:
 def test_apps_databricks_yml_has_staging_target_for_all_templates(tmp_path):
     """The staging target is unconditional — every --target apps template
     gets dev/staging/prod, regardless of whether it has a catalog/schema."""
+    import yaml
+
     from apx_agent import cli
     cli._scaffold_apps(tmp_path, "demo", force=True, catalog="", schema="", template="base")
     yml = (tmp_path / "databricks.yml").read_text()
+    app = yaml.safe_load(yml)["resources"]["apps"]["demo"]
+    assert app["user_api_scopes"] == ["sql", "model-serving"]
+    assert "serving.serving-endpoints" not in yml
     assert "  staging:" in yml
     assert "    mode: production" in yml
     # staging appears between dev and prod, shaped like prod.
@@ -4683,20 +4688,24 @@ class TestDatabricksYmlMergePreservesComments:
         assert "OPENAI_API_KEY" in out  # secret valueFrom persists
         assert any("env scrub" in m for m in logs)
 
-    def test_auto_update_yml_preserves_comments(self, tmp_path, monkeypatch):
-        from apx_agent.cli import _auto_update_databricks_yml
+    def test_authorization_reconcile_preserves_comments(self, tmp_path):
+        from apx_agent import Agent
+        from apx_agent._apps_authorization import (
+            AppFamilyPermissions,
+            compile_authorization_plan,
+        )
+        from apx_agent.cli import _reconcile_apps_authorization
 
         yml_path = tmp_path / "databricks.yml"
         yml_path.write_text(self._SEED)
-        monkeypatch.setattr(
-            "apx_agent._resources.collect_resource_specs", lambda agent: [],
-        )
-        monkeypatch.setattr(
-            "apx_agent._resources.user_api_scopes_for", lambda specs: [],
-        )
 
-        _auto_update_databricks_yml(
-            tmp_path, agent=object(), bundle_key="my-agent", log=lambda msg: None,
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=compile_authorization_plan(Agent(tools=[]), model="model-endpoint"),
+            resolved_dependencies=[],
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-agent",
+            log=lambda msg: None,
         )
 
         out = yml_path.read_text()
@@ -4704,14 +4713,89 @@ class TestDatabricksYmlMergePreservesComments:
         assert "# inline comment" in out
         assert "# a note about this block" in out
 
-    def test_auto_update_yml_unions_tool_declared_scope(self, tmp_path):
+    def test_authorization_reconcile_matches_identity_and_preserves_custom_handle(
+        self,
+        tmp_path,
+    ):
+        import yaml as pyyaml
+
+        from apx_agent import Agent, Dependencies, ResourceSpec, attach_resources
+        from apx_agent._apps_authorization import (
+            AppFamilyPermissions,
+            compile_authorization_plan,
+        )
+        from apx_agent.cli import _reconcile_apps_authorization
+
+        def search_orders(ws: Dependencies.Client) -> str:
+            return "ok"
+
+        attach_resources(
+            search_orders,
+            [ResourceSpec("uc_table", "main.sales.orders")],
+        )
+        yml_path = tmp_path / "databricks.yml"
+        yml_path.write_text(
+            "resources:\n"
+            "  apps:\n"
+            "    my-agent:\n"
+            "      name: my-agent\n"
+            "      resources:\n"
+            "      - uc_securable:\n"
+            "          name: custom-orders-handle\n"
+            "          securable_full_name: main.sales.orders\n"
+            "          securable_type: TABLE\n"
+            "          permission: SELECT\n"
+            "      - serving_endpoint:\n"
+            "          name: custom-model-handle\n"
+            "          endpoint_name: model-endpoint\n"
+            "          permission: CAN_QUERY\n"
+        )
+
+        changed = _reconcile_apps_authorization(
+            tmp_path,
+            plan=compile_authorization_plan(
+                Agent(tools=[search_orders]),
+                model="model-endpoint",
+            ),
+            resolved_dependencies=[],
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-agent",
+            log=lambda msg: None,
+        )
+
+        resources = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"][
+            "my-agent"
+        ]["resources"]
+        assert len(resources) == 2
+        assert resources[0]["uc_securable"]["name"] == "custom-orders-handle"
+        assert changed is True
+        assert pyyaml.safe_load(yml_path.read_text())["resources"]["apps"][
+            "my-agent"
+        ]["user_api_scopes"] == ["sql"]
+        assert _reconcile_apps_authorization(
+            tmp_path,
+            plan=compile_authorization_plan(
+                Agent(tools=[search_orders]),
+                model="model-endpoint",
+            ),
+            resolved_dependencies=[],
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-agent",
+            log=lambda msg: None,
+        ) is False
+
+    def test_authorization_reconcile_unions_tool_declared_scope(self, tmp_path):
         # #563: a tool that declares a catalog scope via require_user_api_scopes
         # gets that scope unioned into databricks.yml at deploy time, even
         # though no ResourceSpec implies it. Turns the prod-only "missing
         # scopes" 500 into a scope declared at deploy time.
         import yaml as pyyaml
         from apx_agent import Agent, require_user_api_scopes
-        from apx_agent.cli import _auto_update_databricks_yml
+        from apx_agent._apps_authorization import (
+            AppFamilyPermissions,
+            compile_authorization_plan,
+        )
+        from apx_agent.cli import _reconcile_apps_authorization
 
         def list_catalogs(ws) -> None: ...
         require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
@@ -4719,20 +4803,31 @@ class TestDatabricksYmlMergePreservesComments:
         yml_path = tmp_path / "databricks.yml"
         yml_path.write_text(self._SEED)
 
-        _auto_update_databricks_yml(
-            tmp_path, agent=Agent(tools=[list_catalogs]),
-            bundle_key="my-agent", log=lambda msg: None,
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=compile_authorization_plan(
+                Agent(tools=[list_catalogs]),
+                model="model-endpoint",
+            ),
+            resolved_dependencies=[],
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-agent",
+            log=lambda msg: None,
         )
 
         app = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]
         assert "catalog.catalogs:read" in app["user_api_scopes"]
 
-    def test_auto_update_yml_never_drops_existing_scopes(self, tmp_path):
-        # The scope union is additive: an operator's existing user_api_scopes
-        # (incl. ones no tool derives) survive when the merge adds a new one.
+    def test_authorization_reconcile_never_drops_existing_scopes(self, tmp_path):
+        # The scope union is additive: deprecated aliases in an operator's
+        # existing config survive, but new declarations never generate them.
         import yaml as pyyaml
         from apx_agent import Agent, require_user_api_scopes
-        from apx_agent.cli import _auto_update_databricks_yml
+        from apx_agent._apps_authorization import (
+            AppFamilyPermissions,
+            compile_authorization_plan,
+        )
+        from apx_agent.cli import _reconcile_apps_authorization
 
         yml_path = tmp_path / "databricks.yml"
         yml_path.write_text(
@@ -4742,30 +4837,50 @@ class TestDatabricksYmlMergePreservesComments:
             "      name: my-agent\n"
             "      user_api_scopes:\n"
             "      - sql\n"
+            "      - dashboards.genie\n"
             "      - serving.serving-endpoints\n"
+            "      - vectorsearch.vector-search-endpoints\n"
             "      config: {}\n"
         )
 
         def list_catalogs(ws) -> None: ...
         require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
 
-        _auto_update_databricks_yml(
-            tmp_path, agent=Agent(tools=[list_catalogs]),
-            bundle_key="my-agent", log=lambda msg: None,
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=compile_authorization_plan(
+                Agent(tools=[list_catalogs]),
+                model="model-endpoint",
+            ),
+            resolved_dependencies=[],
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-agent",
+            log=lambda msg: None,
         )
 
         scopes = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]["user_api_scopes"]
         assert set(scopes) == {
-            "sql", "serving.serving-endpoints", "catalog.catalogs:read",
+            "sql",
+            "dashboards.genie",
+            "serving.serving-endpoints",
+            "vectorsearch.vector-search-endpoints",
+            "catalog.catalogs:read",
         }
 
-    def test_auto_update_yml_unions_sql_from_auto_discover_sql_tool(self, tmp_path):
+    def test_authorization_reconcile_unions_sql_from_auto_discover_sql_tool(
+        self,
+        tmp_path,
+    ):
         # sql_tool() with no warehouse_id attaches no ResourceSpec, but still
         # needs the `sql` OBO scope. Deploy must union it from the tool
         # declaration rather than relying on the scaffold baseline alone.
         import yaml as pyyaml
         from apx_agent import Agent, sql_tool
-        from apx_agent.cli import _auto_update_databricks_yml
+        from apx_agent._apps_authorization import (
+            AppFamilyPermissions,
+            compile_authorization_plan,
+        )
+        from apx_agent.cli import _reconcile_apps_authorization
 
         yml_path = tmp_path / "databricks.yml"
         # Seed WITHOUT sql so the derived scope is the only source.
@@ -4779,9 +4894,16 @@ class TestDatabricksYmlMergePreservesComments:
             "      resources: []\n"
         )
 
-        _auto_update_databricks_yml(
-            tmp_path, agent=Agent(tools=[sql_tool()]),
-            bundle_key="my-agent", log=lambda msg: None,
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=compile_authorization_plan(
+                Agent(tools=[sql_tool()]),
+                model="model-endpoint",
+            ),
+            resolved_dependencies=[],
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-agent",
+            log=lambda msg: None,
         )
 
         app = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]
@@ -4789,87 +4911,15 @@ class TestDatabricksYmlMergePreservesComments:
         assert "serving.serving-endpoints" in app["user_api_scopes"]
 
 
-class TestDeployScopePrecheck:
-    """Day-2 (#563): an apps deploy WARNS (never mutates) when a tool needs an
-    OBO scope databricks.yml omits — so the scope derivation fires on the common
-    deploy/redeploy path, not only under the opt-in --auto-update-yml flag.
-    """
-
-    def _doc(self, scopes: list[str]) -> dict:
-        return {"resources": {"apps": {"my-agent": {
-            "name": "my-agent",
-            "user_api_scopes": list(scopes),
-        }}}}
-
-    def _agent_needing_catalog_scope(self):
-        from apx_agent import Agent, require_user_api_scopes
-
-        def list_catalogs(ws) -> None: ...
-        require_user_api_scopes(list_catalogs, ["catalog.catalogs:read"])
-        return Agent(tools=[list_catalogs])
-
-    def test_warns_on_missing_scope(self, monkeypatch):
-        from apx_agent.cli import _warn_missing_user_api_scopes
-
-        monkeypatch.setattr(
-            "apx_agent.cli._load_finalized_agent",
-            lambda module: self._agent_needing_catalog_scope(),
-        )
-        logs: list[str] = []
-        missing = _warn_missing_user_api_scopes(
-            self._doc(["sql", "serving.serving-endpoints"]),
-            module="agent", bundle_key="my-agent", log=logs.append,
-        )
-        assert missing == ["catalog.catalogs:read"]
-        assert any("catalog.catalogs:read" in m and "WARNING" in m for m in logs)
-
-    def test_silent_when_scope_present(self, monkeypatch):
-        from apx_agent.cli import _warn_missing_user_api_scopes
-
-        monkeypatch.setattr(
-            "apx_agent.cli._load_finalized_agent",
-            lambda module: self._agent_needing_catalog_scope(),
-        )
-        logs: list[str] = []
-        missing = _warn_missing_user_api_scopes(
-            self._doc(["sql", "catalog.catalogs:read"]),
-            module="agent", bundle_key="my-agent", log=logs.append,
-        )
-        assert missing == []
-        assert logs == []
-
-    def test_best_effort_on_agent_load_failure(self, monkeypatch):
-        # A failure to load/introspect the agent skips the check silently — the
-        # pre-check must never abort a deploy.
-        from apx_agent.cli import _warn_missing_user_api_scopes
-
-        def _boom(module):
-            raise RuntimeError("cannot import user module")
-
-        monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _boom)
-        logs: list[str] = []
-        missing = _warn_missing_user_api_scopes(
-            self._doc(["sql"]), module="agent", bundle_key="my-agent", log=logs.append,
-        )
-        assert missing == []
-        assert logs == []
-
-
 def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Governance: a [[tool.apx.tools]] genie tool must be present on the agent
-    that _auto_update_databricks_yml receives, so its genie_space resource is
-    merged into databricks.yml.
+    """A config Genie tool reaches the one deploy authorization plan.
 
-    Uses a spy on _auto_update_databricks_yml: captures the agent argument, then
-    raises a sentinel to short-circuit the downstream I/O (wheel build, bundle
-    deploy, apps deploy).  Before the fix in _deploy_apps_impl, the agent was
-    loaded but NOT finalized before the call, so collect_resource_specs would
-    return no genie_space.  After the fix, finalize_agent runs first and the
-    config tool is present.
+    A spy on reconciliation captures the compiled plan and stops before wheel,
+    bundle, or Apps I/O. The config-declared tool defaults to user execution, so
+    its Genie resource must be user-only and its OBO scope must be present.
     """
-    from apx_agent._resources import collect_resource_specs
     from apx_agent.cli import _deploy_apps_impl
 
     # Write a minimal agent module with NO inline tools — genie comes from config.
@@ -4900,16 +4950,24 @@ def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
     class _StopAfterSeam(Exception):
         pass
 
-    captured_agent: list = []
+    captured_plans: list = []
 
-    def _spy_auto_update(cwd, *, agent, bundle_key, log):
-        captured_agent.append(agent)
+    def _spy_reconcile(
+        cwd,
+        *,
+        plan,
+        resolved_dependencies,
+        family_permissions,
+        bundle_key,
+        log,
+    ):
+        captured_plans.append(plan)
         raise _StopAfterSeam("spy: stopping after seam")
 
     with patch("apx_agent.cli._preflight_databricks_cli", return_value=None), \
          patch("apx_agent.cli._preflight_apps", return_value=None), \
          patch("apx_agent.cli._validate_responses_agent_compiler", return_value=None), \
-         patch("apx_agent.cli._auto_update_databricks_yml", side_effect=_spy_auto_update):
+         patch("apx_agent.cli._reconcile_apps_authorization", side_effect=_spy_reconcile):
         try:
             _deploy_apps_impl(
                 cwd=tmp_path,
@@ -4929,14 +4987,12 @@ def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
 
     sys.modules.pop("deploy_apps_config_tools_agent", None)
 
-    assert captured_agent, "spy was never called — test setup error"
-    agent = captured_agent[0]
-    specs = collect_resource_specs(agent)
-    kinds = {s.kind for s in specs}
-    assert "genie_space" in kinds, (
-        f"genie_space not in resource specs after finalize; got: {kinds}. "
-        "finalize_agent was not called before _auto_update_databricks_yml."
-    )
+    assert captured_plans, "spy was never called — test setup error"
+    plan = captured_plans[0]
+    assert {(resource.kind, resource.identifier) for resource in plan.user_resources} >= {
+        ("genie_space", "cfg-space-xyz"),
+    }
+    assert "genie" in plan.user_api_scopes
 
 
 # ---------------------------------------------------------------------------

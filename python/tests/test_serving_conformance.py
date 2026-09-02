@@ -13,11 +13,12 @@ adapters that diverge ONLY at the serving boundary but must behave IDENTICALLY:
     ``non_streaming_fn(ResponsesAgentRequest(input=[...], custom_inputs=...))``.
     Wire shape ``{"input": [...]}``.
 
-Both funnel into the SAME ``compile_to_langgraph(agent, *, ws, model, headers)``
-and both resolve OBO via ``apx_agent._obo.extract_obo_headers``. Three real bugs
-fixed this cycle were all *behavioral divergence between these two adapters*:
-OBO workspace-client built differently (#119), tracing on in one path not the
-other (#120), dev UI hardcoded to one wire shape (#124).
+Both funnel into the SAME ``compile_to_langgraph(agent, *, ws, service_ws,
+model, headers)`` and both resolve OBO via
+``apx_agent._obo.extract_obo_headers``. Three real bugs fixed this cycle were
+all *behavioral divergence between these two adapters*: OBO workspace-client
+built differently (#119), tracing on in one path not the other (#120), dev UI
+hardcoded to one wire shape (#124).
 
 This suite encodes the contract that the two adapters are behaviorally
 equivalent: it drives BOTH adapters with the SAME logical request (the model
@@ -36,7 +37,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, NamedTuple
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -48,7 +49,7 @@ pytest.importorskip("mlflow")
 mlflow_responses = pytest.importorskip("mlflow.types.responses")
 ResponsesAgentRequest = mlflow_responses.ResponsesAgentRequest
 
-from langchain_core.messages import AIMessage  # noqa: E402
+from langchain_core.messages import AIMessage, ToolMessage  # noqa: E402
 from mlflow.types.agent import ChatAgentMessage  # noqa: E402
 
 from apx_agent import (  # noqa: E402
@@ -94,15 +95,15 @@ def _normalize_lc(msgs: list[Any]) -> list[tuple[Any, ...]]:
         tool_calls = tuple(
             sorted(
                 (tc["name"], _json_args(tc["args"]), tc["id"])
-                for tc in (getattr(m, "tool_calls", None) or [])
+                for tc in (m.tool_calls or [])
             )
-        )
+        ) if isinstance(m, AIMessage) else ()
         out.append(
             (
                 m.type,
                 m.content,
                 tool_calls,
-                getattr(m, "tool_call_id", None),
+                m.tool_call_id if isinstance(m, ToolMessage) else None,
             )
         )
     return out
@@ -131,17 +132,19 @@ class _Capture:
 
     def __init__(self) -> None:
         self.ws: Any = None
+        self.service_ws: Any = None
         self.model: Any = None
         self.headers: Any = None
         self.graph_input: list[Any] = []
-        self.factory_call: Any = None  # mock_factory.call_args
+        self.factory_calls: Any = None  # mock_factory.call_args_list
         self.response: Any = None
         self._mock_factory: Any = None  # the patched _make_workspace_client mock
 
 
 def _spy_compile_and_graph(cap: _Capture, final_text: str) -> Any:
-    """Return a ``compile_to_langgraph`` spy that records (ws, model, headers)
-    and a fake graph whose ``.invoke`` records the langchain input messages.
+    """Return a compile spy recording both clients, model, and headers.
+
+    The fake graph's ``.invoke`` records the langchain input messages.
 
     The spy captures the graph-input message list by having the fake graph's
     ``.invoke`` write ``state["messages"]`` into ``cap.graph_input`` before
@@ -155,8 +158,16 @@ def _spy_compile_and_graph(cap: _Capture, final_text: str) -> Any:
     fake_graph = MagicMock(name="fake_graph")
     fake_graph.invoke.side_effect = _invoke
 
-    def _spy(agent_arg: Any, *, ws: Any, model: Any, headers: Any = None) -> Any:
+    def _spy(
+        agent_arg: Any,
+        *,
+        ws: Any,
+        service_ws: Any,
+        model: Any,
+        headers: Any = None,
+    ) -> Any:
         cap.ws = ws
+        cap.service_ws = service_ws
         cap.model = model
         cap.headers = headers
         return fake_graph
@@ -169,10 +180,8 @@ def _spy_compile_and_graph(cap: _Capture, final_text: str) -> Any:
 # ---------------------------------------------------------------------------
 #
 # Each adapter runs in its OWN patch context (NOT a shared one) so that
-# per-path ``_make_workspace_client.assert_called_once_with(...)`` assertions
-# are honest: a single shared mock would record two calls and break
-# ``assert_called_once``. The SAME ``sentinel_ws`` object is threaded into both
-# so test 1's "captured ws IS the sentinel in both paths" is a literal ``is``.
+# per-path workspace-client call assertions are honest. The SAME user and
+# service sentinels are threaded into both so identity comparisons are literal.
 
 
 def _run_chat(
@@ -181,6 +190,7 @@ def _run_chat(
     messages: list[ChatAgentMessage],
     custom_inputs: dict[str, Any] | None,
     sentinel_ws: Any,
+    sentinel_service_ws: Any,
     final_text: str = "OK",
 ) -> _Capture:
     """Drive the ChatAgent adapter for one logical request; capture the seams."""
@@ -188,7 +198,7 @@ def _run_chat(
     wrapped = chat_agent_for(agent, model=MODEL)
     with patch(
         "apx_agent._defaults._make_workspace_client",
-        return_value=sentinel_ws,
+        side_effect=[sentinel_ws, sentinel_service_ws],
     ) as mock_factory, patch(
         "apx_agent._chat_agent.compile_to_langgraph",
         side_effect=_spy_compile_and_graph(cap, final_text),
@@ -196,7 +206,7 @@ def _run_chat(
         cap.response = wrapped.predict(
             messages=messages, custom_inputs=custom_inputs
         )
-        cap.factory_call = mock_factory.call_args
+        cap.factory_calls = mock_factory.call_args_list
         cap._mock_factory = mock_factory
     return cap
 
@@ -207,6 +217,7 @@ def _run_responses(
     input_items: list[dict[str, Any]],
     custom_inputs: dict[str, Any] | None,
     sentinel_ws: Any,
+    sentinel_service_ws: Any,
     final_text: str = "OK",
 ) -> _Capture:
     """Drive the ResponsesAgent adapter for one logical request; capture seams."""
@@ -214,7 +225,7 @@ def _run_responses(
     non_streaming, _ = compile_to_responses_agent(agent, model=MODEL)
     with patch(
         "apx_agent._defaults._make_workspace_client",
-        return_value=sentinel_ws,
+        side_effect=[sentinel_ws, sentinel_service_ws],
     ) as mock_factory, patch(
         "apx_agent._responses_agent.compile_to_langgraph",
         side_effect=_spy_compile_and_graph(cap, final_text),
@@ -224,7 +235,7 @@ def _run_responses(
                 input=input_items, custom_inputs=custom_inputs or None
             )
         )
-        cap.factory_call = mock_factory.call_args
+        cap.factory_calls = mock_factory.call_args_list
         cap._mock_factory = mock_factory
     return cap
 
@@ -235,6 +246,7 @@ def _run_both(
     responses_input: list[dict[str, Any]],
     custom_inputs: dict[str, Any] | None = None,
     sentinel_ws: Any | None = None,
+    sentinel_service_ws: Any | None = None,
     final_text: str = "OK",
 ) -> _BothCaptures:
     """Run the SAME logical request through both adapters.
@@ -246,12 +258,18 @@ def _run_both(
     differs, which is precisely the boundary under test.
     """
     sentinel_ws = sentinel_ws if sentinel_ws is not None else MagicMock(name="ws")
+    sentinel_service_ws = (
+        sentinel_service_ws
+        if sentinel_service_ws is not None
+        else MagicMock(name="service_ws")
+    )
     agent = _make_agent()
     chat_cap = _run_chat(
         agent,
         messages=chat_messages,
         custom_inputs=custom_inputs,
         sentinel_ws=sentinel_ws,
+        sentinel_service_ws=sentinel_service_ws,
         final_text=final_text,
     )
     resp_cap = _run_responses(
@@ -259,6 +277,7 @@ def _run_both(
         input_items=responses_input,
         custom_inputs=custom_inputs,
         sentinel_ws=sentinel_ws,
+        sentinel_service_ws=sentinel_service_ws,
         final_text=final_text,
     )
     return _BothCaptures(chat=chat_cap, responses=resp_cap)
@@ -275,7 +294,7 @@ def _responses_assistant_text(response: Any) -> str:
         if d.get("type") == "message" and d.get("role") == "assistant":
             for part in d.get("content", []) or []:
                 if part.get("type") == "output_text":
-                    return part.get("text", "")
+                    return part["text"]
     return ""
 
 
@@ -286,7 +305,8 @@ def _responses_assistant_text(response: Any) -> str:
 
 class TestSameOboWorkspaceClient:
     def test_same_obo_workspace_client_kwargs_and_sentinel(self) -> None:
-        sentinel = MagicMock(name="obo_ws")
+        user_ws = MagicMock(name="user_ws")
+        service_ws = MagicMock(name="service_ws")
         ci = {
             "user_token": "tok",
             "workspace_host": "https://ws.databricks.com",
@@ -295,22 +315,21 @@ class TestSameOboWorkspaceClient:
             chat_messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
             responses_input=[{"role": "user", "content": "hi"}],
             custom_inputs=ci,
-            sentinel_ws=sentinel,
+            sentinel_ws=user_ws,
+            sentinel_service_ws=service_ws,
         )
 
-        # Both paths built the WorkspaceClient with the SAME token+host kwargs.
-        expected = {"token": "tok", "host": "https://ws.databricks.com"}
-        assert chat_cap.factory_call.kwargs == expected
-        assert resp_cap.factory_call.kwargs == expected
-        assert chat_cap.factory_call.kwargs == resp_cap.factory_call.kwargs
-
-        # Each path called the factory exactly once.
-        chat_cap._mock_factory.assert_called_once()
-        resp_cap._mock_factory.assert_called_once()
-
-        # The ws handed to compile_to_langgraph IS the OBO sentinel in BOTH.
-        assert chat_cap.ws is sentinel
-        assert resp_cap.ws is sentinel
+        expected_calls = [
+            call(token="tok", host="https://ws.databricks.com"),
+            call(),
+        ]
+        assert chat_cap.factory_calls == expected_calls
+        assert resp_cap.factory_calls == expected_calls
+        assert chat_cap.ws is user_ws
+        assert resp_cap.ws is user_ws
+        assert chat_cap.service_ws is service_ws
+        assert resp_cap.service_ws is service_ws
+        assert user_ws is not service_ws
 
 
 # ---------------------------------------------------------------------------
@@ -514,10 +533,8 @@ class TestNoOboFallbackParity:
             responses_input=[{"role": "user", "content": "hi"}],
             custom_inputs=None,
         )
-        # Both paths fall back to the default SP/CLI client: factory called
-        # with NO token/host kwargs.
-        chat_cap._mock_factory.assert_called_once_with()
-        resp_cap._mock_factory.assert_called_once_with()
+        assert chat_cap.factory_calls == [call(), call()]
+        assert resp_cap.factory_calls == [call(), call()]
 
     def test_empty_custom_inputs_calls_factory_with_no_kwargs_in_both(self) -> None:
         chat_cap, resp_cap = _run_both(
@@ -525,8 +542,8 @@ class TestNoOboFallbackParity:
             responses_input=[{"role": "user", "content": "hi"}],
             custom_inputs={},
         )
-        chat_cap._mock_factory.assert_called_once_with()
-        resp_cap._mock_factory.assert_called_once_with()
+        assert chat_cap.factory_calls == [call(), call()]
+        assert resp_cap.factory_calls == [call(), call()]
 
 
 # ---------------------------------------------------------------------------

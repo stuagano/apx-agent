@@ -22,7 +22,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 # Skip the whole module unless the optional extra is installed.
 pytest.importorskip("langgraph")
@@ -93,6 +93,128 @@ def report_generator(summary: str) -> str:  # no dependencies — pure tool
 
 
 class TestCompileLlmAgent:
+    def test_compile_threads_distinct_service_and_user_clients(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apx_agent import _compile
+
+        service_ws = MagicMock(name="service_ws")
+        user_ws = MagicMock(name="user_ws")
+        monkeypatch.setattr(_compile, "_compile_any", lambda _agent, ctx: ctx)
+
+        ctx = compile_to_langgraph(
+            LlmAgent(tools=[]),
+            ws=user_ws,
+            service_ws=service_ws,
+            model="any",
+        )
+
+        assert ctx.service_ws is service_ws
+        assert ctx.user_ws is user_ws
+
+    def test_dependency_resolution_preserves_service_and_user_clients(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apx_agent._compile import CompileContext, _resolve_deps_for_fn
+
+        service_ws = MagicMock(name="service_ws")
+        user_ws = MagicMock(name="user_ws")
+        run_sql = MagicMock(return_value=[{"value": 1}])
+        monkeypatch.setattr("apx_agent._sql.run_sql", run_sql)
+        ctx = CompileContext(service_ws=service_ws, user_ws=user_ws, model="any")
+
+        def service_lookup(ws: Dependencies.Client) -> Any:
+            return ws
+
+        def user_lookup(user_client: Dependencies.UserClient) -> Any:
+            return user_client
+
+        def workspace_lookup(ws: Dependencies.Workspace) -> Any:
+            return ws
+
+        def sql_lookup(sql: Dependencies.Sql) -> Any:
+            return sql
+
+        assert _resolve_deps_for_fn(service_lookup, ctx) == {"ws": service_ws}
+        assert _resolve_deps_for_fn(user_lookup, ctx) == {"user_client": user_ws}
+        assert _resolve_deps_for_fn(workspace_lookup, ctx) == {"ws": user_ws}
+        sql = _resolve_deps_for_fn(sql_lookup, ctx)["sql"]
+        assert sql("SELECT 1") == [{"value": 1}]
+        run_sql.assert_called_once_with(user_ws, "SELECT 1")
+
+    def test_dependency_resolution_preserves_request_context(self) -> None:
+        from apx_agent._compile import CompileContext, _resolve_deps_for_fn
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/_apx/internal/appkit/tools/inspect",
+                "raw_path": b"/_apx/internal/appkit/tools/inspect",
+                "query_string": b"",
+                "headers": [],
+                "server": ("127.0.0.1", 8000),
+            }
+        )
+        ctx = CompileContext(
+            service_ws=None,
+            user_ws=None,
+            model="any",
+            request=request,
+        )
+
+        def inspect_request(request: Dependencies.Request) -> Request:
+            return request
+
+        assert _resolve_deps_for_fn(inspect_request, ctx) == {"request": request}
+
+    @pytest.mark.parametrize(
+        "dependency",
+        [Dependencies.UserClient, Dependencies.Workspace, Dependencies.Sql],
+    )
+    def test_missing_user_client_fails_only_user_tools(self, dependency: Any) -> None:
+        from apx_agent._compile import CompileContext, _resolve_deps_for_fn
+
+        service_ws = MagicMock(name="service_ws")
+        ctx = CompileContext(service_ws=service_ws, user_ws=None, model="any")
+
+        def service_lookup(ws: Dependencies.Client) -> Any:
+            return ws
+
+        def pure_lookup() -> str:
+            return "ok"
+
+        def user_lookup(value: Any) -> Any:
+            return value
+
+        user_lookup.__annotations__["value"] = dependency
+
+        assert _resolve_deps_for_fn(service_lookup, ctx) == {"ws": service_ws}
+        assert _resolve_deps_for_fn(pure_lookup, ctx) == {}
+        with pytest.raises(ValueError, match="user_lookup.*user WorkspaceClient"):
+            _resolve_deps_for_fn(user_lookup, ctx)
+
+    def test_missing_service_client_fails_only_service_tools(self) -> None:
+        from apx_agent._compile import CompileContext, _resolve_deps_for_fn
+
+        user_ws = MagicMock(name="user_ws")
+        ctx = CompileContext(service_ws=None, user_ws=user_ws, model="any")
+
+        def service_lookup(ws: Dependencies.Client) -> Any:
+            return ws
+
+        def user_lookup(ws: Dependencies.UserClient) -> Any:
+            return ws
+
+        def pure_lookup() -> str:
+            return "ok"
+
+        assert _resolve_deps_for_fn(user_lookup, ctx) == {"ws": user_ws}
+        assert _resolve_deps_for_fn(pure_lookup, ctx) == {}
+        with pytest.raises(ValueError, match="service_lookup.*service WorkspaceClient"):
+            _resolve_deps_for_fn(service_lookup, ctx)
+
     def test_compiles_to_runnable(self, fake_ws: MagicMock) -> None:
         agent = LlmAgent(
             name="scanner",
@@ -123,7 +245,7 @@ class TestCompileLlmAgent:
         """Tool's ``ws`` parameter must be bound to OUR fake_ws at compile time."""
         from apx_agent._compile import CompileContext, _make_langchain_tool
 
-        ctx = CompileContext(ws=fake_ws, model="any")
+        ctx = CompileContext(service_ws=None, user_ws=fake_ws, model="any")
         lc_tool = _make_langchain_tool(scan_demand, ctx)
 
         # Invoke the wrapped tool with only the plain param. The closure
@@ -131,13 +253,27 @@ class TestCompileLlmAgent:
         lc_tool.invoke({"lookback_hours": 48})
         fake_ws.dummy_call.assert_called_once_with(48)
 
+    def test_dependency_resolution_uses_inspection_callables(
+        self, fake_ws: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apx_agent._compile import CompileContext, _resolve_deps_for_fn
+        from apx_agent._defaults import _get_workspace_client
+
+        monkeypatch.setattr(
+            "apx_agent._compile._tool_dependency_callables",
+            lambda _fn: {"ws": _get_workspace_client},
+        )
+
+        ctx = CompileContext(service_ws=fake_ws, user_ws=None, model="any")
+        assert _resolve_deps_for_fn(scan_demand, ctx) == {"ws": fake_ws}
+
     def test_dependency_params_excluded_from_input_schema(
         self, fake_ws: MagicMock
     ) -> None:
         """The LLM-visible schema must NOT include ``ws`` (it's a dependency)."""
         from apx_agent._compile import CompileContext, _make_langchain_tool
 
-        ctx = CompileContext(ws=fake_ws, model="any")
+        ctx = CompileContext(service_ws=None, user_ws=fake_ws, model="any")
         lc_tool = _make_langchain_tool(scan_demand, ctx)
 
         schema = lc_tool.args_schema.model_json_schema()
@@ -157,7 +293,9 @@ class TestAsyncToolInvocation:
             """Fetch a row."""
             return f"row:{row_id}"
 
-        lc_tool = _make_langchain_tool(fetch_row, CompileContext(ws=fake_ws, model="any"))
+        lc_tool = _make_langchain_tool(
+            fetch_row, CompileContext(service_ws=None, user_ws=None, model="any")
+        )
         # The bug: this raised ToolException "does not support sync invocation".
         assert lc_tool.invoke({"row_id": "42"}) == "row:42"
 
@@ -169,7 +307,9 @@ class TestAsyncToolInvocation:
             """Fetch a row."""
             return f"row:{row_id}"
 
-        lc_tool = _make_langchain_tool(fetch_row, CompileContext(ws=fake_ws, model="any"))
+        lc_tool = _make_langchain_tool(
+            fetch_row, CompileContext(service_ws=None, user_ws=None, model="any")
+        )
         # Sync bridge must also work even when called from within a running loop.
         assert lc_tool.invoke({"row_id": "9"}) == "row:9"
         assert await lc_tool.ainvoke({"row_id": "7"}) == "row:7"
@@ -233,7 +373,12 @@ class TestDependenciesProgress:
 
         assert Dependencies.Progress is not None
 
-        ctx = CompileContext(ws=None, model="m", headers=None)  # type: ignore[arg-type]
+        ctx = CompileContext(
+            service_ws=None,
+            user_ws=None,
+            model="m",
+            headers=None,
+        )
         resolvers = _make_dep_resolvers(ctx)
         assert resolvers[_get_progress] is emit_progress
 
@@ -343,7 +488,9 @@ class TestZeroArgToolFmapiSchema:
             """Return the secret word."""
             return "swordfish"
 
-        lc_tool = _make_langchain_tool(secret_word, CompileContext(ws=fake_ws, model="any"))
+        lc_tool = _make_langchain_tool(
+            secret_word, CompileContext(service_ws=None, user_ws=None, model="any")
+        )
         payload = convert_to_openai_tool(lc_tool)
 
         parameters = payload["function"]["parameters"]
@@ -363,7 +510,14 @@ class TestZeroArgToolFmapiSchema:
             """List things."""
             return f"listed via {ws.config.host}"
 
-        lc_tool = _make_langchain_tool(list_things, CompileContext(ws=fake_ws, model="any"))
+        lc_tool = _make_langchain_tool(
+            list_things,
+            CompileContext(
+                service_ws=None,
+                user_ws=fake_ws,
+                model="any",
+            ),
+        )
         payload = convert_to_openai_tool(lc_tool)
 
         parameters = payload["function"]["parameters"]
@@ -381,7 +535,9 @@ class TestZeroArgToolFmapiSchema:
             """Ping."""
             return "pong"
 
-        lc_tool = _make_langchain_tool(ping, CompileContext(ws=fake_ws, model="any"))
+        lc_tool = _make_langchain_tool(
+            ping, CompileContext(service_ws=None, user_ws=None, model="any")
+        )
         self._assert_fmapi_accepts(convert_to_openai_tool(lc_tool))
         assert lc_tool.invoke({}) == "pong"
 

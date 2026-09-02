@@ -84,6 +84,26 @@ def test_tool_without_effect_keeps_metadata_unspecified() -> None:
     assert get_tool_metadata(apply).effect is None
 
 
+def test_tool_records_execution_identity() -> None:
+    @tool(effect="read", execution="service")
+    def lookup(value: str) -> str:
+        return value
+
+    metadata = get_tool_metadata(lookup)
+    assert metadata is not None
+    assert metadata.effect == "read"
+    assert metadata.execution == "service"
+
+
+@pytest.mark.parametrize("execution", ["", "app", "USER"])
+def test_tool_rejects_invalid_execution_identity(execution: str) -> None:
+    with pytest.raises(ValueError, match="user.*service"):
+
+        @tool(execution=execution)  # type: ignore[arg-type]
+        def fn(value: str) -> str:
+            return value
+
+
 @pytest.mark.parametrize("effect", ["invalid", "delete", "READ"])
 def test_tool_rejects_invalid_effect(effect: str) -> None:
     with pytest.raises(ValueError, match="read.*write.*update.*destructive"):

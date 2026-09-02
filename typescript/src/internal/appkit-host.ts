@@ -33,6 +33,11 @@ import { toStrictSchema, zodToJsonSchema } from '../agent/index.js';
 
 export const INTERNAL_APX_APPKIT_PLUGIN_NAME = 'apx';
 
+interface InternalApxAppsHostResource {
+  kind: string;
+  identifier: string;
+}
+
 const bridgeHeaderStorage = new AsyncLocalStorage<Record<string, string>>();
 const FORWARDED_HEADER_NAMES = [
   'x-forwarded-host',
@@ -42,37 +47,60 @@ const FORWARDED_HEADER_NAMES = [
   'x-forwarded-access-token',
   'x-request-id',
 ] as const;
+const FORWARDED_ACCESS_TOKEN_HEADER = 'x-forwarded-access-token';
 
 export interface InternalApxAppsHostManifest {
+  kind: 'apx.apps_host_manifest';
+  version: 1;
   agent: {
     name: string;
+    description: string;
     model: string;
-    instructions?: string;
-    max_iterations?: number;
-    max_tokens?: number | null;
+    instructions: string;
+    temperature: number | null;
+    max_tokens: number | null;
+    max_iterations: number;
   };
-  appkit?: {
-    default?: boolean;
-    tool_prefix?: string;
-    max_steps?: number;
-    max_tokens?: number | null;
-    limits?: {
-      max_tool_calls?: number;
+  appkit: {
+    default: boolean;
+    tool_prefix: string;
+    max_steps: number;
+    max_tokens: number | null;
+    limits: {
+      max_tool_calls: number;
       max_concurrent_streams_per_user?: number;
       max_sub_agent_depth?: number;
       tool_call_timeout_ms?: number;
     };
-    ephemeral?: boolean | null;
-    generation_params?: AgentDefinition['generationParams'] | null;
+    ephemeral: boolean | null;
+    generation_params: Record<string, unknown> | null;
   };
-  tools?: Array<{
+  tools: Array<{
     name: string;
-    description?: string;
+    description: string;
+    runtime: 'python';
     parameters: Record<string, unknown>;
-    annotations?: {
-      effect?: ToolAnnotations['effect'];
-      requires_user_context?: boolean;
+    output_schema: Record<string, unknown> | null;
+    annotations: {
+      effect: NonNullable<ToolAnnotations['effect']>;
+      execution_identity: 'user' | 'service';
+      requires_request_context: boolean;
+      requires_user_context: boolean;
     };
+    handler: {
+      kind: 'python';
+      ref: string;
+    };
+    resources: InternalApxAppsHostResource[];
+    user_api_scopes: string[];
+  }>;
+  resources: InternalApxAppsHostResource[];
+  user_resources: InternalApxAppsHostResource[];
+  service_resources: InternalApxAppsHostResource[];
+  user_api_scopes: string[];
+  app_to_app_permissions: Array<{
+    url: string;
+    permission: 'CAN_USE';
   }>;
 }
 
@@ -144,6 +172,13 @@ export interface InternalApxAppKitDevRuntime {
 
 const devModelSchema = z.string().trim().min(1).max(256);
 const devInstructionsSchema = z.string().max(64_000);
+const appKitGenerationParamsSchema = z.object({
+  temperature: z.number().optional(),
+  top_p: z.number().optional(),
+  stop: z.union([z.string(), z.array(z.string())]).optional(),
+  frequency_penalty: z.number().optional(),
+  presence_penalty: z.number().optional(),
+}).strict();
 const devSkillSchema = z.object({
   name: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/),
   description: z.string().max(500),
@@ -190,13 +225,43 @@ function requireAgentSource(config: InternalApxAppKitGovernanceConfig):
   return { kind: 'exports', value: requireAgentExports(config.agent) };
 }
 
-function bridgeHeadersFromRequest(req: Parameters<Plugin['asUser']>[0]): Record<string, string> {
+function bridgeHeadersFromRequest(
+  req: Parameters<Plugin['asUser']>[0],
+  identity: 'user' | 'service',
+): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const name of FORWARDED_HEADER_NAMES) {
+    if (identity === 'service' && name === FORWARDED_ACCESS_TOKEN_HEADER) continue;
     const value = req.header(name)?.trim();
     if (value) headers[name] = value;
   }
   return headers;
+}
+
+function bridgeConfigHeaders(
+  headers: Record<string, string> | undefined,
+  identity: 'user' | 'service',
+): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    const normalizedName = name.toLowerCase();
+    if (identity === 'service' && normalizedName === FORWARDED_ACCESS_TOKEN_HEADER) continue;
+    normalized[normalizedName] = value;
+  }
+  return normalized;
+}
+
+function appKitGenerationParams(
+  params: Record<string, unknown> | null | undefined,
+): AgentDefinition['generationParams'] | undefined {
+  return params == null ? undefined : appKitGenerationParamsSchema.parse(params);
+}
+
+function manifestToolExecutionIdentity(
+  tool: NonNullable<InternalApxAppsHostManifest['tools']>[number] | undefined,
+): 'user' | 'service' {
+  if (tool?.annotations?.execution_identity) return tool.annotations.execution_identity;
+  return tool?.annotations?.requires_user_context === false ? 'service' : 'user';
 }
 
 function toolAnnotations(
@@ -215,7 +280,7 @@ function manifestToolAnnotations(
 ): ToolAnnotations {
   return {
     effect: tool.annotations?.effect ?? 'update',
-    requiresUserContext: tool.annotations?.requires_user_context ?? true,
+    requiresUserContext: manifestToolExecutionIdentity(tool) === 'user',
   };
 }
 
@@ -273,13 +338,29 @@ export class InternalApxAppKitGovernancePlugin
   }
 
   asUser(req: Parameters<Plugin['asUser']>[0]): this {
-    const scoped = super.asUser(req);
-    const headers = bridgeHeadersFromRequest(req);
-    return new Proxy(scoped, {
+    const executeAsUser = (name: string, args: unknown, signal?: AbortSignal) => (
+      super.asUser(req).executeAgentTool(name, args, signal)
+    );
+    return new Proxy(this, {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
-        if (typeof value !== 'function') return value;
-        return (...args: unknown[]) => bridgeHeaderStorage.run(headers, () => value.apply(target, args));
+        if (prop !== 'executeAgentTool' || typeof value !== 'function') return value;
+        return (name: string, args: unknown, signal?: AbortSignal) => {
+          const manifestTool = target.config.manifest?.tools?.find(
+            (candidate) => candidate.name === name,
+          );
+          const identity = manifestToolExecutionIdentity(manifestTool);
+          const invoke = () => (
+            identity === 'user'
+              ? executeAsUser(name, args, signal)
+              : target.executeAgentTool(name, args, signal)
+          );
+          const needsRequest = identity === 'user'
+            || manifestTool?.annotations?.requires_request_context === true;
+          return needsRequest
+            ? bridgeHeaderStorage.run(bridgeHeadersFromRequest(req, identity), invoke)
+            : invoke();
+        };
       },
     });
   }
@@ -321,13 +402,14 @@ export class InternalApxAppKitGovernancePlugin
     if (!tool) {
       const bridge = this.config.pythonBridge;
       if (!bridge) throw new Error(`APX Python bridge is not configured for tool: ${name}`);
+      const identity = manifestToolExecutionIdentity(manifestTool);
       const response = await fetch(
         `${bridge.baseUrl.replace(/\/$/, '')}/_apx/internal/appkit/tools/${encodeURIComponent(name)}`,
         {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            ...bridge.headers,
+            ...bridgeConfigHeaders(bridge.headers, identity),
             ...bridgeHeaderStorage.getStore(),
           },
           body: JSON.stringify({ args }),
@@ -404,7 +486,8 @@ export function createInternalApxAppKitAgentDefinitionFromManifest(
     model: manifest.agent.model,
     default: options.default ?? manifest.appkit?.default,
     baseSystemPrompt: options.baseSystemPrompt,
-    generationParams: options.generationParams ?? manifest.appkit?.generation_params ?? undefined,
+    generationParams: options.generationParams
+      ?? appKitGenerationParams(manifest.appkit?.generation_params),
     maxSteps: options.maxSteps ?? manifest.appkit?.max_steps ?? manifest.agent.max_iterations,
     maxTokens: options.maxTokens ?? manifest.appkit?.max_tokens ?? manifest.agent.max_tokens ?? undefined,
     ephemeral: options.ephemeral ?? manifest.appkit?.ephemeral ?? undefined,
@@ -466,7 +549,7 @@ export function createInternalApxAppKitDevRuntime(
         model,
         default: manifest.appkit?.default,
         baseSystemPrompt,
-        generationParams: manifest.appkit?.generation_params ?? undefined,
+        generationParams: appKitGenerationParams(manifest.appkit?.generation_params),
         maxSteps: manifest.appkit?.max_steps ?? manifest.agent.max_iterations,
         maxTokens: manifest.appkit?.max_tokens ?? manifest.agent.max_tokens ?? undefined,
         ephemeral: manifest.appkit?.ephemeral ?? undefined,

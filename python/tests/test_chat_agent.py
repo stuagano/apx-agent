@@ -18,8 +18,9 @@ Skips if optional extras (``langgraph``, ``eval``) are not installed.
 from __future__ import annotations
 
 import textwrap
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -28,7 +29,7 @@ pytest.importorskip("langchain_core")
 pytest.importorskip("mlflow")
 
 
-from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
+from langchain_core.messages import AIMessage  # noqa: E402
 from mlflow.pyfunc import ChatAgent  # noqa: E402
 from mlflow.types.agent import (  # noqa: E402
     ChatAgentMessage,
@@ -127,6 +128,30 @@ class TestPredictStream:
         assert chunks[0].delta.content == "streamed!"
         assert chunks[0].delta.role == "assistant"
 
+    def test_threads_distinct_user_and_service_clients(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        wrapped = chat_agent_for(agent, model="any")
+        user_ws = MagicMock(name="user_ws")
+        service_ws = MagicMock(name="service_ws")
+
+        with patch(
+            "apx_agent._chat_agent._resolve_ws_and_headers",
+            return_value=SimpleNamespace(
+                user_ws=user_ws, service_ws=service_ws, headers=None
+            ),
+        ), patch(
+            "apx_agent._chat_agent.compile_to_langgraph",
+            return_value=_make_fake_graph("streamed!"),
+        ) as mock_compile:
+            list(
+                wrapped.predict_stream(
+                    messages=[ChatAgentMessage(role="user", content="go", id="u1")]
+                )
+            )
+
+        assert mock_compile.call_args.kwargs["ws"] is user_ws
+        assert mock_compile.call_args.kwargs["service_ws"] is service_ws
+
 
 class TestUserScopeAuth:
     """The load-bearing test: user_token in custom_inputs MUST flow to compile."""
@@ -138,8 +163,9 @@ class TestUserScopeAuth:
         fake_graph = _make_fake_graph()
         captured: dict[str, Any] = {}
 
-        def _spy_compile(agent_arg, *, ws, model, headers=None):
+        def _spy_compile(agent_arg, *, ws, service_ws, model, headers=None):
             captured["ws"] = ws
+            captured["service_ws"] = service_ws
             captured["model"] = model
             return fake_graph
 
@@ -151,8 +177,9 @@ class TestUserScopeAuth:
             "apx_agent._chat_agent.compile_to_langgraph",
             side_effect=_spy_compile,
         ):
-            sentinel_ws = MagicMock(name="obo_ws")
-            mock_factory.return_value = sentinel_ws
+            user_ws = MagicMock(name="user_ws")
+            service_ws = MagicMock(name="service_ws")
+            mock_factory.side_effect = [user_ws, service_ws]
 
             wrapped.predict(
                 messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
@@ -165,12 +192,13 @@ class TestUserScopeAuth:
         # The factory was called with the OBO token — i.e. the closure-based
         # user-scope auth made it from custom_inputs all the way to the
         # WorkspaceClient construction.
-        mock_factory.assert_called_once_with(
-            token="tok-abc",
-            host="https://fake.cloud.databricks.com",
-        )
-        # And the ws handed to compile_to_langgraph IS the OBO one.
-        assert captured["ws"] is sentinel_ws
+        assert mock_factory.call_args_list == [
+            call(token="tok-abc", host="https://fake.cloud.databricks.com"),
+            call(),
+        ]
+        assert captured["ws"] is user_ws
+        assert captured["service_ws"] is service_ws
+        assert captured["ws"] is not captured["service_ws"]
 
     def test_no_user_token_falls_back_to_default(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
@@ -184,14 +212,39 @@ class TestUserScopeAuth:
             "apx_agent._chat_agent.compile_to_langgraph",
             return_value=fake_graph,
         ):
-            mock_factory.return_value = MagicMock(name="sp_ws")
+            user_ws = MagicMock(name="user_ws")
+            service_ws = MagicMock(name="service_ws")
+            mock_factory.side_effect = [user_ws, service_ws]
             wrapped.predict(
                 messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
                 custom_inputs=None,
             )
 
-        # No kwargs — default SP/CLI path.
-        mock_factory.assert_called_once_with()
+        # Local compatibility keeps the default chain, but the two slots do not alias.
+        assert mock_factory.call_args_list == [call(), call()]
+
+    def test_thread_interrupt_threads_distinct_user_and_service_clients(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        checkpointer = MagicMock(name="checkpointer")
+        wrapped = chat_agent_for(agent, model="any", checkpointer=checkpointer)
+        user_ws = MagicMock(name="user_ws")
+        service_ws = MagicMock(name="service_ws")
+        graph = MagicMock(name="graph")
+        graph.get_state.return_value.interrupts = []
+
+        with patch(
+            "apx_agent._chat_agent._resolve_ws_and_headers",
+            return_value=SimpleNamespace(
+                user_ws=user_ws, service_ws=service_ws, headers=None
+            ),
+        ), patch(
+            "apx_agent._chat_agent.compile_to_langgraph",
+            return_value=graph,
+        ) as mock_compile:
+            assert wrapped.thread_interrupt("thread-1") is None
+
+        assert mock_compile.call_args.kwargs["ws"] is user_ws
+        assert mock_compile.call_args.kwargs["service_ws"] is service_ws
 
 
 # --- _from_langchain_message conversion (model-serving deploy regressions) ---

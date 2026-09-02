@@ -26,13 +26,23 @@ import sys
 import textwrap
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 import yaml
 from click.testing import CliRunner
-from unittest.mock import MagicMock, patch
 
+from apx_agent import ResourceSpec
+from apx_agent._apps_authorization import (
+    AppDependency,
+    AppFamilyPermissions,
+    AuthorizationPlan,
+    OperationAuthorization,
+    ResolvedAppDependency,
+)
 from apx_agent.cli import main
 
 
@@ -161,6 +171,642 @@ class _FakeProc:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+def _authorization_plan(
+    *,
+    user_api_scopes: tuple[str, ...] = ("catalog.tables:read", "sql"),
+    app_dependencies: tuple[AppDependency, ...] = (
+        AppDependency("https://peer.cloud.databricksapps.com"),
+    ),
+) -> AuthorizationPlan:
+    user_resource = ResourceSpec("uc_table", "main.private.orders")
+    return AuthorizationPlan(
+        operations=(
+            OperationAuthorization(
+                name="inspect_orders",
+                execution_identity="user",
+                requires_request_context=True,
+                resources=(user_resource,),
+                user_api_scopes=("catalog.tables:read",),
+            ),
+            OperationAuthorization(
+                name="run_job",
+                execution_identity="service",
+                requires_request_context=False,
+                resources=(ResourceSpec("job", "job-123"),),
+                user_api_scopes=(),
+            ),
+        ),
+        user_resources=(user_resource,),
+        service_resources=(
+            ResourceSpec("job", "job-123"),
+            ResourceSpec("serving_endpoint", "model-endpoint"),
+            ResourceSpec("uc_table", "main.sales.orders"),
+        ),
+        user_api_scopes=user_api_scopes,
+        app_dependencies=app_dependencies,
+    )
+
+
+def test_reconcile_apps_authorization_is_complete_additive_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    from apx_agent.cli import _reconcile_apps_authorization
+
+    yml_path = tmp_path / "databricks.yml"
+    yml_path.write_text(textwrap.dedent("""\
+        # preserved comment
+        resources:
+          apps:
+            my-app:
+              name: my-app
+              user_api_scopes:
+                - sql
+                - operator.custom-scope
+              resources:
+                - job:
+                    name: custom-job-handle
+                    id: job-123
+                    permission: CAN_MANAGE_RUN
+                - uc_securable:
+                    name: archived-orders
+                    securable_full_name: archive.sales.orders
+                    securable_type: TABLE
+                    permission: SELECT
+                - serving_endpoint:
+                    name: operator-endpoint
+                    endpoint_name: operator-endpoint
+                    permission: CAN_QUERY
+              permissions:
+                - user_name: owner@example.com
+                  level: CAN_MANAGE
+                - service_principal_name: external-client-id
+                  level: CAN_USE
+                - group_name: existing-audience
+                  level: CAN_USE
+        """))
+    plan = _authorization_plan()
+    resolved = [
+        ResolvedAppDependency(
+            id="app-id-123",
+            name="peer-app",
+            url="https://peer.cloud.databricksapps.com",
+        ),
+    ]
+    policy = AppFamilyPermissions(
+        can_use_groups=("existing-audience", "new-audience"),
+        can_manage_groups=("app-admins",),
+    )
+    logs: list[str] = []
+
+    assert _reconcile_apps_authorization(
+        tmp_path,
+        plan=plan,
+        resolved_dependencies=resolved,
+        family_permissions=policy,
+        bundle_key="my-app",
+        log=logs.append,
+    ) is True
+
+    first_text = yml_path.read_text()
+    doc = yaml.safe_load(first_text)
+    app = doc["resources"]["apps"]["my-app"]
+    assert app["user_api_scopes"] == [
+        "catalog.tables:read",
+        "operator.custom-scope",
+        "sql",
+    ]
+    resources = app["resources"]
+    assert any(
+        entry.get("job", {}).get("name") == "custom-job-handle"
+        for entry in resources
+    )
+    assert sum(
+        entry.get("job", {}).get("id") == "job-123"
+        for entry in resources
+    ) == 1
+    assert {
+        entry.get("uc_securable", {}).get("securable_full_name")
+        for entry in resources
+    } >= {"archive.sales.orders", "main.sales.orders"}
+    assert not any(
+        entry.get("uc_securable", {}).get("securable_full_name")
+        == "main.private.orders"
+        for entry in resources
+    )
+    assert any(
+        entry.get("serving_endpoint", {}).get("endpoint_name")
+        == "model-endpoint"
+        and entry["serving_endpoint"]["permission"] == "CAN_QUERY"
+        for entry in resources
+    )
+    assert {entry.get("app", {}).get("name") for entry in resources} >= {"peer-app"}
+    assert any(
+        entry.get("app") == {"name": "peer-app", "permission": "CAN_USE"}
+        for entry in resources
+    )
+    assert {tuple(sorted(entry.items())) for entry in app["permissions"]} >= {
+        (("level", "CAN_MANAGE"), ("user_name", "owner@example.com")),
+        (("level", "CAN_USE"), ("service_principal_name", "external-client-id")),
+        (("group_name", "existing-audience"), ("level", "CAN_USE")),
+        (("group_name", "new-audience"), ("level", "CAN_USE")),
+        (("group_name", "app-admins"), ("level", "CAN_MANAGE")),
+    }
+    assert "# preserved comment" in first_text
+    assert any("reconciled Apps authorization" in message for message in logs)
+
+    assert _reconcile_apps_authorization(
+        tmp_path,
+        plan=plan,
+        resolved_dependencies=resolved,
+        family_permissions=policy,
+        bundle_key="my-app",
+        log=logs.append,
+    ) is False
+    assert yml_path.read_text() == first_text
+
+
+@pytest.mark.parametrize(
+    ("plan", "resolved", "match"),
+    [
+        (
+            _authorization_plan(
+                user_api_scopes=("unknown.generated-scope",),
+                app_dependencies=(),
+            ),
+            [],
+            "unknown generated user API scope",
+        ),
+        (
+            _authorization_plan(),
+            [],
+            "resolved App dependencies do not match",
+        ),
+    ],
+)
+def test_reconcile_apps_authorization_fails_closed_before_write(
+    tmp_path: Path,
+    plan: AuthorizationPlan,
+    resolved: list[ResolvedAppDependency],
+    match: str,
+) -> None:
+    from apx_agent.cli import _reconcile_apps_authorization
+
+    yml_path = tmp_path / "databricks.yml"
+    original = "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+    yml_path.write_text(original)
+
+    with pytest.raises(click.ClickException, match=match):
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=plan,
+            resolved_dependencies=resolved,
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-app",
+            log=lambda _message: None,
+        )
+
+    assert yml_path.read_text() == original
+
+
+@pytest.mark.parametrize(
+    ("resource_block", "family_permissions", "match"),
+    [
+        (
+            """\
+              resources:
+                - job:
+                    name: existing-job
+                    id: job-123
+                    permission: CAN_VIEW
+            """,
+            AppFamilyPermissions(),
+            "effective authorization mismatch",
+        ),
+        (
+            """\
+              permissions:
+                - group_name: operators
+                  level: CAN_MANAGE
+            """,
+            AppFamilyPermissions(can_use_groups=("operators",)),
+            "conflicts with existing level",
+        ),
+    ],
+)
+def test_reconcile_apps_authorization_rejects_explicit_conflicts(
+    tmp_path: Path,
+    resource_block: str,
+    family_permissions: AppFamilyPermissions,
+    match: str,
+) -> None:
+    from apx_agent.cli import _reconcile_apps_authorization
+
+    yml_path = tmp_path / "databricks.yml"
+    original = (
+        "resources:\n"
+        "  apps:\n"
+        "    my-app:\n"
+        "      name: my-app\n"
+        + textwrap.indent(textwrap.dedent(resource_block), "      ")
+    )
+    yml_path.write_text(original)
+    plan = _authorization_plan(app_dependencies=())
+
+    with pytest.raises(click.ClickException, match=match):
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=plan,
+            resolved_dependencies=[],
+            family_permissions=family_permissions,
+            bundle_key="my-app",
+            log=lambda _message: None,
+        )
+
+    assert yml_path.read_text() == original
+
+
+@pytest.mark.parametrize("failure_stage", ["dump", "replace"])
+def test_reconcile_apps_authorization_write_failure_is_atomic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    yml_path = tmp_path / "databricks.yml"
+    original = b"# original bytes\nresources:\n  apps:\n    my-app:\n      name: my-app\n"
+    yml_path.write_bytes(original)
+
+    if failure_stage == "dump":
+        _yml, doc = cli_mod._load_databricks_yml_roundtrip(tmp_path)
+
+        class FailingYaml:
+            def dump(self, _doc: Any, stream: Any) -> None:
+                stream.write("# partial temporary output\n")
+                stream.flush()
+                raise OSError("dump failed")
+
+        monkeypatch.setattr(
+            cli_mod,
+            "_load_databricks_yml_roundtrip",
+            lambda _cwd: (FailingYaml(), doc),
+        )
+    else:
+        monkeypatch.setattr(
+            cli_mod.os,
+            "replace",
+            lambda _source, _target: (_ for _ in ()).throw(OSError("replace failed")),
+        )
+
+    with pytest.raises(click.ClickException, match="atomically write databricks.yml"):
+        cli_mod._reconcile_apps_authorization(
+            tmp_path,
+            plan=_authorization_plan(
+                app_dependencies=(),
+            ),
+            resolved_dependencies=[],
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-app",
+            log=lambda _message: None,
+        )
+
+    assert yml_path.read_bytes() == original
+    assert list(tmp_path.glob(".databricks.yml.*.tmp")) == []
+
+
+def test_reconcile_apps_authorization_refuses_symlink_target(tmp_path: Path) -> None:
+    from apx_agent.cli import _reconcile_apps_authorization
+
+    actual_path = tmp_path / "operator-owned.yml"
+    original = "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+    actual_path.write_text(original)
+    (tmp_path / "databricks.yml").symlink_to(actual_path)
+
+    with pytest.raises(click.ClickException, match="symlinked databricks.yml"):
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=_authorization_plan(
+                app_dependencies=(),
+            ),
+            resolved_dependencies=[],
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-app",
+            log=lambda _message: None,
+        )
+
+    assert actual_path.read_text() == original
+
+
+@pytest.mark.parametrize(
+    ("resolved", "match"),
+    [
+        (
+            [
+                ResolvedAppDependency(
+                    id="shared-id",
+                    name="peer-one",
+                    url="https://peer-one.cloud.databricksapps.com",
+                ),
+                ResolvedAppDependency(
+                    id="shared-id",
+                    name="peer-two",
+                    url="https://peer-two.cloud.databricksapps.com",
+                ),
+            ],
+            "duplicate immutable App id",
+        ),
+        (
+            [
+                ResolvedAppDependency(
+                    id="app-id-one",
+                    name="shared-name",
+                    url="https://peer-one.cloud.databricksapps.com",
+                ),
+                ResolvedAppDependency(
+                    id="app-id-two",
+                    name="shared-name",
+                    url="https://peer-two.cloud.databricksapps.com",
+                ),
+            ],
+            "duplicate workspace App name",
+        ),
+    ],
+)
+def test_reconcile_apps_authorization_rejects_non_bijective_app_resolution(
+    tmp_path: Path,
+    resolved: list[ResolvedAppDependency],
+    match: str,
+) -> None:
+    from apx_agent.cli import _reconcile_apps_authorization
+
+    yml_path = tmp_path / "databricks.yml"
+    original = "resources:\n  apps:\n    my-app:\n      name: my-app\n"
+    yml_path.write_text(original)
+    plan = _authorization_plan(
+        app_dependencies=(
+            AppDependency("https://peer-one.cloud.databricksapps.com"),
+            AppDependency("https://peer-two.cloud.databricksapps.com"),
+        ),
+    )
+
+    with pytest.raises(click.ClickException, match=match):
+        _reconcile_apps_authorization(
+            tmp_path,
+            plan=plan,
+            resolved_dependencies=resolved,
+            family_permissions=AppFamilyPermissions(),
+            bundle_key="my-app",
+            log=lambda _message: None,
+        )
+
+    assert yml_path.read_text() == original
+
+
+def test_resolve_app_dependencies_matches_exact_url_with_explicit_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    apps = [
+        SimpleNamespace(
+            id="app-id",
+            name="peer-app",
+            url="https://peer.cloud.databricksapps.com",
+            client_secret="must-not-appear",
+        ),
+        SimpleNamespace(
+            id="guessed-id",
+            name="peer",
+            url="https://peer.databricksapps.com",
+        ),
+    ]
+    constructed: list[dict[str, Any]] = []
+    list_calls = 0
+
+    def list_apps() -> Any:
+        nonlocal list_calls
+        list_calls += 1
+        return iter(apps)
+
+    class FakeWorkspaceClient:
+        def __init__(self, **kwargs: Any) -> None:
+            constructed.append(kwargs)
+            self.apps = SimpleNamespace(list=list_apps)
+
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "ambient-must-not-win")
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", FakeWorkspaceClient)
+
+    resolved = cli_mod._resolve_app_dependencies(
+        (AppDependency("https://peer.cloud.databricksapps.com/"),),
+        profile="explicit-profile",
+    )
+
+    assert resolved == [
+        ResolvedAppDependency(
+            id="app-id",
+            name="peer-app",
+            url="https://peer.cloud.databricksapps.com",
+        ),
+    ]
+    assert constructed == [{"profile": "explicit-profile"}]
+    assert list_calls == 1
+    assert "must-not-appear" not in repr(resolved)
+
+
+@pytest.mark.parametrize(
+    "apps, expected_match",
+    [
+        ([], "no exact workspace App"),
+        (
+            [
+                SimpleNamespace(
+                    id="first-id",
+                    name="first",
+                    url="https://peer.cloud.databricksapps.com",
+                ),
+                SimpleNamespace(
+                    id="second-id",
+                    name="second",
+                    url="https://peer.cloud.databricksapps.com/",
+                ),
+            ],
+            "multiple exact workspace Apps",
+        ),
+    ],
+)
+def test_resolve_app_dependencies_fails_closed_for_non_unique_match(
+    monkeypatch: pytest.MonkeyPatch,
+    apps: list[Any],
+    expected_match: str,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    fake_ws = SimpleNamespace(apps=SimpleNamespace(list=lambda: iter(apps)))
+    constructed: list[dict[str, Any]] = []
+
+    def workspace_client(**kwargs: Any) -> Any:
+        constructed.append(kwargs)
+        return fake_ws
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", workspace_client)
+
+    with pytest.raises(click.ClickException, match=expected_match) as exc_info:
+        cli_mod._resolve_app_dependencies(
+            (AppDependency("https://peer.cloud.databricksapps.com"),),
+            profile="explicit-profile",
+        )
+
+    error = str(exc_info.value)
+    assert constructed == [{"profile": "explicit-profile"}]
+    assert "first-id" not in error
+    assert "second-id" not in error
+
+
+def test_resolve_app_dependencies_does_not_guess_app_from_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    guessed = SimpleNamespace(
+        id="guessed-id",
+        name="peer",
+        url="https://different.cloud.databricksapps.com",
+    )
+    fake_ws = SimpleNamespace(apps=SimpleNamespace(list=lambda: iter([guessed])))
+    constructed: list[dict[str, Any]] = []
+
+    def workspace_client(**kwargs: Any) -> Any:
+        constructed.append(kwargs)
+        return fake_ws
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", workspace_client)
+
+    with pytest.raises(click.ClickException, match="no exact workspace App"):
+        cli_mod._resolve_app_dependencies(
+            (AppDependency("https://peer.cloud.databricksapps.com"),),
+            profile="explicit-profile",
+        )
+    assert constructed == [{"profile": "explicit-profile"}]
+
+
+def test_resolve_app_dependencies_empty_set_needs_no_profile_or_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    def unexpected_client(**_kwargs: Any) -> Any:
+        raise AssertionError("WorkspaceClient must not be constructed")
+
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "ambient-must-not-win")
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", unexpected_client)
+
+    assert cli_mod._resolve_app_dependencies((), profile=None) == []
+
+
+@pytest.mark.parametrize("profile", [None, ""])
+def test_resolve_app_dependencies_requires_explicit_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str | None,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    def unexpected_client(**_kwargs: Any) -> Any:
+        raise AssertionError("WorkspaceClient must not be constructed")
+
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "ambient-must-not-win")
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", unexpected_client)
+
+    with pytest.raises(click.ClickException, match="explicit --profile"):
+        cli_mod._resolve_app_dependencies(
+            (AppDependency("https://peer.cloud.databricksapps.com"),),
+            profile=profile,
+        )
+
+
+@pytest.mark.parametrize("failure", ["constructor", "list", "iterator"])
+def test_resolve_app_dependencies_sanitizes_sdk_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    constructed: list[dict[str, Any]] = []
+    marker = f"{failure}-credential-text-must-not-leak"
+
+    def failing_iterator() -> Any:
+        yield SimpleNamespace(
+            id="app-id",
+            name="peer-app",
+            url="https://peer.cloud.databricksapps.com",
+        )
+        raise RuntimeError(marker)
+
+    def failing_list() -> Any:
+        if failure == "list":
+            raise RuntimeError(marker)
+        return failing_iterator()
+
+    def workspace_client(**kwargs: Any) -> Any:
+        constructed.append(kwargs)
+        if failure == "constructor":
+            raise RuntimeError(marker)
+        return SimpleNamespace(apps=SimpleNamespace(list=failing_list))
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", workspace_client)
+
+    with pytest.raises(click.ClickException) as exc_info:
+        cli_mod._resolve_app_dependencies(
+            (AppDependency("https://peer.cloud.databricksapps.com"),),
+            profile="explicit-profile",
+        )
+
+    error = str(exc_info.value)
+    assert constructed == [{"profile": "explicit-profile"}]
+    assert len(error) < 240
+    assert marker not in error
+
+
+@pytest.mark.parametrize("field", ["id", "name", "url"])
+@pytest.mark.parametrize(
+    "bad_value",
+    [None, "", 17],
+    ids=["missing", "empty", "wrong-type"],
+)
+def test_resolve_app_dependencies_rejects_incomplete_app_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    bad_value: Any,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    app = SimpleNamespace(
+        id="app-id",
+        name="peer-app",
+        url="https://peer.cloud.databricksapps.com",
+    )
+    setattr(app, field, bad_value)
+    fake_ws = SimpleNamespace(apps=SimpleNamespace(list=lambda: iter([app])))
+    constructed: list[dict[str, Any]] = []
+
+    def workspace_client(**kwargs: Any) -> Any:
+        constructed.append(kwargs)
+        return fake_ws
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", workspace_client)
+
+    with pytest.raises(click.ClickException) as exc_info:
+        cli_mod._resolve_app_dependencies(
+            (AppDependency("https://peer.cloud.databricksapps.com"),),
+            profile="explicit-profile",
+        )
+
+    error = str(exc_info.value)
+    assert constructed == [{"profile": "explicit-profile"}]
+    assert len(error) < 240
+    assert "app-id" not in error
+    assert "peer-app" not in error
 
 
 def _ready_payload(url: str = "https://my-app.example.databricksapps.com") -> str:
@@ -413,10 +1059,8 @@ def test_appkit_opt_in_stages_internal_host(
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from apx_agent import AgentConfig
-    from apx_agent._appkit_tool_bridge import build_appkit_tool_bridge_router
+    from apx_agent import AgentConfig, _appkit_tool_bridge
     from apx_agent._models import AgentCard, AgentContext
-    from apx_agent._obo import ApxIdentityError
 
     agent_module = importlib.import_module("agent")
     bridge = FastAPI()
@@ -426,32 +1070,25 @@ def test_appkit_opt_in_stages_internal_host(
         card=AgentCard(name="supported-surface", description="Supported surface"),
         agent=agent_module.agent,
     )
-    bridge.include_router(build_appkit_tool_bridge_router())
+    from apx_agent._apps_host_manifest import AppsHostManifest
+    bridge.state.apx_appkit_host_manifest = AppsHostManifest.model_validate(manifest)
+    bridge.include_router(_appkit_tool_bridge.build_appkit_tool_bridge_router())
     client = TestClient(bridge)
     monkeypatch.setenv("DATABRICKS_APP_NAME", "local-appkit-test")
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", os.devnull)
     monkeypatch.setenv("DATABRICKS_HOST", "https://fake.cloud.databricks.com")
     monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
     monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.setattr(_appkit_tool_bridge, "_make_workspace_client", MagicMock)
+    identity = client.post(
+        "/_apx/internal/appkit/tools/who_am_i",
+        json={"args": {}},
+        headers={"X-Forwarded-User": "alice"},
+    )
     token_headers = {
         "X-Forwarded-Access-Token": "local-user-token",
         "X-Forwarded-User": "alice",
     }
-    with pytest.raises(ApxIdentityError, match="no OBO user token"):
-        client.post(
-            "/_apx/internal/appkit/tools/who_am_i",
-            json={"args": {}},
-            headers={"X-Forwarded-User": "alice"},
-        )
-    monkeypatch.setattr(
-        "databricks.sdk.config.Config._resolve_host_metadata",
-        lambda _self: None,
-    )
-    identity = client.post(
-        "/_apx/internal/appkit/tools/who_am_i",
-        json={"args": {}},
-        headers=token_headers,
-    )
     denied = client.post(
         "/_apx/internal/appkit/tools/apply_change",
         json={"args": {"value": "deny"}},
@@ -549,14 +1186,15 @@ def test_python_default_skips_internal_appkit_host(
     assert not (tmp_path / ".build" / "apx_appkit_host" / "package.json").exists()
 
 
-def test_auto_update_yml_adds_missing_resources(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("legacy_flag", [False, True])
+def test_apps_deploy_reconciles_resources_without_legacy_flag(
+    scaffold: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    legacy_flag: bool,
 ) -> None:
-    """--auto-update-yml merges ResourceSpec entries into databricks.yml."""
-    # Override the stub agent (top-level agent.py per the ADK-style layout)
-    # with one that declares a ResourceSpec.
+    """Every Apps deploy reconciles the plan; the legacy flag is a no-op."""
     (scaffold / "agent.py").write_text(textwrap.dedent("""\
-        from apx_agent._resources import ResourceSpec
+        from apx_agent import Dependencies, ResourceSpec
 
         class _StubAgent:
             def __init__(self):
@@ -564,7 +1202,7 @@ def test_auto_update_yml_adds_missing_resources(
                 self._sub_agent_urls = []
 
         def _make_tool():
-            def t(): return "ok"
+            def t(ws: Dependencies.Client): return "ok"
             t._apx_resources = [
                 ResourceSpec("serving_endpoint", "claude-3-5"),
                 ResourceSpec("sql_warehouse", "abc123"),
@@ -585,9 +1223,10 @@ def test_auto_update_yml_adds_missing_resources(
     )
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "agents", "deploy", "--target", "apps", "--auto-update-yml",
-    ])
+    args = ["agents", "deploy", "--target", "apps"]
+    if legacy_flag:
+        args.append("--auto-update-yml")
+    result = runner.invoke(main, args)
     assert result.exit_code == 0, result.output
     doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
     resources = doc["resources"]["apps"]["my-app"]["resources"]
@@ -601,21 +1240,21 @@ def test_auto_update_yml_adds_missing_resources(
     assert endpoint_block["serving_endpoint"]["endpoint_name"] == "claude-3-5"
     warehouse_block = next(r for r in resources if "sql_warehouse" in r)
     assert warehouse_block["sql_warehouse"]["id"] == "abc123"
+    assert "# Apps authorization summary" in result.output
+    if legacy_flag:
+        assert "already automatic" in result.output
 
 
-def test_auto_update_yml_preserves_user_added_resources(
+def test_apps_deploy_preserves_matching_custom_resource_handle(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """User-added resources with matching names are NOT clobbered."""
-    # Pre-populate the bundle with an explicit resource that uses the
-    # same auto-derived name we'd generate. The DAB shape is
-    # {"<resource_type>": {"name": "...", ...}} — name is NESTED.
+    """An exact existing identity is preserved without adding a duplicate."""
     doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
     doc["resources"]["apps"]["my-app"]["resources"] = [
         {
             "serving_endpoint": {
-                "name": "claude-3-5-endpoint",  # matches the auto-derived name
-                "endpoint_name": "USER-OVERRIDE-claude",
+                "name": "custom-claude-handle",
+                "endpoint_name": "claude-3-5",
                 "permission": "CAN_QUERY",
             },
         },
@@ -625,7 +1264,7 @@ def test_auto_update_yml_preserves_user_added_resources(
     )
 
     (scaffold / "agent.py").write_text(textwrap.dedent("""\
-        from apx_agent._resources import ResourceSpec
+        from apx_agent import Dependencies, ResourceSpec
 
         class _StubAgent:
             def __init__(self):
@@ -633,7 +1272,7 @@ def test_auto_update_yml_preserves_user_added_resources(
                 self._sub_agent_urls = []
 
         def _make_tool():
-            def t(): return "ok"
+            def t(ws: Dependencies.Client): return "ok"
             t._apx_resources = [
                 ResourceSpec("serving_endpoint", "claude-3-5"),
             ]
@@ -652,23 +1291,278 @@ def test_auto_update_yml_preserves_user_added_resources(
     )
     _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "agents", "deploy", "--target", "apps", "--auto-update-yml",
-    ])
+    result = runner.invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code == 0, result.output
 
     updated = yaml.safe_load((scaffold / "databricks.yml").read_text())
     resources = updated["resources"]["apps"]["my-app"]["resources"]
-    # Exactly one entry with that name — the user's, untouched.
-    def _name(e: dict) -> str:
-        for v in e.values():
-            if isinstance(v, dict) and isinstance(v.get("name"), str):
-                return v["name"]
-        return ""
-    matching = [r for r in resources if _name(r) == "claude-3-5-endpoint"]
+    matching = [
+        resource
+        for resource in resources
+        if resource.get("serving_endpoint", {}).get("endpoint_name")
+        == "claude-3-5"
+    ]
     assert len(matching) == 1
-    # The user's override is preserved verbatim.
-    assert matching[0]["serving_endpoint"]["endpoint_name"] == "USER-OVERRIDE-claude"
+    assert matching[0]["serving_endpoint"]["name"] == "custom-claude-handle"
+
+
+def test_apps_deploy_unknown_generated_scope_fails_before_bundle_deploy(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local scope validation runs before any workspace Apps listing."""
+    (scaffold / "agent.py").write_text(textwrap.dedent("""\
+        from apx_agent import Agent
+
+        def invalid_scope(): return "ok"
+        invalid_scope._apx_user_api_scopes = ["unknown.generated-scope"]
+
+        agent = Agent(
+            tools=[invalid_scope],
+            sub_agents=["https://peer.cloud.databricksapps.com"],
+        )
+        """))
+    sys.modules.pop("agent", None)
+    workspace_clients: list[str] = []
+
+    class UnexpectedWorkspaceClient:
+        def __init__(self, *, profile: str) -> None:
+            workspace_clients.append(profile)
+            raise AssertionError("workspace Apps listing must not start")
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", UnexpectedWorkspaceClient)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(
+        main,
+        ["agents", "deploy", "--target", "apps", "--profile", "test"],
+    )
+
+    assert result.exit_code != 0
+    assert "unknown generated user API scope" in result.output
+    assert workspace_clients == []
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+
+
+def test_apps_deploy_unresolved_a2a_fails_before_bundle_deploy(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer App cannot be resolved from an ambient workspace profile."""
+    (scaffold / "agent.py").write_text(textwrap.dedent("""\
+        from apx_agent import Agent
+
+        agent = Agent(
+            tools=[],
+            sub_agents=["https://peer.cloud.databricksapps.com"],
+        )
+        """))
+    sys.modules.pop("agent", None)
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+
+    assert result.exit_code != 0
+    assert "requires an explicit --profile" in result.output
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+
+
+def test_apps_deploy_group_conflict_fails_before_bundle_deploy(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generated family policy never replaces an explicit group permission."""
+    (scaffold / "pyproject.toml").write_text(textwrap.dedent("""\
+        [project]
+        name = "test-app"
+
+        [tool.apx.apps.permissions]
+        can_use_groups = ["operators"]
+        """))
+    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    doc["resources"]["apps"]["my-app"]["permissions"] = [
+        {"group_name": "operators", "level": "CAN_MANAGE"},
+    ]
+    original = yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
+    (scaffold / "databricks.yml").write_text(original)
+    bake_calls: list[Path] = []
+    monkeypatch.setattr(
+        "apx_agent.cli._bake_deploy_function_signatures",
+        lambda cwd, **_kwargs: bake_calls.append(cwd) or False,
+    )
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+
+    assert result.exit_code != 0
+    assert "conflicts with existing level" in result.output
+    assert bake_calls == []
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+    assert (scaffold / "databricks.yml").read_text() == original
+
+
+@pytest.mark.parametrize(
+    ("conflict", "match"),
+    [
+        ("permission", "effective authorization mismatch"),
+        ("handle", "already identifies a different resource"),
+    ],
+)
+def test_apps_deploy_resource_conflict_fails_before_bundle_deploy(
+    scaffold: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    conflict: str,
+    match: str,
+) -> None:
+    """Normal deploy validates existing bundle conflicts before baking."""
+    from apx_agent.cli import _APPS_DEFAULT_MODEL
+    from apx_agent._resources import resources_to_databricks_yml
+
+    [generated] = resources_to_databricks_yml([
+        ResourceSpec("serving_endpoint", _APPS_DEFAULT_MODEL),
+    ])
+    body = generated["serving_endpoint"]
+    if conflict == "permission":
+        body["permission"] = "CAN_MANAGE"
+    else:
+        body["endpoint_name"] = "operator-owned-endpoint"
+
+    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    doc["resources"]["apps"]["my-app"]["resources"] = [generated]
+    original = yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
+    (scaffold / "databricks.yml").write_text(original)
+    bake_calls: list[Path] = []
+    monkeypatch.setattr(
+        "apx_agent.cli._bake_deploy_function_signatures",
+        lambda cwd, **_kwargs: bake_calls.append(cwd) or False,
+    )
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+
+    assert result.exit_code != 0
+    assert match in result.output
+    assert bake_calls == []
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+    assert (scaffold / "databricks.yml").read_text() == original
+
+
+@pytest.mark.parametrize(
+    ("duplicate", "match"),
+    [
+        ("id", "duplicate immutable App id"),
+        ("name", "duplicate workspace App name"),
+    ],
+)
+def test_apps_deploy_non_bijective_a2a_fails_before_bundle_deploy(
+    scaffold: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    duplicate: str,
+    match: str,
+) -> None:
+    """Distinct declared URLs must resolve to distinct immutable Apps."""
+    (scaffold / "agent.py").write_text(textwrap.dedent("""\
+        from apx_agent import Agent
+
+        agent = Agent(
+            tools=[],
+            sub_agents=[
+                "https://peer-one.cloud.databricksapps.com",
+                "https://peer-two.cloud.databricksapps.com",
+            ],
+        )
+        """))
+    sys.modules.pop("agent", None)
+    apps = [
+        SimpleNamespace(
+            id="shared-id" if duplicate == "id" else "app-id-one",
+            name="shared-name" if duplicate == "name" else "peer-one",
+            url="https://peer-one.cloud.databricksapps.com",
+        ),
+        SimpleNamespace(
+            id="shared-id" if duplicate == "id" else "app-id-two",
+            name="shared-name" if duplicate == "name" else "peer-two",
+            url="https://peer-two.cloud.databricksapps.com",
+        ),
+    ]
+
+    class FakeWorkspaceClient:
+        def __init__(self, *, profile: str) -> None:
+            assert profile == "test"
+            self.apps = SimpleNamespace(list=lambda: iter(apps))
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", FakeWorkspaceClient)
+    bake_calls: list[Path] = []
+    monkeypatch.setattr(
+        "apx_agent.cli._bake_deploy_function_signatures",
+        lambda cwd, **_kwargs: bake_calls.append(cwd) or False,
+    )
+    calls = _install_subprocess_mock(monkeypatch)
+    bundle_path = scaffold / "databricks.yml"
+    original_bundle = bundle_path.read_bytes()
+
+    result = CliRunner().invoke(
+        main,
+        ["agents", "deploy", "--target", "apps", "--profile", "test"],
+    )
+
+    assert result.exit_code != 0
+    assert match in result.output
+    assert bake_calls == []
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+    assert bundle_path.read_bytes() == original_bundle
+
+
+def test_apps_deploy_invalid_authorization_precedes_signature_bake(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A UC bake candidate remains byte-identical when auth is invalid."""
+    (scaffold / "agent.py").write_text(textwrap.dedent("""\
+        from apx_agent import Agent, uc_function_tool
+
+        def invalid_scope(): return "ok"
+        invalid_scope._apx_user_api_scopes = ["unknown.generated-scope"]
+
+        agent = Agent(
+            tools=[uc_function_tool("main.sales.score"), invalid_scope],
+        )
+        """))
+    sys.modules.pop("agent", None)
+    apx_dir = scaffold / ".apx"
+    apx_dir.mkdir()
+    schema_path = apx_dir / "schema.json"
+    original_schema = json.dumps({
+        "catalog": "main",
+        "schema": "sales",
+        "tables": {"orders": ["id(int)"]},
+        "functions": {},
+    }).encode()
+    schema_path.write_bytes(original_schema)
+    workspace_calls: list[str | None] = []
+
+    def unexpected_workspace(profile: str | None) -> Any:
+        workspace_calls.append(profile)
+        raise AssertionError("signature bake must not create a workspace client")
+
+    monkeypatch.setattr(
+        "apx_agent.cli._make_ws_for_scaffold",
+        unexpected_workspace,
+    )
+    bake_calls: list[Path] = []
+    monkeypatch.setattr(
+        "apx_agent.cli._bake_deploy_function_signatures",
+        lambda cwd, **_kwargs: bake_calls.append(cwd) or False,
+    )
+    calls = _install_subprocess_mock(monkeypatch)
+    bundle_path = scaffold / "databricks.yml"
+    original_bundle = bundle_path.read_bytes()
+
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+
+    assert result.exit_code != 0
+    assert "unknown generated user API scope" in result.output
+    assert bake_calls == []
+    assert workspace_calls == []
+    assert schema_path.read_bytes() == original_schema
+    assert bundle_path.read_bytes() == original_bundle
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
 
 
 def test_polling_stops_on_active_running(
