@@ -140,6 +140,7 @@ PROBE = textwrap.dedent(
     from pathlib import Path
     from threading import Thread
     from time import sleep
+    from unittest.mock import MagicMock
     from http.client import HTTPConnection, IncompleteRead
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.error import HTTPError, URLError
@@ -232,7 +233,10 @@ PROBE = textwrap.dedent(
         ),
         agent=agent,
     )
-    bridge_module._obo_ws_from_headers = lambda _: None
+    service_ws = MagicMock(name="service_ws")
+    user_ws = MagicMock(name="user_ws")
+    bridge_module._make_workspace_client = lambda: service_ws
+    bridge_module._obo_ws_from_headers = lambda _: user_ws
     app.include_router(build_appkit_tool_bridge_router())
     client = TestClient(app)
     response = client.post(
@@ -579,6 +583,7 @@ PROBE = textwrap.dedent(
     if tool_case_raw is not None:
         tool_case = json.loads(tool_case_raw)
         headers = {
+            "X-Forwarded-Access-Token": "local-user-token",
             "X-Forwarded-User": "alice",
             "X-Forwarded-Email": "alice@example.com",
             **tool_case.get("headers", {}),

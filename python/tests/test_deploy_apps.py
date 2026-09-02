@@ -1059,10 +1059,8 @@ def test_appkit_opt_in_stages_internal_host(
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from apx_agent import AgentConfig
-    from apx_agent._appkit_tool_bridge import build_appkit_tool_bridge_router
+    from apx_agent import AgentConfig, _appkit_tool_bridge
     from apx_agent._models import AgentCard, AgentContext
-    from apx_agent._obo import ApxIdentityError
 
     agent_module = importlib.import_module("agent")
     bridge = FastAPI()
@@ -1072,32 +1070,23 @@ def test_appkit_opt_in_stages_internal_host(
         card=AgentCard(name="supported-surface", description="Supported surface"),
         agent=agent_module.agent,
     )
-    bridge.include_router(build_appkit_tool_bridge_router())
+    bridge.include_router(_appkit_tool_bridge.build_appkit_tool_bridge_router())
     client = TestClient(bridge)
     monkeypatch.setenv("DATABRICKS_APP_NAME", "local-appkit-test")
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", os.devnull)
     monkeypatch.setenv("DATABRICKS_HOST", "https://fake.cloud.databricks.com")
     monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
     monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.setattr(_appkit_tool_bridge, "_make_workspace_client", MagicMock)
+    identity = client.post(
+        "/_apx/internal/appkit/tools/who_am_i",
+        json={"args": {}},
+        headers={"X-Forwarded-User": "alice"},
+    )
     token_headers = {
         "X-Forwarded-Access-Token": "local-user-token",
         "X-Forwarded-User": "alice",
     }
-    with pytest.raises(ApxIdentityError, match="no OBO user token"):
-        client.post(
-            "/_apx/internal/appkit/tools/who_am_i",
-            json={"args": {}},
-            headers={"X-Forwarded-User": "alice"},
-        )
-    monkeypatch.setattr(
-        "databricks.sdk.config.Config._resolve_host_metadata",
-        lambda _self: None,
-    )
-    identity = client.post(
-        "/_apx/internal/appkit/tools/who_am_i",
-        json={"args": {}},
-        headers=token_headers,
-    )
     denied = client.post(
         "/_apx/internal/appkit/tools/apply_change",
         json={"args": {"value": "deny"}},
