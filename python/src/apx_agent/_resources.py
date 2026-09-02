@@ -131,14 +131,25 @@ def get_resources(fn: Any) -> list[ResourceSpec]:
 # set so a typo becomes a deploy-time error instead of another prod-only
 # "missing scopes" 500 (#563).
 _KNOWN_USER_API_SCOPES = frozenset({
+    "ai-gateway",
+    "apps",
+    "files",
+    "genie",
+    "model-serving",
+    "postgres",
     "sql",
-    "dashboards.genie",
-    "serving.serving-endpoints",
-    "vectorsearch.vector-search-endpoints",
+    "sql:restricted-query",
+    "vector-search",
+    "catalog.catalogs",
     "catalog.catalogs:read",
+    "catalog.connections",
     "catalog.connections:read",
+    "catalog.schemas",
     "catalog.schemas:read",
+    "catalog.tables",
     "catalog.tables:read",
+    "workspace.workspace",
+    "workspace.workspace:read",
 })
 
 
@@ -146,8 +157,8 @@ def require_user_api_scopes(fn: Any, scopes: Iterable[str]) -> Any:
     """Declare raw OBO ``user_api_scopes`` a tool needs. Returns ``fn``.
 
     Most scopes are *derived* from a tool's ``ResourceSpec``s (a Genie space
-    implies ``dashboards.genie``; a serving endpoint implies
-    ``serving.serving-endpoints`` — see :func:`user_api_scopes_for`). Use this
+    implies ``genie``; a serving endpoint implies ``model-serving`` — see
+    :func:`user_api_scopes_for`). Use this
     only for a tool that calls a Databricks API with **no securable** to point a
     ``ResourceSpec`` at. The UC metadata/discovery REST API is the motivating
     case: ``ws.catalogs.list()`` / ``ws.schemas.list()`` / ``ws.tables.get()``
@@ -630,17 +641,17 @@ _KIND_TO_SCOPE: dict[str, str] = {
     "uc_table": "sql",
     "uc_function": "sql",
     "uc_connection": "sql",
-    "serving_endpoint": "serving.serving-endpoints",
-    "genie_space": "dashboards.genie",
-    "vector_search_index": "vectorsearch.vector-search-endpoints",
+    "serving_endpoint": "model-serving",
+    "genie_space": "genie",
+    "vector_search_index": "vector-search",
 }
 
 
 def user_api_scopes_for(resources: Iterable["ResourceSpec"]) -> list[str]:
     """Derive the OBO ``user_api_scopes`` an Apps deploy needs from its resources.
 
-    e.g. a Genie space → ``dashboards.genie``; a serving endpoint →
-    ``serving.serving-endpoints``. Returned sorted + de-duplicated. Note: a
+    e.g. a Genie space → ``genie``; a serving endpoint →
+    ``model-serving``. Returned sorted + de-duplicated. Note: a
     ``sql_tool`` that auto-discovers its warehouse declares no SQL resource —
     that path uses :func:`require_user_api_scopes` for ``sql`` instead, and
     deploy unions both sources onto the scaffold baseline.

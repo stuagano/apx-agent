@@ -488,6 +488,7 @@ def test_databricks_yml_contains_agent_name(tmp_path: Path, coworker_config: Age
     app = data["resources"]["apps"]["payroll-coworker"]
     assert ".build/apx_appkit_host" in data["artifacts"]["default"]["build"]
     assert app["config"]["command"] == ["python", "-m", "agent_server.start_host"]
+    assert app["user_api_scopes"] == ["sql", "model-serving"]
     env = {item["name"]: item["value"] for item in app["config"]["env"]}
     assert env["APX_APPS_HOST"] == "python"
 

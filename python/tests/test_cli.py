@@ -4166,9 +4166,14 @@ def test_scaffold_apps_databricks_yml_enables_autolog_env() -> None:
 def test_apps_databricks_yml_has_staging_target_for_all_templates(tmp_path):
     """The staging target is unconditional — every --target apps template
     gets dev/staging/prod, regardless of whether it has a catalog/schema."""
+    import yaml
+
     from apx_agent import cli
     cli._scaffold_apps(tmp_path, "demo", force=True, catalog="", schema="", template="base")
     yml = (tmp_path / "databricks.yml").read_text()
+    app = yaml.safe_load(yml)["resources"]["apps"]["demo"]
+    assert app["user_api_scopes"] == ["sql", "model-serving"]
+    assert "serving.serving-endpoints" not in yml
     assert "  staging:" in yml
     assert "    mode: production" in yml
     # staging appears between dev and prod, shaped like prod.
@@ -4814,8 +4819,8 @@ class TestDatabricksYmlMergePreservesComments:
         assert "catalog.catalogs:read" in app["user_api_scopes"]
 
     def test_authorization_reconcile_never_drops_existing_scopes(self, tmp_path):
-        # The scope union is additive: an operator's existing user_api_scopes
-        # (incl. ones no tool derives) survive when the merge adds a new one.
+        # The scope union is additive: deprecated aliases in an operator's
+        # existing config survive, but new declarations never generate them.
         import yaml as pyyaml
         from apx_agent import Agent, require_user_api_scopes
         from apx_agent._apps_authorization import (
@@ -4832,7 +4837,9 @@ class TestDatabricksYmlMergePreservesComments:
             "      name: my-agent\n"
             "      user_api_scopes:\n"
             "      - sql\n"
+            "      - dashboards.genie\n"
             "      - serving.serving-endpoints\n"
+            "      - vectorsearch.vector-search-endpoints\n"
             "      config: {}\n"
         )
 
@@ -4853,7 +4860,11 @@ class TestDatabricksYmlMergePreservesComments:
 
         scopes = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]["user_api_scopes"]
         assert set(scopes) == {
-            "sql", "serving.serving-endpoints", "catalog.catalogs:read",
+            "sql",
+            "dashboards.genie",
+            "serving.serving-endpoints",
+            "vectorsearch.vector-search-endpoints",
+            "catalog.catalogs:read",
         }
 
     def test_authorization_reconcile_unions_sql_from_auto_discover_sql_tool(
@@ -4981,7 +4992,7 @@ def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
     assert {(resource.kind, resource.identifier) for resource in plan.user_resources} >= {
         ("genie_space", "cfg-space-xyz"),
     }
-    assert "dashboards.genie" in plan.user_api_scopes
+    assert "genie" in plan.user_api_scopes
 
 
 # ---------------------------------------------------------------------------
