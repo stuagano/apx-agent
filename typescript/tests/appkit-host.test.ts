@@ -1,7 +1,4 @@
-import {
-  Plugin,
-  ResourceType,
-} from '@databricks/appkit';
+import { Plugin } from '@databricks/appkit';
 import {
   createMockRequest,
   createMockResponse,
@@ -544,28 +541,29 @@ describe('internal AppKit host', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('derives AppKit resource requirements from the authorization manifest', () => {
+  it('keeps concrete service resources in DAB instead of AppKit plugin requirements', async () => {
     const manifest = makeManifest();
+    manifest.service_resources.push({ kind: 'uc_table', identifier: 'main.sales.orders' });
+    const mock = createTestPluginContext();
 
-    expect(InternalApxAppKitGovernancePlugin.getResourceRequirements({ manifest })).toEqual([
-      expect.objectContaining({
-        type: ResourceType.JOB,
-        permission: 'CAN_MANAGE_RUN',
-        fields: { id: expect.objectContaining({ value: 'telemetry-job' }) },
-        required: true,
-      }),
-    ]);
+    await expect(mock.attach(new InternalApxAppKitGovernancePlugin({ manifest })))
+      .resolves.toBeInstanceOf(InternalApxAppKitGovernancePlugin);
+    expect(Reflect.has(InternalApxAppKitGovernancePlugin, 'getResourceRequirements')).toBe(false);
+    expect(InternalApxAppKitGovernancePlugin.manifest.resources).toEqual({
+      required: [],
+      optional: [],
+    });
     expect(manifest).toMatchObject({
       user_resources: [{ kind: 'serving_endpoint', identifier: 'model-a' }],
-      service_resources: [{ kind: 'job', identifier: 'telemetry-job' }],
+      service_resources: [
+        { kind: 'job', identifier: 'telemetry-job' },
+        { kind: 'uc_table', identifier: 'main.sales.orders' },
+      ],
       user_api_scopes: ['serving.serving-endpoints'],
       app_to_app_permissions: [
         { url: 'https://peer.cloud.databricksapps.com', permission: 'CAN_USE' },
       ],
     });
-    manifest.service_resources.push({ kind: 'uc_table', identifier: 'main.sales.orders' });
-    expect(() => InternalApxAppKitGovernancePlugin.getResourceRequirements({ manifest }))
-      .toThrow('Unsupported APX AppKit service resource kind: uc_table');
   });
 
   it('accepts and round-trips the complete Python authorization manifest shape', () => {
@@ -588,18 +586,10 @@ describe('internal AppKit host', () => {
       name: 'search_orders',
       annotations: { effect: 'update', requiresUserContext: true },
     });
-    expect(InternalApxAppKitGovernancePlugin.getResourceRequirements({
-      manifest: roundTripped,
-    })).toEqual([
-      expect.objectContaining({
-        type: ResourceType.JOB,
-        fields: { id: expect.objectContaining({ value: 'telemetry-job' }) },
-      }),
-      expect.objectContaining({
-        type: ResourceType.SERVING_ENDPOINT,
-        fields: { name: expect.objectContaining({ value: 'model-a' }) },
-      }),
-    ]);
+    expect(InternalApxAppKitGovernancePlugin.manifest.resources).toEqual({
+      required: [],
+      optional: [],
+    });
   });
 
   it('dispatches manifest tools by identity without duplicating the bridge path', async () => {
