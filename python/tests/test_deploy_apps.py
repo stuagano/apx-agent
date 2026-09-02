@@ -1070,6 +1070,8 @@ def test_appkit_opt_in_stages_internal_host(
         card=AgentCard(name="supported-surface", description="Supported surface"),
         agent=agent_module.agent,
     )
+    from apx_agent._apps_host_manifest import AppsHostManifest
+    bridge.state.apx_appkit_host_manifest = AppsHostManifest.model_validate(manifest)
     bridge.include_router(_appkit_tool_bridge.build_appkit_tool_bridge_router())
     client = TestClient(bridge)
     monkeypatch.setenv("DATABRICKS_APP_NAME", "local-appkit-test")

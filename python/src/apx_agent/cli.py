@@ -1607,11 +1607,17 @@ if __name__ == "__main__":
 
 _INTERNAL_APPKIT_BRIDGE_SERVER = '''\
 """Loopback APX sidecar for the generated AppKit host."""
+from pathlib import Path
+
 from apx_agent import create_app
+from apx_agent._apps_host_manifest import AppsHostManifest
 
 from agent import agent
 
 app = create_app(agent)
+app.state.apx_appkit_host_manifest = AppsHostManifest.model_validate_json(
+    (Path(__file__).resolve().parents[1] / "apx_appkit_host" / "apx-host-manifest.json").read_text()
+)
 '''
 
 

@@ -200,6 +200,7 @@ PROBE = textwrap.dedent(
     bridge_src = bridge_entrypoint.read_text()
     assert "from apx_agent import create_app" in bridge_src
     assert "app = create_app(agent)" in bridge_src
+    assert "AppsHostManifest.model_validate_json" in bridge_src
     assert "FastAPI()" not in bridge_src
     assert "finalize_agent(" not in bridge_src
     if (root / "agent.config.yaml").exists():
@@ -233,6 +234,8 @@ PROBE = textwrap.dedent(
         ),
         agent=agent,
     )
+    from apx_agent._apps_host_manifest import AppsHostManifest
+    app.state.apx_appkit_host_manifest = AppsHostManifest.model_validate(manifest)
     service_ws = MagicMock(name="service_ws")
     user_ws = MagicMock(name="user_ws")
     bridge_module._make_workspace_client = lambda: service_ws
@@ -269,7 +272,10 @@ PROBE = textwrap.dedent(
         [
             sys.executable,
             "-c",
-            "from agent_server.appkit_bridge import app; assert app is not None",
+            (
+                "from agent_server.appkit_bridge import app; "
+                "assert app.state.apx_appkit_host_manifest.tools"
+            ),
         ],
         cwd=root / ".build",
         env=bridge_env,

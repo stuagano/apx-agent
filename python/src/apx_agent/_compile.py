@@ -55,6 +55,7 @@ from ._agents import (
 from ._defaults import (
     _get_principal,
     _get_progress,
+    _get_request,
     _get_sql_runner,
     _get_user_client,
     _get_workspace_client,
@@ -72,6 +73,7 @@ from ._state_tool import _make_stateful_langchain_tool
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
+    from fastapi import Request
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,7 @@ class CompileContext:
     short-term memory. Applied to the ``create_agent`` runtime (LlmAgent path).
     Must be process-scoped (shared across per-request compiles) to persist
     across turns. Requires a ``thread_id`` in the invoke config."""
+    request: "Request | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -117,9 +120,7 @@ def _make_dep_resolvers(ctx: CompileContext) -> dict[Any, Any]:
         _get_sql_runner: (lambda q: run_sql(ctx.user_ws, q)),
         _get_principal: (ctx.headers.user_id if ctx.headers else None),  # E3b
         _get_progress: emit_progress,  # tool progress → trace span events
-        # _get_request intentionally omitted: no FastAPI Request inside a
-        # compiled graph. Tools needing the raw request can't be compiled
-        # without lifting them; we fail loudly if encountered.
+        _get_request: ctx.request,
     }
 
 
@@ -138,6 +139,11 @@ def _resolve_deps_for_fn(fn: Any, ctx: CompileContext) -> dict[str, Any]:
             raise ValueError(
                 f"Tool {fn.__name__!r} requires a user WorkspaceClient for "
                 f"dependency {dep_name!r}, but none was provided."
+            )
+        if target is _get_request and ctx.request is None:
+            raise ValueError(
+                f"Tool {fn.__name__!r} requires request context for dependency "
+                f"{dep_name!r}, but none was provided."
             )
         if target not in resolvers:
             raise ValueError(

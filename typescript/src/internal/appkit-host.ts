@@ -7,15 +7,12 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash } from 'node:crypto';
 
 import {
   Plugin,
-  ResourceType,
   toPlugin,
   type BasePluginConfig,
   type PluginManifest,
-  type ResourceRequirement,
 } from '@databricks/appkit';
 import {
   createAgent,
@@ -267,53 +264,6 @@ function manifestToolExecutionIdentity(
   return tool?.annotations?.requires_user_context === false ? 'service' : 'user';
 }
 
-function appKitResourceRequirement(
-  resource: InternalApxAppsHostResource,
-): ResourceRequirement {
-  const resourceKey = `apx-${resource.kind.replaceAll('_', '-')}-${createHash('sha256')
-    .update(`${resource.kind}:${resource.identifier}`)
-    .digest('hex')
-    .slice(0, 8)}`;
-  const base = {
-    alias: `${resource.kind}: ${resource.identifier}`,
-    resourceKey,
-    description: `APX-declared ${resource.kind} resource`,
-    required: true,
-  };
-  const field = (name: string) => ({ [name]: { value: resource.identifier } });
-
-  switch (resource.kind) {
-    case 'job':
-      return { ...base, type: ResourceType.JOB, permission: 'CAN_MANAGE_RUN', fields: field('id') };
-    case 'serving_endpoint':
-      return { ...base, type: ResourceType.SERVING_ENDPOINT, permission: 'CAN_QUERY', fields: field('name') };
-    case 'sql_warehouse':
-      return { ...base, type: ResourceType.SQL_WAREHOUSE, permission: 'CAN_USE', fields: field('id') };
-    case 'vector_search_index':
-      return { ...base, type: ResourceType.VECTOR_SEARCH_INDEX, permission: 'SELECT', fields: field('name') };
-    case 'uc_function':
-      return { ...base, type: ResourceType.UC_FUNCTION, permission: 'EXECUTE', fields: field('name') };
-    case 'uc_connection':
-      return { ...base, type: ResourceType.UC_CONNECTION, permission: 'USE_CONNECTION', fields: field('name') };
-    case 'genie_space':
-      return { ...base, type: ResourceType.GENIE_SPACE, permission: 'CAN_RUN', fields: field('id') };
-    case 'lakebase_instance':
-      return {
-        ...base,
-        type: ResourceType.DATABASE,
-        permission: 'CAN_CONNECT_AND_CREATE',
-        fields: {
-          instance_name: { value: resource.identifier },
-          database_name: { value: 'databricks_postgres' },
-        },
-      };
-    case 'app':
-      return { ...base, type: ResourceType.APP, permission: 'CAN_USE', fields: field('name') };
-    default:
-      throw new Error(`Unsupported APX AppKit service resource kind: ${resource.kind}`);
-  }
-}
-
 function toolAnnotations(
   tool: AgentTool,
   overrides: Record<string, ToolAnnotations> | undefined,
@@ -376,12 +326,6 @@ export class InternalApxAppKitGovernancePlugin
     description: 'Internal APX governed agent declarations exposed as AppKit agent tools',
     resources: { required: [], optional: [] },
   } satisfies PluginManifest<typeof INTERNAL_APX_APPKIT_PLUGIN_NAME>;
-
-  static getResourceRequirements(
-    config: InternalApxAppKitGovernanceConfig,
-  ): ResourceRequirement[] {
-    return (config.manifest?.service_resources ?? []).map(appKitResourceRequirement);
-  }
 
   private get agentExports(): AgentExports {
     return requireAgentExports(this.config.agent);

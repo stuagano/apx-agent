@@ -22,7 +22,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 # Skip the whole module unless the optional extra is installed.
 pytest.importorskip("langgraph")
@@ -141,6 +141,33 @@ class TestCompileLlmAgent:
         sql = _resolve_deps_for_fn(sql_lookup, ctx)["sql"]
         assert sql("SELECT 1") == [{"value": 1}]
         run_sql.assert_called_once_with(user_ws, "SELECT 1")
+
+    def test_dependency_resolution_preserves_request_context(self) -> None:
+        from apx_agent._compile import CompileContext, _resolve_deps_for_fn
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/_apx/internal/appkit/tools/inspect",
+                "raw_path": b"/_apx/internal/appkit/tools/inspect",
+                "query_string": b"",
+                "headers": [],
+                "server": ("127.0.0.1", 8000),
+            }
+        )
+        ctx = CompileContext(
+            service_ws=None,
+            user_ws=None,
+            model="any",
+            request=request,
+        )
+
+        def inspect_request(request: Dependencies.Request) -> Request:
+            return request
+
+        assert _resolve_deps_for_fn(inspect_request, ctx) == {"request": request}
 
     @pytest.mark.parametrize(
         "dependency",
