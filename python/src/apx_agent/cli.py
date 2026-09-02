@@ -1857,11 +1857,11 @@ resources:
       # OAuth scopes the forwarded user (OBO) token carries, so governed tools
       # run AS the calling user. The iam.* defaults are always granted and must
       # NOT be listed here. `sql` is what DataAgent / sql_tool / uc_function_tool
-      # need; add `dashboards.genie` for genie_tool and `vectorsearch.vector-search-endpoints`
+      # need; add `genie` for genie_tool and `vector-search`
       # for vector_search_tool. (Changing scopes requires users to re-authorize.)
       user_api_scopes:
         - sql
-        - serving.serving-endpoints
+        - model-serving
       resources:
         - name: experiment
           experiment:
