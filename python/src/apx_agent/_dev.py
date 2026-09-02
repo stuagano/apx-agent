@@ -929,6 +929,18 @@ async function submitFeedback(value, btn) {{
     msg.textContent = 'Failed: ' + e.message;
   }}
 }}
+document.addEventListener('DOMContentLoaded', async () => {{
+  try {{
+    const r = await fetch('/_apx/feedback/{tid_js}');
+    if (!r.ok) return;
+    const data = await r.json();
+    const quality = (data.assessments || []).filter(a => a.name === 'quality').pop();
+    if (quality != null) {{
+      const cls = quality.value === true ? 'up' : 'down';
+      document.querySelector('.fb-btn.' + cls)?.classList.add('active');
+    }}
+  }} catch(_) {{}}
+}});
 </script>
 </body></html>"""
 
