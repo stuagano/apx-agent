@@ -3950,6 +3950,68 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 load_error = f"Could not parse {path}: {exc}"
         return HTMLResponse(_render_eval_landing(cases, loaded_path, load_error))
 
+    @router.post("/_apx/eval/label-start")
+    async def eval_label_start(request: Request) -> Any:
+        """Start an SME labeling session via `apx-agent label start`."""
+        from fastapi.responses import JSONResponse
+        from apx_agent import _labeling
+        import datetime
+
+        ctx: AgentContext | None = request.app.state.agent_context
+        body = await request.json()
+        judge_name = (body.get("judge_name") or "").strip()
+        if not judge_name:
+            return JSONResponse({"ok": False, "error": "judge_name is required"}, status_code=422)
+        experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip() or None
+        if not experiment_id:
+            return JSONResponse({"ok": False, "error": "MLFLOW_EXPERIMENT_ID not set"}, status_code=503)
+        agent_name = ctx.config.name if ctx else "agent"
+        try:
+            import mlflow
+            mlflow.set_tracking_uri("databricks")
+            result = _labeling.start_session(
+                experiment_id=experiment_id,
+                agent_name=agent_name,
+                judge_name=judge_name,
+                scale=None, options=None, assignees=[],
+                filter_string=None, limit=None, endpoint=None,
+                attach_agent=True,
+                now=datetime.datetime.now(datetime.timezone.utc),
+            )
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return {"ok": True, "run_id": result.run_id, "session_url": result.session_url, "trace_count": result.trace_count}
+
+    @router.post("/_apx/eval/label-align")
+    async def eval_label_align(request: Request) -> Any:
+        """Run MemAlign judge alignment via `apx-agent label align`."""
+        from fastapi.responses import JSONResponse
+        from apx_agent import _labeling
+
+        body = await request.json()
+        judge_name = (body.get("judge_name") or "").strip()
+        run_id = (body.get("run_id") or "").strip()
+        if not judge_name or not run_id:
+            return JSONResponse({"ok": False, "error": "judge_name and run_id are required"}, status_code=422)
+        experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip() or None
+        if not experiment_id:
+            return JSONResponse({"ok": False, "error": "MLFLOW_EXPERIMENT_ID not set"}, status_code=503)
+        try:
+            import mlflow
+            mlflow.set_tracking_uri("databricks")
+            result = _labeling.align_judge(
+                experiment_id=experiment_id,
+                judge_name=judge_name,
+                run_id=run_id,
+                reflection_model="databricks:/databricks-claude-sonnet-4-6",
+                embedding_model="databricks:/databricks-gte-large-en",
+                retrieval_k=5,
+                new_version=None,
+            )
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return {"ok": True, "registered_as": result.registered_as, "guidelines": result.guidelines}
+
     @router.get("/_apx/wizard", include_in_schema=False)
     async def wizard_ui() -> Any:
         from starlette.responses import RedirectResponse as _R
