@@ -328,7 +328,7 @@ def _render_traces_list(rows: list, agent_name: str | None) -> str:
     if not rows:
         body = '<p class="empty">No traces found. Run the agent and traces will appear here.</p>'
     else:
-        ths = "<tr><th>Time</th><th>Duration</th><th>Status</th><th>Request</th><th>Response</th></tr>"
+        ths = "<tr><th>Time</th><th>Duration</th><th>Status</th><th>Request</th><th>Response</th><th>Feedback</th></tr>"
         tds = []
         for r in rows:
             ts = r["request_time_ms"]
@@ -340,6 +340,7 @@ def _render_traces_list(rows: list, agent_name: str | None) -> str:
             req = _html.escape((r["request_preview"] or "")[:120])
             resp = _html.escape((r["response_preview"] or "")[:120])
             tid = _html.escape(r["trace_id"])
+            tid_js = tid.replace("'", "\\'")
             tds.append(
                 f'<tr>'
                 f'<td><a href="/_apx/traces/{tid}">{dt}</a></td>'
@@ -347,13 +348,39 @@ def _render_traces_list(rows: list, agent_name: str | None) -> str:
                 f'<td class="{st_cls}">{st}</td>'
                 f'<td class="preview">{req}</td>'
                 f'<td class="preview">{resp}</td>'
+                f'<td class="fb-cell">'
+                f'<button class="fb-btn up" onclick="submitFeedback(\'{tid_js}\',true,this)">👍</button>'
+                f'<button class="fb-btn down" onclick="submitFeedback(\'{tid_js}\',false,this)">👎</button>'
+                f'</td>'
                 f'</tr>'
             )
         body = f'<table>{ths}{"".join(tds)}</table>'
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>{_html.escape(title)}</title>
-<style>{_TRACE_CSS}</style></head><body>
+<style>{_TRACE_CSS}
+.fb-cell{{white-space:nowrap}}
+.fb-btn{{background:none;border:1px solid var(--border,#ccc);border-radius:4px;cursor:pointer;font-size:.9rem;padding:.1rem .4rem;opacity:.5}}
+.fb-btn:hover{{opacity:1}}
+.fb-btn.active.up{{opacity:1;border-color:#2e7d32}}
+.fb-btn.active.down{{opacity:1;border-color:#c62828}}
+</style>
+<script>
+async function submitFeedback(tid, value, btn) {{
+  try {{
+    const r = await fetch('/_apx/feedback', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{trace_id: tid, name: 'quality', value}})
+    }});
+    if (!r.ok) throw new Error(await r.text());
+    const row = btn.closest('tr');
+    row.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }} catch(e) {{ alert('Feedback failed: ' + e.message); }}
+}}
+</script>
+</head><body>
 <header>
   <span class="badge">APX</span><h1>{_html.escape(title)}</h1>
   <a class="back" href="/_apx/agent">← Agent</a>
@@ -859,17 +886,50 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
         body = err_html + tree_html
 
     tid_escaped = _html.escape(trace_id)
+    tid_js = tid_escaped.replace("'", "\\'")
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Trace {tid_escaped}</title>
-<style>{_TRACE_CSS}</style></head><body>
+<style>{_TRACE_CSS}
+.feedback{{display:inline-flex;gap:.5rem;margin-left:1rem;vertical-align:middle}}
+.fb-btn{{background:none;border:1px solid var(--border,#ccc);border-radius:4px;cursor:pointer;font-size:1rem;padding:.1rem .5rem;opacity:.6}}
+.fb-btn:hover{{opacity:1}}
+.fb-btn.active{{opacity:1;border-color:currentColor}}
+.fb-btn.up.active{{color:#2e7d32}}
+.fb-btn.down.active{{color:#c62828}}
+#fb-msg{{font-size:.75rem;color:#666;margin-left:.5rem}}
+</style></head><body>
 <header>
   <span class="badge">APX</span><h1>Trace</h1>
   <a class="back" href="/_apx/traces">← All traces</a>
 </header>
 <main>
-  <div class="meta">ID: {tid_escaped}</div>
+  <div class="meta">ID: {tid_escaped}
+    <span class="feedback">
+      <button class="fb-btn up" title="Good response" onclick="submitFeedback(true,this)">👍</button>
+      <button class="fb-btn down" title="Bad response" onclick="submitFeedback(false,this)">👎</button>
+      <span id="fb-msg"></span>
+    </span>
+  </div>
   {body}
 </main>
+<script>
+async function submitFeedback(value, btn) {{
+  const msg = document.getElementById('fb-msg');
+  try {{
+    const r = await fetch('/_apx/feedback', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{trace_id: '{tid_js}', name: 'quality', value}})
+    }});
+    if (!r.ok) throw new Error(await r.text());
+    document.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    msg.textContent = value ? 'Marked good' : 'Marked bad';
+  }} catch(e) {{
+    msg.textContent = 'Failed: ' + e.message;
+  }}
+}}
+</script>
 </body></html>"""
 
 
