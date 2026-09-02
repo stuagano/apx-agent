@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from apx_agent import AgentConfig, Dependencies, LlmAgent
 from apx_agent._appkit_tool_bridge import build_appkit_tool_bridge_router
 from apx_agent._models import AgentCard, AgentContext
+from apx_agent._policy import ApprovalRequired, ApprovalStore
 
 
 def _app(agent: LlmAgent, monkeypatch) -> FastAPI:
@@ -93,3 +94,51 @@ def test_bridge_rejects_stateful_tools(monkeypatch) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "APX AppKit bridge cannot execute stateful tool: remember"
+
+
+def test_bridge_returns_403_when_before_tool_denies(monkeypatch) -> None:
+    called = False
+
+    def mutate(value: str) -> str:
+        nonlocal called
+        called = True
+        return value
+
+    agent = LlmAgent(
+        tools=[mutate],
+        before_tool=lambda _name, _args: (_ for _ in ()).throw(PermissionError("blocked")),
+    )
+    response = TestClient(_app(agent, monkeypatch)).post(
+        "/_apx/internal/appkit/tools/mutate",
+        json={"args": {"value": "x"}},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "blocked"}
+    assert called is False
+
+
+def test_bridge_returns_bounded_403_when_before_tool_requires_approval(monkeypatch) -> None:
+    called = False
+    approval = ApprovalStore().request("mutate", {"value": "x"}, reason="manual confirmation")
+
+    def mutate(value: str) -> str:
+        nonlocal called
+        called = True
+        return value
+
+    agent = LlmAgent(
+        tools=[mutate],
+        before_tool=lambda _name, _args: (_ for _ in ()).throw(ApprovalRequired(approval)),
+    )
+    response = TestClient(_app(agent, monkeypatch), raise_server_exceptions=False).post(
+        "/_apx/internal/appkit/tools/mutate",
+        json={"args": {"value": "x"}},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Tool execution is denied"}
+    assert approval.id not in response.text
+    assert "approval" not in response.text.lower()
+    assert "retry" not in response.text.lower()
+    assert called is False

@@ -220,12 +220,12 @@ The exact path can change, but the ownership rule is fixed:
 
 ### 6. Internal host cutover
 
-AppKit is the default Apps host. Keep a temporary escape hatch while the legacy
-Python host remains in tree:
+The Python host remains the default until the parity gates below pass. AppKit is
+an explicit opt-in while the generated host is still being hardened:
 
 ```text
-APX_APPS_HOST=appkit   # default generated AppKit host
-APX_APPS_HOST=python   # legacy Python host fallback
+APX_APPS_HOST=python   # default governed Python host
+APX_APPS_HOST=appkit   # explicit generated AppKit host opt-in
 ```
 
 After parity gates pass, the same public deployment command stages the AppKit
@@ -328,8 +328,8 @@ implementation only when these deletion tests pass:
 - Generate TypeScript host files into `.build/apx_appkit_host/`.
 - Build the generated host with `apx-internal-runtime`.
 - Prove the generated host can expose a trivial read-only tool.
-- Make generated AppKit internals the Apps default; keep `APX_APPS_HOST=python`
-  as the temporary legacy fallback.
+- Keep the Python host as the Apps default; allow `APX_APPS_HOST=appkit` as an
+  explicit opt-in while parity work continues.
 
 ### Phase 3 - AppKit route ownership
 

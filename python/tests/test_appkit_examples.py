@@ -3,12 +3,20 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import textwrap
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from typing import NamedTuple
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import pytest
+import yaml
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -126,9 +134,16 @@ PROBE = textwrap.dedent(
 
     import json
     import os
+    import socket
     import subprocess
     import sys
     from pathlib import Path
+    from threading import Thread
+    from time import sleep
+    from http.client import HTTPConnection, IncompleteRead
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
 
     import yaml
 
@@ -154,7 +169,7 @@ PROBE = textwrap.dedent(
         item
         for item in env
         if not (isinstance(item, dict) and item.get("name") == "APX_APPS_HOST")
-    ]
+    ] + [{"name": "APX_APPS_HOST", "value": "appkit"}]
 
     (root / ".build").mkdir(exist_ok=True)
     logs = []
@@ -182,9 +197,10 @@ PROBE = textwrap.dedent(
     bridge_entrypoint = bridge_dir / "appkit_bridge.py"
     assert bridge_entrypoint.exists()
     bridge_src = bridge_entrypoint.read_text()
-    assert "compile_to_responses_agent" not in bridge_src
-    assert "mount_mcp_endpoints" not in bridge_src
-    assert "mount_readyz" not in bridge_src
+    assert "from apx_agent import create_app" in bridge_src
+    assert "app = create_app(agent)" in bridge_src
+    assert "FastAPI()" not in bridge_src
+    assert "finalize_agent(" not in bridge_src
     if (root / "agent.config.yaml").exists():
         assert (root / ".build" / "agent.config.yaml").exists()
     assert package["dependencies"]["apx-internal-runtime"] == "file:../apx_internal_runtime"
@@ -241,10 +257,322 @@ PROBE = textwrap.dedent(
         env=bridge_env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=60,
         check=False,
     )
     assert bridge_boot.returncode == 0, bridge_boot.stderr + bridge_boot.stdout
+    bridge_import = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from agent_server.appkit_bridge import app; assert app is not None",
+        ],
+        cwd=root / ".build",
+        env=bridge_env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert bridge_import.returncode == 0, bridge_import.stderr + bridge_import.stdout
+
+    if os.environ.get("APX_APPKIT_PROXY_PROBE") == "1":
+        observed = {"routes": []}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def log_message(self, _format, *_args):
+                pass
+
+            def _api_response(self):
+                payload = b'{"id":"test-user","userName":"tester@example.com"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def _hop_headers(self):
+                self.send_header("Connection", "X-Response-Hop")
+                self.send_header("Keep-Alive", "timeout=1")
+                self.send_header("Proxy-Authenticate", "Basic")
+                self.send_header("Proxy-Authorization", "secret")
+                self.send_header("TE", "trailers")
+                self.send_header("Trailer", "X-Trailer")
+                self.send_header("Upgrade", "websocket")
+                self.send_header("X-Response-Hop", "remove-me")
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                if self.path.startswith("/api/"):
+                    self._api_response()
+                    return
+                observed["json"] = {
+                    "body": json.loads(body),
+                    "identity": {
+                        name: self.headers.get(name)
+                        for name in (
+                            "X-Databricks-Host",
+                            "X-Databricks-Token",
+                            "X-Databricks-User",
+                            "X-Forwarded-User",
+                            "X-Request-Id",
+                        )
+                    },
+                    "method": self.command,
+                    "path": self.path,
+                    "removed": {
+                        name: self.headers.get(name) is None
+                        for name in (
+                            "Keep-Alive",
+                            "Proxy-Authenticate",
+                            "Proxy-Authorization",
+                            "TE",
+                            "Trailer",
+                            "Upgrade",
+                            "X-Request-Hop",
+                        )
+                    },
+                }
+                payload = b'{"proxied":true}'
+                self.send_response(201)
+                self._hop_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_GET(self):
+                if self.path.startswith("/api/"):
+                    self._api_response()
+                    return
+                observed["routes"].append((self.command, self.path))
+                if self.path == "/readyz?stall=1":
+                    sleep(6)
+                    return
+                if self.path == "/mcp?abort=1":
+                    self.send_response(200)
+                    self._hop_headers()
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", "100")
+                    self.end_headers()
+                    self.wfile.write(b"partial")
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
+                if self.path == "/_apx/stream?mode=sse":
+                    payload = b"data: one\\n\\ndata: two\\n\\n"
+                    self.send_response(206)
+                    self._hop_headers()
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload[:10])
+                    self.wfile.flush()
+                    sleep(6)
+                    self.wfile.write(payload[10:])
+                    return
+                payload = b'{"proxied":true}'
+                self.send_response(200)
+                self._hop_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        upstream.daemon_threads = True
+        upstream_thread = Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            host_port = listener.getsockname()[1]
+
+        node_modules = host_dir / "node_modules"
+        node_modules.mkdir()
+        runtime_node_modules = Path(os.environ["APX_APPKIT_RUNTIME_NODE_MODULES"])
+        for package in ("@databricks", "tsx", "zod", "zod-to-json-schema"):
+            os.symlink(
+                runtime_node_modules / package,
+                node_modules / package,
+                target_is_directory=True,
+            )
+        os.symlink(
+            host_dir.parent / "apx_internal_runtime",
+            node_modules / "apx-internal-runtime",
+            target_is_directory=True,
+        )
+        os.symlink(node_modules, host_dir.parent / "node_modules", target_is_directory=True)
+
+        host_env = {
+            **os.environ,
+            "APX_PYTHON_BRIDGE_URL": f"http://127.0.0.1:{upstream.server_port}",
+            "DATABRICKS_HOST": f"http://127.0.0.1:{upstream.server_port}",
+            "DATABRICKS_TOKEN": "local-test-token",
+            "DATABRICKS_APP_PORT": str(host_port),
+        }
+        for name in (
+            "DATABRICKS_CONFIG_FILE",
+            "DATABRICKS_CONFIG_PROFILE",
+        ):
+            host_env.pop(name, None)
+        host = subprocess.Popen(
+            [
+                "node",
+                "--import",
+                str(runtime_node_modules / "tsx" / "dist" / "loader.mjs"),
+                "server/server.ts",
+            ],
+            cwd=host_dir,
+            env=host_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            for _ in range(100):
+                if host.poll() is not None:
+                    stdout, stderr = host.communicate()
+                    raise AssertionError(stdout + stderr)
+                try:
+                    with urlopen(
+                        f"http://127.0.0.1:{host_port}/api/dev-ui", timeout=0.2
+                    ) as response:
+                        if response.status == 200:
+                            break
+                except URLError:
+                    sleep(0.1)
+            else:
+                raise AssertionError("generated AppKit host did not start")
+
+            post_connection = HTTPConnection("127.0.0.1", host_port, timeout=5)
+            try:
+                post_connection.request(
+                    "POST",
+                    "/?request_id=abc",
+                    body=b'{"question":"status"}',
+                    headers={
+                    "Content-Type": "application/json",
+                    "Connection": "X-Request-Hop",
+                    "Keep-Alive": "timeout=1",
+                    "Proxy-Authenticate": "Basic",
+                    "Proxy-Authorization": "secret",
+                    "TE": "trailers",
+                    "Trailer": "X-Trailer",
+                    "Upgrade": "websocket",
+                    "X-Databricks-Host": "https://workspace-sentinel",
+                    "X-Databricks-Token": "token-sentinel",
+                    "X-Databricks-User": "user:alice",
+                    "X-Forwarded-User": "user:alice",
+                    "X-Request-Id": "request-sentinel",
+                    "X-Request-Hop": "remove-me",
+                    },
+                )
+                response = post_connection.getresponse()
+                assert response.status == 201
+                assert response.headers["Content-Type"] == "application/json"
+                for name, value in {
+                    "Keep-Alive": "timeout=1",
+                    "Proxy-Authenticate": "Basic",
+                    "Proxy-Authorization": "secret",
+                    "TE": "trailers",
+                    "Trailer": "X-Trailer",
+                    "Upgrade": "websocket",
+                    "X-Response-Hop": "remove-me",
+                }.items():
+                    assert response.headers.get(name) != value, name
+                body = response.read()
+                assert body == b'{"proxied":true}', body
+            finally:
+                post_connection.close()
+            assert observed["json"] == {
+                "body": {"question": "status"},
+                "identity": {
+                    "X-Databricks-Host": "https://workspace-sentinel",
+                    "X-Databricks-Token": "token-sentinel",
+                    "X-Databricks-User": "user:alice",
+                    "X-Forwarded-User": "user:alice",
+                    "X-Request-Id": "request-sentinel",
+                },
+                "method": "POST",
+                "path": "/?request_id=abc",
+                "removed": {
+                    "Keep-Alive": True,
+                    "Proxy-Authenticate": True,
+                    "Proxy-Authorization": True,
+                    "TE": True,
+                    "Trailer": True,
+                    "Upgrade": True,
+                    "X-Request-Hop": True,
+                },
+            }, observed["json"]
+
+            with urlopen(
+                Request(
+                    f"http://127.0.0.1:{host_port}/_apx/stream?mode=sse",
+                    headers={"X-Forwarded-User": "user:alice"},
+                ),
+                timeout=7,
+            ) as response:
+                assert response.status == 206
+                assert response.headers["Content-Type"] == "text/event-stream"
+                assert response.read() == b"data: one\\n\\ndata: two\\n\\n"
+            for path in ("/mcp?transport=sse", "/.well-known/agent.json", "/readyz"):
+                with urlopen(f"http://127.0.0.1:{host_port}{path}", timeout=5) as response:
+                    assert response.status == 200
+                    assert response.read() == b'{"proxied":true}'
+            routes_before_appkit = list(observed["routes"])
+            with urlopen(f"http://127.0.0.1:{host_port}/health", timeout=5) as response:
+                assert response.status == 200
+                assert json.loads(response.read()) == {"status": "ok"}
+            with urlopen(f"http://127.0.0.1:{host_port}/api/dev-ui", timeout=5) as response:
+                assert response.status == 200
+            assert observed["routes"] == routes_before_appkit
+            assert set(observed["routes"]) >= {
+                ("GET", "/_apx/stream?mode=sse"),
+                ("GET", "/mcp?transport=sse"),
+                ("GET", "/.well-known/agent.json"),
+                ("GET", "/readyz"),
+            }
+
+            connection = HTTPConnection("127.0.0.1", host_port, timeout=5)
+            try:
+                connection.request("GET", "/mcp?abort=1")
+                response = connection.getresponse()
+                assert response.status == 200
+                try:
+                    response.read()
+                except IncompleteRead:
+                    pass
+                else:
+                    raise AssertionError("aborted Python bridge response remained open")
+            finally:
+                connection.close()
+
+            try:
+                urlopen(f"http://127.0.0.1:{host_port}/readyz?stall=1", timeout=7)
+            except HTTPError as error:
+                assert error.code == 502
+                assert error.read() == b'{"detail":"APX Python bridge unavailable"}'
+            else:
+                raise AssertionError("stalled Python bridge did not return 502")
+
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+            try:
+                urlopen(f"http://127.0.0.1:{host_port}/readyz", timeout=5)
+            except HTTPError as error:
+                assert error.code == 502
+                assert error.read() == b'{"detail":"APX Python bridge unavailable"}'
+            else:
+                raise AssertionError("stopped Python bridge did not return 502")
+        finally:
+            if upstream_thread.is_alive():
+                upstream.shutdown()
+                upstream.server_close()
+                upstream_thread.join(timeout=5)
+            host.terminate()
+            host.communicate(timeout=10)
 
     executed_tool = None
     tool_case_raw = os.environ.get("APX_APPKIT_TOOL_CASE")
@@ -298,6 +626,323 @@ def _copy_example(src: Path, dst: Path) -> None:
     )
 
 
+def _free_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+class _HttpResult(NamedTuple):
+    status: int
+    body: bytes
+
+
+def _wait_http(
+    url: str,
+    *,
+    timeout: float = 90,
+    headers: dict[str, str] | None = None,
+    process: subprocess.Popen[str] | None = None,
+    process_log: Path | None = None,
+) -> _HttpResult:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            output = process_log.read_text() if process_log is not None else ""
+            raise AssertionError(f"generated host exited early:\n{output}")
+        try:
+            with urlopen(Request(url, headers=headers or {}), timeout=1) as response:
+                return _HttpResult(response.status, response.read())
+        except HTTPError as exc:
+            return _HttpResult(exc.code, exc.read())
+        except (TimeoutError, URLError):
+            time.sleep(0.1)
+    raise AssertionError(f"timed out waiting for {url}")
+
+
+def _wait_pid_file(path: Path, *, timeout: float = 10) -> int:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return int(path.read_text())
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for child pid: {path}")
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_pid_exit(pid: int, *, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_is_running(pid):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"child process {pid} did not exit")
+
+
+def test_generated_appkit_host_build_and_supervisor_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apx_agent.cli import _stage_internal_appkit_host
+
+    workdir = tmp_path / "customer_triage"
+    _copy_example(EXAMPLES_ROOT / "customer_triage", workdir)
+    doc = yaml.safe_load((workdir / "databricks.yml").read_text())
+    apps = doc["resources"]["apps"]
+    bundle_key = next(iter(apps))
+    apps[bundle_key].setdefault("config", {})["env"] = [
+        {"name": "APX_APPS_HOST", "value": "appkit"}
+    ]
+    (workdir / "databricks.yml").write_text(
+        yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
+    )
+    (workdir / ".build").mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.syspath_prepend(str(workdir))
+    sys.modules.pop("agent", None)
+    _stage_internal_appkit_host(
+        workdir,
+        module="agent:agent",
+        doc=doc,
+        bundle_key=bundle_key,
+        log=lambda _message: None,
+    )
+    host_dir = workdir / ".build" / "apx_appkit_host"
+    host_manifest = json.loads((host_dir / "apx-host-manifest.json").read_text())
+
+    package = json.loads((host_dir / "package.json").read_text())
+    lock = json.loads((PYTHON_ROOT.parent / "typescript" / "package-lock.json").read_text())
+    lock["name"] = package["name"]
+    lock["packages"][""] = {
+        "name": package["name"],
+        "dependencies": package["dependencies"],
+        "devDependencies": package["devDependencies"],
+    }
+    (host_dir / "package-lock.json").write_text(json.dumps(lock))
+    npm_env = {
+        **os.environ,
+        "npm_config_fetch_retries": "1",
+        "npm_config_fetch_timeout": "20000",
+        "npm_config_offline": "true",
+    }
+    install = subprocess.run(
+        ["npm", "install", "--ignore-scripts"],
+        cwd=host_dir,
+        env=npm_env,
+        text=True,
+        capture_output=True,
+        timeout=180,
+        check=False,
+    )
+    if install.returncode != 0 and "ENOTCACHED" in install.stderr:
+        npm_env.pop("npm_config_offline")
+        install = subprocess.run(
+            ["npm", "install", "--ignore-scripts"],
+            cwd=host_dir,
+            env=npm_env,
+            text=True,
+            capture_output=True,
+            timeout=180,
+            check=False,
+        )
+    assert install.returncode == 0, install.stderr + install.stdout
+    build = subprocess.run(
+        ["npm", "run", "build"],
+        cwd=host_dir,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr + build.stdout
+
+    python_pid_file = tmp_path / "python-child.pid"
+    appkit_pid_file = tmp_path / "appkit-child.pid"
+    python_wrapper = tmp_path / "python-wrapper"
+    python_wrapper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['APX_PYTHON_PID_FILE']).write_text(str(os.getpid()))\n"
+        "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+    )
+    python_wrapper.chmod(0o755)
+    node_preload = tmp_path / "record-appkit-pid.mjs"
+    node_preload.write_text(
+        "import { writeFileSync } from 'node:fs';\n"
+        "if (process.argv.some((arg) => arg.endsWith('server/server.ts'))) {\n"
+        "  writeFileSync(process.env.APX_APPKIT_PID_FILE, String(process.pid));\n"
+        "}\n"
+    )
+    app_port = _free_port()
+    bridge_port = _free_port()
+
+    class WorkspaceStub(BaseHTTPRequestHandler):
+        def log_message(self, _format, *_args):
+            pass
+
+        def _respond(self) -> None:
+            if "/serving-endpoints/" in self.path:
+                payload = json.dumps(
+                    {
+                        "id": "local-completion",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "local-ready-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "ready",
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                        },
+                    }
+                ).encode()
+            else:
+                payload = b'{"id":"local-user","userName":"local@example.com"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        do_GET = _respond
+        do_POST = _respond
+
+    workspace = ThreadingHTTPServer(("127.0.0.1", 0), WorkspaceStub)
+    workspace_thread = Thread(target=workspace.serve_forever, daemon=True)
+    workspace_thread.start()
+    env = {
+        **os.environ,
+        "APX_AGENT_MLFLOW_AUTOLOG": "0",
+        "APX_APPKIT_PID_FILE": str(appkit_pid_file),
+        "APX_PYTHON_BRIDGE_PORT": str(bridge_port),
+        "APX_PYTHON_PID_FILE": str(python_pid_file),
+        "APX_SMOKE_MODE": "1",
+        "DATABRICKS_APP_NAME": "local-appkit-test",
+        "DATABRICKS_APP_PORT": str(app_port),
+        "DATABRICKS_CONFIG_FILE": os.devnull,
+        "DATABRICKS_HOST": f"http://127.0.0.1:{workspace.server_port}",
+        "DATABRICKS_TOKEN": "local-test-token",
+        "DATABRICKS_WORKSPACE_ID": "local-test-workspace",
+        "DEMO_MODE": "true",
+        "MLFLOW_TRACKING_URI": f"file:{tmp_path / 'mlruns'}",
+        "NODE_OPTIONS": f"--import={node_preload}",
+        "PYTHON": str(python_wrapper),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    env.pop("DATABRICKS_CONFIG_PROFILE", None)
+    supervisor_log_path = tmp_path / "supervisor.log"
+    supervisor_log = supervisor_log_path.open("w")
+    supervisor = subprocess.Popen(
+        ["node", "scripts/start.mjs"],
+        cwd=host_dir,
+        env=env,
+        text=True,
+        stdout=supervisor_log,
+        stderr=subprocess.STDOUT,
+    )
+    try:
+        health_status, health_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/health",
+            process=supervisor,
+            process_log=supervisor_log_path,
+        )
+        assert health_status == 200, health_body
+        assert json.loads(health_body) == {"status": "ok"}
+        bridge_health_status, bridge_health_body = _wait_http(
+            f"http://127.0.0.1:{bridge_port}/health"
+        )
+        assert bridge_health_status == 200, bridge_health_body
+        readyz_status, readyz_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/readyz",
+            headers={
+                "X-Forwarded-Access-Token": "local-user-token",
+                "X-Forwarded-Email": "local@example.com",
+                "X-Forwarded-User": "local-user",
+            },
+        )
+        assert readyz_status == 200, readyz_body
+        assert json.loads(readyz_body)["status"] == "ready"
+
+        dev_status, dev_body = _wait_http(f"http://127.0.0.1:{app_port}/api/dev/config")
+        assert dev_status == 200, dev_body
+        assert json.loads(dev_body)["agentName"] == host_manifest["agent"]["name"]
+        topology_status, topology_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/_apx/topology.json"
+        )
+        assert topology_status == 200, topology_body
+        assert set(json.loads(topology_body)) >= {"nodes", "edges"}
+        probe_status, probe_body = _wait_http(f"http://127.0.0.1:{app_port}/_apx/probe")
+        assert probe_status == 200, probe_body
+        assert b"Probe" in probe_body
+        feedback_status, feedback_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/_apx/feedback/missing-trace"
+        )
+        assert feedback_status == 401, feedback_body
+        assert set(json.loads(feedback_body)) == {"detail"}
+        traces_status, traces_body = _wait_http(
+            f"http://127.0.0.1:{app_port}/_apx/traces?fmt=json"
+        )
+        assert traces_status == 403, traces_body
+        assert "signed-in Databricks Apps user" in json.loads(traces_body)["detail"]
+        python_pid = _wait_pid_file(python_pid_file)
+        appkit_pid = _wait_pid_file(appkit_pid_file)
+
+        supervisor.terminate()
+        supervisor.wait(timeout=15)
+        _wait_pid_exit(python_pid)
+        _wait_pid_exit(appkit_pid)
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+            supervisor.wait(timeout=5)
+        supervisor_log.close()
+        for pid_file in (python_pid_file, appkit_pid_file):
+            if pid_file.exists() and _pid_is_running(int(pid_file.read_text())):
+                os.kill(int(pid_file.read_text()), 15)
+        workspace.shutdown()
+        workspace.server_close()
+        workspace_thread.join(timeout=5)
+
+    failed_env = {
+        **env,
+        "APX_APPKIT_PID_FILE": str(tmp_path / "failed-appkit-child.pid"),
+        "APX_PYTHON_BRIDGE_APP": "missing_appkit_bridge:app",
+        "APX_PYTHON_BRIDGE_PORT": str(_free_port()),
+        "APX_PYTHON_PID_FILE": str(tmp_path / "failed-python-child.pid"),
+        "DATABRICKS_APP_PORT": str(_free_port()),
+    }
+    failed = subprocess.run(
+        ["node", "scripts/start.mjs"],
+        cwd=host_dir,
+        env=failed_env,
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    assert failed.returncode != 0
+    assert "APX Python bridge exited" in failed.stderr + failed.stdout
+    failed_appkit_pid_file = Path(failed_env["APX_APPKIT_PID_FILE"])
+    if failed_appkit_pid_file.exists():
+        _wait_pid_exit(int(failed_appkit_pid_file.read_text()))
+
+
 @pytest.mark.parametrize(
     "example_dir",
     EXAMPLE_DIRS,
@@ -334,6 +979,11 @@ def test_example_agent_stages_internal_appkit_host(
     tool_case = BRIDGE_TOOL_CASES.get(rel)
     if tool_case is not None:
         env["APX_APPKIT_TOOL_CASE"] = json.dumps(tool_case)
+    if rel == Path("customer_triage"):
+        env["APX_APPKIT_PROXY_PROBE"] = "1"
+        env["APX_APPKIT_RUNTIME_NODE_MODULES"] = str(
+            PYTHON_ROOT.parent / "typescript" / "node_modules"
+        )
     env.pop("DATABRICKS_CONFIG_PROFILE", None)
 
     result = subprocess.run(
@@ -342,7 +992,7 @@ def test_example_agent_stages_internal_appkit_host(
         env=env,
         text=True,
         capture_output=True,
-        timeout=90,
+        timeout=180,
         check=False,
     )
 

@@ -1,9 +1,18 @@
 import {
   createMockRequest,
+  createMockResponse,
+  createMockRouter,
   createTestPluginContext,
+  expectStream,
   mockServiceContext,
   setupDatabricksEnv,
 } from '@databricks/appkit/testing';
+import {
+  agents,
+  createAgent,
+  tool,
+  type AgentAdapter,
+} from '@databricks/appkit/beta';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -15,7 +24,6 @@ import {
   createInternalApxAppKitDevRuntime,
   internalApxAppKitSystemPrompt,
   internalApxAppKitAgentsOptionsFromManifest,
-  type InternalApxAppKitAuditEvent,
   type InternalApxAppsHostManifest,
 } from '../src/internal/appkit-host.js';
 import {
@@ -80,6 +88,56 @@ function makeManifest(): InternalApxAppsHostManifest {
   };
 }
 
+function makeSupportedSurfaceManifest(): InternalApxAppsHostManifest {
+  return {
+    ...makeManifest(),
+    tools: [
+      {
+        name: 'who_am_i',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        annotations: { effect: 'read', requires_user_context: true },
+      },
+      {
+        name: 'apply_change',
+        parameters: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+          required: ['value'],
+          additionalProperties: false,
+        },
+        annotations: { effect: 'update', requires_user_context: true },
+      },
+      {
+        name: 'remember',
+        parameters: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+          required: ['value'],
+          additionalProperties: false,
+        },
+        annotations: { effect: 'update', requires_user_context: true },
+      },
+    ],
+  };
+}
+
+async function waitForSseEvent(
+  response: ReturnType<typeof createMockResponse>,
+  eventType: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const body = response.write.mock.calls.map((call) => String(call[0])).join('');
+    for (const line of body.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const event = JSON.parse(line.slice('data: '.length)) as Record<string, unknown>;
+      if (event.type === eventType) return event;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Timed out waiting for SSE event: ${eventType}`);
+}
+
 describe('internal AppKit host', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -109,8 +167,8 @@ describe('internal AppKit host', () => {
         __toolkitRef: true,
         pluginName: INTERNAL_APX_APPKIT_PLUGIN_NAME,
         localName: 'lookup_policy',
-        annotations: { effect: 'read', requiresUserContext: true },
-        autoInheritable: true,
+        annotations: { effect: 'update', requiresUserContext: true },
+        autoInheritable: false,
       },
       'apx.apply_recommendation': {
         __toolkitRef: true,
@@ -162,6 +220,20 @@ describe('internal AppKit host', () => {
         localName: 'lookup_policy',
         annotations: { effect: 'read', requiresUserContext: true },
         autoInheritable: true,
+      },
+    });
+  });
+
+  it('treats undeclared manifest tool effects as updates', () => {
+    const manifest = makeManifest();
+    if (!manifest.tools) throw new Error('expected manifest tools');
+    manifest.tools[0].annotations = {};
+    const apx = new InternalApxAppKitGovernancePlugin({ manifest });
+
+    expect(apx.toolkit({ prefix: 'apx.' })).toMatchObject({
+      'apx.lookup_policy': {
+        annotations: { effect: 'update', requiresUserContext: true },
+        autoInheritable: false,
       },
     });
   });
@@ -280,37 +352,15 @@ describe('internal AppKit host', () => {
     });
   });
 
-  it('enforces APX policy and records audit events around tool execution', async () => {
-    const audit: InternalApxAppKitAuditEvent[] = [];
-    const apx = new InternalApxAppKitGovernancePlugin({
-      agent: makeAgentExports(),
-      policy: ({ toolName }) =>
-        toolName === 'apply_recommendation'
-          ? { action: 'DENY', reason: 'manual approval required' }
-          : { action: 'ALLOW' },
-      audit: (event) => audit.push(event),
-    });
-
+  it('does not add a second policy layer around APX tool execution', async () => {
+    const apx = new InternalApxAppKitGovernancePlugin({ agent: makeAgentExports() });
     await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).resolves.toEqual({
       resource: 'main.sales.orders',
       policy: 'read-only',
     });
-    await expect(
-      apx.executeAgentTool('apply_recommendation', { recommendation_id: 'rec-1' }),
-    ).rejects.toThrow('manual approval required');
-
-    expect(audit).toMatchObject([
-      { toolName: 'lookup_policy', action: 'ALLOW', reason: null },
-      {
-        toolName: 'apply_recommendation',
-        action: 'DENY',
-        reason: 'manual approval required',
-      },
-    ]);
   });
 
   it('executes manifest-backed Python tools through the configured bridge', async () => {
-    const audit: InternalApxAppKitAuditEvent[] = [];
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ result: { policy: 'read-only' } }), {
         status: 200,
@@ -323,7 +373,6 @@ describe('internal AppKit host', () => {
         baseUrl: 'http://127.0.0.1:8000/',
         headers: { 'x-apx-test': '1' },
       },
-      audit: (event) => audit.push(event),
     });
 
     await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).resolves.toEqual({
@@ -341,56 +390,90 @@ describe('internal AppKit host', () => {
         body: JSON.stringify({ args: { resource: 'main.sales.orders' } }),
       }),
     );
-    expect(audit).toMatchObject([
-      { toolName: 'lookup_policy', action: 'ALLOW', reason: null },
-    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('short-circuits manifest-backed tools when APX policy denies execution', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch');
-    const apx = new InternalApxAppKitGovernancePlugin({
-      manifest: makeManifest(),
-      pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
-      policy: () => ({ action: 'DENY', reason: 'blocked' }),
-    });
-
-    await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).rejects.toThrow(
-      'blocked',
-    );
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('forwards AppKit OBO headers to manifest-backed Python tools', async () => {
+  it('proves the supported manifest surface through the real AppKit context', async () => {
     setupDatabricksEnv();
     const serviceContext = mockServiceContext({ userId: 'alice@databricks.com' });
     const mock = createTestPluginContext();
+    const manifest = makeSupportedSurfaceManifest();
     await mock.attach(new InternalApxAppKitGovernancePlugin({
-      manifest: makeManifest(),
+      manifest,
       pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
     }));
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ result: { policy: 'read-only' } }), {
+    const definition = createInternalApxAppKitAgentDefinitionFromManifest(manifest);
+    const apx = new InternalApxAppKitGovernancePlugin({ manifest });
+    if (typeof definition.tools !== 'function') throw new Error('expected function-form tools');
+    expect(definition.tools({ [INTERNAL_APX_APPKIT_PLUGIN_NAME]: apx })).toMatchObject({
+      'apx.who_am_i': { annotations: { effect: 'read' } },
+      'apx.apply_change': { annotations: { effect: 'update' } },
+      'apx.remember': { annotations: { effect: 'update' } },
+    });
+
+    let forwardedSignal: AbortSignal | null = null;
+    let cancellationObserved = false;
+    let cancelledExecutionCompleted = false;
+    let releaseInFlightFetch: (() => void) | undefined;
+    const inFlightFetchStarted = new Promise<void>((resolve) => {
+      releaseInFlightFetch = resolve;
+    });
+    let identityCalls = 0;
+    const executed: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const args = JSON.parse(String(init?.body)).args;
+      forwardedSignal = init?.signal as AbortSignal;
+      if (url.endsWith('/who_am_i')) {
+        identityCalls += 1;
+        if (identityCalls === 2) {
+          releaseInFlightFetch?.();
+          return await new Promise<Response>((_resolve, reject) => {
+            forwardedSignal?.addEventListener('abort', () => {
+              cancellationObserved = true;
+              reject(new DOMException('AppKit tool dispatch aborted', 'AbortError'));
+            }, { once: true });
+          });
+        }
+      }
+      if (url.endsWith('/apply_change') && args.value === 'deny') {
+        return new Response(JSON.stringify({ detail: 'Tool execution is denied' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/remember')) {
+        return new Response(JSON.stringify({
+          detail: 'APX AppKit bridge cannot execute stateful tool: remember',
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      executed.push(url.split('/').at(-1) ?? 'missing');
+      return new Response(JSON.stringify({ result: 'alice@databricks.com' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
-      }),
-    );
+      });
+    });
+    const request = createMockRequest({
+      obo: {
+        userId: 'alice@databricks.com',
+        token: 'alice-token',
+        email: 'alice@databricks.com',
+      },
+    });
 
     try {
-      await mock.ctx.executeTool(
-        createMockRequest({
-          obo: {
-            userId: 'alice@databricks.com',
-            token: 'alice-token',
-            email: 'alice@databricks.com',
-          },
-        }),
+      await expect(mock.ctx.executeTool(
+        request,
         INTERNAL_APX_APPKIT_PLUGIN_NAME,
-        'lookup_policy',
-        { resource: 'main.sales.orders' },
-      );
+        'who_am_i',
+        {},
+      )).resolves.toBe('alice@databricks.com');
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://127.0.0.1:8000/_apx/internal/appkit/tools/lookup_policy',
+        'http://127.0.0.1:8000/_apx/internal/appkit/tools/who_am_i',
         expect.objectContaining({
           headers: expect.objectContaining({
             'x-forwarded-user': 'alice@databricks.com',
@@ -399,27 +482,179 @@ describe('internal AppKit host', () => {
           }),
         }),
       );
+      expect(forwardedSignal).toBeInstanceOf(AbortSignal);
+
+      const tokenlessRequest = createMockRequest({
+        headers: { 'x-forwarded-user': 'alice@databricks.com' },
+      });
+      await expect(mock.ctx.executeTool(
+        tokenlessRequest,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'who_am_i',
+        {},
+      )).rejects.toThrow(/user token/i);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      const cancellation = new AbortController();
+      const cancelled = mock.ctx.executeTool(
+        request,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'who_am_i',
+        {},
+        cancellation.signal,
+      ).then(() => {
+        cancelledExecutionCompleted = true;
+      });
+      await inFlightFetchStarted;
+      expect(cancelledExecutionCompleted).toBe(false);
+      cancellation.abort();
+      await expect(cancelled).rejects.toThrow(/aborted/i);
+      expect(cancellationObserved).toBe(true);
+      expect(cancelledExecutionCompleted).toBe(false);
+      expect(forwardedSignal?.aborted).toBe(true);
+
+      const denied = mock.ctx.executeTool(
+        request,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'apply_change',
+        { value: 'deny' },
+      );
+      await expect(denied).rejects.toThrow(
+        'APX Python bridge failed for apply_change: Tool execution is denied',
+      );
+      await expect(denied).rejects.not.toThrow(/approval|retry/i);
+
+      await expect(mock.ctx.executeTool(
+        request,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'remember',
+        { value: 'never' },
+      )).rejects.toThrow(
+        'APX Python bridge failed for remember: '
+          + 'APX AppKit bridge cannot execute stateful tool: remember',
+      );
+      expect(executed).toEqual(['who_am_i']);
     } finally {
       serviceContext.restore();
     }
   });
 
-  it('surfaces bridge error details for manifest-backed tools', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ detail: 'Unknown APX tool: lookup_policy' }), {
-        status: 404,
-        statusText: 'Not Found',
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-    const apx = new InternalApxAppKitGovernancePlugin({
-      manifest: makeManifest(),
-      pythonBridge: { baseUrl: 'http://127.0.0.1:8000' },
+  it('uses the native AppKit approval gate for mutating tools', async () => {
+    setupDatabricksEnv();
+    const serviceContext = mockServiceContext({ userId: 'alice@databricks.com' });
+    const executions: string[] = [];
+    const adapterResults: unknown[] = [];
+    const adapter: AgentAdapter = {
+      async *run(_input, context) {
+        yield {
+          type: 'tool_call',
+          callId: 'apply-1',
+          name: 'apply_change',
+          args: { value: 'approved' },
+        };
+        const result = await context.executeTool('apply_change', { value: 'approved' });
+        adapterResults.push(result);
+        yield { type: 'message', content: String(result) };
+      },
+    };
+    const descriptor = agents({
+      agents: {
+        governed: createAgent({
+          name: 'governed',
+          default: true,
+          instructions: 'Apply the requested governed change.',
+          model: adapter,
+          tools: {
+            apply_change: tool({
+              description: 'Apply one governed change after approval.',
+              schema: z.object({ value: z.string() }),
+              annotations: { effect: 'update' },
+              execute: async ({ value }) => {
+                executions.push(value);
+                return `applied:${value}`;
+              },
+            }),
+          },
+        }),
+      },
+      approval: { requireForDestructive: true, timeoutMs: 1_000 },
     });
+    const plugin = new descriptor.plugin(descriptor.config);
+    const context = createTestPluginContext();
+    const router = createMockRouter();
 
-    await expect(apx.executeAgentTool('lookup_policy', { resource: 'main.sales.orders' })).rejects.toThrow(
-      'APX Python bridge failed for lookup_policy: Unknown APX tool: lookup_policy',
-    );
+    try {
+      await context.attach(plugin);
+      await plugin.setup();
+      plugin.injectRoutes(router.router);
+      const chat = router.getHandler('post', '/chat');
+      const approve = router.getHandler('post', '/approve');
+      const invoke = context.routes.find(
+        (route) => route.method === 'post' && route.path === '/invocations',
+      )?.handlers[0];
+      expect(chat).toBeTypeOf('function');
+      expect(approve).toBeTypeOf('function');
+      expect(invoke).toBeTypeOf('function');
+
+      const nonStreamingResponse = createMockResponse();
+      await invoke?.(
+        createMockRequest({ obo: true, body: { input: 'apply it' } }),
+        nonStreamingResponse,
+        () => undefined,
+      );
+      expect(nonStreamingResponse.status).toHaveBeenCalledWith(400);
+      expect(nonStreamingResponse.json).toHaveBeenCalledWith(expect.objectContaining({
+        error: expect.stringMatching(/non-streaming and cannot run HITL/),
+      }));
+
+      const decide = async (decision: 'approve' | 'deny') => {
+        const streamResponse = createMockResponse();
+        const stream = chat(
+          createMockRequest({
+            obo: { userId: 'alice@databricks.com', token: 'alice-token' },
+            body: { message: 'apply it', agent: 'governed' },
+          }),
+          streamResponse,
+        );
+        const pending = await waitForSseEvent(streamResponse, 'appkit.approval_pending');
+        expect(executions).toHaveLength(0);
+
+        const decisionResponse = createMockResponse();
+        await approve(
+          createMockRequest({
+            obo: { userId: 'alice@databricks.com', token: 'alice-token' },
+            body: {
+              streamId: pending.stream_id,
+              approvalId: pending.approval_id,
+              decision,
+            },
+          }),
+          decisionResponse,
+        );
+        expect(decisionResponse.json).toHaveBeenCalledWith({ decision });
+        await stream;
+        await expectStream(streamResponse).toEmit(
+          'appkit.approval_pending',
+          'response.completed',
+        );
+      };
+
+      await decide('deny');
+      expect(adapterResults).toEqual([
+        'Tool execution denied by user approval gate (tool: apply_change).',
+      ]);
+      expect(executions).toEqual([]);
+
+      await decide('approve');
+      expect(adapterResults).toEqual([
+        'Tool execution denied by user approval gate (tool: apply_change).',
+        'applied:approved',
+      ]);
+      expect(executions).toEqual(['approved']);
+    } finally {
+      await plugin.shutdown();
+      serviceContext.restore();
+    }
   });
 
   it('runs APX plugin tools through AppKit PluginContext OBO dispatch', async () => {

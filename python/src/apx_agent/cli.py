@@ -1604,40 +1604,12 @@ if __name__ == "__main__":
 
 
 _INTERNAL_APPKIT_BRIDGE_SERVER = '''\
-"""Internal AppKit bridge entry point.
-
-This process is started only by the generated AppKit host. AppKit owns the
-Apps HTTP routes; this FastAPI app exposes only APX's local Python tool bridge.
-"""
-
-from __future__ import annotations
-
-from fastapi import FastAPI
-
-from apx_agent._appkit_tool_bridge import build_appkit_tool_bridge_router
-from apx_agent._defaults import _make_workspace_client
-from apx_agent._inspection import _load_agent_config
-from apx_agent._models import AgentCard, AgentContext
-from apx_agent._wiring import finalize_agent
+"""Loopback APX sidecar for the generated AppKit host."""
+from apx_agent import create_app
 
 from agent import agent
 
-_ws = _make_workspace_client()
-_agent_config = _load_agent_config()
-finalize_agent(agent, _agent_config, ws=_ws)
-
-app = FastAPI()
-app.state.workspace_client = _ws
-app.state.agent_context = AgentContext(
-    config=_agent_config,
-    tools=[],
-    card=AgentCard(
-        name=_agent_config.name,
-        description=_agent_config.description,
-    ),
-    agent=agent,
-)
-app.include_router(build_appkit_tool_bridge_router())
+app = create_app(agent)
 '''
 
 
@@ -1921,7 +1893,7 @@ resources:
           - name: APX_AGENT_NAME
             value: <APP_NAME>
           - name: APX_APPS_HOST
-            value: appkit
+            value: python
           - name: APX_GIT_SHA
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
@@ -7927,8 +7899,8 @@ def _stage_internal_appkit_host(
     bundle_key: str,
     log: Any,
 ) -> None:
-    """Stage generated AppKit internals unless the legacy Python host is requested."""
-    host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "appkit")
+    """Stage generated AppKit internals only when the AppKit host is requested."""
+    host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "python")
     host = host.strip().lower()
     if host == "python":
         return

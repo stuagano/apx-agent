@@ -6,6 +6,7 @@ from apx_agent import (
     ResourceSpec,
     attach_resources,
     require_user_api_scopes,
+    tool,
 )
 from apx_agent._apps_host_manifest import compile_apps_host_manifest
 
@@ -58,7 +59,7 @@ def test_manifest_projects_agent_tools_resources_and_scopes() -> None:
     assert manifest.appkit.limits.max_tool_calls == 4
     assert manifest.tools[0].parameters["properties"]["query"]["type"] == "string"
     assert manifest.tools[0].parameters["properties"]["limit"]["default"] == 10
-    assert manifest.tools[0].annotations.effect == "read"
+    assert manifest.tools[0].annotations.effect == "update"
     assert manifest.tools[0].annotations.requires_user_context is True
     assert manifest.tools[0].handler.kind == "python"
     assert manifest.tools[0].handler.ref.endswith(
@@ -74,6 +75,20 @@ def test_manifest_projects_agent_tools_resources_and_scopes() -> None:
         {"kind": "uc_table", "identifier": "main.sales.orders"},
     ]
     assert manifest.user_api_scopes == ["catalog.catalogs:read", "model-serving", "sql"]
+
+
+def test_manifest_projects_explicit_effect_and_defaults_plain_tools() -> None:
+    @tool(effect="read")
+    def lookup(value: str) -> str:
+        return value
+
+    def apply(value: str) -> str:
+        return value
+
+    manifest = compile_apps_host_manifest(LlmAgent(tools=[lookup, apply]))
+    effects = {item.name: item.annotations.effect for item in manifest.tools}
+
+    assert effects == {"lookup": "read", "apply": "update"}
 
 
 def test_manifest_uses_instance_defaults_without_config() -> None:
