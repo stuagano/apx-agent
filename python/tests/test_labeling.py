@@ -330,17 +330,25 @@ def test_align_judge_aligns_and_updates_in_place(monkeypatch):
         _semantic_memory=[SimpleNamespace(guideline_text="be precise")],
         update=lambda **kw: captured.update(kw) or SimpleNamespace(name="j"),
     )
-    base = SimpleNamespace(align=lambda **kw: (captured.update(align=kw), aligned)[1])
+    base = SimpleNamespace(
+        is_session_level_scorer=False,
+        align=lambda **kw: (captured.update(align=kw), aligned)[1],
+    )
     monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
     monkeypatch.setattr(_labeling, "_load_memalign",
                         lambda **kw: "OPT")  # bypass dspy import
     search_kw: dict = {}
 
+    trace_a = SimpleNamespace(info=SimpleNamespace(trace_id="trace-a"))
+    trace_b = SimpleNamespace(info=SimpleNamespace(trace_id="trace-b"))
+
     def fake_search(exp, **kw):
         search_kw.update(kw)
-        return ["trace-a", "trace-b"]
+        return [trace_a, trace_b]
 
     monkeypatch.setattr(_labeling, "search_traces_for_experiment", fake_search)
+    # mlflow.get_trace: return the thin trace as-is (identity) — tests don't need spans
+    monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid)))
 
     res = _labeling.align_judge(
         experiment_id="123", judge_name="j", run_id="r1",
@@ -349,7 +357,7 @@ def test_align_judge_aligns_and_updates_in_place(monkeypatch):
     )
     assert res.guidelines == ["be precise"]
     assert captured["align"]["optimizer"] == "OPT"
-    assert captured["align"]["traces"] == ["trace-a", "trace-b"]
+    assert len(captured["align"]["traces"]) == 2
     assert "experiment_id" in captured  # update() was called in-place
     # FEVM footgun: the run-tagged trace read must be metadata-only too.
     assert search_kw.get("include_spans") is False
@@ -366,11 +374,12 @@ def test_align_judge_no_sme_labels_raises_friendly(monkeypatch):
         raise MlflowException(
             "Alignment optimization failed: No valid feedback records found in traces.")
 
-    base = SimpleNamespace(align=boom)
+    base = SimpleNamespace(is_session_level_scorer=False, align=boom)
     monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
     monkeypatch.setattr(_labeling, "_load_memalign", lambda **kw: "OPT")
-    monkeypatch.setattr(_labeling, "search_traces_for_experiment",
-                        lambda exp, **kw: ["trace-a"])
+    thin = [SimpleNamespace(info=SimpleNamespace(trace_id="trace-a"))]
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: thin)
+    monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid)))
 
     with pytest.raises(_labeling.LabelingError, match="no SME labels"):
         _labeling.align_judge(
@@ -396,14 +405,17 @@ def test_align_judge_new_version_makes_and_registers(monkeypatch):
         update=lambda **kw: SimpleNamespace(name="j"),
     )
     base = SimpleNamespace(
+        is_session_level_scorer=False,
         feedback_value_type=float,
         model="databricks:/model",
         align=lambda **kw: aligned,
     )
     monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
     monkeypatch.setattr(_labeling, "_load_memalign", lambda **kw: "OPT")
-    monkeypatch.setattr(_labeling, "search_traces_for_experiment",
-                        lambda exp, **kw: ["trace-a", "trace-b"])
+    thin = [SimpleNamespace(info=SimpleNamespace(trace_id="trace-a")),
+            SimpleNamespace(info=SimpleNamespace(trace_id="trace-b"))]
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: thin)
+    monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid)))
     monkeypatch.setattr("mlflow.genai.judges.make_judge", fake_make_judge)
 
     res = _labeling.align_judge(
