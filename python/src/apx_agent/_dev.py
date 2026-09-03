@@ -890,13 +890,18 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Trace {tid_escaped}</title>
 <style>{_TRACE_CSS}
-.feedback{{display:inline-flex;gap:.5rem;margin-left:1rem;vertical-align:middle}}
+.feedback{{display:flex;flex-direction:column;gap:.4rem;margin-top:.5rem}}
+.fb-row{{display:flex;align-items:center;gap:.5rem}}
 .fb-btn{{background:none;border:1px solid var(--border,#ccc);border-radius:4px;cursor:pointer;font-size:1rem;padding:.1rem .5rem;opacity:.6}}
 .fb-btn:hover{{opacity:1}}
 .fb-btn.active{{opacity:1;border-color:currentColor}}
 .fb-btn.up.active{{color:#2e7d32}}
 .fb-btn.down.active{{color:#c62828}}
-#fb-msg{{font-size:.75rem;color:#666;margin-left:.5rem}}
+#fb-msg{{font-size:.75rem;color:#666}}
+#fb-rationale{{width:100%;max-width:520px;background:#161616;border:1px solid #2a2a2a;color:#e5e7eb;border-radius:4px;padding:5px 8px;font-size:12px;font-family:inherit;resize:vertical;min-height:48px;display:none}}
+#fb-rationale.visible{{display:block}}
+.fb-screenshot{{margin-top:8px;max-width:480px;border-radius:4px;border:1px solid #2a2a2a}}
+#fb-prev-note{{font-size:11px;color:#666;font-style:italic}}
 </style></head><body>
 <header>
   <span class="badge">APX</span><h1>Trace</h1>
@@ -904,40 +909,72 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
 </header>
 <main>
   <div class="meta">ID: {tid_escaped}
-    <span class="feedback">
-      <button class="fb-btn up" title="Good response" onclick="submitFeedback(true,this)">👍</button>
-      <button class="fb-btn down" title="Bad response" onclick="submitFeedback(false,this)">👎</button>
-      <span id="fb-msg"></span>
-    </span>
+    <div class="feedback">
+      <div class="fb-row">
+        <button class="fb-btn up" title="Good response" onclick="toggleRationale(true,this)">👍</button>
+        <button class="fb-btn down" title="Bad response" onclick="toggleRationale(false,this)">👎</button>
+        <span id="fb-msg"></span>
+      </div>
+      <textarea id="fb-rationale" placeholder="Optional: add a note (e.g. 'agent skipped checkout step')"></textarea>
+      <div id="fb-prev-note"></div>
+      <div id="fb-screenshot-wrap"></div>
+    </div>
   </div>
   {body}
 </main>
 <script>
-async function submitFeedback(value, btn) {{
+let _pendingValue = null;
+
+function toggleRationale(value, btn) {{
+  _pendingValue = value;
+  document.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const ta = document.getElementById('fb-rationale');
+  ta.classList.add('visible');
+  ta.focus();
+}}
+
+async function submitFeedback() {{
   const msg = document.getElementById('fb-msg');
+  const comment = document.getElementById('fb-rationale').value.trim() || null;
   try {{
     const r = await fetch('/_apx/feedback', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{trace_id: '{tid_js}', name: 'quality', value}})
+      body: JSON.stringify({{trace_id: '{tid_js}', name: 'quality', value: _pendingValue, comment}})
     }});
     if (!r.ok) throw new Error(await r.text());
-    document.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    msg.textContent = value ? 'Marked good' : 'Marked bad';
+    msg.textContent = (_pendingValue ? 'Marked good' : 'Marked bad') + (comment ? ' · note saved' : '');
+    document.getElementById('fb-rationale').classList.remove('visible');
   }} catch(e) {{
     msg.textContent = 'Failed: ' + e.message;
   }}
 }}
+
 document.addEventListener('DOMContentLoaded', async () => {{
+  // Submit on Enter (without shift), allow shift+Enter for newlines
+  document.getElementById('fb-rationale').addEventListener('keydown', e => {{
+    if (e.key === 'Enter' && !e.shiftKey) {{ e.preventDefault(); submitFeedback(); }}
+  }});
+
   try {{
     const r = await fetch('/_apx/feedback/{tid_js}');
     if (!r.ok) return;
     const data = await r.json();
     const quality = (data.assessments || []).filter(a => a.name === 'quality').pop();
-    if (quality != null) {{
-      const cls = quality.value === true ? 'up' : 'down';
-      document.querySelector('.fb-btn.' + cls)?.classList.add('active');
+    if (!quality) return;
+    const cls = quality.value === true ? 'up' : 'down';
+    document.querySelector('.fb-btn.' + cls)?.classList.add('active');
+    if (quality.rationale) {{
+      document.getElementById('fb-prev-note').textContent = '↩ ' + quality.rationale;
+    }}
+    const uri = (quality.metadata || {{}}).screenshot_uri;
+    if (uri) {{
+      const wrap = document.getElementById('fb-screenshot-wrap');
+      const img = document.createElement('img');
+      img.src = uri; img.className = 'fb-screenshot';
+      img.alt = 'annotation screenshot';
+      wrap.appendChild(img);
     }}
   }} catch(_) {{}}
 }});
