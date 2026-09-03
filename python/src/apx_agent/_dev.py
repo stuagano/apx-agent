@@ -950,11 +950,15 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
 .fb-btn.active{{opacity:1;border-color:currentColor}}
 .fb-btn.up.active{{color:#2e7d32}}
 .fb-btn.down.active{{color:#c62828}}
-#fb-msg{{font-size:.75rem;color:#666}}
+#fb-msg{{font-size:.75rem;color:#888}}
 #fb-rationale{{width:100%;max-width:520px;background:#161616;border:1px solid #2a2a2a;color:#e5e7eb;border-radius:4px;padding:5px 8px;font-size:12px;font-family:inherit;resize:vertical;min-height:48px;display:none}}
 #fb-rationale.visible{{display:block}}
+.fb-save-btn{{background:#1a3a1a;border:1px solid #2e7d32;color:#86efac;border-radius:4px;padding:3px 12px;font-size:12px;cursor:pointer;display:none}}
+.fb-save-btn.visible{{display:inline-block}}
+.fb-save-btn:hover{{background:#1e4a1e}}
 .fb-screenshot{{margin-top:8px;max-width:480px;border-radius:4px;border:1px solid #2a2a2a}}
 #fb-prev-note{{font-size:11px;color:#666;font-style:italic}}
+.fb-hint{{font-size:11px;color:#555;margin-top:2px}}
 </style></head><body>
 <header>
   <span class="badge">APX</span><h1>Trace</h1>
@@ -966,9 +970,16 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
       <div class="fb-row">
         <button class="fb-btn up" title="Good response" onclick="toggleRationale(true,this)">👍</button>
         <button class="fb-btn down" title="Bad response" onclick="toggleRationale(false,this)">👎</button>
+      </div>
+      <textarea id="fb-rationale" placeholder="Why? (e.g. 'fabricated a number', 'correct SQL, right answer')"></textarea>
+      <div style="display:flex;align-items:center;gap:.5rem;margin-top:4px">
+        <button class="fb-save-btn" id="fb-save-btn" onclick="submitFeedback()">Save</button>
         <span id="fb-msg"></span>
       </div>
-      <textarea id="fb-rationale" placeholder="Optional: add a note (e.g. 'agent skipped checkout step')"></textarea>
+      <div class="fb-hint" id="fb-hint" style="display:none">
+        Saved to MLflow as a <code>quality</code> assessment on this trace.
+        Collect ~20 ratings then go to <a href="/_apx/eval" style="color:#60b0ff">Eval → Judge Alignment</a> to run MemAlign.
+      </div>
       <div id="fb-prev-note"></div>
       <div id="fb-screenshot-wrap"></div>
     </div>
@@ -982,14 +993,15 @@ function toggleRationale(value, btn) {{
   _pendingValue = value;
   document.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  const ta = document.getElementById('fb-rationale');
-  ta.classList.add('visible');
-  ta.focus();
+  document.getElementById('fb-rationale').classList.add('visible');
+  document.getElementById('fb-save-btn').classList.add('visible');
+  document.getElementById('fb-rationale').focus();
 }}
 
 async function submitFeedback() {{
   const msg = document.getElementById('fb-msg');
   const comment = document.getElementById('fb-rationale').value.trim() || null;
+  msg.textContent = 'Saving…';
   try {{
     const r = await fetch('/_apx/feedback', {{
       method: 'POST',
@@ -997,8 +1009,10 @@ async function submitFeedback() {{
       body: JSON.stringify({{trace_id: '{tid_js}', name: 'quality', value: _pendingValue, comment}})
     }});
     if (!r.ok) throw new Error(await r.text());
-    msg.textContent = (_pendingValue ? 'Marked good' : 'Marked bad') + (comment ? ' · note saved' : '');
+    msg.textContent = (_pendingValue ? '✓ Marked good' : '✓ Marked bad') + (comment ? ' · note saved' : '');
     document.getElementById('fb-rationale').classList.remove('visible');
+    document.getElementById('fb-save-btn').classList.remove('visible');
+    document.getElementById('fb-hint').style.display = 'block';
   }} catch(e) {{
     msg.textContent = 'Failed: ' + e.message;
   }}
