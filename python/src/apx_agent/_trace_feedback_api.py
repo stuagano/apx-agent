@@ -46,38 +46,79 @@ class _TraceFeedbackContext:
 
 
 class _OBOTraceFeedbackApi:
-    def __init__(self, *, host: str, token: str) -> None:
-        from mlflow.store.tracking.databricks_rest_store import (
-            DatabricksTracingRestStore,
-        )
-        from mlflow.utils.rest_utils import MlflowHostCreds
+    """Feedback API that uses the OBO user token for UC-backed traces.
 
-        self._store = DatabricksTracingRestStore(
-            lambda: MlflowHostCreds(host=host, token=token)
-        )
+    Uses mlflow.log_feedback() / mlflow.get_trace() with the OBO credentials
+    injected via environment variables. This routes correctly for both legacy
+    V2 traces and UC-backed traces (trace:/ format) — the low-level
+    DatabricksTracingRestStore.create_assessment only handles V2. Fixes #724.
+    """
+
+    def __init__(self, *, host: str, token: str) -> None:
+        self._host = host
+        self._token = token
+
+    def _obo_env(self) -> dict[str, str]:
+        return {
+            "DATABRICKS_HOST": self._host,
+            "DATABRICKS_TOKEN": self._token,
+            "MLFLOW_TRACKING_URI": "databricks",
+        }
+
+    def _with_obo_creds(self, fn: Any) -> Any:
+        """Run fn with OBO credentials injected as env vars, then restore."""
+        import os
+        env = self._obo_env()
+        old = {k: os.environ.get(k) for k in env}
+        try:
+            os.environ.update(env)
+            return fn()
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
     def get_trace(self, trace_id: str) -> Any:
+        import mlflow as _mlflow
         from mlflow.exceptions import MlflowException
+        from mlflow.tracking import MlflowClient
 
         try:
-            return SimpleNamespace(info=self._store.get_trace_info(trace_id))
+            # Use MlflowClient with explicit tracking URI to avoid mutating
+            # global mlflow state. For UC-backed traces the client routes via
+            # the correct API path when DATABRICKS_HOST/TOKEN are in env.
+            return self._with_obo_creds(
+                lambda: MlflowClient(tracking_uri="databricks").get_trace(trace_id)
+            )
         except MlflowException as exc:
             if exc.get_http_status_code() == 404:
                 return None
             raise
 
     def log_feedback(self, **kwargs: Any) -> Any:
-        from mlflow.entities import Feedback
+        import mlflow as _mlflow
+        from mlflow.entities import AssessmentSource, AssessmentSourceType
 
-        assessment = Feedback(
-            trace_id=kwargs["trace_id"],
-            name=kwargs["name"],
-            value=kwargs["value"],
-            rationale=kwargs.get("rationale"),
-            source=kwargs.get("source"),
-            metadata=kwargs.get("metadata"),
+        source = kwargs.get("source")
+        if isinstance(source, str):
+            source = AssessmentSource(
+                source_type=AssessmentSourceType.HUMAN, source_id=source
+            )
+
+        # mlflow.log_feedback routes correctly for both V2 and UC-backed traces.
+        # Inject OBO credentials via env so it authenticates as the calling user.
+        return self._with_obo_creds(
+            lambda: _mlflow.log_feedback(
+                trace_id=kwargs["trace_id"],
+                name=kwargs["name"],
+                value=kwargs["value"],
+                rationale=kwargs.get("rationale"),
+                source=source,
+                metadata=kwargs.get("metadata"),
+            )
         )
-        return self._store.create_assessment(assessment)
 
 
 def _request_feedback_context(request: Request) -> _TraceFeedbackContext:
