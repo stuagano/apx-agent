@@ -738,6 +738,7 @@ resources:
       user_api_scopes:
         - sql
         - serving.serving-endpoints
+        - ml.mlflow
       resources:
         - name: experiment
           experiment:
