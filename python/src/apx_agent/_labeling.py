@@ -25,6 +25,7 @@ try:
     from apx_agent._mlflow_tracing import search_traces_for_experiment
     set_trace_tag = _mlflow.set_trace_tag
 except Exception:  # pragma: no cover
+    _mlflow = None  # type: ignore[assignment]
     search_traces_for_experiment = None  # type: ignore[assignment]
     set_trace_tag = None  # type: ignore[assignment]
 
@@ -69,7 +70,7 @@ def _require_mlflow() -> Any:
     return _label_schemas
 
 
-def parse_scale(scale: str) -> tuple[float, float]:
+def parse_scale(scale: str) -> "tuple[float, float]":  # noqa: PYI024  # ponytail: named fields would add noise for a 2-element coordinate pair
     """Parse a ``MIN-MAX`` scale string into ``(min, max)`` floats."""
     parts = [p.strip() for p in (scale or "").split("-")]
     if len(parts) != 2 or not all(parts):
@@ -280,10 +281,21 @@ def start_session(
         assigned_users=assignees,
         label_schemas=[schema_name],
     )
-    # Add the scored traces directly to the session. (The earlier UC-dataset
-    # path required a catalog.schema.table name that the agent/run id can't
-    # supply; add_traces takes the traces straight from search_traces.)
-    session = session.add_traces(traces)
+    # Add traces to the session by loading each one individually via
+    # mlflow.get_trace() rather than passing the search_traces DataFrame.
+    # search_traces with include_spans=False returns span-less objects that
+    # break add_traces on private-link / FEVM workspaces (the copy path
+    # requires a root span). mlflow.get_trace() fetches individual traces with
+    # full span data and works on FEVM. Fixes #718.
+    full_traces = []
+    if _mlflow is not None:
+        for tid in trace_ids:
+            try:
+                full_traces.append(_mlflow.get_trace(tid))
+            except Exception:
+                pass  # skip traces whose spans are still unavailable
+    if full_traces:
+        session = session.add_traces(full_traces)
 
     return StartResult(
         run_id=run_id, session_url=str(getattr(session, "url", "")),
@@ -333,15 +345,44 @@ def align_judge(
         embedding_model=embedding_model,
         retrieval_k=retrieval_k,
     )
-    # include_spans=False: metadata-only read so the run-tagged traces still
-    # come back on FEVM/private-link workspaces (blocked trace blob store);
-    # MemAlign aligns from the labeled request/response + assessments, not spans.
-    traces = search_traces_for_experiment(
+    # Load traces with full spans via mlflow.get_trace() — MemAlign needs the
+    # root span's inputs/outputs to generate guidelines. search_traces with
+    # include_spans=False returns span-less objects that MemAlign cannot read.
+    # mlflow.get_trace() works on FEVM/private-link workspaces. Fixes #718.
+    thin = search_traces_for_experiment(
         experiment_id, filter_string=f"tag.{RUN_TAG} = '{run_id}'",
         return_type="list", include_spans=False,
     )
+    traces = []
+    if _mlflow is not None:
+        for t in thin:
+            try:
+                traces.append(_mlflow.get_trace(t.info.trace_id))
+            except Exception:
+                pass
+    if not traces:
+        raise LabelingError(
+            f"no traces found for run '{run_id}'. Check the run id or re-run `label start`."
+        )
+
     base = get_scorer(name=judge_name, experiment_id=experiment_id)  # type: ignore[call]
     from mlflow.exceptions import MlflowException
+
+    # Session-level scorers (instructions use {{ conversation }}) do not support
+    # .align(). Fall back to a trace-level judge with the same instructions but
+    # using {{ inputs }} / {{ outputs }} template variables. Fixes #719.
+    if getattr(base, "is_session_level_scorer", False):
+        from mlflow.genai.judges import make_judge
+        base = make_judge(
+            name=judge_name,
+            instructions=(
+                "Input: {{ inputs }}\nOutput: {{ outputs }}\n\n"
+                + (getattr(base, "instructions", None) or "")
+            ),
+            feedback_value_type=base.feedback_value_type,  # type: ignore[union-attr]
+            model=base.model,  # type: ignore[union-attr]
+        )
+
     try:
         aligned = base.align(traces=traces, optimizer=optimizer)  # type: ignore[union-attr]
     except MlflowException as e:
@@ -368,7 +409,11 @@ def align_judge(
         new.register(experiment_id=experiment_id)
         registered_as = new_version
     else:
-        updated = aligned.update(experiment_id=experiment_id)
+        from mlflow.genai.scorers import ScorerSamplingConfig
+        updated = aligned.update(
+            experiment_id=experiment_id,
+            sampling_config=ScorerSamplingConfig(sample_rate=1.0),
+        )
         registered_as = str(getattr(updated, "name", judge_name))
 
     return AlignResult(judge_name=judge_name, guidelines=guidelines, registered_as=registered_as)
