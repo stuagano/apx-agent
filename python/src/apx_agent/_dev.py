@@ -417,9 +417,16 @@ function renderRows(rows) {{
 
 document.addEventListener('DOMContentLoaded', async () => {{
   try {{
-    const r = await fetch('/_apx/traces?fmt=json');
-    if (!r.ok) throw new Error(r.statusText);
-    renderRows(await r.json());
+    const r = await fetch('/_apx/traces?fmt=json', {{headers: {{'Accept': 'application/json'}}}});
+    if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+    const text = await r.text();
+    let rows;
+    try {{ rows = JSON.parse(text); }} catch(_) {{
+      // Got HTML (auth redirect or error page) — reload to trigger SSO
+      if (text.includes('<html') || text.includes('<!DOCTYPE')) {{ location.reload(); return; }}
+      throw new Error('bad JSON response');
+    }}
+    renderRows(rows);
   }} catch(e) {{
     document.getElementById('traces-body').innerHTML =
       '<p class="empty">Failed to load traces: ' + e.message + '</p>';
