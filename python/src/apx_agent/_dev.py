@@ -321,12 +321,15 @@ def _span_type_css(span_type: str) -> str:
     return "OTHER"
 
 
-def _render_traces_list(rows: list, agent_name: str | None) -> str:
+def _render_traces_list(rows: list | None, agent_name: str | None) -> str:
     import html as _html
 
     title = f"{agent_name} — traces" if agent_name else "Traces"
-    if not rows:
-        body = '<p class="empty">No traces found. Run the agent and traces will appear here.</p>'
+    # rows=None → skeleton mode: JS fetches ?fmt=json and renders client-side
+    if rows is None:
+        body = '<div id="traces-body"><p class="empty">Loading traces…</p></div>'
+    elif not rows:
+        body = '<div id="traces-body"><p class="empty">No traces found. Run the agent and traces will appear here.</p></div>'
     else:
         ths = "<tr><th>Time</th><th>Duration</th><th>Status</th><th>Request</th><th>Response</th><th>Feedback</th></tr>"
         tds = []
@@ -354,7 +357,7 @@ def _render_traces_list(rows: list, agent_name: str | None) -> str:
                 f'</td>'
                 f'</tr>'
             )
-        body = f'<table>{ths}{"".join(tds)}</table>'
+        body = f'<div id="traces-body"><table>{ths}{"".join(tds)}</table></div>'
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>{_html.escape(title)}</title>
@@ -379,6 +382,49 @@ async function submitFeedback(tid, value, btn) {{
     btn.classList.add('active');
   }} catch(e) {{ alert('Feedback failed: ' + e.message); }}
 }}
+
+function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+
+function renderRows(rows) {{
+  const wrap = document.getElementById('traces-body');
+  if (!rows.length) {{
+    wrap.innerHTML = '<p class="empty">No traces found. Run the agent and traces will appear here.</p>';
+    return;
+  }}
+  const ths = '<tr><th>Time</th><th>Duration</th><th>Status</th><th>Request</th><th>Response</th><th>Feedback</th></tr>';
+  const tds = rows.map(r => {{
+    const dt = r.request_time_ms
+      ? new Date(r.request_time_ms).toLocaleString('en-US', {{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}})
+      : '—';
+    const dur = r.duration_ms != null ? r.duration_ms + 'ms' : '—';
+    const st = r.state || '';
+    const stCls = /OK|COMPLETE/.test(st) ? 'st-ok' : /ERR|FAIL/.test(st) ? 'st-err' : 'st-run';
+    const tid = esc(r.trace_id);
+    return `<tr>
+      <td><a href="/_apx/traces/${{tid}}">${{dt}}</a></td>
+      <td class="dur">${{dur}}</td>
+      <td class="${{stCls}}">${{st}}</td>
+      <td class="preview">${{esc((r.request_preview||'').slice(0,120))}}</td>
+      <td class="preview">${{esc((r.response_preview||'').slice(0,120))}}</td>
+      <td class="fb-cell">
+        <button class="fb-btn up" onclick="submitFeedback('${{tid}}',true,this)">👍</button>
+        <button class="fb-btn down" onclick="submitFeedback('${{tid}}',false,this)">👎</button>
+      </td>
+    </tr>`;
+  }}).join('');
+  wrap.innerHTML = '<table>' + ths + tds + '</table>';
+}}
+
+document.addEventListener('DOMContentLoaded', async () => {{
+  try {{
+    const r = await fetch('/_apx/traces?fmt=json');
+    if (!r.ok) throw new Error(r.statusText);
+    renderRows(await r.json());
+  }} catch(e) {{
+    document.getElementById('traces-body').innerHTML =
+      '<p class="empty">Failed to load traces: ' + e.message + '</p>';
+  }}
+}});
 </script>
 </head><body>
 <header>
@@ -1630,6 +1676,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         agent_name = ctx.config.name if ctx else None
         fmt = request.query_params.get("fmt")
         max_results = int(request.query_params.get("max", "50"))
+
+        # HTML path: return the skeleton immediately — rows load via JS fetch
+        # to /_apx/traces?fmt=json. Avoids a 30-60s cold-warehouse hang that
+        # makes the browser tab unresponsive on deployed Apps. (#718 class issue)
+        if fmt != "json":
+            return HTMLResponse(_render_traces_list(None, agent_name))
+
         experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
         try:
             # include_spans=False skips artifact download — works even when
