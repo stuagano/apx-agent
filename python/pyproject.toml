@@ -56,6 +56,8 @@ dev = [
     "pyright>=1.1.380",
     "hatchling>=1.29.0",
     "hatch-vcs>=0.5.0",
+    "apx-agent[align]",
+    "databricks-agents>=1.12.0",
 ]
 
 [project.scripts]
@@ -103,3 +105,6 @@ include = ["src/apx_agent"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 reportMissingImports = "warning"
+
+[tool.uv.sources]
+apx-agent = { workspace = true }
