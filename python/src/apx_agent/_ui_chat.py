@@ -477,14 +477,10 @@ def _render_eval_landing(
     <h2>Judge Alignment</h2>
     <p style="color:var(--muted);font-size:12px;margin:0 0 12px">
       Rate traces with 👍/👎 in the <a href="/_apx/traces" style="color:var(--accent)">Traces</a> view,
-      then create a labeling session and run MemAlign to align your judge.
+      then run MemAlign to distill guidelines from your ratings into an aligned judge.
     </p>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
       <input id="la-judge" placeholder="Judge name (e.g. quality)" style="max-width:220px;margin:0" />
-      <button class="btn btn-run" id="la-start-btn" onclick="labelStart()">Start session</button>
-    </div>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-      <input id="la-run-id" placeholder="Run ID (from start session)" style="max-width:320px;margin:0" />
       <button class="btn btn-run" id="la-align-btn" onclick="labelAlign()">Run alignment</button>
     </div>
     <div id="la-status" style="font-size:12px;color:var(--muted);min-height:18px"></div>
@@ -673,45 +669,21 @@ window.addEventListener('message', (e) => {{
 }}}});
 
 // ── Judge Alignment ──────────────────────────────────────────────────────────
-async function labelStart() {{
+async function labelAlign() {{
   const judge = document.getElementById('la-judge').value.trim();
-  if (!judge) {{ document.getElementById('la-status').textContent = 'Enter a judge name.'; return; }}
-  document.getElementById('la-start-btn').disabled = true;
-  document.getElementById('la-status').textContent = 'Starting…';
+  if (!judge) {{ document.getElementById('la-status').textContent = 'Enter a judge name (e.g. quality).'; return; }}
+  document.getElementById('la-align-btn').disabled = true;
+  document.getElementById('la-status').textContent = 'Reading your ratings and running MemAlign… (may take a minute)';
   try {{
-    const r = await fetch('/_apx/eval/label-start', {{
+    const r = await fetch('/_apx/eval/label-align', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{judge_name: judge}}),
     }});
     const d = await r.json();
     if (!d.ok) throw new Error(d.error);
-    document.getElementById('la-run-id').value = d.run_id;
-    document.getElementById('la-status').innerHTML =
-      `Session created (${{d.trace_count}} traces). ` +
-      (d.session_url ? `<a href="${{d.session_url}}" target="_blank">Open Review App →</a>` : `run_id: ${{d.run_id}}`);
-  }} catch(e) {{
-    document.getElementById('la-status').textContent = 'Error: ' + e.message;
-  }} finally {{
-    document.getElementById('la-start-btn').disabled = false;
-  }}
-}}
-
-async function labelAlign() {{
-  const judge = document.getElementById('la-judge').value.trim();
-  const run_id = document.getElementById('la-run-id').value.trim();
-  if (!judge || !run_id) {{ document.getElementById('la-status').textContent = 'Judge name and run ID required.'; return; }}
-  document.getElementById('la-align-btn').disabled = true;
-  document.getElementById('la-status').textContent = 'Aligning… (this may take a minute)';
-  try {{
-    const r = await fetch('/_apx/eval/label-align', {{
-      method: 'POST', headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{judge_name: judge, run_id}}),
-    }});
-    const d = await r.json();
-    if (!d.ok) throw new Error(d.error);
     const gs = (d.guidelines || []).map((g, i) => `${{i+1}}. ${{g}}`).join('<br>');
     document.getElementById('la-status').innerHTML =
-      `✓ Aligned as <strong>${{d.registered_as}}</strong><br><small>${{gs}}</small>`;
+      `✓ Aligned on ${{d.trace_count}} traces — <strong>${{d.guidelines?.length || 0}} guidelines distilled</strong><br><small style="color:#888">${{gs}}</small>`;
   }} catch(e) {{
     document.getElementById('la-status').textContent = 'Error: ' + e.message;
   }} finally {{

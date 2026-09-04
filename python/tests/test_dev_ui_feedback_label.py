@@ -262,98 +262,75 @@ async def test_label_start_returns_503_without_experiment_id(monkeypatch) -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_label_align_returns_registered_judge_and_guidelines(monkeypatch) -> None:
-    from apx_agent import _labeling
+async def test_label_align_runs_memalign_from_labeled_traces(monkeypatch) -> None:
+    # New impl: no run_id needed — reads all labeled traces from MLflow directly.
+    import types
 
     monkeypatch.setenv("MLFLOW_EXPERIMENT_ID", "exp-99")
 
-    aligned: list = []
+    import pandas as pd
+    fake_trace = types.SimpleNamespace(info=types.SimpleNamespace(trace_id="tr-1"))
+    fake_df = pd.DataFrame([{
+        "trace_id": "tr-1",
+        "request": '{"input":[{"role":"user","content":"test q"}]}',
+        "assessments": [{"assessment_name": "quality", "feedback": {"value": True}, "rationale": "good"}],
+    }])
 
-    def fake_align(**kw):
-        aligned.append(kw)
-        return _labeling.AlignResult(
-            judge_name="quality",
-            registered_as="quality/v2",
-            guidelines=["Be concise.", "Cite sources."],
-        )
+    aligned_obj = types.SimpleNamespace(
+        instructions="aligned",
+        _semantic_memory=[types.SimpleNamespace(guideline_text="Be grounded.")],
+    )
 
-    monkeypatch.setattr(_labeling, "align_judge", fake_align)
+    with patch("mlflow.set_tracking_uri"), \
+         patch("mlflow.search_traces", return_value=fake_df), \
+         patch("mlflow.get_trace", return_value=fake_trace), \
+         patch("mlflow.genai.judges.make_judge") as mock_judge, \
+         patch("mlflow.genai.judges.optimizers.MemAlignOptimizer") as mock_opt:
+        mock_judge.return_value.align.return_value = aligned_obj
+        mock_judge.return_value.is_session_level_scorer = False
+        mock_opt.return_value = "OPT"
 
-    with patch("mlflow.set_tracking_uri"):
         app = FastAPI()
         app.state.agent_context = _make_ctx()
         app.include_router(build_dev_ui_router())
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as client:
-            resp = await client.post(
-                "/_apx/eval/label-align",
-                json={"judge_name": "quality", "run_id": "run-abc"},
-            )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/_apx/eval/label-align", json={"judge_name": "quality"})
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
-    assert body["registered_as"] == "quality/v2"
-    assert body["guidelines"] == ["Be concise.", "Cite sources."]
-    assert aligned[0]["judge_name"] == "quality"
-    assert aligned[0]["run_id"] == "run-abc"
-    assert aligned[0]["experiment_id"] == "exp-99"
+    assert body["guidelines"] == ["Be grounded."]
+    assert body["trace_count"] == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_label_align_requires_both_fields(monkeypatch) -> None:
+async def test_label_align_requires_judge_name(monkeypatch) -> None:
     monkeypatch.setenv("MLFLOW_EXPERIMENT_ID", "exp-99")
     app = FastAPI()
     app.state.agent_context = _make_ctx()
     app.include_router(build_dev_ui_router())
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-    ) as client:
-        missing_run = await client.post(
-            "/_apx/eval/label-align",
-            json={"judge_name": "quality"},
-        )
-        missing_judge = await client.post(
-            "/_apx/eval/label-align",
-            json={"run_id": "run-abc"},
-        )
-
-    assert missing_run.status_code == 422
-    assert missing_run.json()["ok"] is False
-    assert missing_judge.status_code == 422
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/_apx/eval/label-align", json={})
+    assert resp.status_code == 422
+    assert resp.json()["ok"] is False
 
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_label_align_propagates_labeling_error(monkeypatch) -> None:
-    from apx_agent import _labeling
+async def test_label_align_returns_422_when_no_labeled_traces(monkeypatch) -> None:
+    import pandas as pd
 
     monkeypatch.setenv("MLFLOW_EXPERIMENT_ID", "exp-99")
-    monkeypatch.setattr(
-        _labeling,
-        "align_judge",
-        lambda **kw: (_ for _ in ()).throw(
-            _labeling.LabelingError("no labeled traces found")
-        ),
-    )
+    empty_df = pd.DataFrame([{"trace_id": "tr-1", "request": "{}", "assessments": []}])
 
-    with patch("mlflow.set_tracking_uri"):
+    with patch("mlflow.set_tracking_uri"), \
+         patch("mlflow.search_traces", return_value=empty_df):
         app = FastAPI()
         app.state.agent_context = _make_ctx()
         app.include_router(build_dev_ui_router())
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as client:
-            resp = await client.post(
-                "/_apx/eval/label-align",
-                json={"judge_name": "quality", "run_id": "run-abc"},
-            )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/_apx/eval/label-align", json={"judge_name": "quality"})
 
-    assert resp.status_code == 500
-    assert resp.json()["ok"] is False
-    assert "no labeled traces" in resp.json()["error"]
+    assert resp.status_code == 422
+    assert "No traces" in resp.json()["error"]
