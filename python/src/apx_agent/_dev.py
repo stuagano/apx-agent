@@ -4088,28 +4088,76 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     # Redirects for old routes
     @router.get("/_apx/eval", response_class=HTMLResponse)
     async def eval_ui() -> HTMLResponse:
-        """Eval landing page — lists persisted eval cases.
+        """Eval landing page — cases sourced from MLflow quality assessments.
 
-        Running cases live in the Chat panel's right-side sub-tab. This
-        standalone page surfaces the same ``evals.json`` data as a
-        read-only list with a link back to Chat, so the Eval tab in the
-        unified shell shows something useful instead of bouncing through
-        a redirect.
+        Reads labeled traces from the active MLflow experiment so the eval
+        suite stays in sync with human ratings — no separate evals.json needed.
+        Falls back to evals.json when MLflow is unavailable.
         """
         from ._ui_chat import _render_eval_landing
-        path = _find_evals_path()
         cases: list[dict[str, Any]] = []
         loaded_path: str | None = None
         load_error: str | None = None
-        if path is not None and path.exists():
-            loaded_path = str(path)
+
+        experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+        if experiment_id:
             try:
-                cases = _json.loads(path.read_text())
-                if not isinstance(cases, list):
-                    cases = []
-                    load_error = f"{path} did not contain a JSON list."
-            except (OSError, ValueError) as exc:
-                load_error = f"Could not parse {path}: {exc}"
+                import mlflow as _mlflow
+                df = _mlflow.search_traces(
+                    experiment_ids=[experiment_id],
+                    max_results=100,
+                    order_by=["attributes.start_time DESC"],
+                )
+                for _, row in df.iterrows():
+                    assessments = row.get("assessments") or []
+                    quality = next(
+                        (a for a in assessments if getattr(a, "name", None) == "quality"),
+                        None,
+                    )
+                    if quality is None:
+                        continue
+                    req = row.get("request") or ""
+                    question = ""
+                    try:
+                        req_obj = _json.loads(req) if isinstance(req, str) else req
+                        inputs = req_obj.get("input") or req_obj.get("messages") or []
+                        for msg in inputs:
+                            if isinstance(msg, dict) and msg.get("role") == "user":
+                                question = str(msg.get("content", ""))
+                                break
+                    except Exception:
+                        question = str(req)[:200]
+                    if not question:
+                        continue
+                    rationale = getattr(quality, "rationale", None) or ""
+                    value = getattr(quality, "value", None)
+                    if hasattr(value, "value"):
+                        value = value.value
+                    cases.append({
+                        "question": question,
+                        "expected_judge": rationale or ("correct and grounded" if value else "should decline or flag"),
+                        "expected_pass": bool(value),
+                        "status": "pending",
+                        "response": "",
+                        "trace_id": str(row.get("trace_id", "")),
+                    })
+                if cases:
+                    loaded_path = f"MLflow experiment {experiment_id} ({len(cases)} labeled traces)"
+            except Exception as exc:
+                load_error = f"MLflow unavailable: {exc}"
+
+        if not cases:
+            path = _find_evals_path()
+            if path is not None and path.exists():
+                loaded_path = str(path)
+                try:
+                    cases = _json.loads(path.read_text())
+                    if not isinstance(cases, list):
+                        cases = []
+                        load_error = f"{path} did not contain a JSON list."
+                except (OSError, ValueError) as exc:
+                    load_error = f"Could not parse {path}: {exc}"
+
         return HTMLResponse(_render_eval_landing(cases, loaded_path, load_error))
 
     @router.post("/_apx/eval/label-start")
