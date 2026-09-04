@@ -164,6 +164,16 @@ class _TTLCache:
 # Module-level singletons — survive request boundaries, reset on process restart.
 _EVAL_CASES_CACHE: _TTLCache = _TTLCache(ttl=300)   # 5 min — ratings change infrequently
 _TRACES_LIST_CACHE: _TTLCache = _TTLCache(ttl=60)   # 60 s — traces change with each run
+# UC schema discovery: keyed by (catalog, schema) tuple — dict[tuple, _TTLCache]
+_SCHEMA_CACHE: dict[tuple[str, str], _TTLCache] = {}
+_GROUNDING_COLUMNS_CACHE: _TTLCache = _TTLCache(ttl=600)  # 10 min — UC comments rarely change
+
+
+def _schema_cache_for(catalog: str, schema: str) -> _TTLCache:
+    key = (catalog, schema)
+    if key not in _SCHEMA_CACHE:
+        _SCHEMA_CACHE[key] = _TTLCache(ttl=600)  # 10 min per catalog.schema
+    return _SCHEMA_CACHE[key]
 
 
 class _EditPanelInventory(NamedTuple):
@@ -2918,18 +2928,43 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/discover/tables", response_model=DiscoverTablesResponse)
     async def discover_tables(request: Request, catalog: str, schema: str) -> Any:
-        """List bounded table metadata using the signed-in user's grants."""
-        import asyncio as _asyncio
+        """List bounded table metadata using the signed-in user's grants.
 
+        Results are cached per (catalog, schema) for 10 minutes so repeated
+        visits to the Discover page don't re-query UC on every open.
+        """
+        import asyncio as _asyncio
         from ._defaults import _ws_prefer_obo
 
+        cache = _schema_cache_for(catalog, schema)
+        if cache.fresh:
+            cached = cache.get()
+            return {"catalog": catalog, "schema_name": schema, "tables": cached}
+
         ws: WorkspaceClient = _ws_prefer_obo(request)
+
+        async def _refresh() -> None:
+            try:
+                tables = await _asyncio.to_thread(list_discover_tables, ws, catalog, schema)
+                cache.put(tables)
+            except Exception:
+                cache._refreshing = False
+
+        cached_tables = cache.get()
+        if cached_tables is not None and not cache._refreshing:
+            # Stale-while-revalidate: return cached, refresh in background
+            cache._refreshing = True
+            _asyncio.create_task(_refresh())
+            return {"catalog": catalog, "schema_name": schema, "tables": cached_tables}
+
+        # First load — fetch synchronously
         try:
             tables = await _asyncio.to_thread(list_discover_tables, ws, catalog, schema)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Could not list table metadata: {exc}") from exc
+        cache.put(tables)
         return {"catalog": catalog, "schema_name": schema, "tables": tables}
 
     @router.get("/_apx/discover/sample", response_model=DiscoverSampleResponse)
@@ -3298,14 +3333,36 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         """Per-column current-vs-suggested description curation state for the
         agent's OKF bundle (#292). Suggestions come from Unity Catalog COMMENTs;
         empty ``tables`` plus ``can_generate`` when the project has no pack but
-        a DataAgent catalog.schema is known (Generate-pack CTA)."""
+        a DataAgent catalog.schema is known (Generate-pack CTA).
+
+        Result cached for 10 minutes — UC column comments change rarely.
+        Cache is busted automatically when columns are saved.
+        """
         import asyncio as _asyncio
         from ._ui_grounding import grounding_columns_payload, resolve_okf_root
+
+        if _GROUNDING_COLUMNS_CACHE.fresh:
+            return _GROUNDING_COLUMNS_CACHE.get()
 
         okf_root = resolve_okf_root()
         ws = getattr(request.app.state, "workspace_client", None)
         ctx = getattr(request.app.state, "agent_context", None)
-        return await _asyncio.to_thread(grounding_columns_payload, okf_root, ws, ctx)
+
+        cached = _GROUNDING_COLUMNS_CACHE.get()
+        if cached is not None and not _GROUNDING_COLUMNS_CACHE._refreshing:
+            _GROUNDING_COLUMNS_CACHE._refreshing = True
+            async def _refresh_grounding() -> None:
+                try:
+                    result = await _asyncio.to_thread(grounding_columns_payload, okf_root, ws, ctx)
+                    _GROUNDING_COLUMNS_CACHE.put(result)
+                except Exception:
+                    _GROUNDING_COLUMNS_CACHE._refreshing = False
+            _asyncio.create_task(_refresh_grounding())
+            return cached
+
+        result = await _asyncio.to_thread(grounding_columns_payload, okf_root, ws, ctx)
+        _GROUNDING_COLUMNS_CACHE.put(result)
+        return result
 
     @router.post("/_apx/grounding/columns", response_model=ColumnDescriptionsSaveResponse)
     async def save_grounding_columns(
@@ -3322,6 +3379,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if okf_root is None:
             return JSONResponse({"ok": False, "error": "No .apx/okf bundle found"}, status_code=404)
         modified = await _asyncio.to_thread(apply_column_descriptions, okf_root, body.accepted)
+        _GROUNDING_COLUMNS_CACHE._value = None  # bust so next GET re-reads from OKF
         return {"ok": True, "modified": modified}
 
     @router.post("/_apx/grounding/generate", response_model=GroundingGenerateResponse)
@@ -4335,7 +4393,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         _TRACES_LIST_CACHE._value = None
         _TRACES_LIST_CACHE._expires = 0.0
         _TRACES_LIST_CACHE._refreshing = False
-        return {"ok": True, "message": "Caches cleared — next request will re-fetch from MLflow."}
+        _GROUNDING_COLUMNS_CACHE._value = None
+        _GROUNDING_COLUMNS_CACHE._expires = 0.0
+        _GROUNDING_COLUMNS_CACHE._refreshing = False
+        _SCHEMA_CACHE.clear()
+        return {"ok": True, "message": "All caches cleared."}
 
     @router.get("/_apx/wizard", include_in_schema=False)
     async def wizard_ui() -> Any:
