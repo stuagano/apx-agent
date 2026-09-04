@@ -1302,6 +1302,14 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
           <textarea id="eval-add-q" placeholder="Add a test question…" rows="2" style="width:100%;background:#111;border:1px solid #222;color:#ccc;border-radius:5px;padding:6px 8px;font-size:12px;resize:none;margin-bottom:6px"></textarea>
           <button id="eval-add-btn" style="background:transparent;color:#555;border:1px solid #2a2a2a;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer">+ Add</button>
         </div>
+        <div style="padding:10px 12px;border-top:1px solid #1a1a1a">
+          <div style="font-size:10px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Judge Alignment</div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input id="eval-judge-name" placeholder="Judge name (e.g. quality)" style="flex:1;background:#111;border:1px solid #222;color:#ccc;border-radius:5px;padding:5px 8px;font-size:11px" />
+            <button id="eval-align-btn" onclick="chatLabelAlign()" style="background:#1e3a5f;color:#60b0ff;border:1px solid #2a5298;border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;white-space:nowrap">Run alignment</button>
+          </div>
+          <div id="eval-align-status" style="font-size:11px;color:#555;margin-top:4px;min-height:14px"></div>
+        </div>
       </div>
     </div>
     <div class="detail-panel" id="detail-panel">
@@ -1614,7 +1622,11 @@ function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').r
 
 function renderEval() {{
   const el = document.getElementById('eval-cases');
-  if (!evalRows.length) {{ el.innerHTML = '<div style="color:#444;font-size:12px;padding:20px 12px">No test cases. Add one below.</div>'; return; }}
+  if (!evalRows.length) {{
+    el.innerHTML = '<div style="color:#444;font-size:12px;padding:20px 12px">No test cases. '
+      + '<button onclick="reloadEvalCases()" style="background:none;border:none;color:#60b0ff;cursor:pointer;font-size:12px;text-decoration:underline">Load from MLflow</button></div>';
+    return;
+  }}
   el.innerHTML = evalRows.map((r, i) => {{
     const dot = r.status === 'pass' ? '#4ade80' : r.status === 'fail' ? '#f87171' : r.status === 'running' ? '#facc15' : '#333';
     const anim = r.status === 'running' ? 'animation:pulse .8s infinite' : '';
@@ -1656,6 +1668,32 @@ function toggleEvalResp(el) {{
   const wrapper = el.closest('[data-idx]');
   const resp = wrapper && wrapper.querySelector('.eval-resp');
   if (resp) resp.style.display = resp.style.display === 'none' ? '' : 'none';
+}}
+
+async function reloadEvalCases() {{
+  evalLoaded = false;
+  await loadEvalCases();
+}}
+
+async function chatLabelAlign() {{
+  const judge = document.getElementById('eval-judge-name').value.trim();
+  const st = document.getElementById('eval-align-status');
+  if (!judge) {{ st.textContent = 'Enter a judge name.'; return; }}
+  document.getElementById('eval-align-btn').disabled = true;
+  st.textContent = 'Running MemAlign… (may take a minute)';
+  try {{
+    const r = await fetch('/_apx/eval/label-align', {{
+      method: 'POST', headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify({{judge_name: judge}}),
+    }});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    st.innerHTML = `✓ ${{d.guidelines?.length || 0}} guidelines distilled from ${{d.trace_count}} traces`;
+  }} catch(e) {{
+    st.textContent = 'Error: ' + e.message;
+  }} finally {{
+    document.getElementById('eval-align-btn').disabled = false;
+  }}
 }}
 
 async function loadEvalCases() {{
