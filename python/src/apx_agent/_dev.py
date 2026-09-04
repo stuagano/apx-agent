@@ -3910,15 +3910,66 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/eval/data", response_model=list[EvalCaseResponse])
     async def eval_data_get() -> Any:
-        """Read persisted eval cases. Returns [] if no file or no agent_router.
+        """Read eval cases from MLflow traces with quality assessments.
 
-        Success returns the persisted JSON list via ``JSONResponse`` so the
-        bytes on the wire are the file verbatim (cases diverge — see
-        :class:`~apx_agent._apx_models.EvalCaseResponse`); ``response_model``
-        documents the row shape in the OpenAPI schema without filtering the
-        response. The parse-error path returns ``{ok: false, error}`` with 500.
+        Pulls traces that have a 'quality' assessment from the active experiment
+        and maps them to eval cases: question from the trace request, criterion
+        from the assessment rationale, expected_pass from the assessment value.
+        Falls back to the local evals.json if MLflow is unavailable.
         """
         from fastapi.responses import JSONResponse
+        import os as _os
+
+        experiment_id = _os.environ.get("MLFLOW_EXPERIMENT_ID")
+        if experiment_id:
+            try:
+                import mlflow as _mlflow
+                df = _mlflow.search_traces(
+                    experiment_ids=[experiment_id],
+                    max_results=100,
+                    order_by=["attributes.start_time DESC"],
+                )
+                cases = []
+                for _, row in df.iterrows():
+                    assessments = row.get("assessments") or []
+                    quality = next(
+                        (a for a in assessments if getattr(a, "name", None) == "quality"),
+                        None,
+                    )
+                    if quality is None:
+                        continue
+                    # Extract question from the request field
+                    req = row.get("request") or ""
+                    question = ""
+                    try:
+                        req_obj = _json.loads(req) if isinstance(req, str) else req
+                        inputs = req_obj.get("input") or req_obj.get("messages") or []
+                        for msg in inputs:
+                            if isinstance(msg, dict) and msg.get("role") == "user":
+                                question = str(msg.get("content", ""))
+                                break
+                    except Exception:
+                        question = str(req)[:200]
+                    if not question:
+                        continue
+                    rationale = getattr(quality, "rationale", None) or ""
+                    value = getattr(quality, "value", None)
+                    if hasattr(value, "value"):
+                        value = value.value
+                    cases.append({
+                        "question": question,
+                        "expected_judge": rationale or ("response should be correct and grounded" if value else "response should decline or be flagged"),
+                        "expected_pass": bool(value),
+                        "status": "pending",
+                        "response": "",
+                        "trace_id": str(row.get("trace_id", "")),
+                    })
+                if cases:
+                    return JSONResponse(cases)
+            except Exception:
+                pass  # fall through to JSON file
+
+        # Fallback: local evals.json
         path = _find_evals_path()
         if path is None or not path.exists():
             return JSONResponse([])

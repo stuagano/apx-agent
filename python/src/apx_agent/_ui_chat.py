@@ -517,6 +517,7 @@ function render() {{
       </div>
       ${{criterion ? `<div class="case-row"><span class="label">Criterion</span><span>${{esc(criterion)}}</span></div>` : ''}}
       ${{expected ? `<div class="case-row"><span class="label">Expected</span><span>${{esc(expected)}}</span></div>` : ''}}
+      ${{r.trace_id ? `<div class="case-row"><span class="label">Source trace</span><a href="/_apx/traces/${{encodeURIComponent(r.trace_id)}}" target="_blank" style="color:#60b0ff;font-size:11px">${{r.trace_id.split('/').pop().slice(0,16)}}…</a></div>` : ''}}
       ${{r.response ? `<div class="case-response">${{esc(r.response)}}</div>` : ''}}
       ${{r.judge_reason ? `<div class="case-reason">${{esc(r.judge_reason)}}</div>` : ''}}
     </div>`;
