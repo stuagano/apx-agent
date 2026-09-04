@@ -135,6 +135,36 @@ from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_prob
 
 logger = logging.getLogger(__name__)
 
+# ── Stale-while-revalidate TTL cache ─────────────────────────────────────────
+import time as _time_mod
+from dataclasses import dataclass, field as _dc_field
+
+
+@dataclass
+class _TTLCache:
+    """Thread-safe stale-while-revalidate cache for slow async fetches."""
+    ttl: float  # seconds
+    _value: Any = _dc_field(default=None, init=False)
+    _expires: float = _dc_field(default=0.0, init=False)
+    _refreshing: bool = _dc_field(default=False, init=False)
+
+    @property
+    def fresh(self) -> bool:
+        return self._value is not None and _time_mod.monotonic() < self._expires
+
+    def get(self) -> Any:
+        return self._value
+
+    def put(self, value: Any) -> None:
+        self._value = value
+        self._expires = _time_mod.monotonic() + self.ttl
+        self._refreshing = False
+
+
+# Module-level singletons — survive request boundaries, reset on process restart.
+_EVAL_CASES_CACHE: _TTLCache = _TTLCache(ttl=300)   # 5 min — ratings change infrequently
+_TRACES_LIST_CACHE: _TTLCache = _TTLCache(ttl=60)   # 60 s — traces change with each run
+
 
 class _EditPanelInventory(NamedTuple):
     schemas: list[dict[str, Any]]
@@ -380,6 +410,7 @@ async function submitFeedback(tid, value, btn) {{
     const row = btn.closest('tr');
     row.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    fetch('/_apx/eval/cache/bust', {{method:'POST'}}).catch(()=>{{}});
   }} catch(e) {{ alert('Feedback failed: ' + e.message); }}
 }}
 
@@ -1013,6 +1044,8 @@ async function submitFeedback() {{
     document.getElementById('fb-rationale').classList.remove('visible');
     document.getElementById('fb-save-btn').classList.remove('visible');
     document.getElementById('fb-hint').style.display = 'block';
+    // Bust cache so new rating appears immediately in Eval page
+    fetch('/_apx/eval/cache/bust', {{method:'POST'}}).catch(()=>{{}});
   }} catch(e) {{
     msg.textContent = 'Failed: ' + e.message;
   }}
@@ -1463,6 +1496,130 @@ def _pick_workspace_defaults(ws: WorkspaceClient) -> "dict[str, str]":
     return out
 
 
+# ── MLflow fetch helpers (run in thread pool to avoid blocking the event loop) ─
+
+def _fetch_eval_cases_sync(experiment_id: str) -> list[dict[str, Any]]:
+    """Fetch MLflow-labeled traces and map to eval cases (sync, call via executor)."""
+    try:
+        import mlflow as _mlflow
+        df = _mlflow.search_traces(
+            experiment_ids=[experiment_id],
+            max_results=100,
+            order_by=["attributes.start_time DESC"],
+        )
+        cases: list[dict[str, Any]] = []
+        for _, row in df.iterrows():
+            assessments = row.get("assessments") or []
+            quality = next(
+                (a for a in assessments
+                 if (a.get("assessment_name") if isinstance(a, dict) else getattr(a, "name", None)) == "quality"),
+                None,
+            )
+            if quality is None:
+                continue
+            req = row.get("request") or ""
+            question = ""
+            try:
+                req_obj = _json.loads(req) if isinstance(req, str) else req
+                inputs = req_obj.get("input") or req_obj.get("messages") or []
+                for msg in inputs:
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        question = str(msg.get("content", ""))
+                        break
+            except Exception:
+                question = str(req)[:200]
+            if not question:
+                continue
+            if isinstance(quality, dict):
+                rationale = quality.get("rationale") or ""
+                fb = quality.get("feedback") or {}
+                value = fb.get("value") if isinstance(fb, dict) else getattr(fb, "value", None)
+            else:
+                rationale = getattr(quality, "rationale", None) or ""
+                value = getattr(quality, "value", None)
+                if hasattr(value, "value"):
+                    value = value.value
+            cases.append({
+                "question": question,
+                "expected_judge": rationale or ("response should be correct and grounded" if value else "response should decline or be flagged"),
+                "expected_pass": bool(value),
+                "status": "pending",
+                "response": "",
+                "trace_id": str(row.get("trace_id", "")),
+            })
+        return cases
+    except Exception:
+        return []
+
+
+async def _fetch_eval_cases_async(experiment_id: str) -> list[dict[str, Any]]:
+    """Run _fetch_eval_cases_sync in the default thread-pool executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_eval_cases_sync, experiment_id)
+
+
+def _fetch_traces_list_sync(experiment_id: str | None, max_results: int) -> list[dict[str, Any]]:
+    """Fetch recent traces from MLflow (sync, call via executor)."""
+    try:
+        from mlflow.tracking import MlflowClient as _MlflowClient
+        client = _MlflowClient()
+        exp_ids: list[str] = (
+            [experiment_id] if experiment_id
+            else [e.experiment_id for e in client.search_experiments()]
+        )
+        traces = list(client.search_traces(
+            locations=exp_ids,
+            max_results=max_results,
+            order_by=["timestamp DESC"],
+            include_spans=False,
+            flush=True,
+        )) if exp_ids else []
+    except Exception:
+        logger.exception("mlflow search_traces failed for trace panel")
+        traces = []
+    traces = _drop_warmup_traces(traces)
+    rows = []
+    for t in traces:
+        info = t.info
+        dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
+        rows.append({
+            "trace_id": info.trace_id,
+            "state": info.state.value if hasattr(info.state, "value") else str(info.state),
+            "request_time_ms": info.request_time,
+            "duration_ms": dur_ms,
+            "request_preview": info.request_preview or "",
+            "response_preview": info.response_preview or "",
+        })
+    return rows
+
+
+async def _fetch_traces_list_async(experiment_id: str | None, max_results: int) -> list[dict[str, Any]]:
+    """Run _fetch_traces_list_sync in the default thread-pool executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_traces_list_sync, experiment_id, max_results)
+
+
+async def _refresh_eval_cache(experiment_id: str) -> None:
+    """Background task: refresh eval cases cache silently."""
+    try:
+        cases = await _fetch_eval_cases_async(experiment_id)
+        if cases:
+            _EVAL_CASES_CACHE.put(cases)
+        else:
+            _EVAL_CASES_CACHE._refreshing = False
+    except Exception:
+        _EVAL_CASES_CACHE._refreshing = False
+
+
+async def _refresh_traces_cache(experiment_id: str | None, max_results: int) -> None:
+    """Background task: refresh traces list cache silently."""
+    try:
+        rows = await _fetch_traces_list_async(experiment_id, max_results)
+        _TRACES_LIST_CACHE.put(rows)
+    except Exception:
+        _TRACES_LIST_CACHE._refreshing = False
+
+
 def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     """Build the /_apx/* dev UI routes.
 
@@ -1705,72 +1862,41 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return HTMLResponse(_render_traces_list(None, agent_name))
 
         experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+
+        # Stale-while-revalidate: serve from cache; background-refresh when stale.
+        if _TRACES_LIST_CACHE.fresh:
+            rows = list(_TRACES_LIST_CACHE.get())
+        else:
+            cached_rows = _TRACES_LIST_CACHE.get()
+            if cached_rows is not None and not _TRACES_LIST_CACHE._refreshing:
+                _TRACES_LIST_CACHE._refreshing = True
+                asyncio.create_task(_refresh_traces_cache(experiment_id, max_results))
+                rows = list(cached_rows)
+            elif cached_rows is None:
+                rows = await _fetch_traces_list_async(experiment_id, max_results)
+                _TRACES_LIST_CACHE.put(rows)
+            else:
+                rows = list(cached_rows or [])
+
+        seen_ids: set[str] = {r["trace_id"] for r in rows}
+        # Merge ring-buffer traces not yet committed to the tracking store.
         try:
-            # include_spans=False skips artifact download — works even when
-            # the blob-storage endpoint is unreachable (e.g. private-link
-            # workspaces where *.storage.cloud.databricks.com is blocked).
-            from mlflow.tracking import MlflowClient as _MlflowClient
-            client = _MlflowClient()
-            # MLflow's search_traces(experiment_ids=None) trips on the local
-            # sqlite store ("'NoneType' object is not iterable"), which is the
-            # default backend for local `apx-agent run` — so the Trace panel sees
-            # nothing even when traces are being recorded. Resolve to all
-            # experiments when no MLFLOW_EXPERIMENT_ID is set so the dev loop
-            # surfaces its traces. In the deployed runtime MLFLOW_EXPERIMENT_ID
-            # is always set and this branch is a no-op.
-            exp_ids: list[str] = (
-                [experiment_id] if experiment_id
-                else [e.experiment_id for e in client.search_experiments()]
-            )
-            traces = list(client.search_traces(
-                locations=exp_ids,
-                max_results=max_results,
-                order_by=["timestamp DESC"],
-                include_spans=False,
-                flush=True,  # MLflow 3.x writes async; flush before search
-            )) if exp_ids else []
+            from ._trace_store import list_recent as _ts_list_recent
+            for tid in _ts_list_recent(max_results):
+                if tid not in seen_ids:
+                    rows.insert(0, {
+                        "trace_id": tid,
+                        "state": "OK",
+                        "request_time_ms": None,
+                        "duration_ms": None,
+                        "request_preview": "",
+                        "response_preview": "",
+                    })
+                    seen_ids.add(tid)
         except Exception:
-            # Keep the panel functional (ring-buffer merge below still
-            # surfaces recent traces) but log why the tracking store
-            # search failed instead of hiding it.
-            logger.exception("mlflow search_traces failed for trace panel")
-            traces = []
-        traces = _drop_warmup_traces(traces)
-        rows = []
-        seen_ids: set[str] = set()
-        for t in traces:
-            info = t.info
-            dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
-            rows.append({
-                "trace_id": info.trace_id,
-                "state": info.state.value if hasattr(info.state, "value") else str(info.state),
-                "request_time_ms": info.request_time,
-                "duration_ms": dur_ms,
-                "request_preview": info.request_preview or "",
-                "response_preview": info.response_preview or "",
-            })
-            seen_ids.add(info.trace_id)
-        if fmt == "json":
-            # Merge in any ring-buffer traces not yet committed to the tracking
-            # store (async write lag, or FEVM blob-egress blocked). Newest first.
-            try:
-                from ._trace_store import list_recent as _ts_list_recent
-                for tid in _ts_list_recent(max_results):
-                    if tid not in seen_ids:
-                        rows.insert(0, {
-                            "trace_id": tid,
-                            "state": "OK",
-                            "request_time_ms": None,
-                            "duration_ms": None,
-                            "request_preview": "",
-                            "response_preview": "",
-                        })
-                        seen_ids.add(tid)
-            except Exception:
-                pass
-            rows = rows[:max_results]
-            return rows
-        return HTMLResponse(_render_traces_list(rows, agent_name))
+            pass
+        rows = rows[:max_results]
+        return rows
 
     def _last_route_payload(
         ctx: AgentContext, *, include_tracking_fallback: bool = True
@@ -3910,69 +4036,31 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/eval/data", response_model=list[EvalCaseResponse])
     async def eval_data_get() -> Any:
-        """Read eval cases from MLflow traces with quality assessments.
+        """Read eval cases — served from cache, refreshed in background after TTL.
 
-        Pulls traces that have a 'quality' assessment from the active experiment
-        and maps them to eval cases: question from the trace request, criterion
-        from the assessment rationale, expected_pass from the assessment value.
-        Falls back to the local evals.json if MLflow is unavailable.
+        First call fetches from MLflow (may take 30-60s on cold warehouse).
+        Subsequent calls return immediately from the 5-minute cache; a background
+        task refreshes it when stale. Falls back to evals.json if MLflow is
+        unavailable.
         """
         from fastapi.responses import JSONResponse
-        import os as _os
 
-        experiment_id = _os.environ.get("MLFLOW_EXPERIMENT_ID")
+        experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
         if experiment_id:
-            try:
-                import mlflow as _mlflow
-                df = _mlflow.search_traces(
-                    experiment_ids=[experiment_id],
-                    max_results=100,
-                    order_by=["attributes.start_time DESC"],
-                )
-                cases = []
-                for _, row in df.iterrows():
-                    assessments = row.get("assessments") or []
-                    quality = next(
-                        (a for a in assessments
-                         if (a.get("assessment_name") if isinstance(a, dict) else getattr(a, "name", None)) == "quality"),
-                        None,
-                    )
-                    if quality is None:
-                        continue
-                    req = row.get("request") or ""
-                    question = ""
-                    try:
-                        req_obj = _json.loads(req) if isinstance(req, str) else req
-                        inputs = req_obj.get("input") or req_obj.get("messages") or []
-                        for msg in inputs:
-                            if isinstance(msg, dict) and msg.get("role") == "user":
-                                question = str(msg.get("content", ""))
-                                break
-                    except Exception:
-                        question = str(req)[:200]
-                    if not question:
-                        continue
-                    if isinstance(quality, dict):
-                        rationale = quality.get("rationale") or ""
-                        fb = quality.get("feedback") or {}
-                        value = fb.get("value") if isinstance(fb, dict) else getattr(fb, "value", None)
-                    else:
-                        rationale = getattr(quality, "rationale", None) or ""
-                        value = getattr(quality, "value", None)
-                        if hasattr(value, "value"):
-                            value = value.value
-                    cases.append({
-                        "question": question,
-                        "expected_judge": rationale or ("response should be correct and grounded" if value else "response should decline or be flagged"),
-                        "expected_pass": bool(value),
-                        "status": "pending",
-                        "response": "",
-                        "trace_id": str(row.get("trace_id", "")),
-                    })
-                if cases:
-                    return JSONResponse(cases)
-            except Exception:
-                pass  # fall through to JSON file
+            if _EVAL_CASES_CACHE.fresh:
+                return JSONResponse(_EVAL_CASES_CACHE.get())
+
+            cached = _EVAL_CASES_CACHE.get()
+            if cached is not None and not _EVAL_CASES_CACHE._refreshing:
+                _EVAL_CASES_CACHE._refreshing = True
+                asyncio.create_task(_refresh_eval_cache(experiment_id))
+                return JSONResponse(cached)
+
+            # First load — must wait
+            cases = await _fetch_eval_cases_async(experiment_id)
+            if cases:
+                _EVAL_CASES_CACHE.put(cases)
+                return JSONResponse(cases)
 
         # Fallback: local evals.json
         path = _find_evals_path()
@@ -4095,8 +4183,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def eval_ui() -> HTMLResponse:
         """Eval landing page — cases sourced from MLflow quality assessments.
 
-        Reads labeled traces from the active MLflow experiment so the eval
-        suite stays in sync with human ratings — no separate evals.json needed.
+        Serves from the shared _EVAL_CASES_CACHE (same cache as /_apx/eval/data)
+        so both the standalone page and the Chat-shell tab stay in sync.
         Falls back to evals.json when MLflow is unavailable.
         """
         from ._ui_chat import _render_eval_landing
@@ -4106,58 +4194,22 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
         if experiment_id:
-            try:
-                import mlflow as _mlflow
-                df = _mlflow.search_traces(
-                    experiment_ids=[experiment_id],
-                    max_results=100,
-                    order_by=["attributes.start_time DESC"],
-                )
-                for _, row in df.iterrows():
-                    assessments = row.get("assessments") or []
-                    # Assessments are dicts: {assessment_name, feedback: {value}, rationale, ...}
-                    quality = next(
-                        (a for a in assessments
-                         if (a.get("assessment_name") if isinstance(a, dict) else getattr(a, "name", None)) == "quality"),
-                        None,
-                    )
-                    if quality is None:
-                        continue
-                    req = row.get("request") or ""
-                    question = ""
-                    try:
-                        req_obj = _json.loads(req) if isinstance(req, str) else req
-                        inputs = req_obj.get("input") or req_obj.get("messages") or []
-                        for msg in inputs:
-                            if isinstance(msg, dict) and msg.get("role") == "user":
-                                question = str(msg.get("content", ""))
-                                break
-                    except Exception:
-                        question = str(req)[:200]
-                    if not question:
-                        continue
-                    # Extract value from nested dict or object
-                    if isinstance(quality, dict):
-                        rationale = quality.get("rationale") or ""
-                        fb = quality.get("feedback") or {}
-                        value = fb.get("value") if isinstance(fb, dict) else getattr(fb, "value", None)
-                    else:
-                        rationale = getattr(quality, "rationale", None) or ""
-                        value = getattr(quality, "value", None)
-                        if hasattr(value, "value"):
-                            value = value.value
-                    cases.append({
-                        "question": question,
-                        "expected_judge": rationale or ("correct and grounded" if value else "should decline or flag"),
-                        "expected_pass": bool(value),
-                        "status": "pending",
-                        "response": "",
-                        "trace_id": str(row.get("trace_id", "")),
-                    })
-                if cases:
-                    loaded_path = f"MLflow experiment {experiment_id} ({len(cases)} labeled traces)"
-            except Exception as exc:
-                load_error = f"MLflow unavailable: {exc}"
+            if _EVAL_CASES_CACHE.fresh:
+                cases = list(_EVAL_CASES_CACHE.get() or [])
+            else:
+                cached = _EVAL_CASES_CACHE.get()
+                if cached is not None and not _EVAL_CASES_CACHE._refreshing:
+                    _EVAL_CASES_CACHE._refreshing = True
+                    asyncio.create_task(_refresh_eval_cache(experiment_id))
+                    cases = list(cached)
+                elif cached is None:
+                    cases = await _fetch_eval_cases_async(experiment_id)
+                    if cases:
+                        _EVAL_CASES_CACHE.put(cases)
+                else:
+                    cases = list(cached or [])
+            if cases:
+                loaded_path = f"MLflow experiment {experiment_id} ({len(cases)} labeled traces)"
 
         if not cases:
             path = _find_evals_path()
@@ -4269,6 +4321,21 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
         return {"ok": True, "registered_as": judge_name, "guidelines": guidelines, "trace_count": len(traces)}
+
+    @router.post("/_apx/eval/cache/bust")
+    async def eval_cache_bust() -> Any:
+        """Clear both MLflow query caches so the next request re-fetches fresh data.
+
+        Call this after rating new traces to see them immediately in /_apx/eval
+        and /_apx/traces without waiting for the TTL to expire.
+        """
+        _EVAL_CASES_CACHE._value = None
+        _EVAL_CASES_CACHE._expires = 0.0
+        _EVAL_CASES_CACHE._refreshing = False
+        _TRACES_LIST_CACHE._value = None
+        _TRACES_LIST_CACHE._expires = 0.0
+        _TRACES_LIST_CACHE._refreshing = False
+        return {"ok": True, "message": "Caches cleared — next request will re-fetch from MLflow."}
 
     @router.get("/_apx/wizard", include_in_schema=False)
     async def wizard_ui() -> Any:
