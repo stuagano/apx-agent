@@ -5837,6 +5837,131 @@ def _kill_pid(pid: int, name: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# query
+# ---------------------------------------------------------------------------
+
+
+@agents.command("query")
+@click.argument("question", default=None, required=False)
+@click.option("--url", default="http://127.0.0.1:8000", show_default=True,
+              help="Agent base URL (local dev server or deployed Databricks App).")
+@click.option("--profile", default=None,
+              help="Databricks CLI profile for bearer-token auth (required for deployed apps).")
+@click.option("--stream", "use_stream", is_flag=True, default=False,
+              help="Request a streaming response.")
+@click.option("--raw", is_flag=True, default=False,
+              help="Print raw JSON response instead of rendered output.")
+def query_cmd(question: str | None, url: str, profile: str | None,
+              use_stream: bool, raw: bool) -> None:
+    """Send a question to a running agent and render the response.
+
+    QUESTION is the user message. If omitted, it is read from stdin.
+
+    \b
+    Examples:
+      apx agents query "Why is ACME Re September data missing?"
+      apx agents query --url https://my-app.databricksapps.com --profile fevm "hi"
+      echo "show all MGAs" | apx agents query --url https://my-app.databricksapps.com --profile fevm
+    """
+    import json
+    import subprocess
+    import textwrap
+    import urllib.error
+    import urllib.request
+
+    # --- resolve question ---
+    if not question:
+        if not click.get_text_stream("stdin").isatty():
+            question = click.get_text_stream("stdin").read().strip()
+        if not question:
+            raise click.ClickException("Provide a question as an argument or via stdin.")
+
+    # --- auth ---
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if profile:
+        try:
+            result = subprocess.run(
+                ["databricks", "auth", "token", "--profile", profile],
+                capture_output=True, text=True, check=True,
+            )
+            token = json.loads(result.stdout)["access_token"]
+            headers["Authorization"] = f"Bearer {token}"
+        except (subprocess.CalledProcessError, KeyError, json.JSONDecodeError) as e:
+            raise click.ClickException(f"Could not get token for profile {profile!r}: {e}") from e
+
+    # --- request ---
+    endpoint = url.rstrip("/") + "/responses"
+    body = json.dumps({
+        "input": [{"role": "user", "content": question}],
+        "stream": use_stream,
+    }).encode()
+
+    click.echo(f"\n❓ {question}")
+    click.echo("─" * min(70, len(question) + 3))
+
+    req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode(errors="replace")
+        raise click.ClickException(f"HTTP {e.code} from {endpoint}:\n{body_text}") from e
+    except urllib.error.URLError as e:
+        raise click.ClickException(f"Could not reach {endpoint}: {e.reason}") from e
+
+    if raw:
+        click.echo(json.dumps(data, indent=2))
+        return
+
+    # --- render ---
+    output = data.get("output", [])
+    step = 0
+
+    for item in output:
+        t = item.get("type")
+
+        if t == "function_call":
+            step += 1
+            try:
+                args = json.loads(item.get("arguments", "{}"))
+                args_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) if args else ""
+            except Exception:
+                args_str = item.get("arguments", "")
+            click.echo(f"  🔧 [{step}] {item['name']}({args_str})")
+
+        elif t == "function_call_output":
+            raw_out = item.get("output", "")
+            try:
+                result_parsed = json.loads(raw_out)
+                if isinstance(result_parsed, dict):
+                    summary = ", ".join(
+                        f"{k}={v!r}" for k, v in list(result_parsed.items())[:4]
+                    )
+                elif isinstance(result_parsed, list):
+                    summary = f"{len(result_parsed)} items"
+                else:
+                    summary = str(result_parsed)[:120]
+            except Exception:
+                summary = str(raw_out)[:120]
+            click.echo(f"     → {summary}")
+
+        elif t == "message":
+            for part in item.get("content", []):
+                if part.get("type") == "output_text":
+                    text = part["text"].strip()
+                    if len(text) > 120:
+                        click.echo("")
+                        for line in text.splitlines():
+                            if line.strip():
+                                click.echo(
+                                    textwrap.fill(line, width=88, subsequent_indent="  ")
+                                )
+                            else:
+                                click.echo("")
+                        click.echo("")
+
+
 @agents.command()
 @click.argument("agent_name", default=None, required=False, metavar="AGENT")
 @click.option("--port", default=None, type=int, help="Target a specific port instead of searching.")
