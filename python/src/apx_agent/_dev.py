@@ -4207,33 +4207,68 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.post("/_apx/eval/label-align")
     async def eval_label_align(request: Request) -> Any:
-        """Run MemAlign judge alignment via `apx-agent label align`."""
+        """Run MemAlign directly from all labeled traces — no run_id needed.
+
+        Loads all traces with quality assessments via mlflow.get_trace(),
+        runs MemAlignOptimizer, and returns the distilled guidelines.
+        """
         from fastapi.responses import JSONResponse
-        from apx_agent import _labeling
 
         body = await request.json()
         judge_name = (body.get("judge_name") or "").strip()
-        run_id = (body.get("run_id") or "").strip()
-        if not judge_name or not run_id:
-            return JSONResponse({"ok": False, "error": "judge_name and run_id are required"}, status_code=422)
+        if not judge_name:
+            return JSONResponse({"ok": False, "error": "judge_name is required"}, status_code=422)
         experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip() or None
         if not experiment_id:
             return JSONResponse({"ok": False, "error": "MLFLOW_EXPERIMENT_ID not set"}, status_code=503)
         try:
             import mlflow
+            from mlflow.genai.judges import make_judge
+            from mlflow.genai.judges.optimizers import MemAlignOptimizer
+
             mlflow.set_tracking_uri("databricks")
-            result = _labeling.align_judge(
-                experiment_id=experiment_id,
-                judge_name=judge_name,
-                run_id=run_id,
-                reflection_model="databricks:/databricks-claude-sonnet-4-6",
-                embedding_model="databricks:/databricks-gte-large-en",
-                retrieval_k=5,
-                new_version=None,
+
+            # Load traces that have quality assessments
+            df = mlflow.search_traces(
+                experiment_ids=[experiment_id],
+                max_results=200,
+                order_by=["attributes.start_time DESC"],
             )
+            labeled_ids = [
+                str(row["trace_id"]) for _, row in df.iterrows()
+                if any(
+                    (a.get("assessment_name") if isinstance(a, dict) else getattr(a, "name", None)) == judge_name
+                    for a in (row.get("assessments") or [])
+                )
+            ]
+            if not labeled_ids:
+                return JSONResponse({"ok": False, "error": f"No traces with '{judge_name}' assessments found. Rate some traces first."}, status_code=422)
+
+            traces = []
+            for tid in labeled_ids:
+                try:
+                    traces.append(mlflow.get_trace(tid))
+                except Exception:
+                    pass
+            if not traces:
+                return JSONResponse({"ok": False, "error": "Could not load trace spans. Try rating more traces."}, status_code=500)
+
+            judge = make_judge(
+                name=judge_name,
+                instructions=f"Input: {{{{ inputs }}}}\nOutput: {{{{ outputs }}}}\nReturn true if the response is accurate and appropriate, false if it fabricates information or fails to decline out-of-scope requests.",
+                feedback_value_type=bool,
+                model="databricks:/databricks-claude-sonnet-4-6",
+            )
+            optimizer = MemAlignOptimizer(
+                reflection_lm="databricks:/databricks-claude-sonnet-4-6",
+                retrieval_k=min(5, len(traces)),
+                embedding_model="databricks:/databricks-gte-large-en",
+            )
+            aligned = judge.align(traces=traces, optimizer=optimizer)
+            guidelines = [g.guideline_text for g in getattr(aligned, "_semantic_memory", []) or []]
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-        return {"ok": True, "registered_as": result.registered_as, "guidelines": result.guidelines}
+        return {"ok": True, "registered_as": judge_name, "guidelines": guidelines, "trace_count": len(traces)}
 
     @router.get("/_apx/wizard", include_in_schema=False)
     async def wizard_ui() -> Any:
