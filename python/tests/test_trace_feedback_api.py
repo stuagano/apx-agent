@@ -142,24 +142,18 @@ async def test_deployed_feedback_requires_obo_and_human_identity(monkeypatch) ->
 async def test_deployed_feedback_maps_missing_mlflow_adapter_to_503(
     monkeypatch,
 ) -> None:
-    # 503 is generated when get_feedback_view raises TraceFeedbackUnavailableError,
-    # which happens when the mlflow import fails. Mock the OBO API so it raises that.
+    # 503 is generated when get_feedback_view raises TraceFeedbackUnavailableError.
     from apx_agent._trace_feedback import TraceFeedbackUnavailableError
 
     monkeypatch.setenv("DATABRICKS_APP_NAME", "feedback-app")
     monkeypatch.setenv("DATABRICKS_HOST", "https://trusted.example")
-
-    def boom_api(*, host, token):
-        return SimpleNamespace(
-            get_trace=lambda tid: (_ for _ in ()).throw(
-                TraceFeedbackUnavailableError("mlflow not available")
-            ),
-            log_feedback=lambda **kw: (_ for _ in ()).throw(
-                TraceFeedbackUnavailableError("mlflow not available")
-            ),
-        )
-
-    monkeypatch.setattr(_trace_feedback_api, "_OBOTraceFeedbackApi", boom_api)
+    monkeypatch.setattr(
+        _trace_feedback_api,
+        "get_feedback_view",
+        lambda tid, mlflow_api=None: (_ for _ in ()).throw(
+            TraceFeedbackUnavailableError("mlflow not available")
+        ),
+    )
     async with AsyncClient(
         transport=ASGITransport(app=_feedback_app(), raise_app_exceptions=False),
         base_url="http://test",
@@ -177,23 +171,23 @@ async def test_deployed_feedback_maps_missing_mlflow_adapter_to_503(
 
 
 @pytest.mark.asyncio
-async def test_deployed_feedback_uses_trusted_host_and_forwarded_email(
+async def test_deployed_feedback_uses_forwarded_email_as_source(
     monkeypatch,
 ) -> None:
+    # Deployed path uses ambient SP creds (mlflow_api=None) + user email as source.
+    # X-Forwarded-Host is ignored — host always comes from trusted DATABRICKS_HOST env.
     monkeypatch.setenv("DATABRICKS_APP_NAME", "feedback-app")
     monkeypatch.setenv("DATABRICKS_HOST", "https://trusted.example")
     captured = {}
 
-    def fake_api(*, host, token):
-        captured.update(host=host, token=token)
-        return SimpleNamespace(
-            log_feedback=lambda **kwargs: (
-                captured.update(write=kwargs),
-                SimpleNamespace(assessment_id="a-1"),
-            )[1]
-        )
-
-    monkeypatch.setattr(_trace_feedback_api, "_OBOTraceFeedbackApi", fake_api)
+    monkeypatch.setattr(
+        _trace_feedback_api,
+        "attach_feedback",
+        lambda fb, mlflow_api=None: (
+            captured.update(source=fb.source, mlflow_api=mlflow_api),
+            TraceFeedbackResult(trace_id=fb.trace_id, feedback_id="a-1", name=fb.name, created=True),
+        )[1],
+    )
     async with AsyncClient(
         transport=ASGITransport(app=_feedback_app()),
         base_url="http://test",
@@ -209,65 +203,60 @@ async def test_deployed_feedback_uses_trusted_host_and_forwarded_email(
         )
 
     assert response.status_code == 200
-    assert captured["host"] == "https://trusted.example"
-    assert captured["token"] == "user-token"
-    assert captured["write"]["source"].source_id == "reviewer@example.com"
+    assert captured["source"] == "reviewer@example.com"
+    assert captured["mlflow_api"] is None  # ambient SP creds, not OBO
 
 
 @pytest.mark.asyncio
-async def test_deployed_feedback_reads_and_replays_with_request_scoped_trace_info(
+async def test_deployed_feedback_reads_and_replays_with_ambient_creds(
     monkeypatch,
 ) -> None:
+    # Deployed path: mlflow_api=None (ambient SP creds), source = user email from OBO.
     monkeypatch.setenv("DATABRICKS_APP_NAME", "feedback-app")
     monkeypatch.setenv("DATABRICKS_HOST", "https://trusted.example")
-    captured = {"host": None, "token": None, "reads": [], "writes": []}
-    # Assessment as a dict — the shape _normalize_assessment expects
-    raw_assessment = {
-        "assessment_id": "a-existing",
-        "assessment_name": "quality",
-        "feedback": {"value": 4},
-        "source": {"source_type": "HUMAN", "source_id": "reviewer@example.com"},
-        "metadata": {IDEMPOTENCY_METADATA_KEY: "req-1"},
-    }
-    info = SimpleNamespace(
+
+    from apx_agent._trace_feedback import TraceFeedbackView, TraceAssessment
+
+    view = TraceFeedbackView(
         trace_id="tr-1",
         tags={"team": "claims"},
-        assessments=[raw_assessment],
+        assessments=[
+            TraceAssessment(
+                assessment_id="a-existing", name="quality", kind="feedback",
+                value=4, rationale=None, source_type="HUMAN",
+                source_id="reviewer@example.com",
+                metadata={IDEMPOTENCY_METADATA_KEY: "req-1"},
+            )
+        ],
+    )
+    captured: dict = {}
+
+    monkeypatch.setattr(_trace_feedback_api, "get_feedback_view",
+                        lambda tid, mlflow_api=None: (captured.update(get_api=mlflow_api), view)[1])
+    monkeypatch.setattr(
+        _trace_feedback_api, "attach_feedback",
+        lambda fb, mlflow_api=None: (
+            captured.update(post_source=fb.source, post_api=mlflow_api),
+            TraceFeedbackResult(trace_id=fb.trace_id, feedback_id="a-existing", name=fb.name, created=False),
+        )[1],
     )
 
-    def fake_obo_api(*, host, token):
-        captured["host"] = host
-        captured["token"] = token
-        return SimpleNamespace(
-            get_trace=lambda tid: (captured["reads"].append(tid), SimpleNamespace(info=info))[1],
-            log_feedback=lambda **kw: (captured["writes"].append(kw), SimpleNamespace(assessment_id="a-existing"))[1],
-        )
-
-    monkeypatch.setattr(_trace_feedback_api, "_OBOTraceFeedbackApi", fake_obo_api)
     async with AsyncClient(
         transport=ASGITransport(app=_feedback_app()),
         base_url="http://test",
-        headers={
-            "X-Forwarded-Access-Token": "user-token",
-            "X-Forwarded-Email": "reviewer@example.com",
-        },
+        headers={"X-Forwarded-Access-Token": "user-token", "X-Forwarded-Email": "reviewer@example.com"},
     ) as client:
         loaded = await client.get("/_apx/feedback/tr-1")
-        replayed = await client.post(
-            "/_apx/feedback",
-            json={
-                "trace_id": "tr-1",
-                "name": "quality",
-                "value": 4,
-                "idempotency_key": "req-1",
-            },
-        )
+        replayed = await client.post("/_apx/feedback",
+                                     json={"trace_id": "tr-1", "name": "quality", "value": 4,
+                                           "idempotency_key": "req-1"})
 
     assert loaded.status_code == 200
     assert loaded.json()["tags"] == {"team": "claims"}
     assert replayed.status_code == 200
-    assert captured["host"] == "https://trusted.example"
-    assert captured["token"] == "user-token"
+    assert captured["get_api"] is None   # ambient SP creds
+    assert captured["post_api"] is None  # ambient SP creds
+    assert captured["post_source"] == "reviewer@example.com"  # user identity preserved
 
 
 @pytest.mark.asyncio

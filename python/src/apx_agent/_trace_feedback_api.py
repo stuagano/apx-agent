@@ -134,10 +134,12 @@ def _request_feedback_context(request: Request) -> _TraceFeedbackContext:
             status_code=401,
             detail="Trace feedback requires an authenticated Databricks Apps user.",
         )
-    return _TraceFeedbackContext(
-        mlflow_api=_OBOTraceFeedbackApi(host=host, token=token),
-        source=source,
-    )
+    # Use ambient app credentials (mlflow_api=None) rather than the OBO token
+    # for MLflow API calls — the app's service principal already has MLflow
+    # access, while the OBO token may lack the ml.mlflow scope or have
+    # insufficient permissions for the UC-backed assessments API. The user's
+    # identity is preserved as the source label on the assessment. Fixes #724.
+    return _TraceFeedbackContext(mlflow_api=None, source=source)
 
 
 def _raise_http_error(exc: Exception) -> NoReturn:
