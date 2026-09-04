@@ -1481,7 +1481,7 @@ function switchTab(name, btn) {{
   document.querySelectorAll('.panel-tabs button').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
-  if (name === 'eval' && !evalLoaded) loadEvalCases();
+  if (name === 'eval' && (!evalLoaded || !evalRows.length)) loadEvalCases();
   if (name === 'history') loadConversationHistory();
 }}
 
