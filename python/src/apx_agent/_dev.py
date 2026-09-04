@@ -3933,12 +3933,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 for _, row in df.iterrows():
                     assessments = row.get("assessments") or []
                     quality = next(
-                        (a for a in assessments if getattr(a, "name", None) == "quality"),
+                        (a for a in assessments
+                         if (a.get("assessment_name") if isinstance(a, dict) else getattr(a, "name", None)) == "quality"),
                         None,
                     )
                     if quality is None:
                         continue
-                    # Extract question from the request field
                     req = row.get("request") or ""
                     question = ""
                     try:
@@ -3952,10 +3952,15 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                         question = str(req)[:200]
                     if not question:
                         continue
-                    rationale = getattr(quality, "rationale", None) or ""
-                    value = getattr(quality, "value", None)
-                    if hasattr(value, "value"):
-                        value = value.value
+                    if isinstance(quality, dict):
+                        rationale = quality.get("rationale") or ""
+                        fb = quality.get("feedback") or {}
+                        value = fb.get("value") if isinstance(fb, dict) else getattr(fb, "value", None)
+                    else:
+                        rationale = getattr(quality, "rationale", None) or ""
+                        value = getattr(quality, "value", None)
+                        if hasattr(value, "value"):
+                            value = value.value
                     cases.append({
                         "question": question,
                         "expected_judge": rationale or ("response should be correct and grounded" if value else "response should decline or be flagged"),
@@ -4110,8 +4115,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 )
                 for _, row in df.iterrows():
                     assessments = row.get("assessments") or []
+                    # Assessments are dicts: {assessment_name, feedback: {value}, rationale, ...}
                     quality = next(
-                        (a for a in assessments if getattr(a, "name", None) == "quality"),
+                        (a for a in assessments
+                         if (a.get("assessment_name") if isinstance(a, dict) else getattr(a, "name", None)) == "quality"),
                         None,
                     )
                     if quality is None:
@@ -4129,10 +4136,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                         question = str(req)[:200]
                     if not question:
                         continue
-                    rationale = getattr(quality, "rationale", None) or ""
-                    value = getattr(quality, "value", None)
-                    if hasattr(value, "value"):
-                        value = value.value
+                    # Extract value from nested dict or object
+                    if isinstance(quality, dict):
+                        rationale = quality.get("rationale") or ""
+                        fb = quality.get("feedback") or {}
+                        value = fb.get("value") if isinstance(fb, dict) else getattr(fb, "value", None)
+                    else:
+                        rationale = getattr(quality, "rationale", None) or ""
+                        value = getattr(quality, "value", None)
+                        if hasattr(value, "value"):
+                            value = value.value
                     cases.append({
                         "question": question,
                         "expected_judge": rationale or ("correct and grounded" if value else "should decline or flag"),
