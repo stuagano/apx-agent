@@ -1660,10 +1660,14 @@ function toggleEvalResp(el) {{
 
 async function loadEvalCases() {{
   evalLoaded = true;
+  document.getElementById('eval-cases').innerHTML = '<div style="color:#555;font-size:12px;padding:20px 12px">Loading from MLflow… (may take ~30s on cold warehouse)</div>';
   try {{
-    const r = await fetch('/_apx/eval/data');
-    evalRows = await r.json();
-    if (!Array.isArray(evalRows)) evalRows = [];
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 90000);
+    const r = await fetch('/_apx/eval/data', {{signal: ctrl.signal}});
+    clearTimeout(t);
+    const data = await r.json();
+    evalRows = Array.isArray(data) ? data : [];
     renderEval();
   }} catch(e) {{
     document.getElementById('eval-cases').innerHTML = '<div style="color:#f87171;font-size:12px;padding:12px">Failed to load: ' + e.message + '</div>';
