@@ -1763,6 +1763,15 @@ function updateExpectedJudge(i, value) {{
   if (!evalRows[i]) return;
   evalRows[i].expected_judge = value;
   saveEvalCases();
+  // Persist back to MLflow as updated assessment rationale
+  const tid = evalRows[i].trace_id;
+  const val = evalRows[i].expected_pass !== undefined ? evalRows[i].expected_pass : true;
+  if (tid) {{
+    fetch('/_apx/feedback', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{trace_id: tid, name: 'quality', value: val, comment: value}}),
+    }}).catch(() => {{}});
+  }}
 }}
 
 function deleteEvalCase(i) {{
