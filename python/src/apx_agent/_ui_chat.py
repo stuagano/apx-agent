@@ -1707,6 +1707,8 @@ async function loadEvalCases() {{
     const data = await r.json();
     evalRows = Array.isArray(data) ? data : [];
     renderEval();
+    // Auto-run when cases come from MLflow ratings (all have a criterion)
+    if (evalRows.length && evalRows.every(r => r.expected_judge)) runAllEvalCases();
   }} catch(e) {{
     document.getElementById('eval-cases').innerHTML = '<div style="color:#f87171;font-size:12px;padding:12px">Failed to load: ' + e.message + '</div>';
   }}
@@ -1851,8 +1853,7 @@ async function runEvalCase(i) {{
   saveEvalCases();
 }}
 
-document.getElementById('eval-run-all').addEventListener('click', async () => {{
-  if (!evalLoaded) await loadEvalCases();
+async function runAllEvalCases() {{
   const btn = document.getElementById('eval-run-all');
   const fill = document.getElementById('eval-progress-fill');
   const st   = document.getElementById('eval-status');
@@ -1866,6 +1867,11 @@ document.getElementById('eval-run-all').addEventListener('click', async () => {{
   const passed = evalRows.filter(r => r.status === 'pass').length;
   st.textContent = `${{passed}}/${{evalRows.length}} passed`;
   btn.disabled = false;
+}}
+
+document.getElementById('eval-run-all').addEventListener('click', async () => {{
+  if (!evalLoaded) await loadEvalCases();
+  await runAllEvalCases();
 }});
 
 document.getElementById('eval-reset').addEventListener('click', () => {{
