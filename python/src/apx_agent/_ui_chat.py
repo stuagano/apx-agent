@@ -1767,10 +1767,12 @@ function updateExpectedJudge(i, value) {{
   const tid = evalRows[i].trace_id;
   const val = evalRows[i].expected_pass !== undefined ? evalRows[i].expected_pass : true;
   if (tid) {{
+    // idempotency_key = trace_id so repeated edits update in place rather than
+    // appending new assessments (attach_feedback matches on the key)
     fetch('/_apx/feedback', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{trace_id: tid, name: 'quality', value: val, comment: value}}),
-    }}).catch(() => {{}});
+      body: JSON.stringify({{trace_id: tid, name: 'quality', value: val, comment: value, idempotency_key: tid}}),
+    }}).then(() => fetch('/_apx/eval/cache/bust', {{method:'POST'}})).catch(() => {{}});
   }}
 }}
 

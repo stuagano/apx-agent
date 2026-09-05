@@ -414,7 +414,7 @@ async function submitFeedback(tid, value, btn) {{
     const r = await fetch('/_apx/feedback', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{trace_id: tid, name: 'quality', value}})
+      body: JSON.stringify({{trace_id: tid, name: 'quality', value, idempotency_key: tid}})
     }});
     if (!r.ok) throw new Error(await r.text());
     const row = btn.closest('tr');
@@ -1047,7 +1047,7 @@ async function submitFeedback() {{
     const r = await fetch('/_apx/feedback', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{trace_id: '{tid_js}', name: 'quality', value: _pendingValue, comment}})
+      body: JSON.stringify({{trace_id: '{tid_js}', name: 'quality', value: _pendingValue, comment, idempotency_key: '{tid_js}'}})
     }});
     if (!r.ok) throw new Error(await r.text());
     msg.textContent = (_pendingValue ? '✓ Marked good' : '✓ Marked bad') + (comment ? ' · note saved' : '');
