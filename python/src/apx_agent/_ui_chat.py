@@ -1772,7 +1772,7 @@ function updateExpectedJudge(i, value) {{
     fetch('/_apx/feedback', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{trace_id: tid, name: 'quality', value: val, comment: value, idempotency_key: tid}}),
-    }}).catch(() => {{}});
+    }}).then(() => fetch('/_apx/eval/cache/bust', {{method:'POST'}})).catch(() => {{}});
   }}
 }}
 
