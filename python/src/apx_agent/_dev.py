@@ -371,13 +371,15 @@ def _render_traces_list(rows: list | None, agent_name: str | None) -> str:
     elif not rows:
         body = '<div id="traces-body"><p class="empty">No traces found. Run the agent and traces will appear here.</p></div>'
     else:
-        ths = "<tr><th>Time</th><th>Duration</th><th>Status</th><th>Request</th><th>Response</th><th>Feedback</th></tr>"
+        ths = "<tr><th>Time</th><th>Duration</th><th>Cost</th><th>Status</th><th>Request</th><th>Response</th><th>Feedback</th></tr>"
         tds = []
         for r in rows:
             ts = r["request_time_ms"]
             import datetime
             dt = datetime.datetime.fromtimestamp(ts / 1000).strftime("%m/%d %H:%M:%S") if ts else "—"
             dur = f"{r['duration_ms']}ms" if r["duration_ms"] is not None else "—"
+            cost = r.get("cost_usd")
+            cost_str = f"${cost * 100:.3f}¢" if cost is not None and cost > 0 else "—"
             st = r["state"]
             st_cls = "st-ok" if "OK" in st or "COMPLETE" in st else ("st-err" if "ERR" in st or "FAIL" in st else "st-run")
             req = _html.escape((r["request_preview"] or "")[:120])
@@ -388,6 +390,7 @@ def _render_traces_list(rows: list | None, agent_name: str | None) -> str:
                 f'<tr>'
                 f'<td><a href="/_apx/traces/{tid}">{dt}</a></td>'
                 f'<td class="dur">{dur}</td>'
+                f'<td class="dur" title="input+output tokens cost (claude-sonnet-4-6)">{cost_str}</td>'
                 f'<td class="{st_cls}">{st}</td>'
                 f'<td class="preview">{req}</td>'
                 f'<td class="preview">{resp}</td>'
@@ -432,18 +435,20 @@ function renderRows(rows) {{
     wrap.innerHTML = '<p class="empty">No traces found. Run the agent and traces will appear here.</p>';
     return;
   }}
-  const ths = '<tr><th>Time</th><th>Duration</th><th>Status</th><th>Request</th><th>Response</th><th>Feedback</th></tr>';
+  const ths = '<tr><th>Time</th><th>Duration</th><th>Cost</th><th>Status</th><th>Request</th><th>Response</th><th>Feedback</th></tr>';
   const tds = rows.map(r => {{
     const dt = r.request_time_ms
       ? new Date(r.request_time_ms).toLocaleString('en-US', {{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}})
       : '—';
     const dur = r.duration_ms != null ? r.duration_ms + 'ms' : '—';
+    const cost = r.cost_usd != null && r.cost_usd > 0 ? (r.cost_usd * 100).toFixed(3) + '¢' : '—';
     const st = r.state || '';
     const stCls = /OK|COMPLETE/.test(st) ? 'st-ok' : /ERR|FAIL/.test(st) ? 'st-err' : 'st-run';
     const tid = esc(r.trace_id);
     return `<tr>
       <td><a href="/_apx/traces/${{tid}}">${{dt}}</a></td>
       <td class="dur">${{dur}}</td>
+      <td class="dur" title="input+output token cost">${{cost}}</td>
       <td class="${{stCls}}">${{st}}</td>
       <td class="preview">${{esc((r.request_preview||'').slice(0,120))}}</td>
       <td class="preview">${{esc((r.response_preview||'').slice(0,120))}}</td>
@@ -1592,6 +1597,20 @@ def _fetch_traces_list_sync(experiment_id: str | None, max_results: int) -> list
     for t in traces:
         info = t.info
         dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
+        # Token cost from trace metadata. Rates: claude-sonnet-4-6 via Databricks
+        # AI Gateway = $3/MTok input, $15/MTok output. Falls back to 0 gracefully.
+        cost_usd: float | None = None
+        try:
+            meta = getattr(info, "request_metadata", None) or {}
+            token_raw = meta.get("mlflow.trace.tokenUsage")
+            if token_raw:
+                tu = _json.loads(token_raw)
+                cost_usd = round(
+                    (tu.get("input_tokens", 0) * 3 + tu.get("output_tokens", 0) * 15) / 1_000_000,
+                    6,
+                )
+        except Exception:
+            pass
         rows.append({
             "trace_id": info.trace_id,
             "state": info.state.value if hasattr(info.state, "value") else str(info.state),
@@ -1599,6 +1618,7 @@ def _fetch_traces_list_sync(experiment_id: str | None, max_results: int) -> list
             "duration_ms": dur_ms,
             "request_preview": info.request_preview or "",
             "response_preview": info.response_preview or "",
+            "cost_usd": cost_usd,
         })
     return rows
 
