@@ -1707,8 +1707,6 @@ async function loadEvalCases() {{
     const data = await r.json();
     evalRows = Array.isArray(data) ? data : [];
     renderEval();
-    // Auto-run when cases come from MLflow ratings (all have a criterion)
-    if (evalRows.length && evalRows.every(r => r.expected_judge)) runAllEvalCases();
   }} catch(e) {{
     document.getElementById('eval-cases').innerHTML = '<div style="color:#f87171;font-size:12px;padding:12px">Failed to load: ' + e.message + '</div>';
   }}
@@ -1851,6 +1849,39 @@ async function runEvalCase(i) {{
   finalizeTrace(traceId, r.status === 'fail' ? 'error' : 'completed');
   renderEval();
   saveEvalCases();
+}}
+
+async function autoEvalResponse(question, response, traceId, msgDiv) {{
+  // Find an eval case whose question matches this interaction (fuzzy: startsWith)
+  const q = question.trim().toLowerCase();
+  const match = evalRows.find(r => q.startsWith(r.question.slice(0, 40).toLowerCase()) ||
+                                   r.question.slice(0, 40).toLowerCase().startsWith(q));
+  if (!match || !match.expected_judge) return;
+
+  // Run the judge against this live response
+  try {{
+    const j = await fetch('/_apx/eval/judge', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{question, response, criterion: match.expected_judge}}),
+    }});
+    const d = await j.json();
+    const pass = d.ok && d.pass;
+    const badge = document.createElement('span');
+    badge.title = d.reason || '';
+    badge.style.cssText = 'font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px;margin-left:6px;vertical-align:middle;cursor:default';
+    badge.style.background = pass ? '#052e16' : '#2a0a0a';
+    badge.style.color = pass ? '#4ade80' : '#f87171';
+    badge.textContent = pass ? '✓ eval pass' : '✗ eval fail';
+    msgDiv.appendChild(badge);
+
+    // Update the matching eval row so the tab reflects it too
+    match.status = pass ? 'pass' : 'fail';
+    match.response = response;
+    match.judge_verdict = pass ? 'PASS' : 'FAIL';
+    match.judge_reason = d.reason || '';
+    match.trace_id = traceId || match.trace_id;
+    renderEval();
+  }} catch(_) {{}}
 }}
 
 async function runAllEvalCases() {{
@@ -2858,6 +2889,9 @@ form.addEventListener('submit', async e => {{
   loadConversationHistory();
   // Surface any ASK-policy approval requests raised during this turn.
   checkPendingApprovals();
+  // Auto-eval: check this response against any loaded eval criterion that
+  // matches the question. Shows inline pass/fail badge on the assistant message.
+  autoEvalResponse(text, full, traceId, assistantDiv);
 }});
 
 // ── Resizable panel ──
