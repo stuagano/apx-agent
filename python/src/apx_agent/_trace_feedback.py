@@ -75,40 +75,30 @@ class _DefaultMlflowApi:
     def get_trace(self, trace_id: str) -> Any:
         """Return trace info with assessments including metadata.
 
-        Uses search_traces (DataFrame path) instead of get_trace because
-        search_traces returns assessments as dicts with the full metadata field
-        populated, whereas get_trace returns Feedback objects that omit metadata.
+        mlflow.get_trace() returns Feedback objects with .metadata populated
+        when MLFLOW_TRACING_SQL_WAREHOUSE_ID is set (as it is in the deployed
+        app via databricks.yml). Use to_dictionary() to convert each assessment
+        to a dict so _normalize_assessment can read the metadata field.
         """
         import mlflow
         from types import SimpleNamespace
 
-        try:
-            df = mlflow.search_traces(
-                filter_string=f"attributes.trace_id = '{trace_id}'",
-                max_results=1,
-            )
-        except Exception:
-            # Fallback: search_traces may require a warehouse ID not set locally
-            df = None
-
-        if df is not None and len(df):
-            row = df.iloc[0]
-            info = SimpleNamespace(
-                trace_id=str(row.get("trace_id", trace_id)),
-                tags=dict(row.get("tags") or {}),
-                assessments=list(row.get("assessments") or []),
-            )
-            return SimpleNamespace(info=info)
-
-        # Last resort: get_trace without metadata (idempotency won't match but
-        # won't crash either — worst case creates a duplicate)
         t = mlflow.get_trace(trace_id)
         if t is None:
             return None
+
+        raw_assessments = []
+        for a in (getattr(t.info, "assessments", None) or []):
+            try:
+                d = a.to_dictionary() if hasattr(a, "to_dictionary") else None
+                raw_assessments.append(d if isinstance(d, dict) else a)
+            except Exception:
+                raw_assessments.append(a)
+
         info = SimpleNamespace(
             trace_id=t.info.trace_id,
             tags=dict(t.info.tags or {}),
-            assessments=[],  # assessments without metadata are useless for idempotency
+            assessments=raw_assessments,
         )
         return SimpleNamespace(info=info)
 
