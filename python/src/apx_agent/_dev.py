@@ -135,6 +135,46 @@ from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_prob
 
 logger = logging.getLogger(__name__)
 
+# ── Stale-while-revalidate TTL cache ─────────────────────────────────────────
+import time as _time_mod
+from dataclasses import dataclass, field as _dc_field
+
+
+@dataclass
+class _TTLCache:
+    """Thread-safe stale-while-revalidate cache for slow async fetches."""
+    ttl: float  # seconds
+    _value: Any = _dc_field(default=None, init=False)
+    _expires: float = _dc_field(default=0.0, init=False)
+    _refreshing: bool = _dc_field(default=False, init=False)
+
+    @property
+    def fresh(self) -> bool:
+        return self._value is not None and _time_mod.monotonic() < self._expires
+
+    def get(self) -> Any:
+        return self._value
+
+    def put(self, value: Any) -> None:
+        self._value = value
+        self._expires = _time_mod.monotonic() + self.ttl
+        self._refreshing = False
+
+
+# Module-level singletons — survive request boundaries, reset on process restart.
+_EVAL_CASES_CACHE: _TTLCache = _TTLCache(ttl=300)   # 5 min — ratings change infrequently
+_TRACES_LIST_CACHE: _TTLCache = _TTLCache(ttl=60)   # 60 s — traces change with each run
+# UC schema discovery: keyed by (catalog, schema) tuple — dict[tuple, _TTLCache]
+_SCHEMA_CACHE: dict[tuple[str, str], _TTLCache] = {}
+_GROUNDING_COLUMNS_CACHE: _TTLCache = _TTLCache(ttl=600)  # 10 min — UC comments rarely change
+
+
+def _schema_cache_for(catalog: str, schema: str) -> _TTLCache:
+    key = (catalog, schema)
+    if key not in _SCHEMA_CACHE:
+        _SCHEMA_CACHE[key] = _TTLCache(ttl=600)  # 10 min per catalog.schema
+    return _SCHEMA_CACHE[key]
+
 
 class _EditPanelInventory(NamedTuple):
     schemas: list[dict[str, Any]]
@@ -321,39 +361,125 @@ def _span_type_css(span_type: str) -> str:
     return "OTHER"
 
 
-def _render_traces_list(rows: list, agent_name: str | None) -> str:
+def _render_traces_list(rows: list | None, agent_name: str | None) -> str:
     import html as _html
 
     title = f"{agent_name} — traces" if agent_name else "Traces"
-    if not rows:
-        body = '<p class="empty">No traces found. Run the agent and traces will appear here.</p>'
+    # rows=None → skeleton mode: JS fetches ?fmt=json and renders client-side
+    if rows is None:
+        body = '<div id="traces-body"><p class="empty">Loading traces…</p></div>'
+    elif not rows:
+        body = '<div id="traces-body"><p class="empty">No traces found. Run the agent and traces will appear here.</p></div>'
     else:
-        ths = "<tr><th>Time</th><th>Duration</th><th>Status</th><th>Request</th><th>Response</th></tr>"
+        ths = "<tr><th>Time</th><th>Duration</th><th>Cost</th><th>Status</th><th>Request</th><th>Response</th><th>Feedback</th></tr>"
         tds = []
         for r in rows:
             ts = r["request_time_ms"]
             import datetime
             dt = datetime.datetime.fromtimestamp(ts / 1000).strftime("%m/%d %H:%M:%S") if ts else "—"
             dur = f"{r['duration_ms']}ms" if r["duration_ms"] is not None else "—"
+            cost = r.get("cost_usd")
+            cost_str = f"${cost * 100:.3f}¢" if cost is not None and cost > 0 else "—"
             st = r["state"]
             st_cls = "st-ok" if "OK" in st or "COMPLETE" in st else ("st-err" if "ERR" in st or "FAIL" in st else "st-run")
             req = _html.escape((r["request_preview"] or "")[:120])
             resp = _html.escape((r["response_preview"] or "")[:120])
             tid = _html.escape(r["trace_id"])
+            tid_js = tid.replace("'", "\\'")
             tds.append(
                 f'<tr>'
                 f'<td><a href="/_apx/traces/{tid}">{dt}</a></td>'
                 f'<td class="dur">{dur}</td>'
+                f'<td class="dur" title="input+output tokens cost (claude-sonnet-4-6)">{cost_str}</td>'
                 f'<td class="{st_cls}">{st}</td>'
                 f'<td class="preview">{req}</td>'
                 f'<td class="preview">{resp}</td>'
+                f'<td class="fb-cell">'
+                f'<button class="fb-btn up" onclick="submitFeedback(\'{tid_js}\',true,this)">👍</button>'
+                f'<button class="fb-btn down" onclick="submitFeedback(\'{tid_js}\',false,this)">👎</button>'
+                f'</td>'
                 f'</tr>'
             )
-        body = f'<table>{ths}{"".join(tds)}</table>'
+        body = f'<div id="traces-body"><table>{ths}{"".join(tds)}</table></div>'
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>{_html.escape(title)}</title>
-<style>{_TRACE_CSS}</style></head><body>
+<style>{_TRACE_CSS}
+.fb-cell{{white-space:nowrap}}
+.fb-btn{{background:none;border:1px solid var(--border,#ccc);border-radius:4px;cursor:pointer;font-size:.9rem;padding:.1rem .4rem;opacity:.5}}
+.fb-btn:hover{{opacity:1}}
+.fb-btn.active.up{{opacity:1;border-color:#2e7d32}}
+.fb-btn.active.down{{opacity:1;border-color:#c62828}}
+</style>
+<script>
+async function submitFeedback(tid, value, btn) {{
+  try {{
+    const r = await fetch('/_apx/feedback', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{trace_id: tid, name: 'quality', value, idempotency_key: tid}})
+    }});
+    if (!r.ok) throw new Error(await r.text());
+    const row = btn.closest('tr');
+    row.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    fetch('/_apx/eval/cache/bust', {{method:'POST'}}).catch(()=>{{}});
+  }} catch(e) {{ alert('Feedback failed: ' + e.message); }}
+}}
+
+function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+
+function renderRows(rows) {{
+  const wrap = document.getElementById('traces-body');
+  if (!rows.length) {{
+    wrap.innerHTML = '<p class="empty">No traces found. Run the agent and traces will appear here.</p>';
+    return;
+  }}
+  const ths = '<tr><th>Time</th><th>Duration</th><th>Cost</th><th>Status</th><th>Request</th><th>Response</th><th>Feedback</th></tr>';
+  const tds = rows.map(r => {{
+    const dt = r.request_time_ms
+      ? new Date(r.request_time_ms).toLocaleString('en-US', {{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}})
+      : '—';
+    const dur = r.duration_ms != null ? r.duration_ms + 'ms' : '—';
+    const cost = r.cost_usd != null && r.cost_usd > 0 ? (r.cost_usd * 100).toFixed(3) + '¢' : '—';
+    const st = r.state || '';
+    const stCls = /OK|COMPLETE/.test(st) ? 'st-ok' : /ERR|FAIL/.test(st) ? 'st-err' : 'st-run';
+    const tid = esc(r.trace_id);
+    return `<tr>
+      <td><a href="/_apx/traces/${{tid}}">${{dt}}</a></td>
+      <td class="dur">${{dur}}</td>
+      <td class="dur" title="input+output token cost">${{cost}}</td>
+      <td class="${{stCls}}">${{st}}</td>
+      <td class="preview">${{esc((r.request_preview||'').slice(0,120))}}</td>
+      <td class="preview">${{esc((r.response_preview||'').slice(0,120))}}</td>
+      <td class="fb-cell">
+        <button class="fb-btn up" onclick="submitFeedback('${{tid}}',true,this)">👍</button>
+        <button class="fb-btn down" onclick="submitFeedback('${{tid}}',false,this)">👎</button>
+      </td>
+    </tr>`;
+  }}).join('');
+  wrap.innerHTML = '<table>' + ths + tds + '</table>';
+}}
+
+document.addEventListener('DOMContentLoaded', async () => {{
+  try {{
+    const r = await fetch('/_apx/traces?fmt=json', {{headers: {{'Accept': 'application/json'}}}});
+    if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+    const text = await r.text();
+    let rows;
+    try {{ rows = JSON.parse(text); }} catch(_) {{
+      // Got HTML (auth redirect or error page) — reload to trigger SSO
+      if (text.includes('<html') || text.includes('<!DOCTYPE')) {{ location.reload(); return; }}
+      throw new Error('bad JSON response');
+    }}
+    renderRows(rows);
+  }} catch(e) {{
+    document.getElementById('traces-body').innerHTML =
+      '<p class="empty">Failed to load traces: ' + e.message + '</p>';
+  }}
+}});
+</script>
+</head><body>
 <header>
   <span class="badge">APX</span><h1>{_html.escape(title)}</h1>
   <a class="back" href="/_apx/agent">← Agent</a>
@@ -859,17 +985,115 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
         body = err_html + tree_html
 
     tid_escaped = _html.escape(trace_id)
+    tid_js = tid_escaped.replace("'", "\\'")
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Trace {tid_escaped}</title>
-<style>{_TRACE_CSS}</style></head><body>
+<style>{_TRACE_CSS}
+.feedback{{display:flex;flex-direction:column;gap:.4rem;margin-top:.5rem}}
+.fb-row{{display:flex;align-items:center;gap:.5rem}}
+.fb-btn{{background:none;border:1px solid var(--border,#ccc);border-radius:4px;cursor:pointer;font-size:1rem;padding:.1rem .5rem;opacity:.6}}
+.fb-btn:hover{{opacity:1}}
+.fb-btn.active{{opacity:1;border-color:currentColor}}
+.fb-btn.up.active{{color:#2e7d32}}
+.fb-btn.down.active{{color:#c62828}}
+#fb-msg{{font-size:.75rem;color:#888}}
+#fb-rationale{{width:100%;max-width:520px;background:#161616;border:1px solid #2a2a2a;color:#e5e7eb;border-radius:4px;padding:5px 8px;font-size:12px;font-family:inherit;resize:vertical;min-height:48px;display:none}}
+#fb-rationale.visible{{display:block}}
+.fb-save-btn{{background:#1a3a1a;border:1px solid #2e7d32;color:#86efac;border-radius:4px;padding:3px 12px;font-size:12px;cursor:pointer;display:none}}
+.fb-save-btn.visible{{display:inline-block}}
+.fb-save-btn:hover{{background:#1e4a1e}}
+.fb-screenshot{{margin-top:8px;max-width:480px;border-radius:4px;border:1px solid #2a2a2a}}
+#fb-prev-note{{font-size:11px;color:#666;font-style:italic}}
+.fb-hint{{font-size:11px;color:#555;margin-top:2px}}
+</style></head><body>
 <header>
   <span class="badge">APX</span><h1>Trace</h1>
   <a class="back" href="/_apx/traces">← All traces</a>
 </header>
 <main>
-  <div class="meta">ID: {tid_escaped}</div>
+  <div class="meta">ID: {tid_escaped}
+    <div class="feedback">
+      <div class="fb-row">
+        <button class="fb-btn up" title="Good response" onclick="toggleRationale(true,this)">👍</button>
+        <button class="fb-btn down" title="Bad response" onclick="toggleRationale(false,this)">👎</button>
+      </div>
+      <textarea id="fb-rationale" placeholder="Why? (e.g. 'fabricated a number', 'correct SQL, right answer')"></textarea>
+      <div style="display:flex;align-items:center;gap:.5rem;margin-top:4px">
+        <button class="fb-save-btn" id="fb-save-btn" onclick="submitFeedback()">Save</button>
+        <span id="fb-msg"></span>
+      </div>
+      <div class="fb-hint" id="fb-hint" style="display:none">
+        Saved to MLflow as a <code>quality</code> assessment on this trace.
+        Collect ~20 ratings then go to <a href="/_apx/eval" style="color:#60b0ff">Eval → Judge Alignment</a> to run MemAlign.
+      </div>
+      <div id="fb-prev-note"></div>
+      <div id="fb-screenshot-wrap"></div>
+    </div>
+  </div>
   {body}
 </main>
+<script>
+let _pendingValue = null;
+
+function toggleRationale(value, btn) {{
+  _pendingValue = value;
+  document.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('fb-rationale').classList.add('visible');
+  document.getElementById('fb-save-btn').classList.add('visible');
+  document.getElementById('fb-rationale').focus();
+}}
+
+async function submitFeedback() {{
+  const msg = document.getElementById('fb-msg');
+  const comment = document.getElementById('fb-rationale').value.trim() || null;
+  msg.textContent = 'Saving…';
+  try {{
+    const r = await fetch('/_apx/feedback', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{trace_id: '{tid_js}', name: 'quality', value: _pendingValue, comment, idempotency_key: '{tid_js}'}})
+    }});
+    if (!r.ok) throw new Error(await r.text());
+    msg.textContent = (_pendingValue ? '✓ Marked good' : '✓ Marked bad') + (comment ? ' · note saved' : '');
+    document.getElementById('fb-rationale').classList.remove('visible');
+    document.getElementById('fb-save-btn').classList.remove('visible');
+    document.getElementById('fb-hint').style.display = 'block';
+    // Bust cache so new rating appears immediately in Eval page
+    fetch('/_apx/eval/cache/bust', {{method:'POST'}}).catch(()=>{{}});
+  }} catch(e) {{
+    msg.textContent = 'Failed: ' + e.message;
+  }}
+}}
+
+document.addEventListener('DOMContentLoaded', async () => {{
+  // Submit on Enter (without shift), allow shift+Enter for newlines
+  document.getElementById('fb-rationale').addEventListener('keydown', e => {{
+    if (e.key === 'Enter' && !e.shiftKey) {{ e.preventDefault(); submitFeedback(); }}
+  }});
+
+  try {{
+    const r = await fetch('/_apx/feedback/{tid_js}');
+    if (!r.ok) return;
+    const data = await r.json();
+    const quality = (data.assessments || []).filter(a => a.name === 'quality').pop();
+    if (!quality) return;
+    const cls = quality.value === true ? 'up' : 'down';
+    document.querySelector('.fb-btn.' + cls)?.classList.add('active');
+    if (quality.rationale) {{
+      document.getElementById('fb-prev-note').textContent = '↩ ' + quality.rationale;
+    }}
+    const uri = (quality.metadata || {{}}).screenshot_uri;
+    if (uri) {{
+      const wrap = document.getElementById('fb-screenshot-wrap');
+      const img = document.createElement('img');
+      img.src = uri; img.className = 'fb-screenshot';
+      img.alt = 'annotation screenshot';
+      wrap.appendChild(img);
+    }}
+  }} catch(_) {{}}
+}});
+</script>
 </body></html>"""
 
 
@@ -1287,6 +1511,145 @@ def _pick_workspace_defaults(ws: WorkspaceClient) -> "dict[str, str]":
     return out
 
 
+# ── MLflow fetch helpers (run in thread pool to avoid blocking the event loop) ─
+
+def _fetch_eval_cases_sync(experiment_id: str) -> list[dict[str, Any]]:
+    """Fetch MLflow-labeled traces and map to eval cases (sync, call via executor)."""
+    try:
+        import mlflow as _mlflow
+        df = _mlflow.search_traces(
+            experiment_ids=[experiment_id],
+            max_results=100,
+            order_by=["attributes.start_time DESC"],
+        )
+        cases: list[dict[str, Any]] = []
+        for _, row in df.iterrows():
+            assessments = row.get("assessments") or []
+            quality = next(
+                (a for a in assessments
+                 if (a.get("assessment_name") if isinstance(a, dict) else getattr(a, "name", None)) == "quality"),
+                None,
+            )
+            if quality is None:
+                continue
+            req = row.get("request") or ""
+            question = ""
+            try:
+                req_obj = _json.loads(req) if isinstance(req, str) else req
+                inputs = req_obj.get("input") or req_obj.get("messages") or []
+                for msg in inputs:
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        question = str(msg.get("content", ""))
+                        break
+            except Exception:
+                question = str(req)[:200]
+            if not question:
+                continue
+            if isinstance(quality, dict):
+                rationale = quality.get("rationale") or ""
+                fb = quality.get("feedback") or {}
+                value = fb.get("value") if isinstance(fb, dict) else getattr(fb, "value", None)
+            else:
+                rationale = getattr(quality, "rationale", None) or ""
+                value = getattr(quality, "value", None)
+                if hasattr(value, "value"):
+                    value = value.value
+            cases.append({
+                "question": question,
+                "expected_judge": rationale or ("response should be correct and grounded" if value else "response should decline or be flagged"),
+                "expected_pass": bool(value),
+                "status": "pending",
+                "response": "",
+                "trace_id": str(row.get("trace_id", "")),
+            })
+        return cases
+    except Exception:
+        return []
+
+
+async def _fetch_eval_cases_async(experiment_id: str) -> list[dict[str, Any]]:
+    """Run _fetch_eval_cases_sync in the default thread-pool executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_eval_cases_sync, experiment_id)
+
+
+def _fetch_traces_list_sync(experiment_id: str | None, max_results: int) -> list[dict[str, Any]]:
+    """Fetch recent traces from MLflow (sync, call via executor)."""
+    try:
+        from mlflow.tracking import MlflowClient as _MlflowClient
+        client = _MlflowClient()
+        exp_ids: list[str] = (
+            [experiment_id] if experiment_id
+            else [e.experiment_id for e in client.search_experiments()]
+        )
+        traces = list(client.search_traces(
+            locations=exp_ids,
+            max_results=max_results,
+            order_by=["timestamp DESC"],
+            include_spans=False,
+            flush=True,
+        )) if exp_ids else []
+    except Exception:
+        logger.exception("mlflow search_traces failed for trace panel")
+        traces = []
+    traces = _drop_warmup_traces(traces)
+    rows = []
+    for t in traces:
+        info = t.info
+        dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
+        # Token cost from trace metadata. Rates: claude-sonnet-4-6 via Databricks
+        # AI Gateway = $3/MTok input, $15/MTok output. Falls back to 0 gracefully.
+        cost_usd: float | None = None
+        try:
+            meta = getattr(info, "request_metadata", None) or {}
+            token_raw = meta.get("mlflow.trace.tokenUsage")
+            if token_raw:
+                tu = _json.loads(token_raw)
+                cost_usd = round(
+                    (tu.get("input_tokens", 0) * 3 + tu.get("output_tokens", 0) * 15) / 1_000_000,
+                    6,
+                )
+        except Exception:
+            pass
+        rows.append({
+            "trace_id": info.trace_id,
+            "state": info.state.value if hasattr(info.state, "value") else str(info.state),
+            "request_time_ms": info.request_time,
+            "duration_ms": dur_ms,
+            "request_preview": info.request_preview or "",
+            "response_preview": info.response_preview or "",
+            "cost_usd": cost_usd,
+        })
+    return rows
+
+
+async def _fetch_traces_list_async(experiment_id: str | None, max_results: int) -> list[dict[str, Any]]:
+    """Run _fetch_traces_list_sync in the default thread-pool executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_traces_list_sync, experiment_id, max_results)
+
+
+async def _refresh_eval_cache(experiment_id: str) -> None:
+    """Background task: refresh eval cases cache silently."""
+    try:
+        cases = await _fetch_eval_cases_async(experiment_id)
+        if cases:
+            _EVAL_CASES_CACHE.put(cases)
+        else:
+            _EVAL_CASES_CACHE._refreshing = False
+    except Exception:
+        _EVAL_CASES_CACHE._refreshing = False
+
+
+async def _refresh_traces_cache(experiment_id: str | None, max_results: int) -> None:
+    """Background task: refresh traces list cache silently."""
+    try:
+        rows = await _fetch_traces_list_async(experiment_id, max_results)
+        _TRACES_LIST_CACHE.put(rows)
+    except Exception:
+        _TRACES_LIST_CACHE._refreshing = False
+
+
 def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     """Build the /_apx/* dev UI routes.
 
@@ -1521,73 +1884,49 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         agent_name = ctx.config.name if ctx else None
         fmt = request.query_params.get("fmt")
         max_results = int(request.query_params.get("max", "50"))
+
+        # HTML path: return the skeleton immediately — rows load via JS fetch
+        # to /_apx/traces?fmt=json. Avoids a 30-60s cold-warehouse hang that
+        # makes the browser tab unresponsive on deployed Apps. (#718 class issue)
+        if fmt != "json":
+            return HTMLResponse(_render_traces_list(None, agent_name))
+
         experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+
+        # Stale-while-revalidate: serve from cache; background-refresh when stale.
+        if _TRACES_LIST_CACHE.fresh:
+            rows = list(_TRACES_LIST_CACHE.get())
+        else:
+            cached_rows = _TRACES_LIST_CACHE.get()
+            if cached_rows is not None and not _TRACES_LIST_CACHE._refreshing:
+                _TRACES_LIST_CACHE._refreshing = True
+                asyncio.create_task(_refresh_traces_cache(experiment_id, max_results))
+                rows = list(cached_rows)
+            elif cached_rows is None:
+                rows = await _fetch_traces_list_async(experiment_id, max_results)
+                _TRACES_LIST_CACHE.put(rows)
+            else:
+                rows = list(cached_rows or [])
+
+        seen_ids: set[str] = {r["trace_id"] for r in rows}
+        # Merge ring-buffer traces not yet committed to the tracking store.
         try:
-            # include_spans=False skips artifact download — works even when
-            # the blob-storage endpoint is unreachable (e.g. private-link
-            # workspaces where *.storage.cloud.databricks.com is blocked).
-            from mlflow.tracking import MlflowClient as _MlflowClient
-            client = _MlflowClient()
-            # MLflow's search_traces(experiment_ids=None) trips on the local
-            # sqlite store ("'NoneType' object is not iterable"), which is the
-            # default backend for local `apx-agent run` — so the Trace panel sees
-            # nothing even when traces are being recorded. Resolve to all
-            # experiments when no MLFLOW_EXPERIMENT_ID is set so the dev loop
-            # surfaces its traces. In the deployed runtime MLFLOW_EXPERIMENT_ID
-            # is always set and this branch is a no-op.
-            exp_ids: list[str] = (
-                [experiment_id] if experiment_id
-                else [e.experiment_id for e in client.search_experiments()]
-            )
-            traces = list(client.search_traces(
-                locations=exp_ids,
-                max_results=max_results,
-                order_by=["timestamp DESC"],
-                include_spans=False,
-                flush=True,  # MLflow 3.x writes async; flush before search
-            )) if exp_ids else []
+            from ._trace_store import list_recent as _ts_list_recent
+            for tid in _ts_list_recent(max_results):
+                if tid not in seen_ids:
+                    rows.insert(0, {
+                        "trace_id": tid,
+                        "state": "OK",
+                        "request_time_ms": None,
+                        "duration_ms": None,
+                        "request_preview": "",
+                        "response_preview": "",
+                    })
+                    seen_ids.add(tid)
         except Exception:
-            # Keep the panel functional (ring-buffer merge below still
-            # surfaces recent traces) but log why the tracking store
-            # search failed instead of hiding it.
-            logger.exception("mlflow search_traces failed for trace panel")
-            traces = []
-        traces = _drop_warmup_traces(traces)
-        rows = []
-        seen_ids: set[str] = set()
-        for t in traces:
-            info = t.info
-            dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
-            rows.append({
-                "trace_id": info.trace_id,
-                "state": info.state.value if hasattr(info.state, "value") else str(info.state),
-                "request_time_ms": info.request_time,
-                "duration_ms": dur_ms,
-                "request_preview": info.request_preview or "",
-                "response_preview": info.response_preview or "",
-            })
-            seen_ids.add(info.trace_id)
-        if fmt == "json":
-            # Merge in any ring-buffer traces not yet committed to the tracking
-            # store (async write lag, or FEVM blob-egress blocked). Newest first.
-            try:
-                from ._trace_store import list_recent as _ts_list_recent
-                for tid in _ts_list_recent(max_results):
-                    if tid not in seen_ids:
-                        rows.insert(0, {
-                            "trace_id": tid,
-                            "state": "OK",
-                            "request_time_ms": None,
-                            "duration_ms": None,
-                            "request_preview": "",
-                            "response_preview": "",
-                        })
-                        seen_ids.add(tid)
-            except Exception:
-                pass
-            rows = rows[:max_results]
-            return rows
-        return HTMLResponse(_render_traces_list(rows, agent_name))
+            pass
+        rows = rows[:max_results]
+        return rows
 
     def _last_route_payload(
         ctx: AgentContext, *, include_tracking_fallback: bool = True
@@ -2609,18 +2948,43 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/discover/tables", response_model=DiscoverTablesResponse)
     async def discover_tables(request: Request, catalog: str, schema: str) -> Any:
-        """List bounded table metadata using the signed-in user's grants."""
-        import asyncio as _asyncio
+        """List bounded table metadata using the signed-in user's grants.
 
+        Results are cached per (catalog, schema) for 10 minutes so repeated
+        visits to the Discover page don't re-query UC on every open.
+        """
+        import asyncio as _asyncio
         from ._defaults import _ws_prefer_obo
 
+        cache = _schema_cache_for(catalog, schema)
+        if cache.fresh:
+            cached = cache.get()
+            return {"catalog": catalog, "schema_name": schema, "tables": cached}
+
         ws: WorkspaceClient = _ws_prefer_obo(request)
+
+        async def _refresh() -> None:
+            try:
+                tables = await _asyncio.to_thread(list_discover_tables, ws, catalog, schema)
+                cache.put(tables)
+            except Exception:
+                cache._refreshing = False
+
+        cached_tables = cache.get()
+        if cached_tables is not None and not cache._refreshing:
+            # Stale-while-revalidate: return cached, refresh in background
+            cache._refreshing = True
+            _asyncio.create_task(_refresh())
+            return {"catalog": catalog, "schema_name": schema, "tables": cached_tables}
+
+        # First load — fetch synchronously
         try:
             tables = await _asyncio.to_thread(list_discover_tables, ws, catalog, schema)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Could not list table metadata: {exc}") from exc
+        cache.put(tables)
         return {"catalog": catalog, "schema_name": schema, "tables": tables}
 
     @router.get("/_apx/discover/sample", response_model=DiscoverSampleResponse)
@@ -2989,14 +3353,36 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         """Per-column current-vs-suggested description curation state for the
         agent's OKF bundle (#292). Suggestions come from Unity Catalog COMMENTs;
         empty ``tables`` plus ``can_generate`` when the project has no pack but
-        a DataAgent catalog.schema is known (Generate-pack CTA)."""
+        a DataAgent catalog.schema is known (Generate-pack CTA).
+
+        Result cached for 10 minutes — UC column comments change rarely.
+        Cache is busted automatically when columns are saved.
+        """
         import asyncio as _asyncio
         from ._ui_grounding import grounding_columns_payload, resolve_okf_root
+
+        if _GROUNDING_COLUMNS_CACHE.fresh:
+            return _GROUNDING_COLUMNS_CACHE.get()
 
         okf_root = resolve_okf_root()
         ws = getattr(request.app.state, "workspace_client", None)
         ctx = getattr(request.app.state, "agent_context", None)
-        return await _asyncio.to_thread(grounding_columns_payload, okf_root, ws, ctx)
+
+        cached = _GROUNDING_COLUMNS_CACHE.get()
+        if cached is not None and not _GROUNDING_COLUMNS_CACHE._refreshing:
+            _GROUNDING_COLUMNS_CACHE._refreshing = True
+            async def _refresh_grounding() -> None:
+                try:
+                    result = await _asyncio.to_thread(grounding_columns_payload, okf_root, ws, ctx)
+                    _GROUNDING_COLUMNS_CACHE.put(result)
+                except Exception:
+                    _GROUNDING_COLUMNS_CACHE._refreshing = False
+            _asyncio.create_task(_refresh_grounding())
+            return cached
+
+        result = await _asyncio.to_thread(grounding_columns_payload, okf_root, ws, ctx)
+        _GROUNDING_COLUMNS_CACHE.put(result)
+        return result
 
     @router.post("/_apx/grounding/columns", response_model=ColumnDescriptionsSaveResponse)
     async def save_grounding_columns(
@@ -3013,6 +3399,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if okf_root is None:
             return JSONResponse({"ok": False, "error": "No .apx/okf bundle found"}, status_code=404)
         modified = await _asyncio.to_thread(apply_column_descriptions, okf_root, body.accepted)
+        _GROUNDING_COLUMNS_CACHE._value = None  # bust so next GET re-reads from OKF
         return {"ok": True, "modified": modified}
 
     @router.post("/_apx/grounding/generate", response_model=GroundingGenerateResponse)
@@ -3727,15 +4114,33 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.get("/_apx/eval/data", response_model=list[EvalCaseResponse])
     async def eval_data_get() -> Any:
-        """Read persisted eval cases. Returns [] if no file or no agent_router.
+        """Read eval cases — served from cache, refreshed in background after TTL.
 
-        Success returns the persisted JSON list via ``JSONResponse`` so the
-        bytes on the wire are the file verbatim (cases diverge — see
-        :class:`~apx_agent._apx_models.EvalCaseResponse`); ``response_model``
-        documents the row shape in the OpenAPI schema without filtering the
-        response. The parse-error path returns ``{ok: false, error}`` with 500.
+        First call fetches from MLflow (may take 30-60s on cold warehouse).
+        Subsequent calls return immediately from the 5-minute cache; a background
+        task refreshes it when stale. Falls back to evals.json if MLflow is
+        unavailable.
         """
         from fastapi.responses import JSONResponse
+
+        experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+        if experiment_id:
+            if _EVAL_CASES_CACHE.fresh:
+                return JSONResponse(_EVAL_CASES_CACHE.get())
+
+            cached = _EVAL_CASES_CACHE.get()
+            if cached is not None and not _EVAL_CASES_CACHE._refreshing:
+                _EVAL_CASES_CACHE._refreshing = True
+                asyncio.create_task(_refresh_eval_cache(experiment_id))
+                return JSONResponse(cached)
+
+            # First load — must wait
+            cases = await _fetch_eval_cases_async(experiment_id)
+            if cases:
+                _EVAL_CASES_CACHE.put(cases)
+                return JSONResponse(cases)
+
+        # Fallback: local evals.json
         path = _find_evals_path()
         if path is None or not path.exists():
             return JSONResponse([])
@@ -3854,29 +4259,165 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     # Redirects for old routes
     @router.get("/_apx/eval", response_class=HTMLResponse)
     async def eval_ui() -> HTMLResponse:
-        """Eval landing page — lists persisted eval cases.
+        """Eval landing page — cases sourced from MLflow quality assessments.
 
-        Running cases live in the Chat panel's right-side sub-tab. This
-        standalone page surfaces the same ``evals.json`` data as a
-        read-only list with a link back to Chat, so the Eval tab in the
-        unified shell shows something useful instead of bouncing through
-        a redirect.
+        Serves from the shared _EVAL_CASES_CACHE (same cache as /_apx/eval/data)
+        so both the standalone page and the Chat-shell tab stay in sync.
+        Falls back to evals.json when MLflow is unavailable.
         """
         from ._ui_chat import _render_eval_landing
-        path = _find_evals_path()
         cases: list[dict[str, Any]] = []
         loaded_path: str | None = None
         load_error: str | None = None
-        if path is not None and path.exists():
-            loaded_path = str(path)
-            try:
-                cases = _json.loads(path.read_text())
-                if not isinstance(cases, list):
-                    cases = []
-                    load_error = f"{path} did not contain a JSON list."
-            except (OSError, ValueError) as exc:
-                load_error = f"Could not parse {path}: {exc}"
+
+        experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+        if experiment_id:
+            if _EVAL_CASES_CACHE.fresh:
+                cases = list(_EVAL_CASES_CACHE.get() or [])
+            else:
+                cached = _EVAL_CASES_CACHE.get()
+                if cached is not None and not _EVAL_CASES_CACHE._refreshing:
+                    _EVAL_CASES_CACHE._refreshing = True
+                    asyncio.create_task(_refresh_eval_cache(experiment_id))
+                    cases = list(cached)
+                elif cached is None:
+                    cases = await _fetch_eval_cases_async(experiment_id)
+                    if cases:
+                        _EVAL_CASES_CACHE.put(cases)
+                else:
+                    cases = list(cached or [])
+            if cases:
+                loaded_path = f"MLflow experiment {experiment_id} ({len(cases)} labeled traces)"
+
+        if not cases:
+            path = _find_evals_path()
+            if path is not None and path.exists():
+                loaded_path = str(path)
+                try:
+                    cases = _json.loads(path.read_text())
+                    if not isinstance(cases, list):
+                        cases = []
+                        load_error = f"{path} did not contain a JSON list."
+                except (OSError, ValueError) as exc:
+                    load_error = f"Could not parse {path}: {exc}"
+
         return HTMLResponse(_render_eval_landing(cases, loaded_path, load_error))
+
+    @router.post("/_apx/eval/label-start")
+    async def eval_label_start(request: Request) -> Any:
+        """Start an SME labeling session via `apx-agent label start`."""
+        from fastapi.responses import JSONResponse
+        from apx_agent import _labeling
+        import datetime
+
+        ctx: AgentContext | None = request.app.state.agent_context
+        body = await request.json()
+        judge_name = (body.get("judge_name") or "").strip()
+        if not judge_name:
+            return JSONResponse({"ok": False, "error": "judge_name is required"}, status_code=422)
+        experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip() or None
+        if not experiment_id:
+            return JSONResponse({"ok": False, "error": "MLFLOW_EXPERIMENT_ID not set"}, status_code=503)
+        agent_name = ctx.config.name if ctx else "agent"
+        try:
+            import mlflow
+            mlflow.set_tracking_uri("databricks")
+            result = _labeling.start_session(
+                experiment_id=experiment_id,
+                agent_name=agent_name,
+                judge_name=judge_name,
+                scale=None, options=None, assignees=[],
+                filter_string=None, limit=None, endpoint=None,
+                attach_agent=True,
+                now=datetime.datetime.now(datetime.timezone.utc),
+            )
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return {"ok": True, "run_id": result.run_id, "session_url": result.session_url, "trace_count": result.trace_count}
+
+    @router.post("/_apx/eval/label-align")
+    async def eval_label_align(request: Request) -> Any:
+        """Run MemAlign directly from all labeled traces — no run_id needed.
+
+        Loads all traces with quality assessments via mlflow.get_trace(),
+        runs MemAlignOptimizer, and returns the distilled guidelines.
+        """
+        from fastapi.responses import JSONResponse
+
+        body = await request.json()
+        judge_name = (body.get("judge_name") or "").strip()
+        if not judge_name:
+            return JSONResponse({"ok": False, "error": "judge_name is required"}, status_code=422)
+        experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip() or None
+        if not experiment_id:
+            return JSONResponse({"ok": False, "error": "MLFLOW_EXPERIMENT_ID not set"}, status_code=503)
+        try:
+            import mlflow
+            from mlflow.genai.judges import make_judge
+            from mlflow.genai.judges.optimizers import MemAlignOptimizer
+
+            mlflow.set_tracking_uri("databricks")
+
+            # Load traces that have quality assessments
+            df = mlflow.search_traces(
+                experiment_ids=[experiment_id],
+                max_results=200,
+                order_by=["attributes.start_time DESC"],
+            )
+            labeled_ids = [
+                str(row["trace_id"]) for _, row in df.iterrows()
+                if any(
+                    (a.get("assessment_name") if isinstance(a, dict) else getattr(a, "name", None)) == judge_name
+                    for a in (row.get("assessments") or [])
+                )
+            ]
+            if not labeled_ids:
+                return JSONResponse({"ok": False, "error": f"No traces with '{judge_name}' assessments found. Rate some traces first."}, status_code=422)
+
+            traces = []
+            for tid in labeled_ids:
+                try:
+                    traces.append(mlflow.get_trace(tid))
+                except Exception:
+                    pass
+            if not traces:
+                return JSONResponse({"ok": False, "error": "Could not load trace spans. Try rating more traces."}, status_code=500)
+
+            judge = make_judge(
+                name=judge_name,
+                instructions=f"Input: {{{{ inputs }}}}\nOutput: {{{{ outputs }}}}\nReturn true if the response is accurate and appropriate, false if it fabricates information or fails to decline out-of-scope requests.",
+                feedback_value_type=bool,
+                model="databricks:/databricks-claude-sonnet-4-6",
+            )
+            optimizer = MemAlignOptimizer(
+                reflection_lm="databricks:/databricks-claude-sonnet-4-6",
+                retrieval_k=min(5, len(traces)),
+                embedding_model="databricks:/databricks-gte-large-en",
+            )
+            aligned = judge.align(traces=traces, optimizer=optimizer)
+            guidelines = [g.guideline_text for g in getattr(aligned, "_semantic_memory", []) or []]
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return {"ok": True, "registered_as": judge_name, "guidelines": guidelines, "trace_count": len(traces)}
+
+    @router.post("/_apx/eval/cache/bust")
+    async def eval_cache_bust() -> Any:
+        """Clear both MLflow query caches so the next request re-fetches fresh data.
+
+        Call this after rating new traces to see them immediately in /_apx/eval
+        and /_apx/traces without waiting for the TTL to expire.
+        """
+        _EVAL_CASES_CACHE._value = None
+        _EVAL_CASES_CACHE._expires = 0.0
+        _EVAL_CASES_CACHE._refreshing = False
+        _TRACES_LIST_CACHE._value = None
+        _TRACES_LIST_CACHE._expires = 0.0
+        _TRACES_LIST_CACHE._refreshing = False
+        _GROUNDING_COLUMNS_CACHE._value = None
+        _GROUNDING_COLUMNS_CACHE._expires = 0.0
+        _GROUNDING_COLUMNS_CACHE._refreshing = False
+        _SCHEMA_CACHE.clear()
+        return {"ok": True, "message": "All caches cleared."}
 
     @router.get("/_apx/wizard", include_in_schema=False)
     async def wizard_ui() -> Any:

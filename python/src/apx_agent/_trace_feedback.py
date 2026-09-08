@@ -63,14 +63,72 @@ class TraceFeedbackView:
     assessments: list[TraceAssessment]
 
 
+class _DefaultMlflowApi:
+    """Thin wrapper around mlflow that returns assessments with metadata populated.
+
+    mlflow.get_trace() returns Feedback objects whose .to_dictionary() does not
+    include the metadata field, so idempotency_key lookups fail. Using
+    mlflow.MlflowClient().get_trace() and converting via to_dictionary() preserves
+    the full assessment shape including metadata.
+    """
+
+    def get_trace(self, trace_id: str) -> Any:
+        """Return trace info with assessments including metadata.
+
+        mlflow.get_trace() returns Feedback objects with .metadata populated
+        when MLFLOW_TRACING_SQL_WAREHOUSE_ID is set (as it is in the deployed
+        app via databricks.yml). Use to_dictionary() to convert each assessment
+        to a dict so _normalize_assessment can read the metadata field.
+        """
+        import mlflow
+        from types import SimpleNamespace
+
+        t = mlflow.get_trace(trace_id)
+        if t is None:
+            return None
+
+        raw_assessments = []
+        for a in (getattr(t.info, "assessments", None) or []):
+            try:
+                d = a.to_dictionary() if hasattr(a, "to_dictionary") else None
+                raw_assessments.append(d if isinstance(d, dict) else a)
+            except Exception:
+                raw_assessments.append(a)
+
+        info = SimpleNamespace(
+            trace_id=t.info.trace_id,
+            tags=dict(t.info.tags or {}),
+            assessments=raw_assessments,
+        )
+        return SimpleNamespace(info=info)
+
+    def log_feedback(self, **kwargs: Any) -> Any:
+        import mlflow
+        from mlflow.entities import AssessmentSource, AssessmentSourceType
+
+        source = kwargs.get("source")
+        if isinstance(source, str):
+            source = AssessmentSource(
+                source_type=AssessmentSourceType.HUMAN, source_id=source
+            )
+        return mlflow.log_feedback(
+            trace_id=kwargs["trace_id"],
+            name=kwargs["name"],
+            value=kwargs["value"],
+            rationale=kwargs.get("rationale"),
+            source=source,
+            metadata=kwargs.get("metadata"),
+        )
+
+
 def _default_mlflow_api() -> Any:
     try:
-        import mlflow
+        import mlflow as _mlflow  # noqa: F401
     except ImportError as exc:  # pragma: no cover - depends on optional install
         raise TraceFeedbackUnavailableError(
             "trace feedback requires mlflow; install 'apx-agent[eval]'"
         ) from exc
-    return mlflow
+    return _DefaultMlflowApi()
 
 
 def _validate_feedback(feedback: TraceFeedback) -> None:

@@ -471,6 +471,21 @@ def _render_eval_landing(
     <button class="btn-add" id="add-btn">+ Add</button>
   </div>
 </div>
+
+<div class="container" style="margin-top:0;padding-top:0">
+  <div class="add-section">
+    <h2>Judge Alignment</h2>
+    <p style="color:var(--muted);font-size:12px;margin:0 0 12px">
+      Rate traces with 👍/👎 in the <a href="/_apx/traces" style="color:var(--accent)">Traces</a> view,
+      then run MemAlign to distill guidelines from your ratings into an aligned judge.
+    </p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <input id="la-judge" placeholder="Judge name (e.g. quality)" style="max-width:220px;margin:0" />
+      <button class="btn btn-run" id="la-align-btn" onclick="labelAlign()">Run alignment</button>
+    </div>
+    <div id="la-status" style="font-size:12px;color:var(--muted);min-height:18px"></div>
+  </div>
+</div>
 <script>
 let rows = {cases_json};
 
@@ -498,6 +513,7 @@ function render() {{
       </div>
       ${{criterion ? `<div class="case-row"><span class="label">Criterion</span><span>${{esc(criterion)}}</span></div>` : ''}}
       ${{expected ? `<div class="case-row"><span class="label">Expected</span><span>${{esc(expected)}}</span></div>` : ''}}
+      ${{r.trace_id ? `<div class="case-row"><span class="label">Source trace</span><a href="/_apx/traces/${{encodeURIComponent(r.trace_id)}}" target="_blank" style="color:#60b0ff;font-size:11px">${{r.trace_id.split('/').pop().slice(0,16)}}…</a></div>` : ''}}
       ${{r.response ? `<div class="case-response">${{esc(r.response)}}</div>` : ''}}
       ${{r.judge_reason ? `<div class="case-reason">${{esc(r.judge_reason)}}</div>` : ''}}
     </div>`;
@@ -650,7 +666,30 @@ window.addEventListener('message', (e) => {{
     addQ.focus();
     document.querySelector('.add-section').scrollIntoView({{behavior: 'smooth'}});
   }}
-}});
+}}}});
+
+// ── Judge Alignment ──────────────────────────────────────────────────────────
+async function labelAlign() {{
+  const judge = document.getElementById('la-judge').value.trim();
+  if (!judge) {{ document.getElementById('la-status').textContent = 'Enter a judge name (e.g. quality).'; return; }}
+  document.getElementById('la-align-btn').disabled = true;
+  document.getElementById('la-status').textContent = 'Reading your ratings and running MemAlign… (may take a minute)';
+  try {{
+    const r = await fetch('/_apx/eval/label-align', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{judge_name: judge}}),
+    }});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    const gs = (d.guidelines || []).map((g, i) => `${{i+1}}. ${{g}}`).join('<br>');
+    document.getElementById('la-status').innerHTML =
+      `✓ Aligned on ${{d.trace_count}} traces — <strong>${{d.guidelines?.length || 0}} guidelines distilled</strong><br><small style="color:#888">${{gs}}</small>`;
+  }} catch(e) {{
+    document.getElementById('la-status').textContent = 'Error: ' + e.message;
+  }} finally {{
+    document.getElementById('la-align-btn').disabled = false;
+  }}
+}}
 </script>
 </body>
 </html>
@@ -1263,6 +1302,14 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
           <textarea id="eval-add-q" placeholder="Add a test question…" rows="2" style="width:100%;background:#111;border:1px solid #222;color:#ccc;border-radius:5px;padding:6px 8px;font-size:12px;resize:none;margin-bottom:6px"></textarea>
           <button id="eval-add-btn" style="background:transparent;color:#555;border:1px solid #2a2a2a;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer">+ Add</button>
         </div>
+        <div style="padding:10px 12px;border-top:1px solid #1a1a1a">
+          <div style="font-size:10px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Judge Alignment</div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input id="eval-judge-name" placeholder="Judge name (e.g. quality)" style="flex:1;background:#111;border:1px solid #222;color:#ccc;border-radius:5px;padding:5px 8px;font-size:11px" />
+            <button id="eval-align-btn" onclick="chatLabelAlign()" style="background:#1e3a5f;color:#60b0ff;border:1px solid #2a5298;border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;white-space:nowrap">Run alignment</button>
+          </div>
+          <div id="eval-align-status" style="font-size:11px;color:#555;margin-top:4px;min-height:14px"></div>
+        </div>
       </div>
     </div>
     <div class="detail-panel" id="detail-panel">
@@ -1434,7 +1481,7 @@ function switchTab(name, btn) {{
   document.querySelectorAll('.panel-tabs button').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
-  if (name === 'eval' && !evalLoaded) loadEvalCases();
+  if (name === 'eval' && (!evalLoaded || !evalRows.length)) loadEvalCases();
   if (name === 'history') loadConversationHistory();
 }}
 
@@ -1575,7 +1622,11 @@ function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').r
 
 function renderEval() {{
   const el = document.getElementById('eval-cases');
-  if (!evalRows.length) {{ el.innerHTML = '<div style="color:#444;font-size:12px;padding:20px 12px">No test cases. Add one below.</div>'; return; }}
+  if (!evalRows.length) {{
+    el.innerHTML = '<div style="color:#444;font-size:12px;padding:20px 12px">No test cases. '
+      + '<button onclick="reloadEvalCases()" style="background:none;border:none;color:#60b0ff;cursor:pointer;font-size:12px;text-decoration:underline">Load from MLflow</button></div>';
+    return;
+  }}
   el.innerHTML = evalRows.map((r, i) => {{
     const dot = r.status === 'pass' ? '#4ade80' : r.status === 'fail' ? '#f87171' : r.status === 'running' ? '#facc15' : '#333';
     const anim = r.status === 'running' ? 'animation:pulse .8s infinite' : '';
@@ -1619,12 +1670,42 @@ function toggleEvalResp(el) {{
   if (resp) resp.style.display = resp.style.display === 'none' ? '' : 'none';
 }}
 
+async function reloadEvalCases() {{
+  evalLoaded = false;
+  await loadEvalCases();
+}}
+
+async function chatLabelAlign() {{
+  const judge = document.getElementById('eval-judge-name').value.trim();
+  const st = document.getElementById('eval-align-status');
+  if (!judge) {{ st.textContent = 'Enter a judge name.'; return; }}
+  document.getElementById('eval-align-btn').disabled = true;
+  st.textContent = 'Running MemAlign… (may take a minute)';
+  try {{
+    const r = await fetch('/_apx/eval/label-align', {{
+      method: 'POST', headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify({{judge_name: judge}}),
+    }});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    st.innerHTML = `✓ ${{d.guidelines?.length || 0}} guidelines distilled from ${{d.trace_count}} traces`;
+  }} catch(e) {{
+    st.textContent = 'Error: ' + e.message;
+  }} finally {{
+    document.getElementById('eval-align-btn').disabled = false;
+  }}
+}}
+
 async function loadEvalCases() {{
   evalLoaded = true;
+  document.getElementById('eval-cases').innerHTML = '<div style="color:#555;font-size:12px;padding:20px 12px">Loading from MLflow… (may take ~30s on cold warehouse)</div>';
   try {{
-    const r = await fetch('/_apx/eval/data');
-    evalRows = await r.json();
-    if (!Array.isArray(evalRows)) evalRows = [];
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 90000);
+    const r = await fetch('/_apx/eval/data', {{signal: ctrl.signal}});
+    clearTimeout(t);
+    const data = await r.json();
+    evalRows = Array.isArray(data) ? data : [];
     renderEval();
   }} catch(e) {{
     document.getElementById('eval-cases').innerHTML = '<div style="color:#f87171;font-size:12px;padding:12px">Failed to load: ' + e.message + '</div>';
@@ -1682,6 +1763,17 @@ function updateExpectedJudge(i, value) {{
   if (!evalRows[i]) return;
   evalRows[i].expected_judge = value;
   saveEvalCases();
+  // Persist back to MLflow as updated assessment rationale
+  const tid = evalRows[i].trace_id;
+  const val = evalRows[i].expected_pass !== undefined ? evalRows[i].expected_pass : true;
+  if (tid) {{
+    // idempotency_key = trace_id so repeated edits update in place rather than
+    // appending new assessments (attach_feedback matches on the key)
+    fetch('/_apx/feedback', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{trace_id: tid, name: 'quality', value: val, comment: value, idempotency_key: tid}}),
+    }}).then(() => fetch('/_apx/eval/cache/bust', {{method:'POST'}})).catch(() => {{}});
+  }}
 }}
 
 function deleteEvalCase(i) {{
@@ -1770,8 +1862,40 @@ async function runEvalCase(i) {{
   saveEvalCases();
 }}
 
-document.getElementById('eval-run-all').addEventListener('click', async () => {{
-  if (!evalLoaded) await loadEvalCases();
+async function autoEvalResponse(question, response, traceId, msgDiv) {{
+  // Find an eval case whose question matches this interaction (fuzzy: startsWith)
+  const q = question.trim().toLowerCase();
+  const match = evalRows.find(r => q.startsWith(r.question.slice(0, 40).toLowerCase()) ||
+                                   r.question.slice(0, 40).toLowerCase().startsWith(q));
+  if (!match || !match.expected_judge) return;
+
+  // Run the judge against this live response
+  try {{
+    const j = await fetch('/_apx/eval/judge', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{question, response, criterion: match.expected_judge}}),
+    }});
+    const d = await j.json();
+    const pass = d.ok && d.pass;
+    const badge = document.createElement('span');
+    badge.title = d.reason || '';
+    badge.style.cssText = 'font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px;margin-left:6px;vertical-align:middle;cursor:default';
+    badge.style.background = pass ? '#052e16' : '#2a0a0a';
+    badge.style.color = pass ? '#4ade80' : '#f87171';
+    badge.textContent = pass ? '✓ eval pass' : '✗ eval fail';
+    msgDiv.appendChild(badge);
+
+    // Update the matching eval row so the tab reflects it too
+    match.status = pass ? 'pass' : 'fail';
+    match.response = response;
+    match.judge_verdict = pass ? 'PASS' : 'FAIL';
+    match.judge_reason = d.reason || '';
+    match.trace_id = traceId || match.trace_id;
+    renderEval();
+  }} catch(_) {{}}
+}}
+
+async function runAllEvalCases() {{
   const btn = document.getElementById('eval-run-all');
   const fill = document.getElementById('eval-progress-fill');
   const st   = document.getElementById('eval-status');
@@ -1785,6 +1909,11 @@ document.getElementById('eval-run-all').addEventListener('click', async () => {{
   const passed = evalRows.filter(r => r.status === 'pass').length;
   st.textContent = `${{passed}}/${{evalRows.length}} passed`;
   btn.disabled = false;
+}}
+
+document.getElementById('eval-run-all').addEventListener('click', async () => {{
+  if (!evalLoaded) await loadEvalCases();
+  await runAllEvalCases();
 }});
 
 document.getElementById('eval-reset').addEventListener('click', () => {{
@@ -2771,6 +2900,9 @@ form.addEventListener('submit', async e => {{
   loadConversationHistory();
   // Surface any ASK-policy approval requests raised during this turn.
   checkPendingApprovals();
+  // Auto-eval: check this response against any loaded eval criterion that
+  // matches the question. Shows inline pass/fail badge on the assistant message.
+  autoEvalResponse(text, full, traceId, assistantDiv);
 }});
 
 // ── Resizable panel ──

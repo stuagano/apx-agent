@@ -1148,6 +1148,29 @@ def create_app(
 
         async with mcp_lifecycle:
             try:
+                # Pre-warm the eval-cases and traces-list MLflow caches in the
+                # background so the first Eval/Traces tab visit is instant
+                # instead of blocking on a cold SQL warehouse. Best-effort.
+                import asyncio as _asyncio
+                import os as _os
+                _exp_id = _os.environ.get("MLFLOW_EXPERIMENT_ID")
+                if _exp_id:
+                    try:
+                        from ._dev import _EVAL_CASES_CACHE, _TRACES_LIST_CACHE, _fetch_eval_cases_async, _fetch_traces_list_sync
+                        async def _warm_caches() -> None:
+                            try:
+                                cases = await _fetch_eval_cases_async(_exp_id)
+                                _EVAL_CASES_CACHE.put(cases)
+                            except Exception:
+                                pass
+                            try:
+                                rows = await _asyncio.get_event_loop().run_in_executor(None, _fetch_traces_list_sync, _exp_id)
+                                _TRACES_LIST_CACHE.put(rows)
+                            except Exception:
+                                pass
+                        _asyncio.create_task(_warm_caches())
+                    except Exception:
+                        pass
                 yield
             finally:
                 logger.info("Shutting down agent runtime")
