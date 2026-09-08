@@ -147,9 +147,15 @@ def authorization_summary_lines(
     plan: AuthorizationPlan,
     resolved_dependencies: list[ResolvedAppDependency],
     family_permissions: AppFamilyPermissions,
+    *,
+    explicit_resources: tuple[str, ...] = (),
 ) -> list[str]:
     """Render the deterministic, credential-free Apps authorization summary."""
     sections = (
+        (
+            "Operation authorization:",
+            _operation_authorization_lines(plan.operations),
+        ),
         (
             "User operations:",
             sorted(
@@ -177,6 +183,7 @@ def authorization_summary_lines(
                 )
             ],
         ),
+        ("Explicit/plugin resources:", sorted(explicit_resources)),
         (
             "App-to-App dependencies:",
             [
@@ -211,6 +218,40 @@ def authorization_summary_lines(
     return lines
 
 
+def _operation_authorization_lines(
+    operations: tuple[OperationAuthorization, ...],
+) -> list[str]:
+    lines: list[str] = []
+    for operation in sorted(operations, key=lambda item: item.name):
+        if not operation.resources:
+            authorization = (
+                ", ".join(operation.user_api_scopes)
+                if operation.user_api_scopes
+                else "App credentials"
+            )
+            lines.append(
+                f"{operation.name} | {operation.execution_identity} | "
+                f"(no declared resource) | {authorization}"
+            )
+            continue
+        for resource in sorted(
+            operation.resources,
+            key=lambda item: (item.kind, item.identifier),
+        ):
+            if operation.execution_identity == "service":
+                authorization = _resource_permission(resource)
+            else:
+                authorization = ", ".join(sorted({
+                    *user_api_scopes_for((resource,)),
+                    *operation.user_api_scopes,
+                }))
+            lines.append(
+                f"{operation.name} | {operation.execution_identity} | "
+                f"{resource.kind} {resource.identifier} | {authorization}"
+            )
+    return lines
+
+
 def _resource_permission(resource: ResourceSpec) -> str:
     [entry] = resources_to_databricks_yml([resource])
     [body] = entry.values()
@@ -239,7 +280,7 @@ def infer_operation_authorization(fn: Callable[..., Any]) -> OperationAuthorizat
     if dependencies & _USER_DEPENDENCIES:
         identities.add("user")
 
-    name = getattr(fn, "__name__", type(fn).__name__)
+    name = fn.__name__
     if len(identities) > 1:
         raise ValueError(
             f"Tool {name!r} mixes user and service credential dependencies; "
@@ -358,7 +399,10 @@ def compile_authorization_plan(
 
 def _is_apps_https_url(url: str) -> bool:
     parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
+    host = parsed.hostname
+    if host is None:
+        return False
+    host = host.lower()
     return (
         parsed.scheme == "https"
         and (host == "databricksapps.com" or host.endswith(".databricksapps.com"))

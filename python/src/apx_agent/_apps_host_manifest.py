@@ -168,8 +168,8 @@ def _tool_manifest(
     fn: Any,
     authorization: OperationAuthorization,
 ) -> AppsHostTool:
-    plain_params, _dep_names = _inspect_tool_fn(fn)
-    input_model = _make_input_model(fn, plain_params)
+    signature = _inspect_tool_fn(fn)
+    input_model = _make_input_model(fn, signature.plain_params)
     metadata = get_tool_metadata(fn)
     effect = metadata.effect if metadata and metadata.effect is not None else "update"
     return AppsHostTool(

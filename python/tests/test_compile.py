@@ -192,8 +192,24 @@ class TestCompileLlmAgent:
 
         assert _resolve_deps_for_fn(service_lookup, ctx) == {"ws": service_ws}
         assert _resolve_deps_for_fn(pure_lookup, ctx) == {}
-        with pytest.raises(ValueError, match="user_lookup.*user WorkspaceClient"):
-            _resolve_deps_for_fn(user_lookup, ctx)
+        assert _resolve_deps_for_fn(user_lookup, ctx) == {"value": None}
+
+    def test_missing_user_identity_fails_only_when_user_tool_runs(self) -> None:
+        from apx_agent._compile import CompileContext, _make_langchain_tool
+        from apx_agent._obo import ApxIdentityError
+
+        service_ws = MagicMock(name="service_ws")
+        ctx = CompileContext(service_ws=service_ws, user_ws=None, model="any")
+
+        def service_lookup(ws: Dependencies.Client) -> str:
+            return "service-ok" if ws is service_ws else "wrong-client"
+
+        def user_lookup(ws: Dependencies.UserClient) -> str:
+            return "unsafe"
+
+        assert _make_langchain_tool(service_lookup, ctx).invoke({}) == "service-ok"
+        with pytest.raises(ApxIdentityError, match="requires an OBO user identity"):
+            _make_langchain_tool(user_lookup, ctx).invoke({})
 
     def test_missing_service_client_fails_only_service_tools(self) -> None:
         from apx_agent._compile import CompileContext, _resolve_deps_for_fn

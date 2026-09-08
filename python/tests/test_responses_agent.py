@@ -510,7 +510,7 @@ class TestUserScopeAuth:
         assert captured["service_ws"] is service_ws
         assert captured["ws"] is not captured["service_ws"]
 
-    def test_no_user_token_falls_back_to_default_workspace_client(self) -> None:
+    def test_service_only_agent_does_not_construct_user_client(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
         non_streaming, _ = compile_to_responses_agent(agent, model="any")
 
@@ -520,13 +520,11 @@ class TestUserScopeAuth:
             "apx_agent._responses_agent.compile_to_langgraph",
             return_value=_make_fake_graph("answer"),
         ):
-            user_ws = MagicMock(name="user_ws")
             service_ws = MagicMock(name="service_ws")
-            mock_factory.side_effect = [user_ws, service_ws]
+            mock_factory.return_value = service_ws
             non_streaming(_user_request("hi"))
 
-        # Local compatibility keeps the default chain, but the two slots do not alias.
-        assert mock_factory.call_args_list == [call(), call()]
+        assert mock_factory.call_args_list == [call()]
 
 
 # ---------------------------------------------------------------------------
@@ -913,18 +911,36 @@ def test_conv_turn_tool_call_round_trip_preserves_tool_calls() -> None:
     assert tool_msgs[0].content == "result-data"
 
 
-def test_resolve_ws_rejects_tokenless_request_in_app(monkeypatch):
-    """G2 wiring: the responses auth chokepoint fails closed in the Apps runtime
-    when no OBO token is present (no app-SP fallback unless opted in)."""
-    import pytest
-
-    from apx_agent._obo import ApxIdentityError
+def test_resolve_ws_keeps_user_client_absent_without_obo(monkeypatch):
+    """Tokenless service operations never inherit the App service client."""
     from apx_agent._responses_agent import _resolve_ws_and_headers_for_request
 
     monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
     monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
-    with pytest.raises(ApxIdentityError):
-        _resolve_ws_and_headers_for_request(custom_inputs=None)
+    with patch(
+        "apx_agent._defaults._make_workspace_client",
+        return_value=MagicMock(name="service_ws"),
+    ) as factory:
+        auth = _resolve_ws_and_headers_for_request(custom_inputs=None)
+    assert auth.user_ws is None
+    assert auth.service_ws is factory.return_value
+    factory.assert_called_once_with()
+
+
+def test_resolve_ws_ignores_explicit_sp_fallback_for_user_slot(monkeypatch):
+    """The legacy fallback flag cannot populate the OBO user slot."""
+    from apx_agent._responses_agent import _resolve_ws_and_headers_for_request
+
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.setenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", "true")
+    with patch(
+        "apx_agent._defaults._make_workspace_client",
+        return_value=MagicMock(name="service_ws"),
+    ) as factory:
+        auth = _resolve_ws_and_headers_for_request(custom_inputs=None)
+    assert auth.user_ws is None
+    assert auth.service_ws is factory.return_value
+    factory.assert_called_once_with()
 
 
 def test_token_without_user_id_still_builds_forwarding_headers(monkeypatch):

@@ -46,8 +46,6 @@ _REQUEST_CONTEXT_HEADERS = frozenset(
         b"x-request-id",
     }
 )
-
-
 def build_appkit_tool_bridge_router() -> APIRouter:
     """Build internal routes used by the generated AppKit host."""
     router = APIRouter()
@@ -85,14 +83,12 @@ def build_appkit_tool_bridge_router() -> APIRouter:
             if authorization.requires_request_context
             else None
         )
-        if authorization.execution_identity == "user" and (
-            headers is None or headers.token is None
-        ):
-            raise HTTPException(
-                status_code=401,
-                detail=f"APX tool {tool_name!r} requires forwarded user identity",
-            )
         if authorization.execution_identity == "user":
+            if headers is None or headers.token is None:
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"APX tool {tool_name!r} requires forwarded user identity",
+                )
             service_ws = None
             user_ws = _obo_ws_from_headers(headers)
         else:
@@ -129,7 +125,10 @@ def build_appkit_tool_bridge_router() -> APIRouter:
 
 
 def _manifest_tool(request: Request, name: str) -> AppsHostTool:
-    manifest = getattr(request.app.state, "apx_appkit_host_manifest", None)
+    try:
+        manifest = request.app.state.apx_appkit_host_manifest
+    except AttributeError:
+        manifest = None
     if not isinstance(manifest, AppsHostManifest):
         raise HTTPException(
             status_code=503,
@@ -171,23 +170,23 @@ def _bounded_request(request: Request, *, include_token: bool) -> Request:
         for name, value in request.scope.get("headers", [])
         if name.lower() in allowed
     ]
-    return Request(
-        {
-            "type": "http",
-            "asgi": request.scope.get("asgi", {"version": "3.0"}),
-            "http_version": request.scope.get("http_version", "1.1"),
-            "method": request.method,
-            "scheme": request.scope.get("scheme", "http"),
-            "path": request.scope.get("path", ""),
-            "raw_path": request.scope.get("raw_path", b""),
-            "query_string": request.scope.get("query_string", b""),
-            "root_path": request.scope.get("root_path", ""),
-            "headers": headers,
-            "client": request.scope.get("client"),
-            "server": request.scope.get("server"),
-            "app": request.app,
-        }
-    )
+    scope = {
+        "type": "http",
+        "asgi": request.scope.get("asgi", {"version": "3.0"}),
+        "http_version": request.scope.get("http_version", "1.1"),
+        "method": request.method,
+        "scheme": request.scope.get("scheme", "http"),
+        "path": request.scope["path"],
+        "raw_path": request.scope.get("raw_path", b""),
+        "query_string": request.scope.get("query_string", b""),
+        "headers": headers,
+        "client": request.scope.get("client"),
+        "server": request.scope.get("server"),
+        "app": request.app,
+    }
+    if "root_path" in request.scope:
+        scope["root_path"] = request.scope["root_path"]
+    return Request(scope)
 
 
 def _find_tool(agent: BaseAgent, name: str) -> _ToolTarget:

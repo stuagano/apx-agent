@@ -228,7 +228,7 @@ def _conv_items_to_chat_msgs(items: list[ConversationItem]) -> list["ChatAgentMe
 
 @dataclass(frozen=True)
 class _WsAndHeaders:
-    user_ws: Any
+    user_ws: Any | None
     service_ws: Any
     headers: Any
 
@@ -273,7 +273,7 @@ def _resolve_ws_and_headers(
     from pydantic import SecretStr
 
     from ._defaults import DatabricksAppsHeaders, _make_workspace_client
-    from ._obo import extract_obo_headers
+    from ._obo import _in_databricks_app, extract_obo_headers
 
     # Model Serving has no HTTP-header source for identity — custom_inputs only.
     obo = extract_obo_headers(custom_inputs=custom_inputs)
@@ -284,12 +284,10 @@ def _resolve_ws_and_headers(
             token=obo["user_token"],
             host=obo.get("workspace_host"),
         )
-    else:
-        # G2: fail closed in the Apps multi-user runtime (unless SP fallback is
-        # explicitly opted in) instead of silently running as the app SP.
-        from ._obo import resolve_no_obo_or_raise
-        resolve_no_obo_or_raise()
+    elif not _in_databricks_app():
         user_ws = _make_workspace_client()
+    else:
+        user_ws = None
 
     service_ws = _make_workspace_client()
 

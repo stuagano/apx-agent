@@ -99,7 +99,7 @@ class _ResponsesTypes:
 class _WsAuth:
     """Distinct user/service clients and optional request identity headers."""
 
-    user_ws: "WorkspaceClient"
+    user_ws: "WorkspaceClient | None"
     service_ws: "WorkspaceClient"
     headers: Any  # DatabricksAppsHeaders | None
 
@@ -206,7 +206,8 @@ def _resolve_ws_and_headers_for_request(
     precedence order so ws-identity and memory-principal are always consistent.
 
     Returns:
-        Separate user and service clients plus ``headers``. Headers are a
+        Separate optional user and required service clients plus ``headers``.
+        Headers are a
         :class:`DatabricksAppsHeaders` instance when a ``user_id`` is
         resolvable, else ``None``.
     """
@@ -233,11 +234,7 @@ def _resolve_ws_and_headers_for_request(
             host=obo.get("workspace_host"),
         )
     else:
-        # G2: fail closed in the Apps multi-user runtime (unless SP fallback is
-        # explicitly opted in) instead of silently running as the app SP.
-        from ._obo import resolve_no_obo_or_raise
-        resolve_no_obo_or_raise()
-        user_ws = _make_workspace_client()
+        user_ws = None
 
     service_ws = _make_workspace_client()
 
@@ -1072,7 +1069,6 @@ def compile_to_responses_agent(
     _conversation_store = conversation_store
     _executor_name = executor
     _agent_id = agent_id if agent_id is not None else getattr(agent, "_name", None)
-
     # Short-term memory (mirrors chat_agent_for): default a served LlmAgent to a
     # process-scoped InMemorySaver when neither a checkpointer nor a durable
     # conversation store was wired — so it remembers across turns within a

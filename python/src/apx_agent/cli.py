@@ -8953,7 +8953,7 @@ def _resolve_app_dependencies(
         expected_url = dependency.url.rstrip("/")
         matches = []
         for app in workspace_apps:
-            candidate_url = getattr(app, "url", None)
+            candidate_url = app.url
             if (
                 isinstance(candidate_url, str)
                 and candidate_url.rstrip("/") == expected_url
@@ -8970,9 +8970,9 @@ def _resolve_app_dependencies(
                 "Remove the duplicate workspace App identities before deploying."
             )
         match = matches[0]
-        app_id = getattr(match, "id", None)
-        app_name = getattr(match, "name", None)
-        app_url = getattr(match, "url", None)
+        app_id = match.id
+        app_name = match.name
+        app_url = match.url
         if (
             not isinstance(app_id, str)
             or not app_id
@@ -9094,6 +9094,97 @@ def _validate_apps_authorization_plan(
             "App family group policy grants both CAN_USE and CAN_MANAGE to: "
             f"{', '.join(overlap)}. Keep each group in one policy list."
         )
+
+
+def _explicit_apps_resource_summary_lines(
+    cwd: Path,
+    bundle_key: str,
+) -> list[str]:
+    """Validate and summarize explicit App resources without exposing values."""
+    required_fields = {
+        "app": ("name",),
+        "database": ("name", "instance_name", "database_name"),
+        "genie_space": ("name", "space_id"),
+        "job": ("name", "id"),
+        "secret": ("name", "scope", "key"),
+        "serving_endpoint": ("name", "endpoint_name"),
+        "sql_warehouse": ("name", "id"),
+        "uc_securable": ("name", "securable_full_name", "securable_type"),
+    }
+    _yml, doc = _load_databricks_yml_roundtrip(cwd)
+    try:
+        entries = doc["resources"]["apps"][bundle_key].get("resources", [])
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise click.ClickException(
+            f"databricks.yml has no valid resources.apps.{bundle_key} block."
+        ) from exc
+    if not isinstance(entries, list):
+        raise click.ClickException(
+            f"resources.apps.{bundle_key}.resources must be a list."
+        )
+
+    lines: list[str] = []
+    names: set[str] = set()
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            raise click.ClickException(
+                f"App resource entry {index} must be a mapping."
+            )
+        bodies = [
+            (kind, body)
+            for kind, body in entry.items()
+            if kind not in {"name", "description"} and isinstance(body, dict)
+        ]
+        if len(bodies) != 1:
+            raise click.ClickException(
+                f"App resource entry {index} must contain exactly one typed resource."
+            )
+        kind, body = bodies[0]
+        if kind not in required_fields:
+            raise click.ClickException(
+                f"App resource entry {index} has unsupported type {kind!r}."
+            )
+        missing_fields = [
+            field
+            for field in required_fields[kind]
+            if not isinstance(
+                (entry.get("name") or body.get("name"))
+                if field == "name"
+                else body.get(field),
+                (str, int),
+            )
+            or not (
+                (entry.get("name") or body.get("name"))
+                if field == "name"
+                else body.get(field)
+            )
+        ]
+        if missing_fields:
+            raise click.ClickException(
+                f"App resource entry {index} ({kind}) is missing required fields: "
+                f"{', '.join(missing_fields)}."
+            )
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            name = body.get("name")
+        if not isinstance(name, str) or not name:
+            raise click.ClickException(
+                f"App resource entry {index} is missing a non-empty name."
+            )
+        if name in names:
+            raise click.ClickException(
+                f"App resource name {name!r} is declared more than once."
+            )
+        names.add(name)
+        permission = body.get("permission")
+        if permission is not None and (
+            not isinstance(permission, str) or not permission
+        ):
+            raise click.ClickException(
+                f"App resource {name!r} has an invalid permission."
+            )
+        lines.append(f"{kind} {name}: {permission or 'plugin-managed'}")
+    return sorted(lines)
 
 
 def _validate_resolved_app_dependencies(
@@ -9891,12 +9982,14 @@ def _deploy_apps_impl(
         authorization_plan,
         resolved_dependencies,
     )
+    explicit_resource_lines = _explicit_apps_resource_summary_lines(cwd, bundle_key)
 
     log("# Apps authorization summary")
     for line in authorization_summary_lines(
         authorization_plan,
         resolved_dependencies,
         family_permissions,
+        explicit_resources=tuple(explicit_resource_lines),
     ):
         log(line)
     if auto_update_yml:

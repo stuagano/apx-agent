@@ -394,18 +394,20 @@ def test_log_agent_finalizes_before_resource_derivation(tmp_path, monkeypatch):
     assert "ask_sales" in seen["tools"]  # finalize ran BEFORE resource derivation
 
 
-def test_resolve_ws_rejects_tokenless_request_in_app(monkeypatch):
-    """G2 wiring: the chat auth chokepoint fails closed in the Apps runtime when
-    no OBO token is present (no app-SP fallback unless opted in)."""
-    import pytest
-
+def test_resolve_ws_keeps_user_client_absent_in_app_without_obo(monkeypatch):
+    """The A2A/Chat path does not place App credentials in the user slot."""
     from apx_agent._chat_agent import _resolve_ws_and_headers
-    from apx_agent._obo import ApxIdentityError
 
     monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
-    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
-    with pytest.raises(ApxIdentityError):
-        _resolve_ws_and_headers(custom_inputs=None)
+    monkeypatch.setenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", "true")
+    with patch(
+        "apx_agent._defaults._make_workspace_client",
+        return_value=MagicMock(name="service_ws"),
+    ) as factory:
+        auth = _resolve_ws_and_headers(custom_inputs=None)
+    assert auth.user_ws is None
+    assert auth.service_ws is factory.return_value
+    factory.assert_called_once_with()
 
 
 def _resolve_headers(monkeypatch, custom_inputs):

@@ -327,6 +327,53 @@ def test_reconcile_apps_authorization_is_complete_additive_and_idempotent(
     assert yml_path.read_text() == first_text
 
 
+def test_explicit_apps_resource_summary_validates_and_redacts_secrets(
+    tmp_path: Path,
+) -> None:
+    from apx_agent.cli import _explicit_apps_resource_summary_lines
+
+    (tmp_path / "databricks.yml").write_text(textwrap.dedent("""\
+        resources:
+          apps:
+            my-app:
+              name: my-app
+              resources:
+                - name: secret-api-key
+                  secret:
+                    scope: production
+                    key: api-key
+                    permission: READ
+                - database:
+                    name: sessions
+                    instance_name: app-lakebase
+                    database_name: sessions
+        """))
+
+    assert _explicit_apps_resource_summary_lines(tmp_path, "my-app") == [
+        "database sessions: plugin-managed",
+        "secret secret-api-key: READ",
+    ]
+
+
+def test_explicit_apps_resource_summary_rejects_missing_typed_fields(
+    tmp_path: Path,
+) -> None:
+    from apx_agent.cli import _explicit_apps_resource_summary_lines
+
+    (tmp_path / "databricks.yml").write_text(textwrap.dedent("""\
+        resources:
+          apps:
+            my-app:
+              resources:
+                - name: secret-api-key
+                  secret:
+                    scope: production
+        """))
+
+    with pytest.raises(click.ClickException, match="missing required fields: key"):
+        _explicit_apps_resource_summary_lines(tmp_path, "my-app")
+
+
 @pytest.mark.parametrize(
     ("plan", "resolved", "match"),
     [

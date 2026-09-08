@@ -477,8 +477,8 @@ def _tool_input_schema(fn: Any) -> dict[str, Any] | None:
             _schema_for_model,
         )
 
-        plain_params, _ = _inspect_tool_fn(fn)
-        input_model = _make_input_model(fn, plain_params)
+        signature = _inspect_tool_fn(fn)
+        input_model = _make_input_model(fn, signature.plain_params)
         return _schema_for_model(input_model)
     except Exception:
         return None

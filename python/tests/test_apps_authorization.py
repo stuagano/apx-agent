@@ -421,7 +421,15 @@ def test_authorization_summary_is_deterministic_and_complete() -> None:
         can_manage_groups=("admins",),
     )
 
-    assert authorization_summary_lines(plan, resolved, policy) == [
+    assert authorization_summary_lines(
+        plan,
+        resolved,
+        policy,
+        explicit_resources=("secret llm-key: READ",),
+    ) == [
+        "Operation authorization:",
+        "  - a_background_job | service | job job-123 | CAN_MANAGE_RUN",
+        "  - z_user_lookup | user | uc_table main.sales.orders | sql",
         "User operations:",
         "  - z_user_lookup",
         "Service operations:",
@@ -431,6 +439,8 @@ def test_authorization_summary_is_deterministic_and_complete() -> None:
         "Service resources:",
         "  - job job-123: CAN_MANAGE_RUN",
         "  - serving_endpoint model-endpoint: CAN_QUERY",
+        "Explicit/plugin resources:",
+        "  - secret llm-key: READ",
         "App-to-App dependencies:",
         "  - https://peer.cloud.databricksapps.com -> peer-app (id: app-id-123)",
         "Audience groups:",

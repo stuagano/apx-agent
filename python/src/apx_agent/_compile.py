@@ -113,11 +113,12 @@ def _make_dep_resolvers(ctx: CompileContext) -> dict[Any, Any]:
     """Map FastAPI dependency callables to their resolved values for ``ctx``."""
     from ._sql import run_sql
 
+    user_ws = ctx.user_ws
     return {
         _get_workspace_client: ctx.service_ws,
-        _get_user_client: ctx.user_ws,
+        _get_user_client: user_ws,
         get_databricks_headers: ctx.headers,
-        _get_sql_runner: (lambda q: run_sql(ctx.user_ws, q)),
+        _get_sql_runner: None if user_ws is None else lambda q: run_sql(user_ws, q),
         _get_principal: (ctx.headers.user_id if ctx.headers else None),  # E3b
         _get_progress: emit_progress,  # tool progress → trace span events
         _get_request: ctx.request,
@@ -133,11 +134,6 @@ def _resolve_deps_for_fn(fn: Any, ctx: CompileContext) -> dict[str, Any]:
         if target is _get_workspace_client and ctx.service_ws is None:
             raise ValueError(
                 f"Tool {fn.__name__!r} requires a service WorkspaceClient for "
-                f"dependency {dep_name!r}, but none was provided."
-            )
-        if target in {_get_user_client, _get_sql_runner} and ctx.user_ws is None:
-            raise ValueError(
-                f"Tool {fn.__name__!r} requires a user WorkspaceClient for "
                 f"dependency {dep_name!r}, but none was provided."
             )
         if target is _get_request and ctx.request is None:
@@ -168,8 +164,8 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
     """
     from langchain_core.tools import StructuredTool
 
-    plain_params, _ = _inspect_tool_fn(fn)
-    input_model = _make_input_model(fn, plain_params)
+    signature = _inspect_tool_fn(fn)
+    input_model = _make_input_model(fn, signature.plain_params)
     if input_model is None:
         # Zero-argument tool: without an explicit args_schema, langchain infers
         # one from the **kwargs wrapper and emits "additionalProperties": true,
@@ -177,8 +173,34 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
         input_model = _EmptyToolInput
     resolved_deps = _resolve_deps_for_fn(fn, ctx)
     is_async = inspect.iscoroutinefunction(fn)
-
     state_param = _state_param_name(fn)
+    missing_user_identity = ctx.user_ws is None and any(
+        dependency in {_get_user_client, _get_sql_runner}
+        for dependency in _tool_dependency_callables(fn).values()
+    )
+
+    if missing_user_identity:
+        from ._obo import ApxIdentityError
+
+        message = (
+            f"Tool {fn.__name__!r} requires an OBO user identity, but this request "
+            "did not provide one."
+        )
+        if is_async:
+            async def _reject_missing_user_async(**kwargs: Any) -> Any:
+                raise ApxIdentityError(message)
+
+            _reject_missing_user_async.__name__ = fn.__name__
+            _reject_missing_user_async.__doc__ = fn.__doc__
+            fn = _reject_missing_user_async
+        else:
+            def _reject_missing_user_sync(**kwargs: Any) -> Any:
+                raise ApxIdentityError(message)
+
+            _reject_missing_user_sync.__name__ = fn.__name__
+            _reject_missing_user_sync.__doc__ = fn.__doc__
+            fn = _reject_missing_user_sync
+
     if state_param is not None:
         return _make_stateful_langchain_tool(
             fn, state_param, resolved_deps, input_model, is_async

@@ -522,28 +522,28 @@ class TestSameOutput:
 
 
 # ---------------------------------------------------------------------------
-# 6. No-OBO fallback parity (local-dev)
+# 6. No-OBO identity behavior (local-dev)
 # ---------------------------------------------------------------------------
 
 
-class TestNoOboFallbackParity:
-    def test_no_custom_inputs_calls_factory_with_no_kwargs_in_both(self) -> None:
+class TestNoOboIdentityBehavior:
+    def test_no_custom_inputs_uses_each_runtime_service_client(self) -> None:
         chat_cap, resp_cap = _run_both(
             chat_messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
             responses_input=[{"role": "user", "content": "hi"}],
             custom_inputs=None,
         )
         assert chat_cap.factory_calls == [call(), call()]
-        assert resp_cap.factory_calls == [call(), call()]
+        assert resp_cap.factory_calls == [call()]
 
-    def test_empty_custom_inputs_calls_factory_with_no_kwargs_in_both(self) -> None:
+    def test_empty_custom_inputs_uses_each_runtime_service_client(self) -> None:
         chat_cap, resp_cap = _run_both(
             chat_messages=[ChatAgentMessage(role="user", content="hi", id="u1")],
             responses_input=[{"role": "user", "content": "hi"}],
             custom_inputs={},
         )
         assert chat_cap.factory_calls == [call(), call()]
-        assert resp_cap.factory_calls == [call(), call()]
+        assert resp_cap.factory_calls == [call()]
 
 
 # ---------------------------------------------------------------------------
