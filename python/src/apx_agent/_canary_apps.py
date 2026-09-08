@@ -504,7 +504,7 @@ def deploy_canary_app(
     deploy/run/get subset here — is what makes the soak App a faithful preview:
     it gets the same validate → wheel build → manifest staging → poll → readyz
     → UC registration that prod gets. See
-    docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md (Phase 0/P1).
+    docs/engine-scope/apps-canary-hotswap-design.md (Sections 3 and 3a).
 
     ``git_sha`` (P1 provenance): when provided, it is stamped on the canary's
     UC manifest version as the ``apx.apps.git_sha`` tag — the exact commit the

@@ -15158,7 +15158,7 @@ def _canary_promote_impl(
         return
 
     # --target apps — gate-don't-mutate promote (see
-    # docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md, P2).
+    # docs/engine-scope/apps-canary-hotswap-design.md, Section 3a).
     if not canary_version:
         raise click.UsageError(
             "--canary-version is required for --target apps (the deploy-time "

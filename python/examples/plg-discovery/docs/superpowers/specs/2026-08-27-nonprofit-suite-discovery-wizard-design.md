@@ -1,7 +1,7 @@
-# Agentic Nonprofit Suite — Discovery & Configuration Wizard (Design)
+# Agentic Nonprofit Suite — Discovery Spine and Future Engines
 
-*Design spec — 2026-08-27. Author-driven brainstorming output. Scope: the 2-day demo
-prototype ("Slice 1 + teaser"), framed inside the end-to-end north-star vision.*
+*Design spec — 2026-08-27; status corrected 2026-09-09. The discovery spine shipped in
+PR #693. Configuration, donor-management, and finance-reporting engines remain roadmap.*
 
 ---
 
@@ -53,92 +53,78 @@ This makes the two demo teasers representative of the entire catalog, not one-of
 
 ---
 
-## 2. Scope of this build (the 2-day demo)
+## 2. Current scope and status
 
-**Goal:** a deployed, demoable prototype that tells the end-to-end story: discovery →
-catalog-aware blueprint → configure two representative components (one per engine).
+The repository currently delivers a deployed discovery experience through a native APX
+agent and the generated TypeScript AppKit host. The original two-engine prototype was not
+completed and remains future product scope.
 
-### 2.1 In scope
+### 2.1 Shipped discovery spine
 
-- **Discovery wizard** (agent-driven) → **catalog-aware blueprint** with a keep/build vs
-  buy/build decision per domain, made against the org's existing stack (§3.4/§3.5).
-- **Component catalog data file**: ~5–8 Run-in-Databricks component specs (name,
-  description, config-schema outline); the two teaser components get full config schemas.
-- **Teaser 1 — Donor Management (Engine A):** a real, minimal **schema-driven app** on
-  Lakebase (1–2 objects: Donor, Gift) whose visible fields/labels + a custom field are set
-  by an agent-generated config produced in a short configuration wizard. A live table view
-  + add/edit form.
-- **Teaser 2 — Finance/Impact Reporting (Engine B):** a **mocked connector** loads a
-  **sample QuickBooks export** (CSV/JSON) into a Delta table in UC; a real **Databricks
-  AI/BI (Lakeview) dashboard** over that table is surfaced (embed or link).
-- **Generic wizard shell** (React): NL conversation panel + **status bar with inspectable
-  artifact nodes** + a result surface (blueprint / donor app / dashboard).
-- **Background-info intake**: paste text **and** upload a file (parsed to text) **and**
-  best-effort auto-fetch of provided links — used to pre-fill the agent's questions and
-  avoid the "doctor's-office effect." Link-fetch degrades gracefully on failure.
-- **Deployed to Databricks Apps** as a **single app** (FastAPI runs apx-agent in-process
-  and serves the React bundle same-origin).
+- Native APX discovery agent with playbook, catalog, skill, and nonprofit research brief
+  grounding.
+- Generated TypeScript AppKit host serving the React wizard and
+  `/api/agents/chat` with real AppKit threads and telemetry.
+- Typed `OrgProfile`, `DomainRelevance`, and `Blueprint` artifacts with an inspectable
+  progress rail, current-systems checklist, artifact inspector, and blueprint surface.
+- Seven catalog entries describing possible Databricks-hosted components.
+- URL intake, browser-readable text-file intake, and filename annotations for binary
+  files.
+- Databricks Apps bundle configuration for the AppKit host, model endpoint, SQL warehouse,
+  and MLflow telemetry resources.
 
-### 2.2 Explicitly out of scope (designed-for, not built)
+### 2.2 Actionable roadmap
 
-- Editing/revisiting completed stages (status-bar nodes are **inspectable / read-only**).
-- Provisioning beyond the two teasers; a fully generic ClickUp-style app builder; live
-  QuickBooks OAuth ingestion.
-- Durable multi-tenant persistence, auth beyond the Databricks App default, a real
-  user/login/tenant model.
-- Activation / PLG event instrumentation (belongs to the multi-tenant future, not the
-  demo).
+- Add full configuration schemas for the donor-management and finance-reporting catalog
+  entries and emit a validated `ComponentConfig` artifact.
+- Add a per-component configuration wizard.
+- Build the minimal schema-driven Donor and Gift application on Lakebase.
+- Load a sample QuickBooks export into Delta and surface a real AI/BI dashboard.
+- Add pasted-text intake, server-side document parsing, and backend context prefill.
+- Complete all twelve current-system categories before `OrgProfile` can pass the hard
+  gate; the shipped gate currently requires five core categories.
+- Re-prompt once when an agent artifact fails schema validation before surfacing the
+  rejection.
 
 ### 2.3 The honesty line
 
-The **narrative spine is fully real**: the agent, both wizards, the generated config,
-real Lakebase data, a real Lakeview dashboard on real lakehouse data. What is *deliberately
-minimal or mocked*: the app engine renders 1–2 objects (not an infinite builder), and the
-QuickBooks **connector** is a sample-file loader (the dashboard result is real).
+The discovery agent, AppKit conversation, three discovery artifacts, and blueprint UI are
+real. The configuration wizard, generated component configuration, Lakebase donor data,
+QuickBooks-to-Delta ingestion, and AI/BI dashboard are not implemented yet.
 
 ---
 
 ## 3. Architecture
 
-### 3.1 Topology — one Databricks App, agent in-process
+### 3.1 Shipped topology — generated AppKit host
 
 ```
-┌───────────────────────── Databricks App (single deploy) ─────────────────────────┐
-│                                                                                   │
-│   React wizard (static bundle)                                                    │
-│        │  same-origin HTTP                                                        │
-│        ▼                                                                          │
-│   FastAPI backend                                                                 │
-│     • /chat        → relay a turn to the in-process discovery/config agent        │
-│     • /ingest      → parse pasted text / uploaded file / fetched link → context   │
-│     • /donor/*     → schema-driven CRUD backed by Lakebase                        │
-│     • /dashboard   → trigger sample ingest to Delta; return Lakeview embed/link   │
-│     • static       → serve the React bundle                                       │
-│        │                                                                          │
-│        ├── in-process ──► apx-agent (LlmAgent + playbooks + brief grounding)      │
-│        ├── Lakebase (Postgres) ──► donor app data + minimal session/artifact state│
-│        └── Databricks SDK/SQL ──► Delta table (sample QB data) + Lakeview API     │
-└───────────────────────────────────────────────────────────────────────────────────┘
+React discovery wizard
+  └─ POST /api/agents/chat
+       └─ generated APX TypeScript AppKit host
+            ├─ native APX discovery-agent declaration
+            ├─ Databricks foundation model and governed Python tools
+            └─ MLflow/AppKit traces, metrics, and logs
 ```
 
-Rationale: a deployed Databricks App is a single served unit; running apx-agent in-process
-(`run_once` / its Python API) avoids a second deployment and cross-app OAuth. The backend
-is **thin plumbing**, not a conversation orchestrator — the agent owns the dialog.
+The original custom FastAPI `/chat`, `/ingest`, `/donor/*`, and `/dashboard` topology was
+superseded. TypeScript remains internal runtime plumbing generated from the Python agent
+declaration.
 
 ### 3.2 Units and interfaces
 
-| Unit | Responsibility | Depends on |
+| Unit | Status | Responsibility |
 |---|---|---|
-| **Wizard shell (React)** | Generic wizard UI: conversation, status bar w/ artifact nodes, result surface. Parameterized by *wizard type*. | backend HTTP |
-| **Backend (FastAPI)** | Serve bundle; relay `/chat`; `/ingest`; donor CRUD; dashboard setup. Stateless-ish. | apx-agent, Lakebase, Databricks SDK |
-| **Discovery/Config agent (apx-agent)** | Owns each dialog; follows a **playbook**; emits **typed artifacts**. | model endpoint, brief, catalog |
-| **Component catalog (data)** | Machine-readable catalog + config schemas (incl. 2 full teaser schemas). | — |
-| **Donor app engine** | Schema-driven CRUD (1–2 objects) rendered from a component config. | Lakebase, backend |
-| **Ingest+BI engine** | Sample-file → Delta; Lakeview dashboard. | Databricks SDK, Lakeview API |
+| **Discovery shell (React)** | Shipped | Conversation, progress, artifact inspection, current-systems gate, and blueprint surface |
+| **Generated AppKit host** | Shipped | Static client, `/api/agents/chat`, threads, governed tool dispatch, and telemetry |
+| **Discovery agent (apx-agent)** | Shipped | Follow the discovery playbook and emit the three typed discovery artifacts |
+| **Component catalog** | Partial | Seven component outlines; teaser configuration schemas remain future work |
+| **Configuration wizard** | Future | Fill and validate one catalog component's `ComponentConfig` |
+| **Donor app engine** | Future | Render Donor and Gift CRUD from configuration using Lakebase |
+| **Ingest and BI engine** | Future | Load sample finance data into Delta and surface an AI/BI dashboard |
 
-Isolation test: the frontend knows only the backend HTTP contract; the backend knows only
-the agent's artifact schemas and the two engines' configs; the agent knows only its
-playbook + grounding. Any one can change internals without breaking the others.
+The Python declaration remains the product-facing source of truth; the generated AppKit
+host is runtime plumbing.
 
 ### 3.3 Agent design (apx-agent)
 
@@ -146,14 +132,12 @@ playbook + grounding. Any one can change internals without breaking the others.
   instruction-following model, e.g. Claude on Databricks if available; else Llama).
   Model id pinned at setup.
 - **Grounding:** the research brief (as context/knowledge) + the component catalog file.
-- **Playbooks (the "modus operandi," superpowers-style):** procedural instructions that
-  put the agent in stages, each **gated by a discrete artifact**. Two playbooks:
-  1. **Discovery Playbook** — stages: (Intake pre-fill) → **Org Profile** → **Domain
-     Relevance** → **Suite Blueprint**.
-  2. **Configuration Playbook** — parameterized by a component's config schema; stages fill
-     the schema → **Component Config** artifact.
-- **Enforcement is prompt-level (soft), by design** for the demo — adequate in a
-  controlled demo; hard (code) gates are a production concern, deferred.
+- **Shipped playbook:** Discovery stages move through **Org Profile** → **Domain
+  Relevance** → **Suite Blueprint**.
+- **Future playbook:** Component configuration is parameterized by a catalog schema and
+  emits a validated **Component Config** artifact.
+- **Enforcement:** artifact parsing and the five-category current-systems gate are hard
+  client checks. The remaining conversational progression is prompt-driven.
 - **Structured output:** each stage emits a typed JSON artifact against a fixed schema so
   the frontend can render status-bar nodes and result surfaces deterministically.
 
@@ -172,8 +156,9 @@ playbook + grounding. Any one can change internals without breaking the others.
   in Databricks); `New→*` = a domain with no current tool. Justification cites the
   keep-vs-migrate and build-vs-buy logic (§14.3/§14.4 — don't rebuild commodities;
   integrate free incumbents; build the vertical/consolidation gaps).
-- `ComponentConfig` — for Engine A: `{ objects[], fields[], views[], labels }`; for Engine
-  B: `{ source, sample_dataset, delta_target, dashboard_ref }`.
+- `ComponentConfig` (**future**) — for Engine A:
+  `{ objects[], fields[], views[], labels }`; for Engine B:
+  `{ source, sample_dataset, delta_target, dashboard_ref }`.
 
 ### 3.5 Required current-systems inventory (un-skippable)
 
@@ -184,117 +169,96 @@ glossed over — this is the substrate the keep/build-vs-buy/build blueprint rea
   fundraising/donations, plus the remaining §14.1 domains (grants, program/case, volunteer,
   events, comms, back-office, vertical/operational).
 - **Per category:** `{ category, has_system: yes|no, system_name?, keep_intent?: keep|open-to-change|unsure }`.
-- **Enforcement (UI checklist gates the stage):** the wizard shows a live **Current
-  Systems checklist**. The agent elicits entries conversationally and the intake pre-fills
-  what it can, but the **Profile stage cannot complete until every required category is
-  filled or explicitly marked "none."** This is a *hard* gate in the shell (the exception
-  to the otherwise soft, playbook-level stage enforcement), chosen specifically because
-  these fields must not be skipped. It stays conversational — the checklist reflects what
-  the dialog captured; it is not a data-entry form up front.
+- **Current enforcement:** the live checklist requires email, docs/productivity,
+  financial/accounting, CRM/constituent, and fundraising/donations before the profile can
+  complete.
+- **Future enforcement:** extend that hard gate to all twelve categories above. The
+  checklist remains conversational rather than becoming an up-front data-entry form.
 
 ---
 
 ## 4. Data flow
 
-1. **Intake (optional):** user pastes text / uploads a file / provides links → `/ingest`
-   → backend extracts text (file parsing via Databricks `ai_parse_document` for
-   PDFs; best-effort fetch for links) → returns a **context pre-fill** the agent uses to
-   skip already-answered questions.
-2. **Discovery:** React ⇄ `/chat` ⇄ in-process agent (Discovery Playbook). Agent asks
-   segmenting questions, emitting `OrgProfile` → `DomainRelevance` → `Blueprint`. Each
-   emitted artifact appears as an inspectable status-bar node; `Blueprint` renders on the
-   result surface with Buy vs Run-in-DBX tags.
-3. **Configure Donor Mgmt (Engine A):** from the blueprint, user opens the Donor Management
-   component → config wizard (Configuration Playbook over the donor schema) → `ComponentConfig`
-   → the **donor app renders live** from that config on Lakebase.
-4. **Set up Finance Reporting (Engine B):** user opens the reporting component → short
-   wizard confirms source → backend loads the **sample QuickBooks export** into a Delta
-   table → surfaces the **Lakeview dashboard**.
+1. **Shipped intake:** the client includes an organization URL and browser-readable file
+   text in the first discovery turn. Binary files contribute their filenames. Pasted text,
+   server-side document parsing, and a separate `/ingest` endpoint remain future work.
+2. **Shipped discovery:** React ⇄ `/api/agents/chat` ⇄ generated AppKit host ⇄ native APX
+   discovery agent. `OrgProfile`, `DomainRelevance`, and `Blueprint` artifacts appear in
+   the progress rail and result surface.
+3. **Future donor configuration:** open Donor Management from the blueprint, emit a
+   `ComponentConfig`, and render Donor and Gift CRUD from it on Lakebase.
+4. **Future finance configuration:** confirm the sample source, load it into Delta, and
+   surface an AI/BI dashboard or link.
 
 ---
 
-## 5. Persistence (minimal)
+## 5. Future engine persistence
 
-- **Lakebase (Postgres):** donor app data (`donors`, `gifts`, with a `custom` JSONB column
-  for agent-added fields); optionally the current session's artifacts (so a refresh
-  survives). Single logical tenant for the demo.
-- **Delta/UC:** the sample QuickBooks dataset loaded by Engine B.
-- No cross-session durable history, no per-user store (deferred to multi-tenant slice).
+The shipped discovery spine relies on AppKit threads and does not provision product data
+stores. Engine A will use Lakebase for `donors`, `gifts`, and a `custom` JSONB field.
+Engine B will use a Delta table for the sample QuickBooks dataset. Both remain scoped to a
+single demo tenant until the multi-tenant control plane exists.
 
 ---
 
 ## 6. Identity & tenancy (seam only)
 
-The demo runs as the Databricks App's default identity (whoever is logged in); a single
-implicit tenant. All tenant-scoped state (donor data, configs) is keyed by a `tenant_id`
-that is **hard-coded to one value** for the demo but present in the schema, so multi-tenancy
-can evolve without reshaping storage. apx-agent's OBO identity passthrough is available for
-future UC-grant-scoped tools but unused in the demo.
+The discovery app uses the generated AppKit host and APX identity contracts. Future
+engine data is scoped to one implicit demo tenant; its schemas should include a stable
+`tenant_id` so a later multi-tenant control plane does not require reshaping storage.
 
 ---
 
 ## 7. Error handling
 
-- **Link fetch** (intake): best-effort; on timeout/failure, skip silently and tell the user
-  which links couldn't be read — never block discovery.
-- **Agent non-conformant output:** validate each artifact against its schema; on failure,
-  re-prompt the agent once with the schema, then surface a friendly "let's continue"
-  fallback rather than crashing the wizard.
-- **Dashboard setup:** if Lakeview creation fails, fall back to a static rendering of the
-  same query result so the demo still shows a chart.
-- **Lakebase unavailable:** donor app degrades to an in-memory store for the session.
+- **Shipped artifact handling:** validate each artifact in the client and display rejected
+  artifacts without crashing the wizard.
+- **Future artifact recovery:** re-prompt once with the schema before displaying a
+  rejection.
+- **Future dashboard setup:** if dashboard creation fails, render the same aggregate data
+  as a static chart.
+- **Future Lakebase fallback:** use an in-memory session store when Lakebase is unavailable
+  during a local demo.
 
 ---
 
 ## 8. Testing strategy
 
-- **Artifact schema validation** (unit): every playbook stage's output validates against
-  its JSON schema; golden examples for Urban Gleaners.
-- **Backend contract tests:** `/chat`, `/ingest`, `/donor/*`, `/dashboard` against a
-  stubbed in-process agent (deterministic canned artifacts) — no live model needed in CI.
-- **Ingestion test:** sample QuickBooks file → Delta table row counts / schema assertions.
-- **Frontend:** a smoke test that the wizard renders nodes as artifacts arrive and the
-  donor app renders from a config fixture.
-- **One scripted end-to-end demo rehearsal** against the live model as manual acceptance.
+- **Shipped:** native-agent declaration and grounding tests, AppKit client contract tests,
+  artifact parsing, current-systems gate, progress shell, and deployment configuration.
+- **Future configuration engine:** schema-validation fixtures for both teaser configs.
+- **Future donor engine:** CRUD contract tests and configuration-driven rendering tests.
+- **Future finance engine:** sample-file schema and row-count checks plus dashboard
+  reference validation.
+- **Acceptance:** one scripted end-to-end rehearsal against the live model and explicitly
+  selected Databricks profile.
 
 TDD applies to the backend contract and artifact schemas (the deterministic parts); the
 agent's conversational quality is validated by rehearsal, not unit tests.
 
 ---
 
-## 9. Deployment (Databricks Apps)
+## 9. Deployment
 
-- Single app: `app.yaml` runs the FastAPI process; React is built to static assets served
-  by FastAPI.
-- Resources: a Lakebase (Postgres) instance; a SQL warehouse / UC schema for the Delta
-  table + Lakeview dashboard; a Foundation Model serving endpoint.
-- Secrets/config via app env (model endpoint, Lakebase connection, warehouse id).
-- **Note:** the project lives under a Google-Drive-synced path; exclude `node_modules`,
-  `.venv`, and build output from sync/git to avoid churn.
+- **Shipped:** `databricks.yml` stages the React client, APX wheel, example wheel, and
+  generated AppKit host. It declares model endpoint, SQL warehouse, and MLflow experiment
+  resources.
+- **Future:** add Lakebase and any additional UC/dashboard resources only when implementing
+  the two engines. Deployment and validation must always pass an explicit CLI profile.
 
 ---
 
-## 10. Rough build order (fits the 2 days)
+## 10. Delivery order
 
-**Immediate focus (first increment):** the **spine** — a basic React chat/wizard interface
-plus the discovery agent loop — built as a tight iteration harness for **tuning the
-apx-agent discovery agent** (playbook, grounding, required-systems elicitation, blueprint
-quality). Everything else follows once the agent feels right.
-
-1. Project scaffold: single Databricks App (FastAPI + Vite/React), local run, auth to
-   workspace + model endpoint.
-2. Component catalog data file (specs + 2 full teaser schemas) + the research brief wired
-   as agent grounding.
-3. Discovery Playbook + artifact schemas; `/chat`; **Current Systems checklist gate**;
-   blueprint renders (spine first). ← *primary iteration surface for agent tuning*
-4. Generic wizard shell: conversation + status bar + artifact inspector + blueprint surface.
-5. Intake (`/ingest`): text + file parse + best-effort link fetch → pre-fill.
-6. Engine A: donor schema-driven CRUD on Lakebase + Configuration Playbook → live donor app.
-7. Engine B: sample QuickBooks → Delta + Lakeview dashboard surface.
-8. Deploy to Databricks Apps; rehearse the end-to-end demo.
-
-Spine (1–4) before teasers (6–7); if time runs short, one teaser can drop without breaking
-the story.
+- [x] Native APX agent and generated AppKit host.
+- [x] Grounded discovery playbook, three discovery artifact types, and catalog outlines.
+- [x] React conversation, progress, artifact inspection, systems checklist, and blueprint.
+- [x] Databricks Apps deployment configuration for the discovery spine.
+- [ ] Complete all-category profile gating and richer intake.
+- [ ] Add teaser configuration schemas and the configuration playbook.
+- [ ] Build Engine A: configuration-driven Donor and Gift CRUD on Lakebase.
+- [ ] Build Engine B: sample QuickBooks ingestion into Delta plus an AI/BI dashboard.
+- [ ] Rehearse the complete discovery-to-configured-engine demo.
 
 ---
 
@@ -302,8 +266,8 @@ the story.
 
 | Risk | Mitigation |
 |---|---|
-| apx-agent in-process invocation rougher than documented | Validate `run_once`/Python API in step 1 (a spike); fall back to calling apx-agent's local FastAPI on localhost if needed. |
-| Databricks Apps deploy friction eats the timeline | Keep it local-first through step 7; deploy is step 8, not a prerequisite. |
+| Generated AppKit contract changes | Keep the Python declaration authoritative and verify the generated host through APX deployment tests. |
+| Databricks resource setup slows engine work | Keep engine contracts locally testable; provision Lakebase, Delta, and dashboard resources only for integration validation. |
 | Generic app engine balloons | Hard-cap to 1–2 objects + 1 custom field; it's a teaser, not a builder. |
 | Link auto-fetch flaky from the app | Best-effort, graceful degradation; text+file are the reliable paths. |
 | Lakeview embedding limitations in an App | Link out to the dashboard if iframe embedding is restricted; static-chart fallback. |
@@ -311,10 +275,10 @@ the story.
 
 ---
 
-## 12. Future slices (post-demo)
+## 12. Later slices
 
-2. Build out the Component Catalog (more Engine-A/B configurations, richer schemas).
-3. Full per-component configuration wizards + editing/revisiting stages.
-4. Provisioning: instantiate configured components for a tenant end-to-end.
-5. Multi-tenancy & identity hardening (real tenant model, auth, PLG activation
-   instrumentation).
+1. Build out the Component Catalog with more Engine A and Engine B configurations.
+2. Add editing and revisiting for completed wizard stages.
+3. Provision configured components for a tenant end to end.
+4. Add multi-tenancy and identity hardening: a real tenant model, auth, and PLG activation
+   instrumentation.

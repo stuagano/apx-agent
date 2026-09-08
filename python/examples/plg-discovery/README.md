@@ -74,4 +74,4 @@ databricks apps logs plg-discovery --follow --profile <profile>
 - `prompts/skills/nonprofit_discovery.md` — callable discovery methodology
 - `data/component_catalog.json` — Databricks-hosted blueprint options
 - `nonprofit-saas-landscape-2025-2026.md` — grounding research brief
-- `docs/superpowers/` — original product spec and implementation plan
+- [`Discovery wizard design`](docs/superpowers/specs/2026-08-27-nonprofit-suite-discovery-wizard-design.md) — product scope and future slices

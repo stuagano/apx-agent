@@ -58,7 +58,6 @@ prod at its own URL.
   Returns `AppsCanaryConfig` (prod/canary App names + URLs). `--traffic` is
   recorded as `traffic_hint` only — **not** a routing directive. The soak App
   is a faithful preview — it cannot diverge from or bypass the prod deploy path.
-  See the [soak-promote design spec](../../python/docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md).
 - **`promote_canary_app(...)`** — re-deploy `prod` off the canary's source tree
   (optionally tear down the canary target). Source-control tagging is the
   operator's job; the module doesn't manage git.
@@ -76,8 +75,7 @@ the platform's.
 
 The CLI `apx-agent canary {deploy,promote,rollback,status} --target apps` adds a
 version ledger and a **gate-don't-mutate** workflow on top of the library
-functions above (full design:
-[apps-soak-promote-design.md](../../python/docs/superpowers/specs/2026-06-12-apps-soak-promote-design.md)):
+functions above:
 
 - **deploy** runs the *same* `_deploy_apps_impl` path as prod (faithful soak)
   and stamps the deploy commit on the canary's UC manifest version as
