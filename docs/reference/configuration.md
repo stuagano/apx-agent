@@ -49,6 +49,10 @@ can_use_groups = ["apx-app-users"]
 can_manage_groups = ["apx-app-admins"]
 ```
 
+Operators declare one group-only Apps permission block. APX compiles that
+configured policy during every Apps deploy; APX does not create or generate
+this TOML block.
+
 This is group policy only. Each deployed App retains one persistent
 platform-created service principal; family members do not share service
 principals or credentials. A group cannot appear in both lists.

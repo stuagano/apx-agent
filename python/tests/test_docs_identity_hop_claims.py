@@ -61,10 +61,10 @@ def test_identity_passthrough_page_scopes_every_hop_claim() -> None:
 
 def test_apps_family_policy_is_operator_declared() -> None:
     """The compiler consumes policy; it does not invent project TOML."""
-    text = _read(
-        "superpowers", "specs", "2026-09-01-apps-authorization-compiler-design.md",
-    )
-    section = text.split("## App-Family Permissions", 1)[1].split("## Bundle Reconciliation", 1)[0]
+    text = _read("reference", "configuration.md")
+    section = text.split("### Apps family permissions", 1)[1].split(
+        "## Declarative tools", 1
+    )[0]
     normalized = " ".join(section.split())
     assert "Operators declare one group-only Apps permission block" in normalized
     assert "APX compiles that configured policy" in normalized
