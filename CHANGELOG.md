@@ -8,6 +8,12 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Added
 
+- **Distributed tracing across A2A hops.** `inject_tracing_headers` (client)
+  and `continue_trace_from_headers` (server) propagate MLflow's tracing context
+  over inter-agent HTTP calls so a supervisor and its remote specialist agents
+  share one trace — the specialists' tool spans nest into the caller's trace
+  instead of starting new root traces. Raw OpenTelemetry `traceparent` alone
+  does not achieve this with MLflow 3.x; both helpers no-op without MLflow.
 - **Service Policies.** Declarative built-in, LLM-as-a-judge, and SQL policy
   attachments with local enforce/dry-run evaluation, deterministic rank
   ordering, MCP-only ASK handling, audit metadata, YAML/project generation,
