@@ -16,7 +16,8 @@ Principal threading: memory tools emitted here carry a
 ``_principal: Dependencies.Principal`` dep param (via
 ``make_memory_tools(_use_dep_principal=True)``) so the per-request OBO
 identity threads through the resolved-deps closure — the same mechanism
-that delivers ``ctx.ws`` (proven in Phase 0, Task 0.2).
+that maps user dependencies to ``ctx.user_ws`` and service dependencies to
+``ctx.service_ws``.
 """
 from __future__ import annotations
 

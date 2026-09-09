@@ -1,3 +1,4 @@
+import { Plugin } from '@databricks/appkit';
 import {
   createMockRequest,
   createMockResponse,
@@ -15,6 +16,8 @@ import {
 } from '@databricks/appkit/beta';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+
+import appsHostManifestFixture from './fixtures/apps-host-manifest.json';
 
 import {
   INTERNAL_APX_APPKIT_PLUGIN_NAME,
@@ -55,24 +58,33 @@ function makeAgentExports() {
 
 function makeManifest(): InternalApxAppsHostManifest {
   return {
+    kind: 'apx.apps_host_manifest',
+    version: 1,
     agent: {
       name: 'pricing-agent',
+      description: 'Governed pricing agent.',
       model: 'databricks-claude-sonnet-4-5',
       instructions: 'Use APX governed tools.',
+      temperature: null,
       max_iterations: 8,
+      max_tokens: null,
     },
     appkit: {
       default: true,
       tool_prefix: 'apx.',
       max_steps: 8,
+      max_tokens: null,
       limits: {
         max_tool_calls: 8,
       },
+      ephemeral: null,
+      generation_params: null,
     },
     tools: [
       {
         name: 'lookup_policy',
         description: 'Return the policy attached to a governed APX resource.',
+        runtime: 'python',
         parameters: {
           type: 'object',
           properties: { resource: { type: 'string' } },
@@ -81,9 +93,25 @@ function makeManifest(): InternalApxAppsHostManifest {
         },
         annotations: {
           effect: 'read',
+          execution_identity: 'user',
+          requires_request_context: true,
           requires_user_context: true,
         },
+        output_schema: null,
+        handler: { kind: 'python', ref: 'tools:lookup_policy' },
+        resources: [{ kind: 'serving_endpoint', identifier: 'model-a' }],
+        user_api_scopes: ['serving.serving-endpoints'],
       },
+    ],
+    resources: [
+      { kind: 'job', identifier: 'telemetry-job' },
+      { kind: 'serving_endpoint', identifier: 'model-a' },
+    ],
+    user_resources: [{ kind: 'serving_endpoint', identifier: 'model-a' }],
+    service_resources: [{ kind: 'job', identifier: 'telemetry-job' }],
+    user_api_scopes: ['serving.serving-endpoints'],
+    app_to_app_permissions: [
+      { url: 'https://peer.cloud.databricksapps.com', permission: 'CAN_USE' },
     ],
   };
 }
@@ -94,31 +122,138 @@ function makeSupportedSurfaceManifest(): InternalApxAppsHostManifest {
     tools: [
       {
         name: 'who_am_i',
+        description: '',
+        runtime: 'python',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
-        annotations: { effect: 'read', requires_user_context: true },
+        annotations: {
+          effect: 'read',
+          execution_identity: 'user',
+          requires_request_context: true,
+          requires_user_context: true,
+        },
+        output_schema: null,
+        handler: { kind: 'python', ref: 'tools:who_am_i' },
+        resources: [],
+        user_api_scopes: [],
       },
       {
         name: 'apply_change',
+        description: '',
+        runtime: 'python',
         parameters: {
           type: 'object',
           properties: { value: { type: 'string' } },
           required: ['value'],
           additionalProperties: false,
         },
-        annotations: { effect: 'update', requires_user_context: true },
+        annotations: {
+          effect: 'update',
+          execution_identity: 'service',
+          requires_request_context: false,
+          requires_user_context: false,
+        },
+        output_schema: null,
+        handler: { kind: 'python', ref: 'tools:apply_change' },
+        resources: [],
+        user_api_scopes: [],
       },
       {
         name: 'remember',
+        description: '',
+        runtime: 'python',
         parameters: {
           type: 'object',
           properties: { value: { type: 'string' } },
           required: ['value'],
           additionalProperties: false,
         },
-        annotations: { effect: 'update', requires_user_context: true },
+        annotations: {
+          effect: 'update',
+          execution_identity: 'service',
+          requires_request_context: true,
+          requires_user_context: false,
+        },
+        output_schema: null,
+        handler: { kind: 'python', ref: 'tools:remember' },
+        resources: [],
+        user_api_scopes: [],
       },
     ],
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isResourceList(value: unknown): boolean {
+  return Array.isArray(value) && value.every(
+    (resource) => isRecord(resource)
+      && typeof resource['kind'] === 'string'
+      && typeof resource['identifier'] === 'string',
+  );
+}
+
+function assertAppsHostManifest(
+  value: unknown,
+): asserts value is InternalApxAppsHostManifest {
+  const agent = isRecord(value) ? value['agent'] : null;
+  const appkit = isRecord(value) ? value['appkit'] : null;
+  if (!isRecord(value)
+    || value['kind'] !== 'apx.apps_host_manifest'
+    || value['version'] !== 1
+    || !isRecord(agent)
+    || typeof agent['name'] !== 'string'
+    || typeof agent['description'] !== 'string'
+    || typeof agent['model'] !== 'string'
+    || typeof agent['instructions'] !== 'string'
+    || !(agent['temperature'] === null || typeof agent['temperature'] === 'number')
+    || !(agent['max_tokens'] === null || typeof agent['max_tokens'] === 'number')
+    || typeof agent['max_iterations'] !== 'number'
+    || !isRecord(appkit)
+    || typeof appkit['default'] !== 'boolean'
+    || typeof appkit['tool_prefix'] !== 'string'
+    || typeof appkit['max_steps'] !== 'number'
+    || !(appkit['max_tokens'] === null || typeof appkit['max_tokens'] === 'number')
+    || !isRecord(appkit['limits'])
+    || typeof appkit['limits']['max_tool_calls'] !== 'number'
+    || !(appkit['ephemeral'] === null || typeof appkit['ephemeral'] === 'boolean')
+    || !(appkit['generation_params'] === null || isRecord(appkit['generation_params']))
+    || !Array.isArray(value['tools'])
+    || !isResourceList(value['resources'])
+    || !isResourceList(value['user_resources'])
+    || !isResourceList(value['service_resources'])
+    || !Array.isArray(value['user_api_scopes'])
+    || !value['user_api_scopes'].every((scope) => typeof scope === 'string')
+    || !Array.isArray(value['app_to_app_permissions'])
+    || !value['app_to_app_permissions'].every(
+      (permission) => isRecord(permission)
+        && typeof permission['url'] === 'string'
+        && permission['permission'] === 'CAN_USE',
+    )) {
+    throw new Error('invalid APX Apps host manifest envelope');
+  }
+  for (const candidate of value['tools']) {
+    if (!isRecord(candidate)
+      || typeof candidate['name'] !== 'string'
+      || typeof candidate['description'] !== 'string'
+      || candidate['runtime'] !== 'python'
+      || !isRecord(candidate['parameters'])
+      || !(candidate['output_schema'] === null || isRecord(candidate['output_schema']))
+      || !isRecord(candidate['annotations'])
+      || typeof candidate['annotations']['effect'] !== 'string'
+      || !['user', 'service'].includes(String(candidate['annotations']['execution_identity']))
+      || typeof candidate['annotations']['requires_request_context'] !== 'boolean'
+      || typeof candidate['annotations']['requires_user_context'] !== 'boolean'
+      || !isRecord(candidate['handler'])
+      || candidate['handler']['kind'] !== 'python'
+      || typeof candidate['handler']['ref'] !== 'string'
+      || !isResourceList(candidate['resources'])
+      || !Array.isArray(candidate['user_api_scopes'])
+      || !candidate['user_api_scopes'].every((scope) => typeof scope === 'string')) {
+      throw new Error('invalid APX Apps host manifest tool');
+    }
+  }
 }
 
 async function waitForSseEvent(
@@ -224,10 +359,23 @@ describe('internal AppKit host', () => {
     });
   });
 
+  it('narrows Python generation parameters only at the AppKit adapter seam', () => {
+    const manifest = makeManifest();
+    manifest.appkit.generation_params = {
+      temperature: 0.2,
+      stop: ['DONE'],
+    };
+
+    expect(createInternalApxAppKitAgentDefinitionFromManifest(manifest))
+      .toMatchObject({ generationParams: { temperature: 0.2, stop: ['DONE'] } });
+
+    manifest.appkit.generation_params = { provider_extension: true };
+    expect(() => createInternalApxAppKitAgentDefinitionFromManifest(manifest)).toThrow();
+  });
+
   it('treats undeclared manifest tool effects as updates', () => {
     const manifest = makeManifest();
-    if (!manifest.tools) throw new Error('expected manifest tools');
-    manifest.tools[0].annotations = {};
+    Reflect.deleteProperty(manifest.tools[0].annotations, 'effect');
     const apx = new InternalApxAppKitGovernancePlugin({ manifest });
 
     expect(apx.toolkit({ prefix: 'apx.' })).toMatchObject({
@@ -391,6 +539,197 @@ describe('internal AppKit host', () => {
       }),
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps concrete service resources in DAB instead of AppKit plugin requirements', async () => {
+    const manifest = makeManifest();
+    manifest.service_resources.push({ kind: 'uc_table', identifier: 'main.sales.orders' });
+    const mock = createTestPluginContext();
+
+    await expect(mock.attach(new InternalApxAppKitGovernancePlugin({ manifest })))
+      .resolves.toBeInstanceOf(InternalApxAppKitGovernancePlugin);
+    expect(Reflect.has(InternalApxAppKitGovernancePlugin, 'getResourceRequirements')).toBe(false);
+    expect(InternalApxAppKitGovernancePlugin.manifest.resources).toEqual({
+      required: [],
+      optional: [],
+    });
+    expect(manifest).toMatchObject({
+      user_resources: [{ kind: 'serving_endpoint', identifier: 'model-a' }],
+      service_resources: [
+        { kind: 'job', identifier: 'telemetry-job' },
+        { kind: 'uc_table', identifier: 'main.sales.orders' },
+      ],
+      user_api_scopes: ['serving.serving-endpoints'],
+      app_to_app_permissions: [
+        { url: 'https://peer.cloud.databricksapps.com', permission: 'CAN_USE' },
+      ],
+    });
+  });
+
+  it('accepts and round-trips the complete Python authorization manifest shape', () => {
+    const rawManifest: unknown = appsHostManifestFixture;
+    assertAppsHostManifest(rawManifest);
+    const manifest = rawManifest;
+    const roundTripped = JSON.parse(JSON.stringify(manifest));
+    assertAppsHostManifest(roundTripped);
+    const apx = new InternalApxAppKitGovernancePlugin({ manifest: roundTripped });
+
+    expect(roundTripped).toEqual(appsHostManifestFixture);
+    expect(roundTripped.tools[0]).toMatchObject({
+      runtime: 'python',
+      output_schema: { type: 'string' },
+      handler: { kind: 'python', ref: 'tests.test_apps_host_manifest:search_orders' },
+      resources: [{ kind: 'uc_table', identifier: 'main.sales.orders' }],
+      user_api_scopes: ['sql'],
+    });
+    expect(apx.getAgentTools()[0]).toMatchObject({
+      name: 'search_orders',
+      annotations: { effect: 'update', requiresUserContext: true },
+    });
+    expect(InternalApxAppKitGovernancePlugin.manifest.resources).toEqual({
+      required: [],
+      optional: [],
+    });
+  });
+
+  it('dispatches manifest tools by identity without duplicating the bridge path', async () => {
+    setupDatabricksEnv();
+    const serviceContext = mockServiceContext({ userId: 'alice@databricks.com' });
+    const mock = createTestPluginContext();
+    const manifest = makeManifest();
+    manifest.tools = [
+      ...(manifest.tools ?? []),
+      {
+        name: 'service_health',
+        description: '',
+        runtime: 'python',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        annotations: {
+          effect: 'read',
+          execution_identity: 'service',
+          requires_request_context: false,
+          requires_user_context: false,
+        },
+        output_schema: null,
+        handler: { kind: 'python', ref: 'tools:service_health' },
+        resources: [],
+        user_api_scopes: [],
+      },
+      {
+        name: 'service_audit',
+        description: '',
+        runtime: 'python',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        annotations: {
+          effect: 'update',
+          execution_identity: 'service',
+          requires_request_context: true,
+          requires_user_context: false,
+        },
+        output_schema: null,
+        handler: { kind: 'python', ref: 'tools:service_audit' },
+        resources: [],
+        user_api_scopes: [],
+      },
+    ];
+    await mock.attach(new InternalApxAppKitGovernancePlugin({
+      manifest,
+      pythonBridge: {
+        baseUrl: 'http://127.0.0.1:8000',
+        headers: {
+          'x-apx-test': '1',
+          'X-Forwarded-Access-Token': 'configured-service-token',
+          'X-Forwarded-User': 'configured-user@databricks.com',
+          'X-Request-ID': 'configured-request-id',
+        },
+      },
+    }));
+    const appKitAsUser = vi.spyOn(Plugin.prototype, 'asUser');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => (
+      new Response(JSON.stringify({ result: String(input).split('/').at(-1) }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ));
+    const serviceRequest = createMockRequest({
+      obo: {
+        userId: 'alice@databricks.com',
+        token: 'request-service-token',
+        email: 'alice@databricks.com',
+      },
+      headers: {
+        'x-request-id': 'request-123',
+        'x-not-forwarded': 'secret-metadata',
+      },
+    });
+    const tokenlessRequest = createMockRequest({
+      headers: { 'x-forwarded-user': 'alice@databricks.com' },
+    });
+    const serviceHeaderSpy = vi.spyOn(serviceRequest, 'header');
+
+    try {
+      await expect(mock.ctx.executeTool(
+        serviceRequest,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'service_health',
+        {},
+      )).resolves.toBe('service_health');
+      expect(appKitAsUser).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        expect.stringMatching(/service_health$/),
+        expect.objectContaining({
+          headers: {
+            'content-type': 'application/json',
+            'x-apx-test': '1',
+            'x-forwarded-user': 'configured-user@databricks.com',
+            'x-request-id': 'configured-request-id',
+          },
+        }),
+      );
+
+      await expect(mock.ctx.executeTool(
+        serviceRequest,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'service_audit',
+        {},
+      )).resolves.toBe('service_audit');
+      expect(appKitAsUser).not.toHaveBeenCalled();
+      const serviceHeaders = fetchMock.mock.calls.at(-1)?.[1]?.headers as Record<string, string>;
+      expect(serviceHeaders['x-request-id']).toBe('request-123');
+      expect(serviceHeaders['x-forwarded-user']).toBe('alice@databricks.com');
+      expect(serviceHeaders['x-forwarded-email']).toBe('alice@databricks.com');
+      expect(Object.keys(serviceHeaders).filter(
+        (name) => name.toLowerCase() === 'x-forwarded-user',
+      )).toEqual(['x-forwarded-user']);
+      expect(Object.keys(serviceHeaders).map((name) => name.toLowerCase()))
+        .not.toContain('x-forwarded-access-token');
+      expect(serviceHeaders).not.toHaveProperty('x-not-forwarded');
+      expect(serviceHeaderSpy).not.toHaveBeenCalledWith('x-forwarded-access-token');
+
+      await expect(mock.ctx.executeTool(
+        tokenlessRequest,
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'lookup_policy',
+        { resource: 'main.sales.orders' },
+      )).rejects.toThrow(/user token/i);
+      expect(appKitAsUser).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      await expect(mock.ctx.executeTool(
+        createMockRequest({ obo: { userId: 'alice@databricks.com', token: 'alice-token' } }),
+        INTERNAL_APX_APPKIT_PLUGIN_NAME,
+        'lookup_policy',
+        { resource: 'main.sales.orders' },
+      )).resolves.toBe('lookup_policy');
+      expect(appKitAsUser).toHaveBeenCalledTimes(2);
+      const userHeaders = fetchMock.mock.calls.at(-1)?.[1]?.headers as Record<string, string>;
+      expect(userHeaders['x-forwarded-access-token']).toBe('alice-token');
+      expect(Object.keys(userHeaders).filter(
+        (name) => name.toLowerCase() === 'x-forwarded-access-token',
+      )).toEqual(['x-forwarded-access-token']);
+    } finally {
+      serviceContext.restore();
+    }
   });
 
   it('proves the supported manifest surface through the real AppKit context', async () => {

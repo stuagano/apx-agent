@@ -54,6 +54,7 @@ def create_executor(
     agent: "BaseAgent",
     config: "AgentConfig",
     ws: Any = None,
+    service_ws: Any = None,
 ) -> Any:
     """Return the appropriate :class:`~apx_agent._executor.Executor` for *agent*.
 
@@ -75,8 +76,10 @@ def create_executor(
     :param agent: The :class:`~apx_agent._agents.BaseAgent` instance to wrap.
     :param config: An :class:`~apx_agent._models.AgentConfig` that carries
         the ``executor`` field (defaults to ``'langgraph'``).
-    :param ws: Optional :class:`~databricks.sdk.WorkspaceClient` for OBO
-        auth.  Passed through to the executor's client factory.
+    :param ws: Optional user-only :class:`~databricks.sdk.WorkspaceClient` for
+        OBO auth. Never fills the LangGraph service dependency slot.
+    :param service_ws: Optional app service ``WorkspaceClient``. Passed only
+        to the LangGraph executor's service dependency slot.
     :returns: An executor instance whose ``run_turn`` method accepts
         the standard :class:`~apx_agent._executor.ExecutorEvent` protocol.
 
@@ -104,7 +107,9 @@ def create_executor(
                 "falling back to LangGraphExecutor for %s",
                 type(agent).__name__,
             )
-            return LangGraphExecutor(agent, ws=ws, model=config.model)
+            return LangGraphExecutor(
+                agent, user_ws=ws, service_ws=service_ws, model=config.model
+            )
 
         if reason := governance_guards_present(agent, config):
             logger.warning(
@@ -113,7 +118,9 @@ def create_executor(
                 "not silently bypassed.",
                 reason,
             )
-            return LangGraphExecutor(agent, ws=ws, model=config.model)
+            return LangGraphExecutor(
+                agent, user_ws=ws, service_ws=service_ws, model=config.model
+            )
 
         return ClaudeSDKExecutor(
             model=config.model,
@@ -123,4 +130,6 @@ def create_executor(
         )
 
     # Default: langgraph
-    return LangGraphExecutor(agent, ws=ws, model=config.model)
+    return LangGraphExecutor(
+        agent, user_ws=ws, service_ws=service_ws, model=config.model
+    )

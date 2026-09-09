@@ -150,8 +150,8 @@ def resolve_no_obo_or_raise() -> None:
         "Rejected: no OBO user token on this request in the Databricks Apps "
         "runtime. apx-agent fails closed — otherwise tools would run as the app "
         "service principal with cross-user data access. Forward the caller's "
-        "X-Forwarded-Access-Token (or custom_inputs.user_token) per request. To "
-        "intentionally run as the app service principal, set "
+        "X-Forwarded-Access-Token (or custom_inputs.user_token) per request."
+        " To intentionally run as the app service principal, set "
         f"{_SP_FALLBACK_ENV}=true. See "
         "docs/design/served-path-guards-and-identity.md (G2)."
     )

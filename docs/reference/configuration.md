@@ -38,6 +38,29 @@ consistently for discovery, A2A metadata, conversation history, tracing, and UI
 filtering; the committed name remains the fallback when the variable is unset.
 A blank value is rejected.
 
+### Apps family permissions
+
+Apps can declare reusable audience and administrator group policy in the
+deployment project's `pyproject.toml`:
+
+```toml
+[tool.apx.apps.permissions]
+can_use_groups = ["apx-app-users"]
+can_manage_groups = ["apx-app-admins"]
+```
+
+This is group policy only. Each deployed App retains one persistent
+platform-created service principal; family members do not share service
+principals or credentials. A group cannot appear in both lists.
+
+On every `apx-agent agents deploy --target apps`, APX validates the compiled
+authorization contract and additively reconciles these groups, tool resources,
+OBO scopes, and resolved App-to-App `CAN_USE` bindings into `databricks.yml`.
+Existing declarations are preserved; the compiler never deletes or downgrades
+permissions. A conflict with an explicit bundle declaration fails before any
+write. `--auto-update-yml` remains accepted for compatibility, but no longer
+controls whether reconciliation occurs.
+
 ## Declarative tools — `[[tool.apx.tools]]`
 
 > Python only. The TypeScript plugin has no `[[tool.apx.tools]]` equivalent — declare tools in code via the `tools` option.

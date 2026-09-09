@@ -737,7 +737,7 @@ resources:
       source_code_path: ./.build
       user_api_scopes:
         - sql
-        - serving.serving-endpoints
+        - model-serving
       resources:
         - name: experiment
           experiment:

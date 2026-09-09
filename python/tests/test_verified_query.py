@@ -161,6 +161,19 @@ def test_dataagent_attaches_verified_query_tool_when_golden_present(tmp_path):
     assert "verified_query" in _tool_names(agent)
 
 
+def test_dataagent_accepts_explicit_verified_query_tool_name(tmp_path):
+    from apx_agent import DataAgent
+
+    agent = DataAgent(
+        "c",
+        "s",
+        knowledge=str(_bundle(tmp_path, with_golden=True)),
+        verified_query_tool_name="run_verified_sales_query",
+    )
+    assert "run_verified_sales_query" in _tool_names(agent)
+    assert "verified_query" not in _tool_names(agent)
+
+
 def test_dataagent_omits_verified_query_tool_without_golden(tmp_path):
     from apx_agent import DataAgent
 

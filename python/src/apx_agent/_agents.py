@@ -210,7 +210,9 @@ class LlmAgent(BaseAgent):
         # Pre-analyze all functions at construction time
         self._analyzed: list[tuple[_ToolFn, dict[str, Any], list[str], type[BaseModel] | None]] = []
         for fn in tools:
-            plain_params, dep_names = _inspect_tool_fn(fn)
+            signature = _inspect_tool_fn(fn)
+            plain_params = signature.plain_params
+            dep_names = signature.dep_param_names
             input_model = _make_input_model(fn, plain_params)
             self._analyzed.append((fn, plain_params, dep_names, input_model))
         # Monotonic counter bumped whenever the runtime callable tool set changes.
@@ -299,7 +301,9 @@ class LlmAgent(BaseAgent):
         invisible to the A2A card / MCP surface / per-tool routes.
         """
         self._tool_fns.append(fn)
-        plain_params, dep_names = _inspect_tool_fn(fn)
+        signature = _inspect_tool_fn(fn)
+        plain_params = signature.plain_params
+        dep_names = signature.dep_param_names
         input_model = _make_input_model(fn, plain_params)
         self._analyzed.append((fn, plain_params, dep_names, input_model))
         self._tools_version += 1

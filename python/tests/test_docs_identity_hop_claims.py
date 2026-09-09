@@ -57,3 +57,15 @@ def test_identity_passthrough_page_scopes_every_hop_claim() -> None:
     assert "every hop" in text.lower()
     assert "service principal" in text.lower()
     assert "a2a.md" in text
+
+
+def test_apps_family_policy_is_operator_declared() -> None:
+    """The compiler consumes policy; it does not invent project TOML."""
+    text = _read(
+        "superpowers", "specs", "2026-09-01-apps-authorization-compiler-design.md",
+    )
+    section = text.split("## App-Family Permissions", 1)[1].split("## Bundle Reconciliation", 1)[0]
+    normalized = " ".join(section.split())
+    assert "Operators declare one group-only Apps permission block" in normalized
+    assert "APX compiles that configured policy" in normalized
+    assert "APX does not create or generate this TOML block" in normalized

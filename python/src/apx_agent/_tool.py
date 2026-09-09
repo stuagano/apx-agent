@@ -46,7 +46,9 @@ from ._resources import ResourceSpec, attach_resources
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 ToolEffect = Literal["read", "write", "update", "destructive"]
+ExecutionIdentity = Literal["user", "service"]
 _TOOL_EFFECTS = frozenset({"read", "write", "update", "destructive"})
+_EXECUTION_IDENTITIES = frozenset({"user", "service"})
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +77,8 @@ class ToolMetadata:
             Python function name. ``None`` if absent.
         effect: AppKit tool effect annotation. ``None`` means the AppKit
             manifest conservatively uses ``update``.
+        execution: Credential identity for the operation. ``None`` lets the
+            Apps authorization compiler infer it from dependencies.
     """
 
     uc_name: str | None = None
@@ -82,6 +86,7 @@ class ToolMetadata:
     description_override: str | None = None
     name_override: str | None = None
     effect: ToolEffect | None = None
+    execution: ExecutionIdentity | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +124,13 @@ def _validate_no_dependencies(fn: Callable[..., Any], uc: str) -> None:
         )
 
 
+def _validate_execution(execution: ExecutionIdentity | None, *, caller: str) -> None:
+    if execution is not None and execution not in _EXECUTION_IDENTITIES:
+        raise ValueError(
+            f"{caller}(execution=...) must be one of user, service; got {execution!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Decorator
 # ---------------------------------------------------------------------------
@@ -136,6 +148,7 @@ def tool(
     uc: str | None = ...,
     grant: Iterable[str] | None = ...,
     effect: ToolEffect | None = ...,
+    execution: ExecutionIdentity | None = ...,
 ) -> Callable[[_F], _F]: ...
 
 
@@ -147,6 +160,7 @@ def tool(
     uc: str | None = None,
     grant: Iterable[str] | None = None,
     effect: ToolEffect | None = None,
+    execution: ExecutionIdentity | None = None,
 ) -> Any:
     """Mark a function as an apx-agent tool.
 
@@ -182,6 +196,8 @@ def tool(
             function. Only meaningful when ``uc`` is set. Empty by default.
         effect: AppKit effect annotation. If omitted, the manifest uses the
             conservative ``update`` effect.
+        execution: Credential identity for the operation. If omitted, Apps
+            authorization infers it from the tool's dependencies.
 
     Returns:
         The decorated function with ``_apx_tool`` metadata attached. Pass it
@@ -193,6 +209,7 @@ def tool(
             "@tool(effect=...) must be one of read, write, update, destructive; "
             f"got {effect!r}"
         )
+    _validate_execution(execution, caller="@tool")
 
     grants_tuple = tuple(grant) if grant else ()
 
@@ -221,6 +238,7 @@ def tool(
             description_override=description,
             name_override=name,
             effect=effect,
+            execution=execution,
         )
         target._apx_tool = metadata  # type: ignore[attr-defined]
 

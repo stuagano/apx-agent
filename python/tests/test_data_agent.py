@@ -44,6 +44,10 @@ class TestNoWorkspace:
         assert a._instructions and "main.sales" in a._instructions
         assert any(getattr(t, "__name__", "") == "run_sql" for t in a._tool_fns)
 
+    def test_accepts_explicit_sql_tool_name(self):
+        a = DataAgent("main", "sales", sql_tool_name="run_sales_sql")
+        assert [tool.__name__ for tool in a._tool_fns] == ["run_sales_sql"]
+
     def test_default_name(self):
         assert DataAgent("main", "sales")._name == "sales_data_agent"
         assert DataAgent("main", "sales", name="biz")._name == "biz"

@@ -32,6 +32,8 @@ WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID") or None
 sales_agent = DataAgent(
     "samples", "bakehouse",
     warehouse_id=WAREHOUSE_ID,
+    sql_tool_name="run_sales_sql",
+    verified_query_tool_name="run_verified_sales_query",
     name="sales_agent",
     knowledge="./.apx/okf",  # OKF bundle grounds the agent + populates the dev-UI Knowledge tab
     instructions=(
@@ -47,7 +49,7 @@ sales_agent = DataAgent(
         "  samples.bakehouse.sales_suppliers(supplierID, name, ingredient, "
         "continent, city, approved)\n"
         "Join on the *ID columns, aggregate revenue with SUM(totalPrice), and base "
-        "every answer on the SQL tool's results."
+        "every answer on the run_sales_sql tool's results."
     ),
 )
 
@@ -55,12 +57,14 @@ sales_agent = DataAgent(
 reviews_agent = DataAgent(
     "samples", "bakehouse",
     warehouse_id=WAREHOUSE_ID,
+    sql_tool_name="run_reviews_sql",
+    verified_query_tool_name="run_verified_reviews_query",
     name="reviews_agent",
     knowledge="./.apx/okf",  # same bundle; the media_customer_reviews card grounds this leaf
     instructions=(
         "You answer questions about what customers say. Query the fully-qualified "
         "table samples.bakehouse.media_customer_reviews(review, franchiseID, "
-        "review_date, new_id) with the SQL tool — the customer's text is in the "
+        "review_date, new_id) with run_reviews_sql — the customer's text is in the "
         "`review` column; filter it with WHERE review LIKE '%...%', read the rows, "
         "and summarize sentiment and themes, quoting briefly. Say so if nothing "
         "relevant is found."

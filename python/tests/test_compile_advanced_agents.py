@@ -440,7 +440,7 @@ class TestHandoffMessageScrub:
             },
             start="triage",
         )
-        ctx = CompileContext(ws=fake_ws, model="any")
+        ctx = CompileContext(service_ws=None, user_ws=None, model="any")
         compiled = _compile_handoff_agent(ho, ctx)
 
         # The compiled CompiledStateGraph keeps node implementations on

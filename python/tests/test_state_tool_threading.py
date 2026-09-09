@@ -90,7 +90,12 @@ def test_compile_llm_agent_passes_state_schema_when_state_tool(
 
     from apx_agent._compile import CompileContext, _compile_llm_agent, state_schema
 
-    ctx = CompileContext(ws=MagicMock(), model="databricks-claude-sonnet-4-6", headers=None)
+    ctx = CompileContext(
+        service_ws=None,
+        user_ws=None,
+        model="databricks-claude-sonnet-4-6",
+        headers=None,
+    )
     _compile_llm_agent(LlmAgent(tools=[with_state], name="a", instructions="Help."), ctx)
 
     assert "state_schema" in captured, (
@@ -123,7 +128,12 @@ def test_compile_llm_agent_omits_state_schema_without_state_tool(
 
     from apx_agent._compile import CompileContext, _compile_llm_agent
 
-    ctx = CompileContext(ws=MagicMock(), model="databricks-claude-sonnet-4-6", headers=None)
+    ctx = CompileContext(
+        service_ws=None,
+        user_ws=None,
+        model="databricks-claude-sonnet-4-6",
+        headers=None,
+    )
     _compile_llm_agent(LlmAgent(tools=[plain], name="b", instructions="Help."), ctx)
 
     assert "state_schema" not in captured, (

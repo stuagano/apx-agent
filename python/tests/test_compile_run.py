@@ -3,10 +3,11 @@
 
 Verifies:
 
-  1. ``_resolve_request_ws`` prefers the OBO header over the SP fallback.
-  2. ``_resolve_request_ws`` falls back to ``request.app.state.workspace_client``
-     when the OBO header is absent.
-  3. ``run_via_compile`` drives a ``LangGraphExecutor`` against the resolved ws
+  1. Request resolution keeps the OBO user client separate from the initialized
+     app service client.
+  2. Missing OBO leaves the user client absent rather than falling back to the
+     service identity.
+  3. ``run_via_compile`` drives a ``LangGraphExecutor`` against both clients
      and returns the final assistant text (raising on an ExecutorError).
   4. ``stream_via_compile`` yields one chunk per non-tool-call AIMessage from
      the graph's node updates.
@@ -26,9 +27,10 @@ pytest.importorskip("langchain_core")
 
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
-from apx_agent import LlmAgent, AgentConfig, Message  # noqa: E402
+from apx_agent import LlmAgent, Message  # noqa: E402
 from apx_agent._compile_run import (  # noqa: E402
-    _resolve_request_ws,
+    _resolve_request_service_ws,
+    _resolve_request_user_ws,
     _to_langchain,
     run_via_compile,
     stream_via_compile,
@@ -63,11 +65,18 @@ def _fake_request(
 
 
 # ---------------------------------------------------------------------------
-# _resolve_request_ws
+# Request client resolution
 # ---------------------------------------------------------------------------
 
 
-class TestResolveRequestWs:
+class TestResolveRequestClients:
+    def test_no_token_keeps_service_client_out_of_user_slot(self) -> None:
+        sp_ws = MagicMock(name="sp_ws")
+        req = _fake_request(obo_token=None, sp_ws=sp_ws)
+
+        assert _resolve_request_user_ws(req) is None
+        assert _resolve_request_service_ws(req) is sp_ws
+
     def test_obo_header_wins(self) -> None:
         sp_ws = MagicMock(name="sp_ws")
         req = _fake_request(obo_token="user-tok", sp_ws=sp_ws)
@@ -76,16 +85,16 @@ class TestResolveRequestWs:
         ) as mock_factory:
             obo_ws = MagicMock(name="obo_ws")
             mock_factory.return_value = obo_ws
-            result = _resolve_request_ws(req)
+            result = _resolve_request_user_ws(req)
             mock_factory.assert_called_once()
             assert result is obo_ws
-            # SP client must NOT be returned when OBO is present.
             assert result is not sp_ws
+            assert _resolve_request_service_ws(req) is sp_ws
 
-    def test_falls_back_to_app_state(self) -> None:
+    def test_service_client_uses_app_state(self) -> None:
         sp_ws = MagicMock(name="sp_ws")
         req = _fake_request(obo_token=None, sp_ws=sp_ws)
-        result = _resolve_request_ws(req)
+        result = _resolve_request_service_ws(req)
         assert result is sp_ws
 
 
@@ -160,6 +169,8 @@ class TestRunViaCompile:
         # The model came from request.app.state.agent_context.config.model
         _, kwargs = mock_compile.call_args
         assert kwargs["model"] == "databricks-claude-sonnet-4-6"
+        assert kwargs["ws"] is None
+        assert kwargs["service_ws"] is req.app.state.workspace_client
 
     @pytest.mark.asyncio
     async def test_obo_ws_threaded_into_compile(self) -> None:
@@ -182,6 +193,7 @@ class TestRunViaCompile:
 
         _, kwargs = mock_compile.call_args
         assert kwargs["ws"] is obo_ws
+        assert kwargs["service_ws"] is req.app.state.workspace_client
 
     @pytest.mark.asyncio
     async def test_returns_last_text_via_astream_multinode(self) -> None:
@@ -267,7 +279,7 @@ class TestStreamViaCompile:
 
         with patch(
             "apx_agent._compile.compile_to_langgraph", return_value=fake_graph
-        ):
+        ) as mock_compile:
             chunks = [
                 c
                 async for c in stream_via_compile(
@@ -277,6 +289,9 @@ class TestStreamViaCompile:
 
         # Tool-call AIMessage is filtered out; only "first" and "last" stream.
         assert chunks == ["first", "last"]
+        _, kwargs = mock_compile.call_args
+        assert kwargs["ws"] is None
+        assert kwargs["service_ws"] is req.app.state.workspace_client
 
 
 # ---------------------------------------------------------------------------

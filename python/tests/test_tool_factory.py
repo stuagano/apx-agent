@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from apx_agent import ResourceSpec, build_tool, resolve_description
+from apx_agent import ResourceSpec, build_tool, get_tool_metadata, resolve_description, tool
 from apx_agent._resources import get_resources
 
 
@@ -25,6 +25,33 @@ class TestBuildTool:
         original = _sample()
         result = build_tool(original, name="x", description="d")
         assert result is original
+
+    def test_execution_uses_tool_metadata_and_preserves_existing_metadata(self):
+        @tool(effect="read")
+        def lookup(query: str) -> str:
+            return query
+
+        result = build_tool(
+            lookup,
+            name="lookup",
+            description="Lookup.",
+            execution="user",
+        )
+
+        metadata = get_tool_metadata(result)
+        assert metadata is not None
+        assert metadata.effect == "read"
+        assert metadata.execution == "user"
+
+    @pytest.mark.parametrize("execution", ["", "app", "USER"])
+    def test_rejects_invalid_execution_identity(self, execution: str):
+        with pytest.raises(ValueError, match="user.*service"):
+            build_tool(
+                _sample(),
+                name="lookup",
+                description="Lookup.",
+                execution=execution,  # type: ignore[arg-type]
+            )
 
     def test_attaches_resources(self):
         fn = build_tool(

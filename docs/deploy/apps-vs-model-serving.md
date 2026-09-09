@@ -149,6 +149,16 @@ normalizes both paths — the per-request `WorkspaceClient` and tool routing
 work identically under either target, so tool code never has to ask which
 runtime it's executing in.
 
+For an Apps deployment, the authorization compiler keeps credential identity
+per operation: `Dependencies.Client` receives the App service principal, while
+`Dependencies.UserClient`, `Dependencies.Workspace`, and `Dependencies.Sql`
+receive OBO user credentials. `@tool(execution="user" | "service")` and
+`build_tool(..., execution=...)` can state the identity when a signature cannot;
+an override that conflicts with dependencies, or a tool that mixes both client
+identities, fails before deployment. Request context (`Headers`, `Principal`,
+or `Request`) is separate from credential choice, so it can be supplied to a
+service operation without turning that operation into OBO.
+
 ### Resource declaration: MLflow `resources=[...]` vs `databricks.yml`
 
 - Model Serving: resources are recorded on the MLflow run via
@@ -156,11 +166,17 @@ runtime it's executing in.
   at deploy time to provision the endpoint's permission grants.
 - Apps: resources live in `databricks.yml` under
   `resources.apps.<name>.resources` (serving endpoints, databases, secrets,
-  warehouses). The bundle deploy reconciles them; the App SP gets ambient
-  credentials.
+  warehouses). Every Apps deploy compiles and additively reconciles the
+  authorization contract: service resources receive native App permissions,
+  user resources contribute OBO scopes, and existing declarations are never
+  removed or downgraded. `--auto-update-yml` is retained for compatibility but
+  does not gate reconciliation.
 
 apx-agent projects a single `ResourceSpec` list into both shapes. You
 declare resources once on the agent; the compile target picks the projection.
+Apps validation and its deterministic authorization summary occur before the
+bundle is mutated, so conflicting identities, missing scopes, or ambiguous A2A
+peer URLs fail before deployment changes the project.
 
 ### Streaming envelope: ChatAgentChunk vs ResponsesAgentStreamEvent
 

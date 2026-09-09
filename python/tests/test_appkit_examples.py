@@ -140,6 +140,7 @@ PROBE = textwrap.dedent(
     from pathlib import Path
     from threading import Thread
     from time import sleep
+    from unittest.mock import MagicMock
     from http.client import HTTPConnection, IncompleteRead
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.error import HTTPError, URLError
@@ -199,6 +200,7 @@ PROBE = textwrap.dedent(
     bridge_src = bridge_entrypoint.read_text()
     assert "from apx_agent import create_app" in bridge_src
     assert "app = create_app(agent)" in bridge_src
+    assert "AppsHostManifest.model_validate_json" in bridge_src
     assert "FastAPI()" not in bridge_src
     assert "finalize_agent(" not in bridge_src
     if (root / "agent.config.yaml").exists():
@@ -232,7 +234,12 @@ PROBE = textwrap.dedent(
         ),
         agent=agent,
     )
-    bridge_module._obo_ws_from_headers = lambda _: None
+    from apx_agent._apps_host_manifest import AppsHostManifest
+    app.state.apx_appkit_host_manifest = AppsHostManifest.model_validate(manifest)
+    service_ws = MagicMock(name="service_ws")
+    user_ws = MagicMock(name="user_ws")
+    bridge_module._make_workspace_client = lambda: service_ws
+    bridge_module._obo_ws_from_headers = lambda _: user_ws
     app.include_router(build_appkit_tool_bridge_router())
     client = TestClient(app)
     response = client.post(
@@ -265,7 +272,10 @@ PROBE = textwrap.dedent(
         [
             sys.executable,
             "-c",
-            "from agent_server.appkit_bridge import app; assert app is not None",
+            (
+                "from agent_server.appkit_bridge import app; "
+                "assert app.state.apx_appkit_host_manifest.tools"
+            ),
         ],
         cwd=root / ".build",
         env=bridge_env,
@@ -579,6 +589,7 @@ PROBE = textwrap.dedent(
     if tool_case_raw is not None:
         tool_case = json.loads(tool_case_raw)
         headers = {
+            "X-Forwarded-Access-Token": "local-user-token",
             "X-Forwarded-User": "alice",
             "X-Forwarded-Email": "alice@example.com",
             **tool_case.get("headers", {}),

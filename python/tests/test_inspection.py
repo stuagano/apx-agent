@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from apx_agent._inspection import (
+    _tool_dependency_callables,
     _inspect_tool_fn,
     _is_fastapi_dependency,
     _load_agent_config,
@@ -76,6 +77,12 @@ class TestInspectToolFn:
         plain, deps = _inspect_tool_fn(async_tool)
         assert "query" in plain
         assert deps == []
+
+    def test_dependency_callables_reuse_inspected_dependency_parameters(self):
+        dependencies = _tool_dependency_callables(query_genie)
+
+        assert list(dependencies) == ["ws"]
+        assert callable(dependencies["ws"])
 
 
 # ---------------------------------------------------------------------------

@@ -428,6 +428,20 @@ def test_yml_sql_warehouse_shape() -> None:
     assert body["permission"] == "CAN_USE"
 
 
+def test_yml_job_shape() -> None:
+    [entry] = resources_to_databricks_yml([ResourceSpec("job", "telemetry-job")])
+    assert _block_key(entry) == "job"
+    body = _block(entry)
+    assert body["id"] == "telemetry-job"
+    assert body["permission"] == "CAN_MANAGE_RUN"
+
+
+def test_yml_app_shape_matches_cli_schema() -> None:
+    assert resources_to_databricks_yml([ResourceSpec("app", "resolved-app-name")]) == [
+        {"app": {"name": "resolved-app-name", "permission": "CAN_USE"}}
+    ]
+
+
 def test_yml_uc_connection_shape() -> None:
     specs = [ResourceSpec("uc_connection", "main.connections.snowflake_prod")]
     [entry] = resources_to_databricks_yml(specs)
@@ -459,6 +473,20 @@ def test_yml_each_entry_has_name() -> None:
         body = _block(entry)
         assert isinstance(body.get("name"), str)
         assert body["name"]  # non-empty
+
+
+def test_yml_handles_include_stable_full_identity_hash() -> None:
+    first = resources_to_databricks_yml([
+        ResourceSpec("uc_table", "main.sales.orders"),
+        ResourceSpec("uc_table", "other.sales.orders"),
+    ])
+    repeated = resources_to_databricks_yml([
+        ResourceSpec("uc_table", "main.sales.orders"),
+    ])
+
+    first_names = [_block(entry)["name"] for entry in first]
+    assert first_names[0] != first_names[1]
+    assert first_names[0] == _block(repeated[0])["name"]
 
 
 def test_yml_full_agent_round_trip() -> None:
@@ -496,9 +524,15 @@ def test_user_api_scopes_sql_family_dedups_to_sql() -> None:
 def test_user_api_scopes_per_kind() -> None:
     from apx_agent._resources import ResourceSpec, user_api_scopes_for
 
-    assert user_api_scopes_for([ResourceSpec("serving_endpoint", "m")]) == ["model-serving"]
-    assert user_api_scopes_for([ResourceSpec("genie_space", "sp")]) == ["genie"]
-    assert user_api_scopes_for([ResourceSpec("vector_search_index", "i")]) == ["vector-search"]
+    assert user_api_scopes_for([ResourceSpec("serving_endpoint", "m")]) == [
+        "model-serving"
+    ]
+    assert user_api_scopes_for([ResourceSpec("genie_space", "sp")]) == [
+        "genie"
+    ]
+    assert user_api_scopes_for([ResourceSpec("vector_search_index", "i")]) == [
+        "vector-search"
+    ]
 
 
 def test_user_api_scopes_mixed_sorted_union() -> None:
@@ -509,7 +543,11 @@ def test_user_api_scopes_mixed_sorted_union() -> None:
         ResourceSpec("uc_function", "main.s.f"),
         ResourceSpec("genie_space", "sp"),
     ]
-    assert user_api_scopes_for(specs) == ["genie", "model-serving", "sql"]
+    assert user_api_scopes_for(specs) == [
+        "genie",
+        "model-serving",
+        "sql",
+    ]
 
 
 def test_user_api_scopes_empty() -> None:
@@ -540,6 +578,84 @@ def test_require_user_api_scopes_dedups_and_accumulates() -> None:
     require_user_api_scopes(uc_tool, ["catalog.tables:read", "catalog.tables:read"])
     require_user_api_scopes(uc_tool, ["sql", "catalog.tables:read"])
     assert get_user_api_scopes(uc_tool) == ["catalog.tables:read", "sql"]
+
+
+def test_require_user_api_scopes_accepts_complete_current_apps_vocabulary() -> None:
+    from apx_agent import require_user_api_scopes
+    from apx_agent._resources import _KNOWN_USER_API_SCOPES
+
+    current_scopes = {
+        "ai-gateway",
+        "apps",
+        "files",
+        "genie",
+        "model-serving",
+        "postgres",
+        "sql",
+        "sql:restricted-query",
+        "vector-search",
+        "catalog.catalogs",
+        "catalog.catalogs:read",
+        "catalog.connections",
+        "catalog.connections:read",
+        "catalog.schemas",
+        "catalog.schemas:read",
+        "catalog.tables",
+        "catalog.tables:read",
+        "workspace.workspace",
+        "workspace.workspace:read",
+    }
+    assert _KNOWN_USER_API_SCOPES == current_scopes
+
+    def current_scope_tool() -> None: ...
+
+    assert (
+        require_user_api_scopes(current_scope_tool, current_scopes)
+        is current_scope_tool
+    )
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "dashboards.genie",
+        "files.files",
+        "serving.serving-endpoints",
+        "serving.serving-endpoints-data-plane",
+        "sql.alerts",
+        "sql.alerts-legacy",
+        "sql.dashboards",
+        "sql.data-sources",
+        "sql.dbsql-permissions",
+        "sql.queries",
+        "sql.queries-legacy",
+        "sql.query-history",
+        "sql.statement-execution",
+        "sql.warehouses",
+        "vectorsearch.vector-search-endpoints",
+        "vectorsearch.vector-search-indexes",
+    ],
+)
+def test_require_user_api_scopes_rejects_deprecated_aliases(scope: str) -> None:
+    from apx_agent import require_user_api_scopes
+
+    def deprecated_scope_tool() -> None: ...
+
+    with pytest.raises(ValueError, match="Unknown user_api_scope"):
+        require_user_api_scopes(deprecated_scope_tool, [scope])
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["iam.access-control:read", "iam.current-user:read"],
+)
+def test_require_user_api_scopes_rejects_implicit_iam_defaults(scope: str) -> None:
+    from apx_agent import require_user_api_scopes
+
+    def tool_with_implicit_scope() -> None: ...
+
+    with pytest.raises(ValueError, match="Unknown user_api_scope"):
+        require_user_api_scopes(tool_with_implicit_scope, [scope])
 
 
 def test_require_user_api_scopes_rejects_unknown() -> None:

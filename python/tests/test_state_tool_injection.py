@@ -3,7 +3,6 @@ import pytest
 pytest.importorskip("langgraph")
 
 from typing import Any
-from unittest.mock import MagicMock
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
@@ -14,8 +13,13 @@ from apx_agent._compile import CompileContext, _make_langchain_tool, state_schem
 
 
 def _ctx() -> CompileContext:
-    # CompileContext carries ws/model/headers; tools here use neither.
-    return CompileContext(ws=MagicMock(), model="databricks-claude-sonnet-4-6", headers=None)
+    # Tools here use neither client nor request headers.
+    return CompileContext(
+        service_ws=None,
+        user_ws=None,
+        model="databricks-claude-sonnet-4-6",
+        headers=None,
+    )
 
 
 def _tool_call(name: str, args: dict, call_id: str = "c1") -> AIMessage:

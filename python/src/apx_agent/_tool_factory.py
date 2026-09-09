@@ -31,9 +31,11 @@ supply it from a trusted allowlist, never from LLM/user input.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Callable, Iterable
 
 from ._resources import ResourceSpec, attach_resources
+from ._tool import ExecutionIdentity, ToolMetadata, _validate_execution, get_tool_metadata
 
 __all__ = ["build_tool", "resolve_description"]
 
@@ -44,6 +46,7 @@ def build_tool(
     name: str,
     description: str,
     resources: Iterable[ResourceSpec] = (),
+    execution: ExecutionIdentity | None = None,
 ) -> Callable[..., Any]:
     """Stamp a tool callable and declare the resources it governs.
 
@@ -59,16 +62,22 @@ def build_tool(
         resources: ``ResourceSpec`` declarations the tool reaches. ``None``
             entries are skipped; an empty iterable attaches nothing (for tools
             with no fixed governed resource, e.g. an auto-discovered warehouse).
+        execution: Credential identity for the operation. If omitted, Apps
+            authorization infers it from dependencies and resource declarations.
 
     Returns:
         The same ``call`` object, stamped and resource-tagged.
     """
+    _validate_execution(execution, caller="build_tool")
     call.__name__ = name
     call.__qualname__ = name
     call.__doc__ = description
     specs = [r for r in resources if r is not None]
     if specs:
         attach_resources(call, specs)
+    if execution is not None:
+        metadata = get_tool_metadata(call) or ToolMetadata()
+        call._apx_tool = replace(metadata, execution=execution)  # type: ignore[attr-defined]
     return call
 
 

@@ -568,27 +568,20 @@ class TestCrossAgentCorrelation:
 
 
 # ---------------------------------------------------------------------------
-# #631: Apps-runtime A2A requires gateway identity (no invented auth protocol)
+# Apps-runtime A2A identity is enforced by each selected operation
 # ---------------------------------------------------------------------------
 
 
-class TestA2AAppsIdentityGate:
-    """In Apps, POST / rejects requests with no proxy/bearer context (#631).
-
-    Local ``apx-agent run`` stays open. Operators opt into SP-only with
-    ``APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK``. Does not invent a second auth
-    scheme — only asserts the Apps gateway left identity headers.
-    """
-
-    def test_apps_without_identity_returns_401(self, a2a_client, monkeypatch):
+class TestA2AAppsIdentity:
+    def test_apps_service_request_without_identity_runs(self, a2a_client, monkeypatch):
         monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
         monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
         client, captured = a2a_client
-        _stub_reply(captured, "should-not-run")
+        _stub_reply(captured, "ok")
         resp = _rpc(client, "message/send", _send_params("hi"))
-        assert resp.status_code == 401
-        assert "gateway" in resp.json()["detail"].lower() or "X-Forwarded" in resp.json()["detail"]
-        captured["chat_agent"].predict.assert_not_called()
+        assert resp.status_code == 200
+        assert resp.json()["result"]["status"]["state"] == "completed"
+        captured["chat_agent"].predict.assert_called_once()
 
     def test_apps_with_obo_token_allows(self, a2a_client, monkeypatch):
         monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
@@ -615,15 +608,6 @@ class TestA2AAppsIdentityGate:
             _send_params("hi"),
             headers={"Authorization": "Bearer sp-token"},
         )
-        assert resp.status_code == 200
-        assert resp.json()["result"]["status"]["state"] == "completed"
-
-    def test_apps_sp_fallback_opt_in_allows(self, a2a_client, monkeypatch):
-        monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
-        monkeypatch.setenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", "true")
-        client, captured = a2a_client
-        _stub_reply(captured, "ok")
-        resp = _rpc(client, "message/send", _send_params("hi"))
         assert resp.status_code == 200
         assert resp.json()["result"]["status"]["state"] == "completed"
 

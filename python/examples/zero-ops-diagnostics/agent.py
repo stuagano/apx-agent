@@ -69,7 +69,7 @@ statement_id, duration, executed_by, warehouse_id, query_preview.
 - ``statement_detail`` — compile / execute / fetch %
 - ``top_spilling_queries`` — memory pressure
 - ``duration_regressions`` — signatures slower week-over-week
-- ``run_sql`` — read-only follow-ups on system.query.history only
+- ``run_query_history_sql`` — read-only follow-ups on system.query.history only
 
 {_INTAKE}
 """,
@@ -80,7 +80,7 @@ statement_id, duration, executed_by, warehouse_id, query_preview.
         duration_regressions,
         sql_tool(
             warehouse_id=WAREHOUSE_ID,
-            name="run_sql",
+            name="run_query_history_sql",
             description=(
                 "Read-only SQL follow-up on system.query.history "
                 "(prefer curated tools first)."
@@ -115,7 +115,7 @@ run_id, duration_minutes, result_state, creator.
 - ``get_job_run_history`` / ``get_job_run_logs`` — Jobs API detail for a run
 - ``get_job_source_paths`` — notebooks / python / dbt / pipeline tasks
 - ``find_jobs_for_table`` — which job writes a UC table
-- ``run_sql`` — read-only follow-ups on system.lakeflow.* only
+- ``run_jobs_sql`` — read-only follow-ups on system.lakeflow.* only
 
 {_INTAKE}
 """,
@@ -127,7 +127,7 @@ run_id, duration_minutes, result_state, creator.
         *jobs_tools(warehouse_id=WAREHOUSE_ID),
         sql_tool(
             warehouse_id=WAREHOUSE_ID,
-            name="run_sql",
+            name="run_jobs_sql",
             description=(
                 "Read-only SQL follow-up on system.lakeflow.* "
                 "(prefer curated tools first)."
@@ -159,7 +159,7 @@ Present compute-type rollup then top SKUs with dbus (+ usd when present).
 ## Drill
 - ``top_cost_by_cluster`` / ``top_cost_by_warehouse`` — resource drivers
 - ``daily_cost_trend`` — spike detection vs 7d moving average
-- ``run_sql`` — read-only follow-ups on system.billing.* only
+- ``run_billing_sql`` — read-only follow-ups on system.billing.* only
 
 When usd is 0 or missing, report DBUs and note list_prices may be unavailable.
 Do not invent dollar amounts.
@@ -174,7 +174,7 @@ Do not invent dollar amounts.
         daily_cost_trend,
         sql_tool(
             warehouse_id=WAREHOUSE_ID,
-            name="run_sql",
+            name="run_billing_sql",
             description=(
                 "Read-only SQL follow-up on system.billing.* "
                 "(prefer curated tools first)."
