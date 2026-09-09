@@ -141,6 +141,207 @@ def test_version_runs() -> None:
     assert result.output.strip()  # some version string
 
 
+class _QueryResponse:
+    def __init__(self, body: bytes = b"", lines: list[bytes] | None = None) -> None:
+        self._body = body
+        self._lines = lines or []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+def test_agents_query_renders_short_final_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    body = json.dumps({
+        "output": [{
+            "type": "message",
+            "content": [{"type": "output_text", "text": "Short answer."}],
+        }],
+    }).encode()
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _QueryResponse(body),
+    )
+
+    result = CliRunner().invoke(main, ["agents", "query", "hello"])
+
+    assert result.exit_code == 0
+    assert "Short answer." in result.output
+
+
+def test_agents_query_stream_renders_apx_sse_without_repeating_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "id": "call-1",
+                "type": "function_call",
+                "name": "lookup",
+                "arguments": '{"id": 7}',
+            },
+        },
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "id": "out-1",
+                "type": "function_call_output",
+                "output": '{"found": true}',
+            },
+        },
+        {"type": "response.output_text.delta", "item_id": "msg-1", "delta": "Hi"},
+        {"type": "response.output_text.delta", "item_id": "msg-1", "delta": " there"},
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "id": "msg-1",
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Hi there"}],
+            },
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "output": [{
+                    "id": "msg-1",
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Hi there"}],
+                }],
+            },
+        },
+    ]
+    lines: list[bytes] = [b": keepalive\n", b"\n"]
+    for event in events:
+        lines.extend([f"data: {json.dumps(event)}\n".encode(), b"\n"])
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _QueryResponse(lines=lines),
+    )
+
+    result = CliRunner().invoke(main, ["agents", "query", "--stream", "hello"])
+
+    assert result.exit_code == 0
+    assert "lookup(id=7)" in result.output
+    assert "found=True" in result.output
+    assert result.output.count("Hi there") == 1
+
+
+def test_agents_query_stream_renders_short_done_item_without_deltas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    event = {
+        "type": "response.output_item.done",
+        "item": {
+            "id": "msg-1",
+            "type": "message",
+            "content": [{"type": "output_text", "text": "Done."}],
+        },
+    }
+    lines = [f"data: {json.dumps(event)}\n".encode(), b"\n"]
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _QueryResponse(lines=lines),
+    )
+
+    result = CliRunner().invoke(main, ["agents", "query", "--stream", "hello"])
+
+    assert result.exit_code == 0
+    assert "Done." in result.output
+
+
+def test_agents_query_profile_rejects_http_before_getting_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    run = MagicMock()
+    urlopen = MagicMock()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    result = CliRunner().invoke(main, [
+        "agents", "query", "--url", "http://agent.example", "--profile", "dev", "hello",
+    ])
+
+    assert result.exit_code != 0
+    assert "requires an https:// URL" in result.output
+    run.assert_not_called()
+    urlopen.assert_not_called()
+
+
+def test_agents_query_bearer_is_not_forwarded_on_cross_origin_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    captured: dict[str, urllib.request.Request] = {}
+
+    def fake_urlopen(request, **_kwargs):
+        captured["request"] = request
+        return _QueryResponse(b'{"output": []}')
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout='{"access_token": "secret"}',
+        ),
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = CliRunner().invoke(main, [
+        "agents", "query", "--url", "https://agent.example", "--profile", "dev", "hello",
+    ])
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert request.get_header("Authorization") == "Bearer secret"
+    redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://other.example/responses",
+    )
+    assert redirected is not None
+    assert redirected.get_header("Authorization") is None
+
+
+def test_agents_query_reports_missing_databricks_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(subprocess, "run", MagicMock(side_effect=FileNotFoundError))
+
+    result = CliRunner().invoke(main, [
+        "agents", "query", "--url", "https://agent.example", "--profile", "dev", "hello",
+    ])
+
+    assert result.exit_code != 0
+    assert "Could not get token for profile 'dev'" in result.output
+
+
 def test_run_missing_yaml_gives_clear_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

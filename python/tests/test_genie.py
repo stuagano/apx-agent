@@ -80,6 +80,10 @@ def _make_ws(msg: MagicMock, *, rows: list[dict] | None = None) -> MagicMock:
 # ===========================================================================
 
 class TestGenieToolFactory:
+    def test_rejects_empty_space_id(self):
+        with pytest.raises(ValueError, match="non-empty space_id"):
+            genie_tool("")
+
     def test_returns_callable(self):
         assert callable(genie_tool("space-123"))
 
@@ -90,7 +94,9 @@ class TestGenieToolFactory:
         assert genie_tool("space-123", name="sales_data").__name__ == "sales_data"
 
     def test_default_description_mentions_space_id(self):
-        assert "space-abc" in (genie_tool("space-abc").__doc__ or "")
+        doc = genie_tool("space-abc").__doc__
+        assert doc is not None
+        assert "space-abc" in doc
 
     def test_inspection_exposes_question_only(self):
         plain, deps = _inspect_tool_fn(genie_tool("space-1"))
@@ -150,7 +156,9 @@ class TestGenieQueryToolFactory:
         assert genie_query_tool("s", name="explore").__name__ == "explore"
 
     def test_default_description_mentions_space_id(self):
-        assert "space-abc" in (genie_query_tool("space-abc").__doc__ or "")
+        doc = genie_query_tool("space-abc").__doc__
+        assert doc is not None
+        assert "space-abc" in doc
 
     def test_inspection_exposes_question_only(self):
         plain, deps = _inspect_tool_fn(genie_query_tool("space-1"))
