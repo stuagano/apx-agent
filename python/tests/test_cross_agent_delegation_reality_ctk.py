@@ -584,14 +584,16 @@ def test_structured_schema_propagates_and_args_cross_the_wire(
 
 
 def test_cross_agent_traces_join_on_one_tag(
-    two_agents, monkeypatch: pytest.MonkeyPatch
+    two_agents, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     """REALITY (#443): during a real A→B delegation, A's trace is tagged with
     the trace-id it SENT and B's trace with the trace-id it RECEIVED — and
     they are the same value under the same tag (apx.outbound.trace_id), so
     the two traces join on one tag equality. B also learns WHO called
     (apx.caller) and keeps the raw traceparent for debugging."""
-    from apx_agent import _audit
+    import mlflow
+
+    from apx_agent import _audit, inject_tracing_headers
 
     _, client_a = two_agents
     # A knows its own name from the Apps runtime env — that's what crosses
@@ -606,25 +608,53 @@ def test_cross_agent_traces_join_on_one_tag(
         _audit, "set_trace_tags", lambda tags: tag_calls.append(dict(tags))
     )
 
-    resp = client_a.post(
-        "/invocations",
-        json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
-    )
-    assert resp.status_code == 200, resp.text
-    assert SENTINEL in _final_texts(resp.json())  # the delegation really ran
+    old_tracking_uri = mlflow.get_tracking_uri()
+    mlflow.set_tracking_uri(f"file://{tmp_path / 'mlruns'}")
+    experiment = mlflow.set_experiment("cross-agent-parentage-reality")
+    try:
+        with mlflow.start_span("external-sender") as sender:
+            headers = inject_tracing_headers({})
+        resp = client_a.post(
+            "/invocations",
+            json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert SENTINEL in _final_texts(resp.json())  # the delegation really ran
+
+        mlflow.flush_trace_async_logging()
+        traces = mlflow.search_traces(
+            locations=[experiment.experiment_id],
+            return_type="list",
+            include_spans=True,
+        )
+        trace = next(t for t in traces if t.info.trace_id == sender.trace_id)
+        spans = trace.data.spans
+        caller_request = next(s for s in spans if s.name == "POST /invocations")
+        assert caller_request.parent_id == sender.span_id
+        remote_requests = [s for s in spans if s.name == "POST /responses"]
+        assert any(
+            remote.parent_id is not None
+            and remote.parent_id != sender.span_id
+            and any(parent.span_id == remote.parent_id for parent in spans)
+            for remote in remote_requests
+        ), "remote request span is not a real child of the caller trace"
+    finally:
+        mlflow.set_tracking_uri(old_tracking_uri)
 
     # Caller side (A): stamped when the delegate fired — trace-id only.
     caller_stamps = [
         t for t in tag_calls
         if "apx.outbound.trace_id" in t and "apx.traceparent" not in t
     ]
-    # Receiver side (B): stamped from the incoming headers on /invocations.
+    # Receiver side: A is stamped from the external sender, then B is stamped
+    # from A's internal /responses call. Select B's stamp by its caller tag.
     receiver_stamps = [t for t in tag_calls if "apx.traceparent" in t]
     assert caller_stamps, "caller side never stamped apx.outbound.trace_id"
     assert receiver_stamps, "receiver side never stamped apx.traceparent"
 
     sent = caller_stamps[0]["apx.outbound.trace_id"]
-    received = receiver_stamps[0]
+    received = next(t for t in receiver_stamps if t.get("apx.caller") == "agent-a")
     # ONE tag equality joins the two traces across experiments.
     assert received["apx.outbound.trace_id"] == sent
     # The raw traceparent B recorded carries the same trace-id A sent…

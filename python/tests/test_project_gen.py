@@ -692,6 +692,42 @@ def test_explicit_knowledge_is_emitted_by_generate_project(tmp_path: Path) -> No
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_generate_project_emits_declared_binding_without_transport_in_agent_py(
+    tmp_path: Path,
+) -> None:
+    """A declared internal leaf is configured in TOML but stays logical in code."""
+    config = AgentConfig(
+        name="declared-graph",
+        model="model",
+        bindings={"pricing": "$PRICING_APP_URL"},
+        agents={
+            "review": {
+                "type": "agent",
+                "instructions": "Review the request before pricing.",
+            },
+            "pricing": {
+                "type": "agent",
+                "instructions": "Return the approved price.",
+            },
+        },
+        root={"type": "sequential", "agents": ["review", "pricing"]},
+    )
+
+    generate_project(config, tmp_path)
+
+    with open(tmp_path / "pyproject.toml", "rb") as f:
+        generated = tomllib.load(f)
+    assert generated["tool"]["apx"]["agent"]["bindings"] == {
+        "pricing": "$PRICING_APP_URL"
+    }
+
+    source = (tmp_path / "agent.py").read_text()
+    assert "pricing = Agent(" in source
+    assert "name='pricing'" in source
+    assert "RemoteDatabricksAgent" not in source
+    assert "$PRICING_APP_URL" not in source
+
+
 def test_render_agent_py_graph_remote_leaf() -> None:
     """AC-1: a remote leaf renders RemoteDatabricksAgent and execs to an instance."""
     cfg = AgentConfig(
