@@ -124,6 +124,13 @@ def genie_tool(
             return f"Genie query did not complete (status: {msg.status})."
         return _extract_text(msg)
 
+    if not space_id:
+        raise ValueError(
+            "genie_tool() requires a non-empty space_id. "
+            "Check that the GENIE_SPACE_ID (or equivalent) environment variable is set "
+            "before calling genie_tool() at module level, or guard the call:\n"
+            "    if SPACE_ID: my_tool = genie_tool(SPACE_ID)"
+        )
     from ._resources import ResourceSpec
     from ._tool_factory import build_tool
     return build_tool(_ask_genie, name=name, description=_desc,
