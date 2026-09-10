@@ -632,7 +632,7 @@ def build_topology(ctx: "AgentContext") -> dict[str, Any]:
         kind = _edge_kind_for_parent(agent)
         for child_name, child_agent in _iter_child_agents(agent):
             child_id = f"{agent_id}.{child_name}"
-            _walk(child_agent, child_id, child_name)
+            _walk(child_agent, child_id, _agent_label(child_agent, child_name))
             _add_edge(agent_id, child_id, kind)
 
     root_id = "agent:root"
