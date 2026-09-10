@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,11 +30,10 @@ from apx_agent import (
 )
 from apx_agent._inspection import _load_agent_config
 from apx_agent._project_gen import generate_project
-from apx_agent._topology import build_topology
 
 
 CARD_URL = "http://pricing.internal/.well-known/agent.json"
-OBO_TOKEN = "opaque-user-token"
+TEST_OBO_SENTINEL = "NON_SECRET_TEST_OBO"
 DIRECT_RESULT = "LOCAL_CAPABILITY_RESULT"
 REMOTE_RESULT = "INTERNAL_PRICING_RESULT"
 
@@ -57,10 +57,13 @@ def read_capability(question: str) -> str:
 
 def approved_price(headers: Dependencies.Headers) -> str:
     """Return a deterministic price while observing the caller identity."""
+    from apx_agent._mlflow_tracing import emit_progress
+
     REMOTE_CALLS.append("ran")
     REMOTE_TOKENS.append(
         headers.token.get_secret_value() if headers.token is not None else None
     )
+    emit_progress("pricing", logical_agent="pricing")
     return REMOTE_RESULT
 
 
@@ -191,41 +194,151 @@ def _request_with_sender(
     payload: dict[str, Any],
 ) -> _RequestResult:
     with mlflow.start_span(name=f"sender:{protocol}") as sender:
+        export_barrier = mlflow.start_span_no_context(
+            "receiver-export-barrier", parent_span=sender
+        )
         headers = inject_tracing_headers(
             {
-                "X-Forwarded-Access-Token": OBO_TOKEN,
+                "X-Forwarded-Access-Token": TEST_OBO_SENTINEL,
                 "X-Forwarded-Host": "caller.example",
             }
         )
+    # The sender is closed before ingress, while a non-active child keeps its
+    # trace export open until the receiver's spans have finished. This avoids a
+    # local-store race without making the barrier the receiver's parent.
     path = "/" if protocol == "a2a" else f"/{protocol}"
-    return _RequestResult(
-        response=client.post(path, json=payload, headers=headers),
-        sender=sender,
-    )
+    try:
+        response = client.post(path, json=payload, headers=headers)
+    finally:
+        export_barrier.end()
+    mlflow.flush_trace_async_logging()
+    return _RequestResult(response=response, sender=sender)
 
 
-def _trace_for(trace_id: str, experiment_id: str) -> Any:
-    traces = mlflow.search_traces(
-        locations=[experiment_id],
-        return_type="list",
-        include_spans=True,
-    )
-    return next(trace for trace in traces if trace.info.trace_id == trace_id)
+def _protocol_payload(protocol: str, query: str, *, message_id: str) -> dict[str, Any]:
+    if protocol == "invocations":
+        return {"messages": [{"role": "user", "content": query}]}
+    if protocol == "responses":
+        return {"input": [{"role": "user", "content": query}]}
+    return {
+        "jsonrpc": "2.0",
+        "id": message_id,
+        "method": "message/send",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": query}],
+                "messageId": message_id,
+            }
+        },
+    }
 
 
-def _assert_real_parentage(trace: Any, sender: Any, protocol: str) -> None:
+def _post_count(transport: _RecordingASGITransport) -> int:
+    return sum(request.method == "POST" for request in transport.requests)
+
+
+def _eventually_complete_trace(
+    sender: Any,
+    experiment_id: str,
+    protocol: str,
+    *,
+    timeout_seconds: float = 8.0,
+) -> Any:
+    """Wait briefly for async MLflow export to persist the complete trace."""
+    route_name = "POST / (A2A)" if protocol == "a2a" else f"POST /{protocol}"
+    deadline = time.monotonic() + timeout_seconds
+    observed: list[dict[str, Any]] = []
+    while True:
+        traces = mlflow.search_traces(
+            locations=[experiment_id],
+            return_type="list",
+            include_spans=True,
+            flush=True,
+        )
+        trace = next(
+            (item for item in traces if item.info.trace_id == sender.trace_id), None
+        )
+        if trace is not None:
+            spans = trace.data.spans
+            observed = [
+                {
+                    "name": span.name,
+                    "parent_id": span.parent_id,
+                    "agent_name": (span.attributes or {}).get("apx.agent.name"),
+                    "events": [event.name for event in (span.events or [])],
+                }
+                for span in spans
+            ]
+            has_caller = any(
+                span.name == route_name
+                and (span.attributes or {}).get("apx.agent.name") == "declared-graph"
+                for span in spans
+            )
+            has_remote = any(
+                span.name == "POST /responses"
+                and (span.attributes or {}).get("apx.agent.name") == "pricing-service"
+                for span in spans
+            )
+            has_progress = any(
+                event.name == "apx.progress"
+                for span in spans
+                for event in (span.events or [])
+            )
+            if has_caller and has_remote and has_progress:
+                return trace
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"trace {sender.trace_id} incomplete for {protocol} after "
+                f"{timeout_seconds:.1f}s; observed={observed!r}"
+            )
+        time.sleep(0.05)
+
+
+def _assert_real_parentage(trace: Any, sender: Any, protocol: str) -> list[Any]:
     spans = trace.data.spans
     assert any(span.span_id == sender.span_id for span in spans)
     route_name = "POST / (A2A)" if protocol == "a2a" else f"POST /{protocol}"
-    request_span = next(span for span in spans if span.name == route_name)
-    assert request_span.parent_id == sender.span_id
-    remote_spans = [span for span in spans if span.name == "POST /responses"]
-    assert any(
-        span.parent_id is not None
-        and span.parent_id != sender.span_id
-        and any(parent.span_id == span.parent_id for parent in spans)
-        for span in remote_spans
+    request_span = next(
+        span
+        for span in spans
+        if span.name == route_name
+        and (span.attributes or {}).get("apx.agent.name") == "declared-graph"
     )
+    assert request_span.parent_id == sender.span_id
+    remote_span = next(
+        span
+        for span in spans
+        if span.name == "POST /responses"
+        and (span.attributes or {}).get("apx.agent.name") == "pricing-service"
+    )
+
+    # MLflow's LangGraph autologging intentionally inserts compiler/graph spans
+    # between the caller ingress and the HTTP continuation. Prove the exact
+    # receiver identity, its immediate `_sync_node` parent, and the complete
+    # parent chain back to this protocol's caller request span.
+    by_id = {span.span_id: span for span in spans}
+    parent = by_id[remote_span.parent_id]
+    assert parent.name == "_sync_node"
+    remote_traceparent = (remote_span.attributes or {})["apx.traceparent"]
+    assert remote_traceparent.split("-")[2] == remote_span.parent_id
+    ancestor_ids: list[str] = []
+    ancestor_names: list[str] = []
+    while parent is not None:
+        ancestor_ids.append(parent.span_id)
+        ancestor_names.append(parent.name)
+        if parent.span_id == request_span.span_id:
+            break
+        parent = by_id.get(parent.parent_id)
+    assert request_span.span_id in ancestor_ids
+    assert "pricing" in ancestor_names
+
+    return [
+        event
+        for span in spans
+        for event in (span.events or [])
+        if event.name == "apx.progress"
+    ]
 
 
 def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
@@ -283,75 +396,127 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
     mlflow.set_tracking_uri(f"file://{tmp_path / 'mlruns'}")
     experiment = mlflow.set_experiment("declared-a2a-binding-reality")
     senders: dict[str, Any] = {}
+    traces_by_protocol: dict[str, Any] = {}
+    route_observations: list[dict[str, Any]] = []
     try:
         with TestClient(remote_app):
             transport = _RecordingASGITransport(remote_app)
             _route_async_clients(monkeypatch, transport)
             caller_app = create_app(caller, config=loaded)
             with TestClient(caller_app) as client:
-                topology = build_topology(client.app.state.agent_context)
-                labels = {node["label"] for node in topology["nodes"]}
-                assert {"data", "pricing_flow", "review", "pricing"} <= labels
-
-                direct_result = _request_with_sender(
-                    client,
-                    protocol="invocations",
-                    payload={
-                        "messages": [
-                            {"role": "user", "content": "read the local capability"}
-                        ]
-                    },
-                )
-                direct_response = direct_result.response
-                assert direct_response.status_code == 200, direct_response.text
-                assert DIRECT_RESULT in _all_text(direct_response.json())
-                assert DIRECT_CALLS == ["observed request"]
-                assert not transport.requests
-
-                requests = {
-                    "invocations": {
-                        "messages": [{"role": "user", "content": "price this request"}]
-                    },
-                    "responses": {
-                        "input": [{"role": "user", "content": "price this request"}]
-                    },
-                    "a2a": {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "message/send",
-                        "params": {
-                            "message": {
-                                "role": "user",
-                                "parts": [
-                                    {"kind": "text", "text": "price this request"}
-                                ],
-                                "messageId": "m1",
-                            }
-                        },
-                    },
-                }
+                topology_response = client.get("/_apx/topology.json")
+                card_response = client.get("/.well-known/agent.json")
                 responses: dict[str, httpx.Response] = {}
-                for protocol, payload in requests.items():
+                all_responses: list[httpx.Response] = []
+                for protocol in ("invocations", "responses", "a2a"):
+                    before = {
+                        "direct": len(DIRECT_CALLS),
+                        "review": len(REVIEW_CALLS),
+                        "remote": len(REMOTE_CALLS),
+                        "posts": _post_count(transport),
+                    }
+                    direct_result = _request_with_sender(
+                        client,
+                        protocol=protocol,
+                        payload=_protocol_payload(
+                            protocol,
+                            "read the local capability",
+                            message_id=f"{protocol}-direct",
+                        ),
+                    )
+                    direct_response = direct_result.response
+                    assert direct_response.status_code == 200, direct_response.text
+                    assert DIRECT_RESULT in _all_text(direct_response.json())
+                    direct_delta = {
+                        "protocol": protocol,
+                        "route": "direct",
+                        "direct": len(DIRECT_CALLS) - before["direct"],
+                        "review": len(REVIEW_CALLS) - before["review"],
+                        "remote": len(REMOTE_CALLS) - before["remote"],
+                        "posts": _post_count(transport) - before["posts"],
+                    }
+                    assert direct_delta == {
+                        "protocol": protocol,
+                        "route": "direct",
+                        "direct": 1,
+                        "review": 0,
+                        "remote": 0,
+                        "posts": 0,
+                    }
+                    route_observations.append(direct_delta)
+                    all_responses.append(direct_response)
+
+                    before = {
+                        "direct": len(DIRECT_CALLS),
+                        "review": len(REVIEW_CALLS),
+                        "remote": len(REMOTE_CALLS),
+                        "posts": _post_count(transport),
+                    }
                     request_result = _request_with_sender(
-                        client, protocol=protocol, payload=payload
+                        client,
+                        protocol=protocol,
+                        payload=_protocol_payload(
+                            protocol,
+                            "price this request",
+                            message_id=f"{protocol}-pricing",
+                        ),
                     )
                     response = request_result.response
                     assert response.status_code == 200, response.text
                     assert REMOTE_RESULT in _all_text(response.json())
+                    remote_delta = {
+                        "protocol": protocol,
+                        "route": "pricing",
+                        "direct": len(DIRECT_CALLS) - before["direct"],
+                        "review": len(REVIEW_CALLS) - before["review"],
+                        "remote": len(REMOTE_CALLS) - before["remote"],
+                        "posts": _post_count(transport) - before["posts"],
+                    }
+                    assert remote_delta == {
+                        "protocol": protocol,
+                        "route": "pricing",
+                        "direct": 0,
+                        "review": 1,
+                        "remote": 1,
+                        "posts": 1,
+                    }
+                    route_observations.append(remote_delta)
                     responses[protocol] = response
+                    all_responses.append(response)
                     senders[protocol] = request_result.sender
+                    traces_by_protocol[protocol] = _eventually_complete_trace(
+                        request_result.sender,
+                        experiment.experiment_id,
+                        protocol,
+                    )
 
-                topology_text = json.dumps(topology, sort_keys=True)
-                card_text = client.get("/.well-known/agent.json").text
                 generated_source = (generated_dir / "agent.py").read_text()
-                visible = "\n".join((topology_text, card_text, generated_source))
 
                 mlflow.flush_trace_async_logging()
 
                 def _verify_observed_effects() -> None:
+                    assert topology_response.status_code == 200, topology_response.text
+                    topology = topology_response.json()
+                    labels = {node["label"] for node in topology["nodes"]}
+                    assert {"data", "pricing_flow", "review", "pricing"} <= labels
+                    assert card_response.status_code == 200, card_response.text
                     expect(len(responses)).satisfies(
                         lambda count: count == 3, "all three ingress protocols ran"
                     ).verify()
+                    expect(route_observations).satisfies(
+                        lambda observations: len(observations) == 6,
+                        "both router branches ran through every ingress protocol",
+                    ).verify()
+                    for observation in route_observations:
+                        expected = (
+                            {"direct": 1, "review": 0, "remote": 0, "posts": 0}
+                            if observation["route"] == "direct"
+                            else {"direct": 0, "review": 1, "remote": 1, "posts": 1}
+                        )
+                        assert {
+                            key: observation[key]
+                            for key in ("direct", "review", "remote", "posts")
+                        } == expected
                     expect(REVIEW_CALLS).satisfies(
                         lambda calls: calls == ["observed request"] * 3,
                         "local review ran exactly once per remote route",
@@ -361,7 +526,7 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                         "declared internal leaf ran exactly once per remote route",
                     ).verify()
                     expect(REMOTE_TOKENS).satisfies(
-                        lambda tokens: tokens == [OBO_TOKEN] * 3,
+                        lambda tokens: tokens == [TEST_OBO_SENTINEL] * 3,
                         "OBO reached remote tool logic",
                     ).verify()
                     posts = [
@@ -376,24 +541,55 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                         lambda paths: paths == {"/responses"},
                         "declared leaf used the real Responses transport",
                     ).verify()
+                    progress_events: list[Any] = []
                     for protocol, sender in senders.items():
-                        trace = _trace_for(sender.trace_id, experiment.experiment_id)
-                        _assert_real_parentage(trace, sender, protocol)
+                        trace = traces_by_protocol[protocol]
+                        events = _assert_real_parentage(trace, sender, protocol)
+                        assert len(events) == 1
+                        assert (events[0].attributes or {}).get("message") == "pricing"
+                        assert (events[0].attributes or {}).get("logical_agent") == (
+                            "pricing"
+                        )
+                        progress_events.extend(events)
+
+                    progress_text = json.dumps(
+                        [dict(event.attributes or {}) for event in progress_events],
+                        sort_keys=True,
+                    )
+                    visible = "\n".join(
+                        (
+                            topology_response.text,
+                            card_response.text,
+                            generated_source,
+                            progress_text,
+                        )
+                    )
+                    for forbidden in (
+                        TEST_OBO_SENTINEL,
+                        CARD_URL,
+                        "$PRICING_APP_URL",
+                        "RemoteDatabricksAgent",
+                    ):
+                        assert forbidden not in visible
+                    assert all(
+                        TEST_OBO_SENTINEL not in response.text
+                        for response in all_responses
+                    )
 
                 claim_vs_reality(
                     claimed_success=all(
-                        response.is_success for response in responses.values()
+                        response.is_success
+                        for response in [
+                            topology_response,
+                            card_response,
+                            *all_responses,
+                        ]
                     ),
                     verifier=_verify_observed_effects,
                     claim_label="generated declared A2A graph",
                 )
-
-                assert OBO_TOKEN not in visible
-                assert CARD_URL not in visible
-                assert "$PRICING_APP_URL" not in visible
-                assert "RemoteDatabricksAgent" not in visible
-                assert all(
-                    OBO_TOKEN not in response.text for response in responses.values()
-                )
     finally:
-        mlflow.set_tracking_uri(old_tracking_uri)
+        try:
+            mlflow.flush_trace_async_logging()
+        finally:
+            mlflow.set_tracking_uri(old_tracking_uri)

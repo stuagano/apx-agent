@@ -726,6 +726,9 @@ def test_generate_project_emits_declared_binding_without_transport_in_agent_py(
     assert "name='pricing'" in source
     assert "RemoteDatabricksAgent" not in source
     assert "$PRICING_APP_URL" not in source
+    assert ".well-known/agent.json" not in source
+    assert "http://" not in source
+    assert "https://" not in source
 
 
 def test_render_agent_py_graph_remote_leaf() -> None:
