@@ -376,9 +376,22 @@ def continue_trace_from_headers(headers: Any):
         from mlflow.tracing import set_tracing_context_from_http_request_headers
 
         cm = set_tracing_context_from_http_request_headers(dict(headers or {}))
+        cm.__enter__()
     except Exception as exc:
         logger.debug("could not continue trace from headers (continuing): %s", exc)
         yield
         return
-    with cm:
+
+    try:
         yield
+    except BaseException as body_exc:
+        try:
+            cm.__exit__(type(body_exc), body_exc, body_exc.__traceback__)
+        except Exception as exc:
+            logger.debug("could not close continued trace context: %s", exc)
+        raise
+    else:
+        try:
+            cm.__exit__(None, None, None)
+        except Exception as exc:
+            logger.debug("could not close continued trace context: %s", exc)

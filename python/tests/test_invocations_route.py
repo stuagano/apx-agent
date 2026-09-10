@@ -20,7 +20,8 @@ Skips if optional extras are missing.
 
 from __future__ import annotations
 
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,6 +48,36 @@ from apx_agent import (  # noqa: E402
 def _trivial_tool(query: str) -> str:
     """Return the query, echoing back."""
     return f"got: {query}"
+
+
+class _SenderTrace(NamedTuple):
+    sender: Any
+    headers: dict[str, str]
+
+
+def _sender_trace_headers() -> _SenderTrace:
+    """Return a closed real sender span and its MLflow propagation headers."""
+    import mlflow
+
+    from apx_agent import inject_tracing_headers
+
+    with mlflow.start_span("sender") as sender:
+        headers = inject_tracing_headers({})
+    return _SenderTrace(sender, headers)
+
+
+def _record_span(named: str, seen: list[Any]):
+    """Wrap the real span helper and retain spans with the requested name."""
+    from apx_agent import safe_span as real_safe_span
+
+    @contextmanager
+    def recording(name: str, **kwargs: Any):
+        with real_safe_span(name, **kwargs) as span:
+            if name == named:
+                seen.append(span)
+            yield span
+
+    return recording
 
 
 @pytest.fixture
@@ -469,6 +500,68 @@ class TestCrossAgentCorrelation:
             }
         )
 
+    def test_invocations_continues_real_sender_trace(
+        self, app_and_chat_agent
+    ) -> None:
+        client, captured = app_and_chat_agent
+        self._stub_predict(captured)
+        sender, headers = _sender_trace_headers()
+        request_spans: list[Any] = []
+
+        with patch(
+            "apx_agent._invocations.safe_span",
+            side_effect=_record_span("POST /invocations", request_spans),
+        ):
+            resp = client.post(
+                "/invocations",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+                headers=headers,
+            )
+
+        assert resp.status_code == 200
+        assert request_spans[0].trace_id == sender.trace_id
+        assert request_spans[0].parent_id == sender.span_id
+
+    def test_invocations_stream_keeps_request_context_for_later_chunks(
+        self, app_and_chat_agent
+    ) -> None:
+        import mlflow
+        from mlflow.types.agent import ChatAgentChunk, ChatAgentMessage
+
+        client, captured = app_and_chat_agent
+        probes: list[Any] = []
+
+        def chunks():
+            yield ChatAgentChunk(
+                delta=ChatAgentMessage(role="assistant", content="one", id="m1")
+            )
+            with mlflow.start_span("stream-body") as probe:
+                probes.append(probe)
+                yield ChatAgentChunk(
+                    delta=ChatAgentMessage(role="assistant", content="two", id="m1")
+                )
+
+        captured["chat_agent"].predict_stream.return_value = chunks()
+        sender, headers = _sender_trace_headers()
+        request_spans: list[Any] = []
+
+        with patch(
+            "apx_agent._invocations.safe_span",
+            side_effect=_record_span("POST /invocations", request_spans),
+        ):
+            resp = client.post(
+                "/invocations",
+                json={
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+                headers=headers,
+            )
+            assert resp.text.count("data: ") == 2
+
+        assert probes[0].trace_id == request_spans[0].trace_id == sender.trace_id
+        assert probes[0].parent_id == request_spans[0].span_id
+
     def test_invocations_without_headers_stamps_nothing(
         self, app_and_chat_agent
     ) -> None:
@@ -500,6 +593,64 @@ class TestCrossAgentCorrelation:
                 "apx.caller": "orchestrator",
             }
         )
+
+    def test_responses_continues_real_sender_trace(self, app_with_responses) -> None:
+        client, _ = app_with_responses
+        sender, headers = _sender_trace_headers()
+        request_spans: list[Any] = []
+
+        with patch(
+            "apx_agent._invocations.safe_span",
+            side_effect=_record_span("POST /responses", request_spans),
+        ):
+            resp = client.post(
+                "/responses",
+                json={"input": [{"role": "user", "content": "hi"}]},
+                headers=headers,
+            )
+
+        assert resp.status_code == 200
+        assert request_spans[0].trace_id == sender.trace_id
+        assert request_spans[0].parent_id == sender.span_id
+
+    def test_responses_stream_keeps_request_context_for_later_events(
+        self, app_with_responses
+    ) -> None:
+        import mlflow
+
+        client, captured = app_with_responses
+        probes: list[Any] = []
+        first = MagicMock()
+        first.model_dump_json.return_value = '{"type":"first"}'
+        second = MagicMock()
+        second.model_dump_json.return_value = '{"type":"second"}'
+
+        def events(_request: Any):
+            yield first
+            with mlflow.start_span("stream-body") as probe:
+                probes.append(probe)
+                yield second
+
+        captured["stream"].side_effect = events
+        sender, headers = _sender_trace_headers()
+        request_spans: list[Any] = []
+
+        with patch(
+            "apx_agent._invocations.safe_span",
+            side_effect=_record_span("POST /responses", request_spans),
+        ):
+            resp = client.post(
+                "/responses",
+                json={
+                    "input": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+                headers=headers,
+            )
+            assert resp.text.count("data: ") == 2
+
+        assert probes[0].trace_id == request_spans[0].trace_id == sender.trace_id
+        assert probes[0].parent_id == request_spans[0].span_id
 
     def test_responses_without_headers_stamps_nothing(
         self, app_with_responses
