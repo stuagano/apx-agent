@@ -59,6 +59,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -67,12 +69,43 @@ from fastapi.responses import StreamingResponse
 from ._agents import BaseAgent
 from ._async_bridge import make_async_stream
 from ._audit import AuditAttrs, stamp_caller_correlation
-from ._mlflow_tracing import safe_span
+from ._mlflow_tracing import continue_trace_from_headers, safe_span
 
 if TYPE_CHECKING:
     from ._models import AgentConfig
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _inbound_request_span(
+    headers: Mapping[str, str],
+    *,
+    name: str,
+    attributes: dict[str, Any],
+):
+    """Continue an inbound trace, then open and stamp the request span."""
+    with continue_trace_from_headers(headers):
+        with safe_span(
+            name,
+            span_type="CHAIN",
+            attributes=attributes,
+        ) as span:
+            stamp_caller_correlation(span, headers)
+            yield span
+
+
+async def _traced_stream(
+    *,
+    headers: Mapping[str, str],
+    name: str,
+    attributes: dict[str, Any],
+    stream_factory: Callable[[], AsyncIterator[str]],
+) -> AsyncIterator[str]:
+    """Keep the inbound request context active for the stream body lifetime."""
+    with _inbound_request_span(headers, name=name, attributes=attributes):
+        async for item in stream_factory():
+            yield item
 
 
 def _last_user_text(input_items: Any, max_len: int = 120) -> str:
@@ -279,34 +312,34 @@ def mount_invocations_route(
                 detail=f"Invalid ChatAgentMessage in messages: {exc}",
             )
 
-        with safe_span(
-            "POST /invocations",
-            span_type="CHAIN",
-            attributes={
-                "http.route": "/invocations",
-                AuditAttrs.AGENT_NAME: config.name,
-                "apx.streaming": stream,
-                "apx.user_scoped": bool(custom_inputs.get("user_token")),
-                "apx.message_count": len(messages),
-            },
-        ) as span:
-            # Cross-agent correlation (#443): when the caller sent a
-            # traceparent / x-apx-caller, tag this trace so it joins the
-            # caller's trace on apx.outbound.trace_id. Absent headers → no-op.
-            stamp_caller_correlation(span, request.headers)
-            if stream:
-                # Run the sync predict_stream on a dedicated worker thread (one
-                # thread for the whole generator, so OTel span attach/detach stay
-                # paired) instead of iterating it on the event loop. Streaming
-                # always emits ChatAgentChunk frames — RemoteDatabricksAgent's
-                # SSE parser understands the chunk-delta dict (#438).
-                return StreamingResponse(
-                    make_async_stream(
+        span_attributes = {
+            "http.route": "/invocations",
+            AuditAttrs.AGENT_NAME: config.name,
+            "apx.streaming": stream,
+            "apx.user_scoped": bool(custom_inputs.get("user_token")),
+            "apx.message_count": len(messages),
+        }
+        if stream:
+            # Copy the request headers before returning; Starlette streams the
+            # body after this route coroutine exits.
+            request_headers = dict(request.headers)
+            return StreamingResponse(
+                _traced_stream(
+                    headers=request_headers,
+                    name="POST /invocations",
+                    attributes=span_attributes,
+                    stream_factory=lambda: make_async_stream(
                         lambda _req: _stream_chunks(chat_agent, messages, custom_inputs)
                     )(None),
-                    media_type="text/event-stream",
-                )
+                ),
+                media_type="text/event-stream",
+            )
 
+        with _inbound_request_span(
+            request.headers,
+            name="POST /invocations",
+            attributes=span_attributes,
+        ):
             # Offload the sync agent turn to a worker thread so one slow tool
             # call doesn't freeze the event loop (and every other request).
             response = await asyncio.to_thread(
@@ -431,24 +464,32 @@ def mount_responses_route(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid input: {exc}")
 
-        with safe_span(
-            "POST /responses",
-            span_type="CHAIN",
-            attributes={
-                "http.route": "/responses",
-                AuditAttrs.AGENT_NAME: config.name,
-                "apx.streaming": stream,
-                "apx.user_scoped": bool(custom_inputs.get("user_token")),
-                "apx.input_items": len(input_items) if isinstance(input_items, list) else 1,
-            },
-        ) as span:
-            # Cross-agent correlation (#443) — same stamp as /invocations.
-            stamp_caller_correlation(span, request.headers)
-            if stream:
-                return StreamingResponse(
-                    make_async_stream(lambda _req: _stream_response_events(_stream_fn, req))(None),
-                    media_type="text/event-stream",
-                )
+        span_attributes = {
+            "http.route": "/responses",
+            AuditAttrs.AGENT_NAME: config.name,
+            "apx.streaming": stream,
+            "apx.user_scoped": bool(custom_inputs.get("user_token")),
+            "apx.input_items": len(input_items) if isinstance(input_items, list) else 1,
+        }
+        if stream:
+            request_headers = dict(request.headers)
+            return StreamingResponse(
+                _traced_stream(
+                    headers=request_headers,
+                    name="POST /responses",
+                    attributes=span_attributes,
+                    stream_factory=lambda: make_async_stream(
+                        lambda _req: _stream_response_events(_stream_fn, req)
+                    )(None),
+                ),
+                media_type="text/event-stream",
+            )
+
+        with _inbound_request_span(
+            request.headers,
+            name="POST /responses",
+            attributes=span_attributes,
+        ):
             result = await asyncio.to_thread(_invoke_fn, req)
             return result.model_dump() if hasattr(result, "model_dump") else result
 

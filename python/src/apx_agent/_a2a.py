@@ -38,9 +38,9 @@ from ._a2a_models import (
     TextPart,
 )
 from ._agents import BaseAgent
-from ._audit import AuditAttrs, stamp_caller_correlation
+from ._audit import AuditAttrs
+from ._invocations import _inbound_request_span
 from ._models import AgentConfig
-from ._mlflow_tracing import safe_span
 
 logger = logging.getLogger(__name__)
 
@@ -313,15 +313,11 @@ def mount_a2a_route(
         # the server MUST run it for side effects but MUST NOT send a response.
         is_notification = "id" not in raw
 
-        with safe_span(
-            "POST / (A2A)",
-            span_type="CHAIN",
+        with _inbound_request_span(
+            request.headers,
+            name="POST / (A2A)",
             attributes={"apx.a2a_method": method, AuditAttrs.AGENT_NAME: config.name},
-        ) as span:
-            # Cross-agent correlation (#443): tag this trace with the caller's
-            # traceparent / name so it joins the caller's trace on
-            # apx.outbound.trace_id. Absent headers → no-op.
-            stamp_caller_correlation(span, request.headers)
+        ):
             if method == "message/send":
                 try:
                     send_params = MessageSendParams(**params)

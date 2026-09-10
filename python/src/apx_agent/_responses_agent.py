@@ -61,7 +61,6 @@ from ._agents import BaseAgent
 from ._audit import AuditAttrs, set_audit_attrs, stamp_version_correlation, user_hash
 from ._chat_agent import _pending_interrupt, _resume_decision
 from ._compile import compile_to_langgraph
-from ._executor import content_to_text as _content_to_text
 from ._conversation import (
     ConversationItem,
     ConversationStore,
@@ -72,7 +71,8 @@ from ._conversation import (
     drop_orphaned_tool_outputs,
     synthesize_conversation_title,
 )
-from ._mlflow_tracing import safe_span, set_span_outputs
+from ._executor import content_to_text as _content_to_text
+from ._mlflow_tracing import continue_trace_from_headers, safe_span, set_span_outputs
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -169,6 +169,17 @@ def _maybe_import_request_headers() -> Callable[[], dict[str, str]] | None:
     return get_request_headers
 
 
+def _request_headers() -> dict[str, str]:
+    """Read AgentServer request headers, or return an empty mapping."""
+    getter = _maybe_import_request_headers()
+    if getter is None:
+        return {}
+    try:
+        return getter() or {}
+    except Exception:
+        return {}
+
+
 def _scope_session_by_principal(custom_inputs: dict[str, Any]) -> dict[str, Any]:
     """Namespace the client thread_id/session_id by the OBO principal (#491) so
     the checkpoint thread + conversation key can't collide across users. Resolves
@@ -176,13 +187,7 @@ def _scope_session_by_principal(custom_inputs: dict[str, Any]) -> dict[str, Any]
     the same sources ``_resolve_ws_and_headers_for_request`` uses."""
     from ._obo import extract_obo_headers, scope_session_key
 
-    http_headers: dict[str, str] = {}
-    getter = _maybe_import_request_headers()
-    if getter is not None:
-        try:
-            http_headers = getter() or {}
-        except Exception:
-            http_headers = {}
+    http_headers = _request_headers()
     principal = extract_obo_headers(
         custom_inputs=custom_inputs, headers=http_headers
     ).get("user_id")
@@ -216,15 +221,7 @@ def _resolve_ws_and_headers_for_request(
     from ._defaults import DatabricksAppsHeaders, _make_workspace_client
     from ._obo import extract_obo_headers
 
-    http_headers: dict[str, str] = {}
-    getter = _maybe_import_request_headers()
-    if getter is not None:
-        try:
-            http_headers = getter() or {}
-        except Exception:
-            # Apps context not initialized (test path, or invoked outside the
-            # server). Quiet best-effort — drop to custom_inputs-only.
-            http_headers = {}
+    http_headers = _request_headers()
 
     obo = extract_obo_headers(custom_inputs=custom_inputs, headers=http_headers)
 
@@ -1122,7 +1119,7 @@ def compile_to_responses_agent(
             _peek_user_token(custom_inputs)
         )
 
-        with safe_span(
+        with continue_trace_from_headers(_request_headers()), safe_span(
             "ApxResponsesAgent.invoke",
             span_type="AGENT",
             inputs={"input": [str(i) for i in request.input]},
@@ -1327,7 +1324,7 @@ def compile_to_responses_agent(
         effective_model = _resolve_model(_model)
         user_token_provided = bool(_peek_user_token(custom_inputs))
 
-        with safe_span(
+        with continue_trace_from_headers(_request_headers()), safe_span(
             "ApxResponsesAgent.stream",
             span_type="AGENT",
             inputs={"input": [str(i) for i in request.input]},

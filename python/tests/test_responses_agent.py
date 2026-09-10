@@ -23,8 +23,9 @@ Covers:
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NamedTuple
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -114,6 +115,36 @@ def test_output_item_passes_through_ordinary_json_array_string():
 def _trivial_tool(query: str) -> str:
     """A tool with no dependencies (compile-friendly without mocks)."""
     return f"got: {query}"
+
+
+class _SenderTrace(NamedTuple):
+    sender: Any
+    headers: dict[str, str]
+
+
+def _sender_trace_headers() -> _SenderTrace:
+    """Return a closed real sender span and its MLflow propagation headers."""
+    import mlflow
+
+    from apx_agent import inject_tracing_headers
+
+    with mlflow.start_span("sender") as sender:
+        headers = inject_tracing_headers({})
+    return _SenderTrace(sender, headers)
+
+
+def _record_span(named: str, seen: list[Any]):
+    """Wrap the real span helper and retain spans with the requested name."""
+    from apx_agent import safe_span as real_safe_span
+
+    @contextmanager
+    def recording(name: str, **kwargs: Any):
+        with real_safe_span(name, **kwargs) as span:
+            if name == named:
+                seen.append(span)
+            yield span
+
+    return recording
 
 
 def _make_fake_graph(final_text: str = "done") -> MagicMock:
@@ -249,6 +280,30 @@ class TestInvoke:
         # content is a list of typed parts
         assert d["content"][0]["text"] == "final answer"
 
+    def test_continues_agent_server_request_trace(self) -> None:
+        agent = LlmAgent(tools=[_trivial_tool])
+        non_streaming, _ = compile_to_responses_agent(agent, model="any")
+        sender, headers = _sender_trace_headers()
+        request_spans: list[Any] = []
+
+        with patch(
+            "apx_agent._responses_agent._maybe_import_request_headers",
+            return_value=lambda: headers,
+        ), patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._responses_agent.compile_to_langgraph",
+            return_value=_make_fake_graph("answer"),
+        ), patch(
+            "apx_agent._responses_agent.safe_span",
+            side_effect=_record_span("ApxResponsesAgent.invoke", request_spans),
+        ):
+            non_streaming(_user_request("hi"))
+
+        assert request_spans[0].trace_id == sender.trace_id
+        assert request_spans[0].parent_id == sender.span_id
+
     def test_accepts_dict_request_for_test_ergonomics(self) -> None:
         """A bare dict (no ResponsesAgentRequest) is coerced via pydantic."""
         agent = LlmAgent(tools=[_trivial_tool])
@@ -316,6 +371,49 @@ class TestStream:
         item = item_dump["item"]
         assert item["type"] == "message"
         assert item["content"][0]["text"] == "hello world"
+
+    def test_continues_agent_server_trace_for_stream_lifetime(self) -> None:
+        import mlflow
+        from langchain_core.messages import AIMessageChunk
+
+        agent = LlmAgent(tools=[_trivial_tool])
+        _, streaming = compile_to_responses_agent(agent, model="any")
+        probes: list[Any] = []
+        graph = MagicMock(name="graph")
+
+        def graph_events(state: dict[str, Any], stream_mode: Any = "updates"):
+            yield (
+                "messages",
+                (AIMessageChunk(content="one", id="ai-1"), {}),
+            )
+            with mlflow.start_span("stream-body") as probe:
+                probes.append(probe)
+                yield (
+                    "updates",
+                    {"agent": {"messages": [AIMessage(content="two", id="ai-1")]}},
+                )
+
+        graph.stream.side_effect = graph_events
+        sender, headers = _sender_trace_headers()
+        request_spans: list[Any] = []
+
+        with patch(
+            "apx_agent._responses_agent._maybe_import_request_headers",
+            return_value=lambda: headers,
+        ), patch(
+            "apx_agent._defaults._make_workspace_client",
+            return_value=MagicMock(name="sp_ws"),
+        ), patch(
+            "apx_agent._responses_agent.compile_to_langgraph",
+            return_value=graph,
+        ), patch(
+            "apx_agent._responses_agent.safe_span",
+            side_effect=_record_span("ApxResponsesAgent.stream", request_spans),
+        ):
+            list(streaming(_user_request("go")))
+
+        assert probes[0].trace_id == request_spans[0].trace_id == sender.trace_id
+        assert probes[0].parent_id == request_spans[0].span_id
 
     def test_emits_output_text_deltas_for_tokens(self) -> None:
         """#287: token chunks from the "messages" stream-mode surface as

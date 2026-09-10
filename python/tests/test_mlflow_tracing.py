@@ -496,6 +496,32 @@ class TestDistributedTracingHelpers:
                 entered = True
             assert entered
 
+    @pytest.mark.parametrize("headers", [{}, {"traceparent": "invalid"}])
+    def test_continue_no_op_without_valid_context(
+        self, headers: dict[str, str]
+    ) -> None:
+        """Absent or invalid propagation headers must still enter the body."""
+        from apx_agent import continue_trace_from_headers
+
+        entered = False
+        with continue_trace_from_headers(headers):
+            entered = True
+        assert entered
+
+    def test_continue_never_hides_handler_exception(self) -> None:
+        """Tracing fallback must not catch an exception raised by the body."""
+        import mlflow
+
+        from apx_agent import continue_trace_from_headers
+        from apx_agent import inject_tracing_headers
+
+        with mlflow.start_span("sender"):
+            headers = inject_tracing_headers({})
+
+        with pytest.raises(RuntimeError, match="handler failed"):
+            with continue_trace_from_headers(headers):
+                raise RuntimeError("handler failed")
+
     def test_continue_uses_mlflow_context_manager(self) -> None:
         """When available, the MLflow server-side context manager is entered."""
         from apx_agent import continue_trace_from_headers
