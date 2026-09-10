@@ -1,80 +1,128 @@
-# A2A discovery + app-to-app auth
+# A2A discovery and app-to-app auth
 
-## A2A discovery
+APX uses A2A as the runtime boundary for a logical leaf deployed in another
+application. The public graph remains declarative; application code does not
+construct the HTTP transport.
 
-Apps-hosted agents publish `/.well-known/agent.json` with capabilities, skills, and MCP endpoint:
+## Declare a logical binding
 
-```json
-{
-  "name": "data_triage_agent",
-  "description": "Investigate why data is missing from Databricks tables",
-  "url": "https://data-triage-agent.workspace.databricksapps.com",
-  "skills": [
-    {"name": "get_table_lineage", "description": "Get upstream sources..."},
-    {"name": "find_jobs_for_table", "description": "Which jobs write to a table..."}
-  ],
-  "mcpEndpoint": "https://data-triage-agent.workspace.databricksapps.com/mcp"
-}
+Name the leaf normally in the graph and bind that name in `pyproject.toml`:
+
+```toml
+[tool.apx.agent]
+experiment = "/Shared/research-assistant"
+
+[tool.apx.agent.bindings]
+pricing = "$PRICING_APP_URL"
 ```
 
-On Model Serving, UC + the Mosaic AI registry are the equivalent discovery surface.
+```python
+from apx_agent import Agent, RouterAgent, SequentialAgent
 
-A peer reached via `sub_agents=[url]` becomes a callable delegate tool named after its card (`peer-agent` → `peer_agent`). If a local tool already owns that name, the local tool keeps it and the peer is **neither advertised nor callable** — a startup warning names the collision, and the fix is to rename one of them (#636). Advertised capability and callable tool always agree.
+data = Agent(name="data", description="Looks up governed account facts.")
+pricing = Agent(name="pricing", description="Produces an approved price.")
+review = SequentialAgent([data, pricing], name="review")
+root = RouterAgent(agents=[data, review])
+```
+
+The environment variable resolves to the peer's HTTP(S) A2A card location.
+APX validates and stores that transport binding privately during startup. The
+generated agent module and visible topology still contain the logical
+`pricing` leaf, not the environment reference, card location, or runtime
+transport type.
+
+A binding fails closed unless it resolves to one uniquely named leaf and a
+valid card location. Bound leaves are supported in sequential, parallel,
+model-routed, and keyword-routed positions. Remote loop completion and remote
+handoff are not supported by the current A2A control surface, so a bound leaf
+cannot occupy `LoopAgent` or `HandoffAgent` control positions.
+
+Existing URL-based sub-agent declarations remain supported for compatibility.
+Use a named binding for a deterministic graph edge so the authored graph stays
+about roles and control rather than transport.
+
+## One root behind every ingress
+
+`create_app()` finalizes the declared root once and serves it through:
+
+- `POST /invocations`
+- `POST /responses`
+- A2A `message/send` on `POST /`
+
+All three execute the same graph semantics. A direct router branch completes
+normally without contacting a peer. A branch that reaches a bound leaf makes
+the A2A call at that leaf and returns its result into the surrounding graph.
+
+## Discovery
+
+An Apps-hosted APX agent publishes `GET /.well-known/agent.json`. The card
+contains its logical name, description, capabilities, skills, and MCP endpoint.
+The same application handles A2A JSON-RPC on `POST /`, including
+`message/send`.
+
+This is the existing A2A discovery and request surface; named graph bindings do
+not introduce a second card format or a new transport protocol.
 
 ## App-to-app authentication
 
-When sub-agents are deployed as sibling Apps (not Model Serving endpoints),
-**auth is at the Databricks Apps SSO gateway**, not a second in-process
-protocol (#631):
+For sibling Databricks Apps, authentication is enforced at the Apps SSO
+gateway and again at the APX A2A handler:
 
-1. The caller authenticates to the callee App (bearer / SSO). Without
-   credentials the gateway rejects before the agent process sees the request.
-2. **CAN_USE permission** on the callee app for the caller's SP. Without it,
-   the gateway returns 401.
-3. Each app has a service principal (platform-created). M2M credentials
-   authenticate outbound calls.
-4. **FMAPI uses the callee app's own identity.** When app A calls app B, B's
-   internal LLM calls use B's own SP token, not A's.
+1. The caller authenticates to the peer application through the gateway.
+2. The caller application's service principal needs `CAN_USE` on the peer.
+3. The gateway forwards caller identity headers to the application.
+4. APX forwards the calling user's OBO token to the bound leaf so its tools can
+   perform user-scoped governed access.
+5. **FMAPI uses the callee app's own identity.** The callee's model calls use
+   its own SP token, not A's OBO token (#633).
 
-Each App keeps its own persistent platform-created service principal. An App
-family may share `CAN_USE`/`CAN_MANAGE` group policy, never credentials.
-
-The A2A JSON-RPC surface is `POST /` on the App. Inside the Apps runtime,
-apx-agent **also fails closed** when a request reaches that handler with
-neither `X-Forwarded-Access-Token` nor `Authorization: Bearer` — a belt-and-
-suspenders check that the gateway (or a mis-mounted path) did not drop
-identity. Local `apx-agent run` stays open for the solo-dev loop. Operators
-that intentionally serve A2A without gateway identity set
-`APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true` (same opt-in as G2 / Discover).
-
-Tool/MCP/dev-UI routes under `/api/` (`api_prefix`) also accept bearer tokens
-via the gateway; `/invocations` and `/responses` mount only at their natural
-paths (no `/api/` mirror).
-
-For APX Apps deployments, declare the peer's exact HTTPS Apps URL in
-`sub_agents` and deploy with an explicit `--profile`. Before mutation, APX
-lists Apps under that profile and requires exactly one URL match with an App
-ID, name, and URL. Zero or multiple matches fail closed. It then emits the
-resolved App **name** as a native bundle resource with `CAN_USE`; operators do
-not need to hand-maintain a matching permission patch or App ID. The
-authorization summary shows the resolved name and immutable ID without
+Each application keeps its own platform-created service principal. Share
+permission policy across an application family when appropriate; do not share
 credentials.
 
-This automatic reconciliation is additive only: it preserves existing bundle
-resources and permissions and never deletes or downgrades grants. The legacy
-`--auto-update-yml` flag remains accepted, but it no longer gates this work.
+Inside the Apps runtime, A2A `POST /` fails closed if neither
+`X-Forwarded-Access-Token` nor `Authorization: Bearer` reaches the handler.
+Local `apx-agent run` remains available for the unauthenticated local
+development loop. An operator intentionally serving without gateway user
+identity must explicitly opt into service-principal fallback with
+`APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true`.
 
-**Common pitfalls:**
+Tool, MCP, and Dev UI routes live under the configured API prefix.
+`/invocations` and `/responses` remain at their protocol-defined root paths.
+
+## Deployment authorization
+
+For an Apps deployment, the configured peer location must resolve uniquely to
+one application under the explicitly selected deployment profile. APX then
+projects that application as a native bundle resource with `CAN_USE` while
+preserving existing resources and permissions. Zero or multiple matches fail
+closed.
+
+The authorization summary reports the resolved application identity without
+credentials. The reconciliation is additive: it does not delete or downgrade
+existing grants.
+
+## Distributed tracing
+
+Outbound A2A calls carry MLflow tracing context. The receiving
+`/invocations`, `/responses`, or A2A `message/send` handler continues that
+context before opening its request span, so receiver spans have real parent
+relationships to the caller's active graph span.
+
+For independently deployed applications to persist this as one inspectable
+trace, both must use the same governed MLflow experiment or trace location.
+Propagation alone cannot merge records written to different destinations.
+
+The experiment destination comes from each application's deployment/runtime
+configuration. It is not selected by a caller-controlled request header, and
+no experiment field is added to the A2A card. See [Tracing](../running/tracing.md#distributed-tracing-across-apps).
+
+## Common failures
 
 | Symptom | Cause | Fix |
-|---------|-------|-----|
-| 302 redirect (HTML login page) | SSO gateway intercepted an unauthenticated call | Send a bearer token; A2A JSON-RPC is `POST /` on the App URL |
-| 401 Unauthorized (gateway) | Caller lacks `CAN_USE` on callee | Verify the declared URL resolves uniquely and redeploy with the intended explicit profile; inspect the authorization summary and resulting bundle permission |
-| 401 from apx-agent on Apps (`#631`) | Request reached `POST /` without proxy/bearer headers | Call through the Apps gateway (or set `APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true` only if intentional) |
-| FMAPI 401 inside sub-agent | Callee service identity lacks its required model/resource permission | Declare the callee's service resource and redeploy; the caller's OBO token is not reused for the callee's LLM call |
-
-For user-scoped multi-agent across boundaries, prefer a Model Serving deployment when the
-Databricks caller supplies identity passthrough. Apps still require explicit app-to-app OAuth
-and `CAN_USE` authorization; do not assume an Apps gateway call becomes user-scoped automatically.
-
-Apps-hosted agents can also be routed through a Mosaic AI Supervisor directly: `apx-agent supervisor add --app <app-name>` registers the App as an `app`-type supervisor tool (requires databricks-sdk >= 0.120).
+|---|---|---|
+| HTML login redirect | The Apps gateway intercepted an unauthenticated call | Authenticate through the Apps gateway. |
+| Gateway `401` | Caller application lacks `CAN_USE` on the peer | Verify the binding resolves to the intended app and inspect the generated authorization plan. |
+| APX `401` on A2A `POST /` | The request reached the handler without proxy or bearer identity | Call through the gateway, or explicitly opt into service-principal fallback when that is the intended trust model. |
+| Model API `401` inside the peer | The peer service identity lacks model permission | Grant the peer application's service identity access to its declared model resource. |
+| Startup binding error | Missing, ambiguous, blank, malformed, loop, or handoff binding | Correct the named leaf and environment-backed card location; do not bypass validation. |

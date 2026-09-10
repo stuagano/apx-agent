@@ -1,168 +1,196 @@
 # Agent composition
 
-Composable agent patterns where the orchestration structure is part of the contract — the LLM executes within each step, but the graph topology is code.
+APX is a declarative agent-graph platform. You declare capability leaves, the
+control graph that connects them, and the governance and state attached to that
+graph. APX compiles the declaration to the served runtime; there is no separate
+pipeline product or runner to wire by hand.
 
-## Core ideas
+## The graph model
 
-- **Sequential, Parallel, and Loop agents** give you deterministic structure. The topology is fixed at definition time; the LLM operates within each node.
-- **`agent_tool`** inverts this: the parent LLM decides whether to delegate and may call the sub-agent multiple times in the same turn.
-- Use composition when the structure is the contract. Use `RouterAgent` or `HandoffAgent` (see [routing.md](routing.md)) when you want the LLM to pick the target from a closed set.
+Capability leaves do work:
 
-| Agent | Purpose |
-|-------|---------|
-| `SequentialAgent` | Pipeline execution (analyze → plan → execute) |
-| `ParallelAgent` | Fan-out / gather (fetch data from multiple sources concurrently) |
-| `LoopAgent` | Iterative refinement (draft → review → revise until done) |
-| `agent_tool` | LLM-driven delegation — wrap any agent as a callable tool |
+| Leaf | Purpose |
+|---|---|
+| `Agent` / `LlmAgent` | Model reasoning with typed tools and callbacks. `Agent` is the short public alias for `LlmAgent`. |
+| `DataAgent` | An `LlmAgent` grounded in governed Unity Catalog data, with SQL and optional data-service tools. |
+| `CoworkerAgent` | A `DataAgent` configured to join two landed source systems around a business key and objective. |
 
-## SequentialAgent — multi-step pipelines
+Graph-control primitives decide when leaves run:
 
-Each step receives the previous step's output as context. Use when step order is part of the contract.
+| Primitive | Control contract |
+|---|---|
+| `SequentialAgent` | Run children in a fixed order; each step receives prior context. |
+| `ParallelAgent` | Run independent children concurrently and gather their results. |
+| `RouterAgent` | Let a model choose one branch from a closed set. |
+| `KeywordRouter` | Choose one branch by deterministic, case-insensitive keyword matching. |
+| `LoopAgent` | Repeat a local leaf until it calls `finish_loop()` or reaches its cap. |
+| `HandoffAgent` | Let one local peer transfer conversational control to another. |
+
+The graph does not replace the declarations attached to it. Tools and their
+governed resources, service policies and guardrails, memory and session
+backends, model and tool callbacks, and template-built leaves remain part of
+the same agent declaration. See [Tools](../tools/overview.md), [Service
+policies](../reference/service-policies.md), [Sessions and
+memory](../running/sessions-and-memory.md), [Callbacks](../safety/callbacks.md),
+and [Configuration](../reference/configuration.md).
+
+## One logical graph across app boundaries
+
+A named binding changes where one logical leaf executes without changing the
+Python graph:
+
+```toml
+[tool.apx.agent]
+experiment = "/Shared/research-assistant"
+
+[tool.apx.agent.bindings]
+pricing = "$PRICING_APP_URL"
+```
 
 ```python
-from apx_agent import Agent, SequentialAgent, lineage_tool, schema_tool
+from apx_agent import Agent, RouterAgent, SequentialAgent
 
-pipeline = SequentialAgent([
-    Agent(
-        instructions="Identify which tables the user is asking about.",
-        tools=[lineage_tool(), schema_tool()],
-    ),
-    Agent(instructions="Plan a multi-step investigation."),
-    Agent(instructions="Execute the plan and report findings."),
+data = Agent(name="data", description="Looks up governed account facts.")
+pricing = Agent(name="pricing", description="Produces an approved price.")
+review = SequentialAgent([data, pricing], name="review")
+root = RouterAgent(agents=[data, review])
+```
+
+`pricing` is still a normal named leaf in source and in the visible topology.
+At startup, APX resolves the environment reference and binds that one leaf to
+the peer's A2A transport internally. Generated customer code remains the
+logical graph: it does not import a transport implementation or embed the
+environment reference or card URL.
+
+Binding validation fails closed. A binding must name exactly one logical leaf,
+the reference must resolve to a valid HTTP(S) A2A card location, and invalid or
+ambiguous declarations stop startup rather than silently choosing a target.
+
+The same declared `root` serves all supported ingress protocols:
+
+- `POST /invocations`
+- `POST /responses`
+- A2A `message/send` on `POST /`
+
+The router's direct `data` answer is an ordinary terminal graph branch: it does
+not make an A2A call. If the router selects `review`, the local `data` step runs
+before the bound `pricing` leaf. This is one graph with different terminal
+paths, not a local graph plus a second transport workflow.
+
+Named remote bindings are supported in `SequentialAgent`, `ParallelAgent`,
+`RouterAgent`, and `KeywordRouter` positions. They are not supported in
+`LoopAgent` or `HandoffAgent` control positions: remote loop completion and
+remote handoff need control semantics that the current A2A surface does not
+provide, so APX rejects those declarations.
+
+## SequentialAgent
+
+Each step receives the accumulated conversation, including the previous
+step's result. Use it when order is part of the contract.
+
+```python
+from apx_agent import Agent, SequentialAgent
+
+research = Agent(
+    name="research",
+    instructions="Collect the governed facts needed for the request.",
+)
+review = Agent(
+    name="review",
+    instructions="Review the facts and produce the final response.",
+)
+root = SequentialAgent([research, review], name="research_review")
+```
+
+Set `output_key` on a producing `Agent` and reference `{key}` in downstream
+instructions when a named state value is clearer than conversation context.
+Tools that read or write several values can use `Dependencies.State`; see
+[custom-tool state sharing](../tools/custom-tools.md#share-state-within-an-invocation).
+
+## ParallelAgent
+
+Use parallel composition for independent work that can run concurrently.
+
+```python
+from apx_agent import Agent, ParallelAgent
+
+root = ParallelAgent([
+    Agent(name="research", instructions="Collect governed source facts."),
+    Agent(name="review", instructions="Check the request against policy."),
 ])
 ```
 
-To pass a value from one step to the next, set `output_key` on the producing
-agent and reference `{key}` in the downstream instructions. Tools that need to
-read or write several values can instead declare `state: Dependencies.State`;
-see [custom-tool state sharing](../tools/custom-tools.md#share-state-within-an-invocation).
+## RouterAgent and KeywordRouter
 
-## ParallelAgent — fan-out / gather
+`RouterAgent` makes one model-directed branch choice. `KeywordRouter` makes a
+zero-model-cost substring match and falls back to its declared default. Both
+return after the selected branch finishes.
 
-Run sub-agents concurrently and merge results. Use for independent lookups that don't depend on each other.
+Use `RouterAgent` when the distinction is semantic. Use `KeywordRouter` when
+the route is an explicit lexical rule. See [Routing](routing.md).
 
-```python
-from apx_agent import ParallelAgent, Agent
+## LoopAgent and HandoffAgent
 
-merged = ParallelAgent([
-    Agent(instructions="Get weather data.", tools=[weather_tool]),
-    Agent(instructions="Get news headlines.", tools=[news_tool]),
-])
-```
+`LoopAgent` repeats its local body until `finish_loop()` or `max_iterations`.
+Nested iteration budgets multiply, so set every cap deliberately;
+`max_iterations=0` is a hard stop, not an unlimited mode.
 
-## LoopAgent — iterative refinement
+`HandoffAgent` gives local named peers model-visible transfer tools and moves
+control to the selected peer. Use it when the original agent should leave the
+conversation rather than receive a sub-agent result.
 
-Repeat a sub-agent until it calls `finish_loop()` or hits `max_iterations`. Use for draft → review → revise patterns.
+These are local control protocols. Do not place a remotely bound leaf in their
+control positions.
 
-```python
-from apx_agent import Agent, LoopAgent
+## `agent_tool`: model-directed delegation
 
-drafter = Agent(instructions="Draft a response. Call finish_loop when satisfied.")
-refiner = LoopAgent(drafter, max_iterations=5)
-```
-
-Nested budgets multiply. A `LoopAgent(max_iterations=N)` whose body is (or
-calls via `agent_tool`) another agent with its own `max_iterations=M` can run
-up to roughly `N × M` inner steps per outer turn — set both caps deliberately.
-`max_iterations=0` on an `LlmAgent` is an explicit hard stop, not unlimited.
-
-## `agent_tool` — LLM-driven delegation
-
-When the parent LLM should decide whether — and how many times — to delegate to a sub-agent, wrap the sub-agent as a tool. The parent calls it like any other tool; the "tool" runs a full sub-agent loop and returns its final response. (This mirrors Google ADK's `AgentTool` pattern as a first-class composition primitive.)
+`agent_tool` exposes an agent as a typed tool. The parent model decides whether
+to call it, what input to pass, and whether to call it again; the parent remains
+in control after the result returns.
 
 ```python
-from apx_agent import Agent, agent_tool, lineage_tool, schema_tool
+from apx_agent import Agent, agent_tool
 
-specialist = Agent(
-    name="lineage_specialist",
-    tools=[lineage_tool(), schema_tool()],
-    instructions="You investigate Unity Catalog lineage and schemas.",
+research = Agent(
+    name="research",
+    description="Collects governed evidence for a question.",
 )
 
-orchestrator = Agent(
-    instructions=(
-        "Answer the user's question. Delegate lineage and schema "
-        "questions to the lineage specialist."
-    ),
+router = Agent(
+    name="router",
+    instructions="Answer directly when possible; delegate evidence gathering when needed.",
     tools=[
         agent_tool(
-            specialist,
-            name="ask_lineage_specialist",
-            description=(
-                "Investigate UC table lineage, upstream sources, and "
-                "schemas. Call this when the user asks where data "
-                "comes from or what columns exist."
-            ),
-        ),
+            research,
+            name="ask_research",
+            description="Collect governed evidence before answering.",
+        )
     ],
 )
 ```
 
-**`name` and `description` are the routing contract.** They are what the parent LLM sees in the tool list — write them like tool docs: when to call, what it does, what it returns. Vague descriptions leave the LLM guessing. `agent_tool` falls back to a generic delegate message if you omit `description`, but you should always set it explicitly for any real agent.
+The tool `name` and `description` are the model's delegation contract. Use
+`agent_tool` for discretionary or repeated delegation; use a graph-control
+primitive when the edge itself is part of the declared contract.
 
-### Local or remote — same wrapper
+Existing URL-based sub-agent declarations remain supported for compatibility.
+For new deterministic cross-app graph edges, prefer a named logical binding so
+source, generated code, and topology describe the role rather than its
+transport.
 
-`agent_tool` accepts any `BaseAgent`. For a remote sub-agent, construct a `RemoteDatabricksAgent` first; the wrapper interface doesn't change.
+Identity propagation is scoped per hop: the calling user's OBO identity is for
+the peer's tool and governed data access. The peer's model calls use the peer
+application's service principal, not the caller's OBO token (#633). See [A2A
+authentication](../multi-agent/a2a.md#app-to-app-authentication).
 
-```python
-from apx_agent import RemoteDatabricksAgent, Agent, agent_tool
+## Choosing a control edge
 
-# By Databricks App name (resolves against $DATABRICKS_HOST)
-remote_billing = await RemoteDatabricksAgent.from_app_name("billing-agent")
-
-# Or by full agent-card URL
-remote_billing = await RemoteDatabricksAgent.from_card_url(
-    "https://billing-agent.workspace.databricksapps.com/.well-known/agent.json"
-)
-
-orchestrator = Agent(tools=[
-    agent_tool(
-        remote_billing,
-        name="billing",
-        description="Answer billing and invoice questions for the calling user.",
-    ),
-])
-```
-
-`BaseAgent.run` is the only contract — the wrapper doesn't care whether the agent runs in-process or over HTTP. Identity passthrough (OBO token) flows through every form: in-process delegation, Model Serving sub-agent calls, and A2A app-to-app calls all forward the calling user's OAuth token, so the sub-agent's *tools* run under that user's UC grants.
-
-One scope limit on the A2A hop: a remote callee's own LLM (FMAPI) calls run as the callee app's service principal, not the caller's OBO token — each Databricks App authenticates outbound model traffic with its own credentials. Tool/data access is user-scoped per hop; model access is app-scoped. See [../multi-agent/a2a.md](../multi-agent/a2a.md) (#633).
-
-### `sub_agents=[url]` shorthand
-
-When the remote agent's own `/.well-known/agent.json` discovery card already has good `name` and `description`, the `Agent` constructor accepts a `sub_agents=[...]` list of URLs. Each entry is auto-resolved to a `RemoteDatabricksAgent` and wrapped via `agent_tool` at startup.
-
-```python
-agent = Agent(
-    tools=[run_sql_query, get_table_info],
-    sub_agents=["https://data-inspector.workspace.databricksapps.com"],
-)
-```
-
-Use explicit `agent_tool(...)` whenever the calling context wants a different `name` or `description` than the remote agent self-describes.
-
-## Decision guide
-
-| | Decision shape | Control after |
-|---|---|---|
-| `RouterAgent` | One — pick a branch from a closed set | Branch returns; routing is done |
-| `HandoffAgent` | One — pick a peer from a closed set, transfer | Conversation moves to the peer; original agent exits |
-| `agent_tool` | Many — call sub-agents like tools | Parent stays in charge; can call again and interleave with other tools |
-
-Reach for `agent_tool` when the parent needs to stay in charge. Reach for `RouterAgent` when one decision is enough and the branches are mutually exclusive. Reach for `HandoffAgent` when control should fully transfer to the specialist.
-
-### Tools or sub-agents?
-
-Use a tool when the operation is one governed action with a compact result —
-for example, an Information Extraction Service request or a single SQL query.
-Use a sub-agent when the work has its own instructions, tools, model budget,
-or reusable domain boundary. A sub-agent is still exposed to the parent as a
-tool when delegation is model-selected; use `SequentialAgent` when delegation
-must happen in a fixed order.
-
-For an external REST service, prefer `openapi_tool` when the service has an
-OpenAPI document so each operation gets an accurate schema and description.
-Use a custom tool when the API needs bespoke validation or orchestration. See
-[custom tools](../tools/custom-tools.md#openapi_tool--openapi-spec--many-tools).
-
-See [routing.md](routing.md) for `RouterAgent` and `HandoffAgent` details.
+| Need | Use |
+|---|---|
+| Fixed order | `SequentialAgent` |
+| Concurrent fan-out and gather | `ParallelAgent` |
+| One semantic branch choice | `RouterAgent` |
+| One lexical branch choice | `KeywordRouter` |
+| Bounded local refinement | `LoopAgent` |
+| Local conversational transfer | `HandoffAgent` |
+| Parent-controlled discretionary delegation | `agent_tool` |
