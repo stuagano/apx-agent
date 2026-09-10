@@ -165,7 +165,24 @@ def _route_async_clients_to(
 
 
 @pytest.fixture
-def two_agents(monkeypatch: pytest.MonkeyPatch):
+def local_trace_store(tmp_path):
+    """Keep the local MLflow destination active until both ASGI apps stop."""
+    import mlflow
+
+    old_tracking_uri = mlflow.get_tracking_uri()
+    mlflow.set_tracking_uri(f"file://{tmp_path / 'mlruns'}")
+    experiment = mlflow.set_experiment("cross-agent-parentage-reality")
+    try:
+        yield experiment
+    finally:
+        try:
+            mlflow.flush_trace_async_logging()
+        finally:
+            mlflow.set_tracking_uri(old_tracking_uri)
+
+
+@pytest.fixture
+def two_agents(monkeypatch: pytest.MonkeyPatch, local_trace_store):
     """A REAL agent A (config sub_agents=[B]) talking to a REAL served agent B."""
     B_TOOL_CALLS.clear()
     BOUND_TOOLS.clear()
@@ -585,7 +602,7 @@ def test_structured_schema_propagates_and_args_cross_the_wire(
 
 
 def test_cross_agent_traces_join_on_one_tag(
-    two_agents, monkeypatch: pytest.MonkeyPatch, tmp_path
+    two_agents, monkeypatch: pytest.MonkeyPatch, local_trace_store
 ) -> None:
     """REALITY (#443): during a real A→B delegation, A's trace is tagged with
     the trace-id it SENT and B's trace with the trace-id it RECEIVED — and
@@ -609,9 +626,7 @@ def test_cross_agent_traces_join_on_one_tag(
         _audit, "set_trace_tags", lambda tags: tag_calls.append(dict(tags))
     )
 
-    old_tracking_uri = mlflow.get_tracking_uri()
-    mlflow.set_tracking_uri(f"file://{tmp_path / 'mlruns'}")
-    experiment = mlflow.set_experiment("cross-agent-parentage-reality")
+    experiment = local_trace_store
     try:
         with mlflow.start_span("external-sender") as sender:
             export_barrier = mlflow.start_span_no_context(
@@ -698,10 +713,7 @@ def test_cross_agent_traces_join_on_one_tag(
             parent = by_id.get(parent.parent_id)
         assert caller_request.span_id in ancestor_ids
     finally:
-        try:
-            mlflow.flush_trace_async_logging()
-        finally:
-            mlflow.set_tracking_uri(old_tracking_uri)
+        mlflow.flush_trace_async_logging()
 
     # Caller side (A): stamped when the delegate fired — trace-id only.
     caller_stamps = [
