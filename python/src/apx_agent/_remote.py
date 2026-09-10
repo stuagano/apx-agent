@@ -474,8 +474,15 @@ class RemoteDatabricksAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def run(self, messages: list[Message], request: Request) -> str:
+        return await self._run_with_incoming_headers(messages, request.headers)
+
+    async def _run_with_incoming_headers(
+        self,
+        messages: list[Message],
+        incoming_headers: Mapping[str, str],
+    ) -> str:
         await self._init_quietly()
-        obo_headers = self._obo_headers(request)
+        obo_headers = self._obo_headers(incoming_headers)
         corr_headers = self._correlation_headers()
 
         # Long-task mode requires the streaming Responses path (continuation
@@ -503,7 +510,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
         await self._init_quietly()
-        obo_headers = self._obo_headers(request)
+        obo_headers = self._obo_headers(request.headers)
         corr_headers = self._correlation_headers()
 
         # Long-task mode: no HTTP fallback (see run() for why).
@@ -574,8 +581,8 @@ class RemoteDatabricksAgent(BaseAgent):
     # Internal: OBO header extraction
     # ------------------------------------------------------------------
 
-    def _obo_headers(self, request: Request) -> dict[str, str]:
-        """Extract OBO-relevant headers from the incoming request.
+    def _obo_headers(self, incoming_headers: Mapping[str, str]) -> dict[str, str]:
+        """Extract OBO-relevant headers from the incoming header mapping.
 
         Credential headers (the user's OBO token) are only forwarded when the
         outbound ``_base_url`` is a trusted origin relative to the operator-
@@ -595,7 +602,7 @@ class RemoteDatabricksAgent(BaseAgent):
         for key in ("Authorization", "X-Forwarded-Access-Token", "X-Forwarded-Host"):
             if not forward_credentials and key in ("Authorization", "X-Forwarded-Access-Token"):
                 continue
-            value = request.headers.get(key, "")
+            value = incoming_headers.get(key, "")
             if value:
                 headers[key] = value
         return headers
@@ -619,13 +626,14 @@ class RemoteDatabricksAgent(BaseAgent):
             build_traceparent,
             stamp_outbound_trace_id,
         )
+        from ._mlflow_tracing import inject_tracing_headers
 
-        traceparent = build_traceparent()
-        stamp_outbound_trace_id(traceparent)
-        headers = {TRACEPARENT_HEADER: traceparent}
+        headers = {TRACEPARENT_HEADER: build_traceparent()}
         caller = os.environ.get("DATABRICKS_APP_NAME")
         if caller:
             headers[CALLER_HEADER] = caller
+        inject_tracing_headers(headers)
+        stamp_outbound_trace_id(headers[TRACEPARENT_HEADER])
         return headers
 
     # ------------------------------------------------------------------
