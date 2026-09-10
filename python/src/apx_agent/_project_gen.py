@@ -156,6 +156,13 @@ def _build_pyproject(config: "AgentConfig") -> str:
         lines.append(f"workflows = {_toml_value_nested(workflows)}")
     lines.append("")
 
+    if config.bindings:
+        _write_toml_section(
+            lines,
+            "tool.apx.agent.bindings",
+            config.bindings,
+        )
+
     # [tool.apx.agent.service_policies] — omit the default empty declaration
     # so existing generated projects remain byte-for-byte compatible.
     service_policies = config.service_policies
