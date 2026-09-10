@@ -377,7 +377,10 @@ def compile_authorization_plan(
         app_url = binding.card_url.rstrip("/")
         if app_url.endswith(_AGENT_CARD_SUFFIX):
             app_url = app_url[: -len(_AGENT_CARD_SUFFIX)]
-        if _is_apps_https_url(app_url):
+        if _is_apps_https_url(app_url) and not any(
+            dependency.url.rstrip("/") == app_url
+            for dependency in app_dependencies
+        ):
             app_dependencies.add(AppDependency(app_url))
 
     ordered_user_resources = tuple(sorted(
