@@ -450,6 +450,20 @@ class TestEmitProgress:
 
 
 class TestDistributedTracingHelpers:
+    def test_real_mlflow_context_round_trip(self) -> None:
+        """A closed sender span becomes the receiver's real MLflow parent."""
+        import mlflow
+
+        from apx_agent import continue_trace_from_headers, inject_tracing_headers
+
+        with mlflow.start_span("sender") as sender:
+            headers = inject_tracing_headers({})
+
+        with continue_trace_from_headers(headers):
+            with safe_span("receiver") as receiver:
+                assert receiver.trace_id == sender.trace_id
+                assert receiver.parent_id == sender.span_id
+
     def test_inject_no_op_when_mlflow_missing(self) -> None:
         """inject_tracing_headers returns headers unchanged, never raises."""
         from apx_agent import inject_tracing_headers

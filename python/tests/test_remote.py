@@ -589,6 +589,22 @@ class TestRun:
         sdk_instance.responses.create.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_public_run_delegates_request_headers_to_private_transport(self):
+        agent = self._make_agent_with_card()
+        incoming = {"X-Forwarded-Host": "workspace.example.com"}
+        request = make_request(incoming)
+        transport = AsyncMock(return_value="private result")
+        agent._run_with_incoming_headers = transport  # type: ignore[attr-defined, method-assign]
+        agent._call_via_sdk = AsyncMock(return_value="legacy result")  # type: ignore[method-assign]
+
+        result = await agent.run([Message(role="user", content="Hello")], request)
+
+        assert result == "private result"
+        transport.assert_awaited_once_with(
+            [Message(role="user", content="Hello")], incoming
+        )
+
+    @pytest.mark.asyncio
     async def test_run_calls_sdk_with_correct_model(self):
         agent = self._make_agent_with_card(app_name="my-app")
         request = make_request()
@@ -1079,42 +1095,36 @@ class TestOboHeaders:
 
     def test_extracts_authorization_header(self):
         agent = self._make_agent()
-        request = make_request({"Authorization": "Bearer token123"})
-        headers = agent._obo_headers(request)
+        headers = agent._obo_headers({"Authorization": "Bearer token123"})
         assert headers["Authorization"] == "Bearer token123"
 
     def test_extracts_forwarded_access_token(self):
         agent = self._make_agent()
-        request = make_request({"X-Forwarded-Access-Token": "obo-token"})
-        headers = agent._obo_headers(request)
+        headers = agent._obo_headers({"X-Forwarded-Access-Token": "obo-token"})
         assert headers["X-Forwarded-Access-Token"] == "obo-token"
 
     def test_extracts_forwarded_host(self):
         agent = self._make_agent()
-        request = make_request({"X-Forwarded-Host": "original-host.com"})
-        headers = agent._obo_headers(request)
+        headers = agent._obo_headers({"X-Forwarded-Host": "original-host.com"})
         assert headers["X-Forwarded-Host"] == "original-host.com"
 
     def test_omits_missing_obo_headers(self):
         agent = self._make_agent()
-        request = make_request({})
-        headers = agent._obo_headers(request)
+        headers = agent._obo_headers({})
         assert "Authorization" not in headers
         assert "X-Forwarded-Access-Token" not in headers
 
     def test_merges_extra_headers_with_obo_headers(self):
         agent = self._make_agent()
         agent._extra_headers = {"X-Custom": "custom-val"}
-        request = make_request({"Authorization": "Bearer tok"})
-        headers = agent._obo_headers(request)
+        headers = agent._obo_headers({"Authorization": "Bearer tok"})
         assert headers["X-Custom"] == "custom-val"
         assert headers["Authorization"] == "Bearer tok"
 
     def test_obo_headers_override_extra_headers_on_conflict(self):
         agent = self._make_agent()
         agent._extra_headers = {"Authorization": "Bearer extra"}
-        request = make_request({"Authorization": "Bearer obo"})
-        headers = agent._obo_headers(request)
+        headers = agent._obo_headers({"Authorization": "Bearer obo"})
         # Request headers override extra headers
         assert headers["Authorization"] == "Bearer obo"
 
@@ -1126,13 +1136,12 @@ class TestOboHeaders:
         )
         agent._base_url = "https://attacker.workspace.databricksapps.com"
         agent._app_name = "data-inspector"
-        request = make_request(
+        headers = agent._obo_headers(
             {
                 "Authorization": "Bearer secret",
                 "X-Forwarded-Access-Token": "obo-token",
             }
         )
-        headers = agent._obo_headers(request)
         assert "Authorization" not in headers
         assert "X-Forwarded-Access-Token" not in headers
 
@@ -1449,6 +1458,10 @@ class TestCorrelationHeaders:
         monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
         agent = make_plain_agent()
 
+        def inject(headers: dict[str, str]) -> dict[str, str]:
+            headers["x-mlflow-test-context"] = "mlflow-context"
+            return headers
+
         async def aiter_lines():
             yield "data: [DONE]"
 
@@ -1459,7 +1472,9 @@ class TestCorrelationHeaders:
         stream_cm.__aenter__ = AsyncMock(return_value=resp)
         stream_cm.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient") as MockClient:
+        with patch(
+            "apx_agent._mlflow_tracing.inject_tracing_headers", side_effect=inject
+        ) as inject_mock, patch("httpx.AsyncClient") as MockClient:
             instance = MagicMock()
             instance.stream = MagicMock(return_value=stream_cm)
             MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
@@ -1472,6 +1487,8 @@ class TestCorrelationHeaders:
             ]
             headers = instance.stream.call_args.kwargs["headers"]
         assert W3C_TRACEPARENT.match(headers["traceparent"]), headers
+        assert headers["x-mlflow-test-context"] == "mlflow-context"
+        inject_mock.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_sdk_path_sends_traceparent_via_extra_headers(self, monkeypatch):
@@ -1487,6 +1504,128 @@ class TestCorrelationHeaders:
             extra = sdk_instance.responses.create.call_args.kwargs["extra_headers"]
         assert W3C_TRACEPARENT.match(extra["traceparent"]), extra
         assert extra["x-apx-caller"] == "orchestrator"
+
+    @pytest.mark.asyncio
+    async def test_sdk_and_http_fallback_share_injected_mlflow_context(
+        self, monkeypatch, caplog
+    ):
+        """One correlation-header build feeds SDK and HTTP, while only the
+        trusted direct HTTP fallback receives the caller's OBO credential."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "orchestrator")
+        agent = make_plain_agent(app_name="data-inspector")
+        opaque_obo = "opaque-obo-sentinel"
+        incoming = {"X-Forwarded-Access-Token": opaque_obo}
+        emitted_traceparent = f"00-{'12' * 16}-{'34' * 8}-01"
+        sdk_headers: dict[str, str] = {}
+        http_headers: dict[str, str] = {}
+
+        def inject(headers: dict[str, str]) -> dict[str, str]:
+            headers.update(
+                {
+                    "traceparent": emitted_traceparent,
+                    "x-mlflow-test-context": "mlflow-context",
+                }
+            )
+            return headers
+
+        async def sdk_create(**kwargs):
+            sdk_headers.update(kwargs["extra_headers"])
+            raise RuntimeError("force HTTP fallback")
+
+        async def http_post(url, **kwargs):
+            http_headers.update(kwargs["headers"])
+            return make_httpx_response(make_responses_payload("ok"))
+
+        with patch(
+            "apx_agent._mlflow_tracing.inject_tracing_headers", side_effect=inject
+        ) as inject_mock, patch(
+            "apx_agent._audit.stamp_outbound_trace_id"
+        ) as stamp_mock, patch(
+            "databricks_openai.AsyncDatabricksOpenAI"
+        ) as MockSDK, patch(
+            "httpx.AsyncClient"
+        ) as MockClient:
+            sdk_instance = AsyncMock()
+            sdk_instance.responses.create = AsyncMock(side_effect=sdk_create)
+            MockSDK.return_value = sdk_instance
+            http_instance = AsyncMock()
+            http_instance.post = AsyncMock(side_effect=http_post)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=http_instance)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await agent.run(
+                [Message(role="user", content="hi")], make_request(incoming)
+            )
+
+        assert result == "ok"
+        for received in (sdk_headers, http_headers):
+            assert received["traceparent"] == emitted_traceparent
+            assert received["x-apx-caller"] == "orchestrator"
+            assert received["x-mlflow-test-context"] == "mlflow-context"
+        assert "X-Forwarded-Access-Token" not in sdk_headers
+        assert http_headers["X-Forwarded-Access-Token"] == opaque_obo
+        assert opaque_obo not in caplog.text
+        inject_mock.assert_called_once()
+        stamp_mock.assert_called_once_with(emitted_traceparent)
+
+    @pytest.mark.asyncio
+    async def test_remote_agent_tool_reuses_header_transport_directly(self):
+        from pydantic import SecretStr
+
+        from apx_agent._agent_tool import remote_agent_tool
+        from apx_agent._defaults import DatabricksAppsHeaders
+
+        tool = remote_agent_tool(
+            "https://peer.example.com", name="peer", description="Delegate"
+        )
+        incoming = DatabricksAppsHeaders(
+            host="workspace.example.com",
+            user_name=None,
+            user_id=None,
+            user_email=None,
+            request_id=None,
+            token=SecretStr("opaque-obo-sentinel"),
+        )
+
+        with patch.object(
+            RemoteDatabricksAgent,
+            "_run_with_incoming_headers",
+            new_callable=AsyncMock,
+            return_value="peer result",
+        ) as transport, patch.object(
+            RemoteDatabricksAgent,
+            "run",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("public Request API must not be used"),
+        ):
+            result = await tool("question", incoming)
+
+        assert result == "peer result"
+        transport.assert_awaited_once()
+        messages, forwarded = transport.await_args.args
+        assert messages == [Message(role="user", content="question")]
+        assert forwarded == {
+            "X-Forwarded-Access-Token": "opaque-obo-sentinel",
+            "Authorization": "Bearer opaque-obo-sentinel",
+            "X-Forwarded-Host": "workspace.example.com",
+        }
+
+    @pytest.mark.asyncio
+    async def test_remote_agent_tool_keeps_transport_failure_as_text(self):
+        from apx_agent._agent_tool import remote_agent_tool
+
+        tool = remote_agent_tool(
+            "https://peer.example.com", name="peer", description="Delegate"
+        )
+        with patch.object(
+            RemoteDatabricksAgent,
+            "_run_with_incoming_headers",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("offline"),
+        ):
+            result = await tool("question", None)
+
+        assert result == "sub-agent at https://peer.example.com unreachable: offline"
 
     @pytest.mark.asyncio
     async def test_traceparent_derives_from_active_span_and_stamps_caller_side(

@@ -30,8 +30,7 @@ import inspect
 import json as _json
 import logging
 import re
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from ._defaults import Dependencies
 from ._models import Message
@@ -39,8 +38,6 @@ from ._tool_factory import build_tool
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from fastapi import Request
 
     from ._agents import BaseAgent
     from ._defaults import DatabricksAppsHeaders
@@ -253,12 +250,10 @@ def remote_agent_tool(
                 forwarded["Authorization"] = f"Bearer {token}"
             if headers.host is not None:
                 forwarded["X-Forwarded-Host"] = headers.host
-        # RemoteDatabricksAgent only reads ``request.headers`` (see
-        # ``_obo_headers``), so a headers-only shim satisfies its contract
-        # without a served FastAPI Request in scope.
-        shim = cast("Request", SimpleNamespace(headers=forwarded))
         try:
-            return await remote.run([Message(role="user", content=content)], shim)
+            return await remote._run_with_incoming_headers(
+                [Message(role="user", content=content)], forwarded
+            )
         except Exception as exc:
             logger.warning("sub-agent call to %s failed: %s", base_url, exc)
             return f"sub-agent at {base_url} unreachable: {exc}"
