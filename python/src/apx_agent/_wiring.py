@@ -468,8 +468,8 @@ def _apply_remote_leaf_bindings(
                 f"remote binding {logical_name!r} resolved to a blank A2A card URL"
             )
 
-        parsed = urlparse(card_url)
         try:
+            parsed = urlparse(card_url)
             parsed.port
         except ValueError:
             valid_url = False
@@ -485,8 +485,7 @@ def _apply_remote_leaf_bindings(
             )
         if not valid_url:
             raise ValueError(
-                f"remote binding {logical_name!r} has malformed A2A card URL: "
-                f"{card_url!r}"
+                f"remote binding {logical_name!r} has malformed A2A card URL"
             )
 
         control_position = matches[0]

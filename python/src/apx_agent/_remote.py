@@ -30,7 +30,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import os
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -55,6 +55,14 @@ logger = logging.getLogger(__name__)
 class _RemoteLeafBinding:
     logical_name: str
     card_url: str
+
+
+def _responses_input(messages: Sequence[Message | dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep compiled Responses items intact and legacy text messages compatible."""
+    return [
+        message if isinstance(message, dict) else {"role": message.role, "content": message.content}
+        for message in messages
+    ]
 
 
 def _obo_custom_inputs(headers: Mapping[str, str]) -> dict[str, str]:
@@ -478,7 +486,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def _run_with_incoming_headers(
         self,
-        messages: list[Message],
+        messages: Sequence[Message | dict[str, Any]],
         incoming_headers: Mapping[str, str],
     ) -> str:
         await self._init_quietly()
@@ -642,7 +650,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def _call_via_sdk(
         self,
-        messages: list[Message],
+        messages: Sequence[Message | dict[str, Any]],
         extra_headers: dict[str, str],
     ) -> str:
         """Call via ``DatabricksOpenAI.responses.create(model="apps/<name>")``.
@@ -662,7 +670,7 @@ class RemoteDatabricksAgent(BaseAgent):
             # openai stub types `input` narrowly, so cast past it.
             input=cast(
                 Any,
-                [{"role": m.role, "content": m.content} for m in messages],
+                _responses_input(messages),
             ),
             extra_headers=extra_headers,
         )
@@ -670,7 +678,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def _stream_via_sdk(
         self,
-        messages: list[Message],
+        messages: Sequence[Message | dict[str, Any]],
         extra_headers: dict[str, str],
     ) -> AsyncGenerator[str, None]:
         """Stream via ``responses.create(model="apps/<name>", stream=True)``.
@@ -691,7 +699,7 @@ class RemoteDatabricksAgent(BaseAgent):
         client = AsyncDatabricksOpenAI()
         # EasyInputMessage dict form (no "type": "message") so string content
         # survives — same as _call_via_sdk.
-        payload: list[Any] = [{"role": m.role, "content": m.content} for m in messages]
+        payload: list[Any] = _responses_input(messages)
         options: dict[str, Any] = (
             {"databricks_options": {"long_task": True}} if self._long_task else {}
         )
@@ -740,7 +748,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def _call_via_http(
         self,
-        messages: list[Message],
+        messages: Sequence[Message | dict[str, Any]],
         headers: dict[str, str],
     ) -> str:
         """Direct POST /responses fallback (with /invocations fallback).
@@ -756,7 +764,7 @@ class RemoteDatabricksAgent(BaseAgent):
         from httpx import AsyncClient
 
         payload: dict[str, Any] = {
-            "input": [{"role": m.role, "content": m.content} for m in messages],
+            "input": _responses_input(messages),
         }
         custom_inputs = _obo_custom_inputs(headers)
         if custom_inputs:
@@ -786,14 +794,14 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def _stream_via_http(
         self,
-        messages: list[Message],
+        messages: Sequence[Message | dict[str, Any]],
         headers: dict[str, str],
     ) -> AsyncGenerator[str, None]:
         """Direct POST /invocations with stream=true, parsing SSE."""
         from httpx import AsyncClient
 
         payload: dict[str, Any] = {
-            "input": [{"role": m.role, "content": m.content} for m in messages],
+            "input": _responses_input(messages),
             "stream": True,
         }
         custom_inputs = _obo_custom_inputs(headers)

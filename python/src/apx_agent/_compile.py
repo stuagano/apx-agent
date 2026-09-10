@@ -1004,12 +1004,13 @@ def _compile_bound_remote_leaf(
     ctx: CompileContext,
 ) -> Any:
     """Compile one bound logical leaf through the private remote transport."""
-    from langchain_core.messages import AIMessage
+    from langchain_core.messages import AIMessage, ToolMessage
     from langchain_core.runnables import RunnableLambda
     from langgraph.graph import END, START, StateGraph
 
     from ._chat_agent import _from_langchain_message
     from ._models import Message
+    from ._responses_agent import _langchain_to_output_item
 
     remote = RemoteDatabricksAgent(binding.card_url)
 
@@ -1040,14 +1041,21 @@ def _compile_bound_remote_leaf(
         return forwarded
 
     async def _node(state: dict[str, Any]) -> dict[str, Any]:
-        messages = [
-            Message.model_validate(_from_langchain_message(message, index).model_dump())
-            for index, message in enumerate(state["messages"])
-        ]
-        result = await remote._run_with_incoming_headers(
-            messages,
-            _incoming_headers(),
-        )
+        messages: list[Message | dict[str, Any]] = []
+        for index, message in enumerate(state["messages"]):
+            if isinstance(message, ToolMessage) or (
+                isinstance(message, AIMessage) and message.tool_calls
+            ):
+                item = _langchain_to_output_item(message, index)
+                messages.extend(item.get("_multi", [item]))
+            else:
+                messages.append(
+                    Message.model_validate(_from_langchain_message(message, index).model_dump())
+                )
+        try:
+            result = await remote._run_with_incoming_headers(messages, _incoming_headers())
+        except Exception as exc:
+            raise RuntimeError(f"Stage {binding.logical_name!r} failed") from exc
         return {"messages": [AIMessage(content=result)]}
 
     def _sync_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -1058,9 +1066,11 @@ def _compile_bound_remote_leaf(
         except RuntimeError:
             return asyncio.run(_node(state))
         import concurrent.futures
+        import contextvars
 
+        context = contextvars.copy_context()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(lambda: asyncio.run(_node(state))).result()
+            return executor.submit(context.run, lambda: asyncio.run(_node(state))).result()
 
     name = getattr(logical_leaf, "_name", None) or binding.logical_name
     graph = StateGraph(state_schema())
@@ -1074,10 +1084,11 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     """Dispatch to the right per-agent compiler."""
     if isinstance(agent, LlmAgent):
         binding = ctx.remote_leaf_bindings.get(getattr(agent, "_name", None))
-        if binding is not None:
-            return _compile_bound_remote_leaf(agent, binding, ctx)
         templated = _has_template(agent)
-        runnable = _compile_llm_agent(agent, ctx, bake_prompt=not templated)
+        if binding is not None:
+            runnable = _compile_bound_remote_leaf(agent, binding, ctx)
+        else:
+            runnable = _compile_llm_agent(agent, ctx, bake_prompt=not templated)
         if not _agent_needs_node_wrap(agent):
             return runnable
         return _wrap_agent_node(agent, runnable, templated=templated)

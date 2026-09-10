@@ -185,8 +185,10 @@ def test_binding_name_collision_does_not_replace_named_container(
 def test_bound_leaf_transport_errors_propagate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    detail = "https://private.example/card NON_SECRET_UPSTREAM_BODY"
+
     async def _raise(*_args: Any, **_kwargs: Any) -> str:
-        raise RuntimeError("remote unavailable")
+        raise RuntimeError(detail)
 
     pricing = Agent(name="pricing")
     root = SequentialAgent([pricing], name="sequence")
@@ -202,8 +204,84 @@ def test_bound_leaf_transport_errors_propagate(
 
     from langchain_core.messages import HumanMessage
 
-    with pytest.raises(RuntimeError, match="remote unavailable"):
+    with pytest.raises(RuntimeError, match="Stage 'pricing' failed") as error:
         graph.invoke({"messages": [HumanMessage(content="price")]})
+    assert detail not in str(error.value)
+    assert str(error.value.__cause__) == detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guard", ["input", "output", "allowed"])
+async def test_bound_leaf_preserves_governance_and_keyed_state(
+    monkeypatch: pytest.MonkeyPatch, guard: str
+) -> None:
+    from langchain_core.messages import HumanMessage
+
+    events: list[str] = []
+
+    async def remote(*_args: Any) -> str:
+        events.append("remote")
+        return "approved"
+
+    def input_guard(messages: Any) -> str | None:
+        events.append("input")
+        return "blocked" if guard == "input" else None
+
+    def output_guard(text: str) -> str | None:
+        events.append("output")
+        return "redacted" if guard == "output" else None
+
+    pricing = Agent(
+        name="pricing",
+        input_guardrails=[input_guard],
+        output_guardrails=[output_guard],
+        before_agent_callback=lambda messages: events.append("before"),
+        after_agent_callback=lambda text: events.append(f"after:{text}"),
+        output_key="price",
+    )
+    pricing._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    monkeypatch.setattr(RemoteDatabricksAgent, "_run_with_incoming_headers", remote)
+    graph = compile_to_langgraph(pricing, ws=None, model="test-model")
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="price")], "state": {"account": "kept"}}
+    )
+    assert _last_text(result) == {
+        "input": "blocked", "output": "redacted", "allowed": "approved"
+    }[guard]
+    assert events == {
+        "input": ["before", "input"],
+        "output": ["before", "input", "remote", "output"],
+        "allowed": ["before", "input", "remote", "output", "after:approved"],
+    }[guard]
+    assert result["state"] == (
+        {"account": "kept", "price": "approved"}
+        if guard == "allowed" else {"account": "kept"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_bound_leaf_sync_in_event_loop_preserves_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextvars import ContextVar
+
+    from langchain_core.messages import HumanMessage
+
+    parent = ContextVar("bound_leaf_parent", default="missing")
+
+    async def remote(*_args: Any) -> str:
+        return parent.get()
+
+    pricing = Agent(name="pricing")
+    pricing._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    monkeypatch.setattr(RemoteDatabricksAgent, "_run_with_incoming_headers", remote)
+    graph = compile_to_langgraph(pricing, ws=None, model="test-model")
+    token = parent.set("caller-parent")
+    try:
+        result = graph.invoke({"messages": [HumanMessage(content="price")]})
+    finally:
+        parent.reset(token)
+    assert _last_text(result) == "caller-parent"
 
 
 @pytest.mark.parametrize("raw_headers", [False, True])
