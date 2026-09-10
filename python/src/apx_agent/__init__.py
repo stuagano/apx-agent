@@ -408,8 +408,10 @@ from ._invocations import mount_invocations_route, mount_responses_route
 
 # MLflow tracing helpers (optional — graceful no-op without mlflow)
 from ._mlflow_tracing import (
+    continue_trace_from_headers,
     current_active_span,
     enable_langchain_autolog,
+    inject_tracing_headers,
     is_mlflow_available,
     safe_span,
 )
@@ -763,8 +765,10 @@ __all__ = [
     "mount_invocations_route",
     "mount_responses_route",
     # MLflow tracing
+    "continue_trace_from_headers",
     "current_active_span",
     "enable_langchain_autolog",
+    "inject_tracing_headers",
     "is_mlflow_available",
     "safe_span",
     # Audit log schema

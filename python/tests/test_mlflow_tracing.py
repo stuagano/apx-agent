@@ -442,3 +442,59 @@ class TestEmitProgress:
             and (e.attributes or {}).get("message") == "Starting SQL warehouse"
             for e in events
         )
+
+
+# ---------------------------------------------------------------------------
+# A2A distributed-tracing propagation helpers (inject / continue)
+# ---------------------------------------------------------------------------
+
+
+class TestDistributedTracingHelpers:
+    def test_inject_no_op_when_mlflow_missing(self) -> None:
+        """inject_tracing_headers returns headers unchanged, never raises."""
+        from apx_agent import inject_tracing_headers
+
+        with patch("apx_agent._mlflow_tracing.is_mlflow_available", return_value=False):
+            headers = {"Authorization": "Bearer x"}
+            out = inject_tracing_headers(headers)
+            assert out is headers
+            assert out == {"Authorization": "Bearer x"}
+
+    def test_inject_merges_mlflow_headers(self) -> None:
+        """When MLflow is available, the propagation headers are merged in."""
+        from apx_agent import inject_tracing_headers
+
+        with patch(
+            "mlflow.tracing.get_tracing_context_headers_for_http_request",
+            return_value={"mlflow-trace-context": "abc"},
+        ):
+            out = inject_tracing_headers({"Authorization": "Bearer x"})
+        assert out["mlflow-trace-context"] == "abc"
+        assert out["Authorization"] == "Bearer x"
+
+    def test_continue_no_op_when_mlflow_missing(self) -> None:
+        """continue_trace_from_headers runs the block even without MLflow."""
+        from apx_agent import continue_trace_from_headers
+
+        with patch("apx_agent._mlflow_tracing.is_mlflow_available", return_value=False):
+            entered = False
+            with continue_trace_from_headers({"mlflow-trace-context": "abc"}):
+                entered = True
+            assert entered
+
+    def test_continue_uses_mlflow_context_manager(self) -> None:
+        """When available, the MLflow server-side context manager is entered."""
+        from apx_agent import continue_trace_from_headers
+
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=None)
+        cm.__exit__ = MagicMock(return_value=None)
+        with patch(
+            "mlflow.tracing.set_tracing_context_from_http_request_headers",
+            return_value=cm,
+        ) as mock_set:
+            with continue_trace_from_headers({"mlflow-trace-context": "abc"}):
+                pass
+        mock_set.assert_called_once_with({"mlflow-trace-context": "abc"})
+        cm.__enter__.assert_called_once()
+        cm.__exit__.assert_called_once()

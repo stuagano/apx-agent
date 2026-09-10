@@ -320,3 +320,65 @@ def current_active_span() -> Any:
         return mlflow.get_current_active_span()
     except Exception:
         return None
+
+
+def inject_tracing_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Add MLflow distributed-tracing headers to an outbound request's headers.
+
+    Call on the **client** side of an inter-agent (A2A) or service HTTP call so
+    the remote agent continues *this* trace instead of starting a new root trace.
+    Mutates and returns ``headers``.
+
+    Raw OpenTelemetry ``traceparent`` injection alone does NOT make MLflow
+    continue a trace across processes — MLflow 3.x needs its own propagation
+    headers, which this emits. Pairs with :func:`continue_trace_from_headers` on
+    the server side. No-ops if MLflow is unavailable or no trace is active; never
+    raises — a request must not fail because tracing failed.
+
+    Usage::
+
+        headers = inject_tracing_headers({"Authorization": f"Bearer {token}"})
+        http_post(url, headers=headers, json=payload)
+    """
+    if not is_mlflow_available():
+        return headers
+    try:
+        from mlflow.tracing import get_tracing_context_headers_for_http_request
+
+        headers.update(get_tracing_context_headers_for_http_request())
+    except Exception as exc:
+        logger.debug("could not inject tracing headers (continuing): %s", exc)
+    return headers
+
+
+@contextlib.contextmanager
+def continue_trace_from_headers(headers: Any):
+    """Continue the caller's MLflow trace inside a request handler.
+
+    Call on the **server** side of an inter-agent (A2A) or service HTTP call,
+    wrapping the work, so spans created within join the caller's trace (shared
+    trace id) instead of starting a new root trace. ``headers`` may be any
+    mapping (e.g. a framework request-headers object); it is coerced to a dict.
+
+    Pairs with :func:`inject_tracing_headers` on the client side. No-ops if
+    MLflow is unavailable or the headers carry no trace context; never raises.
+
+    Usage::
+
+        with continue_trace_from_headers(request.headers):
+            with safe_span("tool:do_work", span_type="TOOL"):
+                ...
+    """
+    if not is_mlflow_available():
+        yield
+        return
+    try:
+        from mlflow.tracing import set_tracing_context_from_http_request_headers
+
+        cm = set_tracing_context_from_http_request_headers(dict(headers or {}))
+    except Exception as exc:
+        logger.debug("could not continue trace from headers (continuing): %s", exc)
+        yield
+        return
+    with cm:
+        yield
