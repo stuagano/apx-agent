@@ -15,7 +15,6 @@ from apx_agent import (
     BaseAgent,
     HandoffAgent,
     LoopAgent,
-    RouterAgent,
     SequentialAgent,
     finalize_agent,
 )
@@ -144,7 +143,7 @@ def test_remote_handoff_peer_requires_control_protocol(tmp_path: Path) -> None:
 
 def test_topology_keeps_logical_name_and_hides_binding_details(tmp_path: Path) -> None:
     pricing = Agent(name="pricing", description="Produces an approved price.")
-    root = RouterAgent(agents=[Agent(name="data"), pricing])
+    root = SequentialAgent([Agent(name="data"), pricing], name="review")
     config = _config(_CARD_URL)
     _finalize(root, config, tmp_path)
     ctx = AgentContext(
@@ -154,8 +153,10 @@ def test_topology_keeps_logical_name_and_hides_binding_details(tmp_path: Path) -
         agent=root,
     )
 
-    serialized = json.dumps(build_topology(ctx))
+    topology = build_topology(ctx)
+    nodes = {node["id"]: node for node in topology["nodes"]}
+    serialized = json.dumps(topology)
 
-    assert "pricing" in serialized
+    assert nodes["agent:root.step1"]["label"] == "pricing"
     assert _CARD_URL not in serialized
     assert "RemoteDatabricksAgent" not in serialized
