@@ -55,6 +55,12 @@ def read_capability(question: str) -> str:
     return DIRECT_RESULT
 
 
+def review_request(question: str) -> str:
+    """Review locally before invoking the bound pricing leaf."""
+    REVIEW_CALLS.append(question)
+    return "reviewed"
+
+
 def approved_price(headers: Dependencies.Headers) -> str:
     """Return a deterministic price while observing the caller identity."""
     from apx_agent._mlflow_tracing import emit_progress
@@ -119,7 +125,9 @@ class _GraphModel(BaseChatModel):
             message = AIMessage(content="reviewed")
         else:
             selected = next(
-                name for name in ("read_capability", "approved_price") if name in names
+                name
+                for name in ("read_capability", "review_request", "approved_price")
+                if name in names
             )
             args = (
                 {"question": "observed request"} if selected != "approved_price" else {}
@@ -381,6 +389,7 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
     review = Agent(
         name="review",
         description="Reviews a request before pricing.",
+        tools=[review_request],
     )
     pricing = Agent(name="pricing", description="Internal pricing specialist.")
     pricing_flow = SequentialAgent([review, pricing], name="pricing_flow")
@@ -547,6 +556,14 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                         lambda paths: paths == {"/responses"},
                         "declared leaf used the real Responses transport",
                     ).verify()
+                    for request in posts:
+                        items = json.loads(request.content)["input"]
+                        call = next(item for item in items if item.get("type") == "function_call")
+                        result = next(item for item in items if item.get("type") == "function_call_output")
+                        assert call["name"] == "review_request"
+                        assert json.loads(call["arguments"]) == {"question": "observed request"}
+                        assert call["call_id"] == result["call_id"] == "review_request-1"
+                        assert result["output"] == "reviewed"
                     progress_events: list[Any] = []
                     for protocol, sender in senders.items():
                         trace = traces_by_protocol[protocol]
@@ -627,3 +644,47 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
             mlflow.flush_trace_async_logging()
         finally:
             mlflow.set_tracking_uri(old_tracking_uri)
+
+
+@pytest.mark.parametrize(
+    "protocol,stream",
+    [("invocations", False), ("responses", False), ("a2a", False),
+     ("invocations", True), ("responses", True)],
+)
+def test_required_bound_leaf_failure_is_opaque_at_ingress(
+    monkeypatch: pytest.MonkeyPatch, protocol: str, stream: bool
+) -> None:
+    _patch_workspace_clients(monkeypatch)
+    _patch_models(monkeypatch)
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"name": "private", "url": "http://pricing.internal"})
+        return httpx.Response(502, text=f"NON_SECRET_UPSTREAM_BODY {CARD_URL}")
+
+    _route_async_clients(monkeypatch, httpx.MockTransport(upstream))
+    caller = Agent(name="pricing")
+    app = create_app(
+        caller,
+        config=AgentConfig(
+            name="failure-proof", model="caller-model", bindings={"pricing": CARD_URL}
+        ),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        payload = _protocol_payload(protocol, "price", message_id="failure-proof")
+        if stream:
+            payload["stream"] = True
+        response = client.post(
+            "/" if protocol == "a2a" else f"/{protocol}",
+            json=payload,
+        )
+    if protocol == "a2a":
+        assert response.json()["result"]["status"]["state"] == "failed"
+    elif stream:
+        assert '"error"' in response.text
+    else:
+        assert response.status_code == 500
+    if protocol == "a2a" or stream:
+        assert "Stage 'pricing' failed" in response.text
+    assert CARD_URL not in response.text
+    assert "NON_SECRET_UPSTREAM_BODY" not in response.text

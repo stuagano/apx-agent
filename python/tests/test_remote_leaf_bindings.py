@@ -106,6 +106,27 @@ def test_unknown_binding_name_fails_closed(tmp_path: Path) -> None:
         _finalize(root, _config(_CARD_URL), tmp_path)
 
 
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "https://NON_SECRET_USER:NON_SECRET_PASSWORD@pricing.example/card",
+        "https://pricing.example/card?NON_SECRET_QUERY=value",
+        "https://pricing.example/card#NON_SECRET_FRAGMENT",
+        "https://pricing.example:NON_SECRET_PORT/card",
+        "https://[NON_SECRET_BAD_IPV6]/card",
+    ],
+)
+def test_invalid_binding_diagnostic_never_echoes_resolved_location(
+    reference: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PRICING_APP_URL", reference)
+    root = SequentialAgent([Agent(name="pricing")])
+    with pytest.raises(ValueError, match="binding 'pricing'.*malformed A2A card URL") as error:
+        _finalize(root, _config(), tmp_path)
+    assert "NON_SECRET" not in str(error.value)
+    assert reference not in str(error.value)
+
+
 def test_duplicate_logical_leaf_name_fails_closed(tmp_path: Path) -> None:
     root = SequentialAgent(
         [Agent(name="pricing"), Agent(name="pricing")],

@@ -73,6 +73,22 @@ def make_httpx_response(data: dict, status_code: int = 200) -> MagicMock:
     return resp
 
 
+@pytest.mark.asyncio
+async def test_sdk_preserves_preconverted_responses_tool_pairs() -> None:
+    items = [
+        {"role": "user", "content": "price"},
+        {"type": "function_call", "name": "review", "arguments": "{}", "call_id": "review-1"},
+        {"type": "function_call_output", "output": "reviewed", "call_id": "review-1"},
+    ]
+    client = MagicMock()
+    client.responses.create = AsyncMock(return_value=MagicMock(output_text="approved"))
+    remote = RemoteDatabricksAgent("https://pricing.example/card", app_name="pricing")
+    with patch("databricks_openai.AsyncDatabricksOpenAI", return_value=client):
+        result = await remote._call_via_sdk(items, {})
+    assert result == "approved"
+    assert client.responses.create.call_args.kwargs["input"] == items
+
+
 # ---------------------------------------------------------------------------
 # _url_to_app_name
 # ---------------------------------------------------------------------------
