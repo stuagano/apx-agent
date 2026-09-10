@@ -500,6 +500,12 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                     labels = {node["label"] for node in topology["nodes"]}
                     assert {"data", "pricing_flow", "review", "pricing"} <= labels
                     assert card_response.status_code == 200, card_response.text
+                    card = card_response.json()
+                    assert card["name"] == "declared-graph"
+                    card_skill_names = {
+                        skill["name"] for skill in card.get("skills", [])
+                    }
+                    assert "read_capability" in card_skill_names
                     expect(len(responses)).satisfies(
                         lambda count: count == 3, "all three ingress protocols ran"
                     ).verify()
@@ -556,12 +562,44 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                         [dict(event.attributes or {}) for event in progress_events],
                         sort_keys=True,
                     )
+                    safe_trace_attribute_names = {
+                        "http.route",
+                        "apx.a2a_method",
+                        "apx.agent.name",
+                        "apx.input_items",
+                        "apx.message_count",
+                        "apx.streaming",
+                        "apx.traceparent",
+                        "apx.user_scoped",
+                    }
+                    trace_text = json.dumps(
+                        {
+                            protocol: [
+                                {
+                                    "name": span.name,
+                                    "attributes": {
+                                        key: value
+                                        for key, value in (span.attributes or {}).items()
+                                        if key in safe_trace_attribute_names
+                                    },
+                                }
+                                for span in trace.data.spans
+                            ]
+                            for protocol, trace in traces_by_protocol.items()
+                        },
+                        sort_keys=True,
+                    )
+                    response_text = "\n".join(
+                        response.text for response in all_responses
+                    )
                     visible = "\n".join(
                         (
                             topology_response.text,
                             card_response.text,
                             generated_source,
                             progress_text,
+                            trace_text,
+                            response_text,
                         )
                     )
                     for forbidden in (
@@ -571,10 +609,6 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                         "RemoteDatabricksAgent",
                     ):
                         assert forbidden not in visible
-                    assert all(
-                        TEST_OBO_SENTINEL not in response.text
-                        for response in all_responses
-                    )
 
                 claim_vs_reality(
                     claimed_success=all(
