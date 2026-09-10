@@ -92,11 +92,12 @@ Tool, MCP, and Dev UI routes live under the configured API prefix.
 
 ## Deployment authorization
 
-For an Apps deployment, the configured peer location must resolve uniquely to
-one application under the explicitly selected deployment profile. APX then
-projects that application as a native bundle resource with `CAN_USE` while
-preserving existing resources and permissions. Zero or multiple matches fail
-closed.
+For an Apps deployment, APX adds each declared binding that resolves to a
+direct Databricks Apps location to the existing native authorization plan. The
+configured peer location must resolve uniquely to one application under the
+explicitly selected deployment profile. APX then projects that application as
+a native bundle resource with `CAN_USE` while preserving existing resources
+and permissions. Zero or multiple matches fail closed.
 
 The authorization summary reports the resolved application identity without
 credentials. The reconciliation is additive: it does not delete or downgrade
