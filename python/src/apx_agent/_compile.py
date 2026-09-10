@@ -63,6 +63,7 @@ from ._defaults import (
     get_databricks_headers,
 )
 from ._mlflow_tracing import emit_progress
+from ._obo import _header_lookup
 from ._remote import RemoteDatabricksAgent, _RemoteLeafBinding
 from ._inspection import (
     _EmptyToolInput,
@@ -1017,9 +1018,9 @@ def _compile_bound_remote_leaf(
         if headers is None:
             return {}
         if isinstance(headers, Mapping):
-            token = headers.get("X-Forwarded-Access-Token")
-            authorization = headers.get("Authorization")
-            host = headers.get("X-Forwarded-Host")
+            token = _header_lookup(headers, "X-Forwarded-Access-Token")
+            authorization = _header_lookup(headers, "Authorization")
+            host = _header_lookup(headers, "X-Forwarded-Host")
         else:
             secret = getattr(headers, "token", None)
             token = secret.get_secret_value() if secret is not None else None
@@ -1071,10 +1072,10 @@ def _compile_bound_remote_leaf(
 
 def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     """Dispatch to the right per-agent compiler."""
-    binding = ctx.remote_leaf_bindings.get(getattr(agent, "_name", None))
-    if binding is not None:
-        return _compile_bound_remote_leaf(agent, binding, ctx)
     if isinstance(agent, LlmAgent):
+        binding = ctx.remote_leaf_bindings.get(getattr(agent, "_name", None))
+        if binding is not None:
+            return _compile_bound_remote_leaf(agent, binding, ctx)
         templated = _has_template(agent)
         runnable = _compile_llm_agent(agent, ctx, bake_prompt=not templated)
         if not _agent_needs_node_wrap(agent):
