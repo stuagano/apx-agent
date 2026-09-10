@@ -92,18 +92,27 @@ def _graph_node_names(graph: Any) -> set[str]:
     return {name.rsplit(":", 1)[-1] for name in graph.get_graph(xray=True).nodes}
 
 
-def _local_compiler_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+def _local_compiler_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str] | None = None,
+) -> None:
     from langchain_core.messages import AIMessage
     from langchain_core.runnables import RunnableLambda
 
-    from apx_agent import _compile
+    from apx_agent import _compile as compile_module
+
+    def _compile_agent(agent: Any, *_args: Any, **_kwargs: Any) -> Any:
+        def _run(_state: Any) -> dict[str, Any]:
+            if calls is not None:
+                calls.append(agent._name)
+            return {"messages": [AIMessage(content="local")]}
+
+        return RunnableLambda(_run)
 
     monkeypatch.setattr(
-        _compile,
+        compile_module,
         "_compile_llm_agent",
-        lambda *_args, **_kwargs: RunnableLambda(
-            lambda _state: {"messages": [AIMessage(content="local")]}
-        ),
+        _compile_agent,
     )
 
 
@@ -124,7 +133,8 @@ def test_bound_leaf_compiles_as_its_logical_name(
 ) -> None:
     pricing = Agent(name="pricing", description="Returns an approved price.")
     root = root_factory(pricing)
-    root._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    binding = _binding("pricing")
+    root._apx_remote_leaf_bindings = {"pricing": binding}
     _local_compiler_stub(monkeypatch)
     monkeypatch.setattr(
         RemoteDatabricksAgent,
@@ -139,7 +149,37 @@ def test_bound_leaf_compiles_as_its_logical_name(
 
     assert _last_text(result) == "approved"
     assert "pricing" in _graph_node_names(graph)
-    assert "RemoteDatabricksAgent" not in _graph_node_names(graph)
+    raw_node_labels = set(graph.get_graph(xray=True).nodes)
+    serialized_labels = "\n".join(raw_node_labels)
+    assert "RemoteDatabricksAgent" not in serialized_labels
+    assert binding.card_url not in serialized_labels
+
+
+def test_binding_name_collision_does_not_replace_named_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langchain_core.messages import HumanMessage
+
+    local_calls: list[str] = []
+    pricing = Agent(name="pricing")
+    root = SequentialAgent(
+        [Agent(name="local"), pricing],
+        name="pricing",
+    )
+    root._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    _local_compiler_stub(monkeypatch, local_calls)
+    monkeypatch.setattr(
+        RemoteDatabricksAgent,
+        "_run_with_incoming_headers",
+        _returning("approved"),
+    )
+
+    graph = compile_to_langgraph(root, ws=None, model="test-model")
+    result = graph.invoke({"messages": [HumanMessage(content="need a price")]})
+
+    assert local_calls == ["local"]
+    assert _last_text(result) == "approved"
+    assert {"local", "pricing"}.issubset(_graph_node_names(graph))
 
 
 def test_bound_leaf_transport_errors_propagate(
@@ -166,8 +206,10 @@ def test_bound_leaf_transport_errors_propagate(
         graph.invoke({"messages": [HumanMessage(content="price")]})
 
 
+@pytest.mark.parametrize("raw_headers", [False, True])
 def test_bound_leaf_converts_messages_and_headers(
     monkeypatch: pytest.MonkeyPatch,
+    raw_headers: bool,
 ) -> None:
     from langchain_core.messages import AIMessage, HumanMessage
 
@@ -189,9 +231,16 @@ def test_bound_leaf_converts_messages_and_headers(
         "_run_with_incoming_headers",
         _capture,
     )
-    headers = get_databricks_headers(
-        host="https://workspace.example.com",
-        token="opaque-test-token",
+    headers = (
+        {
+            "x-forwarded-access-token": "opaque-test-token",
+            "x-forwarded-host": "https://workspace.example.com",
+        }
+        if raw_headers
+        else get_databricks_headers(
+            host="https://workspace.example.com",
+            token="opaque-test-token",
+        )
     )
 
     graph = compile_to_langgraph(
