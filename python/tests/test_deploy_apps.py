@@ -1427,7 +1427,13 @@ def test_apps_deploy_reconciles_named_binding_as_can_use_app_resource(
             from apx_agent import Agent, SequentialAgent
 
             agent = SequentialAgent(
-                [Agent(name="review"), Agent(name="pricing")],
+                [
+                    Agent(name="review"),
+                    Agent(
+                        name="pricing",
+                        sub_agents=["https://pricing.cloud.databricksapps.com/"],
+                    ),
+                ],
                 name="root",
             )
             """)

@@ -296,10 +296,11 @@ def test_compile_deduplicates_named_and_legacy_app_dependency(tmp_path: Path) ->
     from apx_agent import Agent, AgentConfig, SequentialAgent, finalize_agent
 
     peer_url = "https://pricing.cloud.databricksapps.com"
+    legacy_url = f"{peer_url}/"
     root = SequentialAgent(
         [
             Agent(name="review"),
-            Agent(name="pricing", sub_agents=[peer_url]),
+            Agent(name="pricing", sub_agents=[legacy_url]),
         ],
         name="root",
     )
@@ -314,7 +315,7 @@ def test_compile_deduplicates_named_and_legacy_app_dependency(tmp_path: Path) ->
 
     plan = compile_authorization_plan(root, model="model")
 
-    assert plan.app_dependencies == (AppDependency(peer_url),)
+    assert plan.app_dependencies == (AppDependency(legacy_url),)
 
 
 def test_compile_excludes_external_https_named_binding(tmp_path: Path) -> None:
