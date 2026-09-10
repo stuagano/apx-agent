@@ -19,7 +19,9 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from starlette.responses import Response
@@ -421,6 +423,102 @@ def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None
     register(vector_search_tool(index_name))
 
 
+def _apply_remote_leaf_bindings(
+    root: BaseAgent,
+    bindings: dict[str, str],
+) -> None:
+    """Resolve named leaf bindings once without changing the logical graph."""
+    if hasattr(root, "_apx_remote_leaf_bindings"):
+        return
+
+    from ._agents import (  # noqa: PLC0415
+        HandoffAgent,
+        KeywordRouter,
+        LoopAgent,
+        ParallelAgent,
+        RouterAgent,
+        SequentialAgent,
+    )
+    from ._remote import _RemoteLeafBinding  # noqa: PLC0415
+
+    leaves: dict[str, list[str | None]] = {}
+
+    def _walk(agent: BaseAgent, control_position: str | None = None) -> None:
+        children: list[tuple[BaseAgent, str]]
+        if isinstance(agent, SequentialAgent):
+            children = [(child, "sequence") for child in agent._agents]
+        elif isinstance(agent, ParallelAgent):
+            children = [(child, "parallel") for child in agent._agents]
+        elif isinstance(agent, RouterAgent):
+            children = [(child, "router") for _, _, child in agent._routes]
+        elif isinstance(agent, KeywordRouter):
+            children = [
+                *((child, "router") for _, child, _ in agent._branches),
+                (agent._default, "router"),
+            ]
+        elif isinstance(agent, LoopAgent):
+            children = [(agent._inner, "loop")]
+        elif isinstance(agent, HandoffAgent):
+            children = [(child, "handoff") for child in agent._agents.values()]
+        else:
+            logical_name = getattr(agent, "_name", None)
+            if isinstance(logical_name, str) and logical_name:
+                leaves.setdefault(logical_name, []).append(control_position)
+            return
+
+        for child, position in children:
+            _walk(child, position)
+
+    _walk(root)
+    resolved: dict[str, _RemoteLeafBinding] = {}
+    for logical_name, reference in bindings.items():
+        matches = leaves.get(logical_name, [])
+        if len(matches) != 1:
+            raise ValueError(
+                f"remote binding {logical_name!r} requires exactly one logical "
+                f"leaf; found {len(matches)}"
+            )
+
+        card_url = resolve_env_var(reference).strip()
+        if not card_url:
+            raise ValueError(
+                f"remote binding {logical_name!r} resolved to a blank A2A card URL"
+            )
+
+        parsed = urlparse(card_url)
+        try:
+            parsed.port
+        except ValueError:
+            valid_url = False
+        else:
+            valid_url = bool(
+                parsed.scheme in {"http", "https"}
+                and parsed.hostname
+                and not parsed.username
+                and not parsed.password
+                and not parsed.query
+                and not parsed.fragment
+                and not any(char.isspace() for char in card_url)
+            )
+        if not valid_url:
+            raise ValueError(
+                f"remote binding {logical_name!r} has malformed A2A card URL: "
+                f"{card_url!r}"
+            )
+
+        control_position = matches[0]
+        if control_position == "loop":
+            raise ValueError(
+                "remote loop completion requires an A2A control protocol"
+            )
+        if control_position == "handoff":
+            raise ValueError("remote handoff requires an A2A control protocol")
+
+        resolved[logical_name] = _RemoteLeafBinding(logical_name, card_url)
+
+    setattr(root, "_apx_remote_leaf_bindings", MappingProxyType(resolved))
+
+
 def finalize_agent(
     agent: BaseAgent,
     config: AgentConfig | None = None,
@@ -450,6 +548,7 @@ def finalize_agent(
     if config is not None:
         apply_config_knobs(agent, config)
         apply_config_service_policies(agent, config)
+        _apply_remote_leaf_bindings(agent, config.bindings)
 
     # Local import: _tool_config lazily imports _resolve_env_var from this module;
     # a top-level import here would make that cycle unconditional at load time.

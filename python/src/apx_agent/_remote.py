@@ -31,6 +31,7 @@ import json as _json
 import logging
 import os
 from collections.abc import AsyncGenerator, Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -48,6 +49,12 @@ from ._models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _RemoteLeafBinding:
+    logical_name: str
+    card_url: str
 
 
 def _obo_custom_inputs(headers: Mapping[str, str]) -> dict[str, str]:
