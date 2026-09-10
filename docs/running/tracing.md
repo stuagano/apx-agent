@@ -14,7 +14,7 @@ apx-agent emits MLflow spans at three levels for every request:
 | `AGENT` | One top-level `ChatAgent.predict` / `predict_stream` call |
 | `TOOL` | Each tool dispatch — `@tool` functions, `sql_tool`, `genie_tool`, UC functions |
 | `LLM` | Each model call, including token counts |
-| `CHAIN` | Sub-agent dispatch (remote `/invocations` calls) |
+| `CHAIN` | Compiled graph and cross-agent request boundaries |
 
 Tracing is **always on** when MLflow is installed. It never adds overhead that blocks a request — if the tracing backend is unreachable, the agent continues running and the span is silently dropped.
 
@@ -36,12 +36,49 @@ When deployed to Databricks, traces flow into MLflow. Each agent writes to the e
 
 ```toml
 [tool.apx.agent]
-experiment = "/Users/me@company.com/agents/customer_triage"
+experiment = "/Shared/research-assistant"
 ```
 
 View traces in the Databricks UI: open the experiment → **Traces** tab. Each row is one request. The span waterfall shows the full agent loop: tool calls, model calls, sub-agent dispatches.
 
 If no experiment is set, MLflow uses its currently-active experiment. See [Evaluation](../evaluate/overview.md) for how experiments and eval results share the same workspace path.
+
+## Distributed tracing across apps
+
+When a logical leaf is bound to another application, APX injects the active
+MLflow tracing context into the outbound request. The receiving
+`/invocations`, `/responses`, or A2A `message/send` handler continues that
+context before it creates the request span and runs the declared root. Direct
+`CompiledResponsesAgent` calls use the AgentServer request-header context in
+the same way.
+
+The result is real trace lineage: the receiver request span shares the caller's
+trace ID and is parented to the active caller graph span. LangGraph may place
+compiled graph or node spans between the caller ingress and the receiver; that
+intermediate ancestry is part of the trace rather than a tag-only join.
+
+Streaming handlers keep the continued context active for the body iterator's
+lifetime, so spans created during later events remain descendants of the
+inbound request span.
+
+Propagation and storage are separate concerns. Independently deployed
+applications must all write to the same governed MLflow experiment or trace
+location for the complete cross-app tree to persist as one inspectable trace.
+If the applications write to different destinations, the propagated trace ID
+does not move or merge the stored records afterward.
+
+Configure the shared destination on every participating application, for
+example:
+
+```toml
+[tool.apx.agent]
+experiment = "/Shared/research-assistant"
+```
+
+The caller controls trace context, not trace storage. APX does not accept a
+caller-provided experiment-selection header and does not add an experiment
+field to the A2A card. Existing MLflow HTTP propagation headers are sufficient;
+there is no APX-specific tracing protocol to configure.
 
 ## MLflow autolog tracing
 
@@ -124,7 +161,7 @@ For analytics — cost rollups, tool-call frequency, latency P95, prompt heatmap
 
 ```bash
 apx-agent traces export \
-  --experiment "/Users/me@company.com/agents/customer_triage" \
+  --experiment "/Shared/research-assistant" \
   --table main.analytics.agent_traces \
   --hours 24
 ```
@@ -136,7 +173,7 @@ from databricks.sdk import WorkspaceClient
 from apx_agent import export_traces
 
 result = export_traces(
-    experiment_name="/Users/me@company.com/agents/customer_triage",
+    experiment_name="/Shared/research-assistant",
     target_table="main.analytics.agent_traces",
     ws=WorkspaceClient(),
     lookback_hours=24,

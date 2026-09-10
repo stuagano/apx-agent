@@ -1,154 +1,162 @@
 # Multi-agent systems
 
-Cross-process and cross-endpoint composition: when to split agents into separate apps, how to connect them, and how durable workflows span restarts.
+An APX application is one declared agent graph. Capability leaves can execute
+in the application process or behind another application's A2A boundary while
+the graph keeps the same logical names and control structure.
 
-> **Coming from ADK?** apx-agent uses the same structural primitives — `SequentialAgent`, `ParallelAgent`, `LoopAgent` for local composition; remote agents via `sub_agents=[url]` or `agent_tool(sub_agent)`. There is no `Pipeline` wrapper — you compose agents directly. See [migration guide](../get-started/migration.md) for a full concept map.
->
-> **Coming from OpenAI Agents SDK?** "Handoffs" in the OpenAI SDK map to `HandoffAgent`. There is no `Runner` class — call `agent.run()` directly. `sub_agents=[url]` is the equivalent of passing remote agents as handoff targets. See [migration guide](../get-started/migration.md) for a full concept map.
+This is the same APX model used for a single agent: declare the capabilities,
+compose the root, and attach tools, policies, resources, memory, sessions,
+callbacks, and templates where they belong. Splitting a leaf into another app
+changes its deployment boundary, not the graph abstraction.
 
----
+## Capabilities and control are separate
 
-## Local vs remote — pick the deploy boundary
+Capability leaves own instructions and work:
 
-An agent is a *module* either way — the question is whether it lives in the same process as its caller, or in its own app behind A2A. That is an orthogonal choice from how the edge is selected (deterministic vs LLM-driven):
+- `Agent` / `LlmAgent` for general model-and-tool reasoning
+- `DataAgent` for governed Unity Catalog data work
+- `CoworkerAgent` for work that joins two landed source systems
 
-|                       | Local (same process)                              | Remote (A2A)                                       |
-|-----------------------|---------------------------------------------------|----------------------------------------------------|
-| **Deterministic edge** | `SequentialAgent` / `ParallelAgent` / `LoopAgent` | `RemoteDatabricksAgent` inside a workflow          |
-| **LLM-driven edge**    | `agent_tool(sub_agent)`                           | `sub_agents=[url]`                                 |
+Graph-control primitives own execution shape:
 
-Pick the deploy boundary by **lifecycle and consumers**, not by agent count. Six agents that always run together, version together, and have no external caller belong in one app composed locally. One agent that has multiple callers, evolves independently, or has a different scaling shape belongs in its own app reached over A2A.
+- `SequentialAgent` for fixed order
+- `ParallelAgent` for concurrent fan-out and gather
+- `RouterAgent` for a model-selected branch
+- `KeywordRouter` for a deterministic keyword-selected branch
+- `LoopAgent` for bounded local repetition
+- `HandoffAgent` for local conversational transfer
+- `agent_tool` when a parent model should decide whether and how often to
+  delegate while retaining control
 
-Reach for a separate app when at least one is true:
+See [Agent composition](../agents/composition.md) for the API and examples.
 
-- **Second consumer.** Another agent (or another team) wants to call it.
-- **Independent deploy cadence.** It changes on a different clock than its caller.
-- **Different scaling profile.** CPU-heavy vs LLM-latency-bound, bursty vs steady, etc.
-- **Cleaner OBO surface.** It owns a sensitive resource and the auth boundary should be explicit.
+## Pick the deployment boundary independently
 
-Keep it local otherwise.
-
-`python/examples/data-triage-agent/` demonstrates both corners in one codebase: a six-step `SequentialAgent` composed locally (deterministic + local), delegating to a `data-inspector` sub-agent over A2A (LLM-driven + remote).
-
-In the Dev UI, **Discover** (`/_apx/discover`) can wire a live Apps peer into
-your agent’s `sub_agents=` (and attach UC / Genie / Vector Search tools) and
-**hot-apply** them onto the running process so Chat can use them without a
-redeploy — see [Dev UI](../get-started/dev-ui.md#apxdiscover--workspace-peer--uc-tool--api-discovery).
-
----
-
-## Handoffs — LLM-driven peer transfer
-
-A **handoff** transfers the conversation from one agent to another mid-session. The receiving agent inherits the conversation state. This is the apx-agent equivalent of OpenAI Agents SDK handoffs and ADK agent-to-agent transfer.
-
-```python
-from apx_agent import HandoffAgent, Agent
-
-triage_agent = Agent(
-    name="triage",
-    description="First contact — classify and route the user's request.",
-    tools=[],
-)
-billing_agent = Agent(
-    name="billing",
-    description="Handles billing inquiries, invoice lookups, and payment issues.",
-    tools=[...],
-)
-tech_agent = Agent(
-    name="technical",
-    description="Handles technical support, error messages, and configuration issues.",
-    tools=[...],
-)
-
-# Pass agents as a list; HandoffAgent uses each agent's name as the transfer key
-triage = HandoffAgent(
-    agents=[triage_agent, billing_agent, tech_agent],
-    # start defaults to "triage" (first agent's name)
-)
-```
-
-Each agent's `description` becomes the transfer tool description visible to the LLM. When the triage agent decides to hand off, it calls a generated tool (`transfer_to_billing`, `transfer_to_technical`) — the framework then routes control to that agent for the remainder of the session.
-
-**`RouterAgent` vs `HandoffAgent`:**
-
-| | `RouterAgent` | `HandoffAgent` |
+| Edge | Same application | Separate application |
 |---|---|---|
-| Decision shape | Pick one branch from a closed set | Pick a peer, transfer |
-| Control after | Branch returns; routing is done | Conversation moves to peer; original agent is out |
-| ADK analogy | `LlmAgent` with routing instructions | ADK agent-to-agent transfer |
-| OpenAI analogy | Agent with `output_type` selector | OpenAI SDK handoff |
+| Declared graph edge | Compose the logical leaf directly | Bind the named logical leaf under `[tool.apx.agent.bindings]` |
+| Model-directed delegation | `agent_tool(local_leaf)` | Existing URL-based sub-agent declarations remain available for compatibility |
 
-For `RouterAgent` and `KeywordRouter`, see [routing.md](../agents/routing.md).
+Keep leaves together when they version, scale, and operate together. Put a
+leaf behind A2A when it has independent consumers, lifecycle, scaling, or a
+distinct governed resource boundary.
 
----
+Named bindings are the default deterministic cross-app path:
 
-## Sub-agents — cross-endpoint composition
+```toml
+[tool.apx.agent]
+experiment = "/Shared/research-assistant"
 
-When sub-agents are deployed as separate Model Serving endpoints or Databricks Apps, declare them with `sub_agents`:
-
-```python
-# Model Serving target — sub-agents become DatabricksServingEndpoint resources
-agent = Agent(
-    instructions="Route the user's question to the right specialist.",
-    sub_agents=[
-        "endpoints/data-triage",
-        "endpoints/billing",
-        "endpoints/sql-explainer",
-    ],
-)
+[tool.apx.agent.bindings]
+pricing = "$PRICING_APP_URL"
 ```
 
 ```python
-# Databricks Apps target — sub-agents are sibling Apps
-agent = Agent(
-    instructions="Route the user's question to the right specialist.",
-    sub_agents=[
-        "$DATA_TRIAGE_URL",  # $VAR expanded at startup
-        "$BILLING_URL",
-    ],
-)
+from apx_agent import Agent, RouterAgent, SequentialAgent
+
+data = Agent(name="data", description="Looks up governed account facts.")
+pricing = Agent(name="pricing", description="Produces an approved price.")
+review = SequentialAgent([data, pricing], name="review")
+root = RouterAgent(agents=[data, review])
 ```
 
-When deployed to Model Serving, sub-agent endpoints are auto-declared as resources. When hosted in Apps, sub-agent calls go through the app-to-app auth path — see [a2a.md](a2a.md).
+APX resolves the binding at application startup. The environment reference,
+card location, and transport implementation do not enter generated customer
+code or topology labels. Operators and users continue to see `pricing`.
 
----
+The binding must match exactly one named leaf and resolve to a valid HTTP(S)
+A2A card location. Missing, ambiguous, blank, or malformed bindings fail
+startup. This makes a deployment mistake explicit rather than silently running
+the wrong leaf.
 
-## Local composition — deterministic pipelines
+## One root, three ingress protocols
 
-For deterministic multi-step flows in the same process, use the composition primitives:
+The finalized root is shared by:
 
-| Primitive | Pattern |
-|-----------|---------|
-| `SequentialAgent` | Run agents in order; each receives prior output |
-| `ParallelAgent` | Run agents concurrently; collect all outputs |
-| `LoopAgent` | Run an agent repeatedly until a stop condition |
-| `agent_tool(sub_agent)` | Wrap an agent as a tool for another agent |
+- MLflow ChatAgent `POST /invocations`
+- MLflow ResponsesAgent `POST /responses`
+- A2A `message/send` on `POST /`
 
-See [composition.md](../agents/composition.md) for the full reference with examples.
+Every ingress therefore sees the same router, sequence, tools, policies, and
+state configuration. A direct branch is a normal terminal graph path. In the
+example, a direct `data` answer makes no remote call; a request routed through
+`review` runs the local step and then invokes the bound `pricing` leaf.
 
----
+APX does not create a shadow workflow for A2A. The outbound call is the runtime
+implementation of the selected logical leaf.
+
+## Supported remote-bound control shapes
+
+A named remote-bound leaf can participate in:
+
+- `SequentialAgent`
+- `ParallelAgent`
+- `RouterAgent`
+- `KeywordRouter`
+
+Remote-bound `LoopAgent` and `HandoffAgent` control positions are deliberately
+unsupported. Their loop-completion and conversation-transfer semantics require
+an A2A control protocol that the current surface does not define, so APX rejects
+those declarations instead of approximating them.
+
+## Model-directed delegation
+
+`agent_tool` is different from a fixed or routed graph edge. It turns an agent
+into a typed tool; the parent model decides when to call it and can call it
+again in the same turn. The parent receives the result and remains in charge.
+
+Use it when delegation is discretionary. Use `SequentialAgent`,
+`ParallelAgent`, `RouterAgent`, or `KeywordRouter` when the graph itself should
+express the edge.
+
+## Identity and governance across A2A
+
+The caller authenticates to the peer application, and the calling user's OBO
+identity is forwarded for user-scoped tool and data access. The peer
+application's own model calls use that application's service identity. This
+keeps user-governed data access and application-scoped model access explicit at
+each hop. See [A2A discovery and app-to-app auth](a2a.md).
+
+Resource declarations and service policies stay attached to the leaf that owns
+the operation. Moving that leaf behind A2A does not move its grants or policy
+responsibility to the caller.
+
+## Distributed tracing
+
+APX propagates MLflow trace context across the A2A call and continues it before
+the peer's request and graph spans begin. To persist the entire cross-app span
+tree as one trace in an independently deployed system, every participating app
+must write to the same governed MLflow experiment or trace location.
+
+The destination is deployment configuration, not caller input. APX does not
+accept an experiment-selection request header and does not extend the A2A card
+protocol for tracing. See [Tracing](../running/tracing.md#distributed-tracing-across-apps).
+
+## Handoffs
+
+A local `HandoffAgent` exposes transfer tools derived from each peer's logical
+name and description. Once selected, the conversation moves to that peer and
+the previous agent exits. Use `RouterAgent` when a branch should return and the
+routing decision is complete; use `HandoffAgent` when control itself moves.
+
+Remote-bound handoffs are not supported by the current A2A control surface.
 
 ## Durable execution
 
-`SequentialAgent` and `LoopAgent` can persist each step's output through a pluggable `WorkflowEngine` — a run can resume after a crash, redeploy, or pause.
-
-| Backend | When to use |
-|---------|-------------|
-| `InMemoryEngine` | Default — tests, dev, short interactive runs |
-| `DeltaEngine` | Production — SQL Statements API against a Delta table; survives restarts |
-
-Durable workflows generally need Apps hosting — Model Serving is stateless and short-lived per request.
-
----
+Local sequential and loop workflows can use the existing workflow engine for
+step persistence. `InMemoryEngine` is process-local; `DeltaEngine` persists
+workflow state through the SQL Statements API. This durability is separate
+from named A2A binding and does not add remote loop or handoff semantics.
 
 ## Decision guide
 
 | Goal | Approach |
-|------|----------|
-| Classify and route a request | `RouterAgent` — LLM picks one branch |
-| Transfer conversation to a specialist | `HandoffAgent` — peer transfer mid-session |
-| Fixed pipeline (step A then B then C) | `SequentialAgent` — local, deterministic |
-| Parallel data gathering | `ParallelAgent` — concurrent, local |
-| Agent callable like a tool | `agent_tool(sub_agent)` — parent stays in control |
-| Separate app, different team | `sub_agents=[url]` — A2A, remote |
-| Survive restarts / long-running | `DeltaEngine` durable execution |
+|---|---|
+| Fixed multi-step graph | `SequentialAgent` |
+| Concurrent independent work | `ParallelAgent` |
+| Model-selected terminal branch | `RouterAgent` |
+| Keyword-selected terminal branch | `KeywordRouter` |
+| Bounded local refinement | `LoopAgent` |
+| Local peer transfer | `HandoffAgent` |
+| Discretionary delegation with parent control | `agent_tool` |
+| Deterministic leaf in another app | Named `[tool.apx.agent.bindings]` entry |
