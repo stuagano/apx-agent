@@ -112,6 +112,24 @@ class TestCompileLlmAgent:
         assert ctx.service_ws is service_ws
         assert ctx.user_ws is user_ws
 
+    def test_compile_threads_private_remote_leaf_bindings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apx_agent import _compile
+        from apx_agent._remote import _RemoteLeafBinding
+
+        root = SequentialAgent([LlmAgent(name="pricing")])
+        binding = _RemoteLeafBinding(
+            logical_name="pricing",
+            card_url="https://pricing.example.com/.well-known/agent.json",
+        )
+        root._apx_remote_leaf_bindings = {"pricing": binding}
+        monkeypatch.setattr(_compile, "_compile_any", lambda _agent, ctx: ctx)
+
+        ctx = compile_to_langgraph(root, ws=None, model="any")
+
+        assert ctx.remote_leaf_bindings == {"pricing": binding}
+
     def test_dependency_resolution_preserves_service_and_user_clients(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

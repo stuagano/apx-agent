@@ -21,12 +21,15 @@ pytest.importorskip("langgraph")
 pytest.importorskip("langchain_core")
 
 from apx_agent import (  # noqa: E402
+    Agent,
     HandoffAgent,
     KeywordRouter,
     LlmAgent,
     LoopAgent,
     ParallelAgent,
+    RemoteDatabricksAgent,
     RouterAgent,
+    SequentialAgent,
     compile_to_langgraph,
 )
 
@@ -57,6 +60,165 @@ def _stub_chat_databricks(monkeypatch: pytest.MonkeyPatch) -> None:
 def _noop_tool(query: str) -> str:
     """A dependency-free tool used to populate sub-agents."""
     return query
+
+
+def _binding(name: str) -> Any:
+    from apx_agent._remote import _RemoteLeafBinding
+
+    return _RemoteLeafBinding(
+        logical_name=name,
+        card_url=f"https://{name}.example.com/.well-known/agent.json",
+    )
+
+
+def _returning(text: str) -> Any:
+    async def _run(_self: Any, _messages: list[Any], _incoming_headers: Any) -> str:
+        return text
+
+    return _run
+
+
+def _last_text(result: dict[str, Any]) -> str:
+    from langchain_core.messages import AIMessage
+
+    return next(
+        message.content
+        for message in reversed(result["messages"])
+        if isinstance(message, AIMessage)
+    )
+
+
+def _graph_node_names(graph: Any) -> set[str]:
+    return {name.rsplit(":", 1)[-1] for name in graph.get_graph(xray=True).nodes}
+
+
+def _local_compiler_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableLambda
+
+    from apx_agent import _compile
+
+    monkeypatch.setattr(
+        _compile,
+        "_compile_llm_agent",
+        lambda *_args, **_kwargs: RunnableLambda(
+            lambda _state: {"messages": [AIMessage(content="local")]}
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "root_factory",
+    [
+        lambda remote: SequentialAgent([remote], name="sequence"),
+        lambda remote: ParallelAgent([Agent(name="local"), remote]),
+        lambda remote: RouterAgent(agents=[remote]),
+        lambda remote: KeywordRouter(
+            branches=[("price", remote, ["price"])],
+            default=Agent(name="local"),
+        ),
+    ],
+)
+def test_bound_leaf_compiles_as_its_logical_name(
+    monkeypatch: pytest.MonkeyPatch, root_factory: Any
+) -> None:
+    pricing = Agent(name="pricing", description="Returns an approved price.")
+    root = root_factory(pricing)
+    root._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    _local_compiler_stub(monkeypatch)
+    monkeypatch.setattr(
+        RemoteDatabricksAgent,
+        "_run_with_incoming_headers",
+        _returning("approved"),
+    )
+
+    graph = compile_to_langgraph(root, ws=None, model="test-model")
+    from langchain_core.messages import HumanMessage
+
+    result = graph.invoke({"messages": [HumanMessage(content="need a price")]})
+
+    assert _last_text(result) == "approved"
+    assert "pricing" in _graph_node_names(graph)
+    assert "RemoteDatabricksAgent" not in _graph_node_names(graph)
+
+
+def test_bound_leaf_transport_errors_propagate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise(*_args: Any, **_kwargs: Any) -> str:
+        raise RuntimeError("remote unavailable")
+
+    pricing = Agent(name="pricing")
+    root = SequentialAgent([pricing], name="sequence")
+    root._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    _local_compiler_stub(monkeypatch)
+    monkeypatch.setattr(
+        RemoteDatabricksAgent,
+        "_run_with_incoming_headers",
+        _raise,
+    )
+
+    graph = compile_to_langgraph(root, ws=None, model="test-model")
+
+    from langchain_core.messages import HumanMessage
+
+    with pytest.raises(RuntimeError, match="remote unavailable"):
+        graph.invoke({"messages": [HumanMessage(content="price")]})
+
+
+def test_bound_leaf_converts_messages_and_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from apx_agent._defaults import get_databricks_headers
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(_self: Any, messages: list[Any], incoming_headers: Any) -> str:
+        captured["messages"] = messages
+        captured["headers"] = incoming_headers
+        return "approved"
+
+    pricing = Agent(name="pricing")
+    root = SequentialAgent([pricing], name="sequence")
+    root._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    _local_compiler_stub(monkeypatch)
+    monkeypatch.setattr(
+        RemoteDatabricksAgent,
+        "_run_with_incoming_headers",
+        _capture,
+    )
+    headers = get_databricks_headers(
+        host="https://workspace.example.com",
+        token="opaque-test-token",
+    )
+
+    graph = compile_to_langgraph(
+        root,
+        ws=None,
+        model="test-model",
+        headers=headers,
+    )
+    result = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(content="need a price"),
+                AIMessage(content="prior context"),
+            ]
+        }
+    )
+
+    assert _last_text(result) == "approved"
+    assert [(message.role, message.content) for message in captured["messages"]] == [
+        ("user", "need a price"),
+        ("assistant", "prior context"),
+    ]
+    assert captured["headers"] == {
+        "Authorization": "Bearer opaque-test-token",
+        "X-Forwarded-Access-Token": "opaque-test-token",
+        "X-Forwarded-Host": "https://workspace.example.com",
+    }
 
 
 # ---------------------------------------------------------------------------

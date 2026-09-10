@@ -27,7 +27,8 @@ from __future__ import annotations
 import inspect
 import logging
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 # Hoisted so TypedDicts defined inside compile functions (e.g. LoopState) can
@@ -63,6 +64,7 @@ from ._defaults import (
 )
 from ._budget import cap_for
 from ._mlflow_tracing import emit_progress
+from ._remote import RemoteDatabricksAgent, _RemoteLeafBinding
 from ._inspection import (
     _EmptyToolInput,
     _inspect_tool_fn,
@@ -103,6 +105,7 @@ class CompileContext:
     Must be process-scoped (shared across per-request compiles) to persist
     across turns. Requires a ``thread_id`` in the invoke config."""
     request: "Request | None" = None
+    remote_leaf_bindings: Mapping[str, _RemoteLeafBinding] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -997,8 +1000,83 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
     return graph.compile()
 
 
+def _compile_bound_remote_leaf(
+    logical_leaf: BaseAgent,
+    binding: _RemoteLeafBinding,
+    ctx: CompileContext,
+) -> Any:
+    """Compile one bound logical leaf through the private remote transport."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableLambda
+    from langgraph.graph import END, START, StateGraph
+
+    from ._chat_agent import _from_langchain_message
+    from ._models import Message
+
+    remote = RemoteDatabricksAgent(binding.card_url)
+
+    def _incoming_headers() -> dict[str, str]:
+        headers = ctx.headers
+        if headers is None:
+            return {}
+        if isinstance(headers, Mapping):
+            token = headers.get("X-Forwarded-Access-Token")
+            authorization = headers.get("Authorization")
+            host = headers.get("X-Forwarded-Host")
+        else:
+            secret = getattr(headers, "token", None)
+            token = secret.get_secret_value() if secret is not None else None
+            authorization = f"Bearer {token}" if token else None
+            host = getattr(headers, "host", None)
+        forwarded = {
+            key: value
+            for key, value in (
+                ("Authorization", authorization),
+                ("X-Forwarded-Access-Token", token),
+                ("X-Forwarded-Host", host),
+            )
+            if value
+        }
+        if token and "Authorization" not in forwarded:
+            forwarded["Authorization"] = f"Bearer {token}"
+        return forwarded
+
+    async def _node(state: dict[str, Any]) -> dict[str, Any]:
+        messages = [
+            Message.model_validate(_from_langchain_message(message, index).model_dump())
+            for index, message in enumerate(state["messages"])
+        ]
+        result = await remote._run_with_incoming_headers(
+            messages,
+            _incoming_headers(),
+        )
+        return {"messages": [AIMessage(content=result)]}
+
+    def _sync_node(state: dict[str, Any]) -> dict[str, Any]:
+        import asyncio
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_node(state))
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(lambda: asyncio.run(_node(state))).result()
+
+    name = getattr(logical_leaf, "_name", None) or binding.logical_name
+    graph = StateGraph(state_schema())
+    graph.add_node(name, RunnableLambda(_sync_node, afunc=_node))
+    graph.add_edge(START, name)
+    graph.add_edge(name, END)
+    return graph.compile()
+
+
 def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     """Dispatch to the right per-agent compiler."""
+    binding = ctx.remote_leaf_bindings.get(getattr(agent, "_name", None))
+    if binding is not None:
+        return _compile_bound_remote_leaf(agent, binding, ctx)
     if isinstance(agent, LlmAgent):
         templated = _has_template(agent)
         runnable = _compile_llm_agent(agent, ctx, bake_prompt=not templated)
@@ -1099,5 +1177,6 @@ def compile_to_langgraph(
         model=model,
         headers=headers,
         checkpointer=checkpointer,
+        remote_leaf_bindings=getattr(agent, "_apx_remote_leaf_bindings", {}),
     )
     return _compile_any(agent, ctx)
