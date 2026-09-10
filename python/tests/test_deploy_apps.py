@@ -1412,6 +1412,91 @@ def test_apps_deploy_unresolved_a2a_fails_before_bundle_deploy(
     assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
 
 
+def test_apps_deploy_reconciles_named_binding_as_can_use_app_resource(
+    scaffold: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A finalized full-card binding reaches the native App resource plan."""
+    peer_url = "https://pricing.cloud.databricksapps.com"
+    monkeypatch.setenv(
+        "PRICING_APP_URL",
+        f"{peer_url}/.well-known/agent.json",
+    )
+    (scaffold / "agent.py").write_text(
+        textwrap.dedent("""\
+            from apx_agent import Agent, SequentialAgent
+
+            agent = SequentialAgent(
+                [Agent(name="review"), Agent(name="pricing")],
+                name="root",
+            )
+            """)
+    )
+    (scaffold / "pyproject.toml").write_text(
+        textwrap.dedent("""\
+            [project]
+            name = "test-app"
+
+            [tool.apx.agent]
+            name = "root"
+            model = "model"
+            module = "agent:agent"
+
+            [tool.apx.agent.bindings]
+            pricing = "$PRICING_APP_URL"
+            """)
+    )
+    sys.modules.pop("agent", None)
+    workspace_profiles: list[str] = []
+
+    class FakeWorkspaceClient:
+        def __init__(self, *, profile: str) -> None:
+            workspace_profiles.append(profile)
+            self.apps = SimpleNamespace(
+                list=lambda: iter(
+                    [
+                        SimpleNamespace(
+                            id="pricing-app-id",
+                            name="pricing-service",
+                            url=peer_url,
+                        ),
+                    ]
+                )
+            )
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", FakeWorkspaceClient)
+    monkeypatch.setattr(
+        "apx_agent.cli._bake_deploy_function_signatures",
+        lambda *_args, **_kwargs: False,
+    )
+    calls = _install_subprocess_mock(monkeypatch)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "agents",
+            "deploy",
+            "--target",
+            "apps",
+            "--profile",
+            "test",
+            "--no-run",
+            "--no-auto-build-wheel",
+            "--no-auto-experiment",
+            "--no-register-uc",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    updated = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    resources = updated["resources"]["apps"]["my-app"]["resources"]
+    assert [entry["app"] for entry in resources if "app" in entry] == [
+        {"name": "pricing-service", "permission": "CAN_USE"},
+    ]
+    assert workspace_profiles == ["test"]
+    assert any(call[:2] == ["bundle", "deploy"] for call in calls)
+
+
 def test_apps_deploy_group_conflict_fails_before_bundle_deploy(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

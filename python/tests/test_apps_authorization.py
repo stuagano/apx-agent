@@ -262,6 +262,81 @@ def test_compile_resolves_environment_backed_app_dependency(
     )
 
 
+@pytest.mark.parametrize(
+    "binding_url",
+    [
+        "https://pricing.cloud.databricksapps.com",
+        "https://pricing.cloud.databricksapps.com/.well-known/agent.json",
+    ],
+)
+def test_compile_includes_finalized_named_binding_as_app_dependency(
+    binding_url: str,
+    tmp_path: Path,
+) -> None:
+    from apx_agent import Agent, AgentConfig, SequentialAgent, finalize_agent
+
+    root = SequentialAgent(
+        [Agent(name="review"), Agent(name="pricing")],
+        name="root",
+    )
+    finalize_agent(
+        root,
+        AgentConfig(name="root", bindings={"pricing": binding_url}),
+        pyproject_path=str(tmp_path / "missing.toml"),
+    )
+
+    plan = compile_authorization_plan(root, model="model")
+
+    assert plan.app_dependencies == (
+        AppDependency("https://pricing.cloud.databricksapps.com"),
+    )
+
+
+def test_compile_deduplicates_named_and_legacy_app_dependency(tmp_path: Path) -> None:
+    from apx_agent import Agent, AgentConfig, SequentialAgent, finalize_agent
+
+    peer_url = "https://pricing.cloud.databricksapps.com"
+    root = SequentialAgent(
+        [
+            Agent(name="review"),
+            Agent(name="pricing", sub_agents=[peer_url]),
+        ],
+        name="root",
+    )
+    finalize_agent(
+        root,
+        AgentConfig(
+            name="root",
+            bindings={"pricing": f"{peer_url}/.well-known/agent.json"},
+        ),
+        pyproject_path=str(tmp_path / "missing.toml"),
+    )
+
+    plan = compile_authorization_plan(root, model="model")
+
+    assert plan.app_dependencies == (AppDependency(peer_url),)
+
+
+def test_compile_excludes_external_https_named_binding(tmp_path: Path) -> None:
+    from apx_agent import Agent, AgentConfig, SequentialAgent, finalize_agent
+
+    root = SequentialAgent([Agent(name="pricing")], name="root")
+    finalize_agent(
+        root,
+        AgentConfig(
+            name="root",
+            bindings={
+                "pricing": "https://pricing.example.com/.well-known/agent.json",
+            },
+        ),
+        pyproject_path=str(tmp_path / "missing.toml"),
+    )
+
+    plan = compile_authorization_plan(root, model="model")
+
+    assert plan.app_dependencies == ()
+
+
 def test_read_app_family_permissions_reads_only_group_policy(tmp_path: Path) -> None:
     pyproject = tmp_path / "pyproject.toml"
     original = """\
