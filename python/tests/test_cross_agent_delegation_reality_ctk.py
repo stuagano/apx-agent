@@ -32,6 +32,7 @@ serialized ChatAgent blob. The relay assertion below pins that.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -613,34 +614,94 @@ def test_cross_agent_traces_join_on_one_tag(
     experiment = mlflow.set_experiment("cross-agent-parentage-reality")
     try:
         with mlflow.start_span("external-sender") as sender:
+            export_barrier = mlflow.start_span_no_context(
+                "receiver-export-barrier", parent_span=sender
+            )
             headers = inject_tracing_headers({})
-        resp = client_a.post(
-            "/invocations",
-            json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
-            headers=headers,
-        )
+        try:
+            resp = client_a.post(
+                "/invocations",
+                json={
+                    "messages": [
+                        {"role": "user", "content": "What is the secret word?"}
+                    ]
+                },
+                headers=headers,
+            )
+        finally:
+            export_barrier.end()
         assert resp.status_code == 200, resp.text
         assert SENTINEL in _final_texts(resp.json())  # the delegation really ran
 
-        mlflow.flush_trace_async_logging()
-        traces = mlflow.search_traces(
-            locations=[experiment.experiment_id],
-            return_type="list",
-            include_spans=True,
-        )
-        trace = next(t for t in traces if t.info.trace_id == sender.trace_id)
+        deadline = time.monotonic() + 4.0
+        observed: list[dict[str, Any]] = []
+        while True:
+            traces = mlflow.search_traces(
+                locations=[experiment.experiment_id],
+                return_type="list",
+                include_spans=True,
+                flush=True,
+            )
+            trace = next(
+                (t for t in traces if t.info.trace_id == sender.trace_id), None
+            )
+            if trace is not None:
+                observed = [
+                    {
+                        "name": span.name,
+                        "parent_id": span.parent_id,
+                        "agent_name": (span.attributes or {}).get("apx.agent.name"),
+                    }
+                    for span in trace.data.spans
+                ]
+                if any(
+                    item["name"] == "POST /invocations"
+                    and item["agent_name"] == "agent-a"
+                    for item in observed
+                ) and any(
+                    item["name"] == "POST /responses"
+                    and item["agent_name"] == "agent-b"
+                    for item in observed
+                ):
+                    break
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    "cross-agent trace did not finish exporting within 4.0s; "
+                    f"observed={observed!r}"
+                )
+            time.sleep(0.05)
+
         spans = trace.data.spans
-        caller_request = next(s for s in spans if s.name == "POST /invocations")
+        caller_request = next(
+            s
+            for s in spans
+            if s.name == "POST /invocations"
+            and (s.attributes or {}).get("apx.agent.name") == "agent-a"
+        )
         assert caller_request.parent_id == sender.span_id
-        remote_requests = [s for s in spans if s.name == "POST /responses"]
-        assert any(
-            remote.parent_id is not None
-            and remote.parent_id != sender.span_id
-            and any(parent.span_id == remote.parent_id for parent in spans)
-            for remote in remote_requests
-        ), "remote request span is not a real child of the caller trace"
+        remote_request = next(
+            s
+            for s in spans
+            if s.name == "POST /responses"
+            and (s.attributes or {}).get("apx.agent.name") == "agent-b"
+        )
+        by_id = {span.span_id: span for span in spans}
+        assert (remote_request.attributes or {})["apx.traceparent"].split("-")[
+            2
+        ] == remote_request.parent_id
+        parent = by_id[remote_request.parent_id]
+        ancestor_ids: list[str] = []
+        while parent is not None:
+            ancestor_ids.append(parent.span_id)
+            if parent.span_id == caller_request.span_id:
+                break
+            parent = by_id.get(parent.parent_id)
+        assert caller_request.span_id in ancestor_ids
     finally:
-        mlflow.set_tracking_uri(old_tracking_uri)
+        try:
+            mlflow.flush_trace_async_logging()
+        finally:
+            mlflow.set_tracking_uri(old_tracking_uri)
 
     # Caller side (A): stamped when the delegate fired — trace-id only.
     caller_stamps = [
