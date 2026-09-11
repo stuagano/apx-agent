@@ -229,14 +229,30 @@ def get_scope(fn: Any) -> ToolScope | None:
 # ---------------------------------------------------------------------------
 
 
-def _norm_uc(ident: str) -> str:
-    """Normalize a UC identifier for comparison.
+def _split_uc(ident: str) -> list[str]:
+    """Split a UC identifier into casefolded segments, respecting backtick quoting.
 
-    UC identifiers are case-insensitive and backtick-quoting is cosmetic, so
-    ``main.finance.LEDGER`` and ``` `main`.`finance`.`ledger` ``` both match a
-    ``main.finance.ledger`` ceiling.
+    UC identifiers are case-insensitive and backtick-quoting is cosmetic, but a
+    dot *inside* a backtick-quoted segment is part of the name, not a separator:
+    ``main.finance.LEDGER`` → ``[main, finance, ledger]`` and
+    ``` `my.catalog`.sch.tbl ``` → ``[my.catalog, sch, tbl]``.
+    ponytail: does not handle escaped backticks (``` `` ```) inside a quoted
+    segment — an exotic name we don't support; upgrade the tokenizer if it ever
+    matters.
     """
-    return ident.replace("`", "").casefold()
+    segments: list[str] = []
+    buf: list[str] = []
+    quoted = False
+    for ch in ident:
+        if ch == "`":
+            quoted = not quoted
+        elif ch == "." and not quoted:
+            segments.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    segments.append("".join(buf))
+    return [s.casefold() for s in segments]
 
 
 def in_scope(scope: ToolScope, ref: str) -> bool:
@@ -246,17 +262,17 @@ def in_scope(scope: ToolScope, ref: str) -> bool:
     a ``catalogs`` entry matches any object under that catalog; a ``schemas``
     entry (``catalog.schema``) matches any object under it. When no UC dimension
     is declared, everything is in scope (undeclared = unrestricted). Matching is
-    case-insensitive and backtick-insensitive (UC identifier semantics).
+    case-insensitive and backtick-insensitive (UC identifier semantics), and
+    compares segment-wise so a quoted dot is never treated as a separator.
     """
     if not scope.has_uc_ceiling:
         return True
-    ref_n = _norm_uc(ref)
-    if ref_n in {_norm_uc(t) for t in scope.tables} or ref_n in {_norm_uc(f) for f in scope.functions}:
+    ref_seg = _split_uc(ref)
+    if any(ref_seg == _split_uc(t) for t in scope.tables) or any(ref_seg == _split_uc(f) for f in scope.functions):
         return True
-    parts = ref_n.split(".")
-    if parts[0] in {_norm_uc(c) for c in scope.catalogs}:
+    if any(ref_seg[:1] == _split_uc(c) for c in scope.catalogs):
         return True
-    if len(parts) >= 2 and ".".join(parts[:2]) in {_norm_uc(s) for s in scope.schemas}:
+    if len(ref_seg) >= 2 and any(ref_seg[:2] == _split_uc(s) for s in scope.schemas):
         return True
     return False
 
@@ -278,9 +294,11 @@ _UC_KINDS = frozenset({"uc_table", "uc_function", "vector_search_index"})
 # Call-argument names that carry a fully-qualified UC identifier. ponytail:
 # v1 enforces on declared resources + these well-known arg names + secret_scope,
 # NOT on parsed free-form SQL bodies (a follow-up — see PRD Risks/out_of_scope).
+# Only UC-specific arg names — generic ones (identifier / full_name / uc_name)
+# collide with common non-UC args (a dotted value like "example.com" or "v1.2.3"
+# would trip a spurious ScopeDenied), same reason plain "scope" is excluded below.
 _UC_ARG_KEYS = frozenset({
-    "table", "table_name", "function", "function_name", "full_name",
-    "uc_name", "identifier", "securable_full_name",
+    "table", "table_name", "function", "function_name", "securable_full_name",
 })
 # Only the unambiguous secret-scope arg name. Plain "scope" is a common
 # non-secret arg (OAuth/search/config scope) — gating on it caused spurious

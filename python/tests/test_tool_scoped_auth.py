@@ -145,6 +145,12 @@ def test_in_scope_is_case_and_backtick_insensitive() -> None:
     assert in_scope(scope, "main.finance.LEDGER")  # exact table, case differs
     assert in_scope(scope, "`main`.`finance`.`ledger`")  # backtick-quoted
     assert not in_scope(scope, "main.finance.gl")  # still out of scope
+    # A dot inside a backtick-quoted segment is part of the name, not a separator:
+    # a catalog literally named `my.catalog` matches segment-wise, and the bare
+    # 3-part "my.catalog.tbl" is a different (catalog=my) identifier.
+    dotted = ToolScope(catalogs=("`my.catalog`",))
+    assert in_scope(dotted, "`my.catalog`.sch.tbl")
+    assert not in_scope(dotted, "my.catalog.tbl")
 
 
 def test_build_tool_python_api_validates_overscope() -> None:
@@ -215,6 +221,19 @@ def test_out_of_scope_call_argument_denied() -> None:
         guard("arg_reader", {"table_name": "main.finance.ledger"})
     # In-scope arg passes.
     guard("arg_reader", {"table_name": "sales.crm.leads"})
+
+
+def test_generic_arg_name_not_treated_as_uc_identifier() -> None:
+    # Fix #1: generic arg names (identifier / full_name / uc_name) collide with
+    # common non-UC args — a dotted value there must NOT trip ScopeDenied.
+    tool = _make_tool("versioned_tool")
+    attach_scope(tool, ToolScope(catalogs=("sales",)))
+    guard = ScopeGuard([tool]).for_tool()
+    guard("versioned_tool", {"identifier": "example.com"})  # not a UC FQN
+    guard("versioned_tool", {"full_name": "v1.2.3"})  # not a UC FQN
+    # A genuinely UC-specific arg name still enforces.
+    with pytest.raises(ScopeDenied):
+        guard("versioned_tool", {"table_name": "main.finance.ledger"})
 
 
 def test_secret_scope_out_of_allowlist_denied() -> None:
