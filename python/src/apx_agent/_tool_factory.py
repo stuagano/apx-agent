@@ -32,10 +32,13 @@ supply it from a trusted allowlist, never from LLM/user input.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from ._resources import ResourceSpec, attach_resources
 from ._tool import ExecutionIdentity, ToolMetadata, _validate_execution, get_tool_metadata
+
+if TYPE_CHECKING:
+    from ._tool_scope import ToolScope
 
 __all__ = ["build_tool", "resolve_description"]
 
@@ -47,6 +50,8 @@ def build_tool(
     description: str,
     resources: Iterable[ResourceSpec] = (),
     execution: ExecutionIdentity | None = None,
+    scope: "ToolScope | None" = None,
+    secret_scopes: Iterable[str] | None = None,
 ) -> Callable[..., Any]:
     """Stamp a tool callable and declare the resources it governs.
 
@@ -78,6 +83,17 @@ def build_tool(
     if execution is not None:
         metadata = get_tool_metadata(call) or ToolMetadata()
         call._apx_tool = replace(metadata, execution=execution)  # type: ignore[attr-defined]
+    if scope is not None or secret_scopes is not None:
+        from ._tool_scope import ToolScope, attach_scope, validate_tool_scope
+
+        effective = scope or ToolScope()
+        if secret_scopes is not None:
+            effective = replace(effective, secret_scopes=tuple(secret_scopes))
+        attach_scope(call, effective)
+        # Enforce over-scope at build time on the Python API path too (the
+        # config path validates via load_config_tools). Resources are already
+        # attached above, so this catches a ResourceSpec outside the ceiling.
+        validate_tool_scope(call)
     return call
 
 

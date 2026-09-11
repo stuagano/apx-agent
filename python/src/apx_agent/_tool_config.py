@@ -146,10 +146,21 @@ def _registry() -> dict[str, Callable[..., Any]]:
 def _build_one(
     index: int, table: dict[str, Any], registry: dict[str, Callable[..., Any]]
 ) -> list[Callable[..., Any]]:
+    from ._tool_scope import attach_scope, parse_tool_scope
+
     kwargs: dict[str, Any] = _resolve_env_deep(dict(table))
     type_ = kwargs.pop("type", None)
     if type_ is None:
         raise ToolConfigError(f"tool #{index}: missing 'type' key.")
+    # Pop scope/identity keys (like 'type') before the factory splat.
+    try:
+        scope = parse_tool_scope(
+            identity=kwargs.pop("identity", None),
+            scope=kwargs.pop("scope", None),
+            secret_scopes=kwargs.pop("secret_scopes", None),
+        )
+    except ToolConfigError as e:
+        raise ToolConfigError(f"tool #{index} (type={type_}): {e}") from e
     factory = registry.get(type_)
     if factory is None:
         raise ToolConfigError(
@@ -177,7 +188,10 @@ def _build_one(
             e,
         )
         return []
-    return result if isinstance(result, list) else [result]
+    tools = result if isinstance(result, list) else [result]
+    for fn in tools:
+        attach_scope(fn, scope)
+    return tools
 
 
 def _find_pyproject_upward(start: Path) -> Path | None:
@@ -276,10 +290,15 @@ def merge_config_tools(agent: Any, pyproject_path: str | None = None) -> None:
 
 def load_config_tools(raw_tables: list[dict[str, Any]]) -> list[Callable[..., Any]]:
     """Build the flat list of tool callables from [[tool.apx.tools]] tables."""
+    from ._tool_scope import validate_tool_scope
+
     registry = _registry()
     out: list[Callable[..., Any]] = []
     for i, table in enumerate(raw_tables):
-        out.extend(_build_one(i, table, registry))
+        built = _build_one(i, table, registry)
+        for fn in built:
+            validate_tool_scope(fn)
+        out.extend(built)
     # Config-vs-config name collision: two tables yielding the same __name__ is
     # an authoring bug (would break the LLM tool schema) — fail loud.
     seen: set[str] = set()

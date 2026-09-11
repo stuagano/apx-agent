@@ -252,6 +252,7 @@ from ._cancellation import (
 # Tool-facing exceptions — raise ToolError to contain a tool failure as a
 # legible finding instead of a turn-aborting 500 (#562).
 from ._errors import ToolError
+from ._tool_scope import ScopeDenied, ScopeGuard, ToolScope
 
 # Policies — ALLOW / ASK / DENY governance with human-in-the-loop approvals
 from ._policy import (
@@ -638,6 +639,9 @@ __all__ = [
     "cancellable",
     # Tool-facing exceptions
     "ToolError",
+    "ScopeDenied",
+    "ScopeGuard",
+    "ToolScope",
     # Policies — ALLOW / ASK / DENY with human-in-the-loop approvals
     "Approval",
     "ApprovalRequired",

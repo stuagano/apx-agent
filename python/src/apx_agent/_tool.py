@@ -87,6 +87,7 @@ class ToolMetadata:
     name_override: str | None = None
     effect: ToolEffect | None = None
     execution: ExecutionIdentity | None = None
+    service_principal_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
