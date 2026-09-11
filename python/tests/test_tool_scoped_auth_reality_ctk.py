@@ -28,7 +28,7 @@ from ctk import Artifact, verify
 from apx_agent._audit import AuditAttrs
 from apx_agent._resources import ResourceSpec
 from apx_agent._tool_factory import build_tool
-from apx_agent._tool_scope import ScopeGuard, ToolScope, attach_scope
+from apx_agent._tool_scope import ScopeDenied, ScopeGuard, ToolScope, attach_scope
 
 
 class _FakeSpan:
