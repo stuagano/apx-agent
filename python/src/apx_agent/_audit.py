@@ -116,6 +116,12 @@ class AuditAttrs:
     WATCHDOG_REASON = "apx.watchdog.reason"
     WATCHDOG_DOMAIN = "apx.watchdog.domain"
 
+    # Tool-scope ceiling decisions (ScopeGuard). Mirrors the WATCHDOG_* pair:
+    # names/reasons/object identifiers only — never raw args or SQL bodies.
+    SCOPE_ACTION = "apx.scope.action"  # deny
+    SCOPE_REASON = "apx.scope.reason"
+    SCOPE_OBJECT = "apx.scope.object"  # the out-of-scope UC object / secret scope
+
     # Service Policy decisions — names, modes, and fingerprints only; never
     # raw prompts, SQL bodies, arguments, or model payloads.
     SERVICE_POLICY_NAME = "apx.service_policy.name"
@@ -178,6 +184,9 @@ _KWARG_TO_KEY: dict[str, str] = {
     "watchdog_policy_id": AuditAttrs.WATCHDOG_POLICY_ID,
     "watchdog_reason": AuditAttrs.WATCHDOG_REASON,
     "watchdog_domain": AuditAttrs.WATCHDOG_DOMAIN,
+    "scope_action": AuditAttrs.SCOPE_ACTION,
+    "scope_reason": AuditAttrs.SCOPE_REASON,
+    "scope_object": AuditAttrs.SCOPE_OBJECT,
     "service_policy_name": AuditAttrs.SERVICE_POLICY_NAME,
     "service_policy_kind": AuditAttrs.SERVICE_POLICY_KIND,
     "service_policy_phase": AuditAttrs.SERVICE_POLICY_PHASE,

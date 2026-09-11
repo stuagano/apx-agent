@@ -213,21 +213,38 @@ def _attach_config_guards_to_leaf(
     before_tool: Any,
     compose: Any,
 ) -> bool:
-    """Attach config guards onto one leaf. Returns True if anything attached."""
+    """Attach config guards onto one leaf. Returns True if anything attached.
+
+    Also auto-composes a ``ScopeGuard`` built from THIS leaf's own tools when
+    any of them declares a scope — "declared, not wired." Gated on
+    ``ScopeGuard.active`` so a leaf with no scoped tools is byte-for-byte
+    unchanged (back-compat). Runs before the config gates.
+    """
     if getattr(leaf, "_apx_config_guards_applied", False):
         return False
     attached = False
+
+    from ._tool_scope import ScopeGuard  # noqa: PLC0415
+
+    scope_guard = ScopeGuard(getattr(leaf, "_tool_fns", []) or [])
+    leaf_before_tool = before_tool
+    if scope_guard.active:
+        scope_hook = scope_guard.for_tool()
+        leaf_before_tool = (
+            compose(scope_hook, before_tool) if before_tool is not None else scope_hook
+        )
+
     if input_guardrails:
         existing_igs = getattr(leaf, "_input_guardrails", None)
         if existing_igs is not None:
             existing_igs.extend(input_guardrails)
             attached = True
-    if before_tool is not None and hasattr(leaf, "_before_tool"):
+    if leaf_before_tool is not None and hasattr(leaf, "_before_tool"):
         code_hook = getattr(leaf, "_before_tool", None)
         if code_hook is not None:
-            setattr(leaf, "_before_tool", compose(code_hook, before_tool))
+            setattr(leaf, "_before_tool", compose(code_hook, leaf_before_tool))
         else:
-            setattr(leaf, "_before_tool", before_tool)
+            setattr(leaf, "_before_tool", leaf_before_tool)
         attached = True
     if attached:
         setattr(leaf, "_apx_config_guards_applied", True)
@@ -265,22 +282,22 @@ def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
     configured = _guardrails_configured(cfg)
     _guards = build_config_guards(cfg)
 
-    if not configured:
-        setattr(agent, "_apx_config_guards_applied", True)
-        return
-
+    # Walk leaves even when no guardrails are configured: a tool declaring a
+    # scope auto-wires a ScopeGuard independently of [tool.apx.agent.guardrails].
     targets = _collect_guardrail_targets(agent)
     attached_any = False
     for leaf in targets:
         if _attach_config_guards_to_leaf(
             leaf,
-            input_guardrails=_guards.input_guardrails,
-            before_tool=_guards.before_tool,
+            input_guardrails=_guards.input_guardrails if configured else [],
+            before_tool=_guards.before_tool if configured else None,
             compose=compose,
         ):
             attached_any = True
 
-    if not attached_any:
+    # Only the explicit guardrails declaration demands a receiving leaf; a
+    # scope-only wiring that finds no scoped tools is a legitimate no-op.
+    if configured and not attached_any:
         raise ValueError(
             f"[tool.apx.agent.guardrails] declared on {type(agent).__name__} but "
             "no LlmAgent leaf could receive them (composition roots and remote "
@@ -432,9 +449,6 @@ def finalize_agent(
         config = _load_agent_config(pyproject_path=pyproject_path)
     if config is not None:
         apply_config_knobs(agent, config)
-        # E3c: attach declarative guards (idempotent; warns on composition
-        # roots lacking the guard hook attributes).
-        apply_config_guardrails(agent, config)
         apply_config_service_policies(agent, config)
 
     # Local import: _tool_config lazily imports _resolve_env_var from this module;
@@ -458,6 +472,12 @@ def finalize_agent(
         # snapshot) so the tool appears in the card and compiled graph.
         # Self-guards when no index is declared (like attach_declared_memory).
         attach_declared_vector_search(agent, config)
+
+        # E3c: attach declarative guards AFTER the tool merge + memory/VS attach
+        # so a ScopeGuard sees config-declared [[tool.apx.tools]] scoped tools
+        # (and code-wired ones), not just those on the agent at construction.
+        # Idempotent via the _apx_config_guards_applied sentinel.
+        apply_config_guardrails(agent, config)
 
     # Late ws-binding: a DataAgent constructed at import time (the Python-canonical
     # agent.py path) has ws=None and so couldn't wire its UC-function tools. Now
