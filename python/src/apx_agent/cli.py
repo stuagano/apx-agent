@@ -7117,7 +7117,7 @@ def deploy(
             deploy_kwargs["workload_size"] = workload_size
         try:
             deployment = agents.deploy(
-                registered_model_name, model_version=registered_version,
+                registered_model_name, model_version=int(registered_version),
                 **deploy_kwargs,
             )
         except Exception as e:
