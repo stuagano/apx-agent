@@ -143,8 +143,3 @@ Prompt:
 > discovered capability is wired and verified, or the chain falls through to
 > ungrounded — then report it as a working-but-ungrounded SQL assistant, not a
 > grounded agent. Don't invent a tool the schema doesn't support.
-
----
-
-These loops are also available as reusable scaffolds in the loop-library skill:
-[`.claude/skills/loop-library/references/examples.md`](../../.claude/skills/loop-library/references/examples.md).
