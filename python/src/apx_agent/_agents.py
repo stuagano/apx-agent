@@ -47,10 +47,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Anthropic server-side tool-search tool (FR-1). Deferred loading injects only
-# this in place of the full tool inventory on the first LLM call.
-TOOL_SEARCH_TOOL_NAME = "tool_search_tool_bm25_20251119"
-
 # Sub-agent card fetch (#440): bounded retry at startup, lazy repair on first
 # use. Boot order in a fleet is not controllable, so a peer that is still
 # starting refuses connections for a few seconds — retry cheap failures with
@@ -169,19 +165,7 @@ class LlmAgent(BaseAgent):
         name: str | None = None,
         memory: str = "off",
         output_key: str | None = None,
-        tool_loading: str = "eager",
-        session_budget: dict[str, int] | None = None,
     ) -> None:
-        if tool_loading not in ("eager", "deferred"):
-            raise ValueError(
-                f"tool_loading must be 'eager' or 'deferred', got {tool_loading!r}"
-            )
-        if session_budget is not None and set(session_budget) - {"tokens"}:
-            raise ValueError(
-                f"session_budget supports only the 'tokens' key, got {sorted(session_budget)}"
-            )
-        self._tool_loading = tool_loading
-        self._session_budget = session_budget
         # tools is optional (#449): an orchestrator whose only capabilities are
         # config-declared sub_agents has no local tools. None → a fresh list
         # per instance (never a shared mutable default).
@@ -362,34 +346,6 @@ class LlmAgent(BaseAgent):
                 output_schema=_schema_for_return(fn),
             )
             for fn, _, _, input_model in self._analyzed
-        ]
-
-    def assemble_llm_tools(self) -> list[AgentTool]:
-        """Tools sent to the model on the first LLM call (FR-1).
-
-        ``eager`` (default) sends every registered tool schema. ``deferred``
-        sends only a single ``tool_search`` tool so the model fetches real
-        schemas on demand — an O(tools) → O(1) first-turn saving for
-        large-inventory agents. The A2A/MCP advertisement surface
-        (``collect_tools``) is unaffected either way.
-        """
-        if self._tool_loading == "eager":
-            return self.collect_tools()
-        return [
-            AgentTool(
-                name=TOOL_SEARCH_TOOL_NAME,
-                description=(
-                    "Search this agent's tool catalog and fetch a tool's schema "
-                    "on demand. Call this before using any tool whose schema you "
-                    "have not yet received."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-                output_schema=None,
-            )
         ]
 
     async def fetch_remote_tools(self) -> list[AgentTool]:
@@ -799,16 +755,16 @@ class ParallelAgent(BaseAgent):
     async def run(self, messages: list[Message], request: Request) -> str:
         import asyncio
 
-        # F4: empty input has no user message to forward — nothing to fan out.
-        if not messages:
-            return ""
-        # FR-4/F5: each branch is independent, so it receives only the incoming
+        # FR-4: each branch is independent, so it receives only the incoming
         # system message (if any) + the triggering user message — not the shared
         # conversation — avoiding O(branches) context bloat. Breaking change from
-        # the prior shared-context pass.
+        # the prior shared-context pass. No user turn to trigger on (empty input,
+        # or a tail with no user message) → nothing to fan out.
         incoming_system = next((m for m in messages if m.role == "system"), None)
-        last_user = next((m for m in reversed(messages) if m.role == "user"), messages[-1])
-        forwarded = [incoming_system, last_user] if incoming_system else [last_user]
+        last_user = next((m for m in reversed(messages) if m.role == "user"), None)
+        forwarded = [m for m in (incoming_system, last_user) if m is not None]
+        if not forwarded:
+            return ""
         context = self._prepend_instructions(forwarded)
         results = await asyncio.gather(*[sub.run(context, request) for sub in self._agents])
         return "\n\n".join(str(r) for r in results)

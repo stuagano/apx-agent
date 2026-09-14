@@ -923,10 +923,6 @@ def chat_agent_for(
                 # No new input on a resume turn — slice only past the prior state.
                 slice_start = pre_count if resume is not None else pre_count + input_count
                 new_lc_messages = result["messages"][slice_start:]
-                # FR-2: enforce the declared session_budget at the served-turn
-                # boundary (this served path never touches run_turn).
-                from ._langgraph_executor import enforce_served_budget
-                enforce_served_budget(self._agent, new_lc_messages)
                 new_messages = [
                     _from_langchain_message(m, idx)
                     for idx, m in enumerate(new_lc_messages)
@@ -1017,7 +1013,6 @@ def chat_agent_for(
                 lc_input = _to_langchain_messages(effective_messages)
                 emitted = 0
                 new_messages: list[ChatAgentMessage] = []
-                turn_lc_messages: list[Any] = []
 
                 # Approval resume: a checkpointed thread resends
                 # {"resume": <decision>} to continue from the paused tool call
@@ -1042,15 +1037,10 @@ def chat_agent_for(
                         if not isinstance(node_output, dict):
                             continue
                         for msg in node_output.get("messages", []) or []:
-                            turn_lc_messages.append(msg)
                             delta = _from_langchain_message(msg, emitted)
                             emitted += 1
                             new_messages.append(delta)
                             yield ChatAgentChunk(delta=delta)
-                # FR-2: enforce the declared session_budget at the served-turn
-                # boundary (this served path never touches run_turn).
-                from ._langgraph_executor import enforce_served_budget
-                enforce_served_budget(self._agent, turn_lc_messages)
                 if span is not None:
                     try:
                         span.set_attribute("apx.chunks_emitted", emitted)
