@@ -6,7 +6,7 @@ import keyword
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -862,16 +862,23 @@ def _set_agent_sub_agents(source: str, urls: list[str], *, target: str = "agent"
     return _set_agent_kwarg(source, arg="sub_agents", literal=literal, target=target)
 
 
+class SubAgentAppend(NamedTuple):
+    # NamedTuple (not dataclass): the rewritten source + "was it already there"
+    # flag are the single result of one append op, and callers unpack positionally.
+    source: str
+    already_present: bool
+
+
 def _append_sub_agent(
     source: str, url_or_env_ref: str, *, target: str = "agent"
-) -> tuple[str, bool]:
+) -> SubAgentAppend:
     """Append a remote peer ref to ``sub_agents=``. Returns ``(source, already_present)``."""
     existing = _get_agent_sub_agents(source, target)
     if url_or_env_ref in existing:
-        return source, True
+        return SubAgentAppend(source, True)
     # Also treat a bare URL as duplicate of an env ref that already points at it
     # only when the exact string matches — callers pass the env ref form.
-    return _set_agent_sub_agents(source, existing + [url_or_env_ref], target=target), False
+    return SubAgentAppend(_set_agent_sub_agents(source, existing + [url_or_env_ref], target=target), False)
 
 
 def _remove_sub_agent(source: str, url_or_env_ref: str, *, target: str = "agent") -> str:
@@ -1478,6 +1485,7 @@ def _render_edit_ui(
 </div>
 <div id="status-bar">
   <button id="btn-save">Save &nbsp;<kbd>⌘S</kbd></button>
+  <button id="btn-improve" title="Propose better instructions with GEPA, scored against your eval set">✨ Improve instructions</button>
   <button id="btn-new-tool">+ New Tool</button>
   <button id="btn-from-data">✨ From data</button>
   <span id="status-msg"></span>
@@ -1591,7 +1599,7 @@ const view = new EditorView({{
 // Read-only (config-only) agents: hide source-mutating controls and show the
 // live tool schemas straight off the running agent (no AST parse to do).
 if (READ_ONLY) {{
-  for (const id of ['btn-save', 'btn-new-tool', 'btn-from-data']) {{
+  for (const id of ['btn-save', 'btn-improve', 'btn-new-tool', 'btn-from-data']) {{
     const b = document.getElementById(id);
     if (b) b.style.display = 'none';
   }}
@@ -1619,6 +1627,51 @@ async function save() {{
   }} catch (e) {{ msg.textContent = '✗ ' + e.message; msg.className = 'err'; }}
 }}
 document.getElementById('btn-save').addEventListener('click', save);
+
+// ── Improve instructions (GEPA) ───────────────────────────────────────────────
+// Runs mlflow.genai.optimize_prompts against the agent's eval set + a judge and
+// loads the winning instructions into the editor for review. Never auto-saves —
+// the human lands it via the existing Save control.
+async function improveInstructions() {{
+  const btn = document.getElementById('btn-improve');
+  const msg = document.getElementById('status-msg');
+  const judge_name = (prompt('Judge (scorer) name to score candidate instructions:') || '').trim();
+  if (!judge_name) return;
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Improving…';
+  msg.textContent = 'Optimizing instructions…'; msg.className = '';
+  try {{
+    const r = await (window.apxDevFetch||fetch)('/_apx/edit/optimize-instructions', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ judge_name }}),
+    }});
+    const d = await r.json();
+    if (d.ok) {{
+      // Splice the candidate into the source's first instructions= literal so the
+      // human sees the diff in the editor and applies it via Save (no auto-write).
+      // ponytail: naive first-match splice; if a file has multiple instructions=
+      //   args this hits the root agent's (declared first). Server-side Save owns
+      //   the authoritative write-back.
+      const src = view.state.doc.toString();
+      const re = /(instructions\\s*=\\s*)('{{3}}[\\s\\S]*?'{{3}}|"{{3}}[\\s\\S]*?"{{3}}|'(?:\\\\.|[^'\\\\])*'|"(?:\\\\.|[^"\\\\])*")/;
+      const next = src.replace(re, '$1' + JSON.stringify(d.candidate));
+      if (next !== src) {{
+        view.dispatch({{ changes: {{ from: 0, to: src.length, insert: next }} }});
+        schedulePreview();
+      }} else {{
+        alert('Candidate instructions (paste into the editor):\\n\\n' + d.candidate);
+      }}
+      const b = d.scores ? d.scores.before : null, a = d.scores ? d.scores.after : null;
+      msg.textContent = '✓ Candidate loaded — review & Save' + (a != null ? ` (judge ${{b}} → ${{a}})` : '');
+      msg.className = 'ok';
+    }} else {{
+      msg.textContent = '✗ ' + d.error; msg.className = 'err';
+    }}
+  }} catch (e) {{ msg.textContent = '✗ ' + e.message; msg.className = 'err'; }}
+  finally {{ btn.disabled = false; btn.textContent = label; }}
+}}
+document.getElementById('btn-improve').addEventListener('click', improveInstructions);
 
 // ── Schema preview ──────────────────────────────────────────────────────────
 let previewTimer = null;
