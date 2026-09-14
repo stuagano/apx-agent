@@ -1184,7 +1184,7 @@ def create_app(
                             except Exception:
                                 pass
                             try:
-                                rows = await _asyncio.get_event_loop().run_in_executor(None, _fetch_traces_list_sync, _exp_id)
+                                rows = await _asyncio.get_event_loop().run_in_executor(None, _fetch_traces_list_sync, _exp_id, 100)
                                 _TRACES_LIST_CACHE.put(rows)
                             except Exception:
                                 pass

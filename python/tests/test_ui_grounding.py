@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from apx_agent._dev import build_dev_ui_router
+from apx_agent._dev import _GROUNDING_COLUMNS_CACHE, build_dev_ui_router
 from apx_agent._okf import okf_columns, write_okf_bundle
 from apx_agent._ui_grounding import (
     apply_column_descriptions,
@@ -106,6 +106,7 @@ def test_apply_writes_accepted_descriptions_into_bundle(tmp_path):
 
 
 def _app(monkeypatch, okf_root, ws):
+    _GROUNDING_COLUMNS_CACHE._value = None  # reset between tests
     monkeypatch.setattr("apx_agent._ui_grounding.resolve_okf_root", lambda start=None: okf_root)
     app = FastAPI()
     app.state.workspace_client = ws
