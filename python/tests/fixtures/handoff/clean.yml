@@ -1,0 +1,56 @@
+# A handoff-ready bundle: SP-owned, timeouts everywhere, idle compute,
+# FQN tables, paused/owned schedules. lint_bundle(...) must return [].
+bundle:
+  name: sales-agent
+
+run_as:
+  service_principal_name: 11112222-3333-4444-5555-666677778888
+
+resources:
+  jobs:
+    ingest:
+      name: ingest
+      timeout_seconds: 3600
+      schedule:
+        quartz_cron_expression: "0 0 * * * ?"
+        pause_status: PAUSED
+      tasks:
+        - task_key: load
+          notebook_task:
+            notebook_path: ./load.py
+            base_parameters:
+              source_table: main.sales.raw_orders
+              target_table: main.sales.orders
+    nightly:
+      name: nightly
+      timeout_seconds: 1800
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        pause_status: UNPAUSED
+      run_as:
+        service_principal_name: 11112222-3333-4444-5555-666677778888
+      tasks:
+        - task_key: rollup
+          sql_task:
+            query:
+              query_id: abc
+
+  sql_warehouses:
+    reporting:
+      name: reporting
+      auto_stop_mins: 10
+
+  model_serving_endpoints:
+    agent-llm:
+      name: agent-llm
+      config:
+        served_entities:
+          - name: agent
+            scale_to_zero_enabled: true
+
+  pipelines:
+    dlt:
+      name: dlt
+      tables:
+        - main.sales.orders
+        - main.sales.customers

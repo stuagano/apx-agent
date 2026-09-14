@@ -150,8 +150,12 @@ def _require_capability(caps, cap_id: str):
     return by_id[cap_id]
 
 
-def cmd_status(root: Path, now: datetime, as_json: bool = False, check: bool = False) -> int:
+def cmd_status(
+    root: Path, now: datetime, as_json: bool = False, check: bool = False, tier: str | None = None
+) -> int:
     caps = load_manifest(root / MANIFEST_NAME)
+    if tier is not None:
+        caps = [c for c in caps if c.tier == tier]
     ledger = load_ledger(root / LEDGER_REL)
     reports = []
     for cap in caps:
@@ -201,8 +205,12 @@ def cmd_status(root: Path, now: datetime, as_json: bool = False, check: bool = F
     return rc
 
 
-def cmd_verify(root: Path, now: datetime, only: str | None, stale: bool = False) -> int:
+def cmd_verify(
+    root: Path, now: datetime, only: str | None, stale: bool = False, tier: str | None = None
+) -> int:
     caps = load_manifest(root / MANIFEST_NAME)
+    if tier is not None:
+        caps = [c for c in caps if c.tier == tier]
     _print_warnings(caps)
     ledger = load_ledger(root / LEDGER_REL)
     if only is not None:
@@ -374,7 +382,7 @@ def cmd_init(target: str, force: bool, install_deps: bool) -> int:
         print(f"  {r.action:11} {r.detail}")
     print()
     print("Next steps:")
-    print("  1. Add a capability:  python -m caps add --id <id> --tier <cheap|live> ...")
+    print("  1. Add a capability:  python -m caps add --id <id> --tier <cheap|live|handoff> ...")
     print("  2. Prove it:          python -m caps verify")
     print("  3. (optional) enforce on every turn — the wrapper is vendored at")
     print("     bin/caps-stop-gate.sh, but the hook is NOT installed by init.")
@@ -397,7 +405,19 @@ def main(argv=None, cwd: str | None = None) -> int:
         action="store_true",
         help="exit non-zero if any capability is unproven/failed/stale (CI gate)",
     )
+    st.add_argument(
+        "--tier",
+        default=None,
+        choices=["cheap", "live", "handoff"],
+        help="show only capabilities of this tier (default: all)",
+    )
     v = sub.add_parser("verify", help="run checks and record proof")
+    v.add_argument(
+        "--tier",
+        default=None,
+        choices=["cheap", "live", "handoff"],
+        help="verify only capabilities of this tier (default: all)",
+    )
     vsel = v.add_mutually_exclusive_group()
     vsel.add_argument(
         "--capability", dest="only", default=None, help="verify a single capability by id"
@@ -463,7 +483,7 @@ def main(argv=None, cwd: str | None = None) -> int:
     ad.add_argument("--given", required=True)
     ad.add_argument("--when", required=True)
     ad.add_argument("--then", required=True)
-    ad.add_argument("--tier", required=True, choices=["cheap", "live"])
+    ad.add_argument("--tier", required=True, choices=["cheap", "live", "handoff"])
     ad.add_argument("--deps", action="append", default=[], help="dep glob (repeat for multiple)")
     grp = ad.add_mutually_exclusive_group(required=True)
     grp.add_argument("--check", help="pytest node, e.g. checks/test_x.py::test_x")
@@ -571,9 +591,9 @@ def main(argv=None, cwd: str | None = None) -> int:
 
     try:
         if args.command == "status":
-            return cmd_status(root, now, args.json, args.check)
+            return cmd_status(root, now, args.json, args.check, args.tier)
         if args.command == "verify":
-            return cmd_verify(root, now, args.only, args.stale)
+            return cmd_verify(root, now, args.only, args.stale, args.tier)
         if args.command == "ack":
             return cmd_ack(root, now, args.capability, args.reason, args.for_)
         if args.command == "evidence":
