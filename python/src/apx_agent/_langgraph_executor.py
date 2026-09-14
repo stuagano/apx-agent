@@ -14,6 +14,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from ._errors import SessionBudgetExceeded
 from ._executor import (
     ExecutorConfig,
     ExecutorError,
@@ -98,6 +99,24 @@ def _texts_from_chunk(chunk: Any) -> list[str]:
             if text:
                 texts.append(text)
     return texts
+
+
+def _usage_from_messages(messages: list[Any]) -> dict[str, int]:
+    """Sum ``input_tokens``/``output_tokens`` across every AIMessage's usage.
+
+    LangChain chat models attach a ``usage_metadata`` dict (keys
+    ``input_tokens`` / ``output_tokens`` / ``total_tokens``) to each
+    ``AIMessage``. A single graph run may hold several — one per internal LLM
+    call in the tool loop — so we sum them to get the turn's total spend.
+    Returns zeros when no usage is reported (provider omitted it).
+    """
+    inp = out = 0
+    for msg in messages:
+        usage = getattr(msg, "usage_metadata", None)
+        if isinstance(usage, dict):
+            inp += int(usage.get("input_tokens") or 0)
+            out += int(usage.get("output_tokens") or 0)
+    return {"input_tokens": inp, "output_tokens": out}
 
 
 def _to_langchain_messages(messages: list[Any], system_prompt: str | None = None) -> list[Any]:
@@ -209,6 +228,24 @@ class LangGraphExecutor:
         self._model = model
         self._checkpointer = checkpointer
         self._compiled_cache: dict[tuple[str, int], Any] = {}
+        # FR-2: running input+output token total across turns of this executor,
+        # enforced against the agent's ``session_budget`` when one is declared.
+        self._session_tokens = 0
+
+    def _enforce_session_budget(self, usage: dict[str, int]) -> None:
+        """Accumulate this turn's tokens and raise if the declared cap is passed.
+
+        ponytail: within-turn aggregate — a single graph run may make several
+        internal LLM calls, and Databricks endpoints report usage only at the
+        turn's end, so the check lands once per turn rather than per LLM call.
+        """
+        budget = getattr(self._agent, "_session_budget", None)
+        if not budget:
+            return
+        self._session_tokens += usage["input_tokens"] + usage["output_tokens"]
+        cap = budget["tokens"]
+        if self._session_tokens > cap:
+            raise SessionBudgetExceeded(spent=self._session_tokens, cap=cap)
 
     def handles_tools_internally(self) -> bool:
         """Return ``True`` — LangGraph's ToolNode dispatches tool calls internally.
@@ -306,11 +343,16 @@ class LangGraphExecutor:
             # The streaming path emits TextChunk events; ainvoke emits none.
             streamed_ok = False
             collected_texts: list[str] = []
+            collected_messages: list[Any] = []
 
             try:
                 async for chunk in compiled.astream(
                     {"messages": lc_messages}, stream_mode="updates", config=lg_config
                 ):
+                    if isinstance(chunk, dict):
+                        for node_output in chunk.values():
+                            if isinstance(node_output, dict):
+                                collected_messages.extend(node_output.get("messages") or [])
                     for text in _texts_from_chunk(chunk):
                         collected_texts.append(text)
                         yield TextChunk(text=text)
@@ -325,16 +367,29 @@ class LangGraphExecutor:
                 # AIMessage) rather than joining all chunks, which would
                 # concatenate intermediate + final messages for multi-node
                 # graphs (Sequential, Loop, Router, Handoff, …).
-                yield TurnComplete(response=collected_texts[-1] if collected_texts else None)
+                usage = _usage_from_messages(collected_messages)
+                self._enforce_session_budget(usage)
+                yield TurnComplete(
+                    response=collected_texts[-1] if collected_texts else None,
+                    usage=usage,
+                )
             else:
                 # astream raised (graph is a sync-only stub or the provider
                 # doesn't support streaming) — fall back to ainvoke once.
                 result = await compiled.ainvoke(
                     {"messages": lc_messages}, config=lg_config
                 )
-                final_text = _final_text_from_messages(result.get("messages", []))
-                yield TurnComplete(response=final_text)
+                result_messages = result.get("messages", [])
+                usage = _usage_from_messages(result_messages)
+                self._enforce_session_budget(usage)
+                final_text = _final_text_from_messages(result_messages)
+                yield TurnComplete(response=final_text, usage=usage)
 
+        except SessionBudgetExceeded:
+            # FR-2 / NFR-2: a runaway loop must fail fast and loud — do NOT
+            # convert it to an ExecutorError (which the loop would swallow as
+            # empty text). Propagate so run_once / predict raise it directly.
+            raise
         except Exception as exc:
             logger.exception("LangGraphExecutor.run_turn failed: %s", exc)
             yield ExecutorError(message=str(exc), retryable=False)

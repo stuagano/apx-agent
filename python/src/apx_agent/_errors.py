@@ -42,6 +42,21 @@ through every caller.
 from __future__ import annotations
 
 
+class SessionBudgetExceeded(Exception):
+    """Cumulative session token usage crossed the declared ``session_budget``.
+
+    Raised by the executor within the same iteration whose usage pushes the
+    running ``input_tokens + output_tokens`` total past the cap, so a runaway
+    loop is stopped promptly rather than one turn late. Carries the accumulated
+    count and the cap so callers can report both.
+    """
+
+    def __init__(self, spent: int, cap: int) -> None:
+        self.spent = spent
+        self.cap = cap
+        super().__init__(f"session token budget exceeded: spent {spent} > cap {cap}")
+
+
 class ToolError(Exception):
     """A tool failed in an expected, legible way — contain it, don't crash.
 

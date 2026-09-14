@@ -58,7 +58,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 
 from ._agents import BaseAgent
-from ._audit import AuditAttrs, set_audit_attrs, stamp_version_correlation, user_hash
+from ._audit import (
+    AuditAttrs,
+    set_audit_attrs,
+    stamp_harness_version,
+    stamp_version_correlation,
+    user_hash,
+)
 from ._chat_agent import _pending_interrupt, _resume_decision
 from ._compile import compile_to_langgraph
 from ._executor import content_to_text as _content_to_text
@@ -1136,6 +1142,7 @@ def compile_to_responses_agent(
                 AuditAttrs.MODEL_STREAMING: False,
             },
         ) as span:
+            stamp_harness_version(span)
             stamp_version_correlation(span)
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             set_audit_attrs(
@@ -1341,6 +1348,7 @@ def compile_to_responses_agent(
                 AuditAttrs.MODEL_STREAMING: True,
             },
         ) as span:
+            stamp_harness_version(span)
             stamp_version_correlation(span)
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             set_audit_attrs(
