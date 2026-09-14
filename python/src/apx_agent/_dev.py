@@ -1407,6 +1407,119 @@ def _persist_instructions(
                 pass
 
 
+def _load_optimize_eval_rows() -> list[Any]:
+    """Eval rows for optimize-instructions — same source as GET /_apx/eval/data.
+
+    MLflow cache when fresh (and an experiment is set), else the local
+    ``evals.json`` via ``_find_evals_path``. Returns ``[]`` when neither yields
+    rows so the caller can fail clear without ever calling ``optimize_prompts``.
+    """
+    experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip()
+    if experiment_id and _EVAL_CASES_CACHE.fresh:
+        cached = _EVAL_CASES_CACHE.get()
+        if cached:
+            return cached
+    path = _find_evals_path()
+    if path is None or not path.exists():
+        return []
+    try:
+        data = _json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _current_root_instructions(ctx: "AgentContext | None") -> str:
+    """The root agent's current instructions — the text the editor shows and
+    Save persists. Prefers the on-disk ``agent.py`` (the source of truth), and
+    falls back to the live config with the dev-mode addendum stripped."""
+    from ._ui_edit import _find_agent_router_path, _parse_agent_nodes
+
+    path = _find_agent_router_path()
+    if path and path.exists():
+        for node in _parse_agent_nodes(path.read_text()):
+            if node["name"] == "agent" and node["instructions"]:
+                return node["instructions"]
+    instr = (ctx.config.instructions if ctx else "") or ""
+    if "[DEV MODE]" in instr:
+        instr = instr.split("[DEV MODE]", 1)[0].rstrip()
+    return instr
+
+
+def _optimize_instructions_sync(
+    *,
+    judge_name: str,
+    rows: list[Any],
+    agent: Any,
+    model: str,
+    current_instructions: str,
+    experiment_id: str | None,
+    reflection_model: str,
+) -> dict[str, Any]:
+    """Run GEPA prompt optimization against the eval rows + judge (synchronous —
+    called via ``asyncio.to_thread``).
+
+    Bridges the current instructions through a *transient* MLflow prompt: it is
+    registered, passed as the single ``prompt_uris`` entry, and deleted in a
+    ``finally`` so cleanup runs even if ``optimize_prompts`` raises. The prompt
+    registry is never surfaced and never a source of truth. Returns a dict with
+    a ``status`` key the route strips before responding.
+    """
+    import uuid
+
+    from mlflow import MlflowClient
+    from mlflow.genai import optimize_prompts, register_prompt
+    from mlflow.genai.optimize import GepaPromptOptimizer
+    from mlflow.genai.scorers import get_scorer
+
+    from apx_agent import _eval
+
+    try:
+        judge = get_scorer(name=judge_name, experiment_id=experiment_id)
+    except Exception as exc:  # noqa: BLE001 — unknown/unavailable judge → clear error, no optimize call
+        return {"ok": False, "error": f"Judge {judge_name!r} is not available: {exc}", "status": 422}
+
+    # Compile lazily on first predict so a mocked optimize (tests) never builds
+    # a graph, and a real run compiles exactly once across all metric calls.
+    compiled: dict[str, Any] = {}
+
+    def predict_fn(inputs: Any) -> str:
+        from mlflow.types.agent import ChatAgentMessage
+
+        if "agent" not in compiled:
+            compiled["agent"] = _eval.compile_to_chat_agent(agent, model=model)
+        chat_messages = [
+            ChatAgentMessage(role=m.get("role", "user"), content=m.get("content", ""), id=m.get("id"))
+            for m in _eval._extract_messages(inputs)
+        ]
+        return _eval._extract_response_text(compiled["agent"].predict(chat_messages))
+
+    prompt_name = f"apx_optimize_{uuid.uuid4().hex}"
+    registered = register_prompt(name=prompt_name, template=current_instructions)
+    uri = f"prompts:/{registered.name}/{registered.version}"
+    try:
+        result = optimize_prompts(
+            predict_fn=predict_fn,
+            train_data=_eval._normalize_evalset(rows),
+            prompt_uris=[uri],
+            optimizer=GepaPromptOptimizer(reflection_model=reflection_model),
+            scorers=[judge],
+        )
+        optimized = result.optimized_prompts or []
+        candidate = optimized[0].template if optimized else current_instructions
+        return {
+            "ok": True,
+            "candidate": candidate,
+            "scores": {"before": result.initial_eval_score, "after": result.final_eval_score},
+            "status": 200,
+        }
+    finally:
+        try:
+            MlflowClient().delete_prompt(prompt_name)
+        except Exception:  # noqa: BLE001 — best-effort cleanup of the transient bridge prompt
+            logger.warning("optimize-instructions: transient prompt cleanup failed for %s", prompt_name, exc_info=True)
+
+
 async def _ws_upload_agent_file(request: Request, local_path: "Path", content: str) -> None:
     """Write-back helper: upload a local agent file to its workspace counterpart."""
     import asyncio as _asyncio
@@ -2375,6 +2488,51 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     @router.post("/_apx/edit/preview", response_model=list[dict[str, Any]])
     async def preview_tool_schemas(body: EditPreviewRequest) -> Any:
         return _extract_schemas_from_source(body.source)
+
+    @router.post("/_apx/edit/optimize-instructions")
+    async def optimize_instructions(request: Request) -> Any:
+        """Propose better root-agent instructions via GEPA (mlflow.genai.optimize_prompts).
+
+        Scores candidate instructions against the agent's existing eval dataset +
+        judge, bridges through a transient prompt-registry entry, and returns only
+        the winning text + before/after scores — writing nothing to agent.py. The
+        Edit tab loads the candidate for review; the human lands it via the
+        existing Save path (POST /_apx/edit → _persist_instructions).
+        """
+        from fastapi.responses import JSONResponse
+        import asyncio as _asyncio
+
+        ctx: AgentContext | None = request.app.state.agent_context
+        body = await request.json()
+        judge_name = (body.get("judge_name") or "").strip()
+        if not judge_name:
+            return JSONResponse({"ok": False, "error": "judge_name is required"}, status_code=422)
+
+        rows = _load_optimize_eval_rows()
+        if not rows:
+            return JSONResponse(
+                {"ok": False, "error": "No eval dataset available. Add cases in the Eval tab or an evals.json first."},
+                status_code=422,
+            )
+
+        experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip() or None
+        try:
+            result = await _asyncio.to_thread(
+                _optimize_instructions_sync,
+                judge_name=judge_name,
+                rows=rows,
+                agent=ctx.agent if ctx else None,
+                model=getattr(ctx.config, "model", "") if ctx else "",
+                current_instructions=_current_root_instructions(ctx),
+                experiment_id=experiment_id,
+                reflection_model="databricks:/databricks-claude-sonnet-4-6",
+            )
+        except Exception as exc:  # noqa: BLE001 — optimize/predict failure → clean 500 (transient prompt already cleaned in finally)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        status = result.pop("status")
+        if not result["ok"]:
+            return JSONResponse(result, status_code=status)
+        return result
 
     @router.get("/_apx/tools/schema", response_model=ToolSchemaResponse)
     async def get_tool_schema_context(request: Request) -> Any:
