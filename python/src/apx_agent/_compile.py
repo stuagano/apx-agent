@@ -50,6 +50,7 @@ from ._agents import (
     RouterAgent,
     SEQUENTIAL_CONTINUATION,
     SequentialAgent,
+    TOOL_SEARCH_TOOL_NAME,
     handoff_transfer_description,
 )
 from ._defaults import (
@@ -375,27 +376,50 @@ def _compile_llm_agent(
 
     from ._callbacks import build_callback_handler
 
-    tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
-    if extra_tools:
-        tools = tools + list(extra_tools)
+    eager_tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
+    extra = list(extra_tools) if extra_tools else []
+    # FR-1: honor ``tool_loading="deferred"`` at compile time — bind only the
+    # tool_search tool (+ any control-flow extras) so the first LLM call carries
+    # one schema instead of O(tools). ``eager`` (default) binds every schema.
+    deferred = getattr(agent, "_tool_loading", "eager") == "deferred"
+    if deferred:
+        tools = [_tool_search_langchain_tool(), *extra]
+    else:
+        tools = eager_tools + extra
     llm = _build_chat_databricks(
         ctx.model,
         temperature=getattr(agent, "_temperature", None),
         max_tokens=getattr(agent, "_max_tokens", None),
     )
-    create_kwargs: dict[str, Any] = {
-        "model": llm,
-        "tools": tools,
-        "system_prompt": (agent._instructions or None) if bake_prompt else None,
-        "middleware": [_governance_exception_middleware()],
-    }
-    if _agent_has_state_tool(agent):
-        create_kwargs["state_schema"] = state_schema()
-    if ctx.checkpointer is not None:
-        # Thread-scoped short-term memory: the create_agent runtime persists
-        # graph state per ``thread_id`` between turns via this saver.
-        create_kwargs["checkpointer"] = ctx.checkpointer
-    runnable = create_agent(**create_kwargs)
+
+    def _build(tool_list: list[Any]) -> Any:
+        create_kwargs: dict[str, Any] = {
+            "model": llm,
+            "tools": tool_list,
+            "system_prompt": (agent._instructions or None) if bake_prompt else None,
+            "middleware": [_governance_exception_middleware()],
+        }
+        if _agent_has_state_tool(agent):
+            create_kwargs["state_schema"] = state_schema()
+        if ctx.checkpointer is not None:
+            # Thread-scoped short-term memory: the create_agent runtime persists
+            # graph state per ``thread_id`` between turns via this saver.
+            create_kwargs["checkpointer"] = ctx.checkpointer
+        return create_agent(**create_kwargs)
+
+    try:
+        runnable = _build(tools)
+    except Exception as exc:
+        # FR-1 graceful fallback: an endpoint that can't accept the tool_search
+        # tool must not break compile — bind eagerly and warn instead.
+        if not deferred:
+            raise
+        logger.warning(
+            "tool_loading='deferred' not accepted by endpoint (%s); "
+            "falling back to eager tool binding",
+            exc,
+        )
+        runnable = _build(eager_tools + extra)
     config: dict[str, Any] = {}
     handler = build_callback_handler(agent)
     if handler is not None:
@@ -507,6 +531,20 @@ def _build_synthetic_tool(name: str, description: str, marker: str) -> Any:
         name=name,
         description=description,
         args_schema=_SyntheticInput,
+    )
+
+
+def _tool_search_langchain_tool() -> Any:
+    """The single tool bound when ``tool_loading="deferred"`` (FR-1).
+
+    A langchain tool named after the deferred-loading contract so the model can
+    fetch real tool schemas on demand instead of receiving all of them up front.
+    """
+    return _build_synthetic_tool(
+        TOOL_SEARCH_TOOL_NAME,
+        "Search this agent's tool catalog and fetch a tool's schema on demand. "
+        "Call this before using any tool whose schema you have not yet received.",
+        TOOL_SEARCH_TOOL_NAME,
     )
 
 

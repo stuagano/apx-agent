@@ -119,6 +119,26 @@ def _usage_from_messages(messages: list[Any]) -> dict[str, int]:
     return {"input_tokens": inp, "output_tokens": out}
 
 
+def enforce_served_budget(agent: Any, messages: list[Any]) -> None:
+    """Raise :class:`SessionBudgetExceeded` if a served turn's usage passes the cap.
+
+    FR-2: the served entrypoints (chat ``predict``/``predict_stream``, responses
+    ``invoke``/``stream``) drive the compiled graph directly rather than through
+    :meth:`LangGraphExecutor.run_turn`, so they call this at the served-turn
+    boundary to honor a declared ``session_budget``. ``messages`` are this turn's
+    new messages; usage is summed from their ``usage_metadata`` via the shared
+    :func:`_usage_from_messages` (no duplicated token-summing logic).
+    """
+    budget = getattr(agent, "_session_budget", None)
+    if not budget:
+        return
+    usage = _usage_from_messages(messages)
+    spent = usage["input_tokens"] + usage["output_tokens"]
+    cap = budget["tokens"]
+    if spent > cap:
+        raise SessionBudgetExceeded(spent=spent, cap=cap)
+
+
 def _to_langchain_messages(messages: list[Any], system_prompt: str | None = None) -> list[Any]:
     """Convert a mixed list of messages to LangChain ``BaseMessage`` objects.
 

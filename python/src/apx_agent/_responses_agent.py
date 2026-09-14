@@ -1273,6 +1273,10 @@ def compile_to_responses_agent(
                 # (mirrors ChatAgent.predict's slice_start).
                 slice_start = pre_count if resume is not None else pre_count + input_count
                 new_lc = result["messages"][slice_start:]
+                # FR-2: enforce the declared session_budget at the served-turn
+                # boundary (this served path never touches run_turn).
+                from ._langgraph_executor import enforce_served_budget
+                enforce_served_budget(agent, new_lc)
                 raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
                 output_items = _flatten_output_items(raw_items)
 
@@ -1396,6 +1400,7 @@ def compile_to_responses_agent(
 
             output_items: list[dict[str, Any]] = []
             output_index = 0
+            turn_lc_messages: list[Any] = []
 
             if _use_sdk:
                 from ._agents import LlmAgent as _LlmAgent
@@ -1469,6 +1474,7 @@ def compile_to_responses_agent(
                         if not isinstance(node_output, dict):
                             continue
                         for lc_msg in node_output.get("messages", []) or []:
+                            turn_lc_messages.append(lc_msg)
                             raw = _langchain_to_output_item(lc_msg, output_index)
                             for item in _flatten_output_items([raw]):
                                 output_items.append(item)
@@ -1478,6 +1484,11 @@ def compile_to_responses_agent(
                                     output_index=output_index,
                                 )
                                 output_index += 1
+
+                # FR-2: enforce the declared session_budget at the served-turn
+                # boundary (this served path never touches run_turn).
+                from ._langgraph_executor import enforce_served_budget
+                enforce_served_budget(_agent, turn_lc_messages)
 
                 # Mid-turn approval: a gated tool suspended the run → surface the
                 # ask (done item + completed event carrying the payload). The tool

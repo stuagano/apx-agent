@@ -799,11 +799,17 @@ class ParallelAgent(BaseAgent):
     async def run(self, messages: list[Message], request: Request) -> str:
         import asyncio
 
-        # FR-4: each branch is independent, so it receives only the triggering
-        # user message — not the shared conversation — avoiding O(branches)
-        # context bloat. Breaking change from the prior shared-context pass.
+        # F4: empty input has no user message to forward — nothing to fan out.
+        if not messages:
+            return ""
+        # FR-4/F5: each branch is independent, so it receives only the incoming
+        # system message (if any) + the triggering user message — not the shared
+        # conversation — avoiding O(branches) context bloat. Breaking change from
+        # the prior shared-context pass.
+        incoming_system = next((m for m in messages if m.role == "system"), None)
         last_user = next((m for m in reversed(messages) if m.role == "user"), messages[-1])
-        context = self._prepend_instructions([last_user])
+        forwarded = [incoming_system, last_user] if incoming_system else [last_user]
+        context = self._prepend_instructions(forwarded)
         results = await asyncio.gather(*[sub.run(context, request) for sub in self._agents])
         return "\n\n".join(str(r) for r in results)
 

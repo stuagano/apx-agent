@@ -43,12 +43,14 @@ from __future__ import annotations
 
 
 class SessionBudgetExceeded(Exception):
-    """Cumulative session token usage crossed the declared ``session_budget``.
+    """Token usage crossed the declared ``session_budget``.
 
-    Raised by the executor within the same iteration whose usage pushes the
-    running ``input_tokens + output_tokens`` total past the cap, so a runaway
-    loop is stopped promptly rather than one turn late. Carries the accumulated
-    count and the cap so callers can report both.
+    Enforced at the served-turn boundary: after a served turn completes, its
+    total ``input_tokens + output_tokens`` is summed and this is raised when the
+    running total passes the cap. LangGraph runs its whole tool loop inside one
+    graph call, so the check lands once per served turn — the internal loop is
+    not intercepted mid-iteration. Carries the accumulated count and the cap so
+    callers can report both.
     """
 
     def __init__(self, spent: int, cap: int) -> None:
