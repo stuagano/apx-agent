@@ -50,7 +50,7 @@ Stop and ask before deleting code outside the change's scope, weakening or
 skipping a test to get green, or any deploy / production / external action.
 
 Worked loop scaffolds: [`docs/loops/README.md`](docs/loops/README.md) and the
-loop-library skill at `.claude/skills/loop-library`.
+global `loop-library` skill.
 
 ## Commands
 
