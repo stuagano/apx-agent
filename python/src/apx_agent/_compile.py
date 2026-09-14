@@ -616,19 +616,27 @@ def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
         state: Annotated[dict[str, Any], _merge_state]
         iteration: int
 
-    # Build the inner react agent with finish_loop appended to its tools.
-    finish_tool = _build_synthetic_tool(
-        name=LoopAgent.FINISH_TOOL,
-        description=(
-            "Signal that the iterative task is complete and exit the loop. "
-            "Call this tool when no further iterations are needed."
-        ),
-        marker="LOOP_FINISHED",
-    )
-    # Compile the inner agent through the governed path so its middleware,
-    # callbacks, state_schema, and generation config survive being looped (#370);
-    # the finish-loop tool rides along as an extra tool.
-    inner_node = _compile_llm_agent(inner, ctx, extra_tools=[finish_tool])
+    binding = ctx.remote_leaf_bindings.get(getattr(inner, "_name", None))
+    if binding is not None:
+        # Remote loop body: the peer signals finish_loop over the wire as a
+        # ControlSignal, which the bound-leaf node reconstructs as the sentinel
+        # tool_call _route already reads. No local finish_tool — the remote
+        # decides completion.
+        inner_node = _compile_bound_remote_leaf(inner, binding, ctx)
+    else:
+        # Build the inner react agent with finish_loop appended to its tools.
+        finish_tool = _build_synthetic_tool(
+            name=LoopAgent.FINISH_TOOL,
+            description=(
+                "Signal that the iterative task is complete and exit the loop. "
+                "Call this tool when no further iterations are needed."
+            ),
+            marker="LOOP_FINISHED",
+        )
+        # Compile the inner agent through the governed path so its middleware,
+        # callbacks, state_schema, and generation config survive being looped
+        # (#370); the finish-loop tool rides along as an extra tool.
+        inner_node = _compile_llm_agent(inner, ctx, extra_tools=[finish_tool])
 
     def _check_done_node(state: dict) -> dict[str, Any]:
         return {"iteration": state.get("iteration", 0) + 1}
@@ -787,6 +795,13 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
 
     def _build_node(current_name: str) -> Any:
         inner = agents[current_name]
+        binding = ctx.remote_leaf_bindings.get(current_name)
+        if binding is not None:
+            # Remote handoff peer: it signals transfer_to:<target> over the wire
+            # as a ControlSignal; the bound-leaf node reconstructs the sentinel
+            # tool_call _route reads and validates the target against the local
+            # sibling allowlist (FR-4). No local transfer_tools bound.
+            return _compile_bound_remote_leaf(inner, binding, ctx)
         transfer_tools = [
             _build_synthetic_tool(
                 name=f"{prefix}{other}",
@@ -1056,10 +1071,39 @@ def _compile_bound_remote_leaf(
                     Message.model_validate(_from_langchain_message(message, index).model_dump())
                 )
         try:
-            result = await remote._run_with_incoming_headers(messages, _incoming_headers())
+            reply = await remote.run_with_control(messages, _incoming_headers())
         except Exception as exc:
             raise RuntimeError(f"Stage {binding.logical_name!r} failed") from exc
-        return {"messages": [AIMessage(content=result)]}
+        control = reply.control
+        if control is None:
+            return {"messages": [AIMessage(content=reply.text)]}
+        # A control reply: reconstruct the sentinel tool_call so the existing
+        # router (_last_ai_tool_call_name) consumes it exactly as in-process,
+        # while reply.text stays on the AIMessage content (FR-6 coexistence).
+        prefix = HandoffAgent.TRANSFER_PREFIX
+        if control.name.startswith(prefix):
+            target = control.name[len(prefix) :]
+            if target not in binding.transfer_targets:
+                # FR-4: a peer may only transfer to a target in the local graph.
+                # Name the logical binding + target; never the URL/transport.
+                raise RuntimeError(
+                    f"remote handoff peer {binding.logical_name!r} requested "
+                    f"transfer to unknown target {target!r}"
+                )
+        return {
+            "messages": [
+                AIMessage(
+                    content=reply.text,
+                    tool_calls=[
+                        {
+                            "name": control.name,
+                            "args": control.args,
+                            "id": control.id or f"{binding.logical_name}-control",
+                        }
+                    ],
+                )
+            ]
+        }
 
     def _sync_node(state: dict[str, Any]) -> dict[str, Any]:
         import asyncio

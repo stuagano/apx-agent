@@ -55,6 +55,64 @@ logger = logging.getLogger(__name__)
 class _RemoteLeafBinding:
     logical_name: str
     card_url: str
+    # Sibling node names a handoff peer may transfer to (FR-4 local-graph
+    # allowlist). Empty for non-handoff positions; a handoff peer's reconstructed
+    # ``transfer_to:<target>`` is rejected when the target is not in this set.
+    transfer_targets: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _RemoteReply:
+    """A remote reply's text plus an optional structured control signal.
+
+    Lint bans ``tuple[...]`` returns; this names the two halves so a control
+    reply and its content coexist (FR-6) without positional ambiguity."""
+
+    text: str
+    control: Any | None  # ControlSignal | None (typed lazily to dodge an import cycle)
+
+
+def _is_control_sentinel(name: str) -> bool:
+    """True when a function_call name is a control-flow sentinel (finish_loop /
+    transfer_to_<target>)."""
+    from ._agents import HandoffAgent, LoopAgent  # noqa: PLC0415
+
+    return name == LoopAgent.FINISH_TOOL or name.startswith(HandoffAgent.TRANSFER_PREFIX)
+
+
+def _extract_remote_control(data: Any) -> Any | None:
+    """The trailing control sentinel on a Responses reply as a ``ControlSignal``.
+
+    Sibling to ``_reply_text``: scans ``data["output"]`` for the last
+    ``function_call`` item whose name is a control sentinel and reconstructs the
+    serialized tool_call. ``None`` when the reply carries no control item — an
+    ordinary (non-control) reply, byte-for-byte the prior behavior (NFR-1).
+
+    The wire carrier is the existing structured ``function_call`` output item
+    (already emitted by ``_langchain_to_output_item``), never reply text (FR-4/G4).
+    """
+    from ._a2a_models import ControlSignal  # noqa: PLC0415
+
+    items = data.get("output") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return None
+    for item in reversed(items):
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not _is_control_sentinel(name):
+            continue
+        raw_args = item.get("arguments")
+        try:
+            args = _json.loads(raw_args) if isinstance(raw_args, str) and raw_args else {}
+        except _json.JSONDecodeError:
+            args = {}
+        return ControlSignal(
+            name=name,
+            args=args if isinstance(args, dict) else {},
+            id=item.get("call_id"),
+        )
+    return None
 
 
 def _responses_input(messages: Sequence[Message | dict[str, Any]]) -> list[dict[str, Any]]:
@@ -296,6 +354,7 @@ class RemoteDatabricksAgent(BaseAgent):
         self._long_task = long_task
         self._max_continuations = max_continuations
         self._card: AgentCard | None = None
+        self._last_http_url = f"{self._base_url}/responses"
 
     # ------------------------------------------------------------------
     # Factory methods
@@ -745,6 +804,79 @@ class RemoteDatabricksAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Internal: direct HTTP path
     # ------------------------------------------------------------------
+
+    async def _post_via_http(
+        self,
+        messages: Sequence[Message | dict[str, Any]],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        """Direct POST /responses (→ /invocations fallback); return the raw reply.
+
+        The structured body — needed to recover a control ``function_call`` item
+        (``_extract_remote_control``) as well as the answer text. ``_call_via_http``
+        wraps this for the text-only callers.
+        """
+        from httpx import AsyncClient
+
+        payload: dict[str, Any] = {
+            "input": _responses_input(messages),
+        }
+        custom_inputs = _obo_custom_inputs(headers)
+        if custom_inputs:
+            payload["custom_inputs"] = custom_inputs
+        url = f"{self._base_url}/responses"
+
+        async with AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json", **headers},
+            )
+            if resp.status_code in (404, 405):
+                url = f"{self._base_url}/invocations"
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json", **headers},
+                )
+
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Remote agent {self.name} returned {resp.status_code}: {resp.text}"
+            )
+
+        data = resp.json()
+        self._last_http_url = url
+        return data
+
+    async def run_with_control(
+        self,
+        messages: Sequence[Message | dict[str, Any]],
+        incoming_headers: Mapping[str, str],
+    ) -> _RemoteReply:
+        """Run the remote leg, returning the answer text plus any control signal.
+
+        The control-aware sibling of ``_run_with_incoming_headers`` used by the
+        bound-leaf runnable so remote loop/handoff peers route like local ones.
+        Only the direct HTTP path recovers control — the ``apps/<name>`` SDK path
+        yields ``output_text`` alone, which cannot carry a ``function_call`` item.
+        # ponytail: SDK/OBO-gateway control round-trip unsupported (output_text is
+        # text-only); a bound leaf reaches its peer over direct HTTP in practice.
+        """
+        await self._init_quietly()
+        obo_headers = self._obo_headers(incoming_headers)
+        corr_headers = self._correlation_headers()
+
+        if self._app_name:
+            # No structured items over the SDK path — fall back to text-only run.
+            text = await self._run_with_incoming_headers(messages, incoming_headers)
+            return _RemoteReply(text=text, control=None)
+
+        data = await self._post_via_http(messages, {**obo_headers, **corr_headers})
+        return _RemoteReply(
+            text=_reply_text(data, url=self._last_http_url, agent_name=self.name),
+            control=_extract_remote_control(data),
+        )
 
     async def _call_via_http(
         self,

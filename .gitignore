@@ -120,3 +120,10 @@ _prd_*.md
 
 # Databricks Apps deploy logs (local)
 **/deploy_apps*.log
+
+# relentless pipeline artifacts (auto-added by relentless-preflight)
+_relentless_config.json
+_relentless_state.md
+_orchestration_state.md
+_gates.json
+_validation_report.json
