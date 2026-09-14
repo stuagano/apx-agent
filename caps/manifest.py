@@ -10,8 +10,8 @@ class ManifestError(Exception):
     """Raised when capabilities.yaml is malformed or invalid."""
 
 
-VALID_TIERS = ("cheap", "live")
-DEFAULT_FRESHNESS = {"cheap": "code", "live": "24h"}
+VALID_TIERS = ("cheap", "live", "handoff")
+DEFAULT_FRESHNESS = {"cheap": "code", "live": "24h", "handoff": "code"}
 REQUIRED_FIELDS = ("id", "description", "given", "when", "then", "tier", "check")
 
 
