@@ -11,9 +11,12 @@ align_judge so `label start` never requires the [align] extra.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 try:  # mlflow is the `eval`/`align` extra
     from mlflow.genai import label_schemas as _label_schemas
@@ -288,18 +291,27 @@ def start_session(
     # requires a root span). mlflow.get_trace() fetches individual traces with
     # full span data and works on FEVM. Fixes #718.
     full_traces = []
+    skipped: list[str] = []
     if _mlflow is not None:
         for tid in trace_ids:
             try:
                 full_traces.append(_mlflow.get_trace(tid))
-            except Exception:
-                pass  # skip traces whose spans are still unavailable
+            except Exception as exc:
+                skipped.append(tid)
+                logger.warning("label start: skipping trace %s (could not fetch spans): %s", tid, exc)
+    if skipped:
+        logger.warning(
+            "label start: %d of %d matched traces were unavailable and not added to the session",
+            len(skipped), len(trace_ids),
+        )
     if full_traces:
         session = session.add_traces(full_traces)
 
+    # trace_count reflects what was actually added, not what was matched — a
+    # session that silently received fewer traces must not report the full count.
     return StartResult(
         run_id=run_id, session_url=str(getattr(session, "url", "")),
-        trace_count=len(trace_ids), schema_name=schema_name,
+        trace_count=len(full_traces), schema_name=schema_name,
     )
 
 
@@ -354,12 +366,19 @@ def align_judge(
         return_type="list", include_spans=False,
     )
     traces = []
+    skipped_align: list[str] = []
     if _mlflow is not None:
         for t in thin:
             try:
                 traces.append(_mlflow.get_trace(t.info.trace_id))
-            except Exception:
-                pass
+            except Exception as exc:
+                skipped_align.append(t.info.trace_id)
+                logger.warning("label align: skipping trace %s (could not fetch spans): %s", t.info.trace_id, exc)
+    if skipped_align:
+        logger.warning(
+            "label align: %d of %d traces were unavailable and excluded from alignment",
+            len(skipped_align), len(thin),
+        )
     if not traces:
         raise LabelingError(
             f"no traces found for run '{run_id}'. Check the run id or re-run `label start`."

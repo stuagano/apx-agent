@@ -1,3 +1,4 @@
+import logging
 import pytest
 import pandas as pd
 from datetime import datetime, timezone
@@ -230,6 +231,46 @@ def test_start_session_creates_schema_with_judge_name(monkeypatch):
     assert res.session_url == "https://x/sme"
     assert res.trace_count == 2
     assert added.get("n", 0) == 2, "scored traces are added to the session via add_traces"
+
+
+@pytest.mark.unit
+def test_start_session_skipped_trace_is_logged_and_counted(monkeypatch, caplog):
+    # #763: a trace whose spans can't be fetched (e.g. FEVM blob store) must be
+    # logged and excluded from the reported count — never silently dropped.
+    judge = _judge(name="dq", ft=float)
+    monkeypatch.setattr(_labeling, "set_experiment", lambda **kw: None)
+    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: judge)
+    monkeypatch.setattr(_labeling, "create_label_schema", lambda **kw: None)
+    monkeypatch.setattr(_labeling, "select_scored_traces",
+                        lambda **kw: pd.DataFrame({"trace_id": ["t1", "t2"]}))
+    monkeypatch.setattr(_labeling, "tag_traces", lambda ids, rid: len(ids))
+
+    def flaky_get_trace(tid):
+        if tid == "t2":
+            raise RuntimeError("span blob store blocked")
+        return SimpleNamespace(info=SimpleNamespace(trace_id=tid))
+
+    import apx_agent._labeling as _lab_mod
+    monkeypatch.setattr(_lab_mod, "_mlflow", SimpleNamespace(get_trace=flaky_get_trace))
+
+    added = {}
+    session = SimpleNamespace(
+        add_traces=lambda traces: (added.update(n=len(traces)), session)[1],
+        url="https://x/sme")
+    monkeypatch.setattr(_labeling, "create_labeling_session", lambda **kw: session)
+    monkeypatch.setattr(_labeling, "get_review_app", lambda experiment_id: None)
+
+    with caplog.at_level(logging.WARNING):
+        res = _labeling.start_session(
+            experiment_id="123", agent_name="a", judge_name="dq",
+            scale="1-5", options=None, assignees=[], filter_string=None,
+            limit=None, endpoint=None, attach_agent=False,
+            now=datetime(2026, 6, 17, 19, 5, 30, tzinfo=timezone.utc),
+        )
+
+    assert added["n"] == 1, "only the fetchable trace is added to the session"
+    assert res.trace_count == 1, "count reflects traces actually added, not matched"
+    assert any("t2" in r.message for r in caplog.records), "skipped trace is logged, not swallowed"
 
 
 def _base_start_session_monkeypatches(monkeypatch):
