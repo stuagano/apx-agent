@@ -205,6 +205,9 @@ def test_start_session_creates_schema_with_judge_name(monkeypatch):
     monkeypatch.setattr(_labeling, "select_scored_traces",
                         lambda **kw: pd.DataFrame({"trace_id": ["t1", "t2"]}))
     monkeypatch.setattr(_labeling, "tag_traces", lambda ids, rid: len(ids))
+    import apx_agent._labeling as _lab_mod
+    monkeypatch.setattr(_lab_mod, "_mlflow",
+                        SimpleNamespace(get_trace=lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid))))
 
     added = {}
     session = SimpleNamespace(add_traces=lambda traces: (added.update(n=len(traces)), session)[1],
@@ -226,7 +229,7 @@ def test_start_session_creates_schema_with_judge_name(monkeypatch):
     assert res.run_id == "domain_quality_base-20260617T190530Z"
     assert res.session_url == "https://x/sme"
     assert res.trace_count == 2
-    assert added["n"] == 2, "scored traces are added to the session via add_traces"
+    assert added.get("n", 0) == 2, "scored traces are added to the session via add_traces"
 
 
 def _base_start_session_monkeypatches(monkeypatch):
