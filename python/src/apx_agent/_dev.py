@@ -1523,7 +1523,7 @@ def _fetch_eval_cases_sync(experiment_id: str) -> list[dict[str, Any]]:
             order_by=["attributes.start_time DESC"],
         )
         cases: list[dict[str, Any]] = []
-        for _, row in df.iterrows():
+        for _, row in df.iterrows():  # type: ignore[union-attr]
             assessments = row.get("assessments") or []
             quality = next(
                 (a for a in assessments
@@ -1553,7 +1553,7 @@ def _fetch_eval_cases_sync(experiment_id: str) -> list[dict[str, Any]]:
                 rationale = getattr(quality, "rationale", None) or ""
                 value = getattr(quality, "value", None)
                 if hasattr(value, "value"):
-                    value = value.value
+                    value = value.value  # type: ignore[union-attr]
             cases.append({
                 "question": question,
                 "expected_judge": rationale or ("response should be correct and grounded" if value else "response should decline or be flagged"),
@@ -4365,7 +4365,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 order_by=["attributes.start_time DESC"],
             )
             labeled_ids = [
-                str(row["trace_id"]) for _, row in df.iterrows()
+                str(row["trace_id"]) for _, row in df.iterrows()  # type: ignore[union-attr]
                 if any(
                     (a.get("assessment_name") if isinstance(a, dict) else getattr(a, "name", None)) == judge_name
                     for a in (row.get("assessments") or [])

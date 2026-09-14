@@ -1697,6 +1697,8 @@ def test_deploy_version_redeploys_logged_version_skipping_publish_and_log(
         return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
     )
     fake_agents = _types.ModuleType("databricks.agents")
+    import importlib.util as _ilu
+    fake_agents.__spec__ = _ilu.spec_from_loader("databricks.agents", None)  # type: ignore[attr-defined]
     fake_agents.deploy = deploy_mock  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "databricks.agents", fake_agents)
     fake_log_agent = MagicMock(
@@ -1727,7 +1729,7 @@ def test_deploy_version_redeploys_logged_version_skipping_publish_and_log(
     fake_log_agent.assert_not_called()
     fake_publish.assert_not_called()
     assert deploy_mock.call_args.args[0] == "main.agents.x"
-    assert deploy_mock.call_args.kwargs["model_version"] == "7"
+    assert deploy_mock.call_args.kwargs["model_version"] == 7
     payload = json.loads(result.stdout)
     assert payload["version"] == "7"
     assert payload["steps"]["publish_tools"] == "skipped"
