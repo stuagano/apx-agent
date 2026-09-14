@@ -39,6 +39,7 @@ about specific agents.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import os
@@ -73,6 +74,7 @@ class AuditAttrs:
 
     # Agent identity & scope
     AGENT_NAME = "apx.agent.name"
+    HARNESS_VERSION = "apx.harness.version"
     AGENT_VERSION = "apx.agent.version"
     SESSION_ID = "apx.session.id"
     OPERATION = "apx.operation"  # predict | predict_stream | tool_call | model_call | sub_agent_call
@@ -230,6 +232,27 @@ def version_correlation_attrs() -> dict[str, str]:
         if value:
             attrs[key] = value
     return attrs
+
+
+@functools.lru_cache(maxsize=1)
+def _harness_version() -> str:
+    """Installed apx-agent version, cached (FR-5). ``dev`` when not installed."""
+    import importlib.metadata
+
+    try:
+        return importlib.metadata.version("apx-agent")
+    except importlib.metadata.PackageNotFoundError:
+        return "dev"
+
+
+def stamp_harness_version(span: Any) -> None:
+    """Stamp the installed apx-agent version on ``span`` (FR-5).
+
+    Called on every top-level predict / predict_stream span, unconditionally —
+    kept separate from the env-gated ``stamp_version_correlation`` so it never
+    perturbs the #404 no-op-without-env contract.
+    """
+    set_span_attribute(span, AuditAttrs.HARNESS_VERSION, _harness_version())
 
 
 def stamp_version_correlation(span: Any) -> None:

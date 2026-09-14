@@ -771,10 +771,11 @@ class _EnvVarGuard:
 
 
 def _resolve_version() -> str:
-    try:
-        return importlib.metadata.version("apx-agent")
-    except importlib.metadata.PackageNotFoundError:
-        return "dev"
+    # Single source of truth: the audit module already resolves + caches the
+    # installed version for the apx.harness.version trace attribute.
+    from ._audit import _harness_version
+
+    return _harness_version()
 
 
 _MOVED_COMMANDS: dict[str, str] = {
@@ -1201,6 +1202,7 @@ def status(
             ]
         payload: dict[str, Any] = {
             "profile": profile,
+            "harness_version": _resolve_version(),
             "in_project": in_project,
             "cwd": str(cwd),
             "project": None if not in_project else {
@@ -1223,6 +1225,7 @@ def status(
         click.echo(f"target:  {target}")
     else:
         click.echo(f"project: none ({cwd} is not an apx project)")
+    click.echo(f"harness: {_resolve_version()}")
     click.echo("\nRun `apx-agent doctor` for a full environment check.")
 
 
