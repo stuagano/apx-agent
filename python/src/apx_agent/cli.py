@@ -771,10 +771,11 @@ class _EnvVarGuard:
 
 
 def _resolve_version() -> str:
-    try:
-        return importlib.metadata.version("apx-agent")
-    except importlib.metadata.PackageNotFoundError:
-        return "dev"
+    # Single source of truth: the audit module already resolves + caches the
+    # installed version for the apx.harness.version trace attribute.
+    from ._audit import _harness_version
+
+    return _harness_version()
 
 
 _MOVED_COMMANDS: dict[str, str] = {
