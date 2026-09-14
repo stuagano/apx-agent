@@ -425,6 +425,7 @@ def _apply_remote_leaf_bindings(
     from ._remote import _RemoteLeafBinding  # noqa: PLC0415
 
     leaves: dict[str, list[str | None]] = {}
+    handoff_siblings: dict[str, frozenset[str]] = {}
 
     def _walk(agent: BaseAgent, control_position: str | None = None) -> None:
         children: list[tuple[BaseAgent, str]]
@@ -443,6 +444,9 @@ def _apply_remote_leaf_bindings(
             children = [(agent._inner, "loop")]
         elif isinstance(agent, HandoffAgent):
             children = [(child, "handoff") for child in agent._agents.values()]
+            all_names = list(agent._agents.keys())
+            for name in all_names:
+                handoff_siblings[name] = frozenset(n for n in all_names if n != name)
         else:
             logical_name = getattr(agent, "_name", None)
             if isinstance(logical_name, str) and logical_name:
@@ -489,14 +493,14 @@ def _apply_remote_leaf_bindings(
             )
 
         control_position = matches[0]
-        if control_position == "loop":
-            raise ValueError(
-                "remote loop completion requires an A2A control protocol"
-            )
-        if control_position == "handoff":
-            raise ValueError("remote handoff requires an A2A control protocol")
-
-        resolved[logical_name] = _RemoteLeafBinding(logical_name, card_url)
+        # Loop/handoff peers route via a typed control signal on the reply
+        # (ControlSignal → reconstructed sentinel tool_call), so a bound leaf in
+        # these positions resolves like a sequential one. A handoff peer may only
+        # transfer to a sibling in the local graph (FR-4 allowlist).
+        transfer_targets = handoff_siblings.get(logical_name, frozenset())
+        resolved[logical_name] = _RemoteLeafBinding(
+            logical_name, card_url, transfer_targets=transfer_targets
+        )
 
     setattr(root, "_apx_remote_leaf_bindings", MappingProxyType(resolved))
 

@@ -137,29 +137,32 @@ def test_duplicate_logical_leaf_name_fails_closed(tmp_path: Path) -> None:
         _finalize(root, _config(_CARD_URL), tmp_path)
 
 
-def test_remote_loop_body_requires_control_protocol(tmp_path: Path) -> None:
+def test_remote_loop_body_binding_resolves(tmp_path: Path) -> None:
+    # AC-6: the old guard is gone — a remote loop body now resolves like a
+    # sequential leaf; control routes via the typed ControlSignal on the reply.
     pricing = Agent(name="pricing")
+    root = LoopAgent(pricing)
 
-    with pytest.raises(
-        ValueError,
-        match="remote loop completion requires an A2A control protocol",
-    ):
-        _finalize(LoopAgent(pricing), _config(_CARD_URL), tmp_path)
+    _finalize(root, _config(_CARD_URL), tmp_path)
+
+    assert root._apx_remote_leaf_bindings["pricing"].card_url == _CARD_URL
 
 
-def test_remote_handoff_peer_requires_control_protocol(tmp_path: Path) -> None:
+def test_remote_handoff_peer_binding_resolves_with_sibling_allowlist(
+    tmp_path: Path,
+) -> None:
+    # AC-6: the handoff guard is gone; the peer resolves and carries the local
+    # sibling allowlist (FR-4) so a reconstructed transfer_to:<target> can be
+    # validated against the local graph.
     triage = Agent(name="triage")
     pricing = Agent(name="pricing")
+    root = HandoffAgent(agents=[triage, pricing])
 
-    with pytest.raises(
-        ValueError,
-        match="remote handoff requires an A2A control protocol",
-    ):
-        _finalize(
-            HandoffAgent(agents=[triage, pricing]),
-            _config(_CARD_URL),
-            tmp_path,
-        )
+    _finalize(root, _config(_CARD_URL), tmp_path)
+
+    resolved = root._apx_remote_leaf_bindings["pricing"]
+    assert resolved.card_url == _CARD_URL
+    assert resolved.transfer_targets == frozenset({"triage"})
 
 
 def test_topology_keeps_logical_name_and_hides_binding_details(tmp_path: Path) -> None:
