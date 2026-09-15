@@ -471,7 +471,7 @@ def _compile_parallel_agent(agent: ParallelAgent, ctx: CompileContext) -> Any:
     and their outputs merge via ``MessagesState``'s ``add_messages`` reducer.
     No explicit join node — LangGraph handles message accumulation natively.
     """
-    from langgraph.graph import END, START, MessagesState, StateGraph
+    from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(state_schema())
     node_names: list[str] = []
@@ -480,10 +480,55 @@ def _compile_parallel_agent(agent: ParallelAgent, ctx: CompileContext) -> Any:
         if name in node_names:
             name = f"{name}_{i}"
         node_names.append(name)
-        graph.add_node(name, _compile_any(sub, ctx))
+        compiled = _compile_any(sub, ctx)
+        graph.add_node(name, _isolated_branch_node(compiled, agent._instructions))
         graph.add_edge(START, name)
         graph.add_edge(name, END)
     return graph.compile()
+
+
+def _isolate_parallel_branch_input(messages: list[Any], instructions: str) -> list[Any]:
+    """Trim a ``ParallelAgent`` branch's input to ``[merged system?] + [last user?]``.
+
+    Each branch runs independently, so it must not see the whole shared history
+    — only the triggering user turn plus one merged system message (the agent's
+    own ``instructions`` first, then any incoming system text, joined into a
+    single ``SystemMessage`` so branches never receive two consecutive system
+    messages). Prior assistant/user turns are dropped. See PRD #769.
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    incoming_system = "\n".join(
+        _ai_message_text(m) for m in messages if isinstance(m, SystemMessage)
+    )
+    parts = [p for p in (instructions.strip(), incoming_system.strip()) if p]
+    isolated: list[Any] = []
+    if parts:
+        isolated.append(SystemMessage(content="\n".join(parts)))
+    last_user = next(
+        (m for m in reversed(messages) if isinstance(m, HumanMessage)), None
+    )
+    if last_user is not None:
+        isolated.append(last_user)
+    return isolated
+
+
+def _isolated_branch_node(compiled: Any, instructions: str) -> Any:
+    """Wrap a compiled branch so it sees an isolated per-branch input.
+
+    Mirrors the handoff wrapper (``_build_subagent_input_messages`` at the
+    node above): invoke the compiled sub-agent graph with the trimmed message
+    list and return ONLY the newly produced messages so ``add_messages`` fan-in
+    merges branch outputs without re-injecting the trimmed input.
+    """
+
+    def _node(state: dict) -> dict[str, Any]:
+        isolated = _isolate_parallel_branch_input(state["messages"], instructions)
+        result = compiled.invoke({"messages": isolated, "state": state.get("state", {})})
+        msgs = result.get("messages", []) if isinstance(result, dict) else []
+        return {"messages": msgs[len(isolated) :]}
+
+    return _node
 
 
 def _build_synthetic_tool(name: str, description: str, marker: str) -> Any:
