@@ -37,25 +37,31 @@ from apx_agent._compile import (  # noqa: E402
 _NO_INSTRUCTIONS = ""
 
 
-def _recording_compile_any(sink: dict[str, list[Any]]):
-    """Return a fake ``_compile_any`` producing a real compiled recording graph."""
+def _recording_graph(sink: dict[str, list[Any]], name: str) -> Any:
+    """A real compiled StateGraph that records the messages its branch received."""
     from langgraph.graph import END, START, StateGraph
 
+    def _node(state: dict) -> dict[str, Any]:
+        sink[name] = list(state["messages"])
+        return {"messages": [AIMessage(content=f"ran-{name}")]}
+
+    graph = StateGraph(state_schema())
+    graph.add_node("rec", _node)
+    graph.add_edge(START, "rec")
+    graph.add_edge("rec", END)
+    return graph.compile()
+
+
+def _recording_branch(sink: dict[str, list[Any]]):
+    """Fake ``_compile_parallel_branch`` → a recording compiled graph.
+
+    Stubs the per-branch leaf compile so we capture exactly what each branch
+    received while the real ``_compile_parallel_agent`` fan-out + isolation
+    wrapper (and ``_branch_leaf_instructions``) stay under test.
+    """
+
     def _factory(sub: Any, ctx: Any) -> Any:
-        if isinstance(sub, ParallelAgent):
-            # Real fan-out graph under test; only leaf branches are recorded.
-            return _compile._compile_parallel_agent(sub, ctx)
-        name = sub._name
-
-        def _node(state: dict) -> dict[str, Any]:
-            sink[name] = list(state["messages"])
-            return {"messages": [AIMessage(content=f"ran-{name}")]}
-
-        graph = StateGraph(state_schema())
-        graph.add_node("rec", _node)
-        graph.add_edge(START, "rec")
-        graph.add_edge("rec", END)
-        return graph.compile()
+        return _recording_graph(sink, sub._name)
 
     return _factory
 
@@ -67,7 +73,7 @@ def _compiled_parallel(
     instructions: str = _NO_INSTRUCTIONS,
     branches: tuple[str, ...] = ("left", "right"),
 ) -> Any:
-    monkeypatch.setattr(_compile, "_compile_any", _recording_compile_any(sink))
+    monkeypatch.setattr(_compile, "_compile_parallel_branch", _recording_branch(sink))
     agent = ParallelAgent(
         agents=[LlmAgent(name=n) for n in branches],
         instructions=instructions,
@@ -176,23 +182,52 @@ def test_ac6_via_compiled_graph(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_ac7_isolate_helper_unit() -> None:
-    # merge: instructions first, then incoming system(s), one message
+    # system_text (pre-merged by the caller) → one SystemMessage + last user
     out = _isolate_parallel_branch_input(
-        [SystemMessage(content="S1"), SystemMessage(content="S2"),
+        [SystemMessage(content="ignored-here"),
          HumanMessage(content="u1"), AIMessage(content="a"),
          HumanMessage(content="u2")],
-        "X",
+        "X\nS",
     )
     assert _roles(out) == ["system", "human"]
-    assert out[0].content == "X\nS1\nS2"
+    assert out[0].content == "X\nS"
     assert out[1].content == "u2"  # last user selected
 
-    # no instructions, no system, no user → empty
+    # empty system_text, no user → empty
     assert _isolate_parallel_branch_input([AIMessage(content="a")], "") == []
 
-    # instructions only, no user → [system]
+    # system_text only, no user → [system]
     only_sys = _isolate_parallel_branch_input([], "X")
     assert _roles(only_sys) == ["system"] and only_sys[0].content == "X"
+
+
+def test_ac9_llm_branch_single_system_and_bake_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F3: an LlmAgent branch with its OWN instructions must receive exactly one
+    merged system message (ParallelAgent + leaf), and must be compiled with
+    bake_prompt=False so create_agent adds no second system prompt."""
+    sink: dict[str, list[Any]] = {}
+    seen: dict[str, Any] = {}
+
+    def _fake_compile_llm(agent: Any, ctx: Any, *, bake_prompt: bool = True,
+                          extra_tools: Any = None) -> Any:
+        seen["bake_prompt"] = bake_prompt
+        return _recording_graph(sink, agent._name)
+
+    monkeypatch.setattr(_compile, "_compile_llm_agent", _fake_compile_llm)
+    agent = ParallelAgent(
+        agents=[LlmAgent(name="b", instructions="LEAF")],
+        instructions="PAR",
+    )
+    compiled = compile_to_langgraph(agent, ws=None, model="any")
+    compiled.invoke({"messages": [SystemMessage(content="S"), HumanMessage(content="q")]})
+
+    assert seen["bake_prompt"] is False  # leaf did NOT bake its own system
+    got = sink["b"]
+    assert _roles(got) == ["system", "human"]          # exactly one system
+    assert got[0].content == "PAR\nLEAF\nS"            # parallel + leaf + incoming
+    assert got[1].content == "q"
 
 
 def test_ac8_suite_regression_marker() -> None:
