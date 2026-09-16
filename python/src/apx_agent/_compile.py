@@ -61,6 +61,7 @@ from ._defaults import (
     _get_workspace_client,
     get_databricks_headers,
 )
+from ._budget import cap_for
 from ._mlflow_tracing import emit_progress
 from ._inspection import (
     _EmptyToolInput,
@@ -389,7 +390,9 @@ def _compile_llm_agent(
         "system_prompt": (agent._instructions or None) if bake_prompt else None,
         "middleware": [_governance_exception_middleware()],
     }
-    if _agent_has_state_tool(agent):
+    # The keyed ``state`` channel is needed by state tools AND by session_budget
+    # (its cumulative token counter persists under state["session_tokens"]).
+    if _agent_has_state_tool(agent) or cap_for(agent) is not None:
         create_kwargs["state_schema"] = state_schema()
     if ctx.checkpointer is not None:
         # Thread-scoped short-term memory: the create_agent runtime persists

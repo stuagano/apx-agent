@@ -165,6 +165,7 @@ class LlmAgent(BaseAgent):
         name: str | None = None,
         memory: str = "off",
         output_key: str | None = None,
+        session_budget: dict[str, int] | None = None,
     ) -> None:
         # tools is optional (#449): an orchestrator whose only capabilities are
         # config-declared sub_agents has no local tools. None → a fresh list
@@ -182,6 +183,15 @@ class LlmAgent(BaseAgent):
         # G3: when set, the agent's final text is written to the shared state
         # channel under this key (readable by later steps via {key} templating).
         self._output_key = output_key
+        # Cumulative per-session token cap (#768). Only "tokens" is supported;
+        # enforced at the served-turn boundary against the checkpointer-persisted
+        # running total (see _budget.py). None = uncapped.
+        if session_budget is not None and set(session_budget) != {"tokens"}:
+            raise ValueError(
+                f"session_budget supports only the 'tokens' key, got "
+                f"{sorted(session_budget)}"
+            )
+        self._session_budget = session_budget
         self._description = description
         self._name = name
         self._temperature = temperature
