@@ -51,7 +51,10 @@ def turn_usage(messages: list[Any]) -> int:
     for m in messages:
         um = getattr(m, "usage_metadata", None)
         if isinstance(um, dict):
-            total += int(um.get("input_tokens", 0)) + int(um.get("output_tokens", 0))
+            # `or 0` (not a default) so a present-but-None field — which langchain
+            # permits on aggregated streaming chunks — contributes 0 instead of
+            # raising int(None) at the turn boundary.
+            total += int(um.get("input_tokens") or 0) + int(um.get("output_tokens") or 0)
     return total
 
 
@@ -78,6 +81,28 @@ def enforce_before_turn(graph: Any, lg_config: dict[str, Any] | None, cap: int) 
     return prior
 
 
+def accrue_turn(
+    graph: Any,
+    lg_config: dict[str, Any] | None,
+    prior: int,
+    new_messages: list[Any],
+) -> int:
+    """Add this turn's usage to ``prior``, persist the new total, return it.
+
+    No raise. Used on the approval-pause path so the model tokens spent up to the
+    pause are still counted (#768) even though that turn returns an approval
+    response rather than a completed result; the next turn's
+    :func:`enforce_before_turn` will refuse if the session is now over cap.
+    """
+    total = prior + turn_usage(new_messages)
+    if lg_config is not None:
+        try:
+            graph.update_state(lg_config, {"state": {_STATE_KEY: total}})
+        except Exception as exc:  # pragma: no cover — checkpointer write failure
+            logger.warning("session_budget: failed to persist token total: %s", exc)
+    return total
+
+
 def enforce_after_turn(
     graph: Any,
     lg_config: dict[str, Any] | None,
@@ -85,12 +110,7 @@ def enforce_after_turn(
     new_messages: list[Any],
     cap: int,
 ) -> None:
-    """Add this turn's usage to ``prior``, persist the new total, raise if crossed."""
-    total = prior + turn_usage(new_messages)
-    if lg_config is not None:
-        try:
-            graph.update_state(lg_config, {"state": {_STATE_KEY: total}})
-        except Exception as exc:  # pragma: no cover — checkpointer write failure
-            logger.warning("session_budget: failed to persist token total: %s", exc)
+    """Accrue this turn's usage, persist the new total, raise if it crossed ``cap``."""
+    total = accrue_turn(graph, lg_config, prior, new_messages)
     if total >= cap:
         raise SessionBudgetExceeded(spent=total, cap=cap)

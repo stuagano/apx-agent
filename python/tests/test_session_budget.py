@@ -228,3 +228,55 @@ def test_ac9_suite_regression_marker() -> None:
     import apx_agent
 
     assert hasattr(apx_agent, "SessionBudgetExceeded")
+
+
+# --------------------------------------------------------------------------- review fixes
+def test_value_validation_rejects_bad_tokens() -> None:
+    """#768 review #6: session_budget['tokens'] must be a positive int."""
+    for bad in ({"tokens": 0}, {"tokens": -5}, {"tokens": "100"}, {"tokens": True}):
+        with pytest.raises(ValueError):
+            LlmAgent(session_budget=bad)
+    LlmAgent(session_budget={"tokens": 100})  # positive int accepted
+
+
+def test_turn_usage_tolerates_none_fields() -> None:
+    """#768 review #2: a present-but-None token field contributes 0, not a crash."""
+    from types import SimpleNamespace
+
+    from apx_agent._budget import turn_usage
+
+    msg = SimpleNamespace(usage_metadata={"input_tokens": None, "output_tokens": 30})
+    assert turn_usage([msg]) == 30  # None → 0, 30 counted, no TypeError
+
+
+def test_accrue_turn_persists_without_raising() -> None:
+    """#768 review #1 mechanism: accrue_turn adds+persists usage but never raises,
+    so approval-pause turns still count their tokens (the raise waits for the
+    next turn's enforce_before_turn)."""
+    from unittest.mock import MagicMock
+
+    from apx_agent._budget import accrue_turn
+
+    graph = MagicMock()
+    cfg = {"configurable": {"thread_id": "T"}}
+    msg = AIMessage(content="x", usage_metadata=_USAGE)
+    total = accrue_turn(graph, cfg, prior=50, new_messages=[msg])
+    assert total == 110  # 50 + 60, no raise even though a 100-cap would be crossed
+    graph.update_state.assert_called_once()
+
+
+def test_budget_config_keyed_on_checkpointer_presence() -> None:
+    """#768 review #5: cross-turn state is keyed on checkpointer presence, not
+    lg_config identity, so a conv-store-without-checkpointer config (lg_config
+    truthy, no saver) does not attempt state I/O every turn.
+
+    Unit-level: enforce_before_turn with a config of None reads prior=0 without
+    touching the graph (the served paths pass budget_config=None when there's no
+    checkpointer)."""
+    from unittest.mock import MagicMock
+
+    from apx_agent._budget import enforce_before_turn
+
+    graph = MagicMock()
+    assert enforce_before_turn(graph, None, cap=100) == 0
+    graph.get_state.assert_not_called()  # no checkpointer → no state read
