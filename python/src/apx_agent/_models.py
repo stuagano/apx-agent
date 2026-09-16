@@ -107,6 +107,32 @@ class GuardrailsConfig(BaseModel):
     ingestion time."""
 
 
+class GatewayConfig(BaseModel):
+    """Mosaic AI Gateway config for a declared external-model endpoint.
+
+    Maps to ``[tool.apx.agent.gateway]``. Governance-ON by default: usage
+    tracking and guardrails on; ``credential`` (a UC service credential name)
+    is the preferred auth, a ``secret_scope``/``secret_key`` pair the documented
+    fallback. No invented default — a missing credential fails the deploy closed
+    (enforced in ``_external_model.build_endpoint_payload``), never silently.
+
+    Only meaningful when ``model`` carries a provider scheme (``bedrock:`` etc.);
+    ignored for a bare endpoint name. ``extra="forbid"`` so a typo'd key that
+    would silently drop governance fails loud at parse time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    credential: str | None = None
+    """UC service credential name carrying the external provider's auth."""
+    secret_scope: str | None = None
+    secret_key: str | None = None
+    usage_tracking: bool = True
+    guardrails: bool = True
+    aws_region: str | None = None
+    """AWS region for ``bedrock:`` endpoints (provider config)."""
+
+
 StoreType = Literal["inmemory", "lakebase", "managed"]
 
 # Default embedding endpoint for the "persistent" knob's Lakebase memory —
@@ -399,6 +425,9 @@ class AgentConfig(BaseModel):
 
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     """Built-in guard configuration — see ``[tool.apx.agent.guardrails]``."""
+    gateway: GatewayConfig | None = None
+    """Mosaic AI Gateway config for a declared external-model endpoint —
+    see ``[tool.apx.agent.gateway]`` (only used when ``model`` has a scheme)."""
     service_policies: ServicePoliciesConfig = Field(default_factory=ServicePoliciesConfig)
     """Portable Service Policy declaration and native/local lifecycle mode."""
     template: dict[str, Any] | None = None

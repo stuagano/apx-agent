@@ -74,6 +74,7 @@
 - [reference/service-policies.md](reference/service-policies.md) — portable local/native Service Policy declaration
 - [reference/pyproject-toml.md](reference/pyproject-toml.md) — `pyproject.toml` shape
 - [reference/cost-tracking.md](reference/cost-tracking.md) — `cost_for_agent`, `apx-agent agents cost` CLI
+- [reference/bedrock-via-ai-gateway.md](reference/bedrock-via-ai-gateway.md) — route the model through Bedrock behind Mosaic AI Gateway (AWS commit burn-down)
 - [reference/ecosystem.md](reference/ecosystem.md) — ecosystem integrations
 - [reference/hub.md](reference/hub.md) — apx Hub
 - [reference/ci-smoke-test.md](reference/ci-smoke-test.md) — CI smoke test recipe
