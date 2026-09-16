@@ -343,8 +343,15 @@ def compile_authorization_plan(
             raise ValueError(f"Duplicate reachable operation name {operation.name!r}.")
         names.add(operation.name)
     user_resources: set[ResourceSpec] = set()
+    # A provider-scheme model (``bedrock:…``) resolves to the external-model
+    # endpoint apx provisions on deploy; the CAN_QUERY resource must name that
+    # endpoint, not the raw scheme string. A bare model passes through.
+    from ._external_model import parse_model_scheme
+
+    ext = parse_model_scheme(model)
+    endpoint_name = ext.endpoint_name if ext is not None else model
     service_resources: set[ResourceSpec] = {
-        ResourceSpec("serving_endpoint", model),
+        ResourceSpec("serving_endpoint", endpoint_name),
     }
     raw_user_scopes: set[str] = set()
 
