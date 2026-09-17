@@ -1,6 +1,6 @@
-# Deploying without `apx deploy` (raw DABs path)
+# Deploying without `apx-agent deploy` (raw DABs path)
 
-`apx deploy` is the recommended deploy path — it handles wheel pinning,
+`apx-agent deploy` is the recommended deploy path — it handles wheel pinning,
 `pyproject.toml` sanitization, and `.build/` staging automatically. But if
 you're wiring `databricks bundle deploy` + `databricks apps deploy` directly
 (e.g. from a CI pipeline that already owns the DABs lifecycle), there are a
@@ -12,7 +12,7 @@ few gaps to fill manually.
 container environment may not have access to that proxy, depending on the
 workspace network config. The result is:
 
-```
+```text
 [BUILD] No dependencies file found. Skipping installation.
 ModuleNotFoundError: No module named 'apx_agent'
 ```
@@ -81,7 +81,7 @@ command:
 
 The `app.py` file at the project root is a **local dev helper** (adds the dev
 UI, CORS, `/_apx/` routes). The production entrypoint for Databricks Apps is
-`agent_server/start_server:app`, which uses `create_app` directly without the
+`agent_server.start_server:app`, which uses `create_app` directly without the
 dev-only extras.
 
 ## genie_tool with empty space ID
@@ -90,7 +90,7 @@ If `PORTFOLIO_GENIE_SPACE_ID` (or equivalent) is empty at module load time,
 `genie_tool("")` raises at import. Guard module-level calls:
 
 ```python
-_GENIE_SPACE = os.environ.get("PORTFOLIO_GENIE_SPACE_ID", "")
+_GENIE_SPACE = os.environ.get("PORTFOLIO_GENIE_SPACE_ID")
 
 if _GENIE_SPACE:
     from apx_agent import genie_tool
@@ -117,10 +117,10 @@ curl -X POST https://<app-url>/responses \
 The response `output` array contains interleaved `function_call`,
 `function_call_output`, and `message` items. Parse with the pattern in
 `query.py` (included in examples that use this deploy path) or use
-`apx agents query` (see below).
+`apx-agent agents query` (see below).
 
-## When to use `apx deploy` instead
+## When to use `apx-agent deploy` instead
 
 Use the raw DABs path only when you own the DABs lifecycle from CI. For
-local development and one-off deploys, `apx deploy --profile <PROFILE>` is
+local development and one-off deploys, `apx-agent deploy --profile <PROFILE>` is
 simpler — it handles all of the above automatically.

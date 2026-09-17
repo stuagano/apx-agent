@@ -5853,6 +5853,135 @@ def _kill_pid(pid: int, name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _query_render_item(item: dict[str, Any], step: int) -> int:
+    """Render one ResponsesAgent output item and return the current step."""
+    import json
+    import textwrap
+
+    item_type = item.get("type")
+    if item_type == "function_call":
+        step += 1
+        arguments = item.get("arguments")
+        arguments_text = arguments if isinstance(arguments, str) else "{}"
+        try:
+            args = json.loads(arguments_text)
+            args_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) if args else ""
+        except (json.JSONDecodeError, AttributeError):
+            args_str = arguments if isinstance(arguments, str) else ""
+        click.echo(f"  🔧 [{step}] {item['name']}({args_str})")
+    elif item_type == "function_call_output":
+        output = item.get("output")
+        output_text = output if isinstance(output, str) else ""
+        try:
+            result = json.loads(output_text)
+            if isinstance(result, dict):
+                summary = ", ".join(
+                    f"{k}={v!r}" for k, v in list(result.items())[:4]
+                )
+            elif isinstance(result, list):
+                summary = f"{len(result)} items"
+            else:
+                summary = str(result)[:120]
+        except json.JSONDecodeError:
+            summary = output_text[:120]
+        click.echo(f"     → {summary}")
+    elif item_type == "message":
+        for part in item.get("content", []):
+            if part.get("type") != "output_text":
+                continue
+            part_text = part.get("text")
+            if not isinstance(part_text, str):
+                continue
+            text = part_text.strip()
+            if len(text) <= 120:
+                click.echo(text)
+                continue
+            click.echo("")
+            for line in text.splitlines():
+                click.echo(
+                    textwrap.fill(line, width=88, subsequent_indent="  ")
+                    if line.strip()
+                    else ""
+                )
+            click.echo("")
+    return step
+
+
+def _query_sse_events(response: Any) -> Iterator[dict[str, Any]]:
+    """Yield JSON objects from a byte-iterable SSE response."""
+    import json
+
+    data_lines: list[str] = []
+    for raw_line in response:
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+        line = line.rstrip("\r\n")
+        if not line:
+            if data_lines:
+                payload = "\n".join(data_lines)
+                data_lines.clear()
+                if payload != "[DONE]":
+                    event = json.loads(payload)
+                    if isinstance(event, dict):
+                        yield event
+            continue
+        if line.startswith(":"):
+            continue
+        field, separator, value = line.partition(":")
+        if separator and field == "data":
+            data_lines.append(value[1:] if value.startswith(" ") else value)
+
+    if data_lines:
+        payload = "\n".join(data_lines)
+        if payload != "[DONE]":
+            event = json.loads(payload)
+            if isinstance(event, dict):
+                yield event
+
+
+def _query_render_stream(response: Any, *, raw: bool) -> None:
+    """Render APX ResponsesAgent SSE events without repeating streamed text."""
+    import json
+
+    step = 0
+    streamed_item_ids: set[str] = set()
+    delta_line_open = False
+
+    for event in _query_sse_events(response):
+        if raw:
+            click.echo(json.dumps(event))
+            continue
+
+        event_type = event.get("type")
+        if event_type == "response.output_text.delta":
+            delta = event.get("delta")
+            if not isinstance(delta, str) or not delta:
+                continue
+            item_id = event.get("item_id")
+            if isinstance(item_id, str):
+                streamed_item_ids.add(item_id)
+            click.echo(delta, nl=False)
+            delta_line_open = True
+            continue
+
+        if event_type == "response.output_item.done":
+            item = event.get("item")
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("id")
+            streamed_message = item.get("type") == "message" and (
+                isinstance(item_id, str) and item_id in streamed_item_ids
+            )
+            if streamed_message:
+                continue
+            if delta_line_open:
+                click.echo("")
+                delta_line_open = False
+            step = _query_render_item(item, step)
+
+    if delta_line_open:
+        click.echo("")
+
+
 @agents.command("query")
 @click.argument("question", default=None, required=False)
 @click.option("--url", default="http://127.0.0.1:8000", show_default=True,
@@ -5871,14 +6000,13 @@ def query_cmd(question: str | None, url: str, profile: str | None,
 
     \b
     Examples:
-      apx agents query "Why is ACME Re September data missing?"
-      apx agents query --url https://my-app.databricksapps.com --profile fevm "hi"
-      echo "show all MGAs" | apx agents query --url https://my-app.databricksapps.com --profile fevm
+      apx-agent agents query "Why is ACME Re September data missing?"
+      apx-agent agents query --url https://my-app.databricksapps.com --profile fevm "hi"
+      echo "show all MGAs" | apx-agent agents query --url https://my-app.databricksapps.com --profile fevm
     """
     import json
-    import subprocess
-    import textwrap
     import urllib.error
+    import urllib.parse
     import urllib.request
 
     # --- resolve question ---
@@ -5889,16 +6017,29 @@ def query_cmd(question: str | None, url: str, profile: str | None,
             raise click.ClickException("Provide a question as an argument or via stdin.")
 
     # --- auth ---
-    headers: dict[str, str] = {"Content-Type": "application/json"}
+    parsed_url = urllib.parse.urlsplit(url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise click.ClickException("--url must be an http:// or https:// URL.")
+    if profile and parsed_url.scheme != "https":
+        raise click.ClickException("--profile bearer authentication requires an https:// URL.")
+
+    token: str | None = None
     if profile:
         try:
-            result = subprocess.run(
-                ["databricks", "auth", "token", "--profile", profile],
-                capture_output=True, text=True, check=True,
+            result = _run_databricks_cmd(
+                ["auth", "token", "--output", "json"], profile=profile,
             )
-            token = json.loads(result.stdout)["access_token"]
-            headers["Authorization"] = f"Bearer {token}"
-        except (subprocess.CalledProcessError, KeyError, json.JSONDecodeError) as e:
+            if result.returncode != 0:
+                raise ValueError(f"databricks exited {result.returncode}")
+            token_value = json.loads(result.stdout)["access_token"]
+            if not isinstance(token_value, str) or not token_value:
+                raise ValueError("auth response contained no access_token")
+            token = token_value
+        except (
+            FileNotFoundError,
+            KeyError,
+            ValueError,
+        ) as e:
             raise click.ClickException(f"Could not get token for profile {profile!r}: {e}") from e
 
     # --- request ---
@@ -5911,10 +6052,22 @@ def query_cmd(question: str | None, url: str, profile: str | None,
     click.echo(f"\n❓ {question}")
     click.echo("─" * min(70, len(question) + 3))
 
-    req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    if token is not None:
+        # Sent on the initial HTTPS request only. Redirected requests cannot
+        # inherit this header, including redirects to a different origin.
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
+        with urllib.request.urlopen(req, timeout=120) as response:  # noqa: S310
+            if use_stream:
+                _query_render_stream(response, raw=raw)
+                return
+            data = json.loads(response.read())
     except urllib.error.HTTPError as e:
         body_text = e.read().decode(errors="replace")
         raise click.ClickException(f"HTTP {e.code} from {endpoint}:\n{body_text}") from e
@@ -5925,52 +6078,13 @@ def query_cmd(question: str | None, url: str, profile: str | None,
         click.echo(json.dumps(data, indent=2))
         return
 
-    # --- render ---
-    output = data.get("output", [])
+    output = data.get("output")
+    if not isinstance(output, list):
+        return
     step = 0
-
     for item in output:
-        t = item.get("type")
-
-        if t == "function_call":
-            step += 1
-            try:
-                args = json.loads(item.get("arguments", "{}"))
-                args_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) if args else ""
-            except Exception:
-                args_str = item.get("arguments", "")
-            click.echo(f"  🔧 [{step}] {item['name']}({args_str})")
-
-        elif t == "function_call_output":
-            raw_out = item.get("output", "")
-            try:
-                result_parsed = json.loads(raw_out)
-                if isinstance(result_parsed, dict):
-                    summary = ", ".join(
-                        f"{k}={v!r}" for k, v in list(result_parsed.items())[:4]
-                    )
-                elif isinstance(result_parsed, list):
-                    summary = f"{len(result_parsed)} items"
-                else:
-                    summary = str(result_parsed)[:120]
-            except Exception:
-                summary = str(raw_out)[:120]
-            click.echo(f"     → {summary}")
-
-        elif t == "message":
-            for part in item.get("content", []):
-                if part.get("type") == "output_text":
-                    text = part["text"].strip()
-                    if len(text) > 120:
-                        click.echo("")
-                        for line in text.splitlines():
-                            if line.strip():
-                                click.echo(
-                                    textwrap.fill(line, width=88, subsequent_indent="  ")
-                                )
-                            else:
-                                click.echo("")
-                        click.echo("")
+        if isinstance(item, dict):
+            step = _query_render_item(item, step)
 
 
 @agents.command()
