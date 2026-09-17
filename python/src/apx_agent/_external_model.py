@@ -1,10 +1,9 @@
 """Declared external-model serving endpoints (``model = "bedrock:…"``).
 
 An apx author normally declares ``model`` as the name of a serving endpoint
-that already exists. A *provider scheme* — ``bedrock:``, ``azure:``,
-``anthropic:`` — instead declares a **non-native** model that apx provisions as
-a governed Databricks external-model serving endpoint (Mosaic AI Gateway:
-guardrails + usage tracking) on deploy.
+that already exists. A *provider scheme* — ``bedrock:`` — instead declares a
+**non-native** model that apx provisions as a governed Databricks external-model
+serving endpoint (Mosaic AI Gateway: guardrails + usage tracking) on deploy.
 
 A provider is a **data row** in ``_PROVIDER_REGISTRY``, not a code path: adding
 one is adding a dict entry. A bare ``model`` (no known scheme) is left alone —
@@ -32,10 +31,15 @@ if TYPE_CHECKING:
 # block key that carries the credential + region. No per-scheme branching lives
 # anywhere else — ``parse_model_scheme`` / ``build_endpoint_payload`` read these
 # fields generically.
+#
+# ponytail: bedrock only. azure/anthropic aren't rows yet because the generic
+# credential fragment (``_resolve_credential``) is bedrock-shaped
+# (``uc_service_credential_name`` / secret pair); Azure ``openai_config`` and
+# ``anthropic_config`` need different auth fields (api base, deployment name,
+# provider api key). Adding a row is still data — but do it WITH its
+# provider-specific credential mapping + a live-proven test, not as a stub.
 _PROVIDER_REGISTRY: dict[str, dict[str, str]] = {
     "bedrock": {"provider": "amazon-bedrock", "config_key": "amazon_bedrock_config"},
-    "azure": {"provider": "azure-openai", "config_key": "openai_config"},
-    "anthropic": {"provider": "anthropic", "config_key": "anthropic_config"},
 }
 
 
