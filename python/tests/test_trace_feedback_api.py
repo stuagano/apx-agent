@@ -365,7 +365,7 @@ async def test_feedback_maps_mlflow_client_errors(
     ],
 )
 async def test_feedback_sanitizes_helper_and_upstream_errors(
-    monkeypatch, error, expected_status
+    monkeypatch, caplog, error, expected_status
 ) -> None:
     monkeypatch.setattr(
         _trace_feedback_api,
@@ -380,6 +380,7 @@ async def test_feedback_sanitizes_helper_and_upstream_errors(
 
     assert response.status_code == expected_status
     assert "user-token" not in response.text
+    assert "user-token" not in caplog.text
 
 
 @pytest.mark.asyncio
