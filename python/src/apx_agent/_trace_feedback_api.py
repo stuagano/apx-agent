@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, NoReturn
@@ -26,6 +27,9 @@ from ._trace_feedback import (
     attach_feedback,
     get_feedback_view,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class _TraceFeedbackRequest(BaseModel):
@@ -143,6 +147,18 @@ def _request_feedback_context(request: Request) -> _TraceFeedbackContext:
 
 
 def _raise_http_error(exc: Exception) -> NoReturn:
+    from mlflow.exceptions import MlflowException
+
+    mlflow_status = (
+        exc.get_http_status_code() if isinstance(exc, MlflowException) else None
+    )
+    logger.warning(
+        "MLflow trace feedback request failed: exception_type=%s "
+        "http_status=%s error_code=%s",
+        type(exc).__name__,
+        mlflow_status,
+        getattr(exc, "error_code", None),
+    )
     if isinstance(exc, HTTPException):
         raise exc
     if isinstance(exc, TraceNotFoundError):
@@ -155,10 +171,8 @@ def _raise_http_error(exc: Exception) -> NoReturn:
     if isinstance(exc, TraceFeedbackError):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    from mlflow.exceptions import MlflowException
-
     if isinstance(exc, MlflowException):
-        status = exc.get_http_status_code()
+        status = mlflow_status
         if status == 401:
             raise HTTPException(
                 status_code=401,
