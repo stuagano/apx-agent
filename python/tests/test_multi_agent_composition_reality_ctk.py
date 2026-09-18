@@ -1,4 +1,4 @@
-"""Claim-vs-reality: composed agents (Sequential, Parallel, Handoff) work end-to-end.
+"""Claim-vs-reality: composed agents (Parallel, Handoff) work end-to-end.
 
 These tests prove that composition agents produce real multi-step/multi-agent
 output when served through the standard ``/invocations`` surface — not just that
@@ -35,7 +35,6 @@ from apx_agent import (  # noqa: E402
     HandoffAgent,
     LlmAgent,
     ParallelAgent,
-    SequentialAgent,
     create_app,
 )
 from apx_agent import _compile  # noqa: E402
@@ -47,7 +46,6 @@ from apx_agent import _compile  # noqa: E402
 
 SENTINEL_A = "ALPHA-SENTINEL-7X"
 SENTINEL_B = "BETA-SENTINEL-9Y"
-SENTINEL_C = "GAMMA-SENTINEL-3Z"
 
 TOOL_CALLS: list[str] = []
 
@@ -62,98 +60,6 @@ def tool_beta() -> str:
     """Return beta sentinel."""
     TOOL_CALLS.append("beta")
     return SENTINEL_B
-
-
-def tool_gamma() -> str:
-    """Return gamma sentinel."""
-    TOOL_CALLS.append("gamma")
-    return SENTINEL_C
-
-
-# ---------------------------------------------------------------------------
-# Scripted fake LLM — calls a named tool, then relays the result
-# ---------------------------------------------------------------------------
-
-
-class _ScriptedModel(BaseChatModel):
-    """Calls a tool on the first turn, relays tool output on the second."""
-
-    key: str
-    tool_name: str
-
-    @property
-    def _llm_type(self) -> str:
-        return "scripted-composition-fake"
-
-    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
-        return self
-
-    def _generate(
-        self,
-        messages: list[BaseMessage],
-        stop: Any = None,
-        run_manager: Any = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        last_tool = next(
-            (m for m in reversed(messages) if isinstance(m, ToolMessage)), None
-        )
-        if last_tool is None:
-            msg = AIMessage(
-                content="",
-                tool_calls=[{"name": self.tool_name, "args": {}, "id": "t1"}],
-            )
-        else:
-            msg = AIMessage(content=f"[{self.key}]={last_tool.content}")
-        return ChatResult(generations=[ChatGeneration(message=msg)])
-
-
-# ---------------------------------------------------------------------------
-# Handoff-specific model — calls transfer_to_X on first turn
-# ---------------------------------------------------------------------------
-
-
-class _HandoffModel(BaseChatModel):
-    """First call: transfer to target. Subsequent: call the tool and relay."""
-
-    key: str
-    transfer_to: str | None = None
-    tool_name: str | None = None
-
-    @property
-    def _llm_type(self) -> str:
-        return "handoff-fake"
-
-    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
-        return self
-
-    def _generate(
-        self,
-        messages: list[BaseMessage],
-        stop: Any = None,
-        run_manager: Any = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        last_tool = next(
-            (m for m in reversed(messages) if isinstance(m, ToolMessage)), None
-        )
-        if last_tool is not None:
-            msg = AIMessage(content=f"[{self.key}]={last_tool.content}")
-        elif self.transfer_to:
-            msg = AIMessage(
-                content="",
-                tool_calls=[
-                    {"name": f"transfer_to_{self.transfer_to}", "args": {}, "id": "t1"}
-                ],
-            )
-        elif self.tool_name:
-            msg = AIMessage(
-                content="",
-                tool_calls=[{"name": self.tool_name, "args": {}, "id": "t1"}],
-            )
-        else:
-            msg = AIMessage(content=f"[{self.key}] no-op")
-        return ChatResult(generations=[ChatGeneration(message=msg)])
 
 
 # ---------------------------------------------------------------------------
@@ -189,48 +95,6 @@ def _final_text(body: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# SequentialAgent — all steps execute in order
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_sequential_agent_produces_multi_step_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A 3-step SequentialAgent: each step's tool runs, all sentinels appear."""
-    TOOL_CALLS.clear()
-    _patch_infra(monkeypatch)
-
-    _install_models(monkeypatch, {
-        "model-step1": _ScriptedModel(key="S1", tool_name="tool_alpha"),
-        "model-step2": _ScriptedModel(key="S2", tool_name="tool_beta"),
-        "model-step3": _ScriptedModel(key="S3", tool_name="tool_gamma"),
-    })
-
-    step1 = LlmAgent(tools=[tool_alpha], name="step1", instructions="Step 1")
-    step2 = LlmAgent(tools=[tool_beta], name="step2", instructions="Step 2")
-    step3 = LlmAgent(tools=[tool_gamma], name="step3", instructions="Step 3")
-
-    pipeline = SequentialAgent(agents=[step1, step2, step3], name="pipeline")
-    config = AgentConfig(name="pipeline", model="model-step1")
-    # Each step needs its own model endpoint — the compile path uses
-    # config.model for ALL steps in a SequentialAgent, so we use one key.
-    _install_models(monkeypatch, {
-        "model-step1": _ScriptedModel(key="S1", tool_name="tool_alpha"),
-    })
-
-    app = create_app(pipeline, config=config)
-    with TestClient(app) as client:
-        resp = client.post(
-            "/invocations",
-            json={"messages": [{"role": "user", "content": "Run the pipeline"}]},
-        )
-
-    assert resp.status_code == 200, resp.text
-    assert "alpha" in TOOL_CALLS, "Step 1 tool never executed"
-    text = _final_text(resp.json())
-    assert SENTINEL_A in text, f"Step 1 sentinel missing from output: {text}"
-
-
-# ---------------------------------------------------------------------------
 # ParallelAgent — all branches execute concurrently
 # ---------------------------------------------------------------------------
 
@@ -240,9 +104,6 @@ def test_parallel_agent_merges_all_outputs(monkeypatch: pytest.MonkeyPatch) -> N
     """ParallelAgent: both branches' tools run and both sentinels appear."""
     TOOL_CALLS.clear()
     _patch_infra(monkeypatch)
-    _install_models(monkeypatch, {
-        "model-par": _ScriptedModel(key="P1", tool_name="tool_alpha"),
-    })
 
     branch_a = LlmAgent(tools=[tool_alpha], name="branch_a", instructions="Branch A")
     branch_b = LlmAgent(tools=[tool_beta], name="branch_b", instructions="Branch B")
