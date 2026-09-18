@@ -616,7 +616,8 @@ def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
         state: Annotated[dict[str, Any], _merge_state]
         iteration: int
 
-    binding = ctx.remote_leaf_bindings.get(getattr(inner, "_name", None))
+    leaf_name = inner._name
+    binding = None if leaf_name is None else ctx.remote_leaf_bindings.get(leaf_name)
     if binding is not None:
         # Remote loop body: the peer signals finish_loop over the wire as a
         # ControlSignal, which the bound-leaf node reconstructs as the sentinel
@@ -1121,7 +1122,7 @@ def _compile_bound_remote_leaf(
 
     name = getattr(logical_leaf, "_name", None) or binding.logical_name
     graph = StateGraph(state_schema())
-    graph.add_node(name, RunnableLambda(_sync_node, afunc=_node))
+    graph.add_node(name, RunnableLambda(_sync_node, afunc=_node))  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
     graph.add_edge(START, name)
     graph.add_edge(name, END)
     return graph.compile()
@@ -1130,7 +1131,8 @@ def _compile_bound_remote_leaf(
 def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     """Dispatch to the right per-agent compiler."""
     if isinstance(agent, LlmAgent):
-        binding = ctx.remote_leaf_bindings.get(getattr(agent, "_name", None))
+        leaf_name = agent._name
+        binding = None if leaf_name is None else ctx.remote_leaf_bindings.get(leaf_name)
         templated = _has_template(agent)
         if binding is not None:
             runnable = _compile_bound_remote_leaf(agent, binding, ctx)
