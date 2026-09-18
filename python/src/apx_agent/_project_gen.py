@@ -220,7 +220,7 @@ def _build_pyproject(config: "AgentConfig") -> str:
     for skill in config.skills:
         lines.append("")
         lines.append("[[tool.apx.tools]]")
-        lines.append(f'type = "skill"')
+        lines.append('type = "skill"')
         lines.append(f"name = {_toml_value(skill.name)}")
         lines.append(f"description = {_toml_value(skill.description)}")
         lines.append(f'path = "skills/{skill.name}.md"')

@@ -110,6 +110,9 @@ include = ["src/apx_agent"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 reportMissingImports = "warning"
+# Mirrors pytest's `pythonpath = [".ctk"]` (see [tool.pytest.ini_options]) so the
+# checker resolves the vendored ctk helpers in the gate/reality tests too.
+extraPaths = [".ctk"]
 
 [tool.uv.sources]
 apx-agent = { workspace = true }

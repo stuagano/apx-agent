@@ -32,4 +32,6 @@ def test_deploy_config_validation() -> None:
 
     # Valid shapes.
     assert DeployConfig(instances=3).instances == 3
-    assert DeployConfig(autoscale=AutoscaleConfig(min=2, max=5)).autoscale.max == 5
+    autoscale = DeployConfig(autoscale=AutoscaleConfig(min=2, max=5)).autoscale
+    assert autoscale is not None
+    assert autoscale.max == 5
