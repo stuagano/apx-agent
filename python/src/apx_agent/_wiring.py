@@ -1071,6 +1071,35 @@ def create_app(
             app, agent, config, pyproject_path=pyproject_path
         )
 
+        # FR-5: runtime boot guard. On Databricks Apps with a declared replica count
+        # >1 and in-memory session state, refuse boot with the same fix-naming error
+        # as the compile guard — a turn landing on another replica silently loses
+        # history/approvals. Instance count is UI/API-only, so the declared count
+        # arrives via APX_DECLARED_INSTANCES (emitted by _build_databricks_yml).
+        # Local dev, or declared<=1, only warns (via _chat_agent's InMemorySaver
+        # warning) — no raise. Placed before the swallowing mount try below so the
+        # raise actually propagates and stops the server.
+        if ctx is not None:
+            from ._dev import _is_deployed_app  # noqa: PLC0415
+            from ._memory_wiring import (  # noqa: PLC0415
+                scaled_in_memory_error,
+                session_is_in_memory,
+            )
+
+            # APX_DECLARED_INSTANCES is emitted into the bundle (_build_databricks_yml)
+            # only when [tool.apx.agent.deploy] declares scaling; its absence means the
+            # app was not declared scaled, i.e. a single replica.
+            raw_declared = os.environ.get("APX_DECLARED_INSTANCES")
+            declared_instances = int(raw_declared) if raw_declared else 1
+            if (
+                declared_instances > 1
+                and _is_deployed_app()
+                and session_is_in_memory(
+                    ctx.config, ws=app.state.workspace_client, agent=ctx.agent
+                )
+            ):
+                raise RuntimeError(scaled_in_memory_error(declared_instances))
+
         # /readyz — the capability self-test the deploy gate and `agents
         # status` probe (#449). The Apps template mounts it in start_server.py;
         # plain create_app (all local runs) must serve it too, or every local

@@ -213,6 +213,39 @@ class SessionBackendConfig(_BackendConfig):
     validate_at_boot: bool = True
 
 
+class AutoscaleConfig(BaseModel):
+    """Databricks Apps autoscale bounds — maps to ``[tool.apx.agent.deploy.autoscale]``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    min: int = Field(ge=1, le=5)
+    max: int = Field(ge=1, le=5)
+
+    @model_validator(mode="after")
+    def _min_le_max(self) -> "AutoscaleConfig":
+        if self.min > self.max:
+            raise ValueError("[tool.apx.agent.deploy.autoscale] min must be <= max")
+        return self
+
+
+class DeployConfig(_BackendConfig):
+    """Declared Apps horizontal scaling — maps to ``[tool.apx.agent.deploy]``.
+
+    ``instances`` (fixed count) XOR ``autoscale`` (min/max); each in 1-5. Drives
+    the compile/runtime scaled-in-memory guard and the emitted bundle scaling field."""
+
+    instances: int | None = Field(default=None, ge=1, le=5)
+    autoscale: AutoscaleConfig | None = None
+
+    @model_validator(mode="after")
+    def _exclusive(self) -> "DeployConfig":
+        if self.instances is not None and self.autoscale is not None:
+            raise ValueError(
+                "[tool.apx.agent.deploy] set at most one of 'instances' or 'autoscale', not both"
+            )
+        return self
+
+
 # Memory-knob helpers — shared by LlmAgent (base) and CoworkerAgent (default "persistent")
 _KNOB_TO_TYPE: dict[str, StoreType | None] = {
     "off": None,
@@ -472,6 +505,9 @@ class AgentConfig(BaseModel):
 
     session: SessionBackendConfig | None = None
     """Declarative session backend — see ``[tool.apx.agent.session]``."""
+
+    deploy: DeployConfig | None = None
+    """Declared Apps horizontal scaling — see ``[tool.apx.agent.deploy]``."""
 
     tools: list[dict[str, Any]] = []
     """Tool declarations from a YAML spec ``tools:`` block.
