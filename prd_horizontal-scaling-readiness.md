@@ -9,7 +9,8 @@ because Databricks Apps session affinity is best-effort only, a turn landing on 
 replica silently loses history and any mid-turn approval. This work adds a **fail-fast
 guardrail** (compile/deploy-time + runtime boot) that turns that silent data-loss footgun
 into a caught misconfiguration naming the durable fix, and a **`[tool.apx.agent.deploy]`**
-config block that emits the Apps horizontal-scaling config into the bundle. Primary success
+config block that emits `APX_DECLARED_INSTANCES` into the bundle (native Apps
+scaling field is de-scoped — SDK `App` has no such field; follow-up #778). Primary success
 metric: a scaled + in-memory app fails fast with a fix-naming error at both catch points,
 and a scaled + Lakebase app boots clean — proven by a caps reality test.
 
@@ -67,8 +68,8 @@ cookie only, with explicit guidance not to rely on instance-local state.
 ### Functional
 - **FR-1 — Deploy config block.** New `[tool.apx.agent.deploy]` block parsed by a Pydantic
   model inheriting `_BackendConfig` (`extra="forbid"`), registered on `AgentConfig` like
-  `session`/`memory` (`_models.py:469-476`). Fields: `instances: int | None` (valid 1–5) and
-  `autoscale: {min: int, max: int} | None` (each 1–5, `min <= max`). At most one of
+  `session`/`memory` (`_models.py:469-476`). Fields: `instances: StrictInt | None` (valid 1–5) and
+  `autoscale: {min: StrictInt, max: StrictInt} | None` (each 1–5, `min <= max`). At most one of
   `instances`/`autoscale` may be set; setting both is a validation error.
 - **FR-2 — Shared predicate.** A single helper computes `declared_max_replicas(config)`
   (= `instances`, else `autoscale.max`, else 1) and `session_is_in_memory(config, ws, agent)`
@@ -82,7 +83,9 @@ cookie only, with explicit guidance not to rely on instance-local state.
     **falsely report in-memory for a lakebase config** — wrongly blocking scaled+lakebase
     (breaks AC-4). The predicate must treat a **declared** `session.type=='lakebase'` as
     durable-intent regardless of `ws` (check the declared type, or pass a compile-mode flag).
-    Runtime (FR-5) has a real `ws`, so this only affects the compile catch point.
+    Runtime (FR-5) must **not** take this shortcut: pass
+    `trust_declared_lakebase=False` and use the resolved store/checkpointer. A
+    declared lakebase that failed to build is still process-local and must refuse boot.
 - **FR-3 — Compile/deploy-time guard.** In the deploy/compile path that builds the bundle
   (`_project_gen._build_databricks_yml`, line 686 region, or the deploy CLI entry that calls
   it), if `declared_max_replicas(config) > 1` **and** `session_is_in_memory(...)`, raise a
@@ -128,8 +131,8 @@ cookie only, with explicit guidance not to rely on instance-local state.
   plus a combined `scaled_in_memory(...)` used by both guards. Reuse, don't re-derive, the
   existing resolution so backend detection stays in one place.
 - **Compile guard + emission** (`_project_gen.py`): call the predicate in `_build_databricks_yml`
-  before assembling the resource; on violation raise; otherwise inject the scaling field and the
-  `APX_DECLARED_INSTANCES` env.
+  before assembling the resource; on violation raise; otherwise inject
+  `APX_DECLARED_INSTANCES` (no native Apps scaling field — see FR-4 / #778).
 - **Runtime guard** (`_wiring.py` lifespan): after stores/checkpointer resolve, evaluate the
   predicate against `APX_DECLARED_INSTANCES` + `_is_deployed_app()`; raise or warn per FR-5.
 
@@ -143,12 +146,13 @@ cookie only, with explicit guidance not to rely on instance-local state.
   # min = 2
   # max = 5
   ```
-- New emitted `databricks.yml` field (app scaling) + `APX_DECLARED_INSTANCES` env. No change
-  to `RemoteDatabricksAgent` or any served-endpoint signature.
+- New emitted `APX_DECLARED_INSTANCES` env. Operators set the UI instance count to match
+  `[tool.apx.agent.deploy]`; UI-only scale is not validated. No change to
+  `RemoteDatabricksAgent` or any served-endpoint signature.
 
 ### Data model
-`DeployConfig`: `instances: int | None = None`, `autoscale: AutoscaleConfig | None = None`.
-`AutoscaleConfig`: `min: int`, `max: int`. No persistence; parse-time only.
+`DeployConfig`: `instances: StrictInt | None = None`, `autoscale: AutoscaleConfig | None = None`.
+`AutoscaleConfig`: `min: StrictInt`, `max: StrictInt`. No persistence; parse-time only.
 
 ## Acceptance Criteria
 
@@ -163,8 +167,9 @@ cookie only, with explicit guidance not to rely on instance-local state.
   `APX_DECLARED_INSTANCES` unset/1, when the app lifespan starts, then it boots successfully
   and logs a warning (no exception).
 - [ ] **AC-4**: Given `[tool.apx.agent.deploy] instances=3` **and** `[tool.apx.agent.session]
-  type='lakebase'`, when compile builds the bundle and when the app boots (with
-  `APX_DECLARED_INSTANCES=3`, `DATABRICKS_APP_PORT` set), then neither raises.
+  type='lakebase'`, compile emits. Runtime with `APX_DECLARED_INSTANCES=3` +
+  `DATABRICKS_APP_PORT` **raises** unless a checkpointer actually resolved (declaration
+  alone is not enough). A stubbed resolved store+checkpointer boots clean.
 - [ ] **AC-5**: Given `[tool.apx.agent.deploy] instances=3`, when `_build_databricks_yml`
   emits, then the written `databricks.yml` contains an `APX_DECLARED_INSTANCES=3` env entry
   in the app `config.env` list (verified via `ctk.verify(Artifact(path, must_contain=...))`).
@@ -225,7 +230,7 @@ Machine-verifiable fields are mirrored in the Agent Handoff JSON below.
     { "id": "AC-1", "description": "compile/deploy raises naming type='lakebase' when declared instances>1 + in-memory; no bundle emitted", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac1.py", "gate_test": "test_compile_refuses_scaled_in_memory" },
     { "id": "AC-2", "description": "runtime lifespan raises when APX_DECLARED_INSTANCES>1 + DATABRICKS_APP_PORT set + in-memory", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac2.py", "gate_test": "test_prod_boot_refuses_scaled_in_memory" },
     { "id": "AC-3", "description": "local dev (no DATABRICKS_APP_PORT) or declared<=1 + in-memory boots with warning, no exception", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac3.py", "gate_test": "test_dev_boot_warns_only" },
-    { "id": "AC-4", "description": "scaled + type='lakebase' boots clean at compile and runtime", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac4.py", "gate_test": "test_scaled_lakebase_boots_clean" },
+    { "id": "AC-4", "description": "scaled + type='lakebase' compiles; runtime raises unless checkpointer actually resolved", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac4.py", "gate_test": "test_scaled_lakebase_compile_clean" },
     { "id": "AC-5", "description": "emitted databricks.yml contains APX_DECLARED_INSTANCES env entry for declared deploy block (native scaling field de-scoped)", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac5.py", "gate_test": "test_bundle_emits_declared_instances_env" },
     { "id": "AC-6", "description": "DeployConfig validation: instances range 1-5, instances/autoscale exclusive, autoscale min<=max", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac6.py", "gate_test": "test_deploy_config_validation" }
   ],
@@ -272,7 +277,8 @@ Machine-verifiable fields are mirrored in the Agent Handoff JSON below.
   ],
   "resolved_decisions": [
     "FR-4 de-scoped to env-only (APX_DECLARED_INSTANCES); native Apps scaling field not declarable in bundle (SDK 0.102.0). Operators set instance count in Apps UI; docs cover it.",
-    "compile guard must treat declared session.type=='lakebase' as durable regardless of ws (ws=None at compile time), else AC-4 breaks"
+    "compile guard must treat declared session.type=='lakebase' as durable regardless of ws (ws=None at compile time), else compile AC-4 breaks",
+    "runtime guard must use resolved backends (trust_declared_lakebase=False); declared lakebase + no checkpointer still refuses boot"
   ],
   "loop_guards": {
     "max_iterations": 7,

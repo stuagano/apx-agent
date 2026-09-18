@@ -22,6 +22,14 @@ def test_deploy_config_validation() -> None:
     with pytest.raises(ValidationError):
         DeployConfig(autoscale=AutoscaleConfig(min=4, max=2))
 
+    # StrictInt: reject string / float coercion ("1", 1.0).
+    with pytest.raises(ValidationError):
+        DeployConfig(instances="3")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        DeployConfig(instances=1.0)  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        AutoscaleConfig(min="1", max=2)  # type: ignore[arg-type]
+
     # Valid shapes.
     assert DeployConfig(instances=3).instances == 3
     assert DeployConfig(autoscale=AutoscaleConfig(min=2, max=5)).autoscale.max == 5

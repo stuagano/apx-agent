@@ -18,8 +18,11 @@ def test_bundle_emits_declared_instances_env(tmp_path) -> None:
     path.write_text(_build_databricks_yml(cfg))
 
     verify(
-        Artifact(str(path), min_bytes=1, must_contain="APX_DECLARED_INSTANCES"),
-        Artifact(str(path), must_contain='value: "3"'),
+        Artifact(
+            str(path),
+            min_bytes=1,
+            must_contain='- name: APX_DECLARED_INSTANCES\n            value: "3"',
+        ),
     )
 
 

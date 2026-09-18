@@ -52,6 +52,7 @@ dev = [
     "uvicorn[standard]>=0.34.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-timeout>=2.4.0",  # fail a stuck test instead of hanging the worker
     "pytest-xdist>=3.6.0",  # parallel test execution (pytest -n auto)
     "pyright>=1.1.380",
     "hatchling>=1.29.0",
@@ -84,6 +85,10 @@ packages = ["src/apx_agent"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Per-test timeout so an xdist worker cannot sit silently for hours (CI #779).
+# thread method works under xdist; 90s is well above any test in a ~3 min suite.
+timeout = 90
+timeout_method = "thread"
 # .ctk/ vendors the claude-test-kit helpers (library only — not packaged into the
 # wheel, which ships only src/apx_agent). Makes `from ctk import run, expect,
 # verify` work in the same uv env the app runs in. The fixtures + error-log guard

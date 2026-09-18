@@ -1095,7 +1095,10 @@ def create_app(
                 declared_instances > 1
                 and _is_deployed_app()
                 and session_is_in_memory(
-                    ctx.config, ws=app.state.workspace_client, agent=ctx.agent
+                    ctx.config,
+                    ws=app.state.workspace_client,
+                    agent=ctx.agent,
+                    trust_declared_lakebase=False,
                 )
             ):
                 raise RuntimeError(scaled_in_memory_error(declared_instances))

@@ -24,6 +24,9 @@ def stub_startup(monkeypatch):
 
         return nullcontext()
 
+    async def _no_remote(*_args, **_kwargs):
+        return []
+
     monkeypatch.setattr(wiring, "_make_workspace_client", lambda: None)
     monkeypatch.setattr(wiring, "_setup_mcp", _no_mcp)
     monkeypatch.setattr(
@@ -34,6 +37,11 @@ def stub_startup(monkeypatch):
         lambda: None,
         raising=False,
     )
+    # setup_agent always awaits fetch_remote_tools; keep that off the network.
+    monkeypatch.setattr(
+        "apx_agent._agents.LlmAgent.fetch_remote_tools", _no_remote, raising=False
+    )
+    monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
 
 
 def boot_app(config):

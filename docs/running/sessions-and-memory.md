@@ -132,9 +132,10 @@ above). Local single-process dev only warns. Scaled + Lakebase boots clean.
 
 Instance count is not declarable in `databricks.yml` (the Databricks SDK's `App`
 model has no scaling field — only vertical `compute_size`), so **set the
-instance count in the Databricks Apps UI**. apx carries the declared count
-forward via the `APX_DECLARED_INSTANCES` env var so the runtime guard still
-fires if a scaled app ever ships with in-memory state.
+instance count in the Databricks Apps UI to match `[tool.apx.agent.deploy]`**.
+UI-only scale is not validated. apx carries the declared count forward via the
+`APX_DECLARED_INSTANCES` env var so the runtime guard still fires if a scaled
+app ever ships with in-memory state.
 
 ---
 
