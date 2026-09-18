@@ -35,7 +35,7 @@ from apx_agent import (
 )
 from apx_agent._conversation import MessageData, NewConversationItem
 from apx_agent._dev import build_dev_ui_router
-from apx_agent._models import AgentCard
+from apx_agent._models import AgentCard, ExampleWorkflow
 
 
 def _ctx(name: str) -> AgentContext:
@@ -73,13 +73,13 @@ async def test_chat_landing_route_renders_workflow_examples_once_and_escapes_tex
     config = AgentConfig(
         name="workflow-reality",
         examples=["What is the position?"],
-        workflows=[{
-            "id": "position",
-            "title": "<Pricing review>",
-            "question": "What is the position?",
-            "purpose": "Compare <b>peers</b>.",
-            "route": ["calibrate"],
-        }],
+        workflows=[ExampleWorkflow(
+            id="position",
+            title="<Pricing review>",
+            question="What is the position?",
+            purpose="Compare <b>peers</b>.",
+            route=["calibrate"],
+        )],
     )
     card = AgentCard(name=config.name, description="", skills=[])
     app = FastAPI()
@@ -317,7 +317,7 @@ class _MemoryAgentStub:
         self._apx_memory_namespace = namespace
 
 
-def _ctx_with_agent(name: str, agent: object) -> AgentContext:
+def _ctx_with_agent(name: str, agent: _MemoryAgentStub) -> AgentContext:
     config = AgentConfig(name=name, model="claude-fake")
     card = AgentCard(name=name, description="", skills=[])
     return AgentContext(config=config, tools=[], card=card, agent=agent)  # type: ignore[arg-type]

@@ -270,6 +270,26 @@ A few things that bite in practice:
   `command:` block sets the worker count, host, and port. Tune workers
   based on expected concurrency; Apps does not autoscale uvicorn worker
   count for you.
+- **Horizontal scaling requires durable session state.** Apps can run 1–5
+  instances behind one URL, and the router's affinity cookie is best-effort —
+  do not rely on instance-local state. Declare the replica count once:
+
+  ```toml
+  [tool.apx.agent.deploy]
+  instances = 3            # fixed 1–5
+  # or, instead of instances:
+  # [tool.apx.agent.deploy.autoscale]
+  # min = 2
+  # max = 5
+  ```
+
+  apx then refuses to compile or boot a scaled app whose session state is
+  in-memory, naming the fix `[tool.apx.agent.session] type='lakebase'`. Instance
+  count is **not** declarable in `databricks.yml` (the SDK's `App` model has no
+  scaling field), so set it in the Databricks Apps UI — **the UI count must
+  match `[tool.apx.agent.deploy]`**; UI-only scale is not validated. apx carries
+  the declared count forward via `APX_DECLARED_INSTANCES` for the runtime guard.
+  See [sessions-and-memory.md → Scaling](../running/sessions-and-memory.md).
 
 ## 7. Cheat sheet
 

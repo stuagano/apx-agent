@@ -523,6 +523,70 @@ def _lakebase_checkpointer_target(
     return _CheckpointerTarget(host=host, database=scfg.database)
 
 
+def declared_max_replicas(config: "AgentConfig | None") -> int:
+    """Max replicas the config declares: ``instances``, else ``autoscale.max``, else 1."""
+    deploy = getattr(config, "deploy", None) if config is not None else None
+    if deploy is None:
+        return 1
+    if deploy.instances is not None:
+        return deploy.instances
+    if deploy.autoscale is not None:
+        return deploy.autoscale.max
+    return 1
+
+
+def session_is_in_memory(
+    config: "AgentConfig | None",
+    ws: Any | None,
+    agent: Any | None = None,
+    *,
+    trust_declared_lakebase: bool = True,
+) -> bool:
+    """True when per-turn continuity is process-local (won't span replicas).
+
+    In-memory when the conversation store resolves to ``InMemoryConversationStore``
+    (or ``None`` while a session is declared) OR the checkpointer resolves to ``None``
+    (LangGraph's in-process ``InMemorySaver``, not a durable ``PostgresSaver``).
+
+    ``trust_declared_lakebase`` is for compile-time (``ws`` is always ``None`` there):
+    a declared ``session.type=='lakebase'`` is durable-intent so scaled+lakebase still
+    emits. Runtime must pass ``False`` and use the resolved backends — a declared
+    lakebase that failed to build a checkpointer is still process-local."""
+    from ._conversation import InMemoryConversationStore  # noqa: PLC0415
+
+    config_session = config.session if config is not None else None
+    scfg = config_session if config_session is not None else getattr(agent, "session_config", None)
+    if trust_declared_lakebase and scfg is not None and scfg.type == "lakebase":
+        return False
+
+    store = resolve_conversation_store(config, ws, agent=agent)
+    session_declared = scfg is not None
+    store_in_memory = isinstance(store, InMemoryConversationStore) or (
+        store is None and session_declared
+    )
+    checkpointer_in_memory = resolve_checkpointer(config, ws, agent=agent) is None
+    return store_in_memory or checkpointer_in_memory
+
+
+def scaled_in_memory(
+    config: "AgentConfig | None", ws: Any | None, agent: Any | None = None
+) -> bool:
+    """The guarded footgun: declared >1 replica AND process-local session state."""
+    return declared_max_replicas(config) > 1 and session_is_in_memory(config, ws, agent)
+
+
+def scaled_in_memory_error(replicas: int) -> str:
+    """Fix-naming guardrail message for both catch points (compile + runtime boot)."""
+    return (
+        f"This app declares {replicas} replicas "
+        "([tool.apx.agent.deploy]) but its session state is in-memory (per-process). "
+        "Databricks Apps affinity is best-effort, so a turn landing on another replica "
+        "silently loses history and any mid-turn approval. Make session state durable by "
+        "declaring [tool.apx.agent.session] type='lakebase', "
+        "or remove the [tool.apx.agent.deploy] scaling block."
+    )
+
+
 def close_checkpointer(checkpointer: Any | None) -> None:
     """Close a durable checkpointer's connection pool on shutdown (#346).
 
@@ -565,6 +629,10 @@ def dispose_store_engine(store: Any | None) -> None:
 __all__ = [
     "attach_declared_memory",
     "close_checkpointer",
+    "declared_max_replicas",
+    "scaled_in_memory",
+    "scaled_in_memory_error",
+    "session_is_in_memory",
     "dispose_store_engine",
     "resolve_checkpointer",
     "resolve_conversation_store",

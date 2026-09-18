@@ -206,7 +206,8 @@ class TestReadyzMemory:
     def test_memory_degraded_surfaced(self):
         from apx_agent import Agent
         agent = Agent(instructions="x", tools=[])
-        agent._apx_memory_degraded = "delta memory needs a workspace/warehouse — not active"
+        # Mirrors runtime wiring: day-two ops state is set via setattr, not declared.
+        setattr(agent, "_apx_memory_degraded", "delta memory needs a workspace/warehouse — not active")
         body = self._app_for(agent).get("/readyz").json()
         assert "delta memory needs" in body["checks"]["memory"]
 
@@ -219,7 +220,7 @@ class TestReadyzMemory:
     def test_memory_degraded_returns_503(self):
         from apx_agent import Agent
         agent = Agent(instructions="x", tools=[])
-        agent._apx_memory_degraded = "delta backend not reachable"
+        setattr(agent, "_apx_memory_degraded", "delta backend not reachable")
         resp = self._app_for(agent).get("/readyz")
         assert resp.status_code == 503
         assert resp.json()["status"] == "degraded"
@@ -278,11 +279,16 @@ class TestReadyzSession:
         assert resp.status_code == 200
 
 
+# "Not passed" sentinel for TestReadyzMcp._app_for — an explicit None is a
+# real state (no mount error recorded), so it can't double as the sentinel.
+_UNSET = object()
+
+
 class TestReadyzMcp:
     """checks['mcp'] is a tri-state, informational signal — it never gates
     readiness (MCP is an optional, extra-gated surface)."""
 
-    def _app_for(self, agent, *, mcp_mount_error=..., mcp_server=...):
+    def _app_for(self, agent, *, mcp_mount_error=_UNSET, mcp_server=_UNSET):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         import apx_agent._readyz as rz
@@ -290,9 +296,9 @@ class TestReadyzMcp:
         rz._run_canned_probe = lambda a, m, **_k: ProbeResult(assistant_text="hi", trace_id="tr-1")  # type: ignore
         app = FastAPI()
         # The readyz handler reads MCP status off app.state at request time.
-        if mcp_mount_error is not ...:
+        if mcp_mount_error is not _UNSET:
             app.state.mcp_mount_error = mcp_mount_error
-        if mcp_server is not ...:
+        if mcp_server is not _UNSET:
             app.state.mcp_server = mcp_server
         mount_readyz(app, agent)
         return TestClient(app)

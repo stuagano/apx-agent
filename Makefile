@@ -5,7 +5,7 @@
 # works — a green exit code here is the read-back, not just "it ran".
 check:
 	./scripts/check-uv-lock-registry.sh --fix
-	cd python && uv run --frozen pytest
+	cd python && uv run --frozen pytest -n auto
 	./scripts/check-uv-lock-registry.sh
 
 # Lint suite from .pre-commit-config.yaml (enforces the Ponytail smells). Uses

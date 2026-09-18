@@ -220,7 +220,7 @@ def _build_pyproject(config: "AgentConfig") -> str:
     for skill in config.skills:
         lines.append("")
         lines.append("[[tool.apx.tools]]")
-        lines.append(f'type = "skill"')
+        lines.append('type = "skill"')
         lines.append(f"name = {_toml_value(skill.name)}")
         lines.append(f"description = {_toml_value(skill.description)}")
         lines.append(f'path = "skills/{skill.name}.md"')
@@ -685,8 +685,30 @@ def _build_databricks_yml(config: "AgentConfig") -> str:
     :param config: Validated ``AgentConfig`` describing the agent.
     :returns: Complete ``databricks.yml`` content as a string.
     """
+    from ._memory_wiring import (  # noqa: PLC0415
+        declared_max_replicas,
+        scaled_in_memory,
+        scaled_in_memory_error,
+    )
+
+    # Compile-time guard (FR-3): refuse to emit a bundle for a scaled app whose
+    # session state is in-memory. ws=None here — session_is_in_memory treats a
+    # declared lakebase session as durable-intent, so scaled+lakebase passes.
+    if scaled_in_memory(config, ws=None):
+        raise ValueError(scaled_in_memory_error(declared_max_replicas(config)))
+
     name = config.name
     skills_copy = "      cp -r skills .build/ 2>/dev/null || true\n\n" if config.skills else "\n"
+    # Carry the declared replica count forward for the runtime boot guard (FR-4).
+    # Instance count is UI/API-only (no bundle field in SDK 0.102.0), so this env
+    # is how the runtime learns the declared scale. Emitted only when declared.
+    declared_instances_env = (
+        f"""
+          - name: APX_DECLARED_INSTANCES
+            value: "{declared_max_replicas(config)}\""""
+        if config.deploy is not None
+        else ""
+    )
     return f"""\
 bundle:
   name: {name}
@@ -763,7 +785,7 @@ resources:
           - name: APX_AGENT_MLFLOW_AUTOLOG
             value: "1"
           - name: APX_APPS_HOST
-            value: python
+            value: python{declared_instances_env}
 
   jobs:
     {name}_keepalive:

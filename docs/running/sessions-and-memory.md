@@ -105,6 +105,38 @@ See [`docs/lakebase-recipe.md`](lakebase-recipe.md) for provisioning, pgvector, 
 
 Install the lakebase extra: `pip install 'apx-agent[lakebase]'`.
 
+### Scaling — durable session state is required for >1 replica
+
+Databricks Apps can run 1–5 instances behind one URL. The router's
+`__Host-databricks-app-router` affinity cookie is **best-effort only** — a turn
+can land on a different replica, so **you must not rely on instance-local
+state**. In-memory session/checkpointer state (the default) lives in one
+process: a turn on another replica silently loses history and any mid-turn
+approval.
+
+Declare the replica count once:
+
+```toml
+[tool.apx.agent.deploy]
+instances = 3            # fixed 1–5
+# or, instead of instances:
+# [tool.apx.agent.deploy.autoscale]
+# min = 2
+# max = 5
+```
+
+When you declare more than one replica, apx **refuses** to compile the bundle or
+boot in production unless session state is durable — the error names the fix,
+`[tool.apx.agent.session] type='lakebase'` (see the Lakebase session store
+above). Local single-process dev only warns. Scaled + Lakebase boots clean.
+
+Instance count is not declarable in `databricks.yml` (the Databricks SDK's `App`
+model has no scaling field — only vertical `compute_size`), so **set the
+instance count in the Databricks Apps UI to match `[tool.apx.agent.deploy]`**.
+UI-only scale is not validated. apx carries the declared count forward via the
+`APX_DECLARED_INSTANCES` env var so the runtime guard still fires if a scaled
+app ever ships with in-memory state.
+
 ---
 
 ## Memory bank — long-lived recall across conversations

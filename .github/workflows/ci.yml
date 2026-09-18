@@ -58,6 +58,9 @@ jobs:
   test:
     needs: changes
     runs-on: ubuntu-latest
+    # Hard cap: the 3.11 job on #779 sat 5.5h after 97% with no output because this
+    # job had no timeout and pytest had no per-test timeout. Green 3.13 is ~4 min.
+    timeout-minutes: 20
     strategy:
       matrix:
         python-version: ["3.11", "3.13"]
@@ -71,46 +74,58 @@ jobs:
       # docs-only path (where the real steps below are skipped).
       - uses: actions/checkout@v6
 
+      # Real suite: code PRs run 3.11 only. 3.13 stays in the matrix so the
+      # required check `test (3.13)` still exists, but the work is deferred to
+      # push-to-main. Docs-only still skip-succeeds both versions.
       - name: Install uv
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true  # cache the uv download/build cache (keyed on uv.lock)
 
       - name: Set up Python ${{ matrix.python-version }}
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
         run: uv sync --group dev --all-extras  # incl. langgraph/eval/uc/lakebase so their tests run, not skip
 
       - name: Setup Node.js
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
         uses: actions/setup-node@v6
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
 
       - name: Build internal TypeScript runtime
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
         working-directory: typescript
         run: |
           npm ci
           npm run build
 
       - name: Run tests
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
         # -n auto runs the suite across the runner's CPUs (~2x faster); the
-        # suite is parallel-clean. Full coverage on every PR — no test subset.
-        run: uv run pytest tests/ -n auto --tb=short
+        # suite is parallel-clean. PR floor is 3.11; 3.13 runs on main.
+        # --timeout names a stuck test instead of hanging the worker (xdist has no
+        # default hung-worker dump). 90s is well above any test in a ~3 min suite.
+        run: uv run pytest tests/ -n auto --tb=short --timeout=90 --timeout-method=thread
 
       - name: Docs-only change — tests not required
         if: needs.changes.outputs.code != 'true'
         run: echo "Docs-only PR — skipping tests; required check passes."
 
+      - name: PR — 3.13 suite deferred to main
+        if: needs.changes.outputs.code == 'true' && github.event_name == 'pull_request' && matrix.python-version == '3.13'
+        run: echo "PR — 3.13 suite deferred to main; required check passes."
+
   typecheck:
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: python
@@ -151,6 +166,7 @@ jobs:
   typecheck-ts:
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         node-version: ['22']
@@ -168,6 +184,8 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
 
       - name: Guard lockfile registry
         if: needs.changes.outputs.code == 'true'
