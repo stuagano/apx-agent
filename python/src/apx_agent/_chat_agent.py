@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generator, cast
 
 from ._agents import BaseAgent
+from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_turn
 from ._audit import (
     AuditAttrs,
     set_audit_attrs,
@@ -867,6 +868,19 @@ def chat_agent_for(
                         **({"checkpointer": checkpointer} if checkpointer else {}),
                     )
 
+                # Session budget (#768): refuse before running if this session's
+                # cumulative token total already crossed the cap; else remember
+                # the prior total to add this turn's usage after the run.
+                budget_cap = cap_for(self._agent)
+                # Cross-turn persistence needs a checkpointer, so key on it, not
+                # lg_config (conv-store-without-checkpointer leaves lg_config set).
+                budget_config = lg_config if checkpointer is not None else None
+                budget_prior = (
+                    enforce_before_turn(graph, budget_config, budget_cap)
+                    if budget_cap is not None
+                    else 0
+                )
+
                 lc_input = _to_langchain_messages(effective_messages)
                 input_count = len(lc_input)
                 # With a checkpointer, invoke returns the FULL thread state
@@ -905,6 +919,13 @@ def chat_agent_for(
                 # approves/denies by resending with {"resume": "approve"|"deny"}.
                 paused = _pending_interrupt(graph, lg_config)
                 if paused is not None:
+                    # Count model tokens spent up to the pause (#768) so an
+                    # approval-gated session can't bypass the cap by pausing.
+                    if budget_cap is not None:
+                        accrue_turn(
+                            graph, budget_config, budget_prior,
+                            result["messages"][pre_count:],
+                        )
                     response = _approval_required_response(paused, thread_id)
                     set_span_outputs(span, response.model_dump())
                     # Persist the user's prompt (+ synthesize the title) on the
@@ -927,6 +948,12 @@ def chat_agent_for(
                     _from_langchain_message(m, idx)
                     for idx, m in enumerate(new_lc_messages)
                 ]
+                # Session budget: add this turn's usage, persist the new total,
+                # raise if the cumulative crossed the cap (turn-boundary).
+                if budget_cap is not None:
+                    enforce_after_turn(
+                        graph, budget_config, budget_prior, new_lc_messages, budget_cap
+                    )
                 response = ChatAgentResponse(messages=new_messages)
                 set_span_outputs(span, response.model_dump())
 
@@ -1010,9 +1037,21 @@ def chat_agent_for(
                     headers=_auth.headers,
                     **({"checkpointer": checkpointer} if checkpointer else {}),
                 )
+                # Session budget (#768): refuse before running if already over.
+                budget_cap = cap_for(self._agent)
+                # Cross-turn persistence needs a checkpointer, so key on it, not
+                # lg_config (conv-store-without-checkpointer leaves lg_config set).
+                budget_config = lg_config if checkpointer is not None else None
+                budget_prior = (
+                    enforce_before_turn(graph, budget_config, budget_cap)
+                    if budget_cap is not None
+                    else 0
+                )
+
                 lc_input = _to_langchain_messages(effective_messages)
                 emitted = 0
                 new_messages: list[ChatAgentMessage] = []
+                turn_lc_messages: list[Any] = []
 
                 # Approval resume: a checkpointed thread resends
                 # {"resume": <decision>} to continue from the paused tool call
@@ -1037,6 +1076,7 @@ def chat_agent_for(
                         if not isinstance(node_output, dict):
                             continue
                         for msg in node_output.get("messages", []) or []:
+                            turn_lc_messages.append(msg)
                             delta = _from_langchain_message(msg, emitted)
                             emitted += 1
                             new_messages.append(delta)
@@ -1054,6 +1094,10 @@ def chat_agent_for(
                 # before this chunk; consistent with predict's state, left as-is.
                 paused = _pending_interrupt(graph, lg_config)
                 if paused is not None:
+                    # Count model tokens spent up to the pause (#768) so a
+                    # repeatedly-pausing session can't bypass the cumulative cap.
+                    if budget_cap is not None:
+                        accrue_turn(graph, budget_config, budget_prior, turn_lc_messages)
                     yield _approval_required_chunk(paused, thread_id)
                     # Persist the user's prompt (+ title) on the approval turn;
                     # the tool result + answer are appended on resume.
@@ -1066,6 +1110,13 @@ def chat_agent_for(
                         is_new=conv.is_new if conv is not None else False,
                     )
                     return
+
+                # Session budget: add this turn's usage, persist the new total,
+                # raise if cumulative crossed the cap (after the streaming turn).
+                if budget_cap is not None:
+                    enforce_after_turn(
+                        graph, budget_config, budget_prior, turn_lc_messages, budget_cap
+                    )
 
                 # Persist the inbound turn + the new messages — mirrors
                 # ``predict`` so streaming multi-turn conversations remember

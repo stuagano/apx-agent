@@ -42,6 +42,30 @@ through every caller.
 from __future__ import annotations
 
 
+class SessionBudgetExceeded(Exception):
+    """A session's cumulative token usage crossed its declared cap.
+
+    Raised on a served turn when an ``LlmAgent(session_budget={"tokens": N})``'s
+    running total — summed across ALL turns of one session (``thread_id``) and
+    persisted in the compiled graph's keyed ``state`` channel — reaches or
+    crosses ``N``. This is a **per-session cumulative** cap enforced at the
+    **turn boundary**: checked before a turn runs (refused if the session is
+    already at/over cap) and after it completes (raised if this turn's usage
+    pushed the total past cap). It is NOT a per-turn cap and does NOT interrupt
+    mid-turn — LangGraph runs the tool loop in one call.
+
+    Cumulative enforcement requires a configured checkpointer (the durable home
+    of the counter across turns); without one it degrades to per-turn.
+    """
+
+    def __init__(self, spent: int, cap: int) -> None:
+        self.spent = spent
+        self.cap = cap
+        super().__init__(
+            f"session token budget exceeded: spent {spent} of {cap} cap"
+        )
+
+
 class ToolError(Exception):
     """A tool failed in an expected, legible way — contain it, don't crash.
 

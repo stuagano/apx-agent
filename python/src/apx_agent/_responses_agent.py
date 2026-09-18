@@ -58,6 +58,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 
 from ._agents import BaseAgent
+from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_turn
 from ._audit import (
     AuditAttrs,
     set_audit_attrs,
@@ -1216,6 +1217,17 @@ def compile_to_responses_agent(
                         headers=req_headers,
                         **({"checkpointer": cp} if cp else {}),
                     )
+                # Session budget (#768): refuse before running if already over.
+                # Cross-turn persistence needs a checkpointer, so key it on `cp`,
+                # not lg_config (a conv-store-without-checkpointer config leaves
+                # lg_config truthy but has no state to read/write).
+                budget_cap = cap_for(_agent)
+                budget_config = lg_config if cp is not None else None
+                budget_prior = (
+                    enforce_before_turn(graph, budget_config, budget_cap)
+                    if budget_cap is not None
+                    else 0
+                )
                 input_count = len(graph_input)
                 # With a checkpointer, invoke returns the FULL thread state
                 # (prior history + this turn's input + output), not just
@@ -1246,6 +1258,14 @@ def compile_to_responses_agent(
                 # approval-required response (tool NOT run) before persisting.
                 paused = _pending_interrupt(graph, lg_config)
                 if paused is not None:
+                    # Count the model tokens spent up to the pause (#768) so an
+                    # approval-gated session can't spend unbounded by repeatedly
+                    # pausing; the next turn's enforce_before_turn refuses if over.
+                    if budget_cap is not None:
+                        accrue_turn(
+                            graph, budget_config, budget_prior,
+                            result["messages"][pre_count:],
+                        )
                     response = ResponsesAgentResponse(
                         id=f"resp-{uuid.uuid4().hex[:12]}",
                         output=[_approval_output_item(paused, thread_id)],
@@ -1273,6 +1293,9 @@ def compile_to_responses_agent(
                 # (mirrors ChatAgent.predict's slice_start).
                 slice_start = pre_count if resume is not None else pre_count + input_count
                 new_lc = result["messages"][slice_start:]
+                # Session budget: add this turn's usage, persist, raise if crossed.
+                if budget_cap is not None:
+                    enforce_after_turn(graph, budget_config, budget_prior, new_lc, budget_cap)
                 raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
                 output_items = _flatten_output_items(raw_items)
 
@@ -1427,6 +1450,16 @@ def compile_to_responses_agent(
                     headers=req_headers,
                     **({"checkpointer": cp} if cp else {}),
                 )
+                # Session budget (#768): refuse before running if already over.
+                # Key cross-turn persistence on `cp` (checkpointer), not lg_config.
+                budget_cap = cap_for(_agent)
+                budget_config = lg_config if cp is not None else None
+                budget_prior = (
+                    enforce_before_turn(graph, budget_config, budget_cap)
+                    if budget_cap is not None
+                    else 0
+                )
+                turn_lc_messages: list[Any] = []
                 # Approval resume: a checkpointed thread resends
                 # {"resume": <decision>} to continue from the paused tool call.
                 resume = _resume_decision(custom_inputs) if lg_config else None
@@ -1469,6 +1502,7 @@ def compile_to_responses_agent(
                         if not isinstance(node_output, dict):
                             continue
                         for lc_msg in node_output.get("messages", []) or []:
+                            turn_lc_messages.append(lc_msg)
                             raw = _langchain_to_output_item(lc_msg, output_index)
                             for item in _flatten_output_items([raw]):
                                 output_items.append(item)
@@ -1485,6 +1519,10 @@ def compile_to_responses_agent(
                 # result + answer are appended on resume).
                 paused = _pending_interrupt(graph, lg_config)
                 if paused is not None:
+                    # Count the model tokens spent up to the pause (#768) so a
+                    # repeatedly-pausing session can't bypass the cumulative cap.
+                    if budget_cap is not None:
+                        accrue_turn(graph, budget_config, budget_prior, turn_lc_messages)
                     appr_item = _approval_output_item(paused, thread_id)
                     yield ResponsesAgentStreamEvent(
                         type="response.output_item.done",
@@ -1511,6 +1549,12 @@ def compile_to_responses_agent(
                             is_new=conv.is_new if conv is not None else False,
                         )
                     return
+
+                # Session budget: add this turn's usage, persist, raise if crossed.
+                if budget_cap is not None:
+                    enforce_after_turn(
+                        graph, budget_config, budget_prior, turn_lc_messages, budget_cap
+                    )
 
             # Terminal event with the assembled response
             final_response = {
