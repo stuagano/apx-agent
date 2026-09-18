@@ -208,8 +208,14 @@ def test_obo_token_reaches_leaf_through_two_hops(
         config=AgentConfig(name="agent-a", model="model-a", sub_agents=[B_URL]),
     )
 
-    # Step 4: Run the full chain — lifespans already fired during create_app
-    with TestClient(app_c), TestClient(app_b), TestClient(app_a) as client_a:
+    # create_app() does not fire lifespan. Three nested TestClients each start
+    # an anyio blocking portal (own event-loop thread). That combination kills
+    # 3.11 xdist workers with "Not properly terminated" and no traceback.
+    # Fire C first so include_router mounts stick after the portal exits, then
+    # keep only B+A live — the same two-portal shape as the two-agent sibling.
+    with TestClient(app_c):
+        pass
+    with TestClient(app_b), TestClient(app_a) as client_a:
         resp = client_a.post(
             "/invocations",
             json={"messages": [{"role": "user", "content": "Who am I?"}]},
