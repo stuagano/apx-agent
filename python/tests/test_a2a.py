@@ -8,7 +8,8 @@ sync-complete tasks as terminal. See docs/design/a2a-tasks-surface.md.
 
 from __future__ import annotations
 
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,6 +35,36 @@ from apx_agent._a2a_models import (  # noqa: E402
 def _trivial_tool(query: str) -> str:
     """Return the query, echoing back."""
     return f"got: {query}"
+
+
+class _SenderTrace(NamedTuple):
+    sender: Any
+    headers: dict[str, str]
+
+
+def _sender_trace_headers() -> _SenderTrace:
+    """Return a closed real sender span and its MLflow propagation headers."""
+    import mlflow
+
+    from apx_agent import inject_tracing_headers
+
+    with mlflow.start_span("sender") as sender:
+        headers = inject_tracing_headers({})
+    return _SenderTrace(sender, headers)
+
+
+def _record_span(named: str, seen: list[Any]):
+    """Wrap the real ingress span helper and retain the requested span."""
+    from apx_agent import safe_span as real_safe_span
+
+    @contextmanager
+    def recording(name: str, **kwargs: Any):
+        with real_safe_span(name, **kwargs) as span:
+            if name == named:
+                seen.append(span)
+            yield span
+
+    return recording
 
 
 @pytest.fixture
@@ -557,6 +588,27 @@ class TestCrossAgentCorrelation:
                 "apx.caller": "orchestrator",
             }
         )
+
+    def test_message_send_continues_real_sender_trace(self, a2a_client):
+        client, captured = a2a_client
+        _stub_reply(captured, "ok")
+        sender, headers = _sender_trace_headers()
+        request_spans: list[Any] = []
+
+        with patch(
+            "apx_agent._invocations.safe_span",
+            side_effect=_record_span("POST / (A2A)", request_spans),
+        ):
+            resp = _rpc(
+                client,
+                "message/send",
+                _send_params("hi"),
+                headers=headers,
+            )
+
+        assert resp.json()["result"]["status"]["state"] == "completed"
+        assert request_spans[0].trace_id == sender.trace_id
+        assert request_spans[0].parent_id == sender.span_id
 
     def test_message_send_without_headers_stamps_nothing(self, a2a_client):
         client, captured = a2a_client

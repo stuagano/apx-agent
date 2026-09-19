@@ -32,6 +32,7 @@ serialized ChatAgent blob. The relay assertion below pins that.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -164,7 +165,21 @@ def _route_async_clients_to(
 
 
 @pytest.fixture
-def two_agents(monkeypatch: pytest.MonkeyPatch):
+def local_trace_store(tmp_path):
+    """Keep the local MLflow destination active until both ASGI apps stop."""
+    import mlflow
+
+    old_tracking_uri = mlflow.get_tracking_uri()
+    mlflow.set_tracking_uri(f"file://{tmp_path / 'mlruns'}")
+    experiment = mlflow.set_experiment("cross-agent-parentage-reality")
+    try:
+        yield experiment
+    finally:
+        mlflow.set_tracking_uri(old_tracking_uri)
+
+
+@pytest.fixture
+def two_agents(monkeypatch: pytest.MonkeyPatch, local_trace_store):
     """A REAL agent A (config sub_agents=[B]) talking to a REAL served agent B."""
     B_TOOL_CALLS.clear()
     BOUND_TOOLS.clear()
@@ -192,20 +207,26 @@ def two_agents(monkeypatch: pytest.MonkeyPatch):
             model="model-b",
         ),
     )
-    with TestClient(app_b):  # real lifespan: mounts /invocations + card on app_b
-        _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
+    # create_app() does not fire lifespan. Nested TestClients each start an
+    # anyio blocking portal (own event-loop thread). That combination kills
+    # 3.11 xdist workers with "Not properly terminated" and no traceback.
+    # Fire B first so include_router mounts stick after the portal exits, then
+    # keep only A live.
+    with TestClient(app_b):
+        pass
+    _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
 
-        agent_a = LlmAgent(tools=[], name="agent-a")
-        app_a = create_app(
-            agent_a,
-            config=AgentConfig(
-                name="agent-a",
-                model="model-a",
-                sub_agents=[B_URL],  # the config path under test — nothing code-wired
-            ),
-        )
-        with TestClient(app_a) as client_a:
-            yield agent_a, client_a
+    agent_a = LlmAgent(tools=[], name="agent-a")
+    app_a = create_app(
+        agent_a,
+        config=AgentConfig(
+            name="agent-a",
+            model="model-a",
+            sub_agents=[B_URL],  # the config path under test — nothing code-wired
+        ),
+    )
+    with TestClient(app_a) as client_a:
+        yield agent_a, client_a
 
 
 def _final_texts(body: dict[str, Any]) -> str:
@@ -462,27 +483,29 @@ def test_degraded_sub_agent_repairs_on_first_use(
                 model="model-b",
             ),
         )
+        # Fire B so include_router mounts stick, then drop its portal before A posts.
         with TestClient(app_b):
-            _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
+            pass
+        _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
 
-            resp = client_a.post(
-                "/invocations",
-                json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
-            )
+        resp = client_a.post(
+            "/invocations",
+            json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
+        )
 
-            assert resp.status_code == 200, resp.text
-            # The call went through: B's tool body really executed.
-            assert B_TOOL_CALLS == ["ran"], "agent B's tool never executed"
-            assert SENTINEL in _final_texts(resp.json())
+        assert resp.status_code == 200, resp.text
+        # The call went through: B's tool body really executed.
+        assert B_TOOL_CALLS == ["ran"], "agent B's tool never executed"
+        assert SENTINEL in _final_texts(resp.json())
 
-            # And the first use repaired the degraded entry in place:
-            assert agent_a._degraded_sub_agents == {}
-            assert stub.description == "Knows the secret word."
-            delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent")
-            assert delegate.__doc__ == "Knows the secret word."
-            # collect_tools (the /tools + MCP surface) reads __doc__ live.
-            collected = {t.name: t.description for t in agent_a.collect_tools()}
-            assert collected["agent"] == "Knows the secret word."
+        # And the first use repaired the degraded entry in place:
+        assert agent_a._degraded_sub_agents == {}
+        assert stub.description == "Knows the secret word."
+        delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent")
+        assert delegate.__doc__ == "Knows the secret word."
+        # collect_tools (the /tools + MCP surface) reads __doc__ live.
+        collected = {t.name: t.description for t in agent_a.collect_tools()}
+        assert collected["agent"] == "Knows the secret word."
 
 
 # ---------------------------------------------------------------------------
@@ -537,45 +560,46 @@ def test_structured_schema_propagates_and_args_cross_the_wire(
         ),
     )
     with TestClient(app_b):
-        _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
+        pass
+    _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
 
-        agent_a = LlmAgent(tools=[], name="agent-a")
-        app_a = create_app(
-            agent_a,
-            config=AgentConfig(name="agent-a", model="model-a", sub_agents=[B_URL]),
+    agent_a = LlmAgent(tools=[], name="agent-a")
+    app_a = create_app(
+        agent_a,
+        config=AgentConfig(name="agent-a", model="model-a", sub_agents=[B_URL]),
+    )
+    with TestClient(app_a) as client_a:
+        # The delegate the compiled graph binds exposes B's real parameter.
+        delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent_b")
+        plain_params, dep_names = _inspect_tool_fn(delegate)
+        assert list(plain_params) == ["team"]
+        assert dep_names == ["headers"]
+
+        # The advertised descriptor carries the card schema, not {message}.
+        descriptor = next(
+            t for t in agent_a.collect_tools() if t.name == "agent_b"
         )
-        with TestClient(app_a) as client_a:
-            # The delegate the compiled graph binds exposes B's real parameter.
-            delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent_b")
-            plain_params, dep_names = _inspect_tool_fn(delegate)
-            assert list(plain_params) == ["team"]
-            assert dep_names == ["headers"]
+        assert descriptor.input_schema is not None
+        assert "team" in descriptor.input_schema["properties"]
+        assert "message" not in descriptor.input_schema["properties"]
 
-            # The advertised descriptor carries the card schema, not {message}.
-            descriptor = next(
-                t for t in agent_a.collect_tools() if t.name == "agent_b"
-            )
-            assert descriptor.input_schema is not None
-            assert "team" in descriptor.input_schema["properties"]
-            assert "message" not in descriptor.input_schema["properties"]
+        resp = client_a.post(
+            "/invocations",
+            json={
+                "messages": [
+                    {"role": "user", "content": "Secret word for team blue?"}
+                ]
+            },
+        )
 
-            resp = client_a.post(
-                "/invocations",
-                json={
-                    "messages": [
-                        {"role": "user", "content": "Secret word for team blue?"}
-                    ]
-                },
-            )
-
-            assert resp.status_code == 200, resp.text
-            # REALITY: B's tool body executed with the structured argument.
-            assert B_TOOL_ARGS == ["blue"], "agent B's tool never got the arg"
-            # WIRE: what B's LLM saw as the user message is the JSON args
-            # object A's delegate serialized — named fields, not prose.
-            assert json.loads(SEEN_USER_CONTENT["B"]) == {"team": "blue"}
-            # And the sentinel still travels back to A's final answer.
-            assert f"{SENTINEL}-blue" in _final_texts(resp.json())
+        assert resp.status_code == 200, resp.text
+        # REALITY: B's tool body executed with the structured argument.
+        assert B_TOOL_ARGS == ["blue"], "agent B's tool never got the arg"
+        # WIRE: what B's LLM saw as the user message is the JSON args
+        # object A's delegate serialized — named fields, not prose.
+        assert json.loads(SEEN_USER_CONTENT["B"]) == {"team": "blue"}
+        # And the sentinel still travels back to A's final answer.
+        assert f"{SENTINEL}-blue" in _final_texts(resp.json())
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +615,9 @@ def test_cross_agent_traces_join_on_one_tag(
     they are the same value under the same tag (apx.outbound.trace_id), so
     the two traces join on one tag equality. B also learns WHO called
     (apx.caller) and keeps the raw traceparent for debugging."""
-    from apx_agent import _audit
+    import mlflow
+
+    from apx_agent import _audit, inject_tracing_headers
 
     _, client_a = two_agents
     # A knows its own name from the Apps runtime env — that's what crosses
@@ -606,25 +632,110 @@ def test_cross_agent_traces_join_on_one_tag(
         _audit, "set_trace_tags", lambda tags: tag_calls.append(dict(tags))
     )
 
-    resp = client_a.post(
-        "/invocations",
-        json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
+    from mlflow.tracing.trace_manager import InMemoryTraceManager
+
+    # Keep the export barrier open after the POST so A/B child spans stay in
+    # InMemoryTraceManager. search_traces(flush=True) / flush_trace_async_logging
+    # join MLflow's process-wide async export queue and hang xdist workers.
+    # Snapshot at root-span-end is too early: that fires when external-sender
+    # closes, before A/B children exist.
+    with mlflow.start_span("external-sender") as sender:
+        export_barrier = mlflow.start_span_no_context(
+            "receiver-export-barrier", parent_span=sender
+        )
+        headers = inject_tracing_headers({})
+    try:
+        resp = client_a.post(
+            "/invocations",
+            json={
+                "messages": [
+                    {"role": "user", "content": "What is the secret word?"}
+                ]
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert SENTINEL in _final_texts(resp.json())  # the delegation really ran
+
+        deadline = time.monotonic() + 4.0
+        observed: list[dict[str, Any]] = []
+        trace = None
+        while True:
+            tm = InMemoryTraceManager.get_instance()
+            with tm.get_trace(sender.trace_id) as live:
+                if live is not None:
+                    snapshot = live.to_mlflow_trace()
+                    observed = [
+                        {
+                            "name": span.name,
+                            "parent_id": span.parent_id,
+                            "agent_name": (span.attributes or {}).get(
+                                "apx.agent.name"
+                            ),
+                        }
+                        for span in snapshot.data.spans
+                    ]
+                    if any(
+                        item["name"] == "POST /invocations"
+                        and item["agent_name"] == "agent-a"
+                        for item in observed
+                    ) and any(
+                        item["name"] == "POST /responses"
+                        and item["agent_name"] == "agent-b"
+                        for item in observed
+                    ):
+                        trace = snapshot
+                        break
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    "cross-agent live trace never contained A/B request "
+                    f"spans; observed={observed!r}"
+                )
+            time.sleep(0.05)
+    finally:
+        export_barrier.end()
+    assert trace is not None
+
+    spans = trace.data.spans
+    caller_request = next(
+        s
+        for s in spans
+        if s.name == "POST /invocations"
+        and (s.attributes or {}).get("apx.agent.name") == "agent-a"
     )
-    assert resp.status_code == 200, resp.text
-    assert SENTINEL in _final_texts(resp.json())  # the delegation really ran
+    assert caller_request.parent_id == sender.span_id
+    remote_request = next(
+        s
+        for s in spans
+        if s.name == "POST /responses"
+        and (s.attributes or {}).get("apx.agent.name") == "agent-b"
+    )
+    by_id = {span.span_id: span for span in spans}
+    assert (remote_request.attributes or {})["apx.traceparent"].split("-")[
+        2
+    ] == remote_request.parent_id
+    parent = by_id[remote_request.parent_id]
+    ancestor_ids: list[str] = []
+    while parent is not None:
+        ancestor_ids.append(parent.span_id)
+        if parent.span_id == caller_request.span_id:
+            break
+        parent = by_id.get(parent.parent_id)
+    assert caller_request.span_id in ancestor_ids
 
     # Caller side (A): stamped when the delegate fired — trace-id only.
     caller_stamps = [
         t for t in tag_calls
         if "apx.outbound.trace_id" in t and "apx.traceparent" not in t
     ]
-    # Receiver side (B): stamped from the incoming headers on /invocations.
+    # Receiver side: A is stamped from the external sender, then B is stamped
+    # from A's internal /responses call. Select B's stamp by its caller tag.
     receiver_stamps = [t for t in tag_calls if "apx.traceparent" in t]
     assert caller_stamps, "caller side never stamped apx.outbound.trace_id"
     assert receiver_stamps, "receiver side never stamped apx.traceparent"
 
     sent = caller_stamps[0]["apx.outbound.trace_id"]
-    received = receiver_stamps[0]
+    received = next(t for t in receiver_stamps if t.get("apx.caller") == "agent-a")
     # ONE tag equality joins the two traces across experiments.
     assert received["apx.outbound.trace_id"] == sent
     # The raw traceparent B recorded carries the same trace-id A sent…

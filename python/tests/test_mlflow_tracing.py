@@ -450,6 +450,20 @@ class TestEmitProgress:
 
 
 class TestDistributedTracingHelpers:
+    def test_real_mlflow_context_round_trip(self) -> None:
+        """A closed sender span becomes the receiver's real MLflow parent."""
+        import mlflow
+
+        from apx_agent import continue_trace_from_headers, inject_tracing_headers
+
+        with mlflow.start_span("sender") as sender:
+            headers = inject_tracing_headers({})
+
+        with continue_trace_from_headers(headers):
+            with safe_span("receiver") as receiver:
+                assert receiver.trace_id == sender.trace_id
+                assert receiver.parent_id == sender.span_id
+
     def test_inject_no_op_when_mlflow_missing(self) -> None:
         """inject_tracing_headers returns headers unchanged, never raises."""
         from apx_agent import inject_tracing_headers
@@ -481,6 +495,32 @@ class TestDistributedTracingHelpers:
             with continue_trace_from_headers({"mlflow-trace-context": "abc"}):
                 entered = True
             assert entered
+
+    @pytest.mark.parametrize("headers", [{}, {"traceparent": "invalid"}])
+    def test_continue_no_op_without_valid_context(
+        self, headers: dict[str, str]
+    ) -> None:
+        """Absent or invalid propagation headers must still enter the body."""
+        from apx_agent import continue_trace_from_headers
+
+        entered = False
+        with continue_trace_from_headers(headers):
+            entered = True
+        assert entered
+
+    def test_continue_never_hides_handler_exception(self) -> None:
+        """Tracing fallback must not catch an exception raised by the body."""
+        import mlflow
+
+        from apx_agent import continue_trace_from_headers
+        from apx_agent import inject_tracing_headers
+
+        with mlflow.start_span("sender"):
+            headers = inject_tracing_headers({})
+
+        with pytest.raises(RuntimeError, match="handler failed"):
+            with continue_trace_from_headers(headers):
+                raise RuntimeError("handler failed")
 
     def test_continue_uses_mlflow_context_manager(self) -> None:
         """When available, the MLflow server-side context manager is entered."""

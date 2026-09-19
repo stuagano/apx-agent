@@ -160,6 +160,11 @@ class _TTLCache:
         self._expires = _time_mod.monotonic() + self.ttl
         self._refreshing = False
 
+    def clear(self) -> None:
+        self._value = None
+        self._expires = 0.0
+        self._refreshing = False
+
 
 # Module-level singletons — survive request boundaries, reset on process restart.
 _EVAL_CASES_CACHE: _TTLCache = _TTLCache(ttl=300)   # 5 min — ratings change infrequently
@@ -1700,7 +1705,6 @@ def _fetch_traces_list_sync(experiment_id: str | None, max_results: int) -> list
             max_results=max_results,
             order_by=["timestamp DESC"],
             include_spans=False,
-            flush=True,
         )) if exp_ids else []
     except Exception:
         logger.exception("mlflow search_traces failed for trace panel")
@@ -2061,7 +2065,6 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                     max_results=5,
                     order_by=["timestamp DESC"],
                     include_spans=False,
-                    flush=True,
                 )) if exp_ids else []
                 traces = _drop_warmup_traces(traces)
                 for t in traces:
@@ -4332,6 +4335,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             path.write_text(content)
         except OSError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        _EVAL_CASES_CACHE.clear()
         await _ws_upload_agent_file(request, path, content)
         # Raw dict (not JSONResponse) so ``response_model`` validates the shape.
         return {"ok": True, "count": len(cases)}
@@ -4565,15 +4569,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         Call this after rating new traces to see them immediately in /_apx/eval
         and /_apx/traces without waiting for the TTL to expire.
         """
-        _EVAL_CASES_CACHE._value = None
-        _EVAL_CASES_CACHE._expires = 0.0
-        _EVAL_CASES_CACHE._refreshing = False
-        _TRACES_LIST_CACHE._value = None
-        _TRACES_LIST_CACHE._expires = 0.0
-        _TRACES_LIST_CACHE._refreshing = False
-        _GROUNDING_COLUMNS_CACHE._value = None
-        _GROUNDING_COLUMNS_CACHE._expires = 0.0
-        _GROUNDING_COLUMNS_CACHE._refreshing = False
+        _EVAL_CASES_CACHE.clear()
+        _TRACES_LIST_CACHE.clear()
+        _GROUNDING_COLUMNS_CACHE.clear()
         _SCHEMA_CACHE.clear()
         return {"ok": True, "message": "All caches cleared."}
 

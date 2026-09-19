@@ -21,12 +21,15 @@ pytest.importorskip("langgraph")
 pytest.importorskip("langchain_core")
 
 from apx_agent import (  # noqa: E402
+    Agent,
     HandoffAgent,
     KeywordRouter,
     LlmAgent,
     LoopAgent,
     ParallelAgent,
+    RemoteDatabricksAgent,
     RouterAgent,
+    SequentialAgent,
     compile_to_langgraph,
 )
 
@@ -57,6 +60,300 @@ def _stub_chat_databricks(monkeypatch: pytest.MonkeyPatch) -> None:
 def _noop_tool(query: str) -> str:
     """A dependency-free tool used to populate sub-agents."""
     return query
+
+
+def _binding(name: str) -> Any:
+    from apx_agent._remote import _RemoteLeafBinding
+
+    return _RemoteLeafBinding(
+        logical_name=name,
+        card_url=f"https://{name}.example.com/.well-known/agent.json",
+    )
+
+
+def _returning(text: str) -> Any:
+    from apx_agent._remote import _RemoteReply
+
+    async def _run(_self: Any, _messages: list[Any], _incoming_headers: Any) -> Any:
+        return _RemoteReply(text=text, control=None)
+
+    return _run
+
+
+def _last_text(result: dict[str, Any]) -> str:
+    from langchain_core.messages import AIMessage
+
+    return next(
+        message.content
+        for message in reversed(result["messages"])
+        if isinstance(message, AIMessage)
+    )
+
+
+def _graph_node_names(graph: Any) -> set[str]:
+    return {name.rsplit(":", 1)[-1] for name in graph.get_graph(xray=True).nodes}
+
+
+def _local_compiler_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str] | None = None,
+) -> None:
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableLambda
+
+    from apx_agent import _compile as compile_module
+
+    def _compile_agent(agent: Any, *_args: Any, **_kwargs: Any) -> Any:
+        def _run(_state: Any) -> dict[str, Any]:
+            if calls is not None:
+                calls.append(agent._name)
+            return {"messages": [AIMessage(content="local")]}
+
+        return RunnableLambda(_run)
+
+    monkeypatch.setattr(
+        compile_module,
+        "_compile_llm_agent",
+        _compile_agent,
+    )
+
+
+@pytest.mark.parametrize(
+    "root_factory",
+    [
+        lambda remote: SequentialAgent([remote], name="sequence"),
+        lambda remote: ParallelAgent([Agent(name="local"), remote]),
+        lambda remote: RouterAgent(agents=[remote]),
+        lambda remote: KeywordRouter(
+            branches=[("price", remote, ["price"])],
+            default=Agent(name="local"),
+        ),
+    ],
+)
+def test_bound_leaf_compiles_as_its_logical_name(
+    monkeypatch: pytest.MonkeyPatch, root_factory: Any
+) -> None:
+    pricing = Agent(name="pricing", description="Returns an approved price.")
+    root = root_factory(pricing)
+    binding = _binding("pricing")
+    root._apx_remote_leaf_bindings = {"pricing": binding}
+    _local_compiler_stub(monkeypatch)
+    monkeypatch.setattr(
+        RemoteDatabricksAgent,
+        "run_with_control",
+        _returning("approved"),
+    )
+
+    graph = compile_to_langgraph(root, ws=None, model="test-model")
+    from langchain_core.messages import HumanMessage
+
+    result = graph.invoke({"messages": [HumanMessage(content="need a price")]})
+
+    assert _last_text(result) == "approved"
+    assert "pricing" in _graph_node_names(graph)
+    raw_node_labels = set(graph.get_graph(xray=True).nodes)
+    serialized_labels = "\n".join(raw_node_labels)
+    assert "RemoteDatabricksAgent" not in serialized_labels
+    assert binding.card_url not in serialized_labels
+
+
+def test_binding_name_collision_does_not_replace_named_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langchain_core.messages import HumanMessage
+
+    local_calls: list[str] = []
+    pricing = Agent(name="pricing")
+    root = SequentialAgent(
+        [Agent(name="local"), pricing],
+        name="pricing",
+    )
+    root._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    _local_compiler_stub(monkeypatch, local_calls)
+    monkeypatch.setattr(
+        RemoteDatabricksAgent,
+        "run_with_control",
+        _returning("approved"),
+    )
+
+    graph = compile_to_langgraph(root, ws=None, model="test-model")
+    result = graph.invoke({"messages": [HumanMessage(content="need a price")]})
+
+    assert local_calls == ["local"]
+    assert _last_text(result) == "approved"
+    assert {"local", "pricing"}.issubset(_graph_node_names(graph))
+
+
+def test_bound_leaf_transport_errors_propagate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detail = "https://private.example/card NON_SECRET_UPSTREAM_BODY"
+
+    async def _raise(*_args: Any, **_kwargs: Any) -> str:
+        raise RuntimeError(detail)
+
+    pricing = Agent(name="pricing")
+    root = SequentialAgent([pricing], name="sequence")
+    root._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    _local_compiler_stub(monkeypatch)
+    monkeypatch.setattr(
+        RemoteDatabricksAgent,
+        "run_with_control",
+        _raise,
+    )
+
+    graph = compile_to_langgraph(root, ws=None, model="test-model")
+
+    from langchain_core.messages import HumanMessage
+
+    with pytest.raises(RuntimeError, match="Stage 'pricing' failed") as error:
+        graph.invoke({"messages": [HumanMessage(content="price")]})
+    assert detail not in str(error.value)
+    assert str(error.value.__cause__) == detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guard", ["input", "output", "allowed"])
+async def test_bound_leaf_preserves_governance_and_keyed_state(
+    monkeypatch: pytest.MonkeyPatch, guard: str
+) -> None:
+    from langchain_core.messages import HumanMessage
+
+    events: list[str] = []
+
+    async def remote(*_args: Any) -> Any:
+        from apx_agent._remote import _RemoteReply
+
+        events.append("remote")
+        return _RemoteReply(text="approved", control=None)
+
+    def input_guard(messages: Any) -> str | None:
+        events.append("input")
+        return "blocked" if guard == "input" else None
+
+    def output_guard(text: str) -> str | None:
+        events.append("output")
+        return "redacted" if guard == "output" else None
+
+    pricing = Agent(
+        name="pricing",
+        input_guardrails=[input_guard],
+        output_guardrails=[output_guard],
+        before_agent_callback=lambda messages: events.append("before"),
+        after_agent_callback=lambda text: events.append(f"after:{text}"),
+        output_key="price",
+    )
+    pricing._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    monkeypatch.setattr(RemoteDatabricksAgent, "run_with_control", remote)
+    graph = compile_to_langgraph(pricing, ws=None, model="test-model")
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="price")], "state": {"account": "kept"}}
+    )
+    assert _last_text(result) == {
+        "input": "blocked", "output": "redacted", "allowed": "approved"
+    }[guard]
+    assert events == {
+        "input": ["before", "input"],
+        "output": ["before", "input", "remote", "output"],
+        "allowed": ["before", "input", "remote", "output", "after:approved"],
+    }[guard]
+    assert result["state"] == (
+        {"account": "kept", "price": "approved"}
+        if guard == "allowed" else {"account": "kept"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_bound_leaf_sync_in_event_loop_preserves_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextvars import ContextVar
+
+    from langchain_core.messages import HumanMessage
+
+    parent = ContextVar("bound_leaf_parent", default="missing")
+
+    async def remote(*_args: Any) -> Any:
+        from apx_agent._remote import _RemoteReply
+
+        return _RemoteReply(text=parent.get(), control=None)
+
+    pricing = Agent(name="pricing")
+    pricing._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    monkeypatch.setattr(RemoteDatabricksAgent, "run_with_control", remote)
+    graph = compile_to_langgraph(pricing, ws=None, model="test-model")
+    token = parent.set("caller-parent")
+    try:
+        result = graph.invoke({"messages": [HumanMessage(content="price")]})
+    finally:
+        parent.reset(token)
+    assert _last_text(result) == "caller-parent"
+
+
+@pytest.mark.parametrize("raw_headers", [False, True])
+def test_bound_leaf_converts_messages_and_headers(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_headers: bool,
+) -> None:
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from apx_agent._defaults import get_databricks_headers
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(_self: Any, messages: list[Any], incoming_headers: Any) -> Any:
+        from apx_agent._remote import _RemoteReply
+
+        captured["messages"] = messages
+        captured["headers"] = incoming_headers
+        return _RemoteReply(text="approved", control=None)
+
+    pricing = Agent(name="pricing")
+    root = SequentialAgent([pricing], name="sequence")
+    root._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    _local_compiler_stub(monkeypatch)
+    monkeypatch.setattr(
+        RemoteDatabricksAgent,
+        "run_with_control",
+        _capture,
+    )
+    headers = (
+        {
+            "x-forwarded-access-token": "opaque-test-token",
+            "x-forwarded-host": "https://workspace.example.com",
+        }
+        if raw_headers
+        else get_databricks_headers(
+            host="https://workspace.example.com",
+            token="opaque-test-token",
+        )
+    )
+
+    graph = compile_to_langgraph(
+        root,
+        ws=None,
+        model="test-model",
+        headers=headers,
+    )
+    result = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(content="need a price"),
+                AIMessage(content="prior context"),
+            ]
+        }
+    )
+
+    assert _last_text(result) == "approved"
+    assert [(message.role, message.content) for message in captured["messages"]] == [
+        ("user", "need a price"),
+        ("assistant", "prior context"),
+    ]
+    assert captured["headers"] == {
+        "Authorization": "Bearer opaque-test-token",
+        "X-Forwarded-Access-Token": "opaque-test-token",
+        "X-Forwarded-Host": "https://workspace.example.com",
+    }
 
 
 # ---------------------------------------------------------------------------

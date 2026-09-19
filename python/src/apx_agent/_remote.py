@@ -30,7 +30,8 @@ from __future__ import annotations
 import json as _json
 import logging
 import os
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -48,6 +49,78 @@ from ._models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _RemoteLeafBinding:
+    logical_name: str
+    card_url: str
+    # Sibling node names a handoff peer may transfer to (FR-4 local-graph
+    # allowlist). Empty for non-handoff positions; a handoff peer's reconstructed
+    # ``transfer_to:<target>`` is rejected when the target is not in this set.
+    transfer_targets: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _RemoteReply:
+    """A remote reply's text plus an optional structured control signal.
+
+    Lint bans ``tuple[...]`` returns; this names the two halves so a control
+    reply and its content coexist (FR-6) without positional ambiguity."""
+
+    text: str
+    control: Any | None  # ControlSignal | None (typed lazily to dodge an import cycle)
+
+
+def _is_control_sentinel(name: str) -> bool:
+    """True when a function_call name is a control-flow sentinel (finish_loop /
+    transfer_to_<target>)."""
+    from ._agents import HandoffAgent, LoopAgent  # noqa: PLC0415
+
+    return name == LoopAgent.FINISH_TOOL or name.startswith(HandoffAgent.TRANSFER_PREFIX)
+
+
+def _extract_remote_control(data: Any) -> Any | None:
+    """The trailing control sentinel on a Responses reply as a ``ControlSignal``.
+
+    Sibling to ``_reply_text``: scans ``data["output"]`` for the last
+    ``function_call`` item whose name is a control sentinel and reconstructs the
+    serialized tool_call. ``None`` when the reply carries no control item — an
+    ordinary (non-control) reply, byte-for-byte the prior behavior (NFR-1).
+
+    The wire carrier is the existing structured ``function_call`` output item
+    (already emitted by ``_langchain_to_output_item``), never reply text (FR-4/G4).
+    """
+    from ._a2a_models import ControlSignal  # noqa: PLC0415
+
+    items = data.get("output") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return None
+    for item in reversed(items):
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not _is_control_sentinel(name):
+            continue
+        raw_args = item.get("arguments")
+        try:
+            args = _json.loads(raw_args) if isinstance(raw_args, str) and raw_args else {}
+        except _json.JSONDecodeError:
+            args = {}
+        return ControlSignal(
+            name=name,
+            args=args if isinstance(args, dict) else {},
+            id=item.get("call_id"),
+        )
+    return None
+
+
+def _responses_input(messages: Sequence[Message | dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep compiled Responses items intact and legacy text messages compatible."""
+    return [
+        message if isinstance(message, dict) else {"role": message.role, "content": message.content}
+        for message in messages
+    ]
 
 
 def _obo_custom_inputs(headers: Mapping[str, str]) -> dict[str, str]:
@@ -281,6 +354,7 @@ class RemoteDatabricksAgent(BaseAgent):
         self._long_task = long_task
         self._max_continuations = max_continuations
         self._card: AgentCard | None = None
+        self._last_http_url = f"{self._base_url}/responses"
 
     # ------------------------------------------------------------------
     # Factory methods
@@ -467,8 +541,15 @@ class RemoteDatabricksAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def run(self, messages: list[Message], request: Request) -> str:
+        return await self._run_with_incoming_headers(messages, request.headers)
+
+    async def _run_with_incoming_headers(
+        self,
+        messages: Sequence[Message | dict[str, Any]],
+        incoming_headers: Mapping[str, str],
+    ) -> str:
         await self._init_quietly()
-        obo_headers = self._obo_headers(request)
+        obo_headers = self._obo_headers(incoming_headers)
         corr_headers = self._correlation_headers()
 
         # Long-task mode requires the streaming Responses path (continuation
@@ -496,7 +577,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
         await self._init_quietly()
-        obo_headers = self._obo_headers(request)
+        obo_headers = self._obo_headers(request.headers)
         corr_headers = self._correlation_headers()
 
         # Long-task mode: no HTTP fallback (see run() for why).
@@ -567,8 +648,8 @@ class RemoteDatabricksAgent(BaseAgent):
     # Internal: OBO header extraction
     # ------------------------------------------------------------------
 
-    def _obo_headers(self, request: Request) -> dict[str, str]:
-        """Extract OBO-relevant headers from the incoming request.
+    def _obo_headers(self, incoming_headers: Mapping[str, str]) -> dict[str, str]:
+        """Extract OBO-relevant headers from the incoming header mapping.
 
         Credential headers (the user's OBO token) are only forwarded when the
         outbound ``_base_url`` is a trusted origin relative to the operator-
@@ -588,7 +669,7 @@ class RemoteDatabricksAgent(BaseAgent):
         for key in ("Authorization", "X-Forwarded-Access-Token", "X-Forwarded-Host"):
             if not forward_credentials and key in ("Authorization", "X-Forwarded-Access-Token"):
                 continue
-            value = request.headers.get(key, "")
+            value = incoming_headers.get(key, "")
             if value:
                 headers[key] = value
         return headers
@@ -612,13 +693,14 @@ class RemoteDatabricksAgent(BaseAgent):
             build_traceparent,
             stamp_outbound_trace_id,
         )
+        from ._mlflow_tracing import inject_tracing_headers
 
-        traceparent = build_traceparent()
-        stamp_outbound_trace_id(traceparent)
-        headers = {TRACEPARENT_HEADER: traceparent}
+        headers = {TRACEPARENT_HEADER: build_traceparent()}
         caller = os.environ.get("DATABRICKS_APP_NAME")
         if caller:
             headers[CALLER_HEADER] = caller
+        inject_tracing_headers(headers)
+        stamp_outbound_trace_id(headers[TRACEPARENT_HEADER])
         return headers
 
     # ------------------------------------------------------------------
@@ -627,7 +709,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def _call_via_sdk(
         self,
-        messages: list[Message],
+        messages: Sequence[Message | dict[str, Any]],
         extra_headers: dict[str, str],
     ) -> str:
         """Call via ``DatabricksOpenAI.responses.create(model="apps/<name>")``.
@@ -647,7 +729,7 @@ class RemoteDatabricksAgent(BaseAgent):
             # openai stub types `input` narrowly, so cast past it.
             input=cast(
                 Any,
-                [{"role": m.role, "content": m.content} for m in messages],
+                _responses_input(messages),
             ),
             extra_headers=extra_headers,
         )
@@ -655,7 +737,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def _stream_via_sdk(
         self,
-        messages: list[Message],
+        messages: Sequence[Message | dict[str, Any]],
         extra_headers: dict[str, str],
     ) -> AsyncGenerator[str, None]:
         """Stream via ``responses.create(model="apps/<name>", stream=True)``.
@@ -676,7 +758,7 @@ class RemoteDatabricksAgent(BaseAgent):
         client = AsyncDatabricksOpenAI()
         # EasyInputMessage dict form (no "type": "message") so string content
         # survives — same as _call_via_sdk.
-        payload: list[Any] = [{"role": m.role, "content": m.content} for m in messages]
+        payload: list[Any] = _responses_input(messages)
         options: dict[str, Any] = (
             {"databricks_options": {"long_task": True}} if self._long_task else {}
         )
@@ -723,9 +805,82 @@ class RemoteDatabricksAgent(BaseAgent):
     # Internal: direct HTTP path
     # ------------------------------------------------------------------
 
+    async def _post_via_http(
+        self,
+        messages: Sequence[Message | dict[str, Any]],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        """Direct POST /responses (→ /invocations fallback); return the raw reply.
+
+        The structured body — needed to recover a control ``function_call`` item
+        (``_extract_remote_control``) as well as the answer text. ``_call_via_http``
+        wraps this for the text-only callers.
+        """
+        from httpx import AsyncClient
+
+        payload: dict[str, Any] = {
+            "input": _responses_input(messages),
+        }
+        custom_inputs = _obo_custom_inputs(headers)
+        if custom_inputs:
+            payload["custom_inputs"] = custom_inputs
+        url = f"{self._base_url}/responses"
+
+        async with AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json", **headers},
+            )
+            if resp.status_code in (404, 405):
+                url = f"{self._base_url}/invocations"
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json", **headers},
+                )
+
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Remote agent {self.name} returned {resp.status_code}: {resp.text}"
+            )
+
+        data = resp.json()
+        self._last_http_url = url
+        return data
+
+    async def run_with_control(
+        self,
+        messages: Sequence[Message | dict[str, Any]],
+        incoming_headers: Mapping[str, str],
+    ) -> _RemoteReply:
+        """Run the remote leg, returning the answer text plus any control signal.
+
+        The control-aware sibling of ``_run_with_incoming_headers`` used by the
+        bound-leaf runnable so remote loop/handoff peers route like local ones.
+        Only the direct HTTP path recovers control — the ``apps/<name>`` SDK path
+        yields ``output_text`` alone, which cannot carry a ``function_call`` item.
+        # ponytail: SDK/OBO-gateway control round-trip unsupported (output_text is
+        # text-only); a bound leaf reaches its peer over direct HTTP in practice.
+        """
+        await self._init_quietly()
+        obo_headers = self._obo_headers(incoming_headers)
+        corr_headers = self._correlation_headers()
+
+        if self._app_name:
+            # No structured items over the SDK path — fall back to text-only run.
+            text = await self._run_with_incoming_headers(messages, incoming_headers)
+            return _RemoteReply(text=text, control=None)
+
+        data = await self._post_via_http(messages, {**obo_headers, **corr_headers})
+        return _RemoteReply(
+            text=_reply_text(data, url=self._last_http_url, agent_name=self.name),
+            control=_extract_remote_control(data),
+        )
+
     async def _call_via_http(
         self,
-        messages: list[Message],
+        messages: Sequence[Message | dict[str, Any]],
         headers: dict[str, str],
     ) -> str:
         """Direct POST /responses fallback (with /invocations fallback).
@@ -741,7 +896,7 @@ class RemoteDatabricksAgent(BaseAgent):
         from httpx import AsyncClient
 
         payload: dict[str, Any] = {
-            "input": [{"role": m.role, "content": m.content} for m in messages],
+            "input": _responses_input(messages),
         }
         custom_inputs = _obo_custom_inputs(headers)
         if custom_inputs:
@@ -771,14 +926,14 @@ class RemoteDatabricksAgent(BaseAgent):
 
     async def _stream_via_http(
         self,
-        messages: list[Message],
+        messages: Sequence[Message | dict[str, Any]],
         headers: dict[str, str],
     ) -> AsyncGenerator[str, None]:
         """Direct POST /invocations with stream=true, parsing SSE."""
         from httpx import AsyncClient
 
         payload: dict[str, Any] = {
-            "input": [{"role": m.role, "content": m.content} for m in messages],
+            "input": _responses_input(messages),
             "stream": True,
         }
         custom_inputs = _obo_custom_inputs(headers)

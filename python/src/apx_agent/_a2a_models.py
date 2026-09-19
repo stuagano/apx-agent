@@ -39,6 +39,20 @@ class TextPart(BaseModel):
     text: str
 
 
+class ControlSignal(BaseModel):
+    """A serialized control-flow sentinel tool_call carried on a reply.
+
+    The typed, structured shape of a ``finish_loop`` / ``transfer_to_<target>``
+    sentinel so remote loop/handoff peers route identically to in-process ones —
+    never emulated via reply text. Mirrors a LangChain tool_call (``name`` /
+    ``args`` / ``id``); ``_extract_remote_control`` reconstructs the AIMessage the
+    router already consumes. Absent ⇒ ordinary (non-control) reply."""
+
+    name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    id: str | None = None
+
+
 class Message(BaseModel):
     """An A2A message. ``role`` is ``user`` (inbound) or ``agent`` (the reply)."""
 

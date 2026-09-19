@@ -27,7 +27,8 @@ from __future__ import annotations
 import inspect
 import logging
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 # Hoisted so TypedDicts defined inside compile functions (e.g. LoopState) can
@@ -63,6 +64,8 @@ from ._defaults import (
 )
 from ._budget import cap_for
 from ._mlflow_tracing import emit_progress
+from ._obo import _header_lookup
+from ._remote import RemoteDatabricksAgent, _RemoteLeafBinding
 from ._inspection import (
     _EmptyToolInput,
     _inspect_tool_fn,
@@ -103,6 +106,7 @@ class CompileContext:
     Must be process-scoped (shared across per-request compiles) to persist
     across turns. Requires a ``thread_id`` in the invoke config."""
     request: "Request | None" = None
+    remote_leaf_bindings: Mapping[str, _RemoteLeafBinding] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -612,19 +616,28 @@ def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
         state: Annotated[dict[str, Any], _merge_state]
         iteration: int
 
-    # Build the inner react agent with finish_loop appended to its tools.
-    finish_tool = _build_synthetic_tool(
-        name=LoopAgent.FINISH_TOOL,
-        description=(
-            "Signal that the iterative task is complete and exit the loop. "
-            "Call this tool when no further iterations are needed."
-        ),
-        marker="LOOP_FINISHED",
-    )
-    # Compile the inner agent through the governed path so its middleware,
-    # callbacks, state_schema, and generation config survive being looped (#370);
-    # the finish-loop tool rides along as an extra tool.
-    inner_node = _compile_llm_agent(inner, ctx, extra_tools=[finish_tool])
+    leaf_name = inner._name
+    binding = None if leaf_name is None else ctx.remote_leaf_bindings.get(leaf_name)
+    if binding is not None:
+        # Remote loop body: the peer signals finish_loop over the wire as a
+        # ControlSignal, which the bound-leaf node reconstructs as the sentinel
+        # tool_call _route already reads. No local finish_tool — the remote
+        # decides completion.
+        inner_node = _compile_bound_remote_leaf(inner, binding, ctx)
+    else:
+        # Build the inner react agent with finish_loop appended to its tools.
+        finish_tool = _build_synthetic_tool(
+            name=LoopAgent.FINISH_TOOL,
+            description=(
+                "Signal that the iterative task is complete and exit the loop. "
+                "Call this tool when no further iterations are needed."
+            ),
+            marker="LOOP_FINISHED",
+        )
+        # Compile the inner agent through the governed path so its middleware,
+        # callbacks, state_schema, and generation config survive being looped
+        # (#370); the finish-loop tool rides along as an extra tool.
+        inner_node = _compile_llm_agent(inner, ctx, extra_tools=[finish_tool])
 
     def _check_done_node(state: dict) -> dict[str, Any]:
         return {"iteration": state.get("iteration", 0) + 1}
@@ -783,6 +796,13 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
 
     def _build_node(current_name: str) -> Any:
         inner = agents[current_name]
+        binding = ctx.remote_leaf_bindings.get(current_name)
+        if binding is not None:
+            # Remote handoff peer: it signals transfer_to:<target> over the wire
+            # as a ControlSignal; the bound-leaf node reconstructs the sentinel
+            # tool_call _route reads and validates the target against the local
+            # sibling allowlist (FR-4). No local transfer_tools bound.
+            return _compile_bound_remote_leaf(inner, binding, ctx)
         transfer_tools = [
             _build_synthetic_tool(
                 name=f"{prefix}{other}",
@@ -997,11 +1017,127 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
     return graph.compile()
 
 
+def _compile_bound_remote_leaf(
+    logical_leaf: BaseAgent,
+    binding: _RemoteLeafBinding,
+    ctx: CompileContext,
+) -> Any:
+    """Compile one bound logical leaf through the private remote transport."""
+    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.runnables import RunnableLambda
+    from langgraph.graph import END, START, StateGraph
+
+    from ._chat_agent import _from_langchain_message
+    from ._models import Message
+    from ._responses_agent import _langchain_to_output_item
+
+    remote = RemoteDatabricksAgent(binding.card_url)
+
+    def _incoming_headers() -> dict[str, str]:
+        headers = ctx.headers
+        if headers is None:
+            return {}
+        if isinstance(headers, Mapping):
+            token = _header_lookup(headers, "X-Forwarded-Access-Token")
+            authorization = _header_lookup(headers, "Authorization")
+            host = _header_lookup(headers, "X-Forwarded-Host")
+        else:
+            secret = getattr(headers, "token", None)
+            token = secret.get_secret_value() if secret is not None else None
+            authorization = f"Bearer {token}" if token else None
+            host = getattr(headers, "host", None)
+        forwarded = {
+            key: value
+            for key, value in (
+                ("Authorization", authorization),
+                ("X-Forwarded-Access-Token", token),
+                ("X-Forwarded-Host", host),
+            )
+            if value
+        }
+        if token and "Authorization" not in forwarded:
+            forwarded["Authorization"] = f"Bearer {token}"
+        return forwarded
+
+    async def _node(state: dict[str, Any]) -> dict[str, Any]:
+        messages: list[Message | dict[str, Any]] = []
+        for index, message in enumerate(state["messages"]):
+            if isinstance(message, ToolMessage) or (
+                isinstance(message, AIMessage) and message.tool_calls
+            ):
+                item = _langchain_to_output_item(message, index)
+                messages.extend(item.get("_multi", [item]))
+            else:
+                messages.append(
+                    Message.model_validate(_from_langchain_message(message, index).model_dump())
+                )
+        try:
+            reply = await remote.run_with_control(messages, _incoming_headers())
+        except Exception as exc:
+            raise RuntimeError(f"Stage {binding.logical_name!r} failed") from exc
+        control = reply.control
+        if control is None:
+            return {"messages": [AIMessage(content=reply.text)]}
+        # A control reply: reconstruct the sentinel tool_call so the existing
+        # router (_last_ai_tool_call_name) consumes it exactly as in-process,
+        # while reply.text stays on the AIMessage content (FR-6 coexistence).
+        prefix = HandoffAgent.TRANSFER_PREFIX
+        if control.name.startswith(prefix):
+            target = control.name[len(prefix) :]
+            if target not in binding.transfer_targets:
+                # FR-4: a peer may only transfer to a target in the local graph.
+                # Name the logical binding + target; never the URL/transport.
+                raise RuntimeError(
+                    f"remote handoff peer {binding.logical_name!r} requested "
+                    f"transfer to unknown target {target!r}"
+                )
+        return {
+            "messages": [
+                AIMessage(
+                    content=reply.text,
+                    tool_calls=[
+                        {
+                            "name": control.name,
+                            "args": control.args,
+                            "id": control.id or f"{binding.logical_name}-control",
+                        }
+                    ],
+                )
+            ]
+        }
+
+    def _sync_node(state: dict[str, Any]) -> dict[str, Any]:
+        import asyncio
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_node(state))
+        import concurrent.futures
+        import contextvars
+
+        context = contextvars.copy_context()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(context.run, lambda: asyncio.run(_node(state))).result()
+
+    name = getattr(logical_leaf, "_name", None) or binding.logical_name
+    graph = StateGraph(state_schema())
+    graph.add_node(name, RunnableLambda(_sync_node, afunc=_node))  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
+    graph.add_edge(START, name)
+    graph.add_edge(name, END)
+    return graph.compile()
+
+
 def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     """Dispatch to the right per-agent compiler."""
     if isinstance(agent, LlmAgent):
+        leaf_name = agent._name
+        binding = None if leaf_name is None else ctx.remote_leaf_bindings.get(leaf_name)
         templated = _has_template(agent)
-        runnable = _compile_llm_agent(agent, ctx, bake_prompt=not templated)
+        if binding is not None:
+            runnable = _compile_bound_remote_leaf(agent, binding, ctx)
+        else:
+            runnable = _compile_llm_agent(agent, ctx, bake_prompt=not templated)
         if not _agent_needs_node_wrap(agent):
             return runnable
         return _wrap_agent_node(agent, runnable, templated=templated)
@@ -1099,5 +1235,6 @@ def compile_to_langgraph(
         model=model,
         headers=headers,
         checkpointer=checkpointer,
+        remote_leaf_bindings=getattr(agent, "_apx_remote_leaf_bindings", {}),
     )
     return _compile_any(agent, ctx)

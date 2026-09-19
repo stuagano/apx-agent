@@ -98,6 +98,7 @@ _REQUEST_CONTEXT_DEPENDENCIES = frozenset({
     _get_principal,
     _get_request,
 })
+_AGENT_CARD_SUFFIX = "/.well-known/agent.json"
 
 
 def read_app_family_permissions(pyproject_path: Path) -> AppFamilyPermissions:
@@ -379,6 +380,15 @@ def compile_authorization_plan(
         endpoint = _sub_agent_to_endpoint(resolved)
         if endpoint is not None:
             service_resources.add(endpoint)
+    for binding in getattr(agent, "_apx_remote_leaf_bindings", {}).values():
+        app_url = binding.card_url.rstrip("/")
+        if app_url.endswith(_AGENT_CARD_SUFFIX):
+            app_url = app_url[: -len(_AGENT_CARD_SUFFIX)]
+        if _is_apps_https_url(app_url) and not any(
+            dependency.url.rstrip("/") == app_url
+            for dependency in app_dependencies
+        ):
+            app_dependencies.add(AppDependency(app_url))
 
     ordered_user_resources = tuple(sorted(
         user_resources,
