@@ -1655,7 +1655,9 @@ async function improveInstructions() {{
       //   the authoritative write-back.
       const src = view.state.doc.toString();
       const re = /(instructions\\s*=\\s*)('{{3}}[\\s\\S]*?'{{3}}|"{{3}}[\\s\\S]*?"{{3}}|'(?:\\\\.|[^'\\\\])*'|"(?:\\\\.|[^"\\\\])*")/;
-      const next = src.replace(re, '$1' + JSON.stringify(d.candidate));
+      // Function replacer: a string replacement treats $ in the candidate
+      // as JS patterns ($$, $&, $1, …) and silently mangles GEPA text (#770).
+      const next = src.replace(re, (m, p1) => p1 + JSON.stringify(d.candidate));
       if (next !== src) {{
         view.dispatch({{ changes: {{ from: 0, to: src.length, insert: next }} }});
         schedulePreview();

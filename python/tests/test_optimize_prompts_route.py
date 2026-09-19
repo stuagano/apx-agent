@@ -6,6 +6,10 @@ are gated (GEPA quality is stochastic and not unit-testable). See the PRD.
 
 from __future__ import annotations
 
+import json
+import re
+import shutil
+import subprocess
 from types import SimpleNamespace
 from typing import NamedTuple
 from unittest.mock import MagicMock, patch
@@ -143,3 +147,54 @@ async def test_edit_ui_has_improve_button():
     assert "/_apx/edit/optimize-instructions" in html
     # candidate loads into the editor (dispatch), not an auto-save (no POST /_apx/edit here)
     assert "view.dispatch" in html
+
+
+def test_edit_ui_improve_uses_function_replacer():
+    """#770: rendered splice must use a function replacer, not a $ string."""
+    from apx_agent._ui_edit import _render_edit_ui
+
+    html = _render_edit_ui('agent = Agent(instructions="old")')
+    assert "src.replace(re, (m, p1) => p1 + JSON.stringify(d.candidate))" in html
+    assert "'$1' + JSON.stringify(d.candidate)" not in html
+
+
+def _splice_improve_candidate(html: str, src: str, candidate: str) -> str:
+    """Execute the rendered Edit-tab splice the same way the browser would."""
+    regex_m = re.search(r"const re = (/.*?/);", html)
+    replace_m = re.search(r"src\.replace\(re, .*?\);", html)
+    assert regex_m is not None, "improve-instructions regex missing from Edit UI"
+    assert replace_m is not None, "improve-instructions replace missing from Edit UI"
+    node = shutil.which("node")
+    assert node is not None, "node is required to execute the browser splice"
+    script = (
+        "const src = "
+        + json.dumps(src)
+        + ";\nconst d = { candidate: "
+        + json.dumps(candidate)
+        + " };\nconst re = "
+        + regex_m.group(1)
+        + ";\nconst next = "
+        + replace_m.group(0).removesuffix(";")
+        + ";\nprocess.stdout.write(next);\n"
+    )
+    completed = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute the browser splice")
+def test_improve_instructions_preserves_dollar_sequences_in_candidate():
+    """#770: $1 / $$ in a GEPA candidate must survive the editor splice."""
+    from apx_agent._ui_edit import _render_edit_ui
+
+    html = _render_edit_ui('agent = Agent(instructions="old")')
+    src = 'agent = Agent(instructions="old")\n'
+    candidate = "Charge $1 then escape $$ and keep $& plus $`"
+    spliced = _splice_improve_candidate(html, src, candidate)
+    assert json.dumps(candidate) in spliced
+    assert candidate in spliced
+    assert spliced.startswith("agent = Agent(instructions=")
