@@ -235,3 +235,44 @@ def test_ac8_suite_regression_marker() -> None:
     Full-suite regression is validated by running `make check` (NFR-2/AC-8)."""
     assert callable(_isolate_parallel_branch_input)
     assert callable(_compile._isolated_branch_node)
+
+
+def test_ac10_bound_remote_leaf_not_compiled_as_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#777 named bindings must stay remote inside ParallelAgent isolation.
+
+    ``_compile_parallel_branch`` used to compile every ``LlmAgent`` via
+    ``_compile_llm_agent(..., bake_prompt=False)`` and skip ``_compile_any``.
+    A bound remote leaf then ran as a local agent (CI: expected ``approved``,
+    got ``local``).
+    """
+    from apx_agent import Agent
+    from apx_agent._remote import RemoteDatabricksAgent, _RemoteLeafBinding, _RemoteReply
+
+    compiled_local: list[str] = []
+
+    def _fake_compile_llm(agent: Any, *_args: Any, **_kwargs: Any) -> Any:
+        compiled_local.append(agent._name)
+        return _recording_graph({}, agent._name)
+
+    async def _approved(_self: Any, _messages: list[Any], _headers: Any) -> Any:
+        return _RemoteReply(text="approved", control=None)
+
+    monkeypatch.setattr(_compile, "_compile_llm_agent", _fake_compile_llm)
+    monkeypatch.setattr(RemoteDatabricksAgent, "run_with_control", _approved)
+
+    pricing = Agent(name="pricing", description="Returns an approved price.")
+    root = ParallelAgent([Agent(name="local"), pricing])
+    root._apx_remote_leaf_bindings = {
+        "pricing": _RemoteLeafBinding(
+            logical_name="pricing",
+            card_url="https://pricing.example.com/.well-known/agent.json",
+        )
+    }
+    compiled = compile_to_langgraph(root, ws=None, model="any")
+    result = compiled.invoke({"messages": [HumanMessage(content="need a price")]})
+
+    ai = [m.content for m in result["messages"] if isinstance(m, AIMessage)]
+    assert "approved" in ai
+    assert "pricing" not in compiled_local

@@ -520,10 +520,15 @@ def _compile_parallel_branch(sub: BaseAgent, ctx: CompileContext) -> Any:
 
     An ``LlmAgent`` leaf is compiled with ``bake_prompt=False`` so it injects no
     system prompt of its own — its instructions are folded into the branch's
-    single merged system by the caller (F3/#769). Non-``LlmAgent`` branches
-    compile normally.
+    single merged system by the caller (F3/#769). Bound remote leaves still go
+    through ``_compile_any`` so ``#777`` named bindings are not compiled as a
+    local LlmAgent. Non-``LlmAgent`` branches compile normally.
     """
     if isinstance(sub, LlmAgent):
+        leaf_name = sub._name
+        binding = None if leaf_name is None else ctx.remote_leaf_bindings.get(leaf_name)
+        if binding is not None:
+            return _compile_any(sub, ctx)
         runnable = _compile_llm_agent(sub, ctx, bake_prompt=False)
         if _agent_needs_node_wrap(sub):
             runnable = _wrap_agent_node(sub, runnable, templated=_has_template(sub))
