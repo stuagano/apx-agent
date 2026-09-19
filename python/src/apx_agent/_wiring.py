@@ -217,24 +217,18 @@ def _attach_config_guards_to_leaf(
 ) -> bool:
     """Attach config guards onto one leaf. Returns True if anything attached.
 
-    Also auto-composes a ``ScopeGuard`` built from THIS leaf's own tools when
-    any of them declares a scope — "declared, not wired." Gated on
-    ``ScopeGuard.active`` so a leaf with no scoped tools is byte-for-byte
-    unchanged (back-compat). Runs before the config gates.
+    Also auto-composes a live ``ScopeGuard`` from THIS leaf's tools when any
+    of them declares a scope — "declared, not wired." Gated so a leaf with no
+    scoped tools is byte-for-byte unchanged (back-compat). Runs before the
+    config gates. The guard re-reads ``leaf._tool_fns`` on each call so a
+    later ``_register_tool`` is visible without a second apply.
     """
+    from ._tool_scope import attach_scope_guard  # noqa: PLC0415
+
+    attached = attach_scope_guard(leaf)
     if getattr(leaf, "_apx_config_guards_applied", False):
-        return False
-    attached = False
-
-    from ._tool_scope import ScopeGuard  # noqa: PLC0415
-
-    scope_guard = ScopeGuard(getattr(leaf, "_tool_fns", []) or [])
+        return attached
     leaf_before_tool = before_tool
-    if scope_guard.active:
-        scope_hook = scope_guard.for_tool()
-        leaf_before_tool = (
-            compose(scope_hook, before_tool) if before_tool is not None else scope_hook
-        )
 
     if input_guardrails:
         existing_igs = getattr(leaf, "_input_guardrails", None)
@@ -522,6 +516,19 @@ def _apply_remote_leaf_bindings(
     setattr(root, "_apx_remote_leaf_bindings", MappingProxyType(resolved))
 
 
+def ensure_scope_guard(agent: BaseAgent) -> None:
+    """Attach a live ScopeGuard to every leaf that has scoped tools.
+
+    Independent of ``[tool.apx.agent]`` / ``apply_config_guardrails`` so a
+    pure-Python ``build_tool(scope=...)`` agent still enforces at serve.
+    Idempotent: leaves that already have ``_apx_scope_guard`` are skipped.
+    """
+    from ._tool_scope import attach_scope_guard  # noqa: PLC0415
+
+    for leaf in _collect_guardrail_targets(agent):
+        attach_scope_guard(leaf)
+
+
 def finalize_agent(
     agent: BaseAgent,
     config: AgentConfig | None = None,
@@ -543,8 +550,9 @@ def finalize_agent(
 
     Note: a project with no [tool.apx.agent] section is not servable (the serve
     path requires an agent section), so finalize_agent is not invoked via the
-    serve path for such a project. Whether tools-only agents should be servable
-    is a future (E3) design question.
+    serve path for such a project. ScopeGuard still attaches here when any
+    tool declares a scope, so log/deploy/Python-API paths do not silently
+    drop runtime enforcement.
     """
     if config is None:
         config = _load_agent_config(pyproject_path=pyproject_path)
@@ -590,6 +598,12 @@ def finalize_agent(
 
         if isinstance(agent, DataAgent):
             agent.bind_workspace(ws)
+
+    # Scope wiring is independent of [tool.apx.agent]: a Python-API agent
+    # with build_tool(scope=...) still needs a runtime guard. apply_config_
+    # guardrails already attached one when config was present; this covers
+    # the no-config path and any scoped tool that appeared during bind.
+    ensure_scope_guard(agent)
 
 
 class TemplateConfigError(ValueError):

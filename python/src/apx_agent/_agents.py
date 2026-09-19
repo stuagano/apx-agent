@@ -325,6 +325,12 @@ class LlmAgent(BaseAgent):
         input_model = _make_input_model(fn, plain_params)
         self._analyzed.append((fn, plain_params, dep_names, input_model))
         self._tools_version += 1
+        # A scoped tool registered after the first guard snapshot must still
+        # be enforced. attach_scope_guard is a no-op when a live guard is
+        # already on this leaf; otherwise it wires one now.
+        from ._tool_scope import attach_scope_guard  # noqa: PLC0415
+
+        attach_scope_guard(self)
 
     @property
     def tools_version(self) -> int:

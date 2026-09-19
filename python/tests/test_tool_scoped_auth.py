@@ -189,12 +189,13 @@ def _governed_middleware():
 
 
 def test_out_of_scope_raises_scope_denied() -> None:
-    tool = _make_tool("scoped_reader", uc_resources=("main.finance.ledger",))
-    attach_scope(tool, ToolScope(catalogs=("sales",)))  # ledger is out of scope
+    tool = _make_tool("scoped_reader")
+    attach_scope(tool, ToolScope(catalogs=("sales",)))
 
     guard = ScopeGuard([tool]).for_tool()
+    out_of_scope = {"table_name": "main.finance.ledger"}
     with pytest.raises(ScopeDenied) as exc:
-        guard("scoped_reader", {})
+        guard("scoped_reader", out_of_scope)
     assert str(exc.value).startswith("scope_denied:")
 
     # The governance middleware contains it as an error ToolMessage (no 500).
@@ -203,7 +204,7 @@ def test_out_of_scope_raises_scope_denied() -> None:
     mw = _governed_middleware()
 
     def handler(req):  # noqa: ANN001
-        guard("scoped_reader", {})  # raises ScopeDenied
+        guard("scoped_reader", out_of_scope)  # raises ScopeDenied
 
     out = mw.wrap_tool_call(SimpleNamespace(tool_call={"id": "c1"}), handler)
     assert isinstance(out, ToolMessage)
@@ -337,8 +338,8 @@ def test_served_before_tool_chain_enforces_scope() -> None:
     from apx_agent import AgentConfig, LlmAgent
     from apx_agent._wiring import apply_config_guardrails
 
-    scoped = _make_tool("scoped_reader", uc_resources=("main.finance.ledger",))
-    attach_scope(scoped, ToolScope(catalogs=("sales",)))  # ledger is out of scope
+    scoped = _make_tool("scoped_reader")
+    attach_scope(scoped, ToolScope(catalogs=("sales",)))
 
     agent = LlmAgent(tools=[scoped])
     # No guardrails declared — scope wiring must still happen (driven by tools,
@@ -348,9 +349,10 @@ def test_served_before_tool_chain_enforces_scope() -> None:
     before_tool = agent._before_tool
     assert before_tool is not None, "ScopeGuard was not wired into the served chain"
 
-    # The wired hook denies the out-of-scope declared resource.
+    # The wired hook denies an out-of-scope fully-qualified UC arg.
+    out_of_scope = {"table_name": "main.finance.ledger"}
     with pytest.raises(ScopeDenied) as exc:
-        before_tool("scoped_reader", {})
+        before_tool("scoped_reader", out_of_scope)
     assert str(exc.value).startswith("scope_denied:")
 
     # And the real serve containment turns it into a scope_denied ToolMessage
@@ -358,7 +360,7 @@ def test_served_before_tool_chain_enforces_scope() -> None:
     mw = _governed_middleware()
 
     def handler(req):  # noqa: ANN001
-        before_tool("scoped_reader", {})
+        before_tool("scoped_reader", out_of_scope)
 
     out = mw.wrap_tool_call(SimpleNamespace(tool_call={"id": "srv1"}), handler)
     assert isinstance(out, ToolMessage)
@@ -375,6 +377,85 @@ def test_served_chain_unchanged_when_no_scoped_tools() -> None:
     apply_config_guardrails(agent, AgentConfig(name="plain-test"))
     # Byte-for-byte unchanged: no scoped tools + no guardrails => nothing wired.
     assert agent._before_tool is baseline
+
+
+def test_unqualified_table_name_is_documented_nongoal() -> None:
+    # F2: table_name="ledger" (no catalog.schema) is a v1 non-goal — must NOT
+    # deny. Pin the hole so nobody "fixes" it into a false-deny.
+    tool = _make_tool("bare_reader")
+    attach_scope(tool, ToolScope(catalogs=("sales",)))
+    guard = ScopeGuard([tool]).for_tool()
+    guard("bare_reader", {"table_name": "ledger"})
+
+
+def test_declared_resources_not_rechecked_at_runtime() -> None:
+    # F3: declared ResourceSpecs are compile-time only. Empty args must not
+    # deny — including the post-hoc over-scope attach the old loop used to catch.
+    ok = _make_tool("in_scope_reader", uc_resources=("sales.crm.leads",))
+    attach_scope(ok, ToolScope(catalogs=("sales",)))
+    ScopeGuard([ok]).for_tool()("in_scope_reader", {})
+
+    illegal = _make_tool("illegal_reader", uc_resources=("main.finance.ledger",))
+    attach_scope(illegal, ToolScope(catalogs=("sales",)))
+    ScopeGuard([illegal]).for_tool()("illegal_reader", {})
+
+    def call(query: str) -> str:
+        return query
+
+    with pytest.raises(ToolConfigError, match="over-scoped"):
+        build_tool(
+            call,
+            name="over_reader",
+            description="compile-time overscope",
+            resources=[ResourceSpec("uc_table", "main.finance.ledger")],
+            scope=ToolScope(catalogs=("sales",)),
+        )
+
+
+def test_late_registered_scoped_tool_is_guarded() -> None:
+    # F5: apply_config_guardrails first (no scoped tools), then register a
+    # scoped fn — the live map + _register_tool attach must still deny.
+    from apx_agent import AgentConfig, LlmAgent
+    from apx_agent._wiring import apply_config_guardrails
+
+    agent = LlmAgent(tools=[_make_tool("plain_tool")])
+    apply_config_guardrails(agent, AgentConfig(name="late-scope-test"))
+    assert agent._before_tool is None  # nothing scoped yet
+
+    late = _make_tool("late_reader")
+    attach_scope(late, ToolScope(catalogs=("sales",)))
+    agent.register_tool(late)
+
+    before_tool = agent._before_tool
+    assert before_tool is not None, "late scoped tool did not attach a ScopeGuard"
+    with pytest.raises(ScopeDenied):
+        before_tool("late_reader", {"table_name": "main.finance.ledger"})
+    before_tool("late_reader", {"table_name": "sales.crm.leads"})
+
+    # A second late tool must be visible on the same hook (live map, not a
+    # second compose — re-attach is a no-op once _apx_scope_guard is set).
+    second = _make_tool("second_reader")
+    attach_scope(second, ToolScope(catalogs=("sales",)))
+    agent.register_tool(second)
+    assert agent._before_tool is before_tool
+    with pytest.raises(ScopeDenied):
+        before_tool("second_reader", {"table_name": "main.finance.ledger"})
+
+
+def test_finalize_agent_without_config_wires_scope_guard() -> None:
+    # F6: Python-API agent, no [tool.apx.agent], still gets a runtime guard.
+    from apx_agent import LlmAgent
+    from apx_agent._wiring import finalize_agent
+
+    scoped = _make_tool("py_reader")
+    attach_scope(scoped, ToolScope(catalogs=("sales",)))
+    agent = LlmAgent(tools=[scoped])
+    finalize_agent(agent, config=None, pyproject_path="/nonexistent/pyproject.toml")
+
+    before_tool = agent._before_tool
+    assert before_tool is not None, "finalize_agent did not wire ScopeGuard without config"
+    with pytest.raises(ScopeDenied):
+        before_tool("py_reader", {"table_name": "main.finance.ledger"})
 
 
 def test_parse_returns_none_when_nothing_declared() -> None:
