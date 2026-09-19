@@ -47,6 +47,7 @@ REMOTE_TOKENS: list[str | None] = []
 class _RequestResult:
     response: httpx.Response
     sender: Any
+    export_barrier: Any
 
 
 def read_capability(question: str) -> str:
@@ -214,13 +215,14 @@ def _request_with_sender(
     # The sender is closed before ingress, while a non-active child keeps its
     # trace export open until the receiver's spans have finished. This avoids a
     # local-store race without making the barrier the receiver's parent.
+    # Leave the export barrier open so the caller can snapshot the live
+    # in-memory trace. Do not flush here: flush_trace_async_logging joins
+    # MLflow's process-wide async export queue and hangs xdist workers.
     path = "/" if protocol == "a2a" else f"/{protocol}"
-    try:
-        response = client.post(path, json=payload, headers=headers)
-    finally:
-        export_barrier.end()
-    mlflow.flush_trace_async_logging()
-    return _RequestResult(response=response, sender=sender)
+    response = client.post(path, json=payload, headers=headers)
+    return _RequestResult(
+        response=response, sender=sender, export_barrier=export_barrier
+    )
 
 
 def _protocol_payload(protocol: str, query: str, *, message_id: str) -> dict[str, Any]:
@@ -248,56 +250,57 @@ def _post_count(transport: _RecordingASGITransport) -> int:
 
 def _eventually_complete_trace(
     sender: Any,
-    experiment_id: str,
     protocol: str,
     *,
     timeout_seconds: float = 8.0,
 ) -> Any:
-    """Wait briefly for async MLflow export to persist the complete trace."""
+    """Snapshot the live in-memory trace while the export barrier is open.
+
+    Do not call search_traces with flush or flush_trace_async_logging:
+    both join MLflow's process-wide async export queue and hang xdist workers.
+    """
+    from mlflow.tracing.trace_manager import InMemoryTraceManager
+
     route_name = "POST / (A2A)" if protocol == "a2a" else f"POST /{protocol}"
     deadline = time.monotonic() + timeout_seconds
     observed: list[dict[str, Any]] = []
     while True:
-        traces = mlflow.search_traces(
-            locations=[experiment_id],
-            return_type="list",
-            include_spans=True,
-            flush=True,
-        )
-        trace = next(
-            (item for item in traces if item.info.trace_id == sender.trace_id), None
-        )
-        if trace is not None:
-            spans = trace.data.spans
-            observed = [
-                {
-                    "name": span.name,
-                    "parent_id": span.parent_id,
-                    "agent_name": (span.attributes or {}).get("apx.agent.name"),
-                    "events": [event.name for event in (span.events or [])],
-                }
-                for span in spans
-            ]
-            has_caller = any(
-                span.name == route_name
-                and (span.attributes or {}).get("apx.agent.name") == "declared-graph"
-                for span in spans
-            )
-            has_remote = any(
-                span.name == "POST /responses"
-                and (span.attributes or {}).get("apx.agent.name") == "pricing-service"
-                for span in spans
-            )
-            has_progress = any(
-                event.name == "apx.progress"
-                for span in spans
-                for event in (span.events or [])
-            )
-            if has_caller and has_remote and has_progress:
-                return trace
+        tm = InMemoryTraceManager.get_instance()
+        with tm.get_trace(sender.trace_id) as live:
+            if live is not None:
+                snapshot = live.to_mlflow_trace()
+                spans = snapshot.data.spans
+                observed = [
+                    {
+                        "name": span.name,
+                        "parent_id": span.parent_id,
+                        "agent_name": (span.attributes or {}).get("apx.agent.name"),
+                        "events": [event.name for event in (span.events or [])],
+                    }
+                    for span in spans
+                ]
+                has_caller = any(
+                    span.name == route_name
+                    and (span.attributes or {}).get("apx.agent.name")
+                    == "declared-graph"
+                    for span in spans
+                )
+                has_remote = any(
+                    span.name == "POST /responses"
+                    and (span.attributes or {}).get("apx.agent.name")
+                    == "pricing-service"
+                    for span in spans
+                )
+                has_progress = any(
+                    event.name == "apx.progress"
+                    for span in spans
+                    for event in (span.events or [])
+                )
+                if has_caller and has_remote and has_progress:
+                    return snapshot
         if time.monotonic() >= deadline:
             raise AssertionError(
-                f"trace {sender.trace_id} incomplete for {protocol} after "
+                f"live trace {sender.trace_id} incomplete for {protocol} after "
                 f"{timeout_seconds:.1f}s; observed={observed!r}"
             )
         time.sleep(0.05)
@@ -436,6 +439,7 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                         message_id=f"{protocol}-direct",
                     ),
                 )
+                direct_result.export_barrier.end()
                 direct_response = direct_result.response
                 assert direct_response.status_code == 200, direct_response.text
                 assert DIRECT_RESULT in _all_text(direct_response.json())
@@ -496,15 +500,15 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                 responses[protocol] = response
                 all_responses.append(response)
                 senders[protocol] = request_result.sender
-                traces_by_protocol[protocol] = _eventually_complete_trace(
-                    request_result.sender,
-                    experiment.experiment_id,
-                    protocol,
-                )
+                try:
+                    traces_by_protocol[protocol] = _eventually_complete_trace(
+                        request_result.sender,
+                        protocol,
+                    )
+                finally:
+                    request_result.export_barrier.end()
 
             generated_source = (generated_dir / "agent.py").read_text()
-
-            mlflow.flush_trace_async_logging()
 
             def _verify_observed_effects() -> None:
                 assert topology_response.status_code == 200, topology_response.text
@@ -643,10 +647,7 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                 claim_label="generated declared A2A graph",
             )
     finally:
-        try:
-            mlflow.flush_trace_async_logging()
-        finally:
-            mlflow.set_tracking_uri(old_tracking_uri)
+        mlflow.set_tracking_uri(old_tracking_uri)
 
 
 @pytest.mark.parametrize(

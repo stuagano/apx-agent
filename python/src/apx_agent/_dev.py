@@ -1705,7 +1705,6 @@ def _fetch_traces_list_sync(experiment_id: str | None, max_results: int) -> list
             max_results=max_results,
             order_by=["timestamp DESC"],
             include_spans=False,
-            flush=True,
         )) if exp_ids else []
     except Exception:
         logger.exception("mlflow search_traces failed for trace panel")
@@ -2066,7 +2065,6 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                     max_results=5,
                     order_by=["timestamp DESC"],
                     include_spans=False,
-                    flush=True,
                 )) if exp_ids else []
                 traces = _drop_warmup_traces(traces)
                 for t in traces:
