@@ -478,7 +478,7 @@ def _compile_parallel_agent(agent: ParallelAgent, ctx: CompileContext) -> Any:
     and their outputs merge via ``MessagesState``'s ``add_messages`` reducer.
     No explicit join node — LangGraph handles message accumulation natively.
     """
-    from langgraph.graph import END, START, MessagesState, StateGraph
+    from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(state_schema())
     node_names: list[str] = []
@@ -487,10 +487,109 @@ def _compile_parallel_agent(agent: ParallelAgent, ctx: CompileContext) -> Any:
         if name in node_names:
             name = f"{name}_{i}"
         node_names.append(name)
-        graph.add_node(name, _compile_any(sub, ctx))
+        compiled = _compile_parallel_branch(sub, ctx)
+        # One merged system for the branch = the ParallelAgent's own instructions
+        # + the leaf's baked instructions (folded here, not baked, so the branch
+        # never receives two consecutive system messages — see F3/#769). Incoming
+        # system text is merged at runtime in the node.
+        static_system = "\n".join(
+            p
+            for p in (agent._instructions.strip(), _branch_leaf_instructions(sub).strip())
+            if p
+        )
+        graph.add_node(name, _isolated_branch_node(compiled, static_system))
         graph.add_edge(START, name)
         graph.add_edge(name, END)
     return graph.compile()
+
+
+def _branch_leaf_instructions(sub: BaseAgent) -> str:
+    """Leaf instructions to fold into the branch's single merged system (#769).
+
+    Empty for non-``LlmAgent`` leaves and for ``{key}``-templated leaves (whose
+    instructions are rendered per-invocation by the node wrap, so folding them
+    here would duplicate them).
+    """
+    if isinstance(sub, LlmAgent) and not _has_template(sub):
+        return sub._instructions
+    return ""
+
+
+def _compile_parallel_branch(sub: BaseAgent, ctx: CompileContext) -> Any:
+    """Compile one ParallelAgent branch runnable.
+
+    An ``LlmAgent`` leaf is compiled with ``bake_prompt=False`` so it injects no
+    system prompt of its own — its instructions are folded into the branch's
+    single merged system by the caller (F3/#769). Bound remote leaves still go
+    through ``_compile_any`` so ``#777`` named bindings are not compiled as a
+    local LlmAgent. Non-``LlmAgent`` branches compile normally.
+    """
+    if isinstance(sub, LlmAgent):
+        leaf_name = sub._name
+        binding = None if leaf_name is None else ctx.remote_leaf_bindings.get(leaf_name)
+        if binding is not None:
+            return _compile_any(sub, ctx)
+        runnable = _compile_llm_agent(sub, ctx, bake_prompt=False)
+        if _agent_needs_node_wrap(sub):
+            runnable = _wrap_agent_node(sub, runnable, templated=_has_template(sub))
+        return runnable
+    return _compile_any(sub, ctx)
+
+
+def _isolate_parallel_branch_input(messages: list[Any], system_text: str) -> list[Any]:
+    """Trim a ``ParallelAgent`` branch's input to ``[system?] + [last user?]``.
+
+    Each branch runs independently, so it must not see the whole shared history
+    — only the triggering user turn plus one ``SystemMessage`` (``system_text``,
+    already merged by the caller). Prior assistant/user turns are dropped, and a
+    branch with a system source but no user turn still runs with ``[system]``
+    (no short-circuit to empty). See PRD #769.
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    isolated: list[Any] = []
+    if system_text.strip():
+        isolated.append(SystemMessage(content=system_text.strip()))
+    last_user = next(
+        (m for m in reversed(messages) if isinstance(m, HumanMessage)), None
+    )
+    if last_user is not None:
+        isolated.append(last_user)
+    return isolated
+
+
+def _isolated_branch_node(compiled: Any, static_system: str) -> Any:
+    """Wrap a compiled branch so it sees an isolated per-branch input.
+
+    ``static_system`` is the compile-time merged system (ParallelAgent + leaf
+    instructions); incoming ``SystemMessage`` text is merged in per-invocation.
+    The node is sync (``compiled.invoke``) because the served runtime drives the
+    top graph via sync ``graph.invoke``/``graph.stream`` (``_chat_agent`` /
+    ``_responses_agent``); LangGraph cannot run an async-only node under a sync
+    invoke, so a sync branch node is what actually executes on the served path.
+
+    New-message extraction is by object identity, not a positional slice, so a
+    leaf that trims/reorders its history (e.g. a summarizing pre_model_hook)
+    still contributes exactly its newly-produced messages to the ``add_messages``
+    fan-in (F4/#769).
+    """
+    from langchain_core.messages import SystemMessage
+
+    def _node(state: dict) -> dict[str, Any]:
+        messages = state["messages"]
+        incoming_system = "\n".join(
+            _ai_message_text(m) for m in messages if isinstance(m, SystemMessage)
+        )
+        system_text = "\n".join(
+            p for p in (static_system.strip(), incoming_system.strip()) if p
+        )
+        isolated = _isolate_parallel_branch_input(messages, system_text)
+        input_ids = {id(m) for m in isolated}
+        result = compiled.invoke({"messages": isolated, "state": state.get("state", {})})
+        msgs = result.get("messages", []) if isinstance(result, dict) else []
+        return {"messages": [m for m in msgs if id(m) not in input_ids]}
+
+    return _node
 
 
 def _build_synthetic_tool(name: str, description: str, marker: str) -> Any:
