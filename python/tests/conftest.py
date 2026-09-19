@@ -16,11 +16,6 @@ from apx_agent import LlmAgent, AgentConfig, AgentContext
 os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 # create_app autolog leaves leftover threads that kill 3.11 xdist workers.
 os.environ.setdefault("APX_AGENT_MLFLOW_AUTOLOG", "0")
-# MLflow async export + OTel batch processor start background threads that
-# xdist workers then fail to join ("Not properly terminated", no traceback).
-# Tests that need async export can override. Search/read-back uses flush=True.
-os.environ.setdefault("MLFLOW_ENABLE_ASYNC_TRACE_LOGGING", "0")
-os.environ.setdefault("MLFLOW_USE_BATCH_SPAN_PROCESSOR", "0")
 
 
 # ---------------------------------------------------------------------------
