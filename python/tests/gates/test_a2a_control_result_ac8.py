@@ -103,6 +103,7 @@ def test_cross_app_trace_parentage_control(
     ws.config.host = "https://workspace.example"
     ws.config.authenticate.return_value = {}
     monkeypatch.setattr("apx_agent._wiring._make_workspace_client", lambda: ws)
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda **kw: ws)
     monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda *a, **kw: ws)
     monkeypatch.setattr(
         "apx_agent._compile._build_chat_databricks",

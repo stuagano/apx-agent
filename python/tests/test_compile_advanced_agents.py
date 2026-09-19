@@ -72,8 +72,10 @@ def _binding(name: str) -> Any:
 
 
 def _returning(text: str) -> Any:
-    async def _run(_self: Any, _messages: list[Any], _incoming_headers: Any) -> str:
-        return text
+    from apx_agent._remote import _RemoteReply
+
+    async def _run(_self: Any, _messages: list[Any], _incoming_headers: Any) -> Any:
+        return _RemoteReply(text=text, control=None)
 
     return _run
 
@@ -138,7 +140,7 @@ def test_bound_leaf_compiles_as_its_logical_name(
     _local_compiler_stub(monkeypatch)
     monkeypatch.setattr(
         RemoteDatabricksAgent,
-        "_run_with_incoming_headers",
+        "run_with_control",
         _returning("approved"),
     )
 
@@ -170,7 +172,7 @@ def test_binding_name_collision_does_not_replace_named_container(
     _local_compiler_stub(monkeypatch, local_calls)
     monkeypatch.setattr(
         RemoteDatabricksAgent,
-        "_run_with_incoming_headers",
+        "run_with_control",
         _returning("approved"),
     )
 
@@ -196,7 +198,7 @@ def test_bound_leaf_transport_errors_propagate(
     _local_compiler_stub(monkeypatch)
     monkeypatch.setattr(
         RemoteDatabricksAgent,
-        "_run_with_incoming_headers",
+        "run_with_control",
         _raise,
     )
 
@@ -219,9 +221,11 @@ async def test_bound_leaf_preserves_governance_and_keyed_state(
 
     events: list[str] = []
 
-    async def remote(*_args: Any) -> str:
+    async def remote(*_args: Any) -> Any:
+        from apx_agent._remote import _RemoteReply
+
         events.append("remote")
-        return "approved"
+        return _RemoteReply(text="approved", control=None)
 
     def input_guard(messages: Any) -> str | None:
         events.append("input")
@@ -240,7 +244,7 @@ async def test_bound_leaf_preserves_governance_and_keyed_state(
         output_key="price",
     )
     pricing._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
-    monkeypatch.setattr(RemoteDatabricksAgent, "_run_with_incoming_headers", remote)
+    monkeypatch.setattr(RemoteDatabricksAgent, "run_with_control", remote)
     graph = compile_to_langgraph(pricing, ws=None, model="test-model")
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="price")], "state": {"account": "kept"}}
@@ -269,12 +273,14 @@ async def test_bound_leaf_sync_in_event_loop_preserves_context(
 
     parent = ContextVar("bound_leaf_parent", default="missing")
 
-    async def remote(*_args: Any) -> str:
-        return parent.get()
+    async def remote(*_args: Any) -> Any:
+        from apx_agent._remote import _RemoteReply
+
+        return _RemoteReply(text=parent.get(), control=None)
 
     pricing = Agent(name="pricing")
     pricing._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
-    monkeypatch.setattr(RemoteDatabricksAgent, "_run_with_incoming_headers", remote)
+    monkeypatch.setattr(RemoteDatabricksAgent, "run_with_control", remote)
     graph = compile_to_langgraph(pricing, ws=None, model="test-model")
     token = parent.set("caller-parent")
     try:
@@ -295,10 +301,12 @@ def test_bound_leaf_converts_messages_and_headers(
 
     captured: dict[str, Any] = {}
 
-    async def _capture(_self: Any, messages: list[Any], incoming_headers: Any) -> str:
+    async def _capture(_self: Any, messages: list[Any], incoming_headers: Any) -> Any:
+        from apx_agent._remote import _RemoteReply
+
         captured["messages"] = messages
         captured["headers"] = incoming_headers
-        return "approved"
+        return _RemoteReply(text="approved", control=None)
 
     pricing = Agent(name="pricing")
     root = SequentialAgent([pricing], name="sequence")
@@ -306,7 +314,7 @@ def test_bound_leaf_converts_messages_and_headers(
     _local_compiler_stub(monkeypatch)
     monkeypatch.setattr(
         RemoteDatabricksAgent,
-        "_run_with_incoming_headers",
+        "run_with_control",
         _capture,
     )
     headers = (
