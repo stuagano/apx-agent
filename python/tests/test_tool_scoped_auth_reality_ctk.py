@@ -26,7 +26,6 @@ pytest.importorskip("langchain_core")
 from ctk import Artifact, verify
 
 from apx_agent._audit import AuditAttrs
-from apx_agent._resources import ResourceSpec
 from apx_agent._tool_factory import build_tool
 from apx_agent._tool_scope import ScopeDenied, ScopeGuard, ToolScope, attach_scope
 
@@ -50,9 +49,8 @@ def _scoped_tool():
         call,
         name="ledger_reader",
         description="reads a UC table",
-        resources=[ResourceSpec("uc_table", "main.finance.ledger")],
     )
-    attach_scope(tool, ToolScope(catalogs=("sales",)))  # ledger is out of scope
+    attach_scope(tool, ToolScope(catalogs=("sales",)))
     return tool
 
 
@@ -72,7 +70,7 @@ def test_scope_denial_audit_and_error_are_real(tmp_path, monkeypatch) -> None:
     mw = _governance_exception_middleware()
 
     def handler(req):  # noqa: ANN001
-        guard("ledger_reader", {})  # out-of-scope declared resource -> ScopeDenied
+        guard("ledger_reader", {"table_name": "main.finance.ledger"})
 
     result = mw.wrap_tool_call(SimpleNamespace(tool_call={"id": "c1"}), handler)
     assert isinstance(result, ToolMessage)
@@ -141,7 +139,6 @@ def test_live_uc_scope_denial() -> None:
         call,
         name="sales_reader",
         description="reads UC as the user",
-        resources=[ResourceSpec("uc_table", "main.finance.ledger")],
     )
     attach_scope(tool, ToolScope(identity="obo", catalogs=("sales",)))
 
@@ -155,7 +152,7 @@ def test_live_uc_scope_denial() -> None:
     try:
         guard = ScopeGuard([tool]).for_tool()
         with pytest.raises(ScopeDenied) as exc:
-            guard("sales_reader", {})
+            guard("sales_reader", {"table_name": "main.finance.ledger"})
     finally:
         ts.current_active_span = orig
 

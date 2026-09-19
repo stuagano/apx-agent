@@ -12,11 +12,15 @@ its two enforcement points, and the runtime error:
     module's existing config-error idiom) naming the tool + the offending
     identifier.
   * **Runtime** — :class:`ScopeGuard` is a ``before_tool`` guard (sibling of
-    ``WatchdogGuard.for_tool()``). When a call's target UC object or secret scope
-    is outside the ceiling it raises :class:`ScopeDenied`, stamps the active span
-    with an audit event, and logs a WARNING. ``ScopeDenied`` subclasses
-    ``PermissionError`` so ``_governance_exception_middleware`` already contains
-    it into an error ``ToolMessage`` — the turn stays alive, no HTTP 500.
+    ``WatchdogGuard.for_tool()``). It best-effort inspects well-known UC arg
+    names and ``secret_scope``; declared ResourceSpecs
+    are *not* re-checked here (compile-time already refused any that were
+    over-scope). Unqualified identifiers (``table_name="ledger"``) are a v1
+    non-goal — resolving them needs a session default catalog we do not have.
+    Out of scope → :class:`ScopeDenied`, an audit event, and a WARNING.
+    ``ScopeDenied`` subclasses ``PermissionError`` so
+    ``_governance_exception_middleware`` already contains it into an error
+    ``ToolMessage`` — the turn stays alive, no HTTP 500.
 
 Back-compat: a tool that declares no scope attaches no ``_apx_scope``; the guard
 skips it and the validator is a no-op. Purely additive — undeclared stays today's
@@ -27,7 +31,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from ._audit import AuditAttrs, set_audit_attrs
 from ._mlflow_tracing import current_active_span
@@ -47,6 +52,7 @@ __all__ = [
     "validate_tool_scope",
     "in_scope",
     "identity_to_execution",
+    "attach_scope_guard",
 ]
 
 
@@ -264,6 +270,10 @@ def in_scope(scope: ToolScope, ref: str) -> bool:
     is declared, everything is in scope (undeclared = unrestricted). Matching is
     case-insensitive and backtick-insensitive (UC identifier semantics), and
     compares segment-wise so a quoted dot is never treated as a separator.
+
+    Unqualified one-segment names (``ledger``) are *not* resolved against a
+    default catalog — that is a v1 non-goal. Callers that only have a bare
+    name cannot be denied here without inventing session context we don't have.
     """
     if not scope.has_uc_ceiling:
         return True
@@ -292,8 +302,10 @@ def secret_in_scope(scope: ToolScope, secret_scope: str) -> bool:
 _UC_KINDS = frozenset({"uc_table", "uc_function", "vector_search_index"})
 
 # Call-argument names that carry a fully-qualified UC identifier. ponytail:
-# v1 enforces on declared resources + these well-known arg names + secret_scope,
-# NOT on parsed free-form SQL bodies (a follow-up — see PRD Risks/out_of_scope).
+# runtime enforcement is this well-known-arg scan + secret_scope, NOT a second
+# pass over declared ResourceSpecs (those are compile-time only) and NOT parsed
+# free-form SQL bodies (a follow-up — see PRD Risks/out_of_scope). Only dotted
+# values are checked — unqualified identifiers are a documented v1 non-goal.
 # Only UC-specific arg names — generic ones (identifier / full_name / uc_name)
 # collide with common non-UC args (a dotted value like "example.com" or "v1.2.3"
 # would trip a spurious ScopeDenied), same reason plain "scope" is excluded below.
@@ -345,38 +357,45 @@ def validate_tool_scope(fn: Any) -> None:
 class ScopeGuard:
     """``before_tool`` guard that enforces each tool's declared scope ceiling.
 
-    Constructed with the agent's tool callables so it can map a call's tool
-    ``name`` back to its :class:`ToolScope`. For a scoped tool it checks the
-    call's target UC object(s) — the tool's declared UC resources plus any
-    fully-qualified UC identifier passed as an argument — and any referenced
-    secret scope against the ceiling. Out of scope → :class:`ScopeDenied`, an
-    audit event on the active span, and a WARNING log. A tool with no scope is a
-    strict no-op (back-compat).
+    ``tools`` is either an iterable of callables or a zero-arg getter that
+    returns one. A getter (or the live ``leaf._tool_fns`` list) means late
+    ``_register_tool`` / ``bind_workspace`` updates are visible without
+    re-composing the hook.
+
+    For a scoped tool the guard inspects well-known UC arg names and any
+    ``secret_scope`` argument. Declared ``ResourceSpec`` s are enforced at
+    compile time by :func:`validate_tool_scope` and are intentionally *not*
+    re-checked here — that loop could never deny a tool that passed build.
+    Unqualified identifiers (``table_name="ledger"``) are a v1 non-goal:
+    arg-scan only fires on dotted values in ``_UC_ARG_KEYS``.
+
+    Out of scope → :class:`ScopeDenied`, an audit event on the active span,
+    and a WARNING log. A tool with no scope is a strict no-op (back-compat).
 
     Sibling of ``WatchdogGuard.for_tool()``::
 
         before_tool=compose(WatchdogGuard(wd).for_tool(), ScopeGuard(tools).for_tool())
     """
 
-    def __init__(self, tools: Iterable[Any]) -> None:
-        self._scopes: dict[str, ToolScope] = {}
-        self._resources: dict[str, list[str]] = {}
-        for fn in tools:
-            scope = get_scope(fn)
-            if scope is None:
-                continue
-            name = getattr(fn, "__name__", None)
-            if not name:
-                continue
-            self._scopes[name] = scope
-            self._resources[name] = [
-                s.identifier for s in get_resources(fn) if s.kind in _UC_KINDS
-            ]
+    def __init__(self, tools: Iterable[Any] | Callable[[], Iterable[Any]]) -> None:
+        self._tools = tools
+
+    def _iter_tools(self) -> Iterable[Any]:
+        tools = self._tools
+        if callable(tools):
+            tools = tools()
+        return tools or ()
+
+    def _scope_for(self, tool_name: str) -> ToolScope | None:
+        for fn in self._iter_tools():
+            if getattr(fn, "__name__", None) == tool_name:
+                return get_scope(fn)
+        return None
 
     @property
     def active(self) -> bool:
         """True when at least one tool declares a scope (else the guard is a no-op)."""
-        return bool(self._scopes)
+        return any(get_scope(fn) is not None for fn in self._iter_tools())
 
     def _deny(self, tool_name: str, obj: str, kind: str, scope: ToolScope) -> None:
         if kind == "secret":
@@ -400,23 +419,54 @@ class ScopeGuard:
         """Return a ``before_tool``-compatible callable ``(name, args) -> None``."""
 
         def _check(tool_name: str, args: dict[str, Any]) -> None:
-            scope = self._scopes.get(tool_name)
+            scope = self._scope_for(tool_name)
             if scope is None:
                 return  # unscoped tool — no-op (back-compat)
-            for ref in self._resources.get(tool_name, []):
-                if not in_scope(scope, ref):
-                    self._deny(tool_name, ref, "uc", scope)
             if not isinstance(args, dict):
                 return
             for key, value in args.items():
                 if not isinstance(value, str) or not value:
                     continue
+                # v1 non-goal: unqualified identifiers (no ".") never reach
+                # in_scope — resolving them needs a default catalog we don't have.
                 if key in _UC_ARG_KEYS and "." in value and not in_scope(scope, value):
                     self._deny(tool_name, value, "uc", scope)
                 if key in _SECRET_ARG_KEYS and not secret_in_scope(scope, value):
                     self._deny(tool_name, value, "secret", scope)
 
         return _check
+
+
+def attach_scope_guard(leaf: Any) -> bool:
+    """Attach a live :class:`ScopeGuard` onto ``leaf._before_tool`` if needed.
+
+    Idempotent via ``_apx_scope_guard``: a second call is a no-op even when
+    the leaf later gains more scoped tools — the live tool map already sees
+    them. Returns True when a hook was newly attached. A leaf with no scoped
+    tools is left byte-for-byte unchanged.
+    """
+    if getattr(leaf, "_apx_scope_guard", None) is not None:
+        return False
+    if not hasattr(leaf, "_before_tool"):
+        return False
+
+    def _live_tools() -> Iterable[Any]:
+        return getattr(leaf, "_tool_fns", []) or []
+
+    guard = ScopeGuard(_live_tools)
+    if not guard.active:
+        return False
+
+    hook = guard.for_tool()
+    existing = getattr(leaf, "_before_tool", None)
+    if existing is not None:
+        from ._guards import compose  # noqa: PLC0415
+
+        setattr(leaf, "_before_tool", compose(existing, hook))
+    else:
+        setattr(leaf, "_before_tool", hook)
+    setattr(leaf, "_apx_scope_guard", guard)
+    return True
 
 
 # AuditAttrs guard: scope audit keys must exist (fail loud if _audit.py drifts).
