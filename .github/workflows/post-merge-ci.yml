@@ -1,0 +1,35 @@
+name: Post-merge CI
+
+# GITHUB_TOKEN squash auto-merge does not fire `push`, so the full 3.11 + 3.13
+# suite never runs after bot merges. workflow_dispatch *does* create a run;
+# this job polls main and dispatches CI when HEAD has no non-PR run yet.
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch-full-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch full CI if main HEAD has no non-PR run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          echo "main HEAD: $sha"
+          extra=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=20" \
+            --jq '[.workflow_runs[] | select(.event != "pull_request")] | length')
+          if [ "$extra" != "0" ]; then
+            echo "main $sha already has $extra non-PR CI run(s); skip dispatch"
+            exit 0
+          fi
+          echo "Dispatching full CI for $sha"
+          gh workflow run CI --repo "$GITHUB_REPOSITORY" --ref main
