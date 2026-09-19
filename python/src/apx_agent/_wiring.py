@@ -1322,11 +1322,20 @@ def create_app(
                                 _TRACES_LIST_CACHE.put(rows)
                             except Exception:
                                 pass
-                        _asyncio.create_task(_warm_caches())
+                        app.state._apx_warm_caches_task = _asyncio.create_task(_warm_caches())
                     except Exception:
                         pass
                 yield
             finally:
+                warm_task = getattr(app.state, "_apx_warm_caches_task", None)
+                if warm_task is not None:
+                    warm_task.cancel()
+                    try:
+                        await warm_task
+                    except _asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.exception("warm-caches task failed during shutdown")
                 logger.info("Shutting down agent runtime")
                 from ._memory_wiring import close_checkpointer, dispose_store_engine  # noqa: PLC0415
 
