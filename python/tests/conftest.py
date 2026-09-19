@@ -14,6 +14,8 @@ from apx_agent import LlmAgent, AgentConfig, AgentContext
 
 
 os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
+# create_app autolog leaves leftover threads that kill 3.11 xdist workers.
+os.environ.setdefault("APX_AGENT_MLFLOW_AUTOLOG", "0")
 
 
 # ---------------------------------------------------------------------------
