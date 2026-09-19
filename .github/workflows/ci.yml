@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # GITHUB_TOKEN auto-merge does not fire `push`. Post-merge-ci.yml dispatches
+  # this so the full 3.11 + 3.13 suite still runs after a bot squash.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a new push frees the runners and
 # gives faster feedback instead of queueing behind stale in-flight runs.
@@ -24,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      changed: ${{ steps.filter.outputs.changed }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -36,6 +40,7 @@ jobs:
           # Push events (to main) carry no PR context — always run full CI.
           if [ -z "$BASE" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "changed=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # If the diff can't be computed for any reason, fail SAFE: run full CI
@@ -43,9 +48,15 @@ jobs:
           if ! changed=$(git diff --name-only "$BASE" "$HEAD"); then
             echo "git diff failed — defaulting to full CI"
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "changed=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "Changed files:"; echo "$changed"
+          {
+            echo "changed<<EOF"
+            printf '%s\n' "$changed"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
           # "code" = any changed file that is NOT under docs/ and NOT a .md file
           # (mirrors the old paths-ignore globs). grep -v exits 0 when such a
           # line exists; inside `if`, a non-match (docs-only) doesn't trip set -e.
@@ -74,9 +85,10 @@ jobs:
       # docs-only path (where the real steps below are skipped).
       - uses: actions/checkout@v6
 
-      # Real suite: code PRs run 3.11 only. 3.13 stays in the matrix so the
-      # required check `test (3.13)` still exists, but the work is deferred to
-      # push-to-main. Docs-only still skip-succeeds both versions.
+      # Real suite: code PRs run 3.11 on a path-aware subset (runtime core +
+      # tests mapped from the diff). 3.13 stays in the matrix so the required
+      # check `test (3.13)` still exists; the work is deferred to push-to-main
+      # / workflow_dispatch. Docs-only still skip-succeeds both versions.
       - name: Install uv
         if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
         uses: astral-sh/setup-uv@v8.1.0
@@ -91,8 +103,28 @@ jobs:
         if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
         run: uv sync --group dev --all-extras  # incl. langgraph/eval/uc/lakebase so their tests run, not skip
 
-      - name: Setup Node.js
+      - name: Select pytest paths
         if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
+        id: pytest_paths
+        # PRs: runtime core + tests mapped from the diff (see pr-pytest-paths.sh).
+        # push / workflow_dispatch: full suite.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_PYTEST_CHANGED_FILES: ${{ needs.changes.outputs.changed }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          paths=$(bash ../scripts/pr-pytest-paths.sh)
+          echo "Selected pytest paths: $paths"
+          echo "paths=$paths" >> "$GITHUB_OUTPUT"
+          if echo " $paths " | grep -q ' tests/ ' || echo "$paths" | grep -q test_appkit; then
+            echo "need_ts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "need_ts=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11') && steps.pytest_paths.outputs.need_ts == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -100,7 +132,7 @@ jobs:
           cache-dependency-path: typescript/package-lock.json
 
       - name: Build internal TypeScript runtime
-        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
+        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11') && steps.pytest_paths.outputs.need_ts == 'true'
         working-directory: typescript
         run: |
           npm ci
@@ -108,11 +140,8 @@ jobs:
 
       - name: Run tests
         if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
-        # -n auto runs the suite across the runner's CPUs (~2x faster); the
-        # suite is parallel-clean. PR floor is 3.11; 3.13 runs on main.
-        # --timeout names a stuck test instead of hanging the worker (xdist has no
-        # default hung-worker dump). 90s is well above any test in a ~3 min suite.
-        run: uv run pytest tests/ -n auto --tb=short --timeout=90 --timeout-method=thread
+        # paths is an intentionally space-separated list from the selector.
+        run: uv run pytest ${{ steps.pytest_paths.outputs.paths }} -n auto --tb=short --timeout=90 --timeout-method=thread
 
       - name: Docs-only change — tests not required
         if: needs.changes.outputs.code != 'true'
