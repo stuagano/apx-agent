@@ -210,20 +210,26 @@ def two_agents(monkeypatch: pytest.MonkeyPatch, local_trace_store):
             model="model-b",
         ),
     )
-    with TestClient(app_b):  # real lifespan: mounts /invocations + card on app_b
-        _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
+    # create_app() does not fire lifespan. Nested TestClients each start an
+    # anyio blocking portal (own event-loop thread). That combination kills
+    # 3.11 xdist workers with "Not properly terminated" and no traceback.
+    # Fire B first so include_router mounts stick after the portal exits, then
+    # keep only A live.
+    with TestClient(app_b):
+        pass
+    _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
 
-        agent_a = LlmAgent(tools=[], name="agent-a")
-        app_a = create_app(
-            agent_a,
-            config=AgentConfig(
-                name="agent-a",
-                model="model-a",
-                sub_agents=[B_URL],  # the config path under test — nothing code-wired
-            ),
-        )
-        with TestClient(app_a) as client_a:
-            yield agent_a, client_a
+    agent_a = LlmAgent(tools=[], name="agent-a")
+    app_a = create_app(
+        agent_a,
+        config=AgentConfig(
+            name="agent-a",
+            model="model-a",
+            sub_agents=[B_URL],  # the config path under test — nothing code-wired
+        ),
+    )
+    with TestClient(app_a) as client_a:
+        yield agent_a, client_a
 
 
 def _final_texts(body: dict[str, Any]) -> str:
@@ -480,27 +486,29 @@ def test_degraded_sub_agent_repairs_on_first_use(
                 model="model-b",
             ),
         )
+        # Fire B so include_router mounts stick, then drop its portal before A posts.
         with TestClient(app_b):
-            _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
+            pass
+        _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
 
-            resp = client_a.post(
-                "/invocations",
-                json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
-            )
+        resp = client_a.post(
+            "/invocations",
+            json={"messages": [{"role": "user", "content": "What is the secret word?"}]},
+        )
 
-            assert resp.status_code == 200, resp.text
-            # The call went through: B's tool body really executed.
-            assert B_TOOL_CALLS == ["ran"], "agent B's tool never executed"
-            assert SENTINEL in _final_texts(resp.json())
+        assert resp.status_code == 200, resp.text
+        # The call went through: B's tool body really executed.
+        assert B_TOOL_CALLS == ["ran"], "agent B's tool never executed"
+        assert SENTINEL in _final_texts(resp.json())
 
-            # And the first use repaired the degraded entry in place:
-            assert agent_a._degraded_sub_agents == {}
-            assert stub.description == "Knows the secret word."
-            delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent")
-            assert delegate.__doc__ == "Knows the secret word."
-            # collect_tools (the /tools + MCP surface) reads __doc__ live.
-            collected = {t.name: t.description for t in agent_a.collect_tools()}
-            assert collected["agent"] == "Knows the secret word."
+        # And the first use repaired the degraded entry in place:
+        assert agent_a._degraded_sub_agents == {}
+        assert stub.description == "Knows the secret word."
+        delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent")
+        assert delegate.__doc__ == "Knows the secret word."
+        # collect_tools (the /tools + MCP surface) reads __doc__ live.
+        collected = {t.name: t.description for t in agent_a.collect_tools()}
+        assert collected["agent"] == "Knows the secret word."
 
 
 # ---------------------------------------------------------------------------
@@ -555,45 +563,46 @@ def test_structured_schema_propagates_and_args_cross_the_wire(
         ),
     )
     with TestClient(app_b):
-        _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
+        pass
+    _route_async_clients_to(monkeypatch, httpx.ASGITransport(app=app_b))
 
-        agent_a = LlmAgent(tools=[], name="agent-a")
-        app_a = create_app(
-            agent_a,
-            config=AgentConfig(name="agent-a", model="model-a", sub_agents=[B_URL]),
+    agent_a = LlmAgent(tools=[], name="agent-a")
+    app_a = create_app(
+        agent_a,
+        config=AgentConfig(name="agent-a", model="model-a", sub_agents=[B_URL]),
+    )
+    with TestClient(app_a) as client_a:
+        # The delegate the compiled graph binds exposes B's real parameter.
+        delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent_b")
+        plain_params, dep_names = _inspect_tool_fn(delegate)
+        assert list(plain_params) == ["team"]
+        assert dep_names == ["headers"]
+
+        # The advertised descriptor carries the card schema, not {message}.
+        descriptor = next(
+            t for t in agent_a.collect_tools() if t.name == "agent_b"
         )
-        with TestClient(app_a) as client_a:
-            # The delegate the compiled graph binds exposes B's real parameter.
-            delegate = next(fn for fn in agent_a._tool_fns if fn.__name__ == "agent_b")
-            plain_params, dep_names = _inspect_tool_fn(delegate)
-            assert list(plain_params) == ["team"]
-            assert dep_names == ["headers"]
+        assert descriptor.input_schema is not None
+        assert "team" in descriptor.input_schema["properties"]
+        assert "message" not in descriptor.input_schema["properties"]
 
-            # The advertised descriptor carries the card schema, not {message}.
-            descriptor = next(
-                t for t in agent_a.collect_tools() if t.name == "agent_b"
-            )
-            assert descriptor.input_schema is not None
-            assert "team" in descriptor.input_schema["properties"]
-            assert "message" not in descriptor.input_schema["properties"]
+        resp = client_a.post(
+            "/invocations",
+            json={
+                "messages": [
+                    {"role": "user", "content": "Secret word for team blue?"}
+                ]
+            },
+        )
 
-            resp = client_a.post(
-                "/invocations",
-                json={
-                    "messages": [
-                        {"role": "user", "content": "Secret word for team blue?"}
-                    ]
-                },
-            )
-
-            assert resp.status_code == 200, resp.text
-            # REALITY: B's tool body executed with the structured argument.
-            assert B_TOOL_ARGS == ["blue"], "agent B's tool never got the arg"
-            # WIRE: what B's LLM saw as the user message is the JSON args
-            # object A's delegate serialized — named fields, not prose.
-            assert json.loads(SEEN_USER_CONTENT["B"]) == {"team": "blue"}
-            # And the sentinel still travels back to A's final answer.
-            assert f"{SENTINEL}-blue" in _final_texts(resp.json())
+        assert resp.status_code == 200, resp.text
+        # REALITY: B's tool body executed with the structured argument.
+        assert B_TOOL_ARGS == ["blue"], "agent B's tool never got the arg"
+        # WIRE: what B's LLM saw as the user message is the JSON args
+        # object A's delegate serialized — named fields, not prose.
+        assert json.loads(SEEN_USER_CONTENT["B"]) == {"team": "blue"}
+        # And the sentinel still travels back to A's final answer.
+        assert f"{SENTINEL}-blue" in _final_texts(resp.json())
 
 
 # ---------------------------------------------------------------------------
