@@ -41,6 +41,7 @@ from ._inspection import (
     _schema_for_model,
     _schema_for_return,
 )
+from ._tool_search import validate_tool_loading
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
@@ -166,6 +167,7 @@ class LlmAgent(BaseAgent):
         memory: str = "off",
         output_key: str | None = None,
         session_budget: dict[str, int] | None = None,
+        tool_loading: str = "eager",
     ) -> None:
         # tools is optional (#449): an orchestrator whose only capabilities are
         # config-declared sub_agents has no local tools. None → a fresh list
@@ -200,6 +202,10 @@ class LlmAgent(BaseAgent):
                     f"session_budget['tokens'] must be a positive int, got {tokens!r}"
                 )
         self._session_budget = session_budget
+        # Deferred tool loading (#767): "eager" binds every author tool on the
+        # first compiled hop (today's behavior). "deferred" advertises only
+        # tool_search until a match writes names into state["bound_tools"].
+        self._tool_loading = validate_tool_loading(tool_loading)
         self._description = description
         self._name = name
         self._temperature = temperature

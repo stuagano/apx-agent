@@ -64,6 +64,11 @@ from ._defaults import (
 )
 from ._budget import cap_for
 from ._mlflow_tracing import emit_progress
+from ._tool_search import (
+    deferred_tools_middleware,
+    is_deferred,
+    make_tool_search_fn,
+)
 from ._obo import _header_lookup
 from ._remote import RemoteDatabricksAgent, _RemoteLeafBinding
 from ._inspection import (
@@ -380,9 +385,28 @@ def _compile_llm_agent(
 
     from ._callbacks import build_callback_handler
 
-    tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
-    if extra_tools:
-        tools = tools + list(extra_tools)
+    author_fns = list(agent._tool_fns)
+    tools = [_make_langchain_tool(fn, ctx) for fn in author_fns]
+    extra = list(extra_tools) if extra_tools else []
+    if extra:
+        tools = tools + extra
+    middleware = [_governance_exception_middleware()]
+    # Deferred loading (#767) still registers every author tool on create_agent
+    # so ToolNode can execute a revealed call. Middleware hides those tools
+    # from the model until tool_search writes their names into state.
+    # extra_tools (Loop finish_loop, Handoff transfer_to_*) stay always visible.
+    if is_deferred(agent):
+        search_fn = make_tool_search_fn(author_fns)
+        search_tool = _make_langchain_tool(search_fn, ctx)
+        searchable = tools[: len(author_fns)]
+        tools = [search_tool, *tools]
+        middleware.append(
+            deferred_tools_middleware(
+                searchable_tools=searchable,
+                search_tool=search_tool,
+                always_visible=extra,
+            )
+        )
     llm = _build_chat_databricks(
         ctx.model,
         temperature=getattr(agent, "_temperature", None),
@@ -392,11 +416,11 @@ def _compile_llm_agent(
         "model": llm,
         "tools": tools,
         "system_prompt": (agent._instructions or None) if bake_prompt else None,
-        "middleware": [_governance_exception_middleware()],
+        "middleware": middleware,
     }
-    # The keyed ``state`` channel is needed by state tools AND by session_budget
-    # (its cumulative token counter persists under state["session_tokens"]).
-    if _agent_has_state_tool(agent) or cap_for(agent) is not None:
+    # The keyed ``state`` channel is needed by state tools, session_budget
+    # (state["session_tokens"]), and deferred tool_search (state["bound_tools"]).
+    if _agent_has_state_tool(agent) or cap_for(agent) is not None or is_deferred(agent):
         create_kwargs["state_schema"] = state_schema()
     if ctx.checkpointer is not None:
         # Thread-scoped short-term memory: the create_agent runtime persists

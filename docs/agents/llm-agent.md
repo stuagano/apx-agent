@@ -42,6 +42,9 @@ model = "databricks-meta-llama-3-3-70b-instruct"
 | `max_iterations` | — | `int \| None` | Safety cap on tool-calling loops; `None` (default) defers to LangGraph's recursion limit |
 | `memory` | — | `str` | Memory tier: `"off"`, `"inmemory"`, or `"persistent"` |
 | `sub_agents` | — | `list[str]` | URLs of remote agents auto-wrapped as `agent_tool` at startup |
+| `tool_loading` | — | `"eager"` \| `"deferred"` | How tools are advertised to the model. `"eager"` (default) binds every author tool on the first hop. `"deferred"` sends only a client-side `tool_search` tool first; matched tools bind for later hops. Not Anthropic's server-side tool-search beta. |
+
+With `tool_loading="deferred"`, the first compiled model call advertises only `tool_search`. The model searches the agent's catalog by name/description; matching tools stay bound for later hops in that session. Loop `finish_loop` and Handoff `transfer_to_*` stay always visible — they are orchestration, not inventory.
 
 ## Running agents
 
