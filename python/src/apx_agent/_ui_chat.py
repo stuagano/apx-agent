@@ -720,7 +720,7 @@ def _render_landing(ctx: AgentContext) -> str:
     parts.append(
         '<div id="latency-spark" hidden>'
         '<div class="landing-label">Latency</div>'
-        '<div class="data-card latency-spark-card">'
+        '<div class="latency-spark-card">'
         '<div id="latency-spark-empty" class="latency-spark-empty" hidden>No traces yet</div>'
         '<div id="latency-spark-body" hidden>'
         '<svg id="latency-spark-svg" viewBox="0 0 240 36" width="240" height="36" '
@@ -1192,7 +1192,9 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
   #latency-spark[hidden],
   #latency-spark-empty[hidden],
   #latency-spark-body[hidden] {{ display: none; }}
-  .latency-spark-card {{ display: flex; flex-direction: column; gap: 8px; }}
+  .latency-spark-card {{ background: #0e1116; border: 1px solid #1f242b; border-radius: 10px;
+                padding: 12px 14px; margin: 10px 0; max-width: 680px;
+                display: flex; flex-direction: column; gap: 8px; }}
   .latency-spark-empty {{ font-size: 12px; color: #6b7280; }}
   #latency-spark-svg {{ display: block; width: 100%; max-width: 240px; height: 36px; }}
   #latency-p50, #latency-p95 {{ color: #8a929b; }}

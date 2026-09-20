@@ -143,6 +143,10 @@ class TestLandingSparklineMount:
         assert 'id="latency-spark-line"' in html
         assert 'id="latency-p50"' in html
         assert 'id="latency-p95"' in html
+        # Schema-card tests treat "data-card" as the tables card. Sparkline
+        # must not reuse that class or the no-schema landing fails CI.
+        assert "data-card" not in html
+        assert 'class="latency-spark-card"' in html
 
     def test_agent_ui_fetches_latency_route(self) -> None:
         from apx_agent import AgentConfig, AgentContext
