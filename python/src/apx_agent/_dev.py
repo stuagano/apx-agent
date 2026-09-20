@@ -73,6 +73,7 @@ from ._apx_models import (
     LastRouteResponse,
     LatencyTrendResponse,
     ToolFailRateResponse,
+    TraceDiffResponse,
     TraceDetailResponse,
     TraceRow,
     VsIndexInfo,
@@ -298,6 +299,19 @@ _TRACE_CSS = """
                    border-radius:10px;font-size:12px;}
   #tool-fails[hidden]{display:none;}
   .tool-fail{font-family:monospace;}
+  .trace-diff-bar{display:flex;align-items:center;gap:10px;margin:0 0 12px;
+                  font-size:12px;color:var(--muted);}
+  .trace-diff-go{background:#0d1f38;border:1px solid #1e3a5f;color:#60b0ff;
+                 border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;}
+  .trace-diff-go:disabled{opacity:.4;cursor:not-allowed;}
+  .td-pick{margin-right:6px;}
+  .trace-diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .trace-diff-card{background:#0e1116;border:1px solid #1f242b;border-radius:10px;
+                   padding:12px 14px;display:flex;flex-direction:column;gap:8px;}
+  .trace-diff-label{font-size:11px;color:var(--muted);text-transform:uppercase;
+                    letter-spacing:.04em;}
+  .trace-diff-body{white-space:pre-wrap;font-size:13px;line-height:1.4;}
+  .trace-diff-banner{font-size:12px;color:var(--muted);margin:0 0 12px;}
   .preview{max-width:360px;overflow:hidden;text-overflow:ellipsis;
            white-space:nowrap;color:var(--muted);}
   .dur{font-family:monospace;color:var(--muted);white-space:nowrap;}
@@ -407,6 +421,7 @@ def _render_traces_list(rows: list | None, agent_name: str | None) -> str:
                 f'<td class="preview">{req}</td>'
                 f'<td class="preview">{resp}</td>'
                 f'<td class="fb-cell">'
+                f'<input type="checkbox" class="td-pick" data-tid="{tid}" />'
                 f'<button class="fb-btn up" onclick="submitFeedback(\'{tid_js}\',true,this)">👍</button>'
                 f'<button class="fb-btn down" onclick="submitFeedback(\'{tid_js}\',false,this)">👎</button>'
                 f'</td>'
@@ -465,12 +480,26 @@ function renderRows(rows) {{
       <td class="preview">${{esc((r.request_preview||'').slice(0,120))}}</td>
       <td class="preview">${{esc((r.response_preview||'').slice(0,120))}}</td>
       <td class="fb-cell">
+        <input type="checkbox" class="td-pick" data-tid="${{tid}}" />
         <button class="fb-btn up" onclick="submitFeedback('${{tid}}',true,this)">👍</button>
         <button class="fb-btn down" onclick="submitFeedback('${{tid}}',false,this)">👎</button>
       </td>
     </tr>`;
   }}).join('');
   wrap.innerHTML = '<table>' + ths + tds + '</table>';
+  refreshCompare();
+}}
+
+function selectedTids() {{
+  return Array.from(document.querySelectorAll('.td-pick:checked'))
+    .map(el => el.getAttribute('data-tid'))
+    .filter(Boolean);
+}}
+
+function refreshCompare() {{
+  const btn = document.getElementById('trace-diff-go');
+  if (!btn) return;
+  btn.disabled = selectedTids().length !== 2;
 }}
 
 document.addEventListener('DOMContentLoaded', async () => {{
@@ -488,6 +517,21 @@ document.addEventListener('DOMContentLoaded', async () => {{
   }} catch(e) {{
     document.getElementById('traces-body').innerHTML =
       '<p class="empty">Failed to load traces: ' + e.message + '</p>';
+  }}
+  const go = document.getElementById('trace-diff-go');
+  if (go) {{
+    go.addEventListener('click', () => {{
+      const tids = selectedTids();
+      if (tids.length !== 2) return;
+      location.href = '/_apx/traces/diff?a=' + encodeURIComponent(tids[0])
+        + '&b=' + encodeURIComponent(tids[1]);
+    }});
+    document.addEventListener('change', (e) => {{
+      if (!e.target || !e.target.classList || !e.target.classList.contains('td-pick')) return;
+      const checked = document.querySelectorAll('.td-pick:checked');
+      if (checked.length > 2) e.target.checked = false;
+      refreshCompare();
+    }});
   }}
   try {{
     const mount = document.getElementById('tool-fails');
@@ -518,6 +562,10 @@ document.addEventListener('DOMContentLoaded', async () => {{
 </header>
 <main>
   <div id="tool-fails" class="tool-fails-card" hidden></div>
+  <div id="trace-diff-bar" class="trace-diff-bar">
+    <button id="trace-diff-go" class="trace-diff-go" type="button" disabled>Compare selected</button>
+    <span>Pick two traces to compare responses and judge verdicts</span>
+  </div>
   {body}
 </main>
 </body></html>"""
@@ -1847,6 +1895,157 @@ def _tool_fail_rates(spans_by_trace: list[list[dict[str, Any]]]) -> dict[str, An
     return {"tools": tools, "n_traces": len(spans_by_trace)}
 
 
+def _question_from_spans(spans: list[dict[str, Any]]) -> str | None:
+    """First user-message content from serialized chat-input spans."""
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        msgs = _is_chat_messages(span.get("inputs"))
+        if msgs is None:
+            continue
+        for msg in msgs:
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and content:
+                return content
+    return None
+
+
+def _response_from_spans(spans: list[dict[str, Any]]) -> str | None:
+    """Last assistant choice content from serialized chat-output spans."""
+    for span in reversed(spans):
+        if not isinstance(span, dict):
+            continue
+        choices = _is_choices(span.get("outputs"))
+        if choices is None:
+            continue
+        for choice in reversed(choices):
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                return content
+    return None
+
+
+def _eval_row_for_trace(trace_id: str, rows: list[Any]) -> dict[str, Any] | None:
+    for row in rows:
+        if isinstance(row, dict) and row.get("trace_id") == trace_id:
+            return row
+    return None
+
+
+def _trace_diff_side(
+    trace_id: str,
+    spans: list[dict[str, Any]] | None,
+    eval_rows: list[Any],
+) -> dict[str, Any]:
+    """Build one compare column from the ring buffer + optional evals.json row.
+
+    Never calls MLflow. Missing judge fields stay None so the response model
+    omits a fake verdict.
+    """
+    found = spans is not None
+    span_list = spans if isinstance(spans, list) else []
+    question = _question_from_spans(span_list)
+    response = _response_from_spans(span_list)
+    judge_verdict: str | None = None
+    judge_reason: str | None = None
+    row = _eval_row_for_trace(trace_id, eval_rows)
+    if row is not None:
+        if question is None:
+            cached_q = row.get("question")
+            if isinstance(cached_q, str) and cached_q:
+                question = cached_q
+        if response is None:
+            cached_a = row.get("response")
+            if isinstance(cached_a, str) and cached_a:
+                response = cached_a
+        verdict = row.get("judge_verdict")
+        if isinstance(verdict, str) and verdict:
+            judge_verdict = verdict
+        reason = row.get("judge_reason")
+        if isinstance(reason, str) and reason:
+            judge_reason = reason
+    return {
+        "trace_id": trace_id,
+        "found": found,
+        "question": question,
+        "response": response,
+        "judge_verdict": judge_verdict,
+        "judge_reason": judge_reason,
+    }
+
+
+def _render_trace_diff(left: dict[str, Any], right: dict[str, Any]) -> str:
+    """Server-rendered two-column compare. Own card class — not data-card."""
+    import html as _html
+
+    def _text(value: Any, fallback: str) -> str:
+        if isinstance(value, str) and value:
+            return _html.escape(value)
+        return fallback
+
+    def _card(side: dict[str, Any], label: str) -> str:
+        tid = _text(side.get("trace_id"), "—")
+        missing = "" if side.get("found") else '<div class="empty">Not in recent buffer</div>'
+        verdict = side.get("judge_verdict")
+        verdict_cls = "st-ok" if verdict == "PASS" else ("st-err" if isinstance(verdict, str) and verdict else "")
+        verdict_html = (
+            f'<div class="trace-diff-label">Judge</div>'
+            f'<div class="trace-diff-body {verdict_cls}">{_text(verdict, "—")}</div>'
+        )
+        reason = side.get("judge_reason")
+        reason_html = (
+            f'<div class="trace-diff-label">Reason</div>'
+            f'<div class="trace-diff-body">{_text(reason, "—")}</div>'
+            if isinstance(reason, str) and reason
+            else ""
+        )
+        return (
+            f'<section class="trace-diff-card">'
+            f'<div class="trace-diff-label">{_html.escape(label)}</div>'
+            f'<div><a href="/_apx/traces/{tid}">{tid}</a></div>'
+            f"{missing}"
+            f'<div class="trace-diff-label">Request</div>'
+            f'<div class="trace-diff-body">{_text(side.get("question"), "—")}</div>'
+            f'<div class="trace-diff-label">Response</div>'
+            f'<div class="trace-diff-body">{_text(side.get("response"), "—")}</div>'
+            f"{verdict_html}{reason_html}"
+            f"</section>"
+        )
+
+    left_q = left.get("question") if isinstance(left.get("question"), str) else None
+    right_q = right.get("question") if isinstance(right.get("question"), str) else None
+    if left_q and right_q and left_q == right_q:
+        banner = "Same question — before / after compare"
+    elif left_q and right_q:
+        banner = "Different questions — compare anyway"
+    else:
+        banner = "Compare two traces"
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Trace diff</title>
+<style>{_TRACE_CSS}</style>
+</head><body>
+<header>
+  <span class="badge">APX</span><h1>Trace diff</h1>
+  <a class="back" href="/_apx/traces">← All traces</a>
+</header>
+<main>
+  <div class="trace-diff-banner">{_html.escape(banner)}</div>
+  <div class="trace-diff-grid">
+    {_card(left, "Left")}
+    {_card(right, "Right")}
+  </div>
+</main>
+</body></html>"""
+
+
 async def _refresh_eval_cache(experiment_id: str) -> None:
     """Background task: refresh eval cases cache silently."""
     try:
@@ -2268,6 +2467,45 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 continue
             spans_by_trace.append(spans)
         return _tool_fail_rates(spans_by_trace)
+
+    @router.get("/_apx/traces/diff", response_model=TraceDiffResponse)
+    async def traces_diff(request: Request) -> Any:
+        """Side-by-side request / response / judge for two trace ids.
+
+        Registered before ``/_apx/traces/{trace_id:path}`` so ``diff`` is not
+        captured as a trace id. Ring buffer + evals.json only — no
+        ``mlflow.get_trace``.
+        """
+        from fastapi.responses import JSONResponse
+        from ._trace_store import get as _ts_get
+
+        left_id = request.query_params.get("a")
+        right_id = request.query_params.get("b")
+        fmt = request.query_params.get("fmt")
+        if not left_id or not right_id:
+            if fmt == "json":
+                return JSONResponse(
+                    {"error": "query params a and b (trace ids) are required"},
+                    status_code=400,
+                )
+            empty = {
+                "trace_id": "",
+                "found": False,
+                "question": None,
+                "response": None,
+                "judge_verdict": None,
+                "judge_reason": None,
+            }
+            return HTMLResponse(_render_trace_diff(empty, empty))
+
+        eval_rows = _load_optimize_eval_rows()
+        payload = {
+            "left": _trace_diff_side(left_id, _ts_get(left_id), eval_rows),
+            "right": _trace_diff_side(right_id, _ts_get(right_id), eval_rows),
+        }
+        if fmt == "json":
+            return payload
+        return HTMLResponse(_render_trace_diff(payload["left"], payload["right"]))
 
     @router.get("/_apx/traces/{trace_id:path}", response_model=TraceDetailResponse)
     async def trace_detail_ui(trace_id: str, request: Request) -> Any:
