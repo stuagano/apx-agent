@@ -4707,11 +4707,62 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 retrieval_k=min(5, len(traces)),
                 embedding_model="databricks:/databricks-gte-large-en",
             )
-            aligned = judge.align(traces=traces, optimizer=optimizer)
-            guidelines = [g.guideline_text for g in getattr(aligned, "_semantic_memory", []) or []]
+            aligned: Any = judge.align(traces=traces, optimizer=optimizer)
+            memory = aligned._semantic_memory if hasattr(aligned, "_semantic_memory") else None
+            guidelines = [g.guideline_text for g in memory or []]
+            from apx_agent import _labeling
+            run_id = _labeling.log_align_run(
+                experiment_id=experiment_id,
+                judge_name=judge_name,
+                registered_as=judge_name,
+                trace_count=len(traces),
+                guidelines=guidelines,
+                mlflow_api=mlflow,
+            )
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-        return {"ok": True, "registered_as": judge_name, "guidelines": guidelines, "trace_count": len(traces)}
+        return {
+            "ok": True,
+            "registered_as": judge_name,
+            "guidelines": guidelines,
+            "trace_count": len(traces),
+            "run_id": run_id,
+        }
+
+    @router.get("/_apx/eval/label-history")
+    async def eval_label_history(request: Request) -> Any:
+        """List past MemAlign runs (guidelines over time) for the current experiment."""
+        experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip() or None
+        if not experiment_id:
+            return JSONResponse({"ok": False, "error": "MLFLOW_EXPERIMENT_ID not set"}, status_code=503)
+        judge_name = (request.query_params.get("judge_name") or "").strip() or None
+        try:
+            import mlflow
+            from apx_agent import _labeling
+
+            mlflow.set_tracking_uri("databricks")
+            runs = _labeling.list_align_runs(
+                experiment_id=experiment_id,
+                judge_name=judge_name,
+                mlflow_api=mlflow,
+            )
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return {
+            "ok": True,
+            "runs": [
+                {
+                    "run_id": run.run_id,
+                    "start_time": run.start_time,
+                    "judge_name": run.judge_name,
+                    "registered_as": run.registered_as,
+                    "trace_count": run.trace_count,
+                    "guidelines": run.guidelines,
+                    "guideline_count": run.guideline_count,
+                }
+                for run in runs
+            ],
+        }
 
     @router.post("/_apx/eval/cache/bust")
     async def eval_cache_bust() -> Any:

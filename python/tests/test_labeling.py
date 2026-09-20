@@ -394,12 +394,25 @@ def test_align_judge_aligns_and_updates_in_place(monkeypatch):
     # mlflow.get_trace: return the thin trace as-is (identity) — tests don't need spans
     monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid)))
 
+    logged: dict = {}
+
+    def fake_log(**kw):
+        logged.update(kw)
+        return "align-run-1"
+
+    monkeypatch.setattr(_labeling, "log_align_run", fake_log)
+
     res = _labeling.align_judge(
         experiment_id="123", judge_name="j", run_id="r1",
         reflection_model="databricks:/m", embedding_model="databricks:/e",
         retrieval_k=5, new_version=None,
     )
     assert res.guidelines == ["be precise"]
+    assert res.run_id == "align-run-1"
+    assert logged["experiment_id"] == "123"
+    assert logged["judge_name"] == "j"
+    assert logged["guidelines"] == ["be precise"]
+    assert logged["trace_count"] == 2
     assert captured["align"]["optimizer"] == "OPT"
     assert len(captured["align"]["traces"]) == 2
     assert "experiment_id" in captured  # update() was called in-place
@@ -424,6 +437,7 @@ def test_align_judge_no_sme_labels_raises_friendly(monkeypatch):
     thin = [SimpleNamespace(info=SimpleNamespace(trace_id="trace-a"))]
     monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: thin)
     monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid)))
+    monkeypatch.setattr(_labeling, "log_align_run", lambda **kw: None)
 
     with pytest.raises(_labeling.LabelingError, match="no SME labels"):
         _labeling.align_judge(
@@ -461,6 +475,7 @@ def test_align_judge_new_version_makes_and_registers(monkeypatch):
     monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: thin)
     monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid)))
     monkeypatch.setattr("mlflow.genai.judges.make_judge", fake_make_judge)
+    monkeypatch.setattr(_labeling, "log_align_run", lambda **kw: "align-v2")
 
     res = _labeling.align_judge(
         experiment_id="exp-42", judge_name="j", run_id="r1",
@@ -502,3 +517,135 @@ def test_set_uc_tags_includes_experiment_id():
     finally:
         w.emit_agent_metadata = orig
     assert client.tags.get("apx.mlflow.experiment_id") == "555"
+
+
+
+
+class _MemAlignStore:
+    """Tiny write/read stand-in so helper tests do not import the route suite."""
+
+    def __init__(self) -> None:
+        self.runs: list[dict] = []
+        self._seq = 0
+        self.last_filter: str | None = None
+
+    def active_run(self):
+        return None
+
+    def start_run(self, **kwargs):
+        self._seq += 1
+        run_id = f"align-{self._seq}"
+        self.runs.append({
+            "run_id": run_id,
+            "start_time": 1_700_000_000_000 - self._seq,
+            "params": {},
+            "tags": {},
+            "artifact": None,
+        })
+        store = self
+
+        class _Run:
+            info = type("info", (), {"run_id": run_id})()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+        return _Run()
+
+    def set_tag(self, key: str, value: str) -> None:
+        self.runs[-1]["tags"][key] = value
+
+    def log_params(self, params: dict[str, str]) -> None:
+        self.runs[-1]["params"].update(params)
+
+    def log_dict(self, payload: dict, path: str) -> None:
+        self.runs[-1]["artifact"] = {"path": path, "payload": payload}
+
+    @property
+    def artifacts(self):
+        store = self
+
+        class _Arts:
+            def load_dict(self, uri: str):
+                run_id = uri.split("/")[1] if uri.startswith("runs:/") else ""
+                for run in store.runs:
+                    if run["run_id"] == run_id and run["artifact"] is not None:
+                        return run["artifact"]["payload"]
+                raise FileNotFoundError(uri)
+
+        return _Arts()
+
+    def search_runs(self, **kwargs):
+        import pandas as pd
+
+        self.last_filter = kwargs.get("filter_string")
+        rows = [{
+            "run_id": run["run_id"],
+            "start_time": run["start_time"],
+            "params.judge_name": run["params"].get("judge_name"),
+            "params.registered_as": run["params"].get("registered_as"),
+            "params.trace_count": run["params"].get("trace_count"),
+            "params.guideline_count": run["params"].get("guideline_count"),
+            "params.guidelines_json": run["params"].get("guidelines_json"),
+            "tags.apx.kind": run["tags"].get("apx.kind"),
+        } for run in self.runs]
+        rows.sort(key=lambda rec: rec["start_time"] or 0, reverse=True)
+        return pd.DataFrame(rows)
+
+@pytest.mark.unit
+def test_log_align_run_is_listed_by_list_align_runs():
+    """Write path + search_runs filter must round-trip guidelines (Ctk)."""
+    fake = _MemAlignStore()
+    run_id = _labeling.log_align_run(
+        experiment_id="exp-1",
+        judge_name="quality",
+        registered_as="quality",
+        trace_count=3,
+        guidelines=["Be grounded.", "Cite sources."],
+        mlflow_api=fake,
+    )
+    assert run_id == "align-1"
+    assert fake.runs[0]["tags"]["apx.kind"] == "memalign"
+
+    listed = _labeling.list_align_runs(
+        experiment_id="exp-1",
+        judge_name="quality",
+        mlflow_api=fake,
+    )
+    assert fake.last_filter is not None
+    assert 'tags.apx.kind = "memalign"' in fake.last_filter
+    assert 'params.judge_name = "quality"' in fake.last_filter
+    assert len(listed) == 1
+    assert listed[0].run_id == "align-1"
+    assert listed[0].guidelines == ["Be grounded.", "Cite sources."]
+    assert listed[0].trace_count == 3
+    assert listed[0].judge_name == "quality"
+
+
+@pytest.mark.unit
+def test_list_align_runs_empty_when_no_memalign_runs():
+    fake = _MemAlignStore()
+    listed = _labeling.list_align_runs(experiment_id="exp-1", mlflow_api=fake)
+    assert listed == []
+
+
+@pytest.mark.unit
+def test_log_align_run_long_guidelines_use_artifact_not_param():
+    fake = _MemAlignStore()
+    long = ["x" * 200, "y" * 200, "z" * 200]
+    _labeling.log_align_run(
+        experiment_id="exp-1",
+        judge_name="quality",
+        registered_as="quality",
+        trace_count=1,
+        guidelines=long,
+        mlflow_api=fake,
+    )
+    assert "guidelines_json" not in fake.runs[0]["params"]
+    assert fake.runs[0]["artifact"]["payload"]["guidelines"] == long
+    assert fake.runs[0]["params"]["guideline_count"] == "3"
+    listed = _labeling.list_align_runs(experiment_id="exp-1", mlflow_api=fake)
+    assert listed[0].guidelines == long
