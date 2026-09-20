@@ -229,6 +229,148 @@ def tag_traces(trace_ids: list[str], run_id: str) -> int:
     return n
 
 
+
+def _assessment_mapping(assessment: Any) -> dict[str, Any] | None:
+    if isinstance(assessment, dict):
+        return assessment
+    to_dictionary = getattr(assessment, "to_dictionary", None)
+    if callable(to_dictionary):
+        raw = to_dictionary()
+        if isinstance(raw, dict):
+            return raw
+    if assessment is None:
+        return None
+    name = getattr(assessment, "assessment_name", None)
+    if not (isinstance(name, str) and name):
+        name = getattr(assessment, "name", None)
+    return {
+        "assessment_name": name,
+        "source": getattr(assessment, "source", None),
+        "feedback": getattr(assessment, "feedback", None),
+        "value": getattr(assessment, "value", None),
+        "rationale": getattr(assessment, "rationale", None),
+        "comment": getattr(assessment, "comment", None),
+    }
+
+
+def _assessment_name(raw: dict[str, Any]) -> str | None:
+    for key in ("assessment_name", "name"):
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _is_human_assessment(raw: dict[str, Any]) -> bool:
+    source = raw.get("source")
+    if isinstance(source, dict):
+        source_type = source.get("source_type")
+    elif source is None:
+        source_type = None
+    else:
+        source_type = getattr(source, "source_type", None)
+    if source_type is None:
+        return False
+    return "HUMAN" in str(source_type).upper()
+
+
+def _assessment_rationale(raw: dict[str, Any]) -> str | None:
+    for key in ("rationale", "comment"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _assessment_value(raw: dict[str, Any]) -> Any:
+    if raw.get("value") is not None:
+        return raw.get("value")
+    feedback = raw.get("feedback")
+    if isinstance(feedback, dict):
+        return feedback.get("value")
+    if feedback is None:
+        return None
+    return getattr(feedback, "value", None)
+
+
+def _label_polarity(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "positive" if value else "negative"
+    if isinstance(value, (int, float)):
+        return "negative" if value < 0.5 else "positive"
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if not lowered:
+            return None
+        if lowered in {"false", "fail", "no"}:
+            return "negative"
+        return "positive"
+    return "positive"
+
+
+def select_alignment_cohort(traces: list[Any], *, judge_name: str) -> list[Any]:
+    """Keep traces with HUMAN assessments named ``judge_name``.
+
+    Fail loud when the feedback name and judge name differ, no HUMAN
+    rationale/labels are present, or the cohort lacks usable label
+    diversity (need at least one positive and one negative).
+    """
+    kept: list[Any] = []
+    polarities: set[str] = set()
+    human_names: set[str] = set()
+    matching_without_rationale = False
+
+    for trace in traces:
+        info = getattr(trace, "info", None)
+        assessments = getattr(info, "assessments", None) if info is not None else None
+        if not isinstance(assessments, list):
+            continue
+        matched: str | None = None
+        for assessment in assessments:
+            raw = _assessment_mapping(assessment)
+            if raw is None or not _is_human_assessment(raw):
+                continue
+            name = _assessment_name(raw)
+            if isinstance(name, str) and name:
+                human_names.add(name)
+            if name != judge_name:
+                continue
+            if _assessment_rationale(raw) is None:
+                matching_without_rationale = True
+                continue
+            polarity = _label_polarity(_assessment_value(raw))
+            if polarity is None:
+                matching_without_rationale = True
+                continue
+            matched = polarity
+            break
+        if matched is not None:
+            kept.append(trace)
+            polarities.add(matched)
+
+    if kept:
+        if "positive" in polarities and "negative" in polarities:
+            return kept
+        raise LabelingError(
+            f"alignment cohort for judge '{judge_name}' lacks usable label "
+            "diversity; need at least one positive and one negative HUMAN label."
+        )
+    if matching_without_rationale:
+        raise LabelingError(
+            f"no HUMAN rationale/labels on assessments named '{judge_name}'"
+        )
+    if human_names:
+        found = ", ".join(sorted(human_names))
+        raise LabelingError(
+            f"feedback name {found} differs from judge '{judge_name}'"
+        )
+    raise LabelingError(
+        f"no HUMAN rationale/labels present for judge '{judge_name}'"
+    )
+
+
 @dataclass
 class StartResult:
     run_id: str
@@ -592,6 +734,8 @@ def align_judge(
         raise LabelingError(
             f"no traces found for run '{run_id}'. Check the run id or re-run `label start`."
         )
+
+    traces = select_alignment_cohort(traces, judge_name=judge_name)
 
     base = get_scorer(name=judge_name, experiment_id=experiment_id)  # type: ignore[call]
     from mlflow.exceptions import MlflowException
