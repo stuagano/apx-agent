@@ -4556,7 +4556,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 retrieval_k=min(5, len(traces)),
                 embedding_model="databricks:/databricks-gte-large-en",
             )
-            aligned = judge.align(traces=traces, optimizer=optimizer)
+            aligned: Any = judge.align(traces=traces, optimizer=optimizer)
             memory = aligned._semantic_memory if hasattr(aligned, "_semantic_memory") else None
             guidelines = [g.guideline_text for g in memory or []]
             from apx_agent import _labeling

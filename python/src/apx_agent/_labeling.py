@@ -644,7 +644,7 @@ def align_judge(
         )
         registered_as = str(getattr(updated, "name", judge_name))
 
-    run_id = log_align_run(
+    logged_run_id = log_align_run(
         experiment_id=experiment_id,
         judge_name=judge_name,
         registered_as=registered_as,
@@ -655,5 +655,5 @@ def align_judge(
         judge_name=judge_name,
         guidelines=guidelines,
         registered_as=registered_as,
-        run_id=run_id,
+        run_id=logged_run_id,
     )
