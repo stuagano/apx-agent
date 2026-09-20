@@ -729,6 +729,24 @@ class ToolFailRateResponse(BaseModel):
     n_traces: int = 0
 
 
+class TraceDiffSide(BaseModel):
+    """One column of ``GET /_apx/traces/diff``."""
+
+    trace_id: str
+    found: bool
+    question: str | None = None
+    response: str | None = None
+    judge_verdict: str | None = None
+    judge_reason: str | None = None
+
+
+class TraceDiffResponse(BaseModel):
+    """``GET /_apx/traces/diff?a=&b=`` — side-by-side request/response/judge."""
+
+    left: TraceDiffSide
+    right: TraceDiffSide
+
+
 # ── Wave 2 / PR-W2a: codegen file-ops writes (edit / preview / delete) ────────
 #
 # The first *request* models on source-mutating routes. These are un-hidden per
