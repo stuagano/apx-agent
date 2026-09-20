@@ -13,6 +13,20 @@ from httpx import ASGITransport, AsyncClient
 from apx_agent._dev import build_dev_ui_router
 
 
+@pytest.fixture(autouse=True)
+def _isolate_eval_route_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /_apx/eval/data serves a process-wide 5-minute TTL cache when
+    ``MLFLOW_EXPERIMENT_ID`` is set. Other tests in the full suite leave both
+    behind; neutralize them so these file-backed assertions stay hermetic."""
+    from apx_agent._dev import _EVAL_CASES_CACHE, _TRACES_LIST_CACHE
+
+    monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+    monkeypatch.setattr(_EVAL_CASES_CACHE, "put", lambda value: None)
+    monkeypatch.setattr(_TRACES_LIST_CACHE, "put", lambda value: None)
+    _EVAL_CASES_CACHE.clear()
+    _TRACES_LIST_CACHE.clear()
+
+
 @pytest.fixture
 def evals_path(tmp_path: Path) -> Path:
     """Patch _find_evals_path so the routes use a per-test temp file."""

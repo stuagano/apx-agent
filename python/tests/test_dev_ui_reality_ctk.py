@@ -38,6 +38,23 @@ from apx_agent._dev import build_dev_ui_router
 from apx_agent._models import AgentCard, ExampleWorkflow
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dev_ui_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Eval/trace list routes serve process-wide TTL caches, and traces also
+    merge the in-process ring buffer. Reset all three so a prior test in the
+    full ``make check`` worker cannot leak rows into these read-after-write
+    assertions."""
+    from apx_agent import _trace_store as ts
+    from apx_agent._dev import _EVAL_CASES_CACHE, _TRACES_LIST_CACHE
+
+    monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+    monkeypatch.setattr(_EVAL_CASES_CACHE, "put", lambda value: None)
+    monkeypatch.setattr(_TRACES_LIST_CACHE, "put", lambda value: None)
+    _EVAL_CASES_CACHE.clear()
+    _TRACES_LIST_CACHE.clear()
+    ts.reset()
+
+
 def _ctx(name: str) -> AgentContext:
     config = AgentConfig(name=name, model="claude-fake")
     card = AgentCard(name=name, description="", skills=[])
@@ -201,14 +218,8 @@ class TestTracesListReadAfterWrite:
     ) -> None:
         import mlflow
 
-        from apx_agent import _trace_store as ts
-        from apx_agent._dev import _EVAL_CASES_CACHE, _TRACES_LIST_CACHE
-        _EVAL_CASES_CACHE.clear()
-        _TRACES_LIST_CACHE.clear()
-
-        # Hermetic: local file backend, fresh ring buffer (the route merges
-        # buffer entries into the list — reset so no prior test leaks in).
-        ts.reset()
+        # Hermetic: local file backend, pinned experiment. Caches / ring
+        # buffer are reset by ``_isolate_dev_ui_caches``.
         mlflow.set_tracking_uri(f"file://{tmp_path}")
         exp_id = mlflow.create_experiment(f"apx-traces-{tmp_path.name}")
         mlflow.set_experiment(experiment_id=exp_id)
@@ -405,10 +416,6 @@ class TestEvalDataReadAfterWrite:
     async def test_posted_cases_read_back_through_get_route(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from apx_agent._dev import _EVAL_CASES_CACHE, _TRACES_LIST_CACHE
-        _EVAL_CASES_CACHE.clear()
-        _TRACES_LIST_CACHE.clear()
-        monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
         target = tmp_path / "evals.json"
         # Hermetic: point the route's evals.json at a temp file (no agent_router
         # resolution, no workspace write — workspace_client is unset).
@@ -480,10 +487,6 @@ class TestEvalGetShapes:
     async def test_eval_data_get_returns_json_list(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from apx_agent._dev import _EVAL_CASES_CACHE, _TRACES_LIST_CACHE
-        _EVAL_CASES_CACHE.clear()
-        _TRACES_LIST_CACHE.clear()
-        monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
         target = tmp_path / "evals.json"
         target.write_text(json.dumps([{"question": "q1", "expected": "a"}]))
         monkeypatch.setattr("apx_agent._dev._find_evals_path", lambda: target)
