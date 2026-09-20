@@ -71,6 +71,7 @@ from ._apx_models import (
     TopologyTracingSetResponse,
     TopologyDigestResponse,
     LastRouteResponse,
+    LatencyTrendResponse,
     TraceDetailResponse,
     TraceRow,
     VsIndexInfo,
@@ -1746,6 +1747,36 @@ async def _fetch_traces_list_async(experiment_id: str | None, max_results: int) 
     return await loop.run_in_executor(None, _fetch_traces_list_sync, experiment_id, max_results)
 
 
+_LATENCY_TREND_WINDOW = 20
+
+
+def _latency_trend(rows: list[dict[str, Any]], *, window: int = _LATENCY_TREND_WINDOW) -> dict[str, Any]:
+    """p50/p95 + chronological sparkline points from trace-list rows.
+
+    Trace list is newest-first; the polyline needs oldest → newest so a
+    left-to-right sparkline tracks latency as instructions change. Rows
+    without ``duration_ms`` (ring-buffer-only merges) are dropped.
+    """
+    from ._canary import _percentile
+
+    durs: list[int] = []
+    for row in rows:
+        dur = row.get("duration_ms") if isinstance(row, dict) else None
+        if isinstance(dur, bool) or not isinstance(dur, int):
+            continue
+        durs.append(dur)
+        if len(durs) >= window:
+            break
+    points = list(reversed(durs))
+    ranked = sorted(points)
+    return {
+        "p50_ms": _percentile(ranked, 50),
+        "p95_ms": _percentile(ranked, 95),
+        "points": points,
+        "n": len(points),
+    }
+
+
 async def _refresh_eval_cache(experiment_id: str) -> None:
     """Background task: refresh eval cases cache silently."""
     try:
@@ -2117,6 +2148,38 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             )
 
         return _last_route_payload(ctx)
+
+    @router.get("/_apx/traces/latency", response_model=LatencyTrendResponse)
+    async def traces_latency_trend(request: Request) -> Any:
+        """p50/p95 + last-20 ``duration_ms`` for the Chat landing sparkline.
+
+        Registered before ``/_apx/traces/{trace_id:path}`` so ``latency`` is
+        not captured as a trace id. Reuses ``_TRACES_LIST_CACHE`` — no second
+        MLflow query, no third TTL cache.
+        """
+        experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+        if not experiment_id:
+            return JSONResponse(
+                {"error": "MLFLOW_EXPERIMENT_ID not set"}, status_code=503
+            )
+
+        if _TRACES_LIST_CACHE.fresh:
+            rows = list(_TRACES_LIST_CACHE.get())
+        else:
+            cached_rows = _TRACES_LIST_CACHE.get()
+            if cached_rows is not None and not _TRACES_LIST_CACHE._refreshing:
+                _TRACES_LIST_CACHE._refreshing = True
+                asyncio.create_task(_refresh_traces_cache(experiment_id, 50))
+                rows = list(cached_rows)
+            elif cached_rows is None:
+                # Fetch the traces-list default (50), not the sparkline
+                # window — putting 20 rows here would starve GET /_apx/traces.
+                rows = await _fetch_traces_list_async(experiment_id, 50)
+                _TRACES_LIST_CACHE.put(rows)
+            else:
+                rows = list(cached_rows)
+
+        return _latency_trend(rows)
 
     @router.get("/_apx/traces/{trace_id:path}", response_model=TraceDetailResponse)
     async def trace_detail_ui(trace_id: str, request: Request) -> Any:

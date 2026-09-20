@@ -696,6 +696,20 @@ class LastRouteResponse(BaseModel):
     span_count: int = 0
 
 
+class LatencyTrendResponse(BaseModel):
+    """``GET /_apx/traces/latency`` — p50/p95 + last-20 ``duration_ms`` sparkline.
+
+    ``points`` is chronological (oldest → newest) so a left-to-right polyline
+    tracks latency as instructions change. ``p50_ms`` / ``p95_ms`` are None
+    when no traces carry a duration.
+    """
+
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    points: list[int] = []
+    n: int = 0
+
+
 # ── Wave 2 / PR-W2a: codegen file-ops writes (edit / preview / delete) ────────
 #
 # The first *request* models on source-mutating routes. These are un-hidden per

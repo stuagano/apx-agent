@@ -717,6 +717,26 @@ def _render_landing(ctx: AgentContext) -> str:
     if desc:
         parts.append(f'<div class="landing-sub">{_html.escape(desc)}</div>')
 
+    parts.append(
+        '<div id="latency-spark" hidden>'
+        '<div class="landing-label">Latency</div>'
+        '<div class="latency-spark-card">'
+        '<div id="latency-spark-empty" class="latency-spark-empty" hidden>No traces yet</div>'
+        '<div id="latency-spark-body" hidden>'
+        '<svg id="latency-spark-svg" viewBox="0 0 240 36" width="240" height="36" '
+        'aria-hidden="true" preserveAspectRatio="none">'
+        '<polyline id="latency-spark-line" fill="none" stroke="#60b0ff" '
+        'stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points=""/>'
+        '</svg>'
+        '<div class="data-pills">'
+        '<span class="data-pill" id="latency-p50">p50 —</span>'
+        '<span class="data-pill" id="latency-p95">p95 —</span>'
+        '</div>'
+        '</div>'
+        '</div>'
+        '</div>'
+    )
+
     schema = getattr(ctx, "schema", None)
     if schema and isinstance(schema.get("tables"), dict) and schema["tables"]:
         schema_name = schema.get("schema", "") or schema.get("catalog", "")
@@ -1169,6 +1189,15 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
   .workflow-title {{ color: #d8f3df; font-weight: 600; }}
   .workflow-purpose {{ color: #8a929b; font-size: 11px; }}
   .workflow-question {{ color: #bfe9cf; font-size: 12px; }}
+  #latency-spark[hidden],
+  #latency-spark-empty[hidden],
+  #latency-spark-body[hidden] {{ display: none; }}
+  .latency-spark-card {{ background: #0e1116; border: 1px solid #1f242b; border-radius: 10px;
+                padding: 12px 14px; margin: 10px 0; max-width: 680px;
+                display: flex; flex-direction: column; gap: 8px; }}
+  .latency-spark-empty {{ font-size: 12px; color: #6b7280; }}
+  #latency-spark-svg {{ display: block; width: 100%; max-width: 240px; height: 36px; }}
+  #latency-p50, #latency-p95 {{ color: #8a929b; }}
 
   /* Compact embed mode for topology's right rail. Same chat implementation,
      without the standalone page chrome or side-by-side desktop split. */
@@ -1972,6 +2001,37 @@ let apxMemoryTable = '';
         const tsSpan = ts ? `<span class="cap-mem-row-ts">${{ts}}</span>` : '';
         return `<div class="cap-mem-row" title="${{m.content.replace(/"/g, '&quot;')}}">${{m.content}}${{tsSpan}}</div>`;
       }}).join('');
+    }}
+  }} catch {{}}
+  // p50/p95 sparkline of the last 20 trace durations on empty-chat landing.
+  try {{
+    const mount = document.getElementById('latency-spark');
+    if (mount) {{
+      const r = await fetch('/_apx/traces/latency', {{headers: {{'Accept': 'application/json'}}}});
+      if (r.ok) {{
+        const d = await r.json();
+        const pts = Array.isArray(d.points) ? d.points.filter(v => typeof v === 'number' && isFinite(v)) : [];
+        mount.hidden = false;
+        const empty = document.getElementById('latency-spark-empty');
+        const body = document.getElementById('latency-spark-body');
+        if (!pts.length) {{
+          empty.hidden = false;
+          body.hidden = true;
+        }} else {{
+          empty.hidden = true;
+          body.hidden = false;
+          const lo = Math.min(...pts), hi = Math.max(...pts), span = hi - lo || 1;
+          const line = pts.map((v, i) => {{
+            const x = pts.length === 1 ? 120 : (i / (pts.length - 1)) * 240;
+            const y = 34 - ((v - lo) / span) * 32;
+            return x.toFixed(1) + ',' + y.toFixed(1);
+          }}).join(' ');
+          document.getElementById('latency-spark-line').setAttribute('points', line);
+          const fmt = (n) => n == null ? '—' : (n >= 1000 ? (n / 1000).toFixed(1) + 's' : Math.round(n) + 'ms');
+          document.getElementById('latency-p50').textContent = 'p50 ' + fmt(d.p50_ms);
+          document.getElementById('latency-p95').textContent = 'p95 ' + fmt(d.p95_ms);
+        }}
+      }}
     }}
   }} catch {{}}
 }})();
