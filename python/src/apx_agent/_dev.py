@@ -71,6 +71,8 @@ from ._apx_models import (
     TopologyTracingSetResponse,
     TopologyDigestResponse,
     LastRouteResponse,
+    LatencyTrendResponse,
+    ToolFailRateResponse,
     TraceDetailResponse,
     TraceRow,
     VsIndexInfo,
@@ -291,6 +293,11 @@ _TRACE_CSS = """
   td a{color:var(--accent);text-decoration:none;}
   td a:hover{text-decoration:underline;}
   .st-ok{color:#4ade80;} .st-err{color:#f87171;} .st-run{color:#facc15;}
+  .tool-fails-card{display:flex;flex-wrap:wrap;gap:8px 14px;padding:10px 12px;
+                   margin:0 0 12px;background:#0e1116;border:1px solid #1f242b;
+                   border-radius:10px;font-size:12px;}
+  #tool-fails[hidden]{display:none;}
+  .tool-fail{font-family:monospace;}
   .preview{max-width:360px;overflow:hidden;text-overflow:ellipsis;
            white-space:nowrap;color:var(--muted);}
   .dur{font-family:monospace;color:var(--muted);white-space:nowrap;}
@@ -482,6 +489,26 @@ document.addEventListener('DOMContentLoaded', async () => {{
     document.getElementById('traces-body').innerHTML =
       '<p class="empty">Failed to load traces: ' + e.message + '</p>';
   }}
+  try {{
+    const mount = document.getElementById('tool-fails');
+    if (mount) {{
+      const fr = await fetch('/_apx/traces/tool-fails', {{headers: {{'Accept': 'application/json'}}}});
+      if (fr.ok) {{
+        const d = await fr.json();
+        const tools = Array.isArray(d.tools) ? d.tools : [];
+        if (tools.length) {{
+          mount.hidden = false;
+          mount.innerHTML = tools.map(t => {{
+            const name = esc(t.name);
+            const failed = typeof t.failed === 'number' ? t.failed : 0;
+            const total = typeof t.total === 'number' ? t.total : 0;
+            const cls = failed > 0 ? 'st-err' : 'st-ok';
+            return '<span class="tool-fail ' + cls + '">' + name + ': ' + failed + '/' + total + ' failed</span>';
+          }}).join('');
+        }}
+      }}
+    }}
+  }} catch {{}}
 }});
 </script>
 </head><body>
@@ -489,7 +516,10 @@ document.addEventListener('DOMContentLoaded', async () => {{
   <span class="badge">APX</span><h1>{_html.escape(title)}</h1>
   <a class="back" href="/_apx/agent">← Agent</a>
 </header>
-<main>{body}</main>
+<main>
+  <div id="tool-fails" class="tool-fails-card" hidden></div>
+  {body}
+</main>
 </body></html>"""
 
 
@@ -1746,6 +1776,77 @@ async def _fetch_traces_list_async(experiment_id: str | None, max_results: int) 
     return await loop.run_in_executor(None, _fetch_traces_list_sync, experiment_id, max_results)
 
 
+_LATENCY_TREND_WINDOW = 20
+
+
+def _latency_trend(rows: list[dict[str, Any]], *, window: int = _LATENCY_TREND_WINDOW) -> dict[str, Any]:
+    """p50/p95 + chronological sparkline points from trace-list rows.
+
+    Trace list is newest-first; the polyline needs oldest → newest so a
+    left-to-right sparkline tracks latency as instructions change. Rows
+    without ``duration_ms`` (ring-buffer-only merges) are dropped.
+    """
+    from ._canary import _percentile
+
+    durs: list[int] = []
+    for row in rows:
+        dur = row.get("duration_ms") if isinstance(row, dict) else None
+        if isinstance(dur, bool) or not isinstance(dur, int):
+            continue
+        durs.append(dur)
+        if len(durs) >= window:
+            break
+    points = list(reversed(durs))
+    ranked = sorted(points)
+    return {
+        "p50_ms": _percentile(ranked, 50),
+        "p95_ms": _percentile(ranked, 95),
+        "points": points,
+        "n": len(points),
+    }
+
+
+def _tool_fail_rates(spans_by_trace: list[list[dict[str, Any]]]) -> dict[str, Any]:
+    """Aggregate TOOL/RETRIEVER span fail rates from ring-buffer traces.
+
+    Fail matches the list-row ``st-err`` test (``ERR`` / ``FAIL`` substring)
+    so serialized ``ERROR`` / ``STATUS_CODE_ERROR`` both count. LLM / CHAIN
+    / AGENT spans are ignored because they would drown the strip.
+    """
+    failed_counts: dict[str, int] = {}
+    total_counts: dict[str, int] = {}
+    for spans in spans_by_trace:
+        if not isinstance(spans, list):
+            continue
+        for span in spans:
+            if not isinstance(span, dict):
+                continue
+            span_type = span.get("span_type")
+            if not isinstance(span_type, str):
+                continue
+            if _span_type_css(span_type) != "TOOL":
+                continue
+            name = span.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            status = span.get("status")
+            status_u = status.upper() if isinstance(status, str) else ""
+            total_counts[name] = total_counts.get(name, 0) + 1
+            if "ERR" in status_u or "FAIL" in status_u:
+                failed_counts[name] = failed_counts.get(name, 0) + 1
+    tools = [
+        {
+            "name": name,
+            "failed": failed_counts.get(name, 0),
+            "total": total,
+        }
+        for name, total in total_counts.items()
+        if total > 0
+    ]
+    tools.sort(key=lambda row: (-int(row["failed"]), str(row["name"])))
+    return {"tools": tools, "n_traces": len(spans_by_trace)}
+
+
 async def _refresh_eval_cache(experiment_id: str) -> None:
     """Background task: refresh eval cases cache silently."""
     try:
@@ -2117,6 +2218,56 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             )
 
         return _last_route_payload(ctx)
+
+    @router.get("/_apx/traces/latency", response_model=LatencyTrendResponse)
+    async def traces_latency_trend(request: Request) -> Any:
+        """p50/p95 + last-20 ``duration_ms`` for the Chat landing sparkline.
+
+        Registered before ``/_apx/traces/{trace_id:path}`` so ``latency`` is
+        not captured as a trace id. Reuses ``_TRACES_LIST_CACHE`` — no second
+        MLflow query, no third TTL cache.
+        """
+        experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+        if not experiment_id:
+            return JSONResponse(
+                {"error": "MLFLOW_EXPERIMENT_ID not set"}, status_code=503
+            )
+
+        if _TRACES_LIST_CACHE.fresh:
+            rows = list(_TRACES_LIST_CACHE.get())
+        else:
+            cached_rows = _TRACES_LIST_CACHE.get()
+            if cached_rows is not None and not _TRACES_LIST_CACHE._refreshing:
+                _TRACES_LIST_CACHE._refreshing = True
+                asyncio.create_task(_refresh_traces_cache(experiment_id, 50))
+                rows = list(cached_rows)
+            elif cached_rows is None:
+                # Fetch the traces-list default (50), not the sparkline
+                # window — putting 20 rows here would starve GET /_apx/traces.
+                rows = await _fetch_traces_list_async(experiment_id, 50)
+                _TRACES_LIST_CACHE.put(rows)
+            else:
+                rows = list(cached_rows)
+
+        return _latency_trend(rows)
+
+    @router.get("/_apx/traces/tool-fails", response_model=ToolFailRateResponse)
+    async def traces_tool_fails(request: Request) -> Any:
+        """Per-tool fail rate from the in-process span ring buffer.
+
+        Registered before ``/_apx/traces/{trace_id:path}`` so ``tool-fails``
+        is not captured as a trace id. Reads ``_trace_store`` only -- no
+        MLflow, no list-cache write.
+        """
+        from ._trace_store import get as _ts_get, list_recent as _ts_list
+
+        spans_by_trace: list[list[dict[str, Any]]] = []
+        for tid in _ts_list():
+            spans = _ts_get(tid)
+            if spans is None:
+                continue
+            spans_by_trace.append(spans)
+        return _tool_fail_rates(spans_by_trace)
 
     @router.get("/_apx/traces/{trace_id:path}", response_model=TraceDetailResponse)
     async def trace_detail_ui(trace_id: str, request: Request) -> Any:
