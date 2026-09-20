@@ -73,3 +73,28 @@ GET /_apx/feedback/tr-123
 
 Retries with the same `review_id` reuse the matching assessment on a
 best-effort basis. Submit a new review ID for a correction.
+
+## Align from submitted reviews
+
+`align_from_reviews.py` submits a small customer-neutral pair of reviews
+whose `label_name` equals the judge (`domain_quality`). After those
+assessments land on traces already tagged `apx.label.run`, align from
+the same cohort:
+
+```bash
+apx-agent label align \
+  --experiment <id> \
+  --judge domain_quality \
+  --run <run-id> \
+  --reflection-model databricks:/databricks-claude-sonnet-4-6 \
+  --embedding-model databricks:/databricks-gte-large-en \
+  --retrieval-k 5 \
+  --new-version domain_quality-v2
+```
+
+MemAlign is experimental. Give every label a natural-language rationale
+and include both positive and negative examples. `label align` rejects a
+name mismatch, missing HUMAN rationale, or a one-sided cohort before it
+calls MemAlign. Keep `--new-version` so the base judge remains available
+for rollback. This example does not run MemAlign itself.
+

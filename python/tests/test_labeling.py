@@ -3,8 +3,28 @@ import pytest
 import pandas as pd
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any
 from mlflow.genai import label_schemas as ls
 from apx_agent import _labeling
+
+def _human_assessment(name: str, value: Any, rationale: str = "labeled by reviewer") -> dict:
+    return {
+        "assessment_name": name,
+        "source": {"source_type": "HUMAN", "source_id": "reviewer"},
+        "feedback": {"value": value},
+        "rationale": rationale,
+    }
+
+
+def _align_trace(trace_id: str, value: Any, *, name: str = "j") -> SimpleNamespace:
+    return SimpleNamespace(
+        info=SimpleNamespace(
+            trace_id=trace_id,
+            assessments=[_human_assessment(name, value)],
+        )
+    )
+
+
 
 
 def _judge(name="domain_quality_base", ft=float, instr="rate {{ inputs }} {{ outputs }}"):
@@ -383,16 +403,17 @@ def test_align_judge_aligns_and_updates_in_place(monkeypatch):
                         lambda **kw: "OPT")  # bypass dspy import
     search_kw: dict = {}
 
-    trace_a = SimpleNamespace(info=SimpleNamespace(trace_id="trace-a"))
-    trace_b = SimpleNamespace(info=SimpleNamespace(trace_id="trace-b"))
+    trace_a = _align_trace("trace-a", True)
+    trace_b = _align_trace("trace-b", False)
 
     def fake_search(exp, **kw):
         search_kw.update(kw)
         return [trace_a, trace_b]
 
     monkeypatch.setattr(_labeling, "search_traces_for_experiment", fake_search)
-    # mlflow.get_trace: return the thin trace as-is (identity) — tests don't need spans
-    monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid)))
+    # mlflow.get_trace: return the thin traces with HUMAN labels the cohort gate needs.
+    fetched = {"trace-a": trace_a, "trace-b": trace_b}
+    monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: fetched[tid])
 
     logged: dict = {}
 
@@ -422,24 +443,17 @@ def test_align_judge_aligns_and_updates_in_place(monkeypatch):
 
 @pytest.mark.unit
 def test_align_judge_no_sme_labels_raises_friendly(monkeypatch):
-    # MemAlign raises MlflowException "No valid feedback records found" when the
-    # run's traces have no human/SME labels yet; align must turn that into a
-    # clear LabelingError pointing the user back to the Review App.
-    from mlflow.exceptions import MlflowException
-
-    def boom(**kw):
-        raise MlflowException(
-            "Alignment optimization failed: No valid feedback records found in traces.")
-
-    base = SimpleNamespace(is_session_level_scorer=False, align=boom)
-    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
+    # Unlabeled traces now fail in select_alignment_cohort before MemAlign.
     monkeypatch.setattr(_labeling, "_load_memalign", lambda **kw: "OPT")
-    thin = [SimpleNamespace(info=SimpleNamespace(trace_id="trace-a"))]
+    thin = [SimpleNamespace(info=SimpleNamespace(trace_id="trace-a", assessments=[]))]
     monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: thin)
-    monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid)))
-    monkeypatch.setattr(_labeling, "log_align_run", lambda **kw: None)
+    monkeypatch.setattr(
+        _labeling._mlflow,
+        "get_trace",
+        lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid, assessments=[])),
+    )
 
-    with pytest.raises(_labeling.LabelingError, match="no SME labels"):
+    with pytest.raises(_labeling.LabelingError, match="no HUMAN rationale/labels"):
         _labeling.align_judge(
             experiment_id="123", judge_name="j", run_id="r1",
             reflection_model="databricks:/m", embedding_model="databricks:/e",
@@ -470,10 +484,10 @@ def test_align_judge_new_version_makes_and_registers(monkeypatch):
     )
     monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
     monkeypatch.setattr(_labeling, "_load_memalign", lambda **kw: "OPT")
-    thin = [SimpleNamespace(info=SimpleNamespace(trace_id="trace-a")),
-            SimpleNamespace(info=SimpleNamespace(trace_id="trace-b"))]
+    thin = [_align_trace("trace-a", True), _align_trace("trace-b", False)]
     monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: thin)
-    monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: SimpleNamespace(info=SimpleNamespace(trace_id=tid)))
+    fetched = {"trace-a": thin[0], "trace-b": thin[1]}
+    monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: fetched[tid])
     monkeypatch.setattr("mlflow.genai.judges.make_judge", fake_make_judge)
     monkeypatch.setattr(_labeling, "log_align_run", lambda **kw: "align-v2")
 
@@ -490,6 +504,106 @@ def test_align_judge_new_version_makes_and_registers(monkeypatch):
     assert register_calls["experiment_id"] == "exp-42"
     assert res.guidelines == ["be very precise"]
 
+
+
+@pytest.mark.unit
+def test_select_alignment_cohort_keeps_matching_human_pair():
+    traces = [_align_trace("t1", True, name="domain_quality"),
+              _align_trace("t2", False, name="domain_quality")]
+    kept = _labeling.select_alignment_cohort(traces, judge_name="domain_quality")
+    assert [t.info.trace_id for t in kept] == ["t1", "t2"]
+
+
+@pytest.mark.unit
+def test_select_alignment_cohort_name_mismatch_raises():
+    traces = [
+        SimpleNamespace(info=SimpleNamespace(
+            trace_id="t1",
+            assessments=[
+                _human_assessment("other_judge", True),
+                {
+                    "assessment_name": "domain_quality",
+                    "source": {"source_type": "LLM_JUDGE", "source_id": "domain_quality"},
+                    "feedback": {"value": True},
+                    "rationale": "model score",
+                },
+            ],
+        )),
+    ]
+    with pytest.raises(_labeling.LabelingError, match=r"differs from judge"):
+        _labeling.select_alignment_cohort(traces, judge_name="domain_quality")
+
+
+@pytest.mark.unit
+def test_select_alignment_cohort_missing_rationale_raises():
+    traces = [
+        SimpleNamespace(info=SimpleNamespace(
+            trace_id="t1",
+            assessments=[_human_assessment("domain_quality", True, rationale="   ")],
+        )),
+        SimpleNamespace(info=SimpleNamespace(
+            trace_id="t2",
+            assessments=[{
+                "assessment_name": "domain_quality",
+                "source": {"source_type": "HUMAN", "source_id": "reviewer"},
+                "feedback": {"value": False},
+            }],
+        )),
+    ]
+    with pytest.raises(_labeling.LabelingError, match="no HUMAN rationale/labels"):
+        _labeling.select_alignment_cohort(traces, judge_name="domain_quality")
+
+
+@pytest.mark.unit
+def test_select_alignment_cohort_one_sided_labels_raises():
+    traces = [
+        _align_trace("t1", True, name="domain_quality"),
+        _align_trace("t2", True, name="domain_quality"),
+    ]
+    with pytest.raises(_labeling.LabelingError, match="diversity"):
+        _labeling.select_alignment_cohort(traces, judge_name="domain_quality")
+
+
+@pytest.mark.unit
+def test_select_alignment_cohort_llm_judge_only_raises():
+    traces = [
+        SimpleNamespace(info=SimpleNamespace(
+            trace_id="t1",
+            assessments=[{
+                "assessment_name": "domain_quality",
+                "source": {"source_type": "LLM_JUDGE", "source_id": "domain_quality"},
+                "feedback": {"value": True},
+                "rationale": "model score",
+            }],
+        )),
+    ]
+    with pytest.raises(_labeling.LabelingError, match="no HUMAN rationale/labels"):
+        _labeling.select_alignment_cohort(traces, judge_name="domain_quality")
+
+
+@pytest.mark.unit
+def test_align_judge_no_feedback_records_still_remaps(monkeypatch):
+    from mlflow.exceptions import MlflowException
+
+    def boom(**kw):
+        raise MlflowException(
+            "Alignment optimization failed: No valid feedback records found in traces.")
+
+    base = SimpleNamespace(is_session_level_scorer=False, align=boom)
+    monkeypatch.setattr(_labeling, "get_scorer", lambda **kw: base)
+    monkeypatch.setattr(_labeling, "_load_memalign", lambda **kw: "OPT")
+    thin = [_align_trace("trace-a", True), _align_trace("trace-b", False)]
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment", lambda exp, **kw: thin)
+    fetched = {"trace-a": thin[0], "trace-b": thin[1]}
+    monkeypatch.setattr(_labeling._mlflow, "get_trace", lambda tid: fetched[tid])
+    monkeypatch.setattr(_labeling, "log_align_run", lambda **kw: None)
+
+    with pytest.raises(_labeling.LabelingError, match="no SME labels"):
+        _labeling.align_judge(
+            experiment_id="123", judge_name="j", run_id="r1",
+            reflection_model="databricks:/m", embedding_model="databricks:/e",
+            retrieval_k=5, new_version=None,
+        )
 
 @pytest.mark.unit
 def test_set_uc_tags_includes_experiment_id():

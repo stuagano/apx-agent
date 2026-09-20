@@ -211,8 +211,14 @@ apx-agent label align \
   --new-version domain_quality-v2
 ```
 
-Alignment requires `apx-agent[align]`. It fails if the run has no human labels
-rather than silently producing an ungrounded judge.
+Alignment requires `apx-agent[align]`. External reviews join the same
+`apx.label.run` cohort through `traces feedback` or `POST /_apx/feedback`;
+there is no second annotation UI. `label align` rejects a feedback-name
+mismatch, missing HUMAN rationale, or a one-sided cohort before it calls
+MemAlign. MemAlign is experimental: give every label a natural-language
+rationale and include both positive and negative examples. `--new-version`
+keeps the base judge registered for rollback. Held-out comparison of the
+base and aligned judges remains a human step.
 
 ### 5. Validate and promote
 

@@ -71,3 +71,36 @@ def test_adapter_skips_reviews_outside_allowed_features() -> None:
 
     assert result is None
     assert calls == []
+
+
+def _load_align_from_reviews():
+    import sys
+
+    path = Path(__file__).parents[1] / "examples/trace-feedback-adapter/align_from_reviews.py"
+    assert path.exists(), "align_from_reviews example is missing"
+    example_dir = str(path.parent)
+    if example_dir not in sys.path:
+        sys.path.insert(0, example_dir)
+    spec = spec_from_file_location("align_from_reviews_example", path)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_align_from_reviews_payload_name_matches_judge() -> None:
+    module = _load_align_from_reviews()
+    calls = []
+    submitted = module.submit_alignment_reviews(
+        module.SAMPLE_REVIEWS,
+        allowed_features={"claims_search"},
+        post_feedback=lambda path, payload: calls.append((path, payload)) or {"ok": True},
+    )
+    assert submitted == [{"ok": True}, {"ok": True}]
+    assert {payload["name"] for _, payload in calls} == {module.JUDGE_NAME}
+    assert {payload["value"] for _, payload in calls} == {True, False}
+    assert all(isinstance(payload["comment"], str) and payload["comment"] for _, payload in calls)
+    command = module.align_command(experiment="123", run_id="domain_quality-run")
+    assert "--judge domain_quality" in command
+    assert "--new-version domain_quality-v2" in command
+
