@@ -710,6 +710,25 @@ class LatencyTrendResponse(BaseModel):
     n: int = 0
 
 
+class ToolFailCount(BaseModel):
+    """One tool's fail / total from the in-process span buffer."""
+
+    name: str
+    failed: int
+    total: int
+
+
+class ToolFailRateResponse(BaseModel):
+    """``GET /_apx/traces/tool-fails`` — per-tool fail rates on the traces list.
+
+    Sourced from ``_trace_store`` span dicts (``name`` / ``span_type`` /
+    ``status``). Empty buffer returns ``tools=[]`` and ``n_traces=0``.
+    """
+
+    tools: list[ToolFailCount] = []
+    n_traces: int = 0
+
+
 # ── Wave 2 / PR-W2a: codegen file-ops writes (edit / preview / delete) ────────
 #
 # The first *request* models on source-mutating routes. These are un-hidden per
