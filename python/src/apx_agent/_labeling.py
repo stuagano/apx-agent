@@ -11,9 +11,10 @@ align_judge so `label start` never requires the [align] extra.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,10 @@ except Exception:  # pragma: no cover
 
 RUN_TAG = "apx.label.run"
 EXPERIMENT_TAG = "apx.mlflow.experiment_id"
+ALIGN_KIND_TAG = "apx.kind"
+ALIGN_KIND_VALUE = "memalign"
+ALIGN_GUIDELINES_ARTIFACT = "guidelines.json"
+_ALIGN_PARAM_LIMIT = 500
 
 
 class LabelingError(Exception):
@@ -320,6 +325,210 @@ class AlignResult:
     judge_name: str
     guidelines: list[str]
     registered_as: str
+    run_id: str | None = None
+
+
+@dataclass
+class AlignHistoryRun:
+    run_id: str
+    start_time: str | None
+    judge_name: str
+    registered_as: str
+    trace_count: int
+    guidelines: list[str]
+    guideline_count: int
+
+
+def _mlflow_api(explicit: Any | None) -> Any:
+    if explicit is not None:
+        return explicit
+    if _mlflow is None:
+        raise LabelingError(
+            "alignment history requires mlflow. Install with: pip install 'apx-agent[eval]'"
+        )
+    return _mlflow
+
+
+def _guidelines_param(guidelines: list[str]) -> str | None:
+    payload = json.dumps(guidelines, ensure_ascii=False)
+    if len(payload) <= _ALIGN_PARAM_LIMIT:
+        return payload
+    return None
+
+
+def _start_time_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 1e12:
+            ts = ts / 1000.0
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    return str(value)
+
+
+def _records_from_search(runs_df: Any) -> list[dict[str, Any]]:
+    if hasattr(runs_df, "to_dict"):
+        return list(runs_df.to_dict(orient="records"))
+    records: list[dict[str, Any]] = []
+    for item in runs_df or []:
+        if hasattr(item, "info"):
+            info = item.info
+            data = item.data if hasattr(item, "data") else None
+            params = data.params if data is not None and hasattr(data, "params") else {}
+            tags = data.tags if data is not None and hasattr(data, "tags") else {}
+            records.append({
+                "run_id": info.run_id,
+                "start_time": info.start_time if hasattr(info, "start_time") else None,
+                "params.judge_name": params.get("judge_name"),
+                "params.registered_as": params.get("registered_as"),
+                "params.trace_count": params.get("trace_count"),
+                "params.guideline_count": params.get("guideline_count"),
+                "params.guidelines_json": params.get("guidelines_json"),
+                "tags.apx.kind": tags.get(ALIGN_KIND_TAG),
+            })
+        elif isinstance(item, dict):
+            records.append(item)
+    return records
+
+
+def _guidelines_from_record(rec: dict[str, Any], api: Any) -> list[str]:
+    raw = rec.get("params.guidelines_json")
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    run_id = rec.get("run_id")
+    if not run_id:
+        return []
+    artifacts = api.artifacts if hasattr(api, "artifacts") else None
+    if artifacts is None or not hasattr(artifacts, "load_dict"):
+        return []
+    try:
+        loaded = artifacts.load_dict(f"runs:/{run_id}/{ALIGN_GUIDELINES_ARTIFACT}")
+    except Exception as exc:
+        logger.warning("label history: could not load guidelines for run %s: %s", run_id, exc)
+        return []
+    if isinstance(loaded, dict):
+        parsed = loaded.get("guidelines")
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    if isinstance(loaded, list):
+        return [str(item) for item in loaded]
+    return []
+
+
+def log_align_run(
+    *,
+    experiment_id: str,
+    judge_name: str,
+    registered_as: str,
+    trace_count: int,
+    guidelines: list[str],
+    mlflow_api: Any | None = None,
+) -> str | None:
+    """Persist a successful MemAlign as a filterable MLflow run.
+
+    Tags the run ``apx.kind=memalign`` so eval history can find it without
+    mixing in ``eval run`` metric rows. Long guideline lists live in the
+    ``guidelines.json`` artifact because MLflow params are capped at 500
+    characters; a short JSON copy is also logged as a param when it fits.
+    Persistence failures are logged and return None — they must not undo
+    an alignment that already succeeded.
+    """
+    try:
+        api = _mlflow_api(mlflow_api)
+    except LabelingError as exc:
+        logger.warning("label align: not persisted (%s)", exc)
+        return None
+    params: dict[str, str] = {
+        "judge_name": judge_name,
+        "registered_as": registered_as,
+        "trace_count": str(trace_count),
+        "guideline_count": str(len(guidelines)),
+    }
+    compact = _guidelines_param(guidelines)
+    if compact is not None:
+        params["guidelines_json"] = compact
+    start_kw: dict[str, Any] = {
+        "experiment_id": experiment_id,
+        "run_name": f"memalign-{judge_name}",
+    }
+    if hasattr(api, "active_run") and api.active_run() is not None:
+        start_kw["nested"] = True
+    try:
+        with api.start_run(**start_kw) as run:
+            if hasattr(api, "set_tag"):
+                api.set_tag(ALIGN_KIND_TAG, ALIGN_KIND_VALUE)
+            if hasattr(api, "log_params"):
+                api.log_params(params)
+            if hasattr(api, "log_dict"):
+                api.log_dict({"guidelines": guidelines}, ALIGN_GUIDELINES_ARTIFACT)
+            info = run.info if hasattr(run, "info") else None
+            if info is not None and hasattr(info, "run_id"):
+                return str(info.run_id)
+    except Exception as exc:
+        logger.warning("label align: failed to persist memalign run: %s", exc)
+        return None
+    return None
+
+
+def list_align_runs(
+    *,
+    experiment_id: str,
+    judge_name: str | None = None,
+    max_results: int = 50,
+    mlflow_api: Any | None = None,
+) -> list[AlignHistoryRun]:
+    """Return MemAlign runs newest-first, optionally filtered by judge."""
+    api = _mlflow_api(mlflow_api)
+    filters = [f'tags.{ALIGN_KIND_TAG} = "{ALIGN_KIND_VALUE}"']
+    if judge_name:
+        safe = judge_name.replace("\\", "\\\\").replace('"', '\\"')
+        filters.append(f'params.judge_name = "{safe}"')
+    if not hasattr(api, "search_runs"):
+        raise LabelingError("mlflow.search_runs is not available")
+    runs_df = api.search_runs(
+        experiment_ids=[experiment_id],
+        filter_string=" and ".join(filters),
+        order_by=["start_time DESC"],
+        max_results=max_results,
+    )
+    history: list[AlignHistoryRun] = []
+    for rec in _records_from_search(runs_df):
+        run_id = rec.get("run_id")
+        if not run_id:
+            continue
+        guidelines = _guidelines_from_record(rec, api)
+        count_raw = rec.get("params.guideline_count")
+        try:
+            guideline_count = int(count_raw) if count_raw is not None and count_raw != "" else len(guidelines)
+        except (TypeError, ValueError):
+            guideline_count = len(guidelines)
+        trace_raw = rec.get("params.trace_count")
+        try:
+            trace_count = int(trace_raw) if trace_raw is not None and trace_raw != "" else 0
+        except (TypeError, ValueError):
+            trace_count = 0
+        judge = rec.get("params.judge_name")
+        registered = rec.get("params.registered_as")
+        history.append(
+            AlignHistoryRun(
+                run_id=str(run_id),
+                start_time=_start_time_str(rec.get("start_time")),
+                judge_name=str(judge) if judge is not None else "",
+                registered_as=str(registered) if registered is not None else "",
+                trace_count=trace_count,
+                guidelines=guidelines,
+                guideline_count=guideline_count if guideline_count else len(guidelines),
+            )
+        )
+    return history
 
 
 def _load_memalign(*, reflection_model: str, embedding_model: str, retrieval_k: int) -> Any:
@@ -435,4 +644,16 @@ def align_judge(
         )
         registered_as = str(getattr(updated, "name", judge_name))
 
-    return AlignResult(judge_name=judge_name, guidelines=guidelines, registered_as=registered_as)
+    run_id = log_align_run(
+        experiment_id=experiment_id,
+        judge_name=judge_name,
+        registered_as=registered_as,
+        trace_count=len(traces),
+        guidelines=guidelines,
+    )
+    return AlignResult(
+        judge_name=judge_name,
+        guidelines=guidelines,
+        registered_as=registered_as,
+        run_id=run_id,
+    )
