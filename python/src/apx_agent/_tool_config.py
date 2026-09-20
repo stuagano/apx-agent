@@ -113,6 +113,7 @@ def _registry() -> dict[str, Callable[..., Any]]:
         jobs_tools,
     )
     from .mcp_consume import mcp_tool, mcp_toolkit
+    from .document_extract import document_extract_tool
     from .sql_tools import sql_tool
     from .uc_comment import uc_comment_tool
     from .vector_search import vector_search_tool
@@ -128,6 +129,7 @@ def _registry() -> dict[str, Callable[..., Any]]:
         "schema": schema_tool,
         "lineage": lineage_tool,
         "sql": sql_tool,
+        "document_extract": document_extract_tool,
         "http": http_tool,
         "openapi": openapi_tool,
         "mcp_tool": mcp_tool,

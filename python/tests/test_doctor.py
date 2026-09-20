@@ -434,6 +434,21 @@ class TestCheckDeclaredTools:
         assert checks[0].status is Status.OK
         ws.warehouses.get.assert_called_once_with(id="wh-abc")
 
+    def test_document_extract_warehouse_found(self, tmp_path):
+        self._project(
+            tmp_path,
+            "\n[[tool.apx.tools]]\ntype = 'document_extract'\n"
+            "warehouse_id = 'wh-abc'\n"
+            "volume = 'main.contracts.raw_contracts'\n"
+            "schema = 'schemas/contract.json'\n",
+        )
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        assert checks[0].status is Status.OK
+        ws.warehouses.get.assert_called_once_with(id="wh-abc")
+
+
     def test_sql_no_warehouse_id_skipped(self, tmp_path):
         """sql_tool without warehouse_id is valid config — nothing to validate."""
         self._project(
