@@ -136,6 +136,7 @@ These are pre-built tools for the Databricks platform. Each factory returns a re
 | `genie_tool(space_id)` | Ask a natural-language question to a Genie space | `DatabricksGenieSpace` |
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
 | `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse | `DatabricksSQLWarehouse` |
+| `document_extract_tool(warehouse_id=..., volume=..., schema=...)` | Parse a UC volume file with `ai_parse_document` and extract a committed schema via `ai_extract` | `DatabricksSQLWarehouse` |
 | `foundation_model_tool(endpoint)` | Ask a Foundation Model endpoint — agent-to-model routing | `DatabricksServingEndpoint` |
 | `lineage_tool()` | Get upstream/downstream lineage for a UC table | — |
 | `schema_tool()` | Describe columns of a UC table | — |
@@ -284,6 +285,13 @@ space_id = "space-abc"
 [[tool.apx.tools]]
 type = "sql"
 warehouse_id = "wh-prod"
+
+[[tool.apx.tools]]
+type = "document_extract"
+warehouse_id = "$SQL_WAREHOUSE_ID"
+volume = "main.contracts.raw_contracts"
+schema = "schemas/contract.json"
+name = "extract_contract"
 ```
 
 Use code when the tool needs custom logic; use config for plain resource references you'd rather keep out of the agent module. See [`[[tool.apx.tools]]`](../reference/configuration.md#declarative-tools--toolapxtools) for the full schema.

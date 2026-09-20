@@ -93,7 +93,7 @@ type = "sql"
 warehouse_id = "$SQL_WAREHOUSE_ID"
 ```
 
-`type` accepts any platform factory: `genie`, `genie_query`, `vector_search`, `uc_function`, `uc_function_toolkit`, `catalog`, `schema`, `lineage`, `sql`, `http`, `openapi`, `mcp_tool`, `mcp_toolkit`, `foundation_model`, `jobs`, `jobs_for_table`, `jobs_history`, `jobs_logs`, `jobs_source_paths`, `uc_comment_writer`. (`uc_function_toolkit`, `jobs`, and `mcp_toolkit` each return several tools.)
+`type` accepts any platform factory: `genie`, `genie_query`, `vector_search`, `uc_function`, `uc_function_toolkit`, `catalog`, `schema`, `lineage`, `sql`, `document_extract`, `http`, `openapi`, `mcp_tool`, `mcp_toolkit`, `foundation_model`, `jobs`, `jobs_for_table`, `jobs_history`, `jobs_logs`, `jobs_source_paths`, `uc_comment_writer`. (`uc_function_toolkit`, `jobs`, and `mcp_toolkit` each return several tools.)
 
 Config tools are **additive** and are merged onto the agent on every runtime — serve, deploy/log, model-serving predict, and `apx-agent agents describe` / `eval lint` / `eval`. Their resource grants (Genie space, warehouse, …) are auto-declared at log time, exactly like code-wired tools. A code-wired tool with the same `name` wins (the config entry is ignored, with a warning), so config is purely additive over code.
 
@@ -102,6 +102,32 @@ Config tools are **additive** and are merged onto the agent on every runtime —
 - `APX_TOOLS_ALLOWED_HOSTS` — comma-separated host allow-list. When set, `openapi` / `mcp_tool` / `mcp_toolkit` tools may only point at those hosts; an out-of-list host is a hard error. Unset (the default) means no restriction.
 - `APX_TOOLS_STRICT=1` — promote a tool whose factory fails at load time (e.g. an unreachable MCP server) to a hard error. The default is to skip that tool with a warning so one bad endpoint doesn't take the whole agent down.
 - `APX_DEV_UI_TOKEN` — optional shared secret for **non-browser** Dev UI writes (CI / curl). On deployed Apps, browser writes are authorized by Apps SSO (`X-Forwarded-Access-Token`). When this token is set, `X-APX-Dev-Token` (or `?token=`) is also accepted. Locally (not a deployed App), writes are allowed without either.
+
+### `type = "document_extract"` — parse a volume file, extract a schema
+
+Compiles `ai_parse_document` then `ai_extract` against a required SQL warehouse.
+The LLM supplies a path *inside* the declared Unity Catalog volume; APX binds
+that full `/Volumes/...` path and the committed extract schema. There is no
+App-side PDF parse and no PyMuPDF / vision fallback.
+
+```toml
+[[tool.apx.tools]]
+type = "document_extract"
+warehouse_id = "$SQL_WAREHOUSE_ID"
+volume = "main.contracts.raw_contracts"
+schema = "schemas/contract.json"
+name = "extract_contract"
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `warehouse_id` | yes | SQL warehouse that can run `ai_parse_document` / `ai_extract` |
+| `volume` | yes | Unity Catalog volume as `catalog.schema.volume` |
+| `schema` | yes | JSON Schema object, JSON-object string, or repo-relative path to one |
+| `name` | no | Tool name exposed to the LLM (default: `"extract_document"`) |
+| `description` | no | Override the auto-generated tool description |
+
+See [`document_extract_tool`](../tools/overview.md#built-in-tools--databricks-platform-factories) and the [design note](../design/declared-document-handling.md).
 
 ### `type = "uc_comment_writer"` — governed UC COMMENT writes
 

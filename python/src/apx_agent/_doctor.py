@@ -1050,7 +1050,7 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
 
     checks: list[Check] = []
 
-    _RESOURCE_TYPES = {"genie", "genie_query", "vector_search", "uc_function", "uc_function_toolkit", "sql"}
+    _RESOURCE_TYPES = {"genie", "genie_query", "vector_search", "uc_function", "uc_function_toolkit", "sql", "document_extract"}
     resource_tables = [t for t in tables if t.get("type") in _RESOURCE_TYPES]
     if not resource_tables and not session_warehouse:
         return []
@@ -1168,9 +1168,16 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
                     f"Confirm {catalog_schema!r} exists and your principal has USE SCHEMA.",
                 ))
 
-        elif typ == "sql":
+        elif typ in ("sql", "document_extract"):
             warehouse_id = table.get("warehouse_id", "")
             if not warehouse_id:
+                if typ == "document_extract":
+                    checks.append(Check(
+                        "Document extract warehouse",
+                        Status.WARN,
+                        "warehouse_id missing in [[tool.apx.tools]]",
+                        "Add warehouse_id to the document_extract tool config.",
+                    ))
                 continue  # warehouse_id is optional for sql_tool — skip silently
             try:
                 ws.warehouses.get(id=warehouse_id)

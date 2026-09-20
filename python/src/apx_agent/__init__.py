@@ -96,6 +96,7 @@ from .uc_comment import uc_comment_tool
 # Platform tool factories
 from .vector_search import vector_search_tool
 from .sql_tools import sql_tool
+from .document_extract import document_extract_tool
 from .http_tools import http_tool, openapi_tool
 from .mcp_consume import mcp_tool, mcp_toolkit
 from .foundation_model import foundation_model_tool
@@ -524,6 +525,7 @@ __all__ = [
     "uc_comment_tool",
     "vector_search_tool",
     "sql_tool",
+    "document_extract_tool",
     "http_tool",
     "openapi_tool",
     "mcp_tool",
