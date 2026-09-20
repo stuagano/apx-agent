@@ -86,8 +86,12 @@ def test_scaffold_apps_creates_expected_file_tree(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_apps_databricks_yml_is_valid_yaml(tmp_path: Path) -> None:
+def test_scaffold_apps_databricks_yml_is_valid_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``databricks.yml`` parses as YAML and lists the bundle's app + experiment."""
+    monkeypatch.delenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", raising=False)
+    monkeypatch.setattr("apx_agent.cli._make_ws_for_scaffold", lambda profile: None)
     runner = CliRunner()
     result = runner.invoke(
         main,
