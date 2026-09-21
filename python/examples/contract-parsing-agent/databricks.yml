@@ -67,6 +67,8 @@ resources:
             value: databricks
           - name: MLFLOW_EXPERIMENT_ID
             value: ${var.mlflow_experiment_id}
+          - name: SQL_WAREHOUSE_ID
+            value: ${var.sql_warehouse_id}
           - name: MLFLOW_TRACING_SQL_WAREHOUSE_ID
             value: ${var.sql_warehouse_id}
           - name: MLFLOW_TRACING_DESTINATION

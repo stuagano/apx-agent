@@ -158,8 +158,8 @@ retire the contract-parsing anti-pattern.
 2. Register `type = "document_extract"` in `_tool_config._registry()`.
 3. Unit-test declaration parse, path-escape, and "no fallback" error copy
    with a fake warehouse. No live `ai_parse_document` in CI.
-4. Point `docs/tools/overview.md` at the factory. Leave the examples
-   unwired until the factory exists.
+4. Point `docs/tools/overview.md` at the factory. The factory shipped in
+   `#796`; the two example agents now call it instead of App-side PDF parse.
 
 Held-out FP/FN on extraction quality is a later human/eval step, same as
 MemAlign (#709).

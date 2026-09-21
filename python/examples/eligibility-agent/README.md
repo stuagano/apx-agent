@@ -2,7 +2,7 @@
 
 An AI agent that assesses program eligibility from uploaded documents — W-2s, paystubs, and residency proof — using Federal Poverty Level thresholds and an auditable reasoning trail.
 
-Demonstrates a single `LlmAgent` driving a six-tool pipeline: document ingestion from UC Volumes via multimodal vision, income aggregation, residency verification, FPL-tier decision, and audit output.
+Demonstrates a single `LlmAgent` driving a six-tool pipeline: document ingestion from UC Volumes via `document_extract`, income aggregation, residency verification, FPL-tier decision, and audit output.
 
 ---
 
@@ -11,7 +11,7 @@ Demonstrates a single `LlmAgent` driving a six-tool pipeline: document ingestion
 The agent runs six tools in order:
 
 1. **`get_household`** — looks up the household record (size, names, residence address) from Unity Catalog
-2. **`parse_documents`** — downloads each application PDF from a UC Volume, renders page 1, and extracts structured fields via Claude vision (W-2 wages, paystub gross pay, residency address/date)
+2. **`parse_documents`** — lists each application PDF in the documents volume and extracts a type-specific schema via `document_extract` (`ai_parse_document` + `ai_extract`) — W-2 wages, paystub gross pay, residency address/date
 3. **`compute_income`** — aggregates annual household income; prefers W-2 over paystub annualisation; flags discrepancies >5%
 4. **`check_residency`** — verifies the residency document against the household record (address match, state, recency window)
 5. **`assess_eligibility`** — applies FPL thresholds: ≤185% = eligible / priority, ≤400% = eligible / standard, >400% = ineligible
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS main.eligibility_demo.documents (
 
 ### Step 2: Create the documents volume
 
-The agent downloads PDFs from a UC Volume. Create the volume and note its path:
+The agent extracts PDFs already stored in a UC Volume. Create the volume and note its path:
 
 ```sql
 CREATE VOLUME IF NOT EXISTS main.eligibility_demo.documents;
@@ -163,6 +163,7 @@ SCHEMA=eligibility_demo
 STATE_CODE=CA
 PROGRAM_NAME=Community Assistance Program
 RESIDENCY_RECENCY_DAYS=60
+SQL_WAREHOUSE_ID=your-sql-warehouse-id
 ```
 
 > `.env` is gitignored. Never commit it.
@@ -227,6 +228,7 @@ The app reads all configuration from environment variables. After the first depl
 | `STATE_CODE` | Two-letter state code (e.g., `CA`) |
 | `PROGRAM_NAME` | Your program name |
 | `RESIDENCY_RECENCY_DAYS` | Max age of residency doc in days (default `60`) |
+| `SQL_WAREHOUSE_ID` | SQL warehouse that can run `ai_parse_document` / `ai_extract` |
 
 Then redeploy to pick up the new values:
 
@@ -265,6 +267,7 @@ All values come from environment variables (or `.env` locally):
 | `STATE_CODE` | `CA` | Two-letter state for residency verification |
 | `PROGRAM_NAME` | `Community Assistance Program` | Appears in the reasoning trail header |
 | `RESIDENCY_RECENCY_DAYS` | `60` | Max age of residency document in days |
+| `SQL_WAREHOUSE_ID` | — | SQL warehouse that can run `ai_parse_document` / `ai_extract` |
 
 > `DATABRICKS_HOST` and `DATABRICKS_TOKEN` are only needed if you are not using `DATABRICKS_CONFIG_PROFILE`. On Databricks Apps, the SDK picks up credentials automatically from the runtime environment.
 
@@ -338,9 +341,10 @@ eligibility-agent/
 ├── agent.py                             # Agent definition (tools + prompt)
 ├── config.py                            # Settings (catalog, schema, state, program)
 ├── prompts.py                           # LLM system prompt
+├── schemas/                             # One JSON Schema per document type
 ├── tools/
 │   ├── get_household.py                 # UC lookup: household + applicant records
-│   ├── parse_documents.py               # PDF vision extraction
+│   ├── parse_documents.py               # document_extract dispatch by doc type
 │   ├── compute_income.py               # Annual income aggregation + discrepancy flag
 │   ├── check_residency.py              # Address match + recency check
 │   ├── assess_eligibility.py           # FPL-tier decision

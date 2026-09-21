@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "properties": {
+    "tenant_name": {
+      "type": "string"
+    },
+    "address_line": {
+      "type": "string"
+    },
+    "city_state_zip": {
+      "type": "string"
+    },
+    "document_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "document_type": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "address_line",
+    "city_state_zip",
+    "document_date"
+  ]
+}

@@ -38,6 +38,7 @@ filterwarnings = [
 ]
 testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "auto"
 
 [tool.apx.metadata]
 app-name = "contract-parsing-agent"
