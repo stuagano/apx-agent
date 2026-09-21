@@ -1,0 +1,39 @@
+[project]
+name = "sec-10k-agent"
+version = "0.1.0"
+description = "10-K research brief — SequentialAgent over an Agent Bricks Knowledge Assistant"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "apx-agent",
+    "mlflow>=3.6.0",
+    "databricks-sdk>=0.74.0",
+    "httpx>=0.27.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "pydantic>=2.0.0",
+]
+
+[tool.uv.sources]
+apx-agent = { path = "../..", editable = true }
+
+[tool.apx.metadata]
+app-name = "sec-10k-agent"
+app-slug = "sec_10k_agent"
+app-entrypoint = "app:app"
+api-prefix = "/api"
+
+[tool.apx.agent]
+name = "sec_10k_agent"
+description = "Research a 10-K question against a Knowledge Assistant, then write a cited investor brief"
+model = "databricks-meta-llama-3-3-70b-instruct"
+module = "agent:agent"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# Flat shape: top-level modules shipped via forced-includes.
+bypass-selection = true
+force-include = { "agent.py" = "agent.py", "app.py" = "app.py" }
