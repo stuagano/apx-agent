@@ -22,13 +22,15 @@ agent = Agent(
 )
 ```
 
-Each tool writes to Unity Catalog using the injected workspace client:
+Each tool writes to Unity Catalog using the injected workspace client.
+`extract_new_contract` calls `document_extract_tool` (`ai_parse_document` +
+`ai_extract` on a SQL warehouse) — no App-side PDF parse.
 
 ```python
-def extract_new_contract(volume_path: str, ws: Workspace = None) -> dict:
+async def extract_new_contract(volume_path: str, ws: Workspace = None) -> dict:
     """Extract structured fields from a contract file and store in UC.
-    volume_path: full path to the contract in a UC volume"""
-    raw = ws.files.download(volume_path).contents.read()
+    volume_path: full path to the contract in a configured UC volume"""
+    extracted = await document_extract(...)
     ...
 ```
 
@@ -43,7 +45,7 @@ POST /upload  →  raw file → UC volume
                           ↓
                   extract_new_contract
                           ↓
-               GenAI extraction → structured schema
+               document_extract → structured schema
                           ↓
                   write to UC table
                           ↓
@@ -159,6 +161,7 @@ CATALOG=my_catalog
 SCHEMA=contracts
 VOLUMES_RAW=/Volumes/my_catalog/contracts/raw_contracts
 VOLUMES_UPLOADS=/Volumes/my_catalog/contracts/uploaded_contracts
+SQL_WAREHOUSE_ID=your-sql-warehouse-id
 ```
 
 > `.env` is gitignored. Never commit it.
@@ -181,7 +184,6 @@ Expected output (abridged):
 
 ```
 tests/test_config.py::test_env_overrides_yaml PASSED
-tests/test_extraction.py::test_extraction_schema_valid PASSED
 tests/test_router_contracts.py::test_query_portfolio_returns_list PASSED
 tests/test_router_upload.py::test_upload_stores_file PASSED
 tests/test_tools_extract_new_contract.py::test_extract_writes_row PASSED
@@ -277,6 +279,7 @@ databricks bundle deploy
 | `SCHEMA` | Yes | — | Unity Catalog schema name |
 | `VOLUMES_RAW` | Yes | — | UC volume path for raw contract files |
 | `VOLUMES_UPLOADS` | Yes | — | UC volume path for uploaded contracts |
+| `SQL_WAREHOUSE_ID` | Yes | — | SQL warehouse that can run `ai_parse_document` / `ai_extract` |
 | `SUB_AGENTS` | No | — | Comma-separated URLs of sub-agents (e.g., data-inspector) |
 
 ---
@@ -287,7 +290,7 @@ databricks bundle deploy
 |------|--------------|
 | `query_portfolio` | Filter and list contracts (counterparty, type, pricing, auto-renewal, or `expires_within_days` for renewal calendars) |
 | `summarize_contract` | Structured summary of a specific contract by ID |
-| `extract_new_contract` | Extract fields from a file in UC volumes and store in the portfolio |
+| `extract_new_contract` | Extract fields from a file in the configured UC volumes via `document_extract` and store in the portfolio |
 
 ---
 
@@ -301,7 +304,7 @@ contract-parsing-agent/
 ├── app.yml                              # Databricks Apps runtime config
 ├── api.py                               # /api/* routes (version, current-user, upload, etc.)
 ├── config.py                            # Settings (catalog, schema, volume paths)
-├── extraction.py                        # Shared PDF -> structured extraction logic
+├── extraction.py                        # Batch notebook helper (not the live tool)
 ├── models.py                            # Pydantic models for API responses
 ├── databricks.yml                       # Asset Bundle — build, deploy, app resource + variables
 ├── tools/                               # Agent tool implementations

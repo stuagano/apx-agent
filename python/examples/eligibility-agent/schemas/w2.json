@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "employee_name": {
+      "type": "string"
+    },
+    "employer": {
+      "type": "string"
+    },
+    "tax_year": {
+      "type": "integer"
+    },
+    "annual_wages": {
+      "type": "number"
+    },
+    "federal_tax_withheld": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "employee_name",
+    "annual_wages"
+  ]
+}

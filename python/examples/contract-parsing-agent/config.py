@@ -40,6 +40,7 @@ class Settings(BaseModel):
     schema: str
     tables: Tables
     volumes: Volumes
+    sql_warehouse_id: str = ""
     model: str
     system_prompt: str
     demo_questions: list[str] = Field(default_factory=list)
@@ -65,6 +66,9 @@ def load_settings(path: Path) -> Settings:
         vols["raw"] = val
     if val := os.getenv("VOLUMES_UPLOADS"):
         vols["uploads"] = val
+
+    if val := os.getenv("SQL_WAREHOUSE_ID"):
+        data["sql_warehouse_id"] = val
 
     if val := os.getenv("SUB_AGENTS"):
         data["sub_agents"] = [u.strip() for u in val.split(",") if u.strip()]

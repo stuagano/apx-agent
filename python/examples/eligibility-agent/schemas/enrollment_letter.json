@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "school_name": {
+      "type": "string"
+    },
+    "student_name": {
+      "type": "string"
+    },
+    "grade_level": {
+      "type": "integer",
+      "description": "K=0"
+    },
+    "academic_year": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "school_name",
+    "student_name"
+  ]
+}

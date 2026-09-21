@@ -1,8 +1,8 @@
 """Shared extraction logic.
 
-`extract(pdf_path, schema, model, ws)` is called by both:
-  - the setup pipeline (batch) — see scripts/setup_portfolio.py
-  - the live tool — see tools/extract_new_contract.py
+`extract(pdf_path, schema, model, ws)` is used by the setup notebook
+(batch). The live ``extract_new_contract`` tool uses ``document_extract_tool``
+instead — do not call this helper from the agent loop.
 
 Knows nothing about Spark, Delta, or the agent. Returns a dict.
 """

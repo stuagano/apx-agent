@@ -50,6 +50,7 @@ def test_load_settings_from_yaml(tmp_path: Path) -> None:
     assert s.qualified_table("ground_truth") == "test_cat.silver.contracts_ground_truth"
     assert "counterparty" in s.extraction_schema["properties"]
     assert s.model == "databricks-claude-sonnet-4-6"
+    assert s.sql_warehouse_id == ""
 
 
 def test_load_settings_missing_required_field(tmp_path: Path) -> None:

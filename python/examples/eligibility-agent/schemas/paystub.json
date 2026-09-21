@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "employee_name": {
+      "type": "string"
+    },
+    "employer": {
+      "type": "string"
+    },
+    "pay_period_end": {
+      "type": "string",
+      "format": "date"
+    },
+    "gross_pay": {
+      "type": "number"
+    },
+    "net_pay": {
+      "type": "number"
+    },
+    "ytd_gross": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "employee_name",
+    "gross_pay"
+  ]
+}
