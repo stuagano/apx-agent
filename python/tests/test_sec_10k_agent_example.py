@@ -70,12 +70,18 @@ def test_get_agent_honors_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "ka-from-env" in endpoints
 
 
-def test_import_without_env_leaves_module_agent_none(
+def test_import_without_env_still_builds_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("APX_KA_ENDPOINT_NAME", raising=False)
     example = _load_example()
-    assert example.agent is None
+    assert isinstance(example.agent, SequentialAgent)
+    endpoints = {
+        spec.identifier
+        for spec in collect_resource_specs(example.agent)
+        if spec.kind == "serving_endpoint"
+    }
+    assert "$APX_KA_ENDPOINT_NAME" in endpoints
 
 
 def test_source_does_not_hardcode_a_demo_endpoint() -> None:

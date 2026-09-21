@@ -77,6 +77,16 @@ def get_agent() -> SequentialAgent:
     return create_sec_10k_agent(endpoint.strip())
 
 
-# Importing this module without the KA endpoint must not explode (app import,
-# unit tests). Runtime entrypoints call get_agent() once the env is set.
-agent = get_agent() if os.environ.get("APX_KA_ENDPOINT_NAME") else None
+def _agent_for_import() -> SequentialAgent:
+    """Always return a SequentialAgent so ``agent:agent`` is loadable.
+
+    AppKit staging and ``create_app`` import this module without a live KA.
+    ``get_agent()`` still fails closed when the env is blank.
+    """
+    endpoint = os.environ.get("APX_KA_ENDPOINT_NAME")
+    if endpoint is not None and endpoint.strip():
+        return create_sec_10k_agent(endpoint.strip())
+    return create_sec_10k_agent("$APX_KA_ENDPOINT_NAME")
+
+
+agent = _agent_for_import()
