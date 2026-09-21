@@ -1,0 +1,61 @@
+# Databricks Asset Bundle for pe55-support-agent (Apps target).
+#
+# Live data lives on go/e2dogfood (agent_cuj). APX_SMOKE_MODE=1 swaps the
+# three tools for stubs so a deploy still boots without that catalog.
+#
+# Deploy:
+#   uv sync
+#   databricks bundle deploy --target dev --profile <e2dogfood-profile>
+
+bundle:
+  name: pe55-support-agent
+
+variables:
+  llm_endpoint_name:
+    description: Foundation model endpoint the agent calls.
+    default: databricks-meta-llama-3-3-70b-instruct
+  mlflow_experiment_id:
+    description: MLflow experiment ID for tracing.
+    default: ""
+
+resources:
+  apps:
+    pe55-support-agent:
+      name: "pe55-support-agent"
+      description: >
+        PE55 Brickfood support agent — reviews SQL + product-docs VS +
+        deterministic policy-volume load. OBO by default.
+      source_code_path: ./
+      # OAuth scopes the forwarded user (OBO) token carries. iam.* defaults
+      # are always granted and must NOT be listed here. `sql` is sql_tool;
+      # `files` is the policy-volume download; serving is the LLM.
+      # vector-search is derived from the vector_search_index resource.
+      user_api_scopes:
+        - sql
+        - files
+        - serving.serving-endpoints
+      config:
+        command: ["uv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+        env:
+          - name: APX_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: AGENT_MODEL
+            value: ${var.llm_endpoint_name}
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
+          - name: MLFLOW_EXPERIMENT_NAME
+            value: "/Shared/pe55-support-agent"
+          - name: APX_SMOKE_MODE
+            value: "0"
+      resources:
+        - name: llm-endpoint
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
+
+targets:
+  dev:
+    mode: development
+    default: true

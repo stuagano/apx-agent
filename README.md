@@ -336,7 +336,7 @@ See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx
 
 ## Examples
 
-12 worked examples in [`python/examples/`](python/examples/EXAMPLES.md):
+13 worked examples in [`python/examples/`](python/examples/EXAMPLES.md):
 
 | Example | What it shows |
 |---|---|
@@ -345,6 +345,7 @@ See [docs/get-started/dev-ui.md](docs/get-started/dev-ui.md) for the full `/_apx
 | **entity-resolution-agent** | Fuzzy account match via Vector Search + `HandoffAgent` |
 | **memory_demo** | `MemoryStore` + `ExampleStore` — recall across handoffs |
 | **slack-agent** | Slack-initiated runs as the Slack user's Databricks identity |
+| **pe55-support-agent** | PE55: reviews + product docs + latest policy, OBO by default |
 | + 7 more | data-inspector, eligibility-agent, contract-parsing, shortage-intelligence, explain-my-bill, apx-builder, agent-hub |
 
 ---

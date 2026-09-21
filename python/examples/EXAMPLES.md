@@ -19,6 +19,7 @@ Quick index — what each example does and which direction data/auth flows.
 | [entity-resolution-agent](./entity-resolution-agent/) | Fuzzy-match account resolution via Vector Search — HandoffAgent (Supervisor + Evaluator) |
 | [eligibility-agent](./eligibility-agent/) | Document-based program eligibility assessment (W-2s, paystubs) |
 | [sec-10k-agent](./sec-10k-agent/) | **SequentialAgent over `knowledge_assistant_tool`** — stage 1 asks an Agent Bricks Knowledge Assistant that already indexes 10-Ks; stage 2 rewrites the grounded answer into a cited brief. Endpoint from `APX_KA_ENDPOINT_NAME`; no EDGAR ingest. |
+| [pe55-support-agent](./pe55-support-agent/) | **PE55 Brickfood CUJ as one `Agent`** — `sql_tool` on region-RLS reviews + `vector_search_tool` on product docs + a `@tool` that re-reads `latest_policies.txt` from a UC volume every turn. OBO is the default (Task 3 is not a code change); coworker ABAC clicks stay people. |
 | [explain-my-bill-agent](./explain-my-bill-agent/) | Energy billing Q&A — looks up customer profiles, AMI smart-meter data, billing history, and rate schedules from Unity Catalog. Ships a `catalog/register_agent.py` to expose the agent as a UC function (SQL-callable). |
 | [shortage-intelligence-agent](./shortage-intelligence-agent/) | Detects demand shortage signals, reports to sourcing + sales |
 | [apx-builder](./apx-builder/) | **Natural-language agent builder** — describe an agent, the builder scaffolds + deploys it. Tools: `search_tables`, `list_genie_spaces`, `scaffold_project`, `deploy_agent`, `poll_deployment`. |
