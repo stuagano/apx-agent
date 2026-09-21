@@ -1,0 +1,13 @@
+command: ["uv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+env:
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+  - name: MLFLOW_REGISTRY_URI
+    value: "databricks-uc"
+  - name: AGENT_MODEL
+    value: "databricks-meta-llama-3-3-70b-instruct"
+  - name: MLFLOW_EXPERIMENT_NAME
+    value: "/Shared/pe55-support-agent"
+  - name: APX_SMOKE_MODE
+    value: "0"
