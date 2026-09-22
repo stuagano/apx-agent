@@ -18,6 +18,7 @@ _UNSET_ENV = ""  # optional UI env vars (catalog, warehouse) resolve to empty wh
 _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
     ("chat", "Chat", "/_apx/chat"),
     ("edit", "Edit", "/_apx/edit"),
+    ("tools", "Tools", "/_apx/tools"),
     ("eval", "Eval", "/_apx/eval"),
     # "setup" is intentionally not a shell tab — its data-source + tool
     # generation flow is reached from the Edit page's "✨ From data" modal.
@@ -379,6 +380,7 @@ def _render_eval_landing(
     """Eval page — run eval cases against the live agent with LLM-as-judge scoring."""
     import html as _html
     import json as _json
+
 
     cases_json = _json.dumps(cases)
     file_label = _html.escape(loaded_path) if loaded_path else "(no evals.json)"
@@ -865,7 +867,7 @@ def _render_landing(ctx: AgentContext) -> str:
 
 def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
     """Return a self-contained HTML page for interactively testing the agent."""
-    import json as _json
+    from ._ui_table import TABLE_CSS, TABLE_JS
 
     agent_name = ctx.config.name if ctx else "Agent"
     agent_desc = ctx.config.description if ctx else ""
@@ -874,14 +876,6 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
     events_active = "" if embed else ' class="active"'
     trace_panel_class = "tab-panel active" if embed else "tab-panel"
     events_panel_class = "tab-panel" if embed else "tab-panel active"
-    tools_json = (
-        _json.dumps([{
-            "name": t.name, "description": t.description,
-            "schema": t.input_schema or {"type": "object", "properties": {}},
-            "remote": bool(t.sub_agent_url),
-        } for t in ctx.tools if t.name != "create_tool"])
-        if ctx else "[]"
-    )
     not_configured = ctx is None
     setup_banner = """
 <div id="setup-banner">
@@ -920,13 +914,14 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
                 '</div>'
             )
 
-    return f"""<!DOCTYPE html>
+    page = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{agent_name} — APX Dev</title>
 <style>
+{{APX_TABLE_CSS}}
   *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
          background: #0a0a0a; color: #e8e8e8; height: 100vh; display: flex; flex-direction: column; }}
@@ -1048,6 +1043,13 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
   /* Trace tab uses flex column so trace-body can scroll independently */
   #tab-trace.active {{ display: flex; flex-direction: column; height: 100%; }}
   #tab-history.active {{ display: flex; flex-direction: column; height: 100%; }}
+  #tab-tools {{ min-height: 0; }}
+  #tab-tools.active {{ display: flex; flex-direction: column; height: 100%; }}
+  .tools-embed-head {{ padding: 10px 12px; border-bottom: 1px solid #1a1a1a; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-shrink:0; font-size:11px; color:#666; }}
+  .tools-embed-head a {{ color:#60b0ff; text-decoration:none; white-space:nowrap; }}
+  .tools-embed-head a:hover {{ text-decoration:underline; }}
+  #tools-embed {{ flex: 1; min-height: 0; display: flex; }}
+  #tools-embed iframe {{ width: 100%; height: 100%; border: 0; background: #0a0a0a; }}
   .conv-toolbar {{ padding: 8px 12px; border-bottom: 1px solid #1a1a1a; display: flex; align-items: center; justify-content: flex-end; flex-shrink: 0; }}
   .conv-new-btn {{ background: transparent; color: #60b0ff; border: 1px solid #1e3a5f; border-radius: 5px; padding: 4px 10px; font-size: 12px; cursor: pointer; }}
   .conv-new-btn:hover {{ background: #0d1f38; }}
@@ -1346,7 +1348,13 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
           <div class="empty-state">No conversations yet</div>
         </div>
       </div>
-      <div id="tab-tools" class="tab-panel"></div>
+      <div id="tab-tools" class="tab-panel">
+        <div class="tools-embed-head">
+          <span>Tool logic — source read from the running process</span>
+          <a href="/_apx/tools" target="_blank" rel="noopener">Open full page ↗</a>
+        </div>
+        <div id="tools-embed"></div>
+      </div>
       <div id="tab-trace" class="{trace_panel_class}">
         <div id="trace-header" style="padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:11px;color:#666;display:flex;justify-content:space-between;align-items:center">
           <span id="trace-status">No trace yet — send a message</span>
@@ -1398,7 +1406,6 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
 <script src="/_apx/vendor/purify.min.js"></script>
 
 <script>
-const TOOLS = {tools_json};
 function useExample(btn) {{
   const inp = document.getElementById('input');
   inp.value = btn.dataset.q;
@@ -1433,93 +1440,21 @@ const form = document.getElementById('form');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('send-btn');
 const eventsList = document.getElementById('events-list');
-const toolsTab = document.getElementById('tab-tools');
+const toolsEmbed = document.getElementById('tools-embed');
+let toolsInspectorLoaded = false;
+function ensureToolsInspector() {{
+  if (toolsInspectorLoaded || !toolsEmbed) return;
+  const frame = document.createElement('iframe');
+  frame.id = 'tools-inspector-frame';
+  frame.title = 'Tool inspector';
+  frame.src = '/_apx/tools';
+  toolsEmbed.appendChild(frame);
+  toolsInspectorLoaded = true;
+}}
 const detailPanel = document.getElementById('detail-panel');
 const detailTitle = document.getElementById('detail-title');
 const detailBody = document.getElementById('detail-body');
 const tooltip = document.getElementById('tooltip');
-
-// ── Render tools tab with invoke forms ──
-TOOLS.forEach(t => {{
-  const props = (t.schema && t.schema.properties) || {{}};
-  const required = (t.schema && t.schema.required) || [];
-  const card = document.createElement('div');
-  card.className = 'tool-card';
-  let fields = '';
-  for (const [k, v] of Object.entries(props)) {{
-    const req = required.includes(k);
-    const ph = v.description || v.type || '';
-    fields += `<label>${{k}}${{req ? ' <span style="color:#f87171">*</span>' : ''}}</label>`
-      + `<input name="${{k}}" type="text" placeholder="${{ph}}" ${{req ? 'required' : ''}} />`;
-  }}
-  card.innerHTML =
-    `<div class="tool-card-header" onclick="this.parentElement.classList.toggle('open')">` +
-      `<span class="arrow">▶</span>` +
-      `<span class="tname">${{t.name}}</span>` +
-      `<span class="tbadge">${{t.remote ? 'remote' : 'local'}}</span>` +
-      (!t.remote ? `<button class="btn-delete-tool" onclick="deleteTool(event,'${{t.name}}')" title="Delete tool">✕</button>` : '') +
-    `</div>` +
-    `<div class="tool-card-body">` +
-      `<div class="tdesc">${{t.description.replace(/\\n/g, ' ')}}</div>` +
-      (fields || '<div style="color:#444;font-size:12px">No parameters</div>') +
-      `<div class="tool-run">` +
-        `<button type="button" onclick="runTool(this, '${{t.name}}')">▶ Run</button>` +
-        `<span class="run-ms"></span>` +
-      `</div>` +
-      `<div class="tool-result-box" style="display:none"></div>` +
-    `</div>`;
-  toolsTab.appendChild(card);
-}});
-if (!TOOLS.length) toolsTab.innerHTML = '<div class="empty-state">No tools registered</div>';
-
-async function runTool(btn, name) {{
-  const card = btn.closest('.tool-card');
-  const inputs = card.querySelectorAll('input[name]');
-  const args = {{}};
-  inputs.forEach(i => {{ if (i.value) args[i.name] = i.value; }});
-  const resultBox = card.querySelector('.tool-result-box');
-  const msSpan = card.querySelector('.run-ms');
-  btn.disabled = true;
-  resultBox.style.display = 'block';
-  resultBox.className = 'tool-result-box';
-  resultBox.textContent = 'Running…';
-  msSpan.textContent = '';
-  const t0 = performance.now();
-  try {{
-    const resp = await fetch(`/api/tools/${{name}}`, {{
-      method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify(args),
-    }});
-    const ms = Math.round(performance.now() - t0);
-    msSpan.textContent = ms + 'ms';
-    const ct = resp.headers.get('content-type') || '';
-    const data = ct.includes('application/json') ? await resp.json() : await resp.text();
-    const raw = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-    resultBox.innerHTML = fmtResp(raw);
-    if (resp.status >= 400) resultBox.classList.add('err');
-  }} catch (err) {{
-    resultBox.textContent = 'Error: ' + err.message;
-    resultBox.classList.add('err');
-    msSpan.textContent = Math.round(performance.now() - t0) + 'ms';
-  }}
-  btn.disabled = false;
-}}
-
-async function deleteTool(evt, name) {{
-  evt.stopPropagation();
-  if (!confirm(`Delete tool "${{name}}"?\n\nThis removes it from agent_router.py.`)) return;
-  const btn = evt.currentTarget;
-  btn.textContent = '…'; btn.disabled = true;
-  try {{
-    const r = await fetch(`/_apx/tools/${{encodeURIComponent(name)}}`, {{ method: 'DELETE' }});
-    const d = await r.json();
-    if (d.ok) {{ location.reload(); }}
-    else {{ alert('Delete failed: ' + d.error); btn.textContent = '✕'; btn.disabled = false; }}
-  }} catch (e) {{
-    alert('Delete failed: ' + e.message); btn.textContent = '✕'; btn.disabled = false;
-  }}
-}}
 
 // ── MCP URL ──
 const mcpBar = document.getElementById('mcp-bar');
@@ -1550,6 +1485,7 @@ function switchTab(name, btn) {{
   document.querySelectorAll('.panel-tabs button').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
+  if (name === 'tools') ensureToolsInspector();
   if (name === 'eval' && (!evalLoaded || !evalRows.length)) loadEvalCases();
   if (name === 'history') loadConversationHistory();
 }}
@@ -2723,6 +2659,7 @@ function addToolPills(trace) {{
   chat.scrollTop = chat.scrollHeight;
 }}
 
+{{APX_TABLE_JS}}
 // ── Tool detail formatters ──
 // SQL keyword highlighter.
 function sqlHL(sql) {{
@@ -2774,6 +2711,7 @@ function fmtResp(rawStr) {{
       if (Array.isArray(obj.data)) html += `<div style="color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.05em;padding:8px 0 4px">Results${{obj._timing ? ' · ' + obj._timing : ''}}</div>${{fmtTable(obj.data)}}`;
       return html;
     }}
+    if (tableShape(obj)) return renderToolOutput(rawStr);
   }} catch {{}}
   try {{
     const pretty = JSON.stringify(JSON.parse(rawStr), null, 2);
@@ -3026,6 +2964,7 @@ inputEl.focus();
 {_deploy_overlay_html()}
 </body>
 </html>"""
+    return page.replace("{APX_TABLE_CSS}", TABLE_CSS).replace("{APX_TABLE_JS}", TABLE_JS)
 
 
 def _build_apx_openapi_spec(

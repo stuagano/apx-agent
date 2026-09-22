@@ -27,6 +27,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from ._ui_table import TABLE_CSS
+
 from ._apx_models import (
     AgentNodeInfo,
     AgentPatternResponse,
@@ -133,6 +135,13 @@ from ._ui_setup import (
     _read_env_file,
     _write_env_file,
     _render_setup_ui,
+)
+from ._ui_tools import (
+    ToolsSaveRequest,
+    _render_tools_ui,
+    save_tool_source,
+    tool_file_response,
+    tools_payload as _tools_payload,
 )
 from ._ui_probe import _generate_agent_instructions, _render_probe_ui, _run_probe_checks, _discover_vs_indexes, _validate_probe_url, validate_wire_peer_url
 
@@ -372,6 +381,8 @@ _TRACE_CSS = """
   .err-banner{background:#2a0f0f;border:1px solid #7f1d1d;border-radius:6px;
               padding:12px 16px;color:#fda4af;margin-bottom:16px;}
 """
+_TRACE_CSS += "\n" + TABLE_CSS
+
 
 
 def _span_type_css(span_type: str) -> str:
@@ -949,6 +960,8 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
     import json as _json
     import html as _html
 
+    from ._ui_table import render_tool_output_html
+
     err_html = f'<div class="err-banner">{_html.escape(error or "Unknown error")}</div>' if error else ""
 
     if not spans:
@@ -1013,8 +1026,16 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
                     state["prev"] = (state["prev"] or []) + added
             elif outputs_obj and not _is_message_heavy(outputs_obj):
                 cleaned = {k: v for k, v in outputs_obj.items() if v is not None} if isinstance(outputs_obj, dict) else outputs_obj
-                out = _json.dumps(cleaned, indent=2)
-                io_html += f'<div class="io-block"><div class="io-label">Outputs</div><pre class="io-pre">{_html.escape(out[:4000])}</pre></div>'
+                # Tool responses are the tabular payloads in a trace. Agent /
+                # chain state dumps (LangGraph updates, message lists) keep the
+                # raw-JSON view — their shape is the diagnostic, and the
+                # conversation view above already renders the messages.
+                table_html = render_tool_output_html(cleaned) if st == "TOOL" else None
+                if table_html:
+                    io_html += f'<div class="io-block"><div class="io-label">Outputs</div>{table_html}</div>'
+                else:
+                    out = _json.dumps(cleaned, indent=2)
+                    io_html += f'<div class="io-block"><div class="io-label">Outputs</div><pre class="io-pre">{_html.escape(out[:4000])}</pre></div>'
             # Progress markers (span events) render in an always-visible strip
             # so a cold-start step shows even while the body is collapsed.
             events_html = ""
@@ -2097,11 +2118,37 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         )
 
     @router.get("/_apx/tools", include_in_schema=False)
-    async def tools_dev_ui() -> Any:
-        # The standalone tools page is retired — tool authoring (incl. the
-        # natural-language generator) now lives in the Edit page's New Tool modal.
-        from starlette.responses import RedirectResponse as _R
-        return _R("/_apx/edit", status_code=302)
+    async def tools_dev_ui() -> HTMLResponse:
+        """Tool inspector — the real source of every registered tool, editable."""
+        return HTMLResponse(_render_tools_ui())
+
+    @router.get("/_apx/tools/list", include_in_schema=False)
+    async def tools_list(request: Request) -> Any:
+        return JSONResponse(_tools_payload(request))
+
+    @router.get("/_apx/tools/file", include_in_schema=False)
+    async def tools_file(request: Request, name: str | None = None) -> Any:
+        tool_file = tool_file_response(request, name)
+        if tool_file.contents is None:
+            return JSONResponse(
+                {"ok": False, "error": "No tool source is on disk in this runtime"},
+                status_code=404,
+            )
+        from fastapi.responses import Response as _Response
+
+        safe_name = (tool_file.filename or "tools.py").replace('"', "_")
+        return _Response(
+            tool_file.contents,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+
+    @router.post("/_apx/tools/save", include_in_schema=False)
+    async def tools_save(request: Request, body: ToolsSaveRequest) -> Any:
+        """Rewrite one registered tool function in place. Protected by the
+        router-level _dev_write_guard (Apps SSO / APX_DEV_UI_TOKEN)."""
+        result = save_tool_source(request, body)
+        return JSONResponse(result.payload, status_code=result.status)
 
     @router.get("/_apx/openapi.json", response_model=dict[str, Any])
     async def apx_openapi_spec(request: Request) -> Any:

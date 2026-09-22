@@ -8,6 +8,7 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Added
 
+- **Tool inspector at `/_apx/tools`.** `/_apx/tools` is a real inspector again — live source from `inspect.getsourcefile`, in-place save, run via `/_apx/replay/tool` — not a 302 to Edit. Also a nav tab, the Chat shell's Tools tab, and an Edit-page Schemas/Tools sub-tab. Shared table renderer used by Tools, Chat, and Trace. New routes: `GET /_apx/tools/list`, `GET /_apx/tools/file`, `POST /_apx/tools/save`.
 - **Native Databricks Apps horizontal-scaling fields in generated bundles.**
   `[tool.apx.agent.deploy]` now emits `compute_min_instances` /
   `compute_max_instances` into `databricks.yml` when rendering Apps bundles,
