@@ -31,7 +31,7 @@ Model Serving deployments use AI Playground as the equivalent surface.
 ## Surfaces
 
 ### `/_apx/agent` — Chat shell
-Tabbed shell (Chat · Edit · Eval · **Discover** · Probe) for testing the running
+Tabbed shell (Chat · Edit · Tools · Eval · **Discover** · Probe) for testing the running
 agent. Streams responses, surfaces tool calls inline, and hosts the other
 `/_apx/*` pages in an iframe.
 
@@ -141,7 +141,10 @@ topology = annotate_topology(
 ### `/_apx/edit` — Edit agent source
 Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file to disk; the running agent is compiled at startup, so a save here — like any source change — takes effect on the next restart. Auto-reload on source changes happens only when you start the server with `apx-agent agents run --reload` (the `--reload` flag is off by default).
 
-Tool authoring also lives here: the **New Tool** modal scaffolds a tool into the source — including a natural-language generator (`POST /_apx/tools/suggest`) that drafts the tool from a description. The standalone `/_apx/tools` inspector page has been retired in the Python dev UI (`/_apx/tools` now redirects to `/_apx/edit`); the standalone tools inspector survives only in the TypeScript dev UI.
+Tool authoring also lives here: the **New Tool** modal scaffolds a tool into the source — including a natural-language generator (`POST /_apx/tools/suggest`) that drafts the tool from a description. The right panel has a **Tools** sub-tab that embeds the `/_apx/tools` inspector.
+
+### `/_apx/tools` — Tool inspector
+Lists every registered tool from the live runtime (not a hardcoded inventory). For each tool: the function source as loaded (`inspect.getsourcefile`), a `<name>_demo` twin when one exists, resolved runtime constants, and an editor that rewrites the function in place. Run a tool via `POST /_apx/replay/tool`. Also: `GET /_apx/tools/list`, `GET /_apx/tools/file`, `POST /_apx/tools/save`. Linked from the nav bar, the Chat shell's Tools tab, and the Edit page's right-panel Tools sub-tab.
 
 ### `/_apx/probe` — Outbound connectivity tester
 Pass `?url=<url>` to verify outbound network reachability from the App. Pairs with `/_apx/probe/checks` for a curated list of common Databricks endpoints (control plane, model serving, UC, Genie). Useful when an App can't reach a managed MCP / vector index / endpoint.

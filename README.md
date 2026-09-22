@@ -159,7 +159,7 @@ uv run apx-agent agents deploy --target apps
 uv run apx-agent agents run --reload
 ```
 
-FastAPI starts on `:8000`; chat at `/_apx/agent`, view traces at `/_apx/traces`, author new tools via the **New Tool** modal and inspect live tool schemas in the right panel of the Edit page (`/_apx/edit`) — the standalone `/_apx/tools` page is retired and redirects there. `agent.py` edits are picked up on restart — pass `--reload` (off by default) for auto-reload during local dev.
+FastAPI starts on `:8000`; chat at `/_apx/agent`, view traces at `/_apx/traces`, inspect and edit live tool source at `/_apx/tools` (also the Tools tab of Chat and the Edit page's right-panel Tools sub-tab). Author new tools via the **New Tool** modal on Edit. `agent.py` edits are picked up on restart — pass `--reload` (off by default) for auto-reload during local dev.
 
 > **Something not working?** Run `uv run apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
 

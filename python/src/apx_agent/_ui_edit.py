@@ -1340,14 +1340,24 @@ def _render_edit_ui(
   #editor-wrap .cm-editor {{ flex: 1; min-height: 0; }}
   #editor-wrap > div {{ flex: 1; min-height: 0; display: flex; flex-direction: column; }}
   #editor-wrap .cm-scroller {{ overflow: auto; flex: 1; }}
-  /* ── Schema panel ── */
+  /* ── Schema / Tools panel ── */
   #schema-panel {{ width: 300px; flex-shrink: 0; display: flex; flex-direction: column;
-                   background: #0a0a0a; overflow: hidden; }}
-  #schema-header {{ padding: 10px 14px; border-bottom: 1px solid #1e1e1e; flex-shrink: 0;
+                   background: #0a0a0a; overflow: hidden; transition: width .15s ease; }}
+  #schema-panel.wide {{ width: min(720px, 55vw); }}
+  #schema-header {{ padding: 0; border-bottom: 1px solid #1e1e1e; flex-shrink: 0;
                     display: flex; align-items: center; justify-content: space-between; }}
   #schema-header span {{ font-size: 11px; font-weight: 600; color: #555;
                           text-transform: uppercase; letter-spacing: .6px; }}
-  #schema-header .schema-hint {{ font-size: 10px; color: #333; font-style: italic; }}
+  #schema-header .schema-hint {{ font-size: 10px; color: #333; font-style: italic;
+                                 padding-right: 1px; }}
+  #schema-subtabs {{ display: flex; padding: 6px 8px 0; gap: 8px; }}
+  #schema-subtabs button {{ background: none; border: none; border-bottom: 2px solid transparent;
+                            color: #555; font-size: 12px; font-weight: 600; padding: 6px 10px;
+                            cursor: pointer; }}
+  #schema-subtabs button:hover {{ color: #aaa; }}
+  #schema-subtabs button.active {{ color: #60b0ff; border-bottom-color: #60b0ff; }}
+  #tools-embed {{ flex: 1; display: flex; flex-direction: column; min-height: 0; }}
+  #tools-embed iframe {{ flex: 1; border: none; background: #0a0a0a; width: 100%; }}
   #schema-list {{ flex: 1; overflow-y: auto; padding: 8px; }}
   .panel-section {{ margin-bottom: 12px; }}
   .panel-section-title {{ font-size: 10px; font-weight: 700; color: #555;
@@ -1480,7 +1490,12 @@ def _render_edit_ui(
       <span>Tools & Agents</span>
       <span class="schema-hint">callable surfaces</span>
     </div>
+    <div id="schema-subtabs">
+      <button id="subtab-schemas" class="active" type="button">Schemas</button>
+      <button id="subtab-tools" type="button">Tools</button>
+    </div>
     <div id="schema-list"><p class="no-params" style="padding:12px">Loading…</p></div>
+    <div id="tools-embed" style="display:none"></div>
   </div>
 </div>
 <div id="status-bar">
@@ -1935,6 +1950,34 @@ document.getElementById('btn-insert').addEventListener('click', async () => {{
       showToast(`${{what}} — close to see it in your agent`);
     }}
   }});
+
+  // ── Right-panel sub-tabs: Schemas (live inventory) vs Tools (inspector) ──
+  const subtabSchemas = document.getElementById('subtab-schemas');
+  const subtabTools = document.getElementById('subtab-tools');
+  const schemaList = document.getElementById('schema-list');
+  const toolsEmbed = document.getElementById('tools-embed');
+  let toolsFrameLoaded = false;
+
+  function setSubtab(which) {{
+    const onTools = which === 'tools';
+    subtabSchemas.classList.toggle('active', !onTools);
+    subtabTools.classList.toggle('active', onTools);
+    document.getElementById('schema-panel').classList.toggle('wide', onTools);
+    schemaList.style.display = onTools ? 'none' : '';
+    if (onTools && !toolsFrameLoaded) {{
+      toolsEmbed.style.display = 'flex';
+      const frame = document.createElement('iframe');
+      frame.id = 'tools-frame';
+      frame.title = 'Tool inspector';
+      frame.src = '/_apx/tools';
+      toolsEmbed.appendChild(frame);
+      toolsFrameLoaded = true;
+    }} else {{
+      toolsEmbed.style.display = onTools ? 'flex' : 'none';
+    }}
+  }}
+  subtabSchemas.addEventListener('click', () => setSubtab('schemas'));
+  subtabTools.addEventListener('click', () => setSubtab('tools'));
 }})();
 </script>
 {_deploy_overlay_html()}

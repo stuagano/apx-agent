@@ -70,7 +70,7 @@ class TestNoDeadNavLinks:
         linked = set(re.findall(r'href="/_apx/([a-z]+)"', r.text))
         # The page may link to non-nav destinations (traces, chat). Only assert
         # that it does NOT link to known-removed pages.
-        removed = {"tools", "wizard", "builder"}
+        removed = {"wizard", "builder"}
         dead = linked & removed
         assert not dead, (
             f"/_apx/{slug} still links to removed page(s) {dead}. "
@@ -104,7 +104,7 @@ class TestStandardEndpointLinks:
 class TestLegacyRedirects:
     """Removed pages still redirect somewhere valid (no hard 404)."""
 
-    @pytest.mark.parametrize("slug,target", [("tools", "/_apx/edit"), ("wizard", "/_apx/setup")])
+    @pytest.mark.parametrize("slug,target", [("wizard", "/_apx/setup")])
     @pytest.mark.asyncio
     async def test_legacy_route_redirects(self, app: FastAPI, slug: str, target: str):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:

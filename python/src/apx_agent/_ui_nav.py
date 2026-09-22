@@ -53,6 +53,7 @@ def _apx_nav_css() -> str:
 APX_NAV_PAGES: list[tuple[str, str]] = [
     ("agent", "Chat"),
     ("edit", "Edit"),
+    ("tools", "Tools"),
     ("eval", "Eval"),
     # "setup" is intentionally not a top-level tab — the data-source + tool
     # generation flow is reached via the Edit page's "✨ From data" modal
