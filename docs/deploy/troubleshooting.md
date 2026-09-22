@@ -172,7 +172,7 @@ If you need to swap the model on a deployed agent without re-logging, use `apx-a
 
 - Called via `/invocations` from another service.
 - Evaluated by `mlflow.evaluate` against a UC eval table.
-- Tagged + tracked in `apx-agent agents list` / topology / databricks-watchdog.
+- Tagged + tracked in `apx-agent agents list` / topology / governance-monitoring.
 
 It is **not** the path when the agent is the backend of a Databricks App (FastAPI on Apps compute). For that path you don't run `apx-agent agents deploy` at all — you run the agent inside a FastAPI app and deploy *that* with `databricks apps deploy`. The two surfaces are independent: the same agent can be served via both, but you only run `apx-agent agents deploy` for the Mosaic AI side.
 

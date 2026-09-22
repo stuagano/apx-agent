@@ -53,7 +53,7 @@ This *is* that follow-up.
 - **A real version spine for Apps** — a configured `apx-agent agents deploy --target
   apps` mints a `v1/v2/v3` UC integer with lineage back to the run.
 - **Discovery parity** — Apps agents finally appear in `apx-agent agents list`,
-  topology, and the databricks-watchdog crawler, all of which read `apx.agent.*` UC tags.
+  topology, and the governance-monitoring crawler, all of which read `apx.agent.*` UC tags.
 - **Promote / rollback bookkeeping** via UC model **aliases** (`@prod`,
   `@canary`) — the alias records which version a live App is running.
 - **`canary analyze` for free** — it already partitions off MLflow traces, so

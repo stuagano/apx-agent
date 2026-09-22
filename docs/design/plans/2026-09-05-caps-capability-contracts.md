@@ -592,12 +592,12 @@ python3 -m caps add --id a2a-delegation-and-identity --tier cheap \
   --shell 'cd python && uv run --frozen pytest tests/test_cross_agent_delegation_reality_ctk.py::test_config_declared_sub_agent_really_executes tests/test_multi_hop_identity_reality_ctk.py::test_obo_token_reaches_leaf_through_two_hops -q'
 
 python3 -m caps add --id governed-tool-approval --tier cheap \
-  --description "Served approval/deny and watchdog fail-closed" \
-  --given "an approval-required or watchdog-gated tool" \
+  --description "Served approval/deny and governance fail-closed" \
+  --given "an approval-required or governance-gated tool" \
   --when "the tool is invoked on the served path" \
   --then "deny blocks; approve resume runs; transport errors fail closed" \
-  --deps python/src/apx_agent/_policy.py --deps python/src/apx_agent/_watchdog.py \
-  --shell 'cd python && uv run --frozen pytest tests/test_approval_served_reality_ctk.py::test_predict_surfaces_approval_then_resume_approve_runs_tool tests/test_watchdog_fail_closed_reality_ctk.py::test_transport_error_fails_closed_by_default -q'
+  --deps python/src/apx_agent/_policy.py --deps python/src/apx_agent/_governance.py \
+  --shell 'cd python && uv run --frozen pytest tests/test_approval_served_reality_ctk.py::test_predict_surfaces_approval_then_resume_approve_runs_tool tests/test_governance_fail_closed_reality_ctk.py::test_transport_error_fails_closed_by_default -q'
 
 python3 -m caps add --id sql-terminal-state-and-cancellation --tier cheap \
   --description "SQL polls to a terminal state and cancellation reaches the statement" \
