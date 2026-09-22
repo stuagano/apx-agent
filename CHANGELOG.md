@@ -8,6 +8,13 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Added
 
+- **Native Databricks Apps horizontal-scaling fields in generated bundles.**
+  `[tool.apx.agent.deploy]` now emits `compute_min_instances` /
+  `compute_max_instances` into `databricks.yml` when rendering Apps bundles,
+  while retaining `APX_DECLARED_INSTANCES` for the runtime scaled-in-memory
+  guard's read-back. Fixed-count `instances = N` emits `min = max = N`;
+  autoscale emits the declared bounds. Requires a Databricks CLI/bundle schema
+  new enough to accept those private-preview fields.
 - **Distributed tracing across A2A hops.** `inject_tracing_headers` (client)
   and `continue_trace_from_headers` (server) propagate MLflow's tracing context
   over inter-agent HTTP calls so a supervisor and its remote specialist agents

@@ -523,16 +523,29 @@ def _lakebase_checkpointer_target(
     return _CheckpointerTarget(host=host, database=scfg.database)
 
 
-def declared_max_replicas(config: "AgentConfig | None") -> int:
-    """Max replicas the config declares: ``instances``, else ``autoscale.max``, else 1."""
+class DeclaredReplicaBounds(NamedTuple):
+    """Declared Apps replica bounds — one opaque min/max pair."""
+
+    min: int
+    max: int
+
+
+def declared_replica_bounds(config: "AgentConfig | None") -> DeclaredReplicaBounds | None:
+    """Declared Apps replica bounds, or ``None`` when undeclared."""
     deploy = getattr(config, "deploy", None) if config is not None else None
     if deploy is None:
-        return 1
+        return None
     if deploy.instances is not None:
-        return deploy.instances
+        return DeclaredReplicaBounds(min=deploy.instances, max=deploy.instances)
     if deploy.autoscale is not None:
-        return deploy.autoscale.max
-    return 1
+        return DeclaredReplicaBounds(min=deploy.autoscale.min, max=deploy.autoscale.max)
+    return None
+
+
+def declared_max_replicas(config: "AgentConfig | None") -> int:
+    """Max replicas the config declares: ``instances``, else ``autoscale.max``, else 1."""
+    bounds = declared_replica_bounds(config)
+    return bounds.max if bounds is not None else 1
 
 
 def session_is_in_memory(
@@ -630,6 +643,7 @@ __all__ = [
     "attach_declared_memory",
     "close_checkpointer",
     "declared_max_replicas",
+    "declared_replica_bounds",
     "scaled_in_memory",
     "scaled_in_memory_error",
     "session_is_in_memory",

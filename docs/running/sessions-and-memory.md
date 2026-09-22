@@ -130,12 +130,12 @@ boot in production unless session state is durable — the error names the fix,
 `[tool.apx.agent.session] type='lakebase'` (see the Lakebase session store
 above). Local single-process dev only warns. Scaled + Lakebase boots clean.
 
-Instance count is not declarable in `databricks.yml` (the Databricks SDK's `App`
-model has no scaling field — only vertical `compute_size`), so **set the
-instance count in the Databricks Apps UI to match `[tool.apx.agent.deploy]`**.
-UI-only scale is not validated. apx carries the declared count forward via the
-`APX_DECLARED_INSTANCES` env var so the runtime guard still fires if a scaled
-app ever ships with in-memory state.
+apx emits native Apps horizontal-scaling bounds into `databricks.yml` as
+`compute_min_instances` / `compute_max_instances`, alongside the declared
+`APX_DECLARED_INSTANCES` env var used by the runtime guard. For fixed
+`instances = N`, apx emits `min = max = N`; for autoscale it emits the declared
+bounds. This requires a Databricks CLI/bundle schema new enough to accept those
+private-preview fields.
 
 ---
 

@@ -694,6 +694,7 @@ def _build_databricks_yml(config: "AgentConfig") -> str:
     """
     from ._memory_wiring import (  # noqa: PLC0415
         declared_max_replicas,
+        declared_replica_bounds,
         scaled_in_memory,
         scaled_in_memory_error,
     )
@@ -707,13 +708,21 @@ def _build_databricks_yml(config: "AgentConfig") -> str:
     name = config.name
     skills_copy = "      cp -r skills .build/ 2>/dev/null || true\n\n" if config.skills else "\n"
     # Carry the declared replica count forward for the runtime boot guard (FR-4).
-    # Instance count is UI/API-only (no bundle field in SDK 0.102.0), so this env
-    # is how the runtime learns the declared scale. Emitted only when declared.
+    # The bundle now also carries native Apps horizontal-scaling bounds, but the
+    # runtime still needs an explicit read-back because the process cannot discover
+    # its deployed replica count from the Apps environment.
     declared_instances_env = (
         f"""
           - name: APX_DECLARED_INSTANCES
             value: "{declared_max_replicas(config)}\""""
         if config.deploy is not None
+        else ""
+    )
+    replica_bounds = declared_replica_bounds(config)
+    scaling_fields = (
+        f"      compute_min_instances: {replica_bounds.min}\n"
+        f"      compute_max_instances: {replica_bounds.max}\n"
+        if replica_bounds is not None
         else ""
     )
     return f"""\
@@ -764,7 +773,7 @@ resources:
       name: {name}
       description: {name} apx-agent
       source_code_path: ./.build
-      user_api_scopes:
+{scaling_fields}      user_api_scopes:
         - sql
         - model-serving
       resources:

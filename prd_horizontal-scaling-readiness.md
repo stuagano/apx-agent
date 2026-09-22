@@ -90,15 +90,14 @@ cookie only, with explicit guidance not to rely on instance-local state.
   (`_project_gen._build_databricks_yml`, line 686 region, or the deploy CLI entry that calls
   it), if `declared_max_replicas(config) > 1` **and** `session_is_in_memory(...)`, raise a
   clear error naming the `type='lakebase'` fix; refuse to emit the bundle.
-- **FR-4 — Bundle emission (env-only).** When `[tool.apx.agent.deploy]` declares scaling,
-  `_build_databricks_yml` emits an `APX_DECLARED_INSTANCES` env var (= `declared_max_replicas`)
-  into the `config.env` list (~lines 756-766) for the runtime read-back.
-  **De-scoped:** a native Apps horizontal-scaling bundle field is **not** emitted — Databricks
-  SDK 0.102.0's `App` model has no scaling field (only `compute_size`, vertical), and the DABs
-  `resources.apps` schema mirrors it, so instance count is UI/API-only and cannot be declared
-  in `databricks.yml`. Operators set the instance count in the Apps UI (documented in FR-6);
-  apx still carries the declared count forward via the env var so the runtime guard works.
-  Follow-up issue tracks emitting the native field if/when the SDK/bundle gains one.
+- **FR-4 — Bundle emission.** When `[tool.apx.agent.deploy]` declares scaling,
+  `_build_databricks_yml` emits native Apps `compute_min_instances` /
+  `compute_max_instances` fields into `resources.apps.<name>` and also emits an
+  `APX_DECLARED_INSTANCES` env var (= `declared_max_replicas`) into the
+  `config.env` list (~lines 756-766) for the runtime read-back. For fixed
+  `instances = N`, apx emits `min = max = N`; for autoscale it emits the
+  declared bounds. The env remains required because the runtime process cannot
+  introspect its deployed replica count from the Apps environment.
 - **FR-5 — Runtime boot guard (emit-and-read-back).** In the lifespan wiring
   (`_wiring.py` ~1104-1311), read `APX_DECLARED_INSTANCES` (int, default 1). If `> 1` **and**
   `_dev._is_deployed_app()` (on Apps = prod) **and** `session_is_in_memory(...)` → raise,
@@ -108,10 +107,8 @@ cookie only, with explicit guidance not to rely on instance-local state.
 - **FR-6 — Discoverability.** The guardrail error text (both catch points) names
   `[tool.apx.agent.session] type='lakebase'`. `docs/running/sessions-and-memory.md` and
   `docs/deploy/apps-vs-model-serving.md` gain a "Scaling" section covering the deploy block,
-  the durable requirement, the best-effort-affinity caveat, and — because instance count is
-  not declarable in the bundle — a note that operators set the instance count in the
-  Databricks Apps UI (apx carries the declared count via `APX_DECLARED_INSTANCES` for the
-  runtime guard).
+  the durable requirement, the best-effort-affinity caveat, and the emitted native Apps
+  scaling fields plus the `APX_DECLARED_INSTANCES` runtime read-back.
 
 ### Non-functional
 - **NFR-1** — The compile-time and runtime checks add no measurable startup latency (a config
@@ -131,8 +128,8 @@ cookie only, with explicit guidance not to rely on instance-local state.
   plus a combined `scaled_in_memory(...)` used by both guards. Reuse, don't re-derive, the
   existing resolution so backend detection stays in one place.
 - **Compile guard + emission** (`_project_gen.py`): call the predicate in `_build_databricks_yml`
-  before assembling the resource; on violation raise; otherwise inject
-  `APX_DECLARED_INSTANCES` (no native Apps scaling field — see FR-4 / #778).
+  before assembling the resource; on violation raise; otherwise inject native Apps
+  `compute_min_instances` / `compute_max_instances` plus `APX_DECLARED_INSTANCES`.
 - **Runtime guard** (`_wiring.py` lifespan): after stores/checkpointer resolve, evaluate the
   predicate against `APX_DECLARED_INSTANCES` + `_is_deployed_app()`; raise or warn per FR-5.
 
@@ -146,8 +143,8 @@ cookie only, with explicit guidance not to rely on instance-local state.
   # min = 2
   # max = 5
   ```
-- New emitted `APX_DECLARED_INSTANCES` env. Operators set the UI instance count to match
-  `[tool.apx.agent.deploy]`; UI-only scale is not validated. No change to
+- New emitted native Apps `compute_min_instances` / `compute_max_instances` fields,
+  plus `APX_DECLARED_INSTANCES` for runtime read-back. No change to
   `RemoteDatabricksAgent` or any served-endpoint signature.
 
 ### Data model
@@ -171,9 +168,10 @@ cookie only, with explicit guidance not to rely on instance-local state.
   `DATABRICKS_APP_PORT` **raises** unless a checkpointer actually resolved (declaration
   alone is not enough). A stubbed resolved store+checkpointer boots clean.
 - [ ] **AC-5**: Given `[tool.apx.agent.deploy] instances=3`, when `_build_databricks_yml`
-  emits, then the written `databricks.yml` contains an `APX_DECLARED_INSTANCES=3` env entry
-  in the app `config.env` list (verified via `ctk.verify(Artifact(path, must_contain=...))`).
-  (Native Apps scaling field de-scoped per FR-4 — not asserted.)
+  emits, then the written `databricks.yml` contains `compute_min_instances: 3`,
+  `compute_max_instances: 3`, and an `APX_DECLARED_INSTANCES=3` env entry in the
+  app `config.env` list (verified via `ctk.verify(Artifact(path, must_contain=...))`).
+  For autoscale, emitted min/max match the declared bounds.
 - [ ] **AC-6**: Given `[tool.apx.agent.deploy]` with `instances=6` (out of range), or both
   `instances` and `autoscale` set, or `autoscale.min > autoscale.max`, when the config is
   parsed, then a Pydantic validation error is raised.
@@ -181,10 +179,10 @@ cookie only, with explicit guidance not to rely on instance-local state.
 Machine-verifiable fields are mirrored in the Agent Handoff JSON below.
 
 ## Risks
-- **Exact Apps bundle scaling key unknown**: the precise `databricks.yml` field name for Apps
-  horizontal scaling isn't confirmed in-repo. Mitigation: confirm via the databricks-dabs /
-  databricks-apps skill (or `databricks bundle schema`) before implementing FR-4; AC-5 asserts
-  on the confirmed key.
+- **CLI/schema compatibility**: `compute_min_instances` / `compute_max_instances` are currently
+  marked private preview in the Databricks bundle schema, so older CLIs/schemas may reject
+  emitted bundles. Mitigation: document the CLI requirement and validate with `databricks bundle schema`
+  / `databricks bundle validate` during implementation.
 - **Predicate false-positive on `None` checkpointer**: `resolve_checkpointer` returns `None`
   for the in-memory case by design (LangGraph injects `InMemorySaver`). Mitigation: the
   predicate treats `None` checkpointer as in-memory, matching `_chat_agent.py`'s own logic;
@@ -196,8 +194,10 @@ Machine-verifiable fields are mirrored in the Agent Handoff JSON below.
 
 ## Open Questions
 - [x] ~~Confirm the exact Databricks Apps bundle YAML key for horizontal scaling~~ **RESOLVED
-  (2026-09-17):** no such key exists — SDK 0.102.0 `App` has only `compute_size` (vertical);
-  instance count is UI/API-only. FR-4 de-scoped to env-only; AC-5 asserts the env entry.
+  (2026-09-22):** the Databricks bundle schema exposes private-preview
+  `compute_min_instances` / `compute_max_instances` under `resources.App`, even though
+  SDK 0.102.0's Python `App` model still lacks horizontal-scaling fields. FR-4 emits the
+  native bundle fields and AC-5 asserts them.
 
 ## Corrected file references (from Phase A during implementation)
 - InMemorySaver warning site: `_chat_agent.py` **~1095-1110** (not 305-313) — FR-5 dev warn reuses it.
@@ -217,13 +217,13 @@ Machine-verifiable fields are mirrored in the Agent Handoff JSON below.
     "prod boot fails on APX_DECLARED_INSTANCES>1 + on-Apps + in-memory",
     "local dev in-memory boots with warning only",
     "scaled + lakebase boots clean at both catch points",
-    "databricks.yml carries APX_DECLARED_INSTANCES for a declared deploy block",
+    "databricks.yml carries APX_DECLARED_INSTANCES and native Apps compute_min_instances/compute_max_instances for a declared deploy block",
     "deploy-block config validation enforces range/exclusivity"
   ],
   "convergence": {
     "stopping_signal": "cd python && uv run pytest tests/gates/ -q",
     "progress_metric": "failing gate-test count",
-    "known_ceiling": "RESOLVED: Databricks Apps has no declarable horizontal-scaling bundle field (SDK 0.102.0 App = compute_size only). FR-4 de-scoped to emitting APX_DECLARED_INSTANCES env only; instance count is UI/API-only.",
+    "known_ceiling": "RESOLVED: the DABs bundle schema exposes private-preview resources.apps compute_min_instances/compute_max_instances (SDK 0.102.0 App Python model still lacks them). FR-4 emits both the native bounds and the APX_DECLARED_INSTANCES runtime read-back.",
     "re_represented": false
   },
   "acceptance_criteria": [
@@ -231,14 +231,14 @@ Machine-verifiable fields are mirrored in the Agent Handoff JSON below.
     { "id": "AC-2", "description": "runtime lifespan raises when APX_DECLARED_INSTANCES>1 + DATABRICKS_APP_PORT set + in-memory", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac2.py", "gate_test": "test_prod_boot_refuses_scaled_in_memory" },
     { "id": "AC-3", "description": "local dev (no DATABRICKS_APP_PORT) or declared<=1 + in-memory boots with warning, no exception", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac3.py", "gate_test": "test_dev_boot_warns_only" },
     { "id": "AC-4", "description": "scaled + type='lakebase' compiles; runtime raises unless checkpointer actually resolved", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac4.py", "gate_test": "test_scaled_lakebase_compile_clean" },
-    { "id": "AC-5", "description": "emitted databricks.yml contains APX_DECLARED_INSTANCES env entry for declared deploy block (native scaling field de-scoped)", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac5.py", "gate_test": "test_bundle_emits_declared_instances_env" },
+    { "id": "AC-5", "description": "emitted databricks.yml contains native Apps compute_min_instances/compute_max_instances and an APX_DECLARED_INSTANCES env entry for a declared deploy block", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac5.py", "gate_test": "test_bundle_emits_declared_instances_env_and_native_scaling_fields" },
     { "id": "AC-6", "description": "DeployConfig validation: instances range 1-5, instances/autoscale exclusive, autoscale min<=max", "verifiable": true, "test_type": "pytest", "gate_file": "python/tests/gates/test_hscale_readiness_ac6.py", "gate_test": "test_deploy_config_validation" }
   ],
   "must_have": [
     "FR-1 [tool.apx.agent.deploy] DeployConfig(_BackendConfig) with instances(1-5)/autoscale{min,max}, mutually exclusive",
     "FR-2 shared predicate declared_max_replicas + session_is_in_memory reusing resolve_conversation_store/resolve_checkpointer",
     "FR-3 compile/deploy-time guard in _project_gen._build_databricks_yml",
-    "FR-4 emit APX_DECLARED_INSTANCES env into databricks.yml config.env (native scaling field de-scoped: not in SDK/bundle)",
+    "FR-4 emit native Apps compute_min_instances/compute_max_instances plus APX_DECLARED_INSTANCES env into databricks.yml (requires a CLI/bundle schema that accepts the private-preview scaling fields)",
     "FR-5 runtime boot guard in _wiring.py lifespan (~after 1134): read APX_DECLARED_INSTANCES + _is_deployed_app + predicate; raise in prod, warn in dev (reuse _chat_agent.py ~1095-1110 warning)",
     "FR-6 error text names type='lakebase'; docs scaling section"
   ],
