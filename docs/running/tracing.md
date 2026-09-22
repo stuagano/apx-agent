@@ -146,12 +146,12 @@ Every framework-emitted span carries a stable set of `apx.*` attributes. These a
 | `apx.subagent.endpoint` | Remote `/invocations` URL |
 | `apx.subagent.name` | Display name of the sub-agent |
 
-### Watchdog decisions
+### Governance decisions
 | Attribute | Value |
 |---|---|
-| `apx.watchdog.action` | `allow` \| `reject` \| `redact` |
-| `apx.watchdog.policy_id` | Which guard fired |
-| `apx.watchdog.reason` | Human-readable reason |
+| `apx.governance.action` | `allow` \| `reject` \| `redact` |
+| `apx.governance.policy_id` | Which guard fired |
+| `apx.governance.reason` | Human-readable reason |
 
 These attributes flow into `system.access.audit_logs` and workspace-level trace tables on Databricks, so compliance queries don't need agent-specific schemas.
 
@@ -198,8 +198,8 @@ CREATE TABLE agent_traces (
     user_token_provided  BOOLEAN,
     model_endpoint       STRING,
     tool_count           INT,
-    watchdog_action      STRING,    -- allow | reject | redact | NULL
-    watchdog_policy_id   STRING,
+    governance_action      STRING,    -- allow | reject | redact | NULL
+    governance_policy_id   STRING,
     tags                 STRING,    -- JSON of remaining apx.* attrs
     exported_at          TIMESTAMP
 ) USING DELTA
@@ -233,15 +233,15 @@ GROUP BY 1
 ORDER BY calls DESC
 ```
 
-**Watchdog rejections**:
+**Governance rejections**:
 
 ```sql
 SELECT
-  watchdog_policy_id,
-  watchdog_action,
+  governance_policy_id,
+  governance_action,
   count(*) AS events
 FROM main.analytics.agent_traces
-WHERE watchdog_action IN ('reject', 'redact')
+WHERE governance_action IN ('reject', 'redact')
 GROUP BY 1, 2
 ORDER BY events DESC
 ```
@@ -269,5 +269,5 @@ For audit-relevant attributes that need to appear consistently across agents, op
 
 - [Dev UI](../get-started/dev-ui.md) — `/_apx/traces` and other dev surfaces
 - [Evaluate](../evaluate/overview.md) — MLflow experiments and eval results
-- [Guardrails & Safety](../safety/callbacks.md) — watchdog decisions in traces
+- [Guardrails & Safety](../safety/callbacks.md) — governance decisions in traces
 - [Cost tracking](../reference/cost-tracking.md) — `cost_for_agent`, CLI cost surface

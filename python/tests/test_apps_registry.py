@@ -91,7 +91,7 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return {}
 
     monkeypatch.setattr(mlflow.pyfunc, "log_model", _fake_log_model)
-    monkeypatch.setattr("apx_agent._watchdog.set_uc_tags_for_agent", _fake_set_uc_tags)
+    monkeypatch.setattr("apx_agent._governance.set_uc_tags_for_agent", _fake_set_uc_tags)
     return captured
 
 

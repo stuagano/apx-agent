@@ -68,8 +68,8 @@ def test_audit_attrs_namespace() -> None:
         ("TOOL_UC_FUNCTION", "apx.tool.uc_function"),
         ("MODEL_ENDPOINT", "apx.model.endpoint"),
         ("MODEL_INPUT_TOKENS", "apx.model.input_tokens"),
-        ("WATCHDOG_ACTION", "apx.watchdog.action"),
-        ("WATCHDOG_POLICY_ID", "apx.watchdog.policy_id"),
+        ("GOVERNANCE_ACTION", "apx.governance.action"),
+        ("GOVERNANCE_POLICY_ID", "apx.governance.policy_id"),
         ("USER_TOKEN_PROVIDED", "apx.user.token_provided"),
         ("APPROVAL_DECISION", "apx.approval.decision"),
         ("MODEL_VERSION", "apx.model_version"),
@@ -94,12 +94,12 @@ def test_set_audit_attrs_maps_kwargs_to_canonical_keys() -> None:
         span,
         agent_name="triage",
         tool_name="classify_intent",
-        watchdog_action="reject",
+        governance_action="reject",
     )
     keys_set = [c.args[0] for c in span.set_attribute.call_args_list]
     assert "apx.agent.name" in keys_set
     assert "apx.tool.name" in keys_set
-    assert "apx.watchdog.action" in keys_set
+    assert "apx.governance.action" in keys_set
 
 
 def test_set_audit_attrs_maps_approval_decision() -> None:
@@ -115,14 +115,14 @@ def test_set_audit_attrs_skips_none_and_empty() -> None:
         span,
         agent_name="triage",
         tool_name=None,
-        watchdog_reason="",
-        watchdog_policy_id="p-1",
+        governance_reason="",
+        governance_policy_id="p-1",
     )
     keys_set = [c.args[0] for c in span.set_attribute.call_args_list]
     assert "apx.agent.name" in keys_set
-    assert "apx.watchdog.policy_id" in keys_set
+    assert "apx.governance.policy_id" in keys_set
     assert "apx.tool.name" not in keys_set
-    assert "apx.watchdog.reason" not in keys_set
+    assert "apx.governance.reason" not in keys_set
 
 
 def test_set_audit_attrs_no_op_for_none_span() -> None:

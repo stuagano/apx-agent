@@ -6,7 +6,7 @@
  * tool-call frequency, latency P95 per operation, prompt heatmaps,
  * audit-event correlation across users). This exporter periodically
  * copies traces into a Delta table with a flat schema so it can be
- * joined to `system.billing.usage`, watchdog violation tables, etc.
+ * joined to `system.billing.usage`, governance violation tables, etc.
  *
  * Schema (auto-created on first write when `autoCreate=true`):
  *
@@ -22,8 +22,8 @@
  *         user_token_provided BOOLEAN,
  *         model_endpoint  STRING,
  *         tool_count      INT,
- *         watchdog_action STRING,
- *         watchdog_policy_id STRING,
+ *         governance_action STRING,
+ *         governance_policy_id STRING,
  *         tags            STRING,
  *         exported_at     TIMESTAMP
  *     ) USING DELTA
@@ -100,8 +100,8 @@ export interface NormalisedTrace {
   user_token_provided: boolean | null;
   model_endpoint: string | null;
   tool_count: number | null;
-  watchdog_action: string | null;
-  watchdog_policy_id: string | null;
+  governance_action: string | null;
+  governance_policy_id: string | null;
   tags: string;
 }
 
@@ -245,8 +245,8 @@ export function _normaliseTrace(trace: RawTrace): NormalisedTrace | null {
       user_token_provided: coerceBool(attrs['apx.user.token_provided']),
       model_endpoint: coerceStringOrNull(attrs['apx.model.endpoint']),
       tool_count: coerceInt(attrs['apx.tools.count']),
-      watchdog_action: coerceStringOrNull(attrs['apx.watchdog.action']),
-      watchdog_policy_id: coerceStringOrNull(attrs['apx.watchdog.policy_id']),
+      governance_action: coerceStringOrNull(attrs['apx.governance.action']),
+      governance_policy_id: coerceStringOrNull(attrs['apx.governance.policy_id']),
       tags: jsonStringifyApx(attrs),
     };
   }
@@ -282,8 +282,8 @@ export function _normaliseTrace(trace: RawTrace): NormalisedTrace | null {
     user_token_provided: coerceBool(attrs['apx.user.token_provided']),
     model_endpoint: coerceStringOrNull(attrs['apx.model.endpoint']),
     tool_count: coerceInt(attrs['apx.tools.count']),
-    watchdog_action: coerceStringOrNull(attrs['apx.watchdog.action']),
-    watchdog_policy_id: coerceStringOrNull(attrs['apx.watchdog.policy_id']),
+    governance_action: coerceStringOrNull(attrs['apx.governance.action']),
+    governance_policy_id: coerceStringOrNull(attrs['apx.governance.policy_id']),
     tags: jsonStringifyApx(attrs),
   };
 }
@@ -317,8 +317,8 @@ function buildCreateTableDdl(targetTable: string): string {
     '  user_token_provided BOOLEAN,' +
     '  model_endpoint STRING,' +
     '  tool_count INT,' +
-    '  watchdog_action STRING,' +
-    '  watchdog_policy_id STRING,' +
+    '  governance_action STRING,' +
+    '  governance_policy_id STRING,' +
     '  tags STRING,' +
     '  exported_at TIMESTAMP' +
     ') USING DELTA'
@@ -343,8 +343,8 @@ function buildMergeSql(targetTable: string, rows: NormalisedTrace[], nowSeconds:
           : 'FALSE',
       escapeSql(r.model_endpoint),
       r.tool_count !== null ? String(r.tool_count) : 'NULL',
-      escapeSql(r.watchdog_action),
-      escapeSql(r.watchdog_policy_id),
+      escapeSql(r.governance_action),
+      escapeSql(r.governance_policy_id),
       escapeSql(r.tags),
       `CAST(${nowSeconds} AS TIMESTAMP)`,
     ];
@@ -358,7 +358,7 @@ function buildMergeSql(targetTable: string, rows: NormalisedTrace[], nowSeconds:
     ' AS src(' +
     '  trace_id, experiment_id, agent_name, operation, status,' +
     '  start_time_ms, execution_time_ms, session_id, user_token_provided,' +
-    '  model_endpoint, tool_count, watchdog_action, watchdog_policy_id,' +
+    '  model_endpoint, tool_count, governance_action, governance_policy_id,' +
     '  tags, exported_at' +
     ')) src ' +
     'ON target.trace_id = src.trace_id ' +

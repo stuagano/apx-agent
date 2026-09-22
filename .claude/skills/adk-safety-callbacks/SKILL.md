@@ -39,7 +39,7 @@ Don't hand-write what's already declared:
   as a `before_tool` hook for a fixed, well-known tool set — lighter than a
   hand-rolled callback. They raise `PermissionError`; the model adapts.
 - For heavier needs (injection detection, rate limits, audit logging as
-  configuration) use the built-in compliance/Watchdog guards rather than
+  configuration) use the built-in compliance/governance guards rather than
   reimplementing them.
 
 Hand-write a callback only for logic the built-ins don't cover.

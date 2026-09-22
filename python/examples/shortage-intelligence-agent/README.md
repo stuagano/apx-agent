@@ -351,8 +351,8 @@ If Slack webhooks are not configured, reports are logged to the job run output i
 | `LAKEBASE_CONNECTION_URL` | `postgresql+psycopg://user@host:5432/dbname` — password injected via OAuth; stateless when unset |
 | `LAKEBASE_INSTANCE_NAME` | Lakebase instance name for OAuth token rotation (required if `LAKEBASE_CONNECTION_URL` is set) |
 | `LAKEBASE_TABLE` | Session table name within the Lakebase database (default: `apx_sessions`) |
-| `WATCHDOG_MCP_URL` | Watchdog MCP endpoint URL — noop when unset |
-| `WATCHDOG_VIOLATIONS_TABLE` | UC table for watchdog violation reports (`catalog.schema.table`) |
+| `GOVERNANCE_MCP_URL` | Governance MCP endpoint URL — noop when unset |
+| `GOVERNANCE_VIOLATIONS_TABLE` | UC table for governance violation reports (`catalog.schema.table`) |
 
 ---
 
@@ -408,7 +408,7 @@ Migration status:
 | `evalset.jsonl` for `apx-agent eval chain` | ✅ shipped |
 | Extract `classify_shortage_severity` as `@tool(uc=...)` (worked UC-function example) | ✅ shipped |
 | Wire `DeltaConversationStore` (multi-turn) | ✅ shipped 2026-05-25 |
-| Wire `WatchdogGuard` + local guards | ✅ shipped 2026-05-25 |
+| Wire `GovernanceGuard` + local guards | ✅ shipped 2026-05-25 |
 | Move data-fetching tools to `@tool(uc=...)` | ❌ blocked — needs user-scoped OBO |
 
 ### Deploy via the canonical flow
@@ -427,7 +427,7 @@ By default `apx-agent agents deploy` runs the full canonical flow in one command
 1. `publish_tools_to_uc(agent)` — register any `@tool(uc=...)` decorated tools (currently `classify_shortage_severity`).
 2. `log_agent(agent, ...)` — log the compiled ChatAgent + auto-derived MLflow resources, register a model version in UC.
 3. `databricks.agents.deploy(...)` — promote the registered version to a Model Serving endpoint.
-4. `set_uc_tags_for_agent(...)` — write `apx.agent.*` UC tags so the agent shows up in `apx-agent agents list`, `apx-agent uc topology`, and watchdog's crawler.
+4. `set_uc_tags_for_agent(...)` — write `apx.agent.*` UC tags so the agent shows up in `apx-agent agents list`, `apx-agent uc topology`, and governance's crawler.
 
 Toggle individual stages with `--no-publish-tools`, `--no-deploy`, or `--no-set-uc-tags`. Model / experiment / agent-name defaults live in `[tool.apx.agent]` in `pyproject.toml`, so once configured you can just run `apx-agent agents deploy --name main.agents.shortage_intelligence`.
 

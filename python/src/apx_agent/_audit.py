@@ -1,7 +1,7 @@
 """Audit log attributes — a stable span-attribute schema for every apx-agent trace.
 
 Every framework-emitted MLflow span carries a consistent set of
-``apx.*`` attributes so downstream consumers (watchdog, compliance
+``apx.*`` attributes so downstream consumers (governance, compliance
 dashboards, ad-hoc SQL over the traces table) can query without
 parsing agent-specific schemas.
 
@@ -17,8 +17,8 @@ Where attributes get set:
     name when set, input keys, output type, duration.
   * Model call lifecycle (``_callbacks.py``) — model endpoint,
     input/output token counts when the LLM returns them.
-  * Watchdog decisions (``_watchdog.py``) — when a guard rejects or
-    redacts, the watchdog action / policy_id / reason / domain land
+  * Governance decisions (``_governance.py``) — when a guard rejects or
+    redacts, the governance action / policy_id / reason / domain land
     on the active span so the trace records *why* the call was gated.
   * Cross-agent boundary (``_remote.py`` / ``_invocations.py`` / ``_a2a.py``,
     issue #443) — the caller sends ``traceparent`` + ``x-apx-caller`` and
@@ -31,7 +31,7 @@ happened* (operation, identity, scope, decision) without logging raw
 inputs or outputs. Use ``hash_for_audit`` to record presence /
 fingerprint without exfiltrating content.
 
-Watchdog (and other consumers) can read these from system tables that
+Governance (and other consumers) can read these from system tables that
 surface MLflow trace attributes — e.g. ``system.access.audit_logs``
 or workspace-level trace tables — without needing to know anything
 about specific agents.
@@ -112,13 +112,13 @@ class AuditAttrs:
     RESOURCE_KINDS = "apx.resources.kinds"
     RESOURCE_COUNT = "apx.resources.count"
 
-    # Watchdog runtime decisions
-    WATCHDOG_ACTION = "apx.watchdog.action"  # allow | reject | redact
-    WATCHDOG_POLICY_ID = "apx.watchdog.policy_id"
-    WATCHDOG_REASON = "apx.watchdog.reason"
-    WATCHDOG_DOMAIN = "apx.watchdog.domain"
+    # Governance runtime decisions
+    GOVERNANCE_ACTION = "apx.governance.action"  # allow | reject | redact
+    GOVERNANCE_POLICY_ID = "apx.governance.policy_id"
+    GOVERNANCE_REASON = "apx.governance.reason"
+    GOVERNANCE_DOMAIN = "apx.governance.domain"
 
-    # Tool-scope ceiling decisions (ScopeGuard). Mirrors the WATCHDOG_* pair:
+    # Tool-scope ceiling decisions (ScopeGuard). Mirrors the GOVERNANCE_* pair:
     # names/reasons/object identifiers only — never raw args or SQL bodies.
     SCOPE_ACTION = "apx.scope.action"  # deny
     SCOPE_REASON = "apx.scope.reason"
@@ -182,10 +182,10 @@ _KWARG_TO_KEY: dict[str, str] = {
     "subagent_name": AuditAttrs.SUBAGENT_NAME,
     "resource_kinds": AuditAttrs.RESOURCE_KINDS,
     "resource_count": AuditAttrs.RESOURCE_COUNT,
-    "watchdog_action": AuditAttrs.WATCHDOG_ACTION,
-    "watchdog_policy_id": AuditAttrs.WATCHDOG_POLICY_ID,
-    "watchdog_reason": AuditAttrs.WATCHDOG_REASON,
-    "watchdog_domain": AuditAttrs.WATCHDOG_DOMAIN,
+    "governance_action": AuditAttrs.GOVERNANCE_ACTION,
+    "governance_policy_id": AuditAttrs.GOVERNANCE_POLICY_ID,
+    "governance_reason": AuditAttrs.GOVERNANCE_REASON,
+    "governance_domain": AuditAttrs.GOVERNANCE_DOMAIN,
     "scope_action": AuditAttrs.SCOPE_ACTION,
     "scope_reason": AuditAttrs.SCOPE_REASON,
     "scope_object": AuditAttrs.SCOPE_OBJECT,

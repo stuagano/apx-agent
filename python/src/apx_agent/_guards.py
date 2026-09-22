@@ -4,23 +4,23 @@ apx-agent's hook surface (``input_guardrails``, ``before_tool``,
 ``before_model``) wants pre-built callables for the most common
 runtime checks: rate limit a tool by user, reject obvious prompt
 injection, gate a tool to an allowlist. These guards are deliberately
-*not* a competing policy engine — Watchdog handles compliance posture
+*not* a competing policy engine — Governance handles compliance posture
 (cross-domain policies, violation tracking, ontology). What lives
 here is the in-process zero-latency layer: no network hop, no
 database, just a function call.
 
-Pair with WatchdogGuard for layered governance::
+Pair with GovernanceGuard for layered governance::
 
     agent = Agent(
         ...,
         input_guardrails=[
             prompt_injection_heuristic(),     # fast local check
-            WatchdogGuard(watchdog).for_input(),  # slower full posture eval
+            GovernanceGuard(governance).for_input(),  # slower full posture eval
         ],
         before_tool=compose(
             RateLimit(per_minute=60),
             ToolAllowlist({"classify_intent", "get_recent_orders"}),
-            WatchdogGuard(watchdog).for_tool(),
+            GovernanceGuard(governance).for_tool(),
         ),
     )
 
@@ -158,7 +158,7 @@ class RateLimit:
 
 # Common injection patterns. Intentionally small and conservative — this is
 # a fast-path heuristic, not a full classifier. False negatives are expected;
-# downstream (Watchdog, LLM-as-judge) catches what slips through. False
+# downstream (Governance, LLM-as-judge) catches what slips through. False
 # positives matter more, so patterns require some specificity.
 _INJECTION_PATTERNS = [
     re.compile(r"ignore (?:all (?:your )?)?(?:previous|prior|above) (?:instructions|prompts|rules)", re.IGNORECASE),
@@ -187,7 +187,7 @@ def prompt_injection_heuristic(
     Pass custom ``patterns`` to extend or replace the default set. The
     defaults are deliberately small and high-specificity — false
     positives hurt UX more than false negatives, and the slower-loop
-    layer (Watchdog) is meant to catch the long tail.
+    layer (Governance) is meant to catch the long tail.
 
     Example::
 
@@ -249,7 +249,7 @@ def _texts_from_messages(messages: Any) -> list[str]:
 class ToolAllowlist:
     """Reject any tool call whose name isn't in the allowlist.
 
-    Plugs into ``before_tool``. Cheaper than a Watchdog round-trip for
+    Plugs into ``before_tool``. Cheaper than a Governance round-trip for
     a fixed, well-known set of allowed tools.
     """
 
@@ -375,7 +375,7 @@ def compose(*callbacks: Callable[..., Any]) -> Callable[..., Any]:
         before_tool=compose(
             RateLimit(per_minute=60),
             ToolAllowlist({"classify_intent"}),
-            WatchdogGuard(watchdog).for_tool(),
+            GovernanceGuard(governance).for_tool(),
         )
     """
     cb_list = list(callbacks)

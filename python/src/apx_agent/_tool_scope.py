@@ -12,7 +12,7 @@ its two enforcement points, and the runtime error:
     module's existing config-error idiom) naming the tool + the offending
     identifier.
   * **Runtime** — :class:`ScopeGuard` is a ``before_tool`` guard (sibling of
-    ``WatchdogGuard.for_tool()``). It best-effort inspects well-known UC arg
+    ``GovernanceGuard.for_tool()``). It best-effort inspects well-known UC arg
     names and ``secret_scope``; declared ResourceSpecs
     are *not* re-checked here (compile-time already refused any that were
     over-scope). Unqualified identifiers (``table_name="ledger"``) are a v1
@@ -372,9 +372,9 @@ class ScopeGuard:
     Out of scope → :class:`ScopeDenied`, an audit event on the active span,
     and a WARNING log. A tool with no scope is a strict no-op (back-compat).
 
-    Sibling of ``WatchdogGuard.for_tool()``::
+    Sibling of ``GovernanceGuard.for_tool()``::
 
-        before_tool=compose(WatchdogGuard(wd).for_tool(), ScopeGuard(tools).for_tool())
+        before_tool=compose(GovernanceGuard(wd).for_tool(), ScopeGuard(tools).for_tool())
     """
 
     def __init__(self, tools: Iterable[Any] | Callable[[], Iterable[Any]]) -> None:
@@ -415,7 +415,7 @@ class ScopeGuard:
         logger.warning("scope_denied: tool %r may not touch %s — %s", tool_name, obj, reason)
         raise ScopeDenied(f"scope_denied: tool {tool_name!r} may not touch {obj!r} ({reason})")
 
-    def for_tool(self):  # noqa: ANN201 — matches WatchdogGuard.for_tool return shape
+    def for_tool(self):  # noqa: ANN201 — matches GovernanceGuard.for_tool return shape
         """Return a ``before_tool``-compatible callable ``(name, args) -> None``."""
 
         def _check(tool_name: str, args: dict[str, Any]) -> None:

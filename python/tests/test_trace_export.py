@@ -41,7 +41,7 @@ def test_normalise_dataframe_row() -> None:
             "apx.user.token_provided": True,
             "apx.model.endpoint": "databricks-claude-sonnet-4-6",
             "apx.tools.count": 5,
-            "apx.watchdog.action": "allow",
+            "apx.governance.action": "allow",
         },
         "status": "OK",
         "timestamp_ms": 1700000000000,
@@ -56,7 +56,7 @@ def test_normalise_dataframe_row() -> None:
     assert norm["user_token_provided"] is True
     assert norm["model_endpoint"] == "databricks-claude-sonnet-4-6"
     assert norm["tool_count"] == 5
-    assert norm["watchdog_action"] == "allow"
+    assert norm["governance_action"] == "allow"
 
 
 def test_normalise_trace_object() -> None:

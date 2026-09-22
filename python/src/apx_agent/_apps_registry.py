@@ -179,7 +179,7 @@ def register_apps_manifest(
     from mlflow.models import ModelSignature
     from mlflow.types.schema import ColSpec, Schema
 
-    from ._watchdog import set_uc_tags_for_agent
+    from ._governance import set_uc_tags_for_agent
 
     pyfunc: Any = mlflow.pyfunc
 
@@ -235,7 +235,7 @@ def register_apps_manifest(
             _set_model_version_tag_with_retry(client, uc_name, version, key, value)
 
         # Registered-model-level discovery tags (apx.agent.*) so the manifest
-        # shows up in `apx agents list` / topology / watchdog, same as a serving
+        # shows up in `apx agents list` / topology / governance, same as a serving
         # deploy.
         set_uc_tags_for_agent(
             agent, registered_model_name=uc_name, model=model, name=agent_name,

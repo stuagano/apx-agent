@@ -305,7 +305,7 @@ def _build_chat_databricks(
 def _governance_exception_middleware() -> Any:
     """Middleware that converts governance exceptions into tool error results.
 
-    ``before_tool`` guards (Watchdog reject, PolicyGate DENY/ASK) and
+    ``before_tool`` guards (Governance reject, PolicyGate DENY/ASK) and
     cancellable tools signal via exceptions — ``PermissionError`` (incl.
     ``ApprovalRequired``) and ``ToolCancelled``. A tool author also opts a
     plain operational failure into containment by raising ``ToolError`` (#562):

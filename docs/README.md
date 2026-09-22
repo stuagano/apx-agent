@@ -47,7 +47,7 @@
 
 - [safety/callbacks.md](safety/callbacks.md) — `before_tool`, `before_model`, `before_agent_callback`, `after_*` hooks
 - [safety/identity-passthrough.md](safety/identity-passthrough.md) — OBO token propagation; each caller runs as themselves
-- [safety/compliance.md](safety/compliance.md) — Watchdog integration, audit log, `GuardrailsConfig`, `WatchdogGuard`
+- [safety/compliance.md](safety/compliance.md) — Governance integration, audit log, `GuardrailsConfig`, `GovernanceGuard`
 
 ## Observability
 

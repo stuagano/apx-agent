@@ -4,7 +4,7 @@
 inner `LlmAgent` via a raw `create_agent(...)` instead of routing through
 `_compile_llm_agent`. That silently dropped the inner agent's governance
 middleware (`_governance_exception_middleware`), callback handler, `state_schema`,
-and generation config — so a PolicyGate/Watchdog guard declared on an agent
+and generation config — so a PolicyGate/Governance guard declared on an agent
 stopped firing the moment it was wrapped in a loop or handoff, and an
 `ApprovalRequired`/`ToolCancelled` raised inside re-propagated unhandled.
 

@@ -607,7 +607,7 @@ def test_align_judge_no_feedback_records_still_remaps(monkeypatch):
 
 @pytest.mark.unit
 def test_set_uc_tags_includes_experiment_id():
-    from apx_agent import _watchdog
+    from apx_agent import _governance
 
     class FakeClient:
         def __init__(self):
@@ -620,11 +620,11 @@ def test_set_uc_tags_includes_experiment_id():
 
     client = FakeClient()
     # emit_agent_metadata needs a real-ish agent; patch it to a minimal dict.
-    import apx_agent._watchdog as w
+    import apx_agent._governance as w
     orig = w.emit_agent_metadata
     w.emit_agent_metadata = lambda agent, name=None, model=None: {"name": "payroll", "model": "m"}
     try:
-        _watchdog.set_uc_tags_for_agent(
+        _governance.set_uc_tags_for_agent(
             FakeAgent(), registered_model_name="c.s.payroll",
             experiment_id="555", mlflow_client=client,
         )

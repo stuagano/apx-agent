@@ -54,7 +54,7 @@ apx deploy --target model-serving --name main.agents.account_lookup
 - [Configuration](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/reference/configuration.md): pyproject.toml [tool.apx.agent] section, env vars, settings
 - [Lakebase Recipe](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/running/lakebase-recipe.md): Provisioning, pgvector, pool tuning, OAuth token rotation
 - [Evaluation](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/evaluate/overview.md): apx eval, evalset.jsonl, MLflow experiments, custom judges
-- [Compliance](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/safety/compliance.md): WatchdogGuard adapter, audit log schema, local guards (RateLimit, ToolAllowlist, prompt_injection_heuristic)
+- [Compliance](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/safety/compliance.md): GovernanceGuard adapter, audit log schema, local guards (RateLimit, ToolAllowlist, prompt_injection_heuristic)
 - [Cost Tracking + Callbacks](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/reference/cost-tracking.md): Cost callbacks, token tracking, usage hooks
 - [Hub + Agent Publishing](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/reference/hub.md): apx publish, agent registry, AgentHub UI
 - [Ecosystem](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/reference/ecosystem.md): How apx-agent fits among Mosaic AI Agent Framework, MLflow, ai_query, and other Databricks AI tools

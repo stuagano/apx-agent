@@ -8,24 +8,24 @@ assistants to query and act on governance posture.
 
 The integration has three wire-protocol contracts, all answered now:
 
-  1. **Metadata shape**: UC tags on the registered model. Watchdog's
+  1. **Metadata shape**: UC tags on the registered model. databricks-watchdog's
      crawler reads tags off the model record. ``set_uc_tags_for_agent``
      writes them.
-  2. **Runtime policy decisions**: watchdog's MCP tools.
+  2. **Runtime policy decisions**: databricks-watchdog's MCP tools.
      ``make_mcp_transport`` produces a transport that calls a named
      MCP tool with the operation context.
-  3. **Violation reports**: an INSERT into a watchdog-owned UC Delta
+  3. **Violation reports**: an INSERT into a databricks-watchdog-owned UC Delta
      table. ``make_uc_violation_writer`` produces a transport that
      handles ``violation_report`` requests.
 
 Three public pieces sit on top of those:
 
-  * ``WatchdogClient`` — adapter that dispatches evaluate /
+  * ``GovernanceClient`` — adapter that dispatches evaluate /
     report_violation calls through a pluggable ``transport`` callable.
     Default transport is a no-op stub so this module is safe to import
-    without a real watchdog wired up.
+    without a real governance wired up.
 
-  * ``WatchdogGuard`` — produces callables for the existing apx-agent
+  * ``GovernanceGuard`` — produces callables for the existing apx-agent
     hooks (``input_guardrails``, ``output_guardrails``, ``before_tool``,
     ``before_model``). Reject short-circuits; redact rewrites; allow
     passes through. Violation reports fire automatically on reject /
@@ -38,8 +38,8 @@ Three public pieces sit on top of those:
 Wiring it up end-to-end::
 
     from apx_agent import (
-        Agent, WatchdogClient, WatchdogGuard,
-        make_watchdog_transport, set_uc_tags_for_agent,
+        Agent, GovernanceClient, GovernanceGuard,
+        make_governance_transport, set_uc_tags_for_agent,
     )
 
     # 1. One-time at deploy: emit metadata as UC tags
@@ -50,17 +50,17 @@ Wiring it up end-to-end::
     )
 
     # 2. Runtime: combined transport (MCP for evaluate + UC table for violations)
-    transport = make_watchdog_transport(
-        mcp_url="https://watchdog.example.com/mcp",
+    transport = make_governance_transport(
+        mcp_url="https://governance.example.com/mcp",
         mcp_tool_name="evaluate_operation",
-        violations_table="main.watchdog.runtime_violations",
+        violations_table="main.governance.runtime_violations",
         ws=ws,
         warehouse_id="wh-prod",
     )
-    watchdog = WatchdogClient(transport=transport)
+    governance = GovernanceClient(transport=transport)
 
     # 3. Bridge to agent hooks
-    guard = WatchdogGuard(watchdog, agent_name="customer_triage")
+    guard = GovernanceGuard(governance, agent_name="customer_triage")
     agent = Agent(
         ...,
         input_guardrails=[guard.for_input()],
@@ -87,8 +87,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _record_decision_on_span(decision: "WatchdogDecision", agent_name: str | None) -> None:
-    """Set apx.watchdog.* audit attributes on the currently active span.
+def _record_decision_on_span(decision: "GovernanceDecision", agent_name: str | None) -> None:
+    """Set apx.governance.* audit attributes on the currently active span.
 
     Only fires when the decision is non-allow — allow is the default and
     doesn't merit a trace annotation. No-op when no span is active.
@@ -97,10 +97,10 @@ def _record_decision_on_span(decision: "WatchdogDecision", agent_name: str | Non
         return
     set_audit_attrs(
         current_active_span(),
-        watchdog_action=decision.action,
-        watchdog_reason=decision.reason,
-        watchdog_policy_id=decision.policy_id,
-        watchdog_domain=decision.domain,
+        governance_action=decision.action,
+        governance_reason=decision.reason,
+        governance_policy_id=decision.policy_id,
+        governance_domain=decision.domain,
         agent_name=agent_name,
     )
 
@@ -111,8 +111,8 @@ def _record_decision_on_span(decision: "WatchdogDecision", agent_name: str | Non
 
 
 @dataclass(frozen=True)
-class WatchdogDecision:
-    """A single policy decision returned by watchdog.
+class GovernanceDecision:
+    """A single policy decision returned by governance.
 
     Attributes:
         action: One of ``"allow"``, ``"reject"``, ``"redact"``. Defaults
@@ -120,15 +120,15 @@ class WatchdogDecision:
             pass-through decision.
         reason: Human-readable explanation surfaced to the user (when
             ``action`` is ``"reject"``) or attached as a violation reason.
-        policy_id: Watchdog's identifier for the policy that produced
+        policy_id: databricks-watchdog's identifier for the policy that produced
             this decision. Pass back when reporting violations so
-            watchdog can aggregate by policy.
+            governance can aggregate by policy.
         domain: Governance domain (``"security"``, ``"data_quality"``,
             ``"cost"``, ``"agent"``, etc.) for trace attribution.
         redacted_content: When ``action="redact"``, the rewritten content
             (e.g. PII stripped). When absent or empty, callers fall back
             to the original content unchanged.
-        metadata: Free-form dict for additional context watchdog wants
+        metadata: Free-form dict for additional context governance wants
             to surface (owner email, remediation link, etc.).
     """
 
@@ -161,15 +161,15 @@ def _normalise_action(raw: Any) -> str:
         if candidate in _CANONICAL_ACTIONS:
             return candidate
     logger.warning(
-        "Watchdog returned non-canonical action %r — failing closed (reject).",
+        "Governance returned non-canonical action %r — failing closed (reject).",
         raw,
     )
     return "reject"
 
 
 # Transport callable shape: receives a request dict, returns a dict the
-# WatchdogClient parses into a WatchdogDecision. Plugged in by callers
-# once the watchdog-side wire protocol is pinned down.
+# GovernanceClient parses into a GovernanceDecision. Plugged in by callers
+# once the governance-side wire protocol is pinned down.
 TransportFn = Callable[[dict[str, Any]], dict[str, Any]]
 
 
@@ -177,7 +177,7 @@ def _run_coro_blocking(make_coro: Callable[[], Any], timeout: float) -> Any:
     """Run an async call to completion from a sync caller, loop-safe.
 
     ``asyncio.run`` raises ``RuntimeError`` if an event loop is already running
-    on this thread — which happens when the (sync) watchdog guard is invoked
+    on this thread — which happens when the (sync) governance guard is invoked
     from an async serving path. That error used to be swallowed into an
     allow decision, silently disabling governance. Detect an active loop and run
     the coroutine on a dedicated thread with its own loop instead, so the call
@@ -203,7 +203,7 @@ def _run_coro_blocking(make_coro: Callable[[], Any], timeout: float) -> Any:
 def _noop_transport(_request: dict[str, Any]) -> dict[str, Any]:
     """Default transport — allow everything, report nothing.
 
-    Returns the shape ``WatchdogClient`` expects for an allow decision.
+    Returns the shape ``GovernanceClient`` expects for an allow decision.
     Used until a real transport is wired in.
     """
     return {"action": "allow"}
@@ -214,16 +214,16 @@ def _noop_transport(_request: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-class WatchdogClient:
+class GovernanceClient:
     """Adapter for talking to a databricks-watchdog deployment.
 
     Args:
-        endpoint: The watchdog HTTP / MCP endpoint URL. Stored for
+        endpoint: The governance HTTP / MCP endpoint URL. Stored for
             future use; the default transport doesn't consult it.
         transport: Optional transport callable taking a request dict
             and returning a decision dict. When omitted, a no-op
             allow-everything transport is used so this module is safe
-            to import and exercise before watchdog's wire API is
+            to import and exercise before governance's wire API is
             finalized.
 
     Subclass to replace ``evaluate`` / ``report_violation`` entirely
@@ -242,7 +242,7 @@ class WatchdogClient:
         # A configured governance gate that can't be reached should block, not
         # silently allow (fail-open governance is worse than none). Set
         # fail_closed=False to restore fail-open for availability-first setups.
-        # The default noop transport never errors, so no-watchdog is unaffected.
+        # The default noop transport never errors, so no-governance is unaffected.
         self._fail_closed = fail_closed
 
     def evaluate(
@@ -250,12 +250,12 @@ class WatchdogClient:
         *,
         operation: str,
         context: dict[str, Any] | None = None,
-    ) -> WatchdogDecision:
-        """Ask watchdog whether ``operation`` should proceed.
+    ) -> GovernanceDecision:
+        """Ask governance whether ``operation`` should proceed.
 
         Args:
             operation: A stable operation key — ``"input_message"``,
-                ``"tool_call"``, ``"model_call"``, etc. Watchdog uses
+                ``"tool_call"``, ``"model_call"``, etc. Governance uses
                 this plus the context to route to the right policy
                 evaluator.
             context: Operation-specific context (the tool name, args,
@@ -263,7 +263,7 @@ class WatchdogClient:
                 to the transport.
 
         Returns:
-            A ``WatchdogDecision``. On transport failure (or a non-decision
+            A ``GovernanceDecision``. On transport failure (or a non-decision
             response) it fails **closed** — ``reject`` — by default, so a
             configured-but-unreachable governance gate blocks rather than
             silently allowing. Construct with ``fail_closed=False`` to restore
@@ -277,23 +277,23 @@ class WatchdogClient:
             response = self._transport(request)
         except Exception as e:
             logger.warning(
-                "Watchdog transport failed for operation %s: %s — failing %s.",
+                "Governance transport failed for operation %s: %s — failing %s.",
                 operation, e, "closed (reject)" if self._fail_closed else "open (allow)",
             )
             if self._fail_closed:
-                return WatchdogDecision(action="reject", reason=f"watchdog unreachable: {e}")
-            return WatchdogDecision(action="allow", reason=f"watchdog transport error: {e}")
+                return GovernanceDecision(action="reject", reason=f"governance unreachable: {e}")
+            return GovernanceDecision(action="allow", reason=f"governance transport error: {e}")
         if not isinstance(response, dict):
             logger.warning(
-                "Watchdog transport returned %s, expected a decision dict — failing %s.",
+                "Governance transport returned %s, expected a decision dict — failing %s.",
                 type(response), "closed (reject)" if self._fail_closed else "open (allow)",
             )
             if self._fail_closed:
-                return WatchdogDecision(
-                    action="reject", reason="watchdog returned a non-decision response"
+                return GovernanceDecision(
+                    action="reject", reason="governance returned a non-decision response"
                 )
-            return WatchdogDecision(action="allow")
-        return WatchdogDecision(
+            return GovernanceDecision(action="allow")
+        return GovernanceDecision(
             action=_normalise_action(response.get("action", "allow")),
             reason=response.get("reason"),
             policy_id=response.get("policy_id"),
@@ -304,12 +304,12 @@ class WatchdogClient:
 
     def report_violation(
         self,
-        decision: WatchdogDecision,
+        decision: GovernanceDecision,
         context: dict[str, Any] | None = None,
     ) -> None:
-        """Report a runtime block / redaction back to watchdog.
+        """Report a runtime block / redaction back to governance.
 
-        Used so the watchdog compliance dashboard reflects what actually
+        Used so the governance compliance dashboard reflects what actually
         happened at runtime, not just what static crawls discovered.
         Failures are logged-and-continued — the agent doesn't have a
         useful response to "I couldn't report a violation".
@@ -328,7 +328,7 @@ class WatchdogClient:
         try:
             self._transport(payload)
         except Exception as e:
-            logger.warning("Watchdog violation report failed: %s", e)
+            logger.warning("Governance violation report failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -336,15 +336,15 @@ class WatchdogClient:
 # ---------------------------------------------------------------------------
 
 
-class WatchdogGuard:
-    """Bridge ``WatchdogClient`` decisions into apx-agent's hook callables.
+class GovernanceGuard:
+    """Bridge ``GovernanceClient`` decisions into apx-agent's hook callables.
 
     Usage::
 
-        from apx_agent import Agent, WatchdogClient, WatchdogGuard
+        from apx_agent import Agent, GovernanceClient, GovernanceGuard
 
-        watchdog = WatchdogClient(transport=my_transport)
-        guard = WatchdogGuard(watchdog, agent_name="customer_triage")
+        governance = GovernanceClient(transport=my_transport)
+        guard = GovernanceGuard(governance, agent_name="customer_triage")
 
         agent = Agent(
             ...,
@@ -361,13 +361,13 @@ class WatchdogGuard:
 
     def __init__(
         self,
-        client: WatchdogClient,
+        client: GovernanceClient,
         *,
         agent_name: str | None = None,
         cancel_registry: "Any | None" = None,
     ) -> None:
         """
-        :param client: The :class:`WatchdogClient` to consult on each hook.
+        :param client: The :class:`GovernanceClient` to consult on each hook.
         :param agent_name: Friendly agent name attached to every evaluate /
             report context, e.g. ``"customer_triage"``.
         :param cancel_registry: Optional
@@ -389,7 +389,7 @@ class WatchdogGuard:
         base.update(extra)
         return base
 
-    def _cancel_inflight(self, decision: "WatchdogDecision") -> None:
+    def _cancel_inflight(self, decision: "GovernanceDecision") -> None:
         """Cancel all registered in-flight tool calls after a reject.
 
         No-op when no registry is wired. Cancellation failures must never
@@ -401,10 +401,10 @@ class WatchdogGuard:
         if self.cancel_registry is None:
             return
         try:
-            reason = f"Watchdog violation: {decision.reason or decision.policy_id or 'policy reject'}"
+            reason = f"Governance violation: {decision.reason or decision.policy_id or 'policy reject'}"
             self.cancel_registry.cancel_all(reason)
         except Exception:
-            logger.exception("cancel_all after Watchdog reject failed")
+            logger.exception("cancel_all after Governance reject failed")
 
     def for_input(self) -> Callable[[Any], str | None]:
         """Return an ``input_guardrails``-compatible callable.
@@ -425,7 +425,7 @@ class WatchdogGuard:
                     self._context(messages=_summarise_messages(messages)),
                 )
                 self._cancel_inflight(decision)
-                return decision.reason or "Request blocked by Watchdog policy."
+                return decision.reason or "Request blocked by Governance policy."
             return None
         return _check
 
@@ -434,7 +434,7 @@ class WatchdogGuard:
 
         Signature: ``(text) -> str | None`` — return ``None`` to let the
         response through, return a string to replace the response. When
-        watchdog returns ``action="redact"`` and ``redacted_content`` is
+        governance returns ``action="redact"`` and ``redacted_content`` is
         set, the redacted content replaces the response.
         """
         def _check(text: str) -> str | None:
@@ -446,7 +446,7 @@ class WatchdogGuard:
             if decision.action == "reject":
                 self.client.report_violation(decision, self._context())
                 self._cancel_inflight(decision)
-                return decision.reason or "Response blocked by Watchdog policy."
+                return decision.reason or "Response blocked by Governance policy."
             if decision.action == "redact" and decision.redacted_content:
                 self.client.report_violation(decision, self._context())
                 return decision.redacted_content
@@ -471,7 +471,7 @@ class WatchdogGuard:
                 )
                 self._cancel_inflight(decision)
                 raise PermissionError(
-                    decision.reason or f"Tool {tool_name!r} blocked by Watchdog policy."
+                    decision.reason or f"Tool {tool_name!r} blocked by Governance policy."
                 )
         return _check
 
@@ -490,7 +490,7 @@ class WatchdogGuard:
                 self.client.report_violation(decision, self._context())
                 self._cancel_inflight(decision)
                 raise PermissionError(
-                    decision.reason or "Model call blocked by Watchdog policy."
+                    decision.reason or "Model call blocked by Governance policy."
                 )
         return _check
 
@@ -506,12 +506,12 @@ def emit_agent_metadata(
     name: str | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
-    """Produce the agent's crawler-facing metadata for watchdog.
+    """Produce the agent's crawler-facing metadata for governance.
 
-    Returns a JSON-serializable dict suitable for posting to watchdog's
+    Returns a JSON-serializable dict suitable for posting to governance's
     crawl endpoint, writing as an MLflow tag, or persisting to a UC
     manifest table. The exact destination depends on which integration
-    shape watchdog accepts (one of the open questions in the gap plan).
+    shape governance accepts (one of the open questions in the gap plan).
 
     The returned shape:
 
@@ -583,7 +583,7 @@ def emit_agent_metadata(
 def _summarise_messages(messages: Any) -> dict[str, Any]:
     """Compress a message list into a summary suitable for the context dict.
 
-    Avoids shipping full message bodies to watchdog on every call.
+    Avoids shipping full message bodies to governance on every call.
     """
     if not isinstance(messages, list):
         return {"count": 0}
@@ -600,7 +600,7 @@ def _count_prompts(prompts: Any) -> int:
 
 
 # ---------------------------------------------------------------------------
-# UC tags writer — metadata that watchdog's crawler reads
+# UC tags writer — metadata that databricks-watchdog's crawler reads
 # ---------------------------------------------------------------------------
 
 
@@ -620,7 +620,7 @@ def _build_uc_tag_payload(metadata: dict[str, Any]) -> dict[str, str]:
     """Render an emit_agent_metadata() dict into the apx.agent.* UC tag set.
 
     The structured fields (tools / sub_agents / resources) are JSON-encoded
-    so watchdog can parse the full shape. Scalar fields (name / model) get
+    so governance can parse the full shape. Scalar fields (name / model) get
     flat string tags so they're queryable by direct equality from UC.
     """
     import json
@@ -643,7 +643,7 @@ def _build_uc_tag_payload(metadata: dict[str, Any]) -> dict[str, str]:
         "apx.agent.resources": _truncate(json.dumps(resources)),
         "apx.agent.metadata": _truncate(json.dumps(metadata, default=str)),
     }
-    # Drop empty values — UC rejects tags with empty keys, and watchdog
+    # Drop empty values — UC rejects tags with empty keys, and governance
     # doesn't gain anything from "apx.agent.sub_agents = ''".
     return {k: v for k, v in tags.items() if v}
 
@@ -659,7 +659,7 @@ def set_uc_tags_for_agent(
 ) -> dict[str, str]:
     """Write the agent's metadata as UC tags on its registered model.
 
-    These tags are what watchdog's crawler reads to discover agents and
+    These tags are what databricks-watchdog's crawler reads to discover agents and
     their declared resources. Run this at deploy time (typically right
     after ``databricks.agents.deploy(...)`` succeeds) so the dashboard
     picks up the new agent on the next crawl.
@@ -741,10 +741,10 @@ def make_uc_violation_writer(
 ) -> TransportFn:
     """Return a transport that handles only ``violation_report`` requests.
 
-    Inserts a row into the watchdog runtime-violations Delta table per
+    Inserts a row into the governance runtime-violations Delta table per
     report. Non-violation-report requests (evaluate calls) pass through
     as no-op allow decisions so this transport can be composed with an
-    evaluate transport via ``make_watchdog_transport``.
+    evaluate transport via ``make_governance_transport``.
 
     Schema (auto-created when ``auto_create=True`` on first use)::
 
@@ -761,13 +761,13 @@ def make_uc_violation_writer(
         ) USING DELTA
 
     Args:
-        violations_table: Three-part UC name of the Delta table watchdog
+        violations_table: Three-part UC name of the Delta table governance
             reads from.
         ws: ``WorkspaceClient`` used for the SQL Statements API.
         warehouse_id: Optional SQL warehouse. When omitted, the SDK
             auto-discovers one.
         auto_create: Create the violations table on first use. Set
-            ``False`` when watchdog provisions the table out-of-band.
+            ``False`` when governance provisions the table out-of-band.
     """
     import json
     import time
@@ -860,18 +860,18 @@ def make_mcp_transport(
     """Return a transport that calls Guardrails MCP ``evaluate_operation``.
 
     Uses the streamable-HTTP MCP client (``mcp.client.streamable_http``)
-    to connect to the Guardrails MCP endpoint (Watchdog's runtime
+    to connect to the Guardrails MCP endpoint (databricks-watchdog's runtime
     enforcement surface), invoke ``tool_name`` with the operation
     context, and parse the result into the response shape
-    ``WatchdogClient.evaluate`` expects.
+    ``GovernanceClient.evaluate`` expects.
 
     Non-evaluate requests (violation reports) pass through as no-op so
     this transport can be composed with a violation writer via
-    ``make_watchdog_transport``.
+    ``make_governance_transport``.
 
     Args:
         mcp_url: HTTPS URL of the Guardrails MCP streamable endpoint
-            (not Watchdog MCP — that surface is posture query only).
+            (not databricks-watchdog MCP — that surface is posture query only).
         tool_name: MCP tool name. Default in docs/examples is
             ``evaluate_operation``.
         timeout_seconds: Per-call timeout. Default 5s.
@@ -880,7 +880,7 @@ def make_mcp_transport(
 
     The MCP call runs synchronously via ``_run_coro_blocking`` (loop-safe —
     works whether or not an event loop is already running). Transport errors
-    propagate to ``WatchdogClient.evaluate``, which applies the fail-open vs
+    propagate to ``GovernanceClient.evaluate``, which applies the fail-open vs
     fail-closed policy; they are not swallowed into an allow here.
     """
 
@@ -913,7 +913,7 @@ def call_mcp_tool(
     """Call a streamable-HTTP MCP tool and parse a JSON text result.
 
     Used by ``make_mcp_transport`` (evaluate) and the CLI
-    ``apx-agent watchdog status`` path (posture tools like
+    ``apx-agent governance status`` path (posture tools like
     ``get_agent_compliance``).
     """
     import json
@@ -934,15 +934,15 @@ def call_mcp_tool(
                         parsed = json.loads(text)
                     except json.JSONDecodeError as e:
                         raise ValueError(
-                            f"watchdog MCP tool {tool_name} returned non-JSON text"
+                            f"governance MCP tool {tool_name} returned non-JSON text"
                         ) from e
                     if not isinstance(parsed, dict):
                         raise ValueError(
-                            f"watchdog MCP tool {tool_name} returned non-object JSON"
+                            f"governance MCP tool {tool_name} returned non-object JSON"
                         )
                     return parsed
                 raise ValueError(
-                    f"watchdog MCP tool {tool_name} returned no decision content"
+                    f"governance MCP tool {tool_name} returned no decision content"
                 )
 
     return _run_coro_blocking(_call, timeout_seconds)
@@ -953,7 +953,7 @@ def call_mcp_tool(
 # ---------------------------------------------------------------------------
 
 
-def make_watchdog_transport(
+def make_governance_transport(
     *,
     mcp_url: str,
     mcp_tool_name: str,
@@ -965,16 +965,16 @@ def make_watchdog_transport(
 ) -> TransportFn:
     """Return a transport bundling MCP evaluate + UC table violation writing.
 
-    This is the canonical watchdog transport: evaluate decisions come
+    This is the canonical governance transport: evaluate decisions come
     from Guardrails MCP ``evaluate_operation``, violation reports flow
-    into Watchdog's ``runtime_violations`` UC Delta table.
+    into databricks-watchdog's ``runtime_violations`` UC Delta table.
 
     Args:
         mcp_url: Guardrails MCP streamable-HTTP endpoint URL.
         mcp_tool_name: The MCP tool name for policy evaluation
             (typically ``evaluate_operation``).
         violations_table: Three-part UC name of the runtime violations
-            Delta table (e.g. ``platform.watchdog.runtime_violations``).
+            Delta table (e.g. ``platform.governance.runtime_violations``).
         ws: ``WorkspaceClient`` used for SQL writes.
         warehouse_id: Optional SQL warehouse for the violation writes.
         mcp_timeout_seconds: MCP call timeout.

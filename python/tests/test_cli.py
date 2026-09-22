@@ -1237,7 +1237,7 @@ def test_deploy_set_uc_tags_failure_fails_exit_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """#402: a set_uc_tags failure must exit non-zero — an untagged agent
-    silently never shows up in list / topology / watchdog."""
+    silently never shows up in list / topology / governance."""
     _write_agent_module(tmp_path)
     monkeypatch.chdir(tmp_path)
 
@@ -1962,29 +1962,29 @@ def test_deploy_version_with_no_deploy_errors(
 
 
 # ---------------------------------------------------------------------------
-# `apx watchdog violations` / `apx watchdog status`
+# `apx governance violations` / `apx governance status`
 # ---------------------------------------------------------------------------
 
 
-def test_watchdog_violations_requires_table(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("APX_WATCHDOG_VIOLATIONS_TABLE", raising=False)
+def test_governance_violations_requires_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APX_GOVERNANCE_VIOLATIONS_TABLE", raising=False)
     runner = CliRunner()
-    result = runner.invoke(main, ["watchdog", "violations"])
+    result = runner.invoke(main, ["governance", "violations"])
     assert result.exit_code != 0
     assert "table" in result.output.lower() or "table" in result.stderr.lower()
 
 
-def test_watchdog_violations_table_must_be_three_part() -> None:
+def test_governance_violations_table_must_be_three_part() -> None:
     runner = CliRunner()
     result = runner.invoke(
-        main, ["watchdog", "violations", "--table", "not_three_parts"],
+        main, ["governance", "violations", "--table", "not_three_parts"],
     )
     assert result.exit_code != 0
     assert "three-part" in result.output
 
 
-def test_watchdog_violations_falls_back_to_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APX_WATCHDOG_VIOLATIONS_TABLE", "main.watchdog.violations")
+def test_governance_violations_falls_back_to_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APX_GOVERNANCE_VIOLATIONS_TABLE", "main.governance.violations")
     rows = [
         {
             "ts": "2026-05-19 08:00:00",
@@ -2005,21 +2005,21 @@ def test_watchdog_violations_falls_back_to_env_var(monkeypatch: pytest.MonkeyPat
     # and is not mocked, so patching only WorkspaceClient causes an auth error.
     with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=rows) as mock_sql:
-        result = runner.invoke(main, ["watchdog", "violations"])
+        result = runner.invoke(main, ["governance", "violations"])
 
     assert result.exit_code == 0, result.output
     # The table identifier is now validated per-part and backtick-quoted (audit M2).
-    assert "`main`.`watchdog`.`violations`" in mock_sql.call_args.args[1]
+    assert "`main`.`governance`.`violations`" in mock_sql.call_args.args[1]
 
 
-def test_watchdog_violations_filters_by_agent_and_hours() -> None:
+def test_governance_violations_filters_by_agent_and_hours() -> None:
     runner = CliRunner()
     fake_ws = MagicMock()
     with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=[]) as mock_sql:
         runner.invoke(main, [
-            "watchdog", "violations",
-            "--table", "main.watchdog.violations",
+            "governance", "violations",
+            "--table", "main.governance.violations",
             "--agent", "triage",
             "--hours", "12",
             "--limit", "5",
@@ -2031,14 +2031,14 @@ def test_watchdog_violations_filters_by_agent_and_hours() -> None:
     assert "LIMIT 5" in sql
 
 
-def test_watchdog_violations_escapes_single_quotes_in_agent_name() -> None:
+def test_governance_violations_escapes_single_quotes_in_agent_name() -> None:
     runner = CliRunner()
     fake_ws = MagicMock()
     with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=[]) as mock_sql:
         runner.invoke(main, [
-            "watchdog", "violations",
-            "--table", "main.watchdog.violations",
+            "governance", "violations",
+            "--table", "main.governance.violations",
             "--agent", "user's-agent",
         ])
 
@@ -2046,7 +2046,7 @@ def test_watchdog_violations_escapes_single_quotes_in_agent_name() -> None:
     assert "user''s-agent" in sql
 
 
-def test_watchdog_violations_json_output() -> None:
+def test_governance_violations_json_output() -> None:
     rows = [
         {
             "ts": "2026-05-19 08:00:00",
@@ -2061,8 +2061,8 @@ def test_watchdog_violations_json_output() -> None:
     with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=rows):
         result = runner.invoke(main, [
-            "watchdog", "violations",
-            "--table", "main.watchdog.violations",
+            "governance", "violations",
+            "--table", "main.governance.violations",
             "--format", "json",
         ])
 
@@ -2071,43 +2071,43 @@ def test_watchdog_violations_json_output() -> None:
     assert parsed[0]["policy_id"] == "p-1"
 
 
-def test_watchdog_violations_no_rows_prints_helpful_message() -> None:
+def test_governance_violations_no_rows_prints_helpful_message() -> None:
     runner = CliRunner()
     fake_ws = MagicMock()
     with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
          patch("apx_agent.run_sql", return_value=[]):
         result = runner.invoke(main, [
-            "watchdog", "violations",
-            "--table", "main.watchdog.violations",
+            "governance", "violations",
+            "--table", "main.governance.violations",
         ])
 
     assert result.exit_code == 0
     assert "No violations matched" in result.output
 
 
-def test_watchdog_status_requires_mcp_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("APX_WATCHDOG_MCP_URL", raising=False)
-    monkeypatch.delenv("APX_WATCHDOG_STATUS_TOOL", raising=False)
+def test_governance_status_requires_mcp_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APX_GOVERNANCE_MCP_URL", raising=False)
+    monkeypatch.delenv("APX_GOVERNANCE_STATUS_TOOL", raising=False)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["watchdog", "status", "--agent", "triage"])
+    result = runner.invoke(main, ["governance", "status", "--agent", "triage"])
     assert result.exit_code != 0
-    assert "mcp-url" in result.output.lower() or "APX_WATCHDOG_MCP_URL" in result.output
+    assert "mcp-url" in result.output.lower() or "APX_GOVERNANCE_MCP_URL" in result.output
 
 
-def test_watchdog_status_requires_agent() -> None:
+def test_governance_status_requires_agent() -> None:
     runner = CliRunner()
     result = runner.invoke(main, [
-        "watchdog", "status",
+        "governance", "status",
         "--mcp-url", "https://guardrails.example.com/mcp",
     ])
     assert result.exit_code != 0
     assert "agent" in result.output.lower()
 
 
-def test_watchdog_status_falls_back_to_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APX_WATCHDOG_MCP_URL", "https://guardrails.example.com/mcp")
-    monkeypatch.delenv("APX_WATCHDOG_STATUS_TOOL", raising=False)
+def test_governance_status_falls_back_to_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APX_GOVERNANCE_MCP_URL", "https://guardrails.example.com/mcp")
+    monkeypatch.delenv("APX_GOVERNANCE_STATUS_TOOL", raising=False)
 
     runner = CliRunner()
     with patch("apx_agent.call_mcp_tool", return_value={
@@ -2120,7 +2120,7 @@ def test_watchdog_status_falls_back_to_env_vars(monkeypatch: pytest.MonkeyPatch)
         "actions_logged": 1,
         "session_start": "2026-08-04T00:00:00+00:00",
     }) as mock_call:
-        result = runner.invoke(main, ["watchdog", "status", "--agent", "triage"])
+        result = runner.invoke(main, ["governance", "status", "--agent", "triage"])
 
     assert result.exit_code == 0, result.output
     assert "risk_level" in result.output
@@ -2132,7 +2132,7 @@ def test_watchdog_status_falls_back_to_env_vars(monkeypatch: pytest.MonkeyPatch)
     assert args[2] == {"agent_id": "triage"}
 
 
-def test_watchdog_status_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_governance_status_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = CliRunner()
     with patch("apx_agent.call_mcp_tool", return_value={
         "agent_id": "triage",
@@ -2140,7 +2140,7 @@ def test_watchdog_status_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
         "checks_denied": 2,
     }):
         result = runner.invoke(main, [
-            "watchdog", "status",
+            "governance", "status",
             "--mcp-url", "https://guardrails.example.com/mcp",
             "--mcp-tool", "get_agent_compliance",
             "--agent", "triage",

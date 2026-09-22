@@ -324,24 +324,24 @@ export type {
   SupervisorAgentsClient,
 } from './publish.js';
 
-// Watchdog — full compliance posture integration
+// Governance — full compliance posture integration
 export {
-  makeWatchdogDecision,
+  makeGovernanceDecision,
   noOpTransport,
-  WatchdogClient,
-  WatchdogGuard,
+  GovernanceClient,
+  GovernanceGuard,
   emitAgentMetadata,
   setUcTagsForAgent,
   makeUcViolationWriter,
   makeMcpTransport,
-  makeWatchdogTransport,
-} from './watchdog.js';
+  makeGovernanceTransport,
+} from './governance.js';
 export type {
-  WatchdogDecision,
+  GovernanceDecision,
   TransportFn,
-  WatchdogClientOptions,
-  EvaluateOpts as WatchdogEvaluateOpts,
-  WatchdogGuardOptions,
+  GovernanceClientOptions,
+  EvaluateOpts as GovernanceEvaluateOpts,
+  GovernanceGuardOptions,
   InputGuard,
   OutputGuard,
   BeforeTool,
@@ -351,12 +351,12 @@ export type {
   AgentMetadata,
   MlflowTagClient,
   SetUcTagsOptions,
-  SqlExecutor as WatchdogSqlExecutor,
+  SqlExecutor as GovernanceSqlExecutor,
   MakeUcViolationWriterOptions,
   McpToolCallFn,
   MakeMcpTransportOptions,
-  MakeWatchdogTransportOptions,
-} from './watchdog.js';
+  MakeGovernanceTransportOptions,
+} from './governance.js';
 
 // Durable session stores — Delta + Lakebase (Postgres)
 export { DeltaSessionStore } from './session-delta.js';

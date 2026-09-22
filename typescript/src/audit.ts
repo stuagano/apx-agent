@@ -2,7 +2,7 @@
  * Audit log attributes — a stable span-attribute schema for every apx-agent trace.
  *
  * Every framework-emitted span carries a consistent set of ``apx.*``
- * attributes so downstream consumers (watchdog, compliance dashboards,
+ * attributes so downstream consumers (governance, compliance dashboards,
  * ad-hoc SQL over the traces table) can query without parsing
  * agent-specific schemas.
  *
@@ -64,11 +64,11 @@ export const AuditAttrs = {
   RESOURCE_KINDS: 'apx.resources.kinds',
   RESOURCE_COUNT: 'apx.resources.count',
 
-  // Watchdog runtime decisions
-  WATCHDOG_ACTION: 'apx.watchdog.action', // allow | reject | redact
-  WATCHDOG_POLICY_ID: 'apx.watchdog.policy_id',
-  WATCHDOG_REASON: 'apx.watchdog.reason',
-  WATCHDOG_DOMAIN: 'apx.watchdog.domain',
+  // Governance runtime decisions
+  GOVERNANCE_ACTION: 'apx.governance.action', // allow | reject | redact
+  GOVERNANCE_POLICY_ID: 'apx.governance.policy_id',
+  GOVERNANCE_REASON: 'apx.governance.reason',
+  GOVERNANCE_DOMAIN: 'apx.governance.domain',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -105,10 +105,10 @@ const KWARG_TO_KEY: ReadonlyMap<string, string> = Object.freeze(
     ['subagentName', AuditAttrs.SUBAGENT_NAME],
     ['resourceKinds', AuditAttrs.RESOURCE_KINDS],
     ['resourceCount', AuditAttrs.RESOURCE_COUNT],
-    ['watchdogAction', AuditAttrs.WATCHDOG_ACTION],
-    ['watchdogPolicyId', AuditAttrs.WATCHDOG_POLICY_ID],
-    ['watchdogReason', AuditAttrs.WATCHDOG_REASON],
-    ['watchdogDomain', AuditAttrs.WATCHDOG_DOMAIN],
+    ['governanceAction', AuditAttrs.GOVERNANCE_ACTION],
+    ['governancePolicyId', AuditAttrs.GOVERNANCE_POLICY_ID],
+    ['governanceReason', AuditAttrs.GOVERNANCE_REASON],
+    ['governanceDomain', AuditAttrs.GOVERNANCE_DOMAIN],
   ]),
 );
 

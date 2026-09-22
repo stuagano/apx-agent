@@ -25,7 +25,7 @@ def governance_guards_present(
 
     The ``before_tool`` / ``before_model`` / ``after_*`` hooks and the input /
     output guardrail lists are exactly what ``PolicyGate`` (human approval),
-    ``WatchdogGuard``, tool allow/deny lists, rate limits, and the injection
+    ``GovernanceGuard``, tool allow/deny lists, rate limits, and the injection
     heuristic all compose into. The :class:`ClaudeSDKExecutor` runs none of them
     — it calls the tool function directly — so selecting it silently disables
     every configured guard. ``config.guardrails`` is checked too, in case the

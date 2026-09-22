@@ -50,8 +50,8 @@ describe('AuditAttrs constants', () => {
     ['TOOL_UC_FUNCTION', 'apx.tool.uc_function'],
     ['MODEL_ENDPOINT', 'apx.model.endpoint'],
     ['MODEL_INPUT_TOKENS', 'apx.model.input_tokens'],
-    ['WATCHDOG_ACTION', 'apx.watchdog.action'],
-    ['WATCHDOG_POLICY_ID', 'apx.watchdog.policy_id'],
+    ['GOVERNANCE_ACTION', 'apx.governance.action'],
+    ['GOVERNANCE_POLICY_ID', 'apx.governance.policy_id'],
     ['USER_TOKEN_PROVIDED', 'apx.user.token_provided'],
   ] as const)('AuditAttrs.%s === %s', (name, expected) => {
     expect((AuditAttrs as Record<string, string>)[name]).toBe(expected);
@@ -68,12 +68,12 @@ describe('setAuditAttrs', () => {
     setAuditAttrs(span, {
       agentName: 'triage',
       toolName: 'classify_intent',
-      watchdogAction: 'reject',
+      governanceAction: 'reject',
     });
     const keys = span.calls.map(([k]) => k);
     expect(keys).toContain('apx.agent.name');
     expect(keys).toContain('apx.tool.name');
-    expect(keys).toContain('apx.watchdog.action');
+    expect(keys).toContain('apx.governance.action');
   });
 
   it('skips null, undefined, and empty-string values', () => {
@@ -81,15 +81,15 @@ describe('setAuditAttrs', () => {
     setAuditAttrs(span, {
       agentName: 'triage',
       toolName: null,
-      watchdogReason: '',
-      watchdogPolicyId: 'p-1',
+      governanceReason: '',
+      governancePolicyId: 'p-1',
       sessionId: undefined,
     });
     const keys = span.calls.map(([k]) => k);
     expect(keys).toContain('apx.agent.name');
-    expect(keys).toContain('apx.watchdog.policy_id');
+    expect(keys).toContain('apx.governance.policy_id');
     expect(keys).not.toContain('apx.tool.name');
-    expect(keys).not.toContain('apx.watchdog.reason');
+    expect(keys).not.toContain('apx.governance.reason');
     expect(keys).not.toContain('apx.session.id');
   });
 

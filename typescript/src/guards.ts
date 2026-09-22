@@ -148,7 +148,7 @@ export class RateLimit {
 /**
  * Common injection patterns. Intentionally small and high-specificity —
  * this is a fast-path heuristic, not a full classifier. False negatives are
- * expected; downstream (Watchdog, LLM-as-judge) catches what slips through.
+ * expected; downstream (Governance, LLM-as-judge) catches what slips through.
  * False positives matter more, so each pattern requires some context.
  */
 const DEFAULT_INJECTION_PATTERNS: ReadonlyArray<RegExp> = [

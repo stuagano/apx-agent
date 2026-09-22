@@ -1,7 +1,7 @@
 """Cancellable tools — interrupt long-running tool calls mid-flight.
 
 Closes roadmap gap 1.2 (omniagents ``CancellableFunctionTool`` parity) with
-the apx-agent twist the watchdog integration enables: **a Watchdog
+the apx-agent twist the governance integration enables: **a Governance
 violation anywhere in the session cancels every in-flight tool call.**
 A runaway SQL extraction doesn't get to finish just because the violation
 was detected on a different hook.
@@ -25,9 +25,9 @@ Pieces:
 * :class:`ToolCancelled` — raised in the agent loop when a running tool
   is cancelled; the LLM sees it as the tool error and can tell the user.
 
-``WatchdogGuard`` accepts ``cancel_registry=`` and calls
+``GovernanceGuard`` accepts ``cancel_registry=`` and calls
 ``cancel_all`` whenever a decision comes back ``reject`` — see
-:mod:`._watchdog`.
+:mod:`._governance`.
 
 Cancellation semantics (Python can't kill threads):
 
@@ -70,7 +70,7 @@ class ToolCancelled(RuntimeError):
 
     :param tool_name: The cancelled tool, e.g. ``"run_extraction"``.
     :param reason: Why it was cancelled, e.g.
-        ``"Watchdog violation: PII detected in session"`` or
+        ``"Governance violation: PII detected in session"`` or
         ``"timed out after 300s"``.
     """
 
@@ -107,7 +107,7 @@ class CancelToken:
         """The cancellation reason, or ``None`` if not cancelled.
 
         :returns: The reason passed to the first :meth:`cancel` call,
-            e.g. ``"Watchdog violation: cost budget exceeded"``.
+            e.g. ``"Governance violation: cost budget exceeded"``.
         """
         return self._reason
 
@@ -115,7 +115,7 @@ class CancelToken:
         """Flip the token to cancelled (idempotent — first reason wins).
 
         :param reason: Why the work should stop,
-            e.g. ``"Watchdog violation: PII detected"``.
+            e.g. ``"Governance violation: PII detected"``.
         """
         with self._lock:
             if not self._event.is_set():
@@ -136,7 +136,7 @@ class CancellationRegistry:
 
     One registry per agent/session scope. Tools register their token on
     start and unregister on completion; :meth:`cancel_all` is the kill
-    switch wired to governance triggers (Watchdog violations, session
+    switch wired to governance triggers (Governance violations, session
     teardown, an operator endpoint).
 
     Thread-safe — tools run in worker threads while the trigger fires
@@ -177,7 +177,7 @@ class CancellationRegistry:
 
         :param reason: Propagated to each token (and into each call's
             :class:`ToolCancelled`), e.g.
-            ``"Watchdog violation: prompt injection detected"``.
+            ``"Governance violation: prompt injection detected"``.
         :returns: How many tokens were newly cancelled (already-cancelled
             tokens don't count).
         """
@@ -248,7 +248,7 @@ def cancellable(
 
     :param fn: The tool function (bare ``@cancellable`` form).
     :param registry: Registry tracking this tool's in-flight calls —
-        wire the SAME instance into ``WatchdogGuard(cancel_registry=...)``
+        wire the SAME instance into ``GovernanceGuard(cancel_registry=...)``
         for violation-triggered cancellation. ``None`` means calls are
         only cancellable via ``timeout_s``.
     :param canceller: Zero-arg callback invoked once on cancellation to
