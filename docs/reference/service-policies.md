@@ -179,6 +179,8 @@ attachment across existing and future matching services is the intended scale
 mechanism, but it is reported unsupported until the native Service Policy
 attachment API supports it. This is distinct from the broader [Unity Catalog
 ABAC model](https://docs.databricks.com/aws/en/data-governance/unity-catalog/abac/grant-policies).
+For user identity attributes evaluated across remote-agent hops, see [Identity
+attributes and remote-agent ABAC](identity-attribute-abac.md).
 
 ## Audit and secret handling
 

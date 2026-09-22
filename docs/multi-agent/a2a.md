@@ -80,6 +80,13 @@ Each application keeps its own platform-created service principal. Share
 permission policy across an application family when appropriate; do not share
 credentials.
 
+Unity Catalog ABAC policies that consume Databricks identity attributes
+evaluate them from the authenticated user identity carried by the forwarded
+OBO credential in step 4 — never from request headers. APX does not copy,
+synthesize, or accept identity attributes on the wire, and the contract does
+not extend to step 5's service-principal calls. See [Identity attributes and
+remote-agent ABAC](../reference/identity-attribute-abac.md).
+
 Inside the Apps runtime, A2A `POST /` fails closed if neither
 `X-Forwarded-Access-Token` nor `Authorization: Bearer` reaches the handler.
 Local `apx-agent run` remains available for the unauthenticated local
