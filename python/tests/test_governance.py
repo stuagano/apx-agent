@@ -1,14 +1,14 @@
 """Tests for the databricks-watchdog integration sketch.
 
-The wire protocol to watchdog isn't finalized — these tests pin the
+The wire protocol to governance isn't finalized — these tests pin the
 shape of the apx-agent side via an injected fake transport. When the
-real watchdog API arrives, only the transport plumbing changes.
+real governance API arrives, only the transport plumbing changes.
 
 Covers:
-  - WatchdogDecision defaults / parsing
-  - WatchdogClient.evaluate happy path + transport-failure fail-open
-  - WatchdogClient.report_violation shape + failure tolerance
-  - WatchdogGuard adapters (for_input / for_output / for_tool / for_model)
+  - GovernanceDecision defaults / parsing
+  - GovernanceClient.evaluate happy path + transport-failure fail-open
+  - GovernanceClient.report_violation shape + failure tolerance
+  - GovernanceGuard adapters (for_input / for_output / for_tool / for_model)
     produce callables with the right hook signatures and behavior
   - reject decisions short-circuit; redact rewrites; allow passes through
   - violation reports fire on reject + redact, not on allow
@@ -25,13 +25,13 @@ from unittest.mock import MagicMock, patch
 
 from apx_agent import (
     Agent,
-    WatchdogClient,
-    WatchdogDecision,
-    WatchdogGuard,
+    GovernanceClient,
+    GovernanceDecision,
+    GovernanceGuard,
     emit_agent_metadata,
     genie_tool,
     make_uc_violation_writer,
-    make_watchdog_transport,
+    make_governance_transport,
     set_uc_tags_for_agent,
     tool,
     uc_function_tool,
@@ -66,30 +66,30 @@ def _make_transport(responses: dict[str, dict[str, Any]] | None = None) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# WatchdogDecision
+# GovernanceDecision
 # ---------------------------------------------------------------------------
 
 
 def test_decision_defaults_to_allow() -> None:
-    d = WatchdogDecision()
+    d = GovernanceDecision()
     assert d.action == "allow"
     assert d.reason is None
     assert d.metadata == {}
 
 
 def test_decision_is_frozen() -> None:
-    d = WatchdogDecision(action="reject", reason="nope")
+    d = GovernanceDecision(action="reject", reason="nope")
     with pytest.raises(Exception):
         d.action = "allow"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
-# WatchdogClient.evaluate
+# GovernanceClient.evaluate
 # ---------------------------------------------------------------------------
 
 
 def test_default_client_allows_everything() -> None:
-    client = WatchdogClient()  # no transport — noop allow
+    client = GovernanceClient()  # no transport — noop allow
     d = client.evaluate(operation="tool_call", context={"tool_name": "x"})
     assert d.action == "allow"
 
@@ -104,7 +104,7 @@ def test_evaluate_parses_transport_response() -> None:
             "metadata": {"owner": "data-team@x.com"},
         },
     })
-    client = WatchdogClient(transport=transport)
+    client = GovernanceClient(transport=transport)
     d = client.evaluate(operation="tool_call", context={"tool_name": "leak_pii"})
     assert d.action == "reject"
     assert d.reason == "PII tool access denied"
@@ -114,11 +114,11 @@ def test_evaluate_parses_transport_response() -> None:
 
 
 def test_evaluate_fails_closed_on_transport_exception() -> None:
-    # #371: a configured watchdog that errors fails CLOSED (reject) by default.
+    # #371: a configured governance that errors fails CLOSED (reject) by default.
     def _broken(_req: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("network down")
 
-    client = WatchdogClient(transport=_broken)
+    client = GovernanceClient(transport=_broken)
     d = client.evaluate(operation="tool_call")
     assert d.action == "reject"
     assert d.reason is not None
@@ -129,7 +129,7 @@ def test_evaluate_fail_closed_false_restores_allow_on_transport_exception() -> N
     def _broken(_req: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("network down")
 
-    client = WatchdogClient(transport=_broken, fail_closed=False)
+    client = GovernanceClient(transport=_broken, fail_closed=False)
     d = client.evaluate(operation="tool_call")
     assert d.action == "allow"
     assert d.reason is not None
@@ -137,14 +137,14 @@ def test_evaluate_fail_closed_false_restores_allow_on_transport_exception() -> N
 
 
 def test_evaluate_fails_closed_when_transport_returns_non_dict() -> None:
-    client = WatchdogClient(transport=lambda _req: "garbage")  # type: ignore[arg-type,return-value]
+    client = GovernanceClient(transport=lambda _req: "garbage")  # type: ignore[arg-type,return-value]
     d = client.evaluate(operation="tool_call")
     assert d.action == "reject"
 
 
 def test_evaluate_forwards_operation_and_context() -> None:
     transport = _make_transport()
-    client = WatchdogClient(transport=transport)
+    client = GovernanceClient(transport=transport)
     client.evaluate(operation="input_message", context={"agent_name": "triage"})
     assert transport.calls[0] == {
         "operation": "input_message",
@@ -153,14 +153,14 @@ def test_evaluate_forwards_operation_and_context() -> None:
 
 
 # ---------------------------------------------------------------------------
-# WatchdogClient.report_violation
+# GovernanceClient.report_violation
 # ---------------------------------------------------------------------------
 
 
 def test_report_violation_sends_expected_shape() -> None:
     transport = _make_transport()
-    client = WatchdogClient(transport=transport)
-    decision = WatchdogDecision(
+    client = GovernanceClient(transport=transport)
+    decision = GovernanceDecision(
         action="reject", reason="bad", policy_id="p-1", domain="security",
         metadata={"k": "v"},
     )
@@ -174,19 +174,19 @@ def test_report_violation_swallows_transport_errors() -> None:
     def _broken(_req: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("network down")
 
-    client = WatchdogClient(transport=_broken)
+    client = GovernanceClient(transport=_broken)
     # Should not raise — violation report failures are logged-and-continued
-    client.report_violation(WatchdogDecision(action="reject"))
+    client.report_violation(GovernanceDecision(action="reject"))
 
 
 # ---------------------------------------------------------------------------
-# WatchdogGuard.for_input
+# GovernanceGuard.for_input
 # ---------------------------------------------------------------------------
 
 
 def test_for_input_allows_when_decision_is_allow() -> None:
     transport = _make_transport()
-    guard = WatchdogGuard(WatchdogClient(transport=transport), agent_name="triage")
+    guard = GovernanceGuard(GovernanceClient(transport=transport), agent_name="triage")
     callback = guard.for_input()
     assert callback([{"role": "user", "content": "hi"}]) is None
 
@@ -195,7 +195,7 @@ def test_for_input_returns_reason_on_reject_and_reports_violation() -> None:
     transport = _make_transport({
         "input_message": {"action": "reject", "reason": "PII in input"},
     })
-    guard = WatchdogGuard(WatchdogClient(transport=transport), agent_name="triage")
+    guard = GovernanceGuard(GovernanceClient(transport=transport), agent_name="triage")
     callback = guard.for_input()
     result = callback([{"role": "user", "content": "my ssn is 123-45-6789"}])
     assert result == "PII in input"
@@ -206,13 +206,13 @@ def test_for_input_returns_reason_on_reject_and_reports_violation() -> None:
 
 def test_for_input_passes_agent_name_in_context() -> None:
     transport = _make_transport()
-    guard = WatchdogGuard(WatchdogClient(transport=transport), agent_name="triage")
+    guard = GovernanceGuard(GovernanceClient(transport=transport), agent_name="triage")
     guard.for_input()([{"role": "user", "content": "hi"}])
     assert transport.calls[0]["context"]["agent_name"] == "triage"
 
 
 # ---------------------------------------------------------------------------
-# WatchdogGuard.for_output
+# GovernanceGuard.for_output
 # ---------------------------------------------------------------------------
 
 
@@ -224,7 +224,7 @@ def test_for_output_redaction_replaces_text() -> None:
             "redacted_content": "Redacted content.",
         },
     })
-    guard = WatchdogGuard(WatchdogClient(transport=transport), agent_name="triage")
+    guard = GovernanceGuard(GovernanceClient(transport=transport), agent_name="triage")
     out = guard.for_output()("Your SSN is 123-45-6789.")
     assert out == "Redacted content."
 
@@ -233,7 +233,7 @@ def test_for_output_redaction_without_content_passes_through() -> None:
     transport = _make_transport({
         "output_message": {"action": "redact", "reason": "x"},  # no redacted_content
     })
-    guard = WatchdogGuard(WatchdogClient(transport=transport))
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
     assert guard.for_output()("hello") is None
 
 
@@ -241,19 +241,19 @@ def test_for_output_reject_returns_reason() -> None:
     transport = _make_transport({
         "output_message": {"action": "reject", "reason": "policy violation"},
     })
-    guard = WatchdogGuard(WatchdogClient(transport=transport))
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
     out = guard.for_output()("anything")
     assert out == "policy violation"
 
 
 # ---------------------------------------------------------------------------
-# WatchdogGuard.for_tool
+# GovernanceGuard.for_tool
 # ---------------------------------------------------------------------------
 
 
 def test_for_tool_allows_silently() -> None:
     transport = _make_transport()
-    guard = WatchdogGuard(WatchdogClient(transport=transport))
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
     # Should not raise
     guard.for_tool()("classify_intent", {"query": "x"})
 
@@ -262,27 +262,27 @@ def test_for_tool_reject_raises_permission_error() -> None:
     transport = _make_transport({
         "tool_call": {"action": "reject", "reason": "tool denied"},
     })
-    guard = WatchdogGuard(WatchdogClient(transport=transport))
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
     with pytest.raises(PermissionError, match="tool denied"):
         guard.for_tool()("classify_intent", {"query": "x"})
 
 
 def test_for_tool_passes_tool_name_in_context() -> None:
     transport = _make_transport()
-    guard = WatchdogGuard(WatchdogClient(transport=transport))
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
     guard.for_tool()("my_tool", {"arg": 1})
     assert transport.calls[0]["context"]["tool_name"] == "my_tool"
     assert transport.calls[0]["context"]["arguments"] == {"arg": 1}
 
 
 # ---------------------------------------------------------------------------
-# WatchdogGuard.for_model
+# GovernanceGuard.for_model
 # ---------------------------------------------------------------------------
 
 
 def test_for_model_allows_silently() -> None:
     transport = _make_transport()
-    guard = WatchdogGuard(WatchdogClient(transport=transport))
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
     guard.for_model()([["msg"]])  # multi-prompt chat shape
 
 
@@ -290,7 +290,7 @@ def test_for_model_reject_raises_permission_error() -> None:
     transport = _make_transport({
         "model_call": {"action": "reject", "reason": "model budget exceeded"},
     })
-    guard = WatchdogGuard(WatchdogClient(transport=transport))
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
     with pytest.raises(PermissionError, match="model budget exceeded"):
         guard.for_model()(["prompt"])
 
@@ -475,7 +475,7 @@ def test_violation_writer_rejects_bad_table_path() -> None:
 def test_violation_writer_inserts_row_with_decision_fields() -> None:
     ws = MagicMock()
     writer = make_uc_violation_writer("main.x.violations", ws=ws, auto_create=False)
-    with patch("apx_agent._watchdog.run_sql") as mock_sql:
+    with patch("apx_agent._governance.run_sql") as mock_sql:
         writer({
             "type": "violation_report",
             "decision": {
@@ -503,7 +503,7 @@ def test_violation_writer_inserts_row_with_decision_fields() -> None:
 def test_violation_writer_passes_through_non_violation_requests() -> None:
     ws = MagicMock()
     writer = make_uc_violation_writer("main.x.violations", ws=ws, auto_create=False)
-    with patch("apx_agent._watchdog.run_sql") as mock_sql:
+    with patch("apx_agent._governance.run_sql") as mock_sql:
         result = writer({"operation": "tool_call", "context": {}})
     assert result == {"action": "allow"}
     mock_sql.assert_not_called()
@@ -512,7 +512,7 @@ def test_violation_writer_passes_through_non_violation_requests() -> None:
 def test_violation_writer_auto_create_runs_once() -> None:
     ws = MagicMock()
     writer = make_uc_violation_writer("main.x.violations", ws=ws)
-    with patch("apx_agent._watchdog.run_sql") as mock_sql:
+    with patch("apx_agent._governance.run_sql") as mock_sql:
         writer({"type": "violation_report", "decision": {"action": "reject"}, "context": {}})
         writer({"type": "violation_report", "decision": {"action": "reject"}, "context": {}})
 
@@ -523,7 +523,7 @@ def test_violation_writer_auto_create_runs_once() -> None:
 def test_violation_writer_escapes_single_quotes_in_decision_strings() -> None:
     ws = MagicMock()
     writer = make_uc_violation_writer("main.x.violations", ws=ws, auto_create=False)
-    with patch("apx_agent._watchdog.run_sql") as mock_sql:
+    with patch("apx_agent._governance.run_sql") as mock_sql:
         writer({
             "type": "violation_report",
             "decision": {"action": "reject", "reason": "user's policy violated"},
@@ -538,7 +538,7 @@ def test_violation_writer_logs_and_continues_on_sql_failure() -> None:
     ws = MagicMock()
     writer = make_uc_violation_writer("main.x.violations", ws=ws, auto_create=False)
     with patch(
-        "apx_agent._watchdog.run_sql", side_effect=RuntimeError("warehouse down"),
+        "apx_agent._governance.run_sql", side_effect=RuntimeError("warehouse down"),
     ):
         # Should not raise
         result = writer({
@@ -550,23 +550,23 @@ def test_violation_writer_logs_and_continues_on_sql_failure() -> None:
 
 
 # ---------------------------------------------------------------------------
-# make_watchdog_transport — combined evaluate + violation
+# make_governance_transport — combined evaluate + violation
 # ---------------------------------------------------------------------------
 
 
-def test_watchdog_transport_routes_violation_to_uc_writer() -> None:
+def test_governance_transport_routes_violation_to_uc_writer() -> None:
     ws = MagicMock()
-    transport = make_watchdog_transport(
-        mcp_url="https://watchdog.example.com/mcp",
+    transport = make_governance_transport(
+        mcp_url="https://governance.example.com/mcp",
         mcp_tool_name="evaluate_operation",
         violations_table="main.x.violations",
         ws=ws,
     )
-    with patch("apx_agent._watchdog.run_sql") as mock_sql, \
-         patch("apx_agent._watchdog.make_mcp_transport") as mock_mcp:
+    with patch("apx_agent._governance.run_sql") as mock_sql, \
+         patch("apx_agent._governance.make_mcp_transport") as mock_mcp:
         # Re-create after patching the MCP factory so we don't hit real MCP
-        transport = make_watchdog_transport(
-            mcp_url="https://watchdog.example.com/mcp",
+        transport = make_governance_transport(
+            mcp_url="https://governance.example.com/mcp",
             mcp_tool_name="evaluate_operation",
             violations_table="main.x.violations",
             ws=ws,
@@ -581,13 +581,13 @@ def test_watchdog_transport_routes_violation_to_uc_writer() -> None:
     assert len(insert_calls) == 1
 
 
-def test_watchdog_transport_routes_evaluate_to_mcp() -> None:
+def test_governance_transport_routes_evaluate_to_mcp() -> None:
     ws = MagicMock()
 
     fake_mcp = MagicMock(return_value={"action": "reject", "reason": "blocked"})
-    with patch("apx_agent._watchdog.make_mcp_transport", return_value=fake_mcp):
-        transport = make_watchdog_transport(
-            mcp_url="https://watchdog.example.com/mcp",
+    with patch("apx_agent._governance.make_mcp_transport", return_value=fake_mcp):
+        transport = make_governance_transport(
+            mcp_url="https://governance.example.com/mcp",
             mcp_tool_name="evaluate_operation",
             violations_table="main.x.violations",
             ws=ws,
@@ -599,12 +599,12 @@ def test_watchdog_transport_routes_evaluate_to_mcp() -> None:
 
 
 # ---------------------------------------------------------------------------
-# WatchdogClient end-to-end with the real combined transport
+# GovernanceClient end-to-end with the real combined transport
 # ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
-# Audit attribute wiring — WatchdogGuard records decisions on active span
+# Audit attribute wiring — GovernanceGuard records decisions on active span
 # ---------------------------------------------------------------------------
 
 
@@ -613,32 +613,32 @@ def test_for_tool_reject_records_audit_attrs_on_active_span() -> None:
         "tool_call": {"action": "reject", "reason": "blocked",
                       "policy_id": "p-1", "domain": "security"},
     })
-    guard = WatchdogGuard(WatchdogClient(transport=transport), agent_name="triage")
+    guard = GovernanceGuard(GovernanceClient(transport=transport), agent_name="triage")
 
     fake_span = MagicMock()
-    with patch("apx_agent._watchdog.current_active_span", return_value=fake_span), \
+    with patch("apx_agent._governance.current_active_span", return_value=fake_span), \
          pytest.raises(PermissionError):
         guard.for_tool()("classify_intent", {"query": "x"})
 
     keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
-    assert "apx.watchdog.action" in keys_set
-    assert "apx.watchdog.reason" in keys_set
-    assert "apx.watchdog.policy_id" in keys_set
-    assert "apx.watchdog.domain" in keys_set
+    assert "apx.governance.action" in keys_set
+    assert "apx.governance.reason" in keys_set
+    assert "apx.governance.policy_id" in keys_set
+    assert "apx.governance.domain" in keys_set
     assert "apx.agent.name" in keys_set
 
 
-def test_for_tool_allow_does_not_record_watchdog_audit_attrs() -> None:
+def test_for_tool_allow_does_not_record_governance_audit_attrs() -> None:
     """Allow decisions are the default — no audit annotation needed."""
     transport = _make_transport()  # default allow
-    guard = WatchdogGuard(WatchdogClient(transport=transport))
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
 
     fake_span = MagicMock()
-    with patch("apx_agent._watchdog.current_active_span", return_value=fake_span):
+    with patch("apx_agent._governance.current_active_span", return_value=fake_span):
         guard.for_tool()("classify_intent", {})
 
     keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
-    assert "apx.watchdog.action" not in keys_set
+    assert "apx.governance.action" not in keys_set
 
 
 def test_for_output_redact_records_audit_attrs() -> None:
@@ -646,16 +646,16 @@ def test_for_output_redact_records_audit_attrs() -> None:
         "output_message": {"action": "redact", "reason": "PII",
                            "redacted_content": "<redacted>", "policy_id": "p-2"},
     })
-    guard = WatchdogGuard(WatchdogClient(transport=transport), agent_name="triage")
+    guard = GovernanceGuard(GovernanceClient(transport=transport), agent_name="triage")
 
     fake_span = MagicMock()
-    with patch("apx_agent._watchdog.current_active_span", return_value=fake_span):
+    with patch("apx_agent._governance.current_active_span", return_value=fake_span):
         out = guard.for_output()("text with PII")
 
     assert out == "<redacted>"
     keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
-    assert "apx.watchdog.action" in keys_set
-    assert "apx.watchdog.policy_id" in keys_set
+    assert "apx.governance.action" in keys_set
+    assert "apx.governance.policy_id" in keys_set
 
 
 def test_client_with_combined_transport_reject_decision_writes_violation_row() -> None:
@@ -663,15 +663,15 @@ def test_client_with_combined_transport_reject_decision_writes_violation_row() -
     ws = MagicMock()
 
     fake_mcp = MagicMock(return_value={"action": "reject", "reason": "blocked", "policy_id": "p-1"})
-    with patch("apx_agent._watchdog.make_mcp_transport", return_value=fake_mcp), \
-         patch("apx_agent._watchdog.run_sql") as mock_sql:
-        transport = make_watchdog_transport(
-            mcp_url="https://watchdog.example.com/mcp",
+    with patch("apx_agent._governance.make_mcp_transport", return_value=fake_mcp), \
+         patch("apx_agent._governance.run_sql") as mock_sql:
+        transport = make_governance_transport(
+            mcp_url="https://governance.example.com/mcp",
             mcp_tool_name="evaluate_operation",
             violations_table="main.x.violations",
             ws=ws,
         )
-        client = WatchdogClient(transport=transport)
+        client = GovernanceClient(transport=transport)
 
         decision = client.evaluate(operation="tool_call", context={"tool_name": "x"})
         assert decision.action == "reject"

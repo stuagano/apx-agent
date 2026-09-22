@@ -1,14 +1,14 @@
 /**
- * Tests for watchdog.ts — databricks-watchdog integration.
+ * Tests for governance.ts — databricks-watchdog integration.
  *
- * Mirrors python/tests/test_watchdog.py.
+ * Mirrors python/tests/test_governance.py.
  *
  * Covers:
- *   - WatchdogDecision defaults / frozen
- *   - WatchdogClient.evaluate happy path + transport-failure fail-open +
+ *   - GovernanceDecision defaults / frozen
+ *   - GovernanceClient.evaluate happy path + transport-failure fail-open +
  *     non-object fallback
- *   - WatchdogClient.reportViolation shape + failure tolerance
- *   - WatchdogGuard adapters (forInput / forOutput / forTool / forModel)
+ *   - GovernanceClient.reportViolation shape + failure tolerance
+ *   - GovernanceGuard adapters (forInput / forOutput / forTool / forModel)
  *   - reject decisions short-circuit; redact rewrites; allow passes through
  *   - violation reports fire on reject + redact, not on allow
  *   - getActiveSpan: audit attributes recorded on non-allow decisions
@@ -17,26 +17,26 @@
  *   - makeUcViolationWriter: bad-path rejection, INSERT shape, single-quote escape,
  *     pass-through for evaluate, auto-create caching
  *   - makeMcpTransport: calls mcpClient with right args, falls back to allow on error
- *   - makeWatchdogTransport: routes by type
+ *   - makeGovernanceTransport: routes by type
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  WatchdogClient,
-  WatchdogGuard,
+  GovernanceClient,
+  GovernanceGuard,
   emitAgentMetadata,
   makeMcpTransport,
   makeUcViolationWriter,
-  makeWatchdogDecision,
-  makeWatchdogTransport,
+  makeGovernanceDecision,
+  makeGovernanceTransport,
   noOpTransport,
   setUcTagsForAgent,
   type McpToolCallFn,
   type MlflowTagClient,
   type SqlExecutor,
   type ToolDescriptor,
-  type WatchdogDecision,
-} from '../src/watchdog.js';
+  type GovernanceDecision,
+} from '../src/governance.js';
 import { attachResources, makeResourceSpec } from '../src/resources.js';
 import type { SpanLike } from '../src/audit.js';
 
@@ -83,19 +83,19 @@ function mockSpan(): SpanLike & { calls: Array<[string, unknown]> } {
 }
 
 // ---------------------------------------------------------------------------
-// WatchdogDecision
+// GovernanceDecision
 // ---------------------------------------------------------------------------
 
-describe('WatchdogDecision', () => {
+describe('GovernanceDecision', () => {
   it('defaults to allow', () => {
-    const d = makeWatchdogDecision();
+    const d = makeGovernanceDecision();
     expect(d.action).toBe('allow');
     expect(d.reason).toBeUndefined();
     expect(d.metadata).toEqual({});
   });
 
   it('is frozen', () => {
-    const d = makeWatchdogDecision({ action: 'reject', reason: 'nope' });
+    const d = makeGovernanceDecision({ action: 'reject', reason: 'nope' });
     expect(Object.isFrozen(d)).toBe(true);
     expect(() => {
       (d as unknown as { action: string }).action = 'allow';
@@ -103,20 +103,20 @@ describe('WatchdogDecision', () => {
   });
 
   it('freezes metadata too', () => {
-    const d = makeWatchdogDecision({ action: 'reject', metadata: { k: 'v' } });
+    const d = makeGovernanceDecision({ action: 'reject', metadata: { k: 'v' } });
     expect(Object.isFrozen(d.metadata)).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// WatchdogClient.evaluate
+// GovernanceClient.evaluate
 // ---------------------------------------------------------------------------
 
-describe('WatchdogClient.evaluate', () => {
+describe('GovernanceClient.evaluate', () => {
   silenceWarn();
 
   it('default client (noOpTransport) allows everything', async () => {
-    const client = new WatchdogClient();
+    const client = new GovernanceClient();
     const d = await client.evaluate({ operation: 'tool_call', context: { tool_name: 'x' } });
     expect(d.action).toBe('allow');
   });
@@ -131,7 +131,7 @@ describe('WatchdogClient.evaluate', () => {
         metadata: { owner: 'data-team@x.com' },
       },
     });
-    const client = new WatchdogClient({ transport });
+    const client = new GovernanceClient({ transport });
     const d = await client.evaluate({ operation: 'tool_call', context: { tool_name: 'leak_pii' } });
     expect(d.action).toBe('reject');
     expect(d.reason).toBe('PII tool access denied');
@@ -141,7 +141,7 @@ describe('WatchdogClient.evaluate', () => {
   });
 
   it('falls back to allow on transport exception', async () => {
-    const client = new WatchdogClient({
+    const client = new GovernanceClient({
       transport: async () => {
         throw new Error('network down');
       },
@@ -152,7 +152,7 @@ describe('WatchdogClient.evaluate', () => {
   });
 
   it('falls back to allow when transport returns a non-object', async () => {
-    const client = new WatchdogClient({
+    const client = new GovernanceClient({
       transport: async () => 'garbage' as unknown as object,
     });
     const d = await client.evaluate({ operation: 'tool_call' });
@@ -160,7 +160,7 @@ describe('WatchdogClient.evaluate', () => {
   });
 
   it('falls back to allow when transport returns an array (Array.isArray check)', async () => {
-    const client = new WatchdogClient({
+    const client = new GovernanceClient({
       transport: async () => [] as unknown as object,
     });
     const d = await client.evaluate({ operation: 'tool_call' });
@@ -169,7 +169,7 @@ describe('WatchdogClient.evaluate', () => {
 
   it('forwards operation and context to the transport', async () => {
     const transport = makeRecordedTransport();
-    const client = new WatchdogClient({ transport });
+    const client = new GovernanceClient({ transport });
     await client.evaluate({ operation: 'input_message', context: { agent_name: 'triage' } });
     expect(transport.calls[0]).toEqual({
       operation: 'input_message',
@@ -178,7 +178,7 @@ describe('WatchdogClient.evaluate', () => {
   });
 
   it('treats unknown action strings as allow', async () => {
-    const client = new WatchdogClient({
+    const client = new GovernanceClient({
       transport: async () => ({ action: 'lolnope' }),
     });
     const d = await client.evaluate({ operation: 'tool_call' });
@@ -187,16 +187,16 @@ describe('WatchdogClient.evaluate', () => {
 });
 
 // ---------------------------------------------------------------------------
-// WatchdogClient.reportViolation
+// GovernanceClient.reportViolation
 // ---------------------------------------------------------------------------
 
-describe('WatchdogClient.reportViolation', () => {
+describe('GovernanceClient.reportViolation', () => {
   silenceWarn();
 
   it('sends the expected shape to the transport', async () => {
     const transport = makeRecordedTransport();
-    const client = new WatchdogClient({ transport });
-    const decision = makeWatchdogDecision({
+    const client = new GovernanceClient({ transport });
+    const decision = makeGovernanceDecision({
       action: 'reject',
       reason: 'bad',
       policyId: 'p-1',
@@ -212,28 +212,28 @@ describe('WatchdogClient.reportViolation', () => {
   });
 
   it('swallows transport errors', async () => {
-    const client = new WatchdogClient({
+    const client = new GovernanceClient({
       transport: async () => {
         throw new Error('network down');
       },
     });
     await expect(
-      client.reportViolation(makeWatchdogDecision({ action: 'reject' })),
+      client.reportViolation(makeGovernanceDecision({ action: 'reject' })),
     ).resolves.toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// WatchdogGuard.forInput
+// GovernanceGuard.forInput
 // ---------------------------------------------------------------------------
 
-describe('WatchdogGuard.forInput', () => {
+describe('GovernanceGuard.forInput', () => {
   silenceWarn();
 
   it('returns null when decision is allow', async () => {
     const transport = makeRecordedTransport();
-    const guard = new WatchdogGuard({
-      client: new WatchdogClient({ transport }),
+    const guard = new GovernanceGuard({
+      client: new GovernanceClient({ transport }),
       agentName: 'triage',
     });
     const out = await guard.forInput()([{ role: 'user', content: 'hi' }]);
@@ -244,8 +244,8 @@ describe('WatchdogGuard.forInput', () => {
     const transport = makeRecordedTransport({
       input_message: { action: 'reject', reason: 'PII in input' },
     });
-    const guard = new WatchdogGuard({
-      client: new WatchdogClient({ transport }),
+    const guard = new GovernanceGuard({
+      client: new GovernanceClient({ transport }),
       agentName: 'triage',
     });
     const result = await guard.forInput()([{ role: 'user', content: 'my ssn is 123-45-6789' }]);
@@ -257,8 +257,8 @@ describe('WatchdogGuard.forInput', () => {
 
   it('threads agent_name into the context', async () => {
     const transport = makeRecordedTransport();
-    const guard = new WatchdogGuard({
-      client: new WatchdogClient({ transport }),
+    const guard = new GovernanceGuard({
+      client: new GovernanceClient({ transport }),
       agentName: 'triage',
     });
     await guard.forInput()([{ role: 'user', content: 'hi' }]);
@@ -268,10 +268,10 @@ describe('WatchdogGuard.forInput', () => {
 });
 
 // ---------------------------------------------------------------------------
-// WatchdogGuard.forOutput
+// GovernanceGuard.forOutput
 // ---------------------------------------------------------------------------
 
-describe('WatchdogGuard.forOutput', () => {
+describe('GovernanceGuard.forOutput', () => {
   silenceWarn();
 
   it('redact replaces text with redactedContent', async () => {
@@ -282,7 +282,7 @@ describe('WatchdogGuard.forOutput', () => {
         redacted_content: 'Redacted content.',
       },
     });
-    const guard = new WatchdogGuard({ client: new WatchdogClient({ transport }) });
+    const guard = new GovernanceGuard({ client: new GovernanceClient({ transport }) });
     const out = await guard.forOutput()('Your SSN is 123-45-6789.');
     expect(out).toBe('Redacted content.');
   });
@@ -291,7 +291,7 @@ describe('WatchdogGuard.forOutput', () => {
     const transport = makeRecordedTransport({
       output_message: { action: 'redact', reason: 'x' },
     });
-    const guard = new WatchdogGuard({ client: new WatchdogClient({ transport }) });
+    const guard = new GovernanceGuard({ client: new GovernanceClient({ transport }) });
     const out = await guard.forOutput()('hello');
     expect(out).toBeNull();
   });
@@ -300,22 +300,22 @@ describe('WatchdogGuard.forOutput', () => {
     const transport = makeRecordedTransport({
       output_message: { action: 'reject', reason: 'policy violation' },
     });
-    const guard = new WatchdogGuard({ client: new WatchdogClient({ transport }) });
+    const guard = new GovernanceGuard({ client: new GovernanceClient({ transport }) });
     const out = await guard.forOutput()('anything');
     expect(out).toBe('policy violation');
   });
 });
 
 // ---------------------------------------------------------------------------
-// WatchdogGuard.forTool
+// GovernanceGuard.forTool
 // ---------------------------------------------------------------------------
 
-describe('WatchdogGuard.forTool', () => {
+describe('GovernanceGuard.forTool', () => {
   silenceWarn();
 
   it('allow does not throw', async () => {
     const transport = makeRecordedTransport();
-    const guard = new WatchdogGuard({ client: new WatchdogClient({ transport }) });
+    const guard = new GovernanceGuard({ client: new GovernanceClient({ transport }) });
     await expect(guard.forTool()('classify_intent', { query: 'x' })).resolves.toBeUndefined();
   });
 
@@ -323,13 +323,13 @@ describe('WatchdogGuard.forTool', () => {
     const transport = makeRecordedTransport({
       tool_call: { action: 'reject', reason: 'tool denied' },
     });
-    const guard = new WatchdogGuard({ client: new WatchdogClient({ transport }) });
+    const guard = new GovernanceGuard({ client: new GovernanceClient({ transport }) });
     await expect(guard.forTool()('classify_intent', { query: 'x' })).rejects.toThrow('tool denied');
   });
 
   it('passes tool_name + arguments through the context', async () => {
     const transport = makeRecordedTransport();
-    const guard = new WatchdogGuard({ client: new WatchdogClient({ transport }) });
+    const guard = new GovernanceGuard({ client: new GovernanceClient({ transport }) });
     await guard.forTool()('my_tool', { arg: 1 });
     const ctx = (transport.calls[0] as Record<string, unknown>).context as Record<string, unknown>;
     expect(ctx.tool_name).toBe('my_tool');
@@ -338,15 +338,15 @@ describe('WatchdogGuard.forTool', () => {
 });
 
 // ---------------------------------------------------------------------------
-// WatchdogGuard.forModel
+// GovernanceGuard.forModel
 // ---------------------------------------------------------------------------
 
-describe('WatchdogGuard.forModel', () => {
+describe('GovernanceGuard.forModel', () => {
   silenceWarn();
 
   it('allow does not throw', async () => {
     const transport = makeRecordedTransport();
-    const guard = new WatchdogGuard({ client: new WatchdogClient({ transport }) });
+    const guard = new GovernanceGuard({ client: new GovernanceClient({ transport }) });
     await expect(guard.forModel()([['msg']])).resolves.toBeUndefined();
   });
 
@@ -354,7 +354,7 @@ describe('WatchdogGuard.forModel', () => {
     const transport = makeRecordedTransport({
       model_call: { action: 'reject', reason: 'model budget exceeded' },
     });
-    const guard = new WatchdogGuard({ client: new WatchdogClient({ transport }) });
+    const guard = new GovernanceGuard({ client: new GovernanceClient({ transport }) });
     await expect(guard.forModel()(['prompt'])).rejects.toThrow('model budget exceeded');
   });
 });
@@ -363,10 +363,10 @@ describe('WatchdogGuard.forModel', () => {
 // Audit-attr wiring: getActiveSpan injection
 // ---------------------------------------------------------------------------
 
-describe('WatchdogGuard — audit attributes via getActiveSpan', () => {
+describe('GovernanceGuard — audit attributes via getActiveSpan', () => {
   silenceWarn();
 
-  it('reject records apx.watchdog.* + apx.agent.name on the active span', async () => {
+  it('reject records apx.governance.* + apx.agent.name on the active span', async () => {
     const transport = makeRecordedTransport({
       tool_call: {
         action: 'reject',
@@ -376,30 +376,30 @@ describe('WatchdogGuard — audit attributes via getActiveSpan', () => {
       },
     });
     const span = mockSpan();
-    const guard = new WatchdogGuard({
-      client: new WatchdogClient({ transport }),
+    const guard = new GovernanceGuard({
+      client: new GovernanceClient({ transport }),
       agentName: 'triage',
       getActiveSpan: () => span,
     });
     await expect(guard.forTool()('classify_intent', { query: 'x' })).rejects.toThrow('blocked');
     const keys = span.calls.map((c) => c[0]);
-    expect(keys).toContain('apx.watchdog.action');
-    expect(keys).toContain('apx.watchdog.reason');
-    expect(keys).toContain('apx.watchdog.policy_id');
-    expect(keys).toContain('apx.watchdog.domain');
+    expect(keys).toContain('apx.governance.action');
+    expect(keys).toContain('apx.governance.reason');
+    expect(keys).toContain('apx.governance.policy_id');
+    expect(keys).toContain('apx.governance.domain');
     expect(keys).toContain('apx.agent.name');
   });
 
-  it('allow does NOT record any apx.watchdog.* attributes', async () => {
+  it('allow does NOT record any apx.governance.* attributes', async () => {
     const transport = makeRecordedTransport(); // default allow
     const span = mockSpan();
-    const guard = new WatchdogGuard({
-      client: new WatchdogClient({ transport }),
+    const guard = new GovernanceGuard({
+      client: new GovernanceClient({ transport }),
       getActiveSpan: () => span,
     });
     await guard.forTool()('classify_intent', {});
     const keys = span.calls.map((c) => c[0]);
-    expect(keys).not.toContain('apx.watchdog.action');
+    expect(keys).not.toContain('apx.governance.action');
   });
 
   it('redact records audit attrs on the active span', async () => {
@@ -412,23 +412,23 @@ describe('WatchdogGuard — audit attributes via getActiveSpan', () => {
       },
     });
     const span = mockSpan();
-    const guard = new WatchdogGuard({
-      client: new WatchdogClient({ transport }),
+    const guard = new GovernanceGuard({
+      client: new GovernanceClient({ transport }),
       agentName: 'triage',
       getActiveSpan: () => span,
     });
     const out = await guard.forOutput()('text with PII');
     expect(out).toBe('<redacted>');
     const keys = span.calls.map((c) => c[0]);
-    expect(keys).toContain('apx.watchdog.action');
-    expect(keys).toContain('apx.watchdog.policy_id');
+    expect(keys).toContain('apx.governance.action');
+    expect(keys).toContain('apx.governance.policy_id');
   });
 
   it('default getActiveSpan returns null — no crash', async () => {
     const transport = makeRecordedTransport({
       tool_call: { action: 'reject', reason: 'denied' },
     });
-    const guard = new WatchdogGuard({ client: new WatchdogClient({ transport }) });
+    const guard = new GovernanceGuard({ client: new GovernanceClient({ transport }) });
     await expect(guard.forTool()('x', {})).rejects.toThrow('denied');
     // No span injected; nothing to assert other than no crash.
   });
@@ -780,14 +780,14 @@ describe('makeMcpTransport', () => {
       return { action: 'reject', reason: 'blocked' };
     };
     const transport = makeMcpTransport({
-      mcpUrl: 'https://watchdog.example.com/mcp',
+      mcpUrl: 'https://governance.example.com/mcp',
       toolName: 'evaluate_operation',
       mcpClient,
     });
     const res = await transport({ operation: 'tool_call', context: { tool_name: 'leak_pii' } });
     expect(res).toEqual({ action: 'reject', reason: 'blocked' });
     expect(calls).toHaveLength(1);
-    expect(calls[0][0]).toBe('https://watchdog.example.com/mcp');
+    expect(calls[0][0]).toBe('https://governance.example.com/mcp');
     expect(calls[0][1]).toBe('evaluate_operation');
     expect(calls[0][2]).toEqual({ operation: 'tool_call', context: { tool_name: 'leak_pii' } });
   });
@@ -797,7 +797,7 @@ describe('makeMcpTransport', () => {
       throw new Error('mcp down');
     };
     const transport = makeMcpTransport({
-      mcpUrl: 'https://watchdog.example.com/mcp',
+      mcpUrl: 'https://governance.example.com/mcp',
       toolName: 'evaluate_operation',
       mcpClient,
     });
@@ -809,7 +809,7 @@ describe('makeMcpTransport', () => {
   it('passes through violation_report as {} (so it routes to the UC writer)', async () => {
     const mcpClient = vi.fn<McpToolCallFn>(async () => ({ action: 'allow' }));
     const transport = makeMcpTransport({
-      mcpUrl: 'https://watchdog.example.com/mcp',
+      mcpUrl: 'https://governance.example.com/mcp',
       toolName: 'evaluate_operation',
       mcpClient,
     });
@@ -820,7 +820,7 @@ describe('makeMcpTransport', () => {
 
   it('without mcpClient, evaluate falls back to allow', async () => {
     const transport = makeMcpTransport({
-      mcpUrl: 'https://watchdog.example.com/mcp',
+      mcpUrl: 'https://governance.example.com/mcp',
       toolName: 'evaluate_operation',
     });
     const res = await transport({ operation: 'tool_call' });
@@ -829,10 +829,10 @@ describe('makeMcpTransport', () => {
 });
 
 // ---------------------------------------------------------------------------
-// makeWatchdogTransport
+// makeGovernanceTransport
 // ---------------------------------------------------------------------------
 
-describe('makeWatchdogTransport', () => {
+describe('makeGovernanceTransport', () => {
   silenceWarn();
 
   it('routes violation_report to the UC writer (INSERT)', async () => {
@@ -841,8 +841,8 @@ describe('makeWatchdogTransport', () => {
       sqlCalls.push(sql);
     };
     const mcpClient: McpToolCallFn = async () => ({ action: 'allow' });
-    const transport = makeWatchdogTransport({
-      mcpUrl: 'https://watchdog.example.com/mcp',
+    const transport = makeGovernanceTransport({
+      mcpUrl: 'https://governance.example.com/mcp',
       mcpToolName: 'evaluate_operation',
       violationsTable: 'main.x.violations',
       sqlExecutor,
@@ -860,8 +860,8 @@ describe('makeWatchdogTransport', () => {
   it('routes evaluate to MCP', async () => {
     const mcpClient = vi.fn<McpToolCallFn>(async () => ({ action: 'reject', reason: 'blocked' }));
     const sqlExecutor: SqlExecutor = async () => null;
-    const transport = makeWatchdogTransport({
-      mcpUrl: 'https://watchdog.example.com/mcp',
+    const transport = makeGovernanceTransport({
+      mcpUrl: 'https://governance.example.com/mcp',
       mcpToolName: 'evaluate_operation',
       violationsTable: 'main.x.violations',
       sqlExecutor,
@@ -874,10 +874,10 @@ describe('makeWatchdogTransport', () => {
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end: WatchdogClient with the combined transport
+// End-to-end: GovernanceClient with the combined transport
 // ---------------------------------------------------------------------------
 
-describe('WatchdogClient + combined transport', () => {
+describe('GovernanceClient + combined transport', () => {
   silenceWarn();
 
   it('reject decision via MCP triggers INSERT via reportViolation', async () => {
@@ -890,15 +890,15 @@ describe('WatchdogClient + combined transport', () => {
       reason: 'blocked',
       policy_id: 'p-1',
     });
-    const transport = makeWatchdogTransport({
-      mcpUrl: 'https://watchdog.example.com/mcp',
+    const transport = makeGovernanceTransport({
+      mcpUrl: 'https://governance.example.com/mcp',
       mcpToolName: 'evaluate_operation',
       violationsTable: 'main.x.violations',
       sqlExecutor,
       mcpClient,
     });
-    const client = new WatchdogClient({ transport });
-    const decision: WatchdogDecision = await client.evaluate({
+    const client = new GovernanceClient({ transport });
+    const decision: GovernanceDecision = await client.evaluate({
       operation: 'tool_call',
       context: { tool_name: 'x' },
     });

@@ -1751,8 +1751,8 @@ WITH span_rows AS (
     NULL AS event_type,
     span.name AS span_name,
     span.attributes:['apx.tool.name']::STRING AS tool_name,
-    span.attributes:['apx.watchdog.policy_id']::STRING AS policy_id,
-    span.attributes:['apx.watchdog.action']::STRING AS decision,
+    span.attributes:['apx.governance.policy_id']::STRING AS policy_id,
+    span.attributes:['apx.governance.action']::STRING AS decision,
     span.status.code AS status,
     (span.end_time_unix_nano - span.start_time_unix_nano) / 1000000.0 AS latency_ms,
     TO_JSON(span.attributes) AS payload_json
@@ -6601,7 +6601,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
     help="After the app is live, register a UC model-version *manifest* for it "
          "(log_agent + apx.* tags, tagged apx.serving=apps) so the Apps agent "
          "gets a version ledger and shows up in apx-agent agents list / uc topology / "
-         "watchdog. NOT promoted to serving — the App serves traffic, the UC "
+         "governance. NOT promoted to serving — the App serves traffic, the UC "
          "version is a record of what it's running. Skips with a notice if no "
          "UC name / model is configured. ON by default. Only used by "
          "--target apps.",
@@ -6661,7 +6661,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--set-uc-tags/--no-set-uc-tags", default=True,
     help="Write apx.agent.* UC tags on the registered model after deploy so "
-         "the agent shows up in apx-agent agents list / uc topology / watchdog crawls. "
+         "the agent shows up in apx-agent agents list / uc topology / databricks-watchdog crawls. "
          "On by default. Only used by --target model-serving.",
 )
 @click.option(
@@ -6809,7 +6809,7 @@ def deploy(
 
     The Apps version manifest (step 5) registers a UC model version tagged
     ``apx.serving=apps`` so the Apps agent gets a version ledger and shows up in
-    ``apx agents list`` / topology / watchdog — but it is NOT promoted to a
+    ``apx agents list`` / topology / governance — but it is NOT promoted to a
     serving endpoint. The App serves traffic; the UC version records what it's
     running. It runs only when a UC name and model are configured (see
     ``docs/engine-scope/apps-uc-registry-shim-design.md``).
@@ -7289,7 +7289,7 @@ def deploy(
     else:
         _say("Skipping deploy (--no-deploy).")
 
-    # 4. Set UC tags so the agent shows up in apx-agent agents list / uc topology / watchdog
+    # 4. Set UC tags so the agent shows up in apx-agent agents list / uc topology / governance
     if set_uc_tags:
         try:
             from apx_agent import set_uc_tags_for_agent
@@ -7312,7 +7312,7 @@ def deploy(
                 )
         except Exception as e:
             # Collected, not swallowed: an untagged agent silently never
-            # shows up in list / topology / watchdog (#402).
+            # shows up in list / topology / governance (#402).
             step_outcomes["set_uc_tags"] = "failed"
             step_failures.append(f"set-uc-tags: {e}")
             click.echo(f"# set-uc-tags failed: {e}", err=True)
@@ -9927,7 +9927,7 @@ def _register_apps_manifest_step(
             "# UC registration skipped: no UC model name resolved. Set "
             "[tool.apx.agent].registered_model (or a non-placeholder "
             "catalog + schema), or pass --uc-name, to enable the Apps version "
-            "ledger (discovery in `apx agents list` / topology / watchdog). "
+            "ledger (discovery in `apx agents list` / topology / governance). "
             "Pass --no-register-uc to silence this."
         )
         return None
@@ -13362,7 +13362,7 @@ def register_agent_cmd(
 
     Deploy-time registration is best-effort: when it fails, the App stays
     live but has NO ledger entry — invisible to `agents list` / topology /
-    watchdog (issue #418). Run this from the project directory to register
+    governance (issue #418). Run this from the project directory to register
     the manifest for one agent, without a workspace-wide `fleet backfill`.
 
     Resolves the app name and UC name exactly as `agents deploy --target
@@ -15836,34 +15836,34 @@ def canary_analyze(
 
 
 # ---------------------------------------------------------------------------
-# watchdog — read-side compliance posture inspection
+# governance — read-side compliance posture inspection
 # ---------------------------------------------------------------------------
 
 
-_ENV_VIOLATIONS_TABLE = "APX_WATCHDOG_VIOLATIONS_TABLE"
-_ENV_MCP_URL = "APX_WATCHDOG_MCP_URL"
-_ENV_MCP_TOOL = "APX_WATCHDOG_MCP_TOOL_NAME"
-_ENV_STATUS_TOOL = "APX_WATCHDOG_STATUS_TOOL"
+_ENV_VIOLATIONS_TABLE = "APX_GOVERNANCE_VIOLATIONS_TABLE"
+_ENV_MCP_URL = "APX_GOVERNANCE_MCP_URL"
+_ENV_MCP_TOOL = "APX_GOVERNANCE_MCP_TOOL_NAME"
+_ENV_STATUS_TOOL = "APX_GOVERNANCE_STATUS_TOOL"
 _DEFAULT_STATUS_TOOL = "get_agent_compliance"
 
 
 @main.group(cls=_ApxGroup)
-def watchdog() -> None:
+def governance() -> None:
     """Inspect databricks-watchdog compliance posture from the CLI.
 
     Reads the UC violations table and Guardrails MCP tools without
     needing to load the agent. Configure once via env vars:
 
-      APX_WATCHDOG_VIOLATIONS_TABLE=catalog.schema.runtime_violations
-      APX_WATCHDOG_MCP_URL=https://guardrails.example.com/mcp
-      APX_WATCHDOG_MCP_TOOL_NAME=evaluate_operation
-      APX_WATCHDOG_STATUS_TOOL=get_agent_compliance
+      APX_GOVERNANCE_VIOLATIONS_TABLE=catalog.schema.runtime_violations
+      APX_GOVERNANCE_MCP_URL=https://guardrails.example.com/mcp
+      APX_GOVERNANCE_MCP_TOOL_NAME=evaluate_operation
+      APX_GOVERNANCE_STATUS_TOOL=get_agent_compliance
     """
 
 
-@watchdog.command("violations")
+@governance.command("violations")
 @click.option("--table", "violations_table", default=None,
-              help=f"Three-part UC name of the watchdog violations table. "
+              help=f"Three-part UC name of the governance violations table. "
                    f"Falls back to ${_ENV_VIOLATIONS_TABLE}.")
 @click.option("--agent", "agent_name", default=None,
               help="Filter to violations for this agent_name.")
@@ -15876,7 +15876,7 @@ def watchdog() -> None:
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-def watchdog_violations(
+def governance_violations(
     violations_table: str | None,
     agent_name: str | None,
     hours: int,
@@ -15885,7 +15885,7 @@ def watchdog_violations(
     profile: str | None,
     fmt: str,
 ) -> None:
-    """Recent reject / redact decisions reported by WatchdogGuard."""
+    """Recent reject / redact decisions reported by GovernanceGuard."""
     import os
 
     table = violations_table or os.environ.get(_ENV_VIOLATIONS_TABLE)
@@ -15952,7 +15952,7 @@ def watchdog_violations(
         )
 
 
-@watchdog.command("status")
+@governance.command("status")
 @click.option("--agent", "agent_name", required=True,
               help="Agent name / id to query posture for (passed as agent_id).")
 @click.option("--mcp-url", default=None,
@@ -15968,7 +15968,7 @@ def watchdog_violations(
     "--format", "fmt", type=click.Choice(["text", "json"]),
     default="text", help="Output format.",
 )
-def watchdog_status(
+def governance_status(
     agent_name: str,
     mcp_url: str | None,
     mcp_tool_name: str | None,
@@ -15978,7 +15978,7 @@ def watchdog_status(
     """Query Guardrails MCP for the agent's compliance posture.
 
     Calls ``get_agent_compliance`` by default (not ``evaluate_operation``).
-    Point ``APX_WATCHDOG_MCP_URL`` at the Guardrails MCP URL.
+    Point ``APX_GOVERNANCE_MCP_URL`` at the Guardrails MCP URL.
     """
     import os
 
@@ -16003,13 +16003,13 @@ def watchdog_status(
             timeout_seconds=timeout_seconds,
         )
     except Exception as e:
-        raise click.ClickException(f"Watchdog status MCP call failed: {e}") from e
+        raise click.ClickException(f"Governance status MCP call failed: {e}") from e
 
     if fmt == "json":
         click.echo(json.dumps(payload, indent=2, default=str))
         return
 
-    click.echo(f"# watchdog status for agent={agent_name} via {tool_name}")
+    click.echo(f"# governance status for agent={agent_name} via {tool_name}")
     for key in (
         "agent_id", "risk_level", "checks_passed", "checks_denied",
         "checks_warned", "tables_accessed", "actions_logged", "session_start",

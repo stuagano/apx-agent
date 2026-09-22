@@ -100,7 +100,7 @@ The stable identifiers are:
 
 Databricks owns the native managed classifiers. The local mirror uses the
 existing prompt-injection heuristic for jailbreak. The other managed
-classifiers require an injected evaluator or Watchdog transport; enforce mode
+classifiers require an injected evaluator or governance transport; enforce mode
 fails closed when neither is available. Local equivalence is not claimed for a
 Databricks-managed classifier unless the same evaluator is used. Sensitive data
 redaction remains a native capability; apx-agent does not invent local
@@ -190,7 +190,7 @@ tokens, and credentials are not logged or included in native plans.
 ## Migration from existing guards
 
 Existing [tool.apx.agent.guardrails], code-defined hooks, PolicyGate, and
-WatchdogGuard remain supported. Service Policy hooks are additive and are
+GovernanceGuard remain supported. Service Policy hooks are additive and are
 attached through the same finalize_agent seam used by Apps and model-serving
 paths. Code-defined hooks run first; the declarative local mirror runs after
 them. Migrate one policy at a time, run with dry_run, inspect audit decisions,

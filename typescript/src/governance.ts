@@ -1,5 +1,5 @@
 /**
- * databricks-watchdog integration (TypeScript port of python/src/apx_agent/_watchdog.py).
+ * databricks-watchdog integration (TypeScript port of python/src/apx_agent/_governance.py).
  *
  * `databricks-watchdog` is the compliance posture layer for Unity Catalog:
  * declarative cross-domain policies, violation lifecycle tracking, owner
@@ -8,21 +8,21 @@
  *
  * The integration has three wire-protocol contracts:
  *
- *   1. **Metadata shape**: UC tags on the registered model. Watchdog's
+ *   1. **Metadata shape**: UC tags on the registered model. databricks-watchdog's
  *      crawler reads tags off the model record. {@link setUcTagsForAgent}
  *      writes them.
- *   2. **Runtime policy decisions**: watchdog's MCP tools.
+ *   2. **Runtime policy decisions**: databricks-watchdog's MCP tools.
  *      {@link makeMcpTransport} produces a transport that calls a named MCP
  *      tool with the operation context.
- *   3. **Violation reports**: an INSERT into a watchdog-owned UC Delta
+ *   3. **Violation reports**: an INSERT into a databricks-watchdog-owned UC Delta
  *      table. {@link makeUcViolationWriter} produces a transport that
  *      handles `violation_report` requests.
  *
  * Three public pieces sit on top of those:
  *
- *   - {@link WatchdogClient} — adapter that dispatches evaluate / report
+ *   - {@link GovernanceClient} — adapter that dispatches evaluate / report
  *     calls through a pluggable transport. Default transport is a no-op stub.
- *   - {@link WatchdogGuard} — produces callables for the existing apx-agent
+ *   - {@link GovernanceGuard} — produces callables for the existing apx-agent
  *     hooks (input guardrails, output guardrails, before-tool, before-model).
  *     Reject short-circuits; redact rewrites; allow passes through. Violation
  *     reports fire automatically on reject / redact.
@@ -30,7 +30,7 @@
  *     {@link setUcTagsForAgent} writes it into UC as tags on the registered
  *     model.
  *
- * Async note (port semantics): Python's `_watchdog.py` is sync. In TypeScript
+ * Async note (port semantics): Python's `_governance.py` is sync. In TypeScript
  * every transport and every hook callable is async because the wire calls
  * (MCP HTTP, Statements API SQL) are async. The shape and behaviour are
  * otherwise preserved 1:1.
@@ -49,7 +49,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * A single policy decision returned by watchdog.
+ * A single policy decision returned by governance.
  *
  * Frozen at construction — mutation throws in strict mode.
  *
@@ -58,18 +58,18 @@ import {
  *     so the no-op stub transport produces a pass-through decision.
  *   - `reason` — human-readable explanation surfaced to the user (on
  *     `"reject"`) or attached as a violation reason.
- *   - `policyId` — watchdog's identifier for the policy that produced this
- *     decision. Pass back when reporting violations so watchdog can aggregate
+ *   - `policyId` — governance's identifier for the policy that produced this
+ *     decision. Pass back when reporting violations so governance can aggregate
  *     by policy.
  *   - `domain` — governance domain (`"security"`, `"data_quality"`,
  *     `"cost"`, `"agent"`, ...) for trace attribution.
  *   - `redactedContent` — when `action="redact"`, the rewritten content
  *     (e.g. PII stripped). When absent/empty, callers fall back to the
  *     original content unchanged.
- *   - `metadata` — free-form dict for additional context watchdog wants to
+ *   - `metadata` — free-form dict for additional context governance wants to
  *     surface (owner email, remediation link, ...).
  */
-export interface WatchdogDecision {
+export interface GovernanceDecision {
   readonly action: 'allow' | 'reject' | 'redact';
   readonly reason?: string;
   readonly policyId?: string;
@@ -78,10 +78,10 @@ export interface WatchdogDecision {
   readonly metadata: Readonly<Record<string, unknown>>;
 }
 
-/** Construct a frozen {@link WatchdogDecision} with sensible defaults. */
-export function makeWatchdogDecision(
-  fields: Partial<Omit<WatchdogDecision, 'metadata'>> & { metadata?: Record<string, unknown> } = {},
-): WatchdogDecision {
+/** Construct a frozen {@link GovernanceDecision} with sensible defaults. */
+export function makeGovernanceDecision(
+  fields: Partial<Omit<GovernanceDecision, 'metadata'>> & { metadata?: Record<string, unknown> } = {},
+): GovernanceDecision {
   return Object.freeze({
     action: fields.action ?? 'allow',
     reason: fields.reason,
@@ -89,7 +89,7 @@ export function makeWatchdogDecision(
     domain: fields.domain,
     redactedContent: fields.redactedContent,
     metadata: Object.freeze({ ...(fields.metadata ?? {}) }),
-  }) as WatchdogDecision;
+  }) as GovernanceDecision;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,8 +98,8 @@ export function makeWatchdogDecision(
 
 /**
  * Transport callable shape: receives a request object, returns an object the
- * {@link WatchdogClient} parses into a {@link WatchdogDecision}. Plugged in
- * by callers once the watchdog-side wire protocol is pinned down.
+ * {@link GovernanceClient} parses into a {@link GovernanceDecision}. Plugged in
+ * by callers once the governance-side wire protocol is pinned down.
  */
 export type TransportFn = (request: object) => Promise<object>;
 
@@ -111,17 +111,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function recordDecisionOnSpan(
-  decision: WatchdogDecision,
+  decision: GovernanceDecision,
   agentName: string | undefined,
   getActiveSpan: () => SpanLike | null,
 ): void {
   if (decision.action === 'allow') return;
   const span = getActiveSpan();
   setAuditAttrs(span, {
-    watchdogAction: decision.action,
-    watchdogReason: decision.reason,
-    watchdogPolicyId: decision.policyId,
-    watchdogDomain: decision.domain,
+    governanceAction: decision.action,
+    governanceReason: decision.reason,
+    governancePolicyId: decision.policyId,
+    governanceDomain: decision.domain,
     agentName,
   });
 }
@@ -130,15 +130,15 @@ function recordDecisionOnSpan(
 // Client
 // ---------------------------------------------------------------------------
 
-export interface WatchdogClientOptions {
+export interface GovernanceClientOptions {
   /**
-   * Watchdog HTTP / MCP endpoint URL. Stored for caller reference; the default
+   * Governance HTTP / MCP endpoint URL. Stored for caller reference; the default
    * transport doesn't consult it.
    */
   endpoint?: string;
   /**
    * Transport callable. When omitted, a no-op allow-everything transport is
-   * used so this module is safe to import and exercise before watchdog's wire
+   * used so this module is safe to import and exercise before governance's wire
    * API is finalised.
    */
   transport?: TransportFn;
@@ -160,24 +160,24 @@ export interface EvaluateOpts {
  * Subclass to replace {@link evaluate} / {@link reportViolation} entirely
  * when more control is needed.
  */
-export class WatchdogClient {
+export class GovernanceClient {
   readonly endpoint: string | undefined;
   private readonly transport: TransportFn;
 
-  constructor(options: WatchdogClientOptions = {}) {
+  constructor(options: GovernanceClientOptions = {}) {
     ClientOptionsSchema.parse({ endpoint: options.endpoint });
     this.endpoint = options.endpoint;
     this.transport = options.transport ?? noOpTransport;
   }
 
   /**
-   * Ask watchdog whether `operation` should proceed.
+   * Ask governance whether `operation` should proceed.
    *
    * Falls back to `allow` (with a `console.warn`) on transport failure so a
-   * watchdog outage doesn't black-hole production traffic — the runtime
+   * governance outage doesn't black-hole production traffic — the runtime
    * decides its own fail-open vs fail-closed policy on top of this.
    */
-  async evaluate(opts: EvaluateOpts): Promise<WatchdogDecision> {
+  async evaluate(opts: EvaluateOpts): Promise<GovernanceDecision> {
     const request = {
       operation: opts.operation,
       context: opts.context ?? {},
@@ -188,28 +188,28 @@ export class WatchdogClient {
       response = await this.transport(request);
     } catch (e) {
       console.warn(
-        `[watchdog] transport failed for operation ${opts.operation}: ${e instanceof Error ? e.message : String(e)} — falling back to allow.`,
+        `[governance] transport failed for operation ${opts.operation}: ${e instanceof Error ? e.message : String(e)} — falling back to allow.`,
       );
-      return makeWatchdogDecision({
+      return makeGovernanceDecision({
         action: 'allow',
-        reason: `watchdog transport error: ${e instanceof Error ? e.message : String(e)}`,
+        reason: `governance transport error: ${e instanceof Error ? e.message : String(e)}`,
       });
     }
 
     if (!isPlainObject(response)) {
       console.warn(
-        `[watchdog] transport returned ${typeof response}, expected object — allowing.`,
+        `[governance] transport returned ${typeof response}, expected object — allowing.`,
       );
-      return makeWatchdogDecision({ action: 'allow' });
+      return makeGovernanceDecision({ action: 'allow' });
     }
 
     const action = typeof response.action === 'string' ? response.action : 'allow';
     if (action !== 'allow' && action !== 'reject' && action !== 'redact') {
       // Unknown action string — treat as allow so an upstream typo doesn't lock the runtime.
-      return makeWatchdogDecision({ action: 'allow' });
+      return makeGovernanceDecision({ action: 'allow' });
     }
 
-    return makeWatchdogDecision({
+    return makeGovernanceDecision({
       action,
       reason: typeof response.reason === 'string' ? response.reason : undefined,
       policyId: typeof response.policy_id === 'string' ? response.policy_id : undefined,
@@ -221,15 +221,15 @@ export class WatchdogClient {
   }
 
   /**
-   * Report a runtime block / redaction back to watchdog.
+   * Report a runtime block / redaction back to governance.
    *
-   * Used so the watchdog compliance dashboard reflects what actually happened
+   * Used so the governance compliance dashboard reflects what actually happened
    * at runtime, not just what static crawls discovered. Failures are
    * logged-and-continued — the agent doesn't have a useful response to "I
    * couldn't report a violation".
    */
   async reportViolation(
-    decision: WatchdogDecision,
+    decision: GovernanceDecision,
     context: Record<string, unknown> = {},
   ): Promise<void> {
     const payload = {
@@ -247,7 +247,7 @@ export class WatchdogClient {
       await this.transport(payload);
     } catch (e) {
       console.warn(
-        `[watchdog] violation report failed: ${e instanceof Error ? e.message : String(e)}`,
+        `[governance] violation report failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }
@@ -257,39 +257,39 @@ export class WatchdogClient {
 // Guard adapters — plug into existing apx-agent hooks
 // ---------------------------------------------------------------------------
 
-export interface WatchdogGuardOptions {
-  client: WatchdogClient;
-  /** Agent name threaded into every context dict watchdog receives. */
+export interface GovernanceGuardOptions {
+  client: GovernanceClient;
+  /** Agent name threaded into every context dict governance receives. */
   agentName?: string;
   /**
    * Returns the currently active tracing span, or `null` when no span is
    * active. Defaults to `() => null` (no MLflow JS bridge yet). When wired,
-   * decisions other than `allow` are annotated with `apx.watchdog.*` audit
+   * decisions other than `allow` are annotated with `apx.governance.*` audit
    * attributes via {@link setAuditAttrs}.
    */
   getActiveSpan?: () => SpanLike | null;
 }
 
-/** Hook callable shapes returned by {@link WatchdogGuard}. */
+/** Hook callable shapes returned by {@link GovernanceGuard}. */
 export type InputGuard = (messages: unknown) => Promise<string | null>;
 export type OutputGuard = (text: string) => Promise<string | null>;
 export type BeforeTool = (toolName: string, args: Record<string, unknown>) => Promise<void>;
 export type BeforeModel = (prompts: unknown) => Promise<void>;
 
 /**
- * Bridge {@link WatchdogClient} decisions into apx-agent's hook callables.
+ * Bridge {@link GovernanceClient} decisions into apx-agent's hook callables.
  *
  * Each `forX()` method returns a callable wired through the right hook
  * signature. Reject decisions raise / short-circuit per the hook's contract;
  * redact decisions modify content where the hook supports it; allow
  * decisions are pass-through.
  */
-export class WatchdogGuard {
-  readonly client: WatchdogClient;
+export class GovernanceGuard {
+  readonly client: GovernanceClient;
   readonly agentName: string | undefined;
   private readonly getActiveSpan: () => SpanLike | null;
 
-  constructor(options: WatchdogGuardOptions) {
+  constructor(options: GovernanceGuardOptions) {
     this.client = options.client;
     this.agentName = options.agentName;
     this.getActiveSpan = options.getActiveSpan ?? ((): SpanLike | null => null);
@@ -310,7 +310,7 @@ export class WatchdogGuard {
       recordDecisionOnSpan(decision, this.agentName, this.getActiveSpan);
       if (decision.action === 'reject') {
         await this.client.reportViolation(decision, ctx);
-        return decision.reason ?? 'Request blocked by Watchdog policy.';
+        return decision.reason ?? 'Request blocked by Governance policy.';
       }
       return null;
     };
@@ -324,7 +324,7 @@ export class WatchdogGuard {
       recordDecisionOnSpan(decision, this.agentName, this.getActiveSpan);
       if (decision.action === 'reject') {
         await this.client.reportViolation(decision, this.buildContext());
-        return decision.reason ?? 'Response blocked by Watchdog policy.';
+        return decision.reason ?? 'Response blocked by Governance policy.';
       }
       if (decision.action === 'redact' && decision.redactedContent) {
         await this.client.reportViolation(decision, this.buildContext());
@@ -342,7 +342,7 @@ export class WatchdogGuard {
       recordDecisionOnSpan(decision, this.agentName, this.getActiveSpan);
       if (decision.action === 'reject') {
         await this.client.reportViolation(decision, ctx);
-        throw new Error(decision.reason ?? `Tool ${JSON.stringify(toolName)} blocked by Watchdog policy.`);
+        throw new Error(decision.reason ?? `Tool ${JSON.stringify(toolName)} blocked by Governance policy.`);
       }
     };
   }
@@ -355,7 +355,7 @@ export class WatchdogGuard {
       recordDecisionOnSpan(decision, this.agentName, this.getActiveSpan);
       if (decision.action === 'reject') {
         await this.client.reportViolation(decision, this.buildContext());
-        throw new Error(decision.reason ?? 'Model call blocked by Watchdog policy.');
+        throw new Error(decision.reason ?? 'Model call blocked by Governance policy.');
       }
     };
   }
@@ -384,7 +384,7 @@ function countPrompts(prompts: unknown): number {
  * Minimum surface emitAgentMetadata reads off each tool callable yielded by
  * `toolIterator`. TS `AgentTool` doesn't carry UC binding metadata directly,
  * so callers can optionally tag each tool with `ucName` / `grants` for
- * watchdog. Attached resource specs (via `attachResources`) are read through
+ * governance. Attached resource specs (via `attachResources`) are read through
  * {@link getResources}.
  */
 export interface ToolDescriptor {
@@ -423,9 +423,9 @@ export interface AgentMetadata {
 }
 
 /**
- * Produce the agent's crawler-facing metadata for watchdog.
+ * Produce the agent's crawler-facing metadata for governance.
  *
- * Returns a JSON-serializable object suitable for posting to watchdog's
+ * Returns a JSON-serializable object suitable for posting to governance's
  * crawl endpoint, writing as an MLflow tag, or persisting to a UC manifest
  * table.
  */
@@ -493,7 +493,7 @@ function buildUcTagPayload(metadata: AgentMetadata): Record<string, string> {
     'apx.agent.metadata': truncate(JSON.stringify(metadata)),
   };
 
-  // Drop empty values — UC rejects empty tag values, and watchdog gains
+  // Drop empty values — UC rejects empty tag values, and governance gains
   // nothing from `apx.agent.sub_agents = ""`.
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(tags)) {
@@ -544,7 +544,7 @@ export async function setUcTagsForAgent<Agent>(
       await options.mlflowClient.setRegisteredModelTag(options.registeredModelName, key, value);
     } catch (e) {
       console.warn(
-        `[watchdog] failed to write UC tag ${key} on ${options.registeredModelName}: ${e instanceof Error ? e.message : String(e)} — continuing with remaining tags.`,
+        `[governance] failed to write UC tag ${key} on ${options.registeredModelName}: ${e instanceof Error ? e.message : String(e)} — continuing with remaining tags.`,
       );
     }
   }
@@ -582,10 +582,10 @@ const UcViolationWriterOptionsSchema = z.object({
 /**
  * Return a transport that handles only `violation_report` requests.
  *
- * Inserts a row into the watchdog runtime-violations Delta table per
+ * Inserts a row into the governance runtime-violations Delta table per
  * report. Non-violation-report requests pass through as `{action: "allow"}`
  * so this transport can be composed with an evaluate transport via
- * {@link makeWatchdogTransport}.
+ * {@link makeGovernanceTransport}.
  */
 export function makeUcViolationWriter(options: MakeUcViolationWriterOptions): TransportFn {
   UcViolationWriterOptionsSchema.parse({
@@ -620,7 +620,7 @@ export function makeUcViolationWriter(options: MakeUcViolationWriterOptions): Tr
       await options.sqlExecutor(ddl);
     } catch (e) {
       console.warn(
-        `[watchdog] CREATE TABLE IF NOT EXISTS ${options.violationsTable} failed: ${e instanceof Error ? e.message : String(e)} — subsequent inserts may fail.`,
+        `[governance] CREATE TABLE IF NOT EXISTS ${options.violationsTable} failed: ${e instanceof Error ? e.message : String(e)} — subsequent inserts may fail.`,
       );
     }
     created = true;
@@ -655,7 +655,7 @@ export function makeUcViolationWriter(options: MakeUcViolationWriterOptions): Tr
       await options.sqlExecutor(sql);
     } catch (e) {
       console.warn(
-        `[watchdog] failed to insert violation row into ${options.violationsTable}: ${e instanceof Error ? e.message : String(e)}`,
+        `[governance] failed to insert violation row into ${options.violationsTable}: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
     return {};
@@ -697,14 +697,14 @@ export interface MakeMcpTransportOptions {
 }
 
 /**
- * Return a transport that calls a watchdog MCP tool for evaluate requests.
+ * Return a transport that calls a governance MCP tool for evaluate requests.
  *
  * Non-evaluate requests (`type === 'violation_report'`) pass through as
  * `{}` so this transport can be composed with a violation writer via
- * {@link makeWatchdogTransport}.
+ * {@link makeGovernanceTransport}.
  *
  * Falls back to `{action: "allow"}` on any error from the MCP client so
- * watchdog outages don't black-hole production traffic.
+ * governance outages don't black-hole production traffic.
  */
 export function makeMcpTransport(options: MakeMcpTransportOptions): TransportFn {
   const timeoutMs = options.timeoutMs ?? 5_000;
@@ -718,9 +718,9 @@ export function makeMcpTransport(options: MakeMcpTransportOptions): TransportFn 
 
     if (!options.mcpClient) {
       console.warn(
-        `[watchdog] makeMcpTransport invoked without an mcpClient — allowing.`,
+        `[governance] makeMcpTransport invoked without an mcpClient — allowing.`,
       );
-      return { action: 'allow', reason: 'watchdog mcp transport not configured' };
+      return { action: 'allow', reason: 'governance mcp transport not configured' };
     }
 
     const args: Record<string, unknown> = {
@@ -731,21 +731,21 @@ export function makeMcpTransport(options: MakeMcpTransportOptions): TransportFn 
     try {
       const callPromise = options.mcpClient(options.mcpUrl, options.toolName, args);
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error(`watchdog mcp call timed out after ${timeoutMs}ms`)), timeoutMs).unref?.();
+        setTimeout(() => reject(new Error(`governance mcp call timed out after ${timeoutMs}ms`)), timeoutMs).unref?.();
       });
       const result = await Promise.race([callPromise, timeoutPromise]);
       if (!isPlainObject(result)) {
-        console.warn(`[watchdog] MCP tool ${options.toolName} returned non-object — allowing.`);
+        console.warn(`[governance] MCP tool ${options.toolName} returned non-object — allowing.`);
         return { action: 'allow' };
       }
       return result;
     } catch (e) {
       console.warn(
-        `[watchdog] MCP call to ${options.toolName} failed: ${e instanceof Error ? e.message : String(e)} — falling back to allow.`,
+        `[governance] MCP call to ${options.toolName} failed: ${e instanceof Error ? e.message : String(e)} — falling back to allow.`,
       );
       return {
         action: 'allow',
-        reason: `watchdog mcp transport error: ${e instanceof Error ? e.message : String(e)}`,
+        reason: `governance mcp transport error: ${e instanceof Error ? e.message : String(e)}`,
       };
     }
   };
@@ -755,7 +755,7 @@ export function makeMcpTransport(options: MakeMcpTransportOptions): TransportFn 
 // Combined transport
 // ---------------------------------------------------------------------------
 
-export interface MakeWatchdogTransportOptions {
+export interface MakeGovernanceTransportOptions {
   mcpUrl: string;
   mcpToolName: string;
   violationsTable: string;
@@ -769,11 +769,11 @@ export interface MakeWatchdogTransportOptions {
 /**
  * Combined transport: evaluate via MCP, violation reports into UC Delta.
  *
- * This is the canonical watchdog transport — both wire-protocol contracts
+ * This is the canonical governance transport — both wire-protocol contracts
  * answered, composed into one callable that
- * `new WatchdogClient({transport})` consumes.
+ * `new GovernanceClient({transport})` consumes.
  */
-export function makeWatchdogTransport(options: MakeWatchdogTransportOptions): TransportFn {
+export function makeGovernanceTransport(options: MakeGovernanceTransportOptions): TransportFn {
   const evalTransport = makeMcpTransport({
     mcpUrl: options.mcpUrl,
     toolName: options.mcpToolName,

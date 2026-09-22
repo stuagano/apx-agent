@@ -393,15 +393,15 @@ from ._apps_registry import (
 )
 
 # databricks-watchdog integration
-from ._watchdog import (
-    WatchdogClient,
-    WatchdogDecision,
-    WatchdogGuard,
+from ._governance import (
+    GovernanceClient,
+    GovernanceDecision,
+    GovernanceGuard,
     call_mcp_tool,
     emit_agent_metadata,
     make_mcp_transport,
     make_uc_violation_writer,
-    make_watchdog_transport,
+    make_governance_transport,
     set_uc_tags_for_agent,
 )
 
@@ -758,16 +758,16 @@ __all__ = [
     "get_version_git_sha",
     "register_apps_manifest",
     "set_prod_alias_version",
-    # Watchdog integration
-    "WatchdogClient",
-    "WatchdogDecision",
-    "WatchdogGuard",
+    # Governance integration
+    "GovernanceClient",
+    "GovernanceDecision",
+    "GovernanceGuard",
     "call_mcp_tool",
     "emit_agent_metadata",
     "set_uc_tags_for_agent",
     "make_uc_violation_writer",
     "make_mcp_transport",
-    "make_watchdog_transport",
+    "make_governance_transport",
     # MLflow route mounters
     "mount_invocations_route",
     "mount_responses_route",

@@ -10,10 +10,10 @@ from __future__ import annotations
 from apx_agent import (
     Agent,
     SequentialAgent,
-    WatchdogClient,
-    WatchdogGuard,
+    GovernanceClient,
+    GovernanceGuard,
     genie_query_tool,
-    make_watchdog_transport,
+    make_governance_transport,
 )
 from apx_agent._guards import RateLimit, compose, prompt_injection_heuristic
 
@@ -32,17 +32,17 @@ def create_shortage_pipeline() -> SequentialAgent:
 
     settings = get_settings()
 
-    # Noop by default; real transport wired if WATCHDOG_MCP_URL is configured.
+    # Noop by default; real transport wired if GOVERNANCE_MCP_URL is configured.
     _transport = (
-        make_watchdog_transport(
-            settings.watchdog_mcp_url,
-            violations_table=settings.watchdog_violations_table or None,
+        make_governance_transport(
+            settings.governance_mcp_url,
+            violations_table=settings.governance_violations_table or None,
         )
-        if settings.watchdog_mcp_url
+        if settings.governance_mcp_url
         else None
     )
-    _watchdog = WatchdogClient(transport=_transport) if _transport else WatchdogClient()
-    _guard = WatchdogGuard(_watchdog, agent_name="shortage_intelligence")
+    _governance = GovernanceClient(transport=_transport) if _transport else GovernanceClient()
+    _guard = GovernanceGuard(_governance, agent_name="shortage_intelligence")
 
     # Ad-hoc Genie exploration is added as an optional tool when a space is
     # configured. The LLM chooses to call it when the canned queries don't

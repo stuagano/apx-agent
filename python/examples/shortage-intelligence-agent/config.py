@@ -30,9 +30,9 @@ class Settings(BaseSettings):
     slack_webhook_sourcing: str = ""
     slack_webhook_sales: str = ""
 
-    # Watchdog compliance integration (optional — noop when unset)
-    watchdog_mcp_url: str = ""
-    watchdog_violations_table: str = ""  # catalog.schema.watchdog_violations
+    # Governance compliance integration (optional — noop when unset)
+    governance_mcp_url: str = ""
+    governance_violations_table: str = ""  # catalog.schema.governance_violations
 
     # Lakebase session persistence (optional — stateless when unset)
     # Use postgresql+psycopg://user@host:5432/dbname — password injected via OAuth

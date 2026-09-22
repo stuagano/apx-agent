@@ -2,7 +2,7 @@
 
 The ``claude-sdk`` executor calls tool functions directly and runs none of the
 ``before_tool`` / ``before_model`` / guardrail wiring that PolicyGate (approval),
-WatchdogGuard, tool allow/deny lists, rate limits, and the injection heuristic
+GovernanceGuard, tool allow/deny lists, rate limits, and the injection heuristic
 compose into. Selecting it must therefore NOT silently disable configured
 governance — the factory falls back to the governed LangGraph path instead.
 """

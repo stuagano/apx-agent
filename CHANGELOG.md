@@ -21,6 +21,20 @@ All notable changes to apx-agent. Format loosely follows
   apply/verify remain explicit plan-only operations until a verified Databricks
   attachment API is available.
 
+### Changed
+
+- **Breaking: the watchdog governance surface is now `governance`.** Runtime
+  names dropped the companion repo: `_watchdog.py` → `_governance.py`,
+  `WatchdogClient` / `WatchdogGuard` / `WatchdogDecision` → `Governance*`,
+  `make_watchdog_transport` → `make_governance_transport`, CLI group
+  `apx-agent watchdog` → `apx-agent governance`, env vars `APX_WATCHDOG_*` →
+  `APX_GOVERNANCE_*`. Trace/audit attributes `apx.watchdog.*` became
+  `apx.governance.*`, and the trace-export columns `watchdog_action` /
+  `watchdog_policy_id` became `governance_action` / `governance_policy_id` —
+  migrate existing dashboards and `WHERE watchdog_action IN (...)` queries.
+  The external companion stays
+  [stuagano/databricks-watchdog](https://github.com/stuagano/databricks-watchdog).
+
 ## [0.4.8] — 2026-08-10
 
 Headline: safer multi-agent discovery and identity handling, more reliable

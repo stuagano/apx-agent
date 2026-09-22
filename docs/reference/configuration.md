@@ -184,7 +184,7 @@ injection_detection = true        # prompt_injection_heuristic()
 
 **Error handling:** A typo'd key (e.g. `rate_limt = 60`) is a hard validation error at startup — `GuardrailsConfig` uses `extra="forbid"`. A silent misconfiguration of a guard is worse than failing fast.
 
-**Not config-expressible (code only):** `FeatureFlagGuard`, per-user rate limiting (`principal_key`), custom injection patterns (`patterns`), `WatchdogGuard`.
+**Not config-expressible (code only):** `FeatureFlagGuard`, per-user rate limiting (`principal_key`), custom injection patterns (`patterns`), `GovernanceGuard`.
 
 ## Template-as-config — `template = { name = "...", ... }`
 

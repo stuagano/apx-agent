@@ -5,7 +5,7 @@ analytical queries downstream consumers want (cost-per-agent rollups,
 tool-call frequency, latency P95 per operation, prompt heatmaps,
 audit-event correlation across users). The exporter periodically
 copies traces into a Delta table with a flat schema so it can be
-joined to ``system.billing.usage``, watchdog violation tables, etc.
+joined to ``system.billing.usage``, governance violation tables, etc.
 
 Schema (auto-created on first write when ``auto_create=True``):
 
@@ -21,8 +21,8 @@ Schema (auto-created on first write when ``auto_create=True``):
         user_token_provided BOOLEAN,
         model_endpoint  STRING,
         tool_count      INT,
-        watchdog_action STRING,
-        watchdog_policy_id STRING,
+        governance_action STRING,
+        governance_policy_id STRING,
         tags            STRING,  -- JSON of remaining apx.* attrs
         exported_at     TIMESTAMP
     ) USING DELTA
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 _APX_TAG_KEYS = {
     "apx.agent.name", "apx.operation", "apx.session.id",
     "apx.user.token_provided", "apx.model.endpoint",
-    "apx.tool.name", "apx.watchdog.action", "apx.watchdog.policy_id",
+    "apx.tool.name", "apx.governance.action", "apx.governance.policy_id",
 }
 
 
@@ -99,8 +99,8 @@ def _normalise_trace(trace: Any) -> dict[str, Any] | None:
             "user_token_provided": _coerce_bool(attrs.get("apx.user.token_provided")),
             "model_endpoint": attrs.get("apx.model.endpoint"),
             "tool_count": _coerce_int(attrs.get("apx.tools.count")),
-            "watchdog_action": attrs.get("apx.watchdog.action"),
-            "watchdog_policy_id": attrs.get("apx.watchdog.policy_id"),
+            "governance_action": attrs.get("apx.governance.action"),
+            "governance_policy_id": attrs.get("apx.governance.policy_id"),
             "tags": json.dumps({k: v for k, v in attrs.items() if k.startswith("apx.")}, default=str),
         }
     # Trace object case
@@ -134,8 +134,8 @@ def _normalise_trace(trace: Any) -> dict[str, Any] | None:
         "user_token_provided": _coerce_bool(attrs.get("apx.user.token_provided")),
         "model_endpoint": attrs.get("apx.model.endpoint"),
         "tool_count": _coerce_int(attrs.get("apx.tools.count")),
-        "watchdog_action": attrs.get("apx.watchdog.action"),
-        "watchdog_policy_id": attrs.get("apx.watchdog.policy_id"),
+        "governance_action": attrs.get("apx.governance.action"),
+        "governance_policy_id": attrs.get("apx.governance.policy_id"),
         "tags": json.dumps({k: v for k, v in attrs.items() if k.startswith("apx.")}, default=str),
     }
 
@@ -229,8 +229,8 @@ def export_traces(
             f"  user_token_provided BOOLEAN,"
             f"  model_endpoint STRING,"
             f"  tool_count INT,"
-            f"  watchdog_action STRING,"
-            f"  watchdog_policy_id STRING,"
+            f"  governance_action STRING,"
+            f"  governance_policy_id STRING,"
             f"  tags STRING,"
             f"  exported_at TIMESTAMP"
             f") USING DELTA"
@@ -298,8 +298,8 @@ def export_traces(
             f"{('TRUE' if r['user_token_provided'] else 'FALSE') if r['user_token_provided'] is not None else 'NULL'}, "
             f"{_escape_sql(r['model_endpoint'])}, "
             f"{r['tool_count'] if r['tool_count'] is not None else 'NULL'}, "
-            f"{_escape_sql(r['watchdog_action'])}, "
-            f"{_escape_sql(r['watchdog_policy_id'])}, "
+            f"{_escape_sql(r['governance_action'])}, "
+            f"{_escape_sql(r['governance_policy_id'])}, "
             f"{_escape_sql(r['tags'])}, "
             f"CAST({now} AS TIMESTAMP)"
             ")"
@@ -311,7 +311,7 @@ def export_traces(
         + " AS src("
         "  trace_id, experiment_id, agent_name, operation, status,"
         "  start_time_ms, execution_time_ms, session_id, user_token_provided,"
-        "  model_endpoint, tool_count, watchdog_action, watchdog_policy_id,"
+        "  model_endpoint, tool_count, governance_action, governance_policy_id,"
         "  tags, exported_at"
         ")) src "
         "ON target.trace_id = src.trace_id "

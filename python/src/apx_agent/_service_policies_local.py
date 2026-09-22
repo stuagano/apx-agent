@@ -49,8 +49,8 @@ def _policy_event(event: ServicePolicyEvent) -> PolicyEvent:
     )
 
 
-def _watchdog_action(watchdog: Any, policy: ServicePolicy, event: ServicePolicyEvent) -> ServicePolicyAction:
-    decision = watchdog.evaluate(
+def _governance_action(governance: Any, policy: ServicePolicy, event: ServicePolicyEvent) -> ServicePolicyAction:
+    decision = governance.evaluate(
         operation=f"service_policy:{policy.name}",
         context={
             "policy_name": policy.name,
@@ -66,13 +66,13 @@ def _watchdog_action(watchdog: Any, policy: ServicePolicy, event: ServicePolicyE
 def build_local_policy_evaluators(
     config: ServicePoliciesConfig,
     *,
-    watchdog: Any | None = None,
+    governance: Any | None = None,
     local_evaluators: Mapping[str, LocalEvaluator] | None = None,
 ) -> dict[str, LocalEvaluator]:
     """Build local evaluators keyed by stable policy name.
 
     Vendor-managed detectors and SQL functions require an injected evaluator
-    or Watchdog transport. They are never silently treated as local ALLOW.
+    or Governance transport. They are never silently treated as local ALLOW.
     """
 
     injected = dict(local_evaluators or {})
@@ -94,8 +94,8 @@ def build_local_policy_evaluators(
                         return ServicePolicyAction.DENY if check([{"content": content or ""}]) else ServicePolicyAction.ALLOW
 
                     evaluators[policy.name] = _jailbreak
-                elif watchdog is not None:
-                    evaluators[policy.name] = lambda event, p=policy: _watchdog_action(watchdog, p, event)
+                elif governance is not None:
+                    evaluators[policy.name] = lambda event, p=policy: _governance_action(governance, p, event)
                 else:
                     builtin = policy.builtin
 
@@ -134,7 +134,7 @@ class LocalServicePolicyAdapter:
         self,
         config: ServicePoliciesConfig,
         *,
-        watchdog: Any | None = None,
+        governance: Any | None = None,
         local_evaluators: Mapping[str, LocalEvaluator] | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
@@ -149,7 +149,7 @@ class LocalServicePolicyAdapter:
         ))
         self._evaluators = build_local_policy_evaluators(
             config,
-            watchdog=watchdog,
+            governance=governance,
             local_evaluators=local_evaluators,
         )
         self._gates = {
@@ -162,7 +162,7 @@ class LocalServicePolicyAdapter:
             for attachment in config.attachments
             if attachment.mode.value == "enforce"
         }
-        self._watchdog = watchdog
+        self._governance = governance
 
     def _make_event(
         self,

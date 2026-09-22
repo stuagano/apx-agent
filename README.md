@@ -387,7 +387,7 @@ See [docs/get-started/cli.md](docs/get-started/cli.md) for the full surface.
 | Sessions + memory | [docs/running/sessions-and-memory.md](docs/running/sessions-and-memory.md) |
 | Guardrails and callbacks | [docs/safety/callbacks.md](docs/safety/callbacks.md) |
 | Identity passthrough + OBO | [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md) |
-| Compliance (Watchdog, audit log) | [docs/safety/compliance.md](docs/safety/compliance.md) |
+| Compliance (databricks-watchdog, audit log) | [docs/safety/compliance.md](docs/safety/compliance.md) |
 | Deploy targets | [docs/deploy/apps-vs-model-serving.md](docs/deploy/apps-vs-model-serving.md) |
 | Scaffolded Apps CI/CD | [docs/deploy-cicd.md](docs/deploy-cicd.md) |
 | Upgrade apx-agent pins safely | [docs/upgrade.md](docs/upgrade.md) |

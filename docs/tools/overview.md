@@ -314,7 +314,7 @@ agent = Agent(
 
 ### Allow or deny specific tools
 
-Use `ToolAllowlist` or `ToolDenylist` as a `before_tool` hook to restrict which tools the agent can invoke at runtime. This is a lighter-weight alternative to a Watchdog policy for a fixed, well-known set.
+Use `ToolAllowlist` or `ToolDenylist` as a `before_tool` hook to restrict which tools the agent can invoke at runtime. This is a lighter-weight alternative to a databricks-watchdog policy for a fixed, well-known set.
 
 ```python
 from apx_agent import Agent, ToolAllowlist, ToolDenylist

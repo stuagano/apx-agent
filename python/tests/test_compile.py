@@ -420,7 +420,7 @@ class TestDependenciesProgress:
 class TestGovernanceExceptionMiddleware:
     """The middleware that keeps the agent loop alive on governance rejects.
 
-    Without it, a PermissionError from a before_tool guard (Watchdog
+    Without it, a PermissionError from a before_tool guard (Governance
     reject, PolicyGate DENY, ApprovalRequired) or a ToolCancelled kills
     the whole turn — the user sees a dead stream instead of the agent
     explaining the rejection and offering an alternative. Verified live

@@ -58,7 +58,7 @@ describe('_normaliseTrace', () => {
         'apx.user.token_provided': true,
         'apx.model.endpoint': 'databricks-claude-sonnet-4-6',
         'apx.tools.count': 5,
-        'apx.watchdog.action': 'allow',
+        'apx.governance.action': 'allow',
       },
       status: 'OK',
       timestamp_ms: 1700000000000,
@@ -73,7 +73,7 @@ describe('_normaliseTrace', () => {
     expect(norm!.user_token_provided).toBe(true);
     expect(norm!.model_endpoint).toBe('databricks-claude-sonnet-4-6');
     expect(norm!.tool_count).toBe(5);
-    expect(norm!.watchdog_action).toBe('allow');
+    expect(norm!.governance_action).toBe('allow');
     expect(norm!.status).toBe('OK');
     expect(norm!.start_time_ms).toBe(1700000000000);
     expect(norm!.execution_time_ms).toBe(1234);

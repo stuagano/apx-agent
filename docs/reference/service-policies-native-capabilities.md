@@ -59,7 +59,7 @@ mismatched, and still-propagating state.
   surface supports tag-based selection.
 - Local execution cannot reproduce Databricks-managed sensitive-data,
   unsafe-content, and hallucination classifiers without an injected evaluator
-  or configured Watchdog transport.
+  or configured governance transport.
 - Native service-policy SQL execution remains Databricks-owned; apx-agent does
   not interpret SQL UDFs locally.
 

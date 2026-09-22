@@ -1,4 +1,4 @@
-"""Tests for _cancellation.py — cancellable tools + watchdog kill switch.
+"""Tests for _cancellation.py — cancellable tools + governance kill switch.
 
 Covers:
   1. CancelToken semantics: one-shot, first-reason-wins, wait().
@@ -6,7 +6,7 @@ Covers:
   3. cancellable() wrapper: pass-through results, exception propagation,
      mid-flight cancellation (deterministic, event-gated), timeout,
      canceller invocation, cooperative token injection, @tool stacking.
-  4. WatchdogGuard(cancel_registry=...): a reject decision cancels
+  4. GovernanceGuard(cancel_registry=...): a reject decision cancels
      in-flight tool calls; an allow decision leaves them running.
 
 Concurrency tests use explicit threading.Event gates: the tool signals
@@ -51,7 +51,7 @@ def test_token_cancel_is_one_shot_first_reason_wins():
     token.cancel("second")
     assert token.is_cancelled is True
     # First reason must win — a later cancel (e.g. timeout racing a
-    # watchdog kill) must not overwrite why the call actually died.
+    # governance kill) must not overwrite why the call actually died.
     assert token.reason == "first"
 
 
@@ -298,13 +298,13 @@ def test_stacks_under_tool_decorator():
 
 
 # ---------------------------------------------------------------------------
-# WatchdogGuard kill switch
+# GovernanceGuard kill switch
 # ---------------------------------------------------------------------------
 
 
-def _scripted_watchdog(action: str, reason: str | None = None):
-    """A WatchdogClient whose transport always returns the given action."""
-    from apx_agent import WatchdogClient
+def _scripted_governance(action: str, reason: str | None = None):
+    """A GovernanceClient whose transport always returns the given action."""
+    from apx_agent import GovernanceClient
 
     def transport(request: dict[str, Any]) -> dict[str, Any]:
         if request.get("type") == "violation_report":
@@ -314,12 +314,12 @@ def _scripted_watchdog(action: str, reason: str | None = None):
             out["reason"] = reason
         return out
 
-    return WatchdogClient(transport=transport)
+    return GovernanceClient(transport=transport)
 
 
-def test_watchdog_reject_cancels_inflight_tool():
+def test_governance_reject_cancels_inflight_tool():
     """The headline integration: a violation on ANY hook kills running tools."""
-    from apx_agent import WatchdogGuard
+    from apx_agent import GovernanceGuard
 
     reg = CancellationRegistry()
     started = threading.Event()
@@ -344,8 +344,8 @@ def test_watchdog_reject_cancels_inflight_tool():
     # GATE: extraction is genuinely in-flight before the violation fires.
     assert started.wait(_JOIN_TIMEOUT_S)
 
-    guard = WatchdogGuard(
-        _scripted_watchdog("reject", reason="PII detected"),
+    guard = GovernanceGuard(
+        _scripted_governance("reject", reason="PII detected"),
         agent_name="t",
         cancel_registry=reg,
     )
@@ -358,12 +358,12 @@ def test_watchdog_reject_cancels_inflight_tool():
     release.set()
     err = holder.get("error")
     assert isinstance(err, ToolCancelled), f"in-flight tool survived: {holder}"
-    assert "Watchdog violation" in err.reason
+    assert "Governance violation" in err.reason
     assert "PII detected" in err.reason
 
 
-def test_watchdog_allow_leaves_inflight_running():
-    from apx_agent import WatchdogGuard
+def test_governance_allow_leaves_inflight_running():
+    from apx_agent import GovernanceGuard
 
     reg = CancellationRegistry()
     started = threading.Event()
@@ -387,8 +387,8 @@ def test_watchdog_allow_leaves_inflight_running():
     caller.start()
     assert started.wait(_JOIN_TIMEOUT_S)
 
-    guard = WatchdogGuard(
-        _scripted_watchdog("allow"), agent_name="t", cancel_registry=reg,
+    guard = GovernanceGuard(
+        _scripted_governance("allow"), agent_name="t", cancel_registry=reg,
     )
     # Allow decision: no exception, and crucially NO cancellation.
     guard.for_tool()("some_tool", {})
@@ -400,10 +400,10 @@ def test_watchdog_allow_leaves_inflight_running():
     assert holder.get("result") == "finished"
 
 
-def test_watchdog_reject_without_registry_still_raises():
+def test_governance_reject_without_registry_still_raises():
     """No registry wired → reject path unchanged (no crash on the new code)."""
-    from apx_agent import WatchdogGuard
+    from apx_agent import GovernanceGuard
 
-    guard = WatchdogGuard(_scripted_watchdog("reject", reason="nope"), agent_name="t")
+    guard = GovernanceGuard(_scripted_governance("reject", reason="nope"), agent_name="t")
     with pytest.raises(PermissionError, match="nope"):
         guard.for_tool()("tool", {})
