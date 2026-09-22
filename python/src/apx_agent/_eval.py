@@ -38,6 +38,30 @@ except ImportError:  # pragma: no cover — defensive
 
 logger = logging.getLogger(__name__)
 
+
+def _extract_non_stream_text(data: Any) -> str:
+    """Pull the final assistant text out of a ResponsesAgent envelope.
+
+    ``data["output"]`` is the full event list (function calls and outputs
+    interleaved with assistant messages). The *last* item carrying message
+    text is the agent's final answer; ``output[0]`` is often the first tool
+    call or opening narration and judging it scores a near-empty response.
+    Untyped items are treated as messages to stay compatible with older
+    envelopes and test fixtures. Falls back to the raw payload if the shape
+    is unexpected.
+    """
+    if isinstance(data, dict):
+        for item in reversed(data.get("output") or []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") not in (None, "message"):
+                continue
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("text"):
+                    return str(part["text"])
+    return str(data)
+
+
 def app_predict_fn(url: str, token: str | None = None) -> Callable[[dict[str, Any]], str]:
     """Return a predict function for mlflow.genai.evaluate().
 
@@ -84,10 +108,7 @@ def app_predict_fn(url: str, token: str | None = None) -> Callable[[dict[str, An
         )
         response.raise_for_status()
         data = response.json()
-        try:
-            return data["output"][0]["content"][0]["text"]
-        except (KeyError, IndexError):
-            return str(data)
+        return _extract_non_stream_text(data)
 
     return predict
 
@@ -547,6 +568,7 @@ def endpoint_predict_fn(
 
         if stream:
             full_text = ""
+            completed = None
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 for raw_line in resp:
                     line = raw_line.decode("utf-8").strip()
@@ -558,17 +580,18 @@ def endpoint_predict_fn(
                         continue
                     if not isinstance(chunk, dict):
                         continue
-                    text = chunk.get("text", "")
+                    if chunk.get("type") == "response.completed" and isinstance(chunk.get("response"), dict):
+                        completed = chunk["response"]
+                    text = chunk.get("text") or chunk.get("delta") or ""
                     if text:
                         full_text += text
+            if completed is not None:
+                return _extract_non_stream_text(completed)
             return full_text
 
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = _json.loads(resp.read().decode("utf-8"))
-        try:
-            return str(data["output"][0]["content"][0]["text"])
-        except (KeyError, IndexError, TypeError):
-            return str(data)
+        return _extract_non_stream_text(data)
 
     return predict
 
