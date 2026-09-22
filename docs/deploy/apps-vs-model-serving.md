@@ -284,12 +284,11 @@ A few things that bite in practice:
   ```
 
   apx then refuses to compile or boot a scaled app whose session state is
-  in-memory, naming the fix `[tool.apx.agent.session] type='lakebase'`. Instance
-  count is **not** declarable in `databricks.yml` (the SDK's `App` model has no
-  scaling field), so set it in the Databricks Apps UI — **the UI count must
-  match `[tool.apx.agent.deploy]`**; UI-only scale is not validated. apx carries
-  the declared count forward via `APX_DECLARED_INSTANCES` for the runtime guard.
-  See [sessions-and-memory.md → Scaling](../running/sessions-and-memory.md).
+  in-memory, naming the fix `[tool.apx.agent.session] type='lakebase'`. apx also
+  emits native Apps `compute_min_instances` / `compute_max_instances` fields in
+  `databricks.yml`, plus `APX_DECLARED_INSTANCES` for the runtime guard's
+  read-back. This needs a Databricks CLI/bundle schema new enough to accept
+  those private-preview fields. See [sessions-and-memory.md → Scaling](../running/sessions-and-memory.md).
 
 ## 7. Cheat sheet
 

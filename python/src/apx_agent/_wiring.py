@@ -1190,8 +1190,9 @@ def create_app(
         # FR-5: runtime boot guard. On Databricks Apps with a declared replica count
         # >1 and in-memory session state, refuse boot with the same fix-naming error
         # as the compile guard — a turn landing on another replica silently loses
-        # history/approvals. Instance count is UI/API-only, so the declared count
-        # arrives via APX_DECLARED_INSTANCES (emitted by _build_databricks_yml).
+        # history/approvals. The bundle can declare native Apps scaling bounds, but
+        # the process still cannot introspect its deployed replica count directly, so
+        # the declared count arrives via APX_DECLARED_INSTANCES (from _build_databricks_yml).
         # Local dev, or declared<=1, only warns (via _chat_agent's InMemorySaver
         # warning) — no raise. Placed before the swallowing mount try below so the
         # raise actually propagates and stops the server.

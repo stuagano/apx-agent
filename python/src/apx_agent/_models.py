@@ -232,8 +232,9 @@ class DeployConfig(_BackendConfig):
     """Declared Apps horizontal scaling — maps to ``[tool.apx.agent.deploy]``.
 
     ``instances`` (fixed count) XOR ``autoscale`` (min/max); each in 1-5. Drives
-    the compile/runtime scaled-in-memory guard and the emitted ``APX_DECLARED_INSTANCES``
-    env. Instance count is UI/API-only (no native Apps bundle field yet; see #778)."""
+    the compile/runtime scaled-in-memory guard, the emitted ``APX_DECLARED_INSTANCES``
+    env, and native Apps ``compute_min_instances`` / ``compute_max_instances``
+    bundle fields when apx renders ``databricks.yml``."""
 
     instances: StrictInt | None = Field(default=None, ge=1, le=5)
     autoscale: AutoscaleConfig | None = None
