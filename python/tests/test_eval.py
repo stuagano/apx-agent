@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from apx_agent._eval import (
+    _extract_non_stream_text,
     _resolve_endpoint_token,
     app_predict_fn,
     endpoint_predict_fn,
@@ -84,8 +85,49 @@ class TestAppPredictFn:
             url = mock_post.call_args[0][0]
             assert url == "http://my-agent.com/invocations"
 
+    def test_predict_returns_last_message_text(self):
+        """A multi-item ResponsesAgent envelope: final answer wins.
 
-# ---------------------------------------------------------------------------
+        ``output[0]`` is a function call with no text; the last message item
+        holds the answer. The old ``output[0]["content"][0]["text"]`` read
+        would KeyError into the raw-payload fallback.
+        """
+        predict = app_predict_fn("http://my-agent.com")
+        resp = self._mock_post(
+            {
+                "output": [
+                    {"type": "function_call", "name": "lookup", "arguments": "{}"},
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "Final answer."}
+                        ],
+                    },
+                ]
+            }
+        )
+
+        with patch("httpx.post", return_value=resp):
+            assert predict("question") == "Final answer."
+
+
+class TestExtractNonStreamText:
+    def test_untyped_item_is_treated_as_message(self):
+        data = {"output": [{"content": [{"text": "plain"}]}]}
+        assert _extract_non_stream_text(data) == "plain"
+
+    def test_skips_typed_non_message_items(self):
+        data = {
+            "output": [
+                {"type": "function_call_output", "call_id": "c", "output": "x"},
+                {"type": "message", "content": [{"type": "output_text", "text": "ans"}]},
+            ]
+        }
+        assert _extract_non_stream_text(data) == "ans"
+
+    def test_fallback_on_unexpected_shape(self):
+        data = {"unexpected": "shape"}
+        assert "unexpected" in _extract_non_stream_text(data)
 # endpoint_predict_fn / eval_against_endpoint — HTTP path
 # ---------------------------------------------------------------------------
 
@@ -248,3 +290,60 @@ class TestEndpointPredictFn:
         monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
         with pytest.raises(RuntimeError, match="Could not resolve"):
             endpoint_predict_fn("https://app.example.com")
+
+    def test_non_stream_returns_last_message_text(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_TOKEN", "T")
+        body = json.dumps(
+            {
+                "output": [
+                    {"type": "function_call", "name": "lookup", "arguments": "{}"},
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "Final answer."}
+                        ],
+                    },
+                ]
+            }
+        ).encode()
+        fake = _FakeUrlopenContext(body=body)
+
+        predict = endpoint_predict_fn("https://app.example.com", stream=False)
+        with patch("urllib.request.urlopen", return_value=fake):
+            assert predict("question") == "Final answer."
+
+    def test_stream_accumulates_delta_when_no_completed_event(self, monkeypatch):
+        """Real SSE deltas ride on ``delta``, not ``text``."""
+        monkeypatch.setenv("DATABRICKS_TOKEN", "T")
+        lines = [
+            b'data: {"delta": "Hel"}\n',
+            b'data: {"delta": "lo"}\n',
+        ]
+        fake = _FakeUrlopenContext(lines=lines)
+        predict = endpoint_predict_fn("https://app.example.com", stream=True)
+        with patch("urllib.request.urlopen", return_value=fake):
+            assert predict("x") == "Hello"
+
+    def test_stream_prefers_completed_response(self, monkeypatch):
+        """A terminal ``response.completed`` event wins over accumulated text."""
+        monkeypatch.setenv("DATABRICKS_TOKEN", "T")
+        completed = {
+            "type": "response.completed",
+            "response": {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"text": "Final answer."}],
+                    }
+                ]
+            },
+        }
+        lines = [
+            b'data: {"text": "noise"}\n',
+            b'data: {"delta": "Hel"}\n',
+            ("data: " + json.dumps(completed) + "\n").encode(),
+        ]
+        fake = _FakeUrlopenContext(lines=lines)
+        predict = endpoint_predict_fn("https://app.example.com", stream=True)
+        with patch("urllib.request.urlopen", return_value=fake):
+            assert predict("x") == "Final answer."
