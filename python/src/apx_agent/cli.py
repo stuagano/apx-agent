@@ -6661,7 +6661,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--set-uc-tags/--no-set-uc-tags", default=True,
     help="Write apx.agent.* UC tags on the registered model after deploy so "
-         "the agent shows up in apx-agent agents list / uc topology / databricks-watchdog crawls. "
+         "the agent shows up in apx-agent agents list / uc topology / governance-monitoring crawls. "
          "On by default. Only used by --target model-serving.",
 )
 @click.option(
@@ -15849,7 +15849,7 @@ _DEFAULT_STATUS_TOOL = "get_agent_compliance"
 
 @main.group(cls=_ApxGroup)
 def governance() -> None:
-    """Inspect databricks-watchdog compliance posture from the CLI.
+    """Inspect governance-monitoring compliance posture from the CLI.
 
     Reads the UC violations table and Guardrails MCP tools without
     needing to load the agent. Configure once via env vars:

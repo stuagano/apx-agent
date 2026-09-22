@@ -1,4 +1,4 @@
-"""Tests for the databricks-watchdog integration sketch.
+"""Tests for the governance integration sketch.
 
 The wire protocol to governance isn't finalized — these tests pin the
 shape of the apx-agent side via an injected fake transport. When the

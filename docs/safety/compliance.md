@@ -2,14 +2,14 @@
 
 ## Governance integration
 
-For compliance posture (cross-domain policies, violation lifecycle, owner accountability), apx-agent integrates with [databricks-watchdog](https://github.com/stuagano/databricks-watchdog) rather than rolling its own policy engine. Three pieces:
+For compliance posture (cross-domain policies, violation lifecycle, owner accountability), apx-agent integrates with [governance-monitoring](https://github.com/stuagano/databricks-agent-governance-monitoring) rather than rolling its own policy engine. Three pieces:
 
 ```python
 from apx_agent import Agent, GovernanceClient, GovernanceGuard, emit_agent_metadata
 
 # 1. Adapter for the governance policy-decision and violation-report calls.
 #    The transport is pluggable — use the no-op default until the wire API
-#    is pinned down, or pass a callable that hits databricks-watchdog's HTTP/MCP surface.
+#    is pinned down, or pass a callable that hits governance-monitoring's HTTP/MCP surface.
 governance = GovernanceClient(transport=my_transport)
 
 # 2. Bridge governance decisions into the existing apx-agent hooks.
@@ -24,12 +24,12 @@ agent = Agent(
     before_model=guard.for_model(),
 )
 
-# 3. Emit the agent's metadata for databricks-watchdog's crawler.
+# 3. Emit the agent's metadata for governance-monitoring's crawler.
 metadata = emit_agent_metadata(agent, name="customer_triage",
                                model="databricks-claude-sonnet-4-6")
 # → JSON-serializable dict: name, model, instructions, tools (with UC sync metadata),
 #   sub-agents, resources. Drop into a UC manifest table, MLflow tag, or
-#   whatever stable shape databricks-watchdog crawls.
+#   whatever stable shape governance-monitoring crawls.
 ```
 
 Governance returns `GovernanceDecision(action, reason, policy_id, domain, redacted_content, metadata)`. `reject` short-circuits the call; `redact` rewrites content (for outputs); `allow` is pass-through. **On transport failure (or a non-decision response) the client fails *closed* — `action="reject"` — by default**, so a configured-but-unreachable governance gate blocks rather than silently allowing (fail-open governance is worse than none). Construct `GovernanceClient(transport=..., fail_closed=False)` to restore fail-open for availability-first deployments. The default no-op transport never errors, so agents with no governance configured are unaffected.
@@ -40,9 +40,9 @@ The three wire-protocol contracts are pinned:
 
 | Contract | Mechanism | Helper |
 |---|---|---|
-| Metadata for databricks-watchdog's crawler | UC tags on the registered model (`apx.agent.*`) | `set_uc_tags_for_agent(agent, registered_model_name=..., model=...)` |
+| Metadata for governance-monitoring's crawler | UC tags on the registered model (`apx.agent.*`) | `set_uc_tags_for_agent(agent, registered_model_name=..., model=...)` |
 | Runtime policy decisions | Guardrails MCP `evaluate_operation` | `make_mcp_transport(mcp_url, tool_name="evaluate_operation")` |
-| Violation reports | INSERT into databricks-watchdog-owned `runtime_violations` Delta table | `make_uc_violation_writer(violations_table, ws=...)` |
+| Violation reports | INSERT into governance-monitoring-owned `runtime_violations` Delta table | `make_uc_violation_writer(violations_table, ws=...)` |
 
 ```python
 from apx_agent import (
@@ -84,13 +84,13 @@ agent = Agent(
 )
 ```
 
-The MCP transport calls `tools/call` on the **Guardrails** streamable HTTP MCP endpoint (`evaluate_operation`); the UC writer auto-creates the `runtime_violations` table on first use (`auto_create=True`) and `INSERT`s a row per reject/redact decision. databricks-watchdog MCP (13 query tools) remains the posture-query surface — use `apx-agent governance status` which defaults to Guardrails `get_agent_compliance`. Both transports are pluggable — pass a custom `transport` to `GovernanceClient` for a different wire shape.
+The MCP transport calls `tools/call` on the **Guardrails** streamable HTTP MCP endpoint (`evaluate_operation`); the UC writer auto-creates the `runtime_violations` table on first use (`auto_create=True`) and `INSERT`s a row per reject/redact decision. governance-monitoring MCP (13 query tools) remains the posture-query surface — use `apx-agent governance status` which defaults to Guardrails `get_agent_compliance`. Both transports are pluggable — pass a custom `transport` to `GovernanceClient` for a different wire shape.
 
-See also databricks-watchdog's [apx-agent integration guide](https://github.com/stuagano/databricks-watchdog/blob/main/docs/guide/how-to/apx-agent-integration.md).
+See also governance-monitoring's [apx-agent integration guide](https://github.com/stuagano/databricks-agent-governance-monitoring/blob/main/docs/guide/how-to/apx-agent-integration.md).
 
 ## Audit log schema
 
-Every framework-emitted MLflow span carries a consistent `apx.*` attribute set so downstream consumers (databricks-watchdog, compliance dashboards, ad-hoc SQL over the traces table) can query without knowing anything about specific agents.
+Every framework-emitted MLflow span carries a consistent `apx.*` attribute set so downstream consumers (governance-monitoring, compliance dashboards, ad-hoc SQL over the traces table) can query without knowing anything about specific agents.
 
 ```python
 from apx_agent import AuditAttrs
@@ -138,11 +138,11 @@ with safe_span("custom_step") as span:
 
 Typos fail loud — `set_audit_attrs` raises `ValueError` for unknown kwargs so the audit schema stays canonical instead of drifting across call sites. Use `hash_for_audit(value)` to fingerprint inputs/outputs without exfiltrating raw content.
 
-databricks-watchdog and any other consumer can query the trace table (e.g. `system.access.audit_logs` or a workspace trace export) by `apx.*` keys to produce compliance reports without parsing agent-specific schemas.
+governance-monitoring and any other consumer can query the trace table (e.g. `system.access.audit_logs` or a workspace trace export) by `apx.*` keys to produce compliance reports without parsing agent-specific schemas.
 
 ## Local guards — zero-latency runtime checks
 
-`_guards.py` ships a small set of in-process callables that plug into the existing hooks. Pair with `GovernanceGuard` for layered governance — local checks for things that should fail in microseconds, databricks-watchdog for cross-domain posture evaluation.
+`_guards.py` ships a small set of in-process callables that plug into the existing hooks. Pair with `GovernanceGuard` for layered governance — local checks for things that should fail in microseconds, governance-monitoring for cross-domain posture evaluation.
 
 ```python
 from apx_agent import (
@@ -168,13 +168,13 @@ agent = Agent(
 | Guard | Purpose |
 |---|---|
 | `RateLimit(per_minute=..., burst=..., principal_key=...)` | In-process token-bucket per principal (default: global bucket). Pass a `principal_key` callable to scope per-user. Thread-safe. |
-| `prompt_injection_heuristic(patterns=..., message=...)` | Regex pass over message content. Default pattern set is small + high-specificity (favors false negatives over false positives — the slower-loop databricks-watchdog catches the long tail). |
+| `prompt_injection_heuristic(patterns=..., message=...)` | Regex pass over message content. Default pattern set is small + high-specificity (favors false negatives over false positives — the slower-loop governance-monitoring catches the long tail). |
 | `ToolAllowlist({names})` / `ToolDenylist({names})` | Gate tool calls by name. |
 | `compose(*callbacks)` | Chain N callbacks. Short-circuits on the first non-`None` return (for `input_guardrails`-style hooks) or first exception (for `before_*` hooks). |
 
-These are runtime helpers, not a policy engine. Compliance posture (cross-domain rules, ontology, violation tracking, owner accountability) lives in [databricks-watchdog](https://github.com/stuagano/databricks-watchdog) — wire `GovernanceGuard` next to these for the full layered story.
+These are runtime helpers, not a policy engine. Compliance posture (cross-domain rules, ontology, violation tracking, owner accountability) lives in [governance-monitoring](https://github.com/stuagano/databricks-agent-governance-monitoring) — wire `GovernanceGuard` next to these for the full layered story.
 ## Service Policy integration
 
 The portable Service Policy declaration and its fail-closed semantics are
 documented in [reference/service-policies.md](../reference/service-policies.md).
-It complements, rather than replaces, databricks-watchdog and Unity Catalog governance.
+It complements, rather than replaces, governance-monitoring and Unity Catalog governance.

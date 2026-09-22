@@ -1,6 +1,6 @@
-"""databricks-watchdog integration.
+"""governance-monitoring integration.
 
-`databricks-watchdog <https://github.com/stuagano/databricks-watchdog>`_ is
+`governance-monitoring <https://github.com/stuagano/databricks-agent-governance-monitoring>`_ is
 the compliance posture layer for Unity Catalog: declarative cross-domain
 policies (security / data quality / cost / agent governance), violation
 lifecycle tracking, owner accountability, and 13 MCP tools for AI
@@ -8,13 +8,13 @@ assistants to query and act on governance posture.
 
 The integration has three wire-protocol contracts, all answered now:
 
-  1. **Metadata shape**: UC tags on the registered model. databricks-watchdog's
+  1. **Metadata shape**: UC tags on the registered model. governance-monitoring's
      crawler reads tags off the model record. ``set_uc_tags_for_agent``
      writes them.
-  2. **Runtime policy decisions**: databricks-watchdog's MCP tools.
+  2. **Runtime policy decisions**: governance-monitoring's MCP tools.
      ``make_mcp_transport`` produces a transport that calls a named
      MCP tool with the operation context.
-  3. **Violation reports**: an INSERT into a databricks-watchdog-owned UC Delta
+  3. **Violation reports**: an INSERT into a governance-monitoring-owned UC Delta
      table. ``make_uc_violation_writer`` produces a transport that
      handles ``violation_report`` requests.
 
@@ -120,7 +120,7 @@ class GovernanceDecision:
             pass-through decision.
         reason: Human-readable explanation surfaced to the user (when
             ``action`` is ``"reject"``) or attached as a violation reason.
-        policy_id: databricks-watchdog's identifier for the policy that produced
+        policy_id: governance-monitoring's identifier for the policy that produced
             this decision. Pass back when reporting violations so
             governance can aggregate by policy.
         domain: Governance domain (``"security"``, ``"data_quality"``,
@@ -215,7 +215,7 @@ def _noop_transport(_request: dict[str, Any]) -> dict[str, Any]:
 
 
 class GovernanceClient:
-    """Adapter for talking to a databricks-watchdog deployment.
+    """Adapter for talking to a governance-monitoring deployment.
 
     Args:
         endpoint: The governance HTTP / MCP endpoint URL. Stored for
@@ -600,7 +600,7 @@ def _count_prompts(prompts: Any) -> int:
 
 
 # ---------------------------------------------------------------------------
-# UC tags writer — metadata that databricks-watchdog's crawler reads
+# UC tags writer — metadata that governance-monitoring's crawler reads
 # ---------------------------------------------------------------------------
 
 
@@ -659,7 +659,7 @@ def set_uc_tags_for_agent(
 ) -> dict[str, str]:
     """Write the agent's metadata as UC tags on its registered model.
 
-    These tags are what databricks-watchdog's crawler reads to discover agents and
+    These tags are what governance-monitoring's crawler reads to discover agents and
     their declared resources. Run this at deploy time (typically right
     after ``databricks.agents.deploy(...)`` succeeds) so the dashboard
     picks up the new agent on the next crawl.
@@ -860,7 +860,7 @@ def make_mcp_transport(
     """Return a transport that calls Guardrails MCP ``evaluate_operation``.
 
     Uses the streamable-HTTP MCP client (``mcp.client.streamable_http``)
-    to connect to the Guardrails MCP endpoint (databricks-watchdog's runtime
+    to connect to the Guardrails MCP endpoint (governance-monitoring's runtime
     enforcement surface), invoke ``tool_name`` with the operation
     context, and parse the result into the response shape
     ``GovernanceClient.evaluate`` expects.
@@ -871,7 +871,7 @@ def make_mcp_transport(
 
     Args:
         mcp_url: HTTPS URL of the Guardrails MCP streamable endpoint
-            (not databricks-watchdog MCP — that surface is posture query only).
+            (not governance-monitoring MCP — that surface is posture query only).
         tool_name: MCP tool name. Default in docs/examples is
             ``evaluate_operation``.
         timeout_seconds: Per-call timeout. Default 5s.
@@ -967,7 +967,7 @@ def make_governance_transport(
 
     This is the canonical governance transport: evaluate decisions come
     from Guardrails MCP ``evaluate_operation``, violation reports flow
-    into databricks-watchdog's ``runtime_violations`` UC Delta table.
+    into governance-monitoring's ``runtime_violations`` UC Delta table.
 
     Args:
         mcp_url: Guardrails MCP streamable-HTTP endpoint URL.

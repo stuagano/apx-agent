@@ -1,20 +1,20 @@
 /**
- * databricks-watchdog integration (TypeScript port of python/src/apx_agent/_governance.py).
+ * governance-monitoring integration (TypeScript port of python/src/apx_agent/_governance.py).
  *
- * `databricks-watchdog` is the compliance posture layer for Unity Catalog:
+ * `governance-monitoring` is the compliance posture layer for Unity Catalog:
  * declarative cross-domain policies, violation lifecycle tracking, owner
  * accountability, and an MCP tool surface for AI assistants to query and act
  * on governance posture.
  *
  * The integration has three wire-protocol contracts:
  *
- *   1. **Metadata shape**: UC tags on the registered model. databricks-watchdog's
+ *   1. **Metadata shape**: UC tags on the registered model. governance-monitoring's
  *      crawler reads tags off the model record. {@link setUcTagsForAgent}
  *      writes them.
- *   2. **Runtime policy decisions**: databricks-watchdog's MCP tools.
+ *   2. **Runtime policy decisions**: governance-monitoring's MCP tools.
  *      {@link makeMcpTransport} produces a transport that calls a named MCP
  *      tool with the operation context.
- *   3. **Violation reports**: an INSERT into a databricks-watchdog-owned UC Delta
+ *   3. **Violation reports**: an INSERT into a governance-monitoring-owned UC Delta
  *      table. {@link makeUcViolationWriter} produces a transport that
  *      handles `violation_report` requests.
  *
@@ -155,7 +155,7 @@ export interface EvaluateOpts {
 }
 
 /**
- * Adapter for talking to a databricks-watchdog deployment.
+ * Adapter for talking to a governance-monitoring deployment.
  *
  * Subclass to replace {@link evaluate} / {@link reportViolation} entirely
  * when more control is needed.

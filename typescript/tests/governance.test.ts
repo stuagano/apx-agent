@@ -1,5 +1,5 @@
 /**
- * Tests for governance.ts — databricks-watchdog integration.
+ * Tests for governance.ts — governance-monitoring integration.
  *
  * Mirrors python/tests/test_governance.py.
  *

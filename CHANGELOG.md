@@ -39,8 +39,8 @@ All notable changes to apx-agent. Format loosely follows
   `apx.governance.*`, and the trace-export columns `watchdog_action` /
   `watchdog_policy_id` became `governance_action` / `governance_policy_id` —
   migrate existing dashboards and `WHERE watchdog_action IN (...)` queries.
-  The external companion stays
-  [stuagano/databricks-watchdog](https://github.com/stuagano/databricks-watchdog).
+  The external companion repo is now
+  [stuagano/databricks-agent-governance-monitoring](https://github.com/stuagano/databricks-agent-governance-monitoring).
 
 ## [0.4.8] — 2026-08-10
 

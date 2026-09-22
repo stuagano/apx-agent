@@ -392,7 +392,7 @@ from ._apps_registry import (
     set_prod_alias_version,
 )
 
-# databricks-watchdog integration
+# governance-monitoring integration
 from ._governance import (
     GovernanceClient,
     GovernanceDecision,
