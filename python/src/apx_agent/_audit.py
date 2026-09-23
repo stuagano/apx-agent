@@ -117,6 +117,9 @@ class AuditAttrs:
     GOVERNANCE_POLICY_ID = "apx.governance.policy_id"
     GOVERNANCE_REASON = "apx.governance.reason"
     GOVERNANCE_DOMAIN = "apx.governance.domain"
+    # DQX data-quality context from governance-monitoring's decision metadata.
+    # Scalar for single-table decisions; JSON map for multi-table allows.
+    GOVERNANCE_QUALITY_SCORE = "apx.governance.quality_score"
 
     # Tool-scope ceiling decisions (ScopeGuard). Mirrors the GOVERNANCE_* pair:
     # names/reasons/object identifiers only — never raw args or SQL bodies.
@@ -186,6 +189,7 @@ _KWARG_TO_KEY: dict[str, str] = {
     "governance_policy_id": AuditAttrs.GOVERNANCE_POLICY_ID,
     "governance_reason": AuditAttrs.GOVERNANCE_REASON,
     "governance_domain": AuditAttrs.GOVERNANCE_DOMAIN,
+    "governance_quality_score": AuditAttrs.GOVERNANCE_QUALITY_SCORE,
     "scope_action": AuditAttrs.SCOPE_ACTION,
     "scope_reason": AuditAttrs.SCOPE_REASON,
     "scope_object": AuditAttrs.SCOPE_OBJECT,

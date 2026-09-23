@@ -70,6 +70,7 @@ def test_audit_attrs_namespace() -> None:
         ("MODEL_INPUT_TOKENS", "apx.model.input_tokens"),
         ("GOVERNANCE_ACTION", "apx.governance.action"),
         ("GOVERNANCE_POLICY_ID", "apx.governance.policy_id"),
+        ("GOVERNANCE_QUALITY_SCORE", "apx.governance.quality_score"),
         ("USER_TOKEN_PROVIDED", "apx.user.token_provided"),
         ("APPROVAL_DECISION", "apx.approval.decision"),
         ("MODEL_VERSION", "apx.model_version"),

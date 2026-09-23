@@ -658,6 +658,105 @@ def test_for_output_redact_records_audit_attrs() -> None:
     assert "apx.governance.policy_id" in keys_set
 
 
+# ---------------------------------------------------------------------------
+# DQX quality-score rendering — decision metadata → apx.governance.quality_score
+# ---------------------------------------------------------------------------
+
+
+def test_for_tool_reject_records_scalar_quality_score() -> None:
+    transport = _make_transport({
+        "tool_call": {"action": "reject", "reason": "quality below threshold",
+                      "policy_id": "POL-Q011", "domain": "data_quality",
+                      "metadata": {"dqx_quality_score": 0.42}},
+    })
+    guard = GovernanceGuard(GovernanceClient(transport=transport), agent_name="triage")
+
+    fake_span = MagicMock()
+    with patch("apx_agent._governance.current_active_span", return_value=fake_span), \
+         pytest.raises(PermissionError):
+        guard.for_tool()("query_reviews", {"table": "agent_cuj.customer_support.user_reviews"})
+
+    attrs = {c.args[0]: c.args[1] for c in fake_span.set_attribute.call_args_list}
+    assert attrs["apx.governance.quality_score"] == 0.42
+    assert attrs["apx.governance.action"] == "reject"
+
+
+def test_for_tool_allow_with_quality_scores_dict_annotates_span() -> None:
+    transport = _make_transport({
+        "tool_call": {"action": "allow",
+                      "metadata": {"dqx_quality_scores": {"main.a.t1": 0.97, "main.a.t2": 0.88}}},
+    })
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
+
+    fake_span = MagicMock()
+    with patch("apx_agent._governance.current_active_span", return_value=fake_span):
+        guard.for_tool()("query_reviews", {})
+
+    attrs = {c.args[0]: c.args[1] for c in fake_span.set_attribute.call_args_list}
+    assert attrs["apx.governance.action"] == "allow"
+    assert attrs["apx.governance.quality_score"] == '{"main.a.t1": 0.97, "main.a.t2": 0.88}'
+
+
+def test_for_tool_allow_without_quality_data_stays_unannotated() -> None:
+    transport = _make_transport({"tool_call": {"action": "allow"}})
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
+
+    fake_span = MagicMock()
+    with patch("apx_agent._governance.current_active_span", return_value=fake_span):
+        guard.for_tool()("query_reviews", {})
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.governance.quality_score" not in keys_set
+    assert "apx.governance.action" not in keys_set
+
+
+def test_for_tool_allow_with_empty_scores_dict_stays_unannotated() -> None:
+    transport = _make_transport({"tool_call": {"action": "allow",
+                                               "metadata": {"dqx_quality_scores": {}}}})
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
+
+    fake_span = MagicMock()
+    with patch("apx_agent._governance.current_active_span", return_value=fake_span):
+        guard.for_tool()("query_reviews", {})
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.governance.quality_score" not in keys_set
+    assert "apx.governance.action" not in keys_set
+
+
+def test_for_tool_reject_without_quality_data_records_decision_only() -> None:
+    transport = _make_transport({
+        "tool_call": {"action": "reject", "reason": "blocked", "policy_id": "p-1"},
+    })
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
+
+    fake_span = MagicMock()
+    with patch("apx_agent._governance.current_active_span", return_value=fake_span), \
+         pytest.raises(PermissionError):
+        guard.for_tool()("classify_intent", {})
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.governance.action" in keys_set
+    assert "apx.governance.quality_score" not in keys_set
+
+
+def test_quality_score_non_numeric_value_ignored() -> None:
+    transport = _make_transport({
+        "tool_call": {"action": "reject", "reason": "blocked",
+                      "metadata": {"dqx_quality_score": "not-a-number"}},
+    })
+    guard = GovernanceGuard(GovernanceClient(transport=transport))
+
+    fake_span = MagicMock()
+    with patch("apx_agent._governance.current_active_span", return_value=fake_span), \
+         pytest.raises(PermissionError):
+        guard.for_tool()("classify_intent", {})
+
+    keys_set = [c.args[0] for c in fake_span.set_attribute.call_args_list]
+    assert "apx.governance.action" in keys_set
+    assert "apx.governance.quality_score" not in keys_set
+
+
 def test_client_with_combined_transport_reject_decision_writes_violation_row() -> None:
     """Integration-style: client.evaluate via MCP + client.report_violation via UC."""
     ws = MagicMock()
