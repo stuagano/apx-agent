@@ -252,9 +252,10 @@ def _harness_version() -> str:
 def stamp_harness_version(span: Any) -> None:
     """Stamp the installed apx-agent version on ``span`` (FR-5).
 
-    Called on every top-level predict / predict_stream span, unconditionally —
-    kept separate from the env-gated ``stamp_version_correlation`` so it never
-    perturbs the #404 no-op-without-env contract.
+    Applied automatically by ``safe_span`` to every AGENT-typed (top-level)
+    span — call sites no longer invoke it by hand. Kept separate from the
+    env-gated ``stamp_version_correlation`` so it never perturbs the #404
+    no-op-without-env contract.
     """
     set_span_attribute(span, AuditAttrs.HARNESS_VERSION, _harness_version())
 
@@ -265,7 +266,8 @@ def stamp_version_correlation(span: Any) -> None:
     Sets ``apx.model_version`` / ``apx.git_sha`` (when the corresponding env
     vars are present) both as span attributes on ``span`` (the audit schema)
     and as trace-level tags — the tags are what ``canary analyze`` reads with
-    a metadata-only ``search_traces``. No env → no-op.
+    a metadata-only ``search_traces``. No env → no-op. Applied automatically
+    by ``safe_span`` to every AGENT-typed span.
     """
     attrs = version_correlation_attrs()
     if not attrs:

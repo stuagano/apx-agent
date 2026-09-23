@@ -214,6 +214,10 @@ def safe_span(
             in the MLflow UI — session stamping is the framework default,
             not a call-site responsibility.
 
+    Every AGENT-typed span (the top-level predict / invoke root spans) also
+    gets the harness version and version-correlation identity stamped
+    automatically — call sites no longer stamp either by hand.
+
     Usage::
 
         with safe_span("ChatAgent.predict", span_type="AGENT",
@@ -250,6 +254,16 @@ def safe_span(
             # traces group in the MLflow UI. No call-site opt-in required.
             if attributes and span is not None:
                 set_trace_session(span, attributes.get("apx.session.id"))
+            # Harness + version-correlation identity is likewise a default on
+            # every AGENT-typed (top-level) span — call sites used to stamp
+            # both by hand on all 4 root spans. Gated on AGENT so inner
+            # CHAIN/TOOL spans stay clean. Late import: _audit imports this
+            # module, so a top-level import would be circular.
+            if span_type == "AGENT" and span is not None:
+                from ._audit import stamp_harness_version, stamp_version_correlation
+
+                stamp_harness_version(span)
+                stamp_version_correlation(span)
             yield span
     except Exception as exc:
         logger.debug("Exception during traced block (re-raising): %s", exc)

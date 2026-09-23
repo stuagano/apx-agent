@@ -54,8 +54,6 @@ from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_tu
 from ._audit import (
     AuditAttrs,
     set_audit_attrs,
-    stamp_harness_version,
-    stamp_version_correlation,
     user_hash,
 )
 from ._compile import compile_to_langgraph
@@ -848,10 +846,9 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: False,
                 },
             ) as span:
-                # Session trace-stamp is automatic via the SESSION_ID attribute
-                # (safe_span default) — no explicit call needed here.
-                stamp_harness_version(span)
-                stamp_version_correlation(span)
+                # Session trace-stamp, harness version, and version-correlation
+                # are all automatic via safe_span defaults on AGENT spans — no
+                # explicit calls needed here.
                 _auth = _resolve_ws_and_headers(custom_inputs)
                 set_audit_attrs(
                     span,
@@ -1024,10 +1021,9 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
-                # Session trace-stamp is automatic via the SESSION_ID attribute
-                # (safe_span default) — no explicit call needed here.
-                stamp_harness_version(span)
-                stamp_version_correlation(span)
+                # Session trace-stamp, harness version, and version-correlation
+                # are all automatic via safe_span defaults on AGENT spans — no
+                # explicit calls needed here.
                 _auth = _resolve_ws_and_headers(custom_inputs)
                 set_audit_attrs(
                     span,

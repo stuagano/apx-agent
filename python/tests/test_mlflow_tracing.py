@@ -125,6 +125,40 @@ class TestSafeSpan:
 
             mock_update.assert_not_called()
 
+    def test_agent_span_auto_stamps_harness_version(self) -> None:
+        """Harness version is the framework default: every AGENT-typed span
+        gets apx.harness.version stamped by safe_span — no call-site opt-in."""
+        import mlflow
+        from apx_agent._audit import _harness_version
+
+        mock_span = MagicMock()
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_span)
+        cm.__exit__ = MagicMock(return_value=None)
+
+        with patch.object(mlflow, "start_span", return_value=cm):
+            with safe_span("root", span_type="AGENT"):
+                pass
+
+        mock_span.set_attribute.assert_any_call("apx.harness.version", _harness_version())
+
+    def test_inner_span_does_not_stamp_harness_version(self) -> None:
+        """The harness-version default is gated on AGENT spans: inner CHAIN /
+        TOOL spans stay clean (the stamp is a root-span contract, FR-5)."""
+        import mlflow
+
+        mock_span = MagicMock()
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_span)
+        cm.__exit__ = MagicMock(return_value=None)
+
+        with patch.object(mlflow, "start_span", return_value=cm):
+            with safe_span("graph.invoke", span_type="CHAIN"):
+                pass
+
+        stamped_keys = {c.args[0] for c in mock_span.set_attribute.call_args_list}
+        assert "apx.harness.version" not in stamped_keys
+
 
 # ---------------------------------------------------------------------------
 # set_trace_tags unit tests (issue #404 — version-correlation trace tags)

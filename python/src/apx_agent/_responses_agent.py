@@ -62,8 +62,6 @@ from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_tu
 from ._audit import (
     AuditAttrs,
     set_audit_attrs,
-    stamp_harness_version,
-    stamp_version_correlation,
     user_hash,
 )
 from ._chat_agent import _pending_interrupt, _resume_decision
@@ -1145,8 +1143,9 @@ def compile_to_responses_agent(
                 AuditAttrs.MODEL_STREAMING: False,
             },
         ) as span:
-            stamp_harness_version(span)
-            stamp_version_correlation(span)
+            # Harness version + version-correlation are automatic via safe_span
+            # defaults on AGENT spans. set_trace_session below stays explicit —
+            # it prefers thread_id, resolved after span entry.
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             set_audit_attrs(
                 span,
@@ -1374,8 +1373,9 @@ def compile_to_responses_agent(
                 AuditAttrs.MODEL_STREAMING: True,
             },
         ) as span:
-            stamp_harness_version(span)
-            stamp_version_correlation(span)
+            # Harness version + version-correlation are automatic via safe_span
+            # defaults on AGENT spans. set_trace_session below stays explicit —
+            # it prefers thread_id, resolved after span entry.
             auth = _resolve_ws_and_headers_for_request(custom_inputs)
             set_audit_attrs(
                 span,
