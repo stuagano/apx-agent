@@ -267,6 +267,57 @@ def set_span_attribute(span: Any, key: str, value: Any) -> None:
         logger.debug("Failed to set span attribute %r: %s", key, exc)
 
 
+# Canonical MLflow trace-metadata key that groups multi-turn traces into one
+# session in the MLflow / Databricks trace UI. Mirrors
+# ``mlflow.entities.TraceMetadataKey.TRACE_SESSION`` ("mlflow.trace.session").
+# Hardcoded so this module stays import-light (no mlflow import at top level).
+TRACE_SESSION_METADATA_KEY = "mlflow.trace.session"
+
+
+def set_trace_session(span, session_id, attributes=None):
+    """Tag the ACTIVE trace with the chat session so per-turn traces group.
+
+    Every chat turn is its own trace (own trace_id) by design; MLflow groups
+    turns into a single *session* when the trace carries
+    ``metadata['mlflow.trace.session']``. The framework already keys
+    conversation memory off ``session_id``/``thread_id``/``conversation_id``
+    but never stamped it on the trace, so each turn showed up as an isolated
+    trace. Call this once per root span.
+
+    Resolution order (first non-empty wins):
+
+      1. ``attributes['apx.session.id']`` -- the value the root span already
+         stamped (single source of truth; matches the AuditAttrs.SESSION_ID
+         span attribute).
+      2. The explicit ``session_id`` argument.
+
+    Also sets the ``apx.session.id`` attribute on ``span`` when it resolved
+    from the argument, so span-level filtering sees the same value. Never
+    raises -- tracing must not break a turn.
+    """
+    try:
+        resolved = session_id
+        if attributes:
+            resolved = attributes.get("apx.session.id") or resolved
+        if not resolved:
+            return
+        sid = str(resolved)
+        if is_mlflow_available():
+            import mlflow
+
+            try:
+                mlflow.update_current_trace(metadata={TRACE_SESSION_METADATA_KEY: sid})
+            except Exception as exc:
+                logger.debug("Failed to stamp trace session: %s", exc)
+        if span is not None:
+            try:
+                span.set_attribute("apx.session.id", sid)
+            except Exception:
+                pass
+    except Exception:  # pragma: no cover -- defensive; never break a turn
+        return
+
+
 def set_trace_tags(tags: dict[str, str]) -> None:
     """Safely set trace-level tags on the ACTIVE trace.
 

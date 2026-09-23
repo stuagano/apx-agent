@@ -69,7 +69,7 @@ from ._conversation import (
     drop_orphaned_tool_outputs,
     synthesize_conversation_title,
 )
-from ._mlflow_tracing import safe_span, set_span_outputs
+from ._mlflow_tracing import safe_span, set_span_outputs, set_trace_session
 
 if TYPE_CHECKING:
     from mlflow.types.agent import (
@@ -848,6 +848,7 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: False,
                 },
             ) as span:
+                set_trace_session(span, conv_id or thread_id)
                 stamp_harness_version(span)
                 stamp_version_correlation(span)
                 _auth = _resolve_ws_and_headers(custom_inputs)
@@ -1022,6 +1023,7 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
+                set_trace_session(span, conv_id or thread_id)
                 stamp_harness_version(span)
                 stamp_version_correlation(span)
                 _auth = _resolve_ws_and_headers(custom_inputs)

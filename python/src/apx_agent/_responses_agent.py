@@ -79,7 +79,12 @@ from ._conversation import (
     synthesize_conversation_title,
 )
 from ._executor import content_to_text as _content_to_text
-from ._mlflow_tracing import continue_trace_from_headers, safe_span, set_span_outputs
+from ._mlflow_tracing import (
+    continue_trace_from_headers,
+    safe_span,
+    set_span_outputs,
+    set_trace_session,
+)
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -1157,6 +1162,7 @@ def compile_to_responses_agent(
             # present, it owns the transcript — send only the new turn (no
             # history prepend) and key state by thread_id. See #329.
             thread_id = custom_inputs.get("thread_id") or custom_inputs.get("session_id")
+            set_trace_session(span, thread_id or conv_id)
             cp = _checkpointer if thread_id else None
             lg_config = {"configurable": {"thread_id": thread_id}} if cp else None
 
@@ -1385,6 +1391,7 @@ def compile_to_responses_agent(
             # key → send only the new turn, key state by thread_id. The stream's
             # "updates" mode yields only new messages, so no slice fix is needed.
             thread_id = custom_inputs.get("thread_id") or custom_inputs.get("session_id")
+            set_trace_session(span, thread_id or conv_id)
             cp = _checkpointer if thread_id else None
             lg_config = {"configurable": {"thread_id": thread_id}} if cp else None
 
