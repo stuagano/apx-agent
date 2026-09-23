@@ -127,3 +127,7 @@ _relentless_state.md
 _orchestration_state.md
 _gates.json
 _validation_report.json
+
+# Local session scratch and daily summaries
+.ctk/
+daily-summaries/
