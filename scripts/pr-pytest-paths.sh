@@ -141,6 +141,11 @@ while IFS= read -r f || [ -n "$f" ]; do
       ;;
     *.md)
       ;;
+    adapters/*)
+      # Self-contained subtree (e.g. adapters/ontos). Its tests live outside
+      # python/tests and run separately (pytest adapters/ontos/tests/), so
+      # only the core set applies — not the unknown-path full-suite fail-safe.
+      ;;
     *)
       unknown=1
       ;;

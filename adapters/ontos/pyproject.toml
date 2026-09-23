@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "apx-ontos-governance"
+version = "0.1.0"
+description = "Pluggable governance UI module for Ontos (databrickslabs/ontos) — backed by Databricks Governance Monitoring"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+dependencies = [
+    "fastapi>=0.111.0",
+    "pydantic>=2.0.0",
+    "uvicorn[standard]>=0.29.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# The default GovernanceProvider needs the Databricks SQL Connector
+governance = [
+    "databricks-sql-connector>=3.0.0",
+]
+# OWL/Turtle export needs the engine's OntologyEngine, which is not
+# published as a PyPI package — install the governance-monitoring
+# engine from source alongside this adapter to use it.
+export = []
+dev = [
+    "pytest>=7.0",
+    "httpx>=0.24",
+    "ruff>=0.4.0",
+]
+
+[project.entry-points."ontos_governance.providers"]
+governance = "ontos_governance.providers.governance:GovernanceProvider"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ontos_governance"]
