@@ -89,6 +89,42 @@ class TestSafeSpan:
             mock_span.set_inputs.assert_called_once_with({"k": "v"})
             mock_span.set_attribute.assert_any_call("apx.foo", "bar")
 
+    def test_auto_stamps_session_from_attribute(self) -> None:
+        """Session grouping is the framework default: a span carrying
+        ``apx.session.id`` in its attributes gets its trace tagged with
+        ``mlflow.trace.session`` — no explicit set_trace_session call needed."""
+        import mlflow
+
+        mock_span = MagicMock()
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_span)
+        cm.__exit__ = MagicMock(return_value=None)
+
+        with patch.object(mlflow, "start_span", return_value=cm), patch.object(
+            mlflow, "update_current_trace"
+        ) as mock_update:
+            with safe_span("s", span_type="AGENT", attributes={"apx.session.id": "sess-1"}):
+                pass
+
+            mock_update.assert_called_once_with(metadata={"mlflow.trace.session": "sess-1"})
+
+    def test_no_session_stamp_without_attribute(self) -> None:
+        """A span with no apx.session.id attribute leaves the trace untagged."""
+        import mlflow
+
+        mock_span = MagicMock()
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_span)
+        cm.__exit__ = MagicMock(return_value=None)
+
+        with patch.object(mlflow, "start_span", return_value=cm), patch.object(
+            mlflow, "update_current_trace"
+        ) as mock_update:
+            with safe_span("s", span_type="AGENT", attributes={"apx.foo": "bar"}):
+                pass
+
+            mock_update.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # set_trace_tags unit tests (issue #404 — version-correlation trace tags)

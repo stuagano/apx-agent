@@ -69,7 +69,7 @@ from ._conversation import (
     drop_orphaned_tool_outputs,
     synthesize_conversation_title,
 )
-from ._mlflow_tracing import safe_span, set_span_outputs, set_trace_session
+from ._mlflow_tracing import safe_span, set_span_outputs
 
 if TYPE_CHECKING:
     from mlflow.types.agent import (
@@ -848,7 +848,8 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: False,
                 },
             ) as span:
-                set_trace_session(span, conv_id or thread_id)
+                # Session trace-stamp is automatic via the SESSION_ID attribute
+                # (safe_span default) — no explicit call needed here.
                 stamp_harness_version(span)
                 stamp_version_correlation(span)
                 _auth = _resolve_ws_and_headers(custom_inputs)
@@ -1023,7 +1024,8 @@ def chat_agent_for(
                     AuditAttrs.MODEL_STREAMING: True,
                 },
             ) as span:
-                set_trace_session(span, conv_id or thread_id)
+                # Session trace-stamp is automatic via the SESSION_ID attribute
+                # (safe_span default) — no explicit call needed here.
                 stamp_harness_version(span)
                 stamp_version_correlation(span)
                 _auth = _resolve_ws_and_headers(custom_inputs)

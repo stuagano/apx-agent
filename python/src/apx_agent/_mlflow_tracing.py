@@ -208,7 +208,11 @@ def safe_span(
             ``"UNKNOWN"`` if a more specific type isn't obvious.
         inputs: Optional input payload (must be JSON-serializable; MLflow
             stringifies).
-        attributes: Optional dict of extra attributes for the span.
+        attributes: Optional dict of extra attributes for the span. When it
+            includes ``apx.session.id``, the enclosing trace is automatically
+            tagged with ``mlflow.trace.session`` so multi-turn traces group
+            in the MLflow UI — session stamping is the framework default,
+            not a call-site responsibility.
 
     Usage::
 
@@ -241,6 +245,11 @@ def safe_span(
                         span.set_attribute(k, v)
             except Exception as exc:  # pragma: no cover — defensive
                 logger.debug("Failed to set span inputs/attrs: %s", exc)
+            # Session grouping is a framework default, not opt-in: any span
+            # carrying apx.session.id gets its trace tagged so multi-turn
+            # traces group in the MLflow UI. No call-site opt-in required.
+            if attributes and span is not None:
+                set_trace_session(span, attributes.get("apx.session.id"))
             yield span
     except Exception as exc:
         logger.debug("Exception during traced block (re-raising): %s", exc)
@@ -282,7 +291,13 @@ def set_trace_session(span, session_id, attributes=None):
     ``metadata['mlflow.trace.session']``. The framework already keys
     conversation memory off ``session_id``/``thread_id``/``conversation_id``
     but never stamped it on the trace, so each turn showed up as an isolated
-    trace. Call this once per root span.
+    trace.
+
+    ``safe_span`` calls this automatically whenever the span attributes carry
+    ``apx.session.id`` — session stamping is the framework default, not a
+    call-site responsibility. Call it explicitly only when the session id is
+    resolved *after* span entry (e.g. the responses agent's ``thread_id``
+    fallback chain). The function is idempotent.
 
     Resolution order (first non-empty wins):
 
