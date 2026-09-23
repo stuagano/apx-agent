@@ -85,6 +85,15 @@ def test_workflow_only_pr_is_core_not_full() -> None:
     assert len(paths) < len(all_tests) // 2
 
 
+def test_adapters_only_pr_is_core_not_full() -> None:
+    # Adapters are self-contained; their tests live outside python/tests, so
+    # an adapter-only diff must not trip the unknown-path full-suite fail-safe.
+    paths = _select("adapters/ontos/src/ontos_governance/router.py")
+    assert "tests/" not in paths
+    assert "tests/test_compile.py" in paths
+    assert "tests/test_cli.py" not in paths
+
+
 def test_ci_yml_dispatches_full_suite_and_uses_selector() -> None:
     body = CI_YML.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in body
