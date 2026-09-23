@@ -71,6 +71,7 @@ Wiring it up end-to-end::
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
@@ -87,13 +88,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _quality_score_attr(metadata: dict[str, Any]) -> Any:
+    """Extract DQX quality-score context from decision metadata.
+
+    governance-monitoring emits ``dqx_quality_score`` (scalar float) on
+    single-table decisions and ``dqx_quality_scores`` (table → score map)
+    on multi-table allows. Span attributes must be primitives, so the map
+    is serialized to JSON. Returns ``None`` when no quality data is
+    present.
+    """
+    scores = metadata.get("dqx_quality_scores")
+    if isinstance(scores, dict) and scores:
+        return json.dumps(scores, sort_keys=True)
+    score = metadata.get("dqx_quality_score")
+    if isinstance(score, (int, float)):
+        return score
+    return None
+
+
 def _record_decision_on_span(decision: "GovernanceDecision", agent_name: str | None) -> None:
     """Set apx.governance.* audit attributes on the currently active span.
 
-    Only fires when the decision is non-allow — allow is the default and
-    doesn't merit a trace annotation. No-op when no span is active.
+    Fires on non-allow decisions, and on allow decisions that carry DQX
+    quality-score context — rendering that context is the whole point of
+    the quality loop. Allow with no quality data stays unannotated.
+    No-op when no span is active.
     """
-    if decision.action == "allow":
+    quality_score = _quality_score_attr(decision.metadata)
+    if decision.action == "allow" and quality_score is None:
         return
     set_audit_attrs(
         current_active_span(),
@@ -101,6 +123,7 @@ def _record_decision_on_span(decision: "GovernanceDecision", agent_name: str | N
         governance_reason=decision.reason,
         governance_policy_id=decision.policy_id,
         governance_domain=decision.domain,
+        governance_quality_score=quality_score,
         agent_name=agent_name,
     )
 
