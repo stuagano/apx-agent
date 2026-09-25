@@ -15,7 +15,14 @@ sync:
 
 artifacts:
   default:
-    build: UV_OFFLINE=1 apx build && cp pyproject.toml .build/
+    # 1. apx build → hub wheel + frontend + requirements.txt into .build
+    # 2. build the apx-agent wheel (local path dep, unpublished) into .build so
+    #    the app can pip-install it on compute (no PyPI proxy there)
+    # 3. stage pyproject + start.sh (start.sh installs both wheels, runs uvicorn)
+    build: |
+      UV_OFFLINE=1 apx build
+      uv build --wheel ../python --out-dir .build
+      cp pyproject.toml start.sh .build/
 
 resources:
   apps:
@@ -23,6 +30,8 @@ resources:
       name: "agent-hub"
       description: "Agent Hub — portal for all deployed AI agents"
       source_code_path: ./.build
+      config:
+        command: ["bash", "start.sh"]
 
 targets:
   dev:
