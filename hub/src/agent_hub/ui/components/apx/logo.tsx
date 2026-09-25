@@ -1,33 +1,43 @@
 import { Link } from "@tanstack/react-router";
+import { Typography, useDesignSystemTheme } from "@databricks/design-system";
 
 interface LogoProps {
   to?: string;
-  className?: string;
   showText?: boolean;
 }
 
-export function Logo({ to = "/", className = "", showText = true }: LogoProps) {
+export function Logo({ to = "/", showText = true }: LogoProps) {
+  const { theme } = useDesignSystemTheme();
+
   const content = (
-    <div className={`flex items-center gap-2 ${className}`}>
+    <div
+      style={{ display: "flex", alignItems: "center", gap: theme.spacing.sm }}
+    >
       <img
         src="/logo.svg"
         alt="logo"
-        className="h-6 w-6 text-primary border border-primary rounded-sm"
+        style={{
+          height: 24,
+          width: 24,
+          border: `1px solid ${theme.colors.actionPrimaryBackgroundDefault}`,
+          borderRadius: theme.borders.borderRadiusSm,
+        }}
       />
       {showText && (
-        <span className="font-semibold text-lg">{__APP_NAME__}</span>
+        <Typography.Title level={4} withoutMargins>
+          {__APP_NAME__}
+        </Typography.Title>
       )}
     </div>
   );
 
   if (to) {
     return (
-      <Link to={to} className="hover:opacity-80 transition-opacity">
+      <Link to={to} style={{ textDecoration: "none" }}>
         {content}
       </Link>
     );
   }
-
   return content;
 }
 

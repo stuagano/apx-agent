@@ -1,24 +1,47 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import {
+  Button,
+  Spinner,
+  Typography,
+  useDesignSystemTheme,
+} from "@databricks/design-system";
 import Navbar from "@/components/apx/navbar";
 import ChatPanel from "@/components/apx/ChatPanel";
-import { discoverWorkspaceAgents, listAgents, type AgentCard } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import {
+  discoverWorkspaceAgents,
+  listAgents,
+  type AgentCard,
+} from "@/lib/api";
 
 export const Route = createFileRoute("/")({
   component: AgentHub,
 });
 
-function StatusDot({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    live: "bg-emerald-400",
-    unreachable: "bg-red-400",
-    stub: "bg-amber-400",
-    planned: "bg-slate-400",
+function useStatusColor(status: string): string {
+  const { theme } = useDesignSystemTheme();
+  const map: Record<string, string> = {
+    live: theme.colors.textValidationSuccess,
+    unreachable: theme.colors.textValidationDanger,
+    stub: theme.colors.textValidationWarning,
+    planned: theme.colors.textSecondary,
   };
+  return map[status] ?? theme.colors.textSecondary;
+}
+
+function StatusDot({ status }: { status: string }) {
+  const color = useStatusColor(status);
   return (
-    <div className={cn("w-2 h-2 rounded-full shrink-0", colors[status] ?? "bg-slate-400")} />
+    <span
+      style={{
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        flexShrink: 0,
+        background: color,
+      }}
+    />
   );
 }
 
@@ -31,6 +54,7 @@ function AgentListItem({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const { theme } = useDesignSystemTheme();
   const isInvokable = agent.status === "live" && agent.supports_invoke;
 
   return (
@@ -38,30 +62,60 @@ function AgentListItem({
       type="button"
       onClick={isInvokable ? onSelect : undefined}
       aria-disabled={!isInvokable}
-      className={cn(
-        "w-full text-left rounded-lg px-3 py-3 transition-colors",
-        isInvokable ? "cursor-pointer hover:bg-accent/50" : "cursor-default opacity-40",
-        selected && "bg-primary/10 border border-primary/30"
-      )}
+      style={{
+        width: "100%",
+        textAlign: "left",
+        border: selected
+          ? `1px solid ${theme.colors.actionDefaultBorderHover}`
+          : "1px solid transparent",
+        borderRadius: theme.borders.borderRadiusMd,
+        padding: theme.spacing.sm,
+        background: selected
+          ? theme.colors.actionDefaultBackgroundPress
+          : "transparent",
+        cursor: isInvokable ? "pointer" : "default",
+        opacity: isInvokable ? 1 : 0.4,
+      }}
+      onMouseEnter={(e) => {
+        if (isInvokable && !selected)
+          e.currentTarget.style.background =
+            theme.colors.actionDefaultBackgroundHover;
+      }}
+      onMouseLeave={(e) => {
+        if (!selected) e.currentTarget.style.background = "transparent";
+      }}
     >
-      <div className="flex items-center gap-2 mb-1">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: theme.spacing.sm,
+          marginBottom: 2,
+        }}
+      >
         <StatusDot status={agent.status} />
-        <span
-          className={cn(
-            "text-sm font-medium truncate",
-            selected ? "text-primary" : "text-foreground"
-          )}
-        >
+        <Typography.Text bold ellipsis>
           {agent.display_name}
-        </span>
+        </Typography.Text>
       </div>
-      <p className="text-xs text-muted-foreground line-clamp-2 pl-4">{agent.description}</p>
+      <Typography.Paragraph
+        color="secondary"
+        withoutMargins
+        ellipsis={{ rows: 2 }}
+      >
+        {agent.description}
+      </Typography.Paragraph>
       {agent.tags && agent.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-1.5 pl-4">
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: theme.spacing.xs,
+            marginTop: theme.spacing.xs,
+          }}
+        >
           {agent.tags.slice(0, 3).map((tag) => (
-            <span key={tag} className="text-[10px] text-muted-foreground">
-              #{tag}
-            </span>
+            <Typography.Hint key={tag}>#{tag}</Typography.Hint>
           ))}
         </div>
       )}
@@ -70,10 +124,11 @@ function AgentListItem({
 }
 
 function AgentHub() {
+  const { theme } = useDesignSystemTheme();
   const queryClient = useQueryClient();
   const { data: agents, isLoading } = useQuery({
     queryKey: ["agents"],
-    queryFn: listAgents,
+    queryFn: () => listAgents(),
   });
 
   const discover = useMutation({
@@ -95,49 +150,110 @@ function AgentHub() {
 
   const [selectedAgent, setSelectedAgent] = useState<AgentCard | null>(null);
 
+  const sectionLabel = (label: string) => (
+    <div
+      style={{ padding: `${theme.spacing.xs}px ${theme.spacing.sm}px` }}
+    >
+      <Typography.Text
+        color="secondary"
+        size="sm"
+        bold
+        style={{ textTransform: "uppercase", letterSpacing: 0.4 }}
+      >
+        {label}
+      </Typography.Text>
+    </div>
+  );
+
   return (
-    <div className="flex flex-col bg-background" style={{ height: "100dvh" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100dvh",
+        background: theme.colors.backgroundPrimary,
+      }}
+    >
       <Navbar />
 
-      <div className="flex flex-1 overflow-hidden min-h-0">
+      <div
+        style={{
+          display: "flex",
+          flex: 1,
+          overflow: "hidden",
+          minHeight: 0,
+        }}
+      >
         {/* Left panel — agent list */}
-        <div className="w-72 shrink-0 border-r flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b shrink-0 space-y-2">
+        <div
+          style={{
+            width: 288,
+            flexShrink: 0,
+            borderRight: `1px solid ${theme.colors.border}`,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              padding: theme.spacing.md,
+              borderBottom: `1px solid ${theme.colors.border}`,
+              flexShrink: 0,
+              display: "flex",
+              flexDirection: "column",
+              gap: theme.spacing.sm,
+            }}
+          >
             <div>
-              <h1 className="font-semibold text-sm">Agent Hub</h1>
-              <p className="text-xs text-muted-foreground mt-0.5">
+              <Typography.Title level={4} withoutMargins>
+                Agent Hub
+              </Typography.Title>
+              <Typography.Text color="secondary" size="sm">
                 {discover.isPending
                   ? "Discovering workspace agents…"
                   : "Select an agent to chat"}
-              </p>
+              </Typography.Text>
             </div>
-            <button
-              type="button"
+            <Button
+              componentId="refresh-discovery"
+              size="small"
               onClick={() => discover.mutate()}
-              disabled={discover.isPending}
-              className="w-full text-xs rounded-md border px-2 py-1.5 hover:bg-accent/50 disabled:opacity-50"
+              loading={discover.isPending}
+              block
             >
               {discover.isPending ? "Refreshing…" : "Refresh discovery"}
-            </button>
+            </Button>
             {discover.isError && (
-              <p className="text-[11px] text-red-500">Discovery failed — check Hub logs.</p>
+              <Typography.Text color="error" size="sm">
+                Discovery failed — check Hub logs.
+              </Typography.Text>
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 min-h-0">
+          <div
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              padding: theme.spacing.sm,
+              minHeight: 0,
+            }}
+          >
             {isLoading ? (
-              <div className="space-y-2 p-1">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-16 bg-muted rounded-lg animate-pulse" />
-                ))}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  padding: theme.spacing.lg,
+                }}
+              >
+                <Spinner />
               </div>
             ) : (
               <>
                 {live.length > 0 && (
-                  <div className="mb-1">
-                    <p className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                      Live
-                    </p>
+                  <div style={{ marginBottom: theme.spacing.xs }}>
+                    {sectionLabel("Live")}
                     {live.map((a) => (
                       <AgentListItem
                         key={a.id}
@@ -150,9 +266,7 @@ function AgentHub() {
                 )}
                 {other.length > 0 && (
                   <div>
-                    <p className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                      Other
-                    </p>
+                    {sectionLabel("Other")}
                     {other.map((a) => (
                       <AgentListItem
                         key={a.id}
@@ -164,11 +278,13 @@ function AgentHub() {
                   </div>
                 )}
                 {!live.length && !other.length && (
-                  <p className="px-3 py-4 text-xs text-muted-foreground">
-                    {discover.isPending
-                      ? "Scanning Databricks Apps for A2A cards…"
-                      : "No agents found yet. Deploy an Apps agent with /.well-known/agent.json, or use Refresh."}
-                  </p>
+                  <div style={{ padding: theme.spacing.md }}>
+                    <Typography.Text color="secondary" size="sm">
+                      {discover.isPending
+                        ? "Scanning Databricks Apps for A2A cards…"
+                        : "No agents found yet. Deploy an Apps agent with /.well-known/agent.json, or use Refresh."}
+                    </Typography.Text>
+                  </div>
                 )}
               </>
             )}
@@ -176,14 +292,28 @@ function AgentHub() {
         </div>
 
         {/* Right panel — chat */}
-        <div className="flex-1 overflow-hidden min-w-0">
+        <div style={{ flex: 1, overflow: "hidden", minWidth: 0 }}>
           {selectedAgent ? (
             <ChatPanel key={selectedAgent.id} agent={selectedAgent} />
           ) : (
-            <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-4">
-              <div className="text-4xl select-none">⬡</div>
-              <p className="text-sm font-medium">Select an agent to start chatting</p>
-              <p className="text-xs text-muted-foreground">Choose from the list on the left</p>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                height: "100%",
+                gap: theme.spacing.sm,
+                textAlign: "center",
+                padding: theme.spacing.md,
+              }}
+            >
+              <Typography.Title level={3} withoutMargins>
+                Select an agent to start chatting
+              </Typography.Title>
+              <Typography.Text color="secondary">
+                Choose from the list on the left
+              </Typography.Text>
             </div>
           )}
         </div>

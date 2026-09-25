@@ -1,21 +1,20 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import {
-  ArrowLeft,
-  ExternalLink,
-  Wrench,
-  CheckCircle2,
-  Clock,
-  AlertCircle,
-  Globe,
-  Server,
-  Send,
-} from "lucide-react";
+  Alert,
+  ArrowLeftIcon,
+  Button,
+  Input,
+  Spinner,
+  Tag,
+  Typography,
+  useDesignSystemTheme,
+} from "@databricks/design-system";
 import Navbar from "@/components/apx/navbar";
 import { getAgent, type AgentCard } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import { extractResponseText } from "@/lib/response-text";
-import { useState } from "react";
+import { renderIcon } from "@/components/apx/Icon";
 
 export const Route = createFileRoute("/agents/$agentId")({
   component: AgentDetail,
@@ -30,23 +29,77 @@ function safeHost(url: string): string {
   }
 }
 
+type TagColor = "lime" | "lemon" | "coral" | "charcoal";
+
 function StatusBadge({ status }: { status: string }) {
-  const config: Record<string, { label: string; icon: typeof CheckCircle2; className: string }> = {
-    live: { label: "Live", icon: CheckCircle2, className: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20" },
-    stub: { label: "Stub", icon: Clock, className: "text-amber-400 bg-amber-400/10 border-amber-400/20" },
-    unreachable: { label: "Unreachable", icon: AlertCircle, className: "text-red-400 bg-red-400/10 border-red-400/20" },
+  const config: Record<string, { label: string; color: TagColor }> = {
+    live: { label: "Live", color: "lime" },
+    stub: { label: "Stub", color: "lemon" },
+    unreachable: { label: "Unreachable", color: "coral" },
   };
   const c = config[status] ?? config.stub;
-  const Icon = c.icon;
   return (
-    <span className={cn("inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-sm font-medium", c.className)}>
-      <Icon size={14} />
+    <Tag color={c.color} componentId={`status-${status}`}>
       {c.label}
-    </span>
+    </Tag>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  const { theme } = useDesignSystemTheme();
+  return (
+    <div style={{ marginBottom: theme.spacing.md }}>
+      <Typography.Text
+        color="secondary"
+        size="sm"
+        bold
+        style={{ textTransform: "uppercase", letterSpacing: 0.4 }}
+      >
+        {children}
+      </Typography.Text>
+    </div>
+  );
+}
+
+function Panel({ children }: { children: React.ReactNode }) {
+  const { theme } = useDesignSystemTheme();
+  return (
+    <div
+      style={{
+        border: `1px solid ${theme.colors.border}`,
+        borderRadius: theme.borders.borderRadiusLg,
+        background: theme.colors.backgroundSecondary,
+        padding: theme.spacing.md,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function CodeBlock({ children }: { children: React.ReactNode }) {
+  const { theme } = useDesignSystemTheme();
+  return (
+    <code
+      style={{
+        display: "block",
+        fontFamily: "monospace",
+        fontSize: 13,
+        background: theme.colors.backgroundPrimary,
+        border: `1px solid ${theme.colors.border}`,
+        borderRadius: theme.borders.borderRadiusMd,
+        padding: `${theme.spacing.sm}px ${theme.spacing.md}px`,
+        wordBreak: "break-all",
+        marginTop: theme.spacing.xs,
+      }}
+    >
+      {children}
+    </code>
   );
 }
 
 function TryItPanel({ agent }: { agent: AgentCard }) {
+  const { theme } = useDesignSystemTheme();
   const [input, setInput] = useState("");
   const [response, setResponse] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -81,61 +134,81 @@ function TryItPanel({ agent }: { agent: AgentCard }) {
   if (!agent.supports_invoke) {
     return (
       <section>
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Try It</h2>
-        <div className="rounded-xl border bg-card p-5 text-sm text-muted-foreground">
-          This agent uses the full AppKit UI.{" "}
-          <a href={`${agent.url}/_apx/agent`} target="_blank" rel="noopener noreferrer" className="text-foreground underline underline-offset-2 hover:no-underline inline-flex items-center gap-1">
-            Open agent UI <ExternalLink size={12} />
-          </a>
-        </div>
+        <SectionTitle>Try It</SectionTitle>
+        <Panel>
+          <Typography.Text color="secondary">
+            This agent uses the full AppKit UI.{" "}
+          </Typography.Text>
+          <Typography.Link
+            componentId="tryit-open-ui"
+            href={`${agent.url}/_apx/agent`}
+            openInNewTab
+          >
+            Open agent UI
+          </Typography.Link>
+        </Panel>
       </section>
     );
   }
 
   return (
     <section>
-      <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
-        Try It
-      </h2>
-      <div className="rounded-xl border bg-card p-5">
-        <div className="flex gap-2 mb-4">
-          <input
-            type="text"
+      <SectionTitle>Try It</SectionTitle>
+      <Panel>
+        <div style={{ display: "flex", gap: theme.spacing.sm }}>
+          <Input
+            componentId="tryit-input"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSend()}
+            onPressEnter={handleSend}
             placeholder="Ask this agent something..."
-            className="flex-1 px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            allowClear
           />
-          <button
+          <Button
+            componentId="tryit-send"
+            type="primary"
             onClick={handleSend}
-            disabled={loading || !input.trim()}
-            className={cn(
-              "px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors",
-              "bg-primary text-primary-foreground hover:bg-primary/90",
-              "disabled:opacity-50 disabled:cursor-not-allowed"
-            )}
+            loading={loading}
+            disabled={!input.trim()}
           >
-            <Send size={14} />
             {loading ? "Sending..." : "Send"}
-          </button>
+          </Button>
         </div>
         {error && (
-          <div className="p-3 rounded-lg border border-destructive/30 bg-destructive/10 text-sm text-destructive-foreground mb-3">
-            {error}
+          <div style={{ marginTop: theme.spacing.md }}>
+            <Alert
+              componentId="tryit-error"
+              type="error"
+              message={error}
+              closable={false}
+            />
           </div>
         )}
         {response && (
-          <div className="p-4 rounded-lg bg-muted/50 text-sm whitespace-pre-wrap font-mono leading-relaxed max-h-96 overflow-y-auto">
+          <div
+            style={{
+              marginTop: theme.spacing.md,
+              padding: theme.spacing.md,
+              borderRadius: theme.borders.borderRadiusMd,
+              background: theme.colors.backgroundPrimary,
+              fontFamily: "monospace",
+              fontSize: 13,
+              whiteSpace: "pre-wrap",
+              lineHeight: 1.6,
+              maxHeight: 384,
+              overflowY: "auto",
+            }}
+          >
             {response}
           </div>
         )}
-      </div>
+      </Panel>
     </section>
   );
 }
 
 function AgentDetail() {
+  const { theme } = useDesignSystemTheme();
   const { agentId } = Route.useParams();
   const { data, isLoading, error } = useQuery({
     queryKey: ["agent", agentId],
@@ -145,83 +218,131 @@ function AgentDetail() {
   const agent = data?.data;
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        background: theme.colors.backgroundPrimary,
+      }}
+    >
       <Navbar />
 
-      <main className="flex-1 max-w-3xl mx-auto w-full px-4 py-10">
-        {/* Back link */}
+      <main
+        style={{
+          flex: 1,
+          maxWidth: 768,
+          margin: "0 auto",
+          width: "100%",
+          padding: `${theme.spacing.lg}px ${theme.spacing.md}px`,
+        }}
+      >
         <Link
           to="/"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors mb-8"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: theme.spacing.xs,
+            marginBottom: theme.spacing.lg,
+          }}
         >
-          <ArrowLeft size={14} />
-          All Agents
+          {renderIcon(ArrowLeftIcon, { color: theme.colors.textSecondary })}
+          <Typography.Text color="secondary" size="sm">
+            All Agents
+          </Typography.Text>
         </Link>
 
         {isLoading && (
-          <div className="space-y-4 animate-pulse">
-            <div className="h-8 bg-muted rounded w-2/5" />
-            <div className="h-4 bg-muted rounded w-4/5" />
-            <div className="h-4 bg-muted rounded w-3/5" />
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <Spinner />
           </div>
         )}
 
         {error && (
-          <div className="p-4 rounded-lg border border-destructive/30 bg-destructive/10 text-sm text-destructive-foreground">
-            Failed to load agent: {String(error)}
-          </div>
+          <Alert
+            componentId="agent-load-error"
+            type="error"
+            message={`Failed to load agent: ${String(error)}`}
+            closable={false}
+          />
         )}
 
         {agent && (
-          <div className="space-y-8">
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: theme.spacing.lg,
+            }}
+          >
             {/* Header */}
             <div>
-              <div className="flex items-center gap-3 mb-3">
-                <h1 className="text-2xl font-bold tracking-tight">{agent.display_name}</h1>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: theme.spacing.sm,
+                  marginBottom: theme.spacing.sm,
+                }}
+              >
+                <Typography.Title level={2} withoutMargins>
+                  {agent.display_name}
+                </Typography.Title>
                 <StatusBadge status={agent.status} />
               </div>
-              <p className="text-muted-foreground leading-relaxed">{agent.description}</p>
+              <Typography.Paragraph color="secondary" withoutMargins>
+                {agent.description}
+              </Typography.Paragraph>
 
               {/* Meta */}
-              <div className="flex flex-wrap gap-4 mt-4 text-sm text-muted-foreground">
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: theme.spacing.md,
+                  marginTop: theme.spacing.md,
+                  alignItems: "center",
+                }}
+              >
                 {agent.url && (
-                  <a
+                  <Typography.Link
+                    componentId="agent-host-link"
                     href={agent.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 hover:text-foreground transition-colors"
+                    openInNewTab
                   >
-                    <Globe size={14} />
                     {safeHost(agent.url)}
-                    <ExternalLink size={12} />
-                  </a>
+                  </Typography.Link>
                 )}
                 {agent.url && agent.status === "live" && (
-                  <a
+                  <Typography.Link
+                    componentId="agent-open-ui"
                     href={`${agent.url}/_apx/agent`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border/60 bg-muted/50 hover:bg-accent hover:text-foreground transition-colors text-xs font-medium"
+                    openInNewTab
                   >
                     Open full agent UI
-                    <ExternalLink size={11} />
-                  </a>
+                  </Typography.Link>
                 )}
                 {agent.mcp_endpoint && (
-                  <span className="inline-flex items-center gap-1.5">
-                    <Server size={14} />
+                  <Typography.Text color="secondary" size="sm">
                     MCP enabled
-                  </span>
+                  </Typography.Text>
                 )}
               </div>
 
               {/* Tags */}
               {agent.tags && agent.tags.length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-4">
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: theme.spacing.xs,
+                    marginTop: theme.spacing.md,
+                  }}
+                >
                   {agent.tags.map((tag) => (
-                    <span key={tag} className="px-2.5 py-0.5 rounded-full bg-muted text-muted-foreground text-xs">
+                    <Tag key={tag} color="charcoal" componentId={`tag-${tag}`}>
                       #{tag}
-                    </span>
+                    </Tag>
                   ))}
                 </div>
               )}
@@ -229,24 +350,45 @@ function AgentDetail() {
 
             {/* Tools */}
             <section>
-              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4 flex items-center gap-2">
-                <Wrench size={14} />
-                Tools ({agent.tools.length})
-              </h2>
+              <SectionTitle>Tools ({agent.tools.length})</SectionTitle>
               {agent.tools.length === 0 ? (
-                <p className="text-sm text-muted-foreground italic">No tools registered.</p>
+                <Typography.Text color="secondary">
+                  No tools registered.
+                </Typography.Text>
               ) : (
-                <div className="grid gap-2">
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: theme.spacing.sm,
+                  }}
+                >
                   {agent.tools.map((tool) => (
-                    <div
-                      key={tool.name}
-                      className="flex items-start gap-3 p-3 rounded-lg border bg-card hover:border-border/80 transition-colors"
-                    >
-                      <code className="shrink-0 px-2 py-0.5 rounded bg-muted text-xs font-mono">
-                        {tool.name}
-                      </code>
-                      <span className="text-sm text-muted-foreground">{tool.description}</span>
-                    </div>
+                    <Panel key={tool.name}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: theme.spacing.sm,
+                        }}
+                      >
+                        <code
+                          style={{
+                            flexShrink: 0,
+                            fontFamily: "monospace",
+                            fontSize: 12,
+                            background: theme.colors.backgroundPrimary,
+                            borderRadius: theme.borders.borderRadiusSm,
+                            padding: `2px ${theme.spacing.xs}px`,
+                          }}
+                        >
+                          {tool.name}
+                        </code>
+                        <Typography.Text color="secondary" size="sm">
+                          {tool.description}
+                        </Typography.Text>
+                      </div>
+                    </Panel>
                   ))}
                 </div>
               )}
@@ -258,37 +400,49 @@ function AgentDetail() {
             {/* Connection Info */}
             {agent.url && agent.status === "live" && (
               <section>
-                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
-                  Connect
-                </h2>
-                <div className="rounded-xl border bg-card p-5 space-y-3">
-                  <div>
-                    <span className="text-xs text-muted-foreground font-medium">Responses API</span>
-                    <code className="block mt-1 text-sm font-mono bg-muted px-3 py-2 rounded-lg break-all">
-                      POST {agent.url}/responses
-                    </code>
-                  </div>
-                  <div>
-                    <span className="text-xs text-muted-foreground font-medium">A2A Discovery</span>
-                    <a
-                      href={`${agent.url}/.well-known/agent.json`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-1 flex items-center justify-between gap-2 text-sm font-mono bg-muted px-3 py-2 rounded-lg break-all hover:bg-accent hover:text-foreground transition-colors"
-                    >
-                      <span>GET {agent.url}/.well-known/agent.json</span>
-                      <ExternalLink size={12} className="shrink-0" />
-                    </a>
-                  </div>
-                  {agent.mcp_endpoint && (
+                <SectionTitle>Connect</SectionTitle>
+                <Panel>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: theme.spacing.md,
+                    }}
+                  >
                     <div>
-                      <span className="text-xs text-muted-foreground font-medium">MCP Server</span>
-                      <code className="block mt-1 text-sm font-mono bg-muted px-3 py-2 rounded-lg break-all">
-                        POST {agent.mcp_endpoint}
-                      </code>
+                      <Typography.Text color="secondary" size="sm" bold>
+                        Responses API
+                      </Typography.Text>
+                      <CodeBlock>POST {agent.url}/responses</CodeBlock>
                     </div>
-                  )}
-                </div>
+                    <div>
+                      <Typography.Text color="secondary" size="sm" bold>
+                        A2A Discovery
+                      </Typography.Text>
+                      <Typography.Link
+                        componentId="connect-a2a"
+                        href={`${agent.url}/.well-known/agent.json`}
+                        openInNewTab
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          marginTop: theme.spacing.xs,
+                        }}
+                      >
+                        GET {agent.url}/.well-known/agent.json
+                      </Typography.Link>
+                    </div>
+                    {agent.mcp_endpoint && (
+                      <div>
+                        <Typography.Text color="secondary" size="sm" bold>
+                          MCP Server
+                        </Typography.Text>
+                        <CodeBlock>POST {agent.mcp_endpoint}</CodeBlock>
+                      </div>
+                    )}
+                  </div>
+                </Panel>
               </section>
             )}
           </div>
