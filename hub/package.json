@@ -13,19 +13,20 @@
         "sonner": "2.0.7"
     },
     "devDependencies": {
-        "@opentelemetry/api-logs": "^0.215.0",
-        "@opentelemetry/exporter-logs-otlp-http": "^0.215.0",
-        "@opentelemetry/resources": "^2.7.0",
-        "@opentelemetry/sdk-logs": "^0.215.0",
-        "@tanstack/router-generator": "^1.166.36",
-        "@tanstack/router-plugin": "^1.167.28",
+        "@opentelemetry/api-logs": "^0.222.0",
+        "@opentelemetry/exporter-logs-otlp-http": "^0.222.0",
+        "@opentelemetry/resources": "^2.11.0",
+        "@opentelemetry/sdk-logs": "^0.222.0",
+        "@tailwindcss/vite": "^4.3.3",
+        "@tanstack/router-generator": "^1.167.38",
+        "@tanstack/router-plugin": "^1.168.40",
         "@types/node": "25.0.3",
         "@types/react": "19.2.7",
         "@types/react-dom": "19.2.3",
-        "@vitejs/plugin-react": "^6.0.1",
+        "@vitejs/plugin-react": "^6.1.1",
         "smol-toml": "1.6.0",
         "typescript": "5.9.3",
-        "vite": "^8.0.10"
+        "vite": "^8.3.0"
     },
     "scripts": {
         "dev": "vite",

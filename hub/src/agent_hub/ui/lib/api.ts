@@ -19,7 +19,7 @@ export interface AgentCard {
     last_seen?: string | null;
     mcp_endpoint?: string | null;
     name: string;
-    status: string;
+    status?: "live" | "unreachable" | "stub" | "planned";
     supports_invoke?: boolean;
     tags?: string[];
     tools: AgentTool[];
@@ -140,37 +140,6 @@ export function useListAgentsSuspense<TData = {
         ...options?.query
     });
 }
-export const refreshAllAgents = async (options?: RequestInit): Promise<{
-    data: AgentCard[];
-}> =>{
-    const res = await fetch("/api/agents/refresh-all", {
-        ...options,
-        method: "POST"
-    });
-    if (!res.ok) {
-        const body = await res.text();
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(body);
-        } catch  {
-            parsed = body;
-        }
-        throw new ApiError(res.status, res.statusText, parsed);
-    }
-    return {
-        data: await res.json()
-    };
-};
-export function useRefreshAllAgents(options?: {
-    mutation?: UseMutationOptions<{
-        data: AgentCard[];
-    }, ApiError, void>;
-}) {
-    return useMutation({
-        mutationFn: ()=>refreshAllAgents(),
-        ...options?.mutation
-    });
-}
 export const discoverWorkspaceAgents = async (options?: RequestInit): Promise<{
     data: AgentCard[];
 }> =>{
@@ -202,7 +171,46 @@ export function useDiscoverWorkspaceAgents(options?: {
         ...options?.mutation
     });
 }
-export const registerAgent = async (data: RegisterRequest, options?: RequestInit): Promise<{
+export const refreshAllAgents = async (options?: RequestInit): Promise<{
+    data: AgentCard[];
+}> =>{
+    const res = await fetch("/api/agents/refresh-all", {
+        ...options,
+        method: "POST"
+    });
+    if (!res.ok) {
+        const body = await res.text();
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(body);
+        } catch  {
+            parsed = body;
+        }
+        throw new ApiError(res.status, res.statusText, parsed);
+    }
+    return {
+        data: await res.json()
+    };
+};
+export function useRefreshAllAgents(options?: {
+    mutation?: UseMutationOptions<{
+        data: AgentCard[];
+    }, ApiError, void>;
+}) {
+    return useMutation({
+        mutationFn: ()=>refreshAllAgents(),
+        ...options?.mutation
+    });
+}
+export interface RegisterAgentParams {
+    "X-Forwarded-Host"?: string | null;
+    "X-Forwarded-Preferred-Username"?: string | null;
+    "X-Forwarded-User"?: string | null;
+    "X-Forwarded-Email"?: string | null;
+    "X-Request-Id"?: string | null;
+    "X-Forwarded-Access-Token"?: string | null;
+}
+export const registerAgent = async (data: RegisterRequest, params?: RegisterAgentParams, options?: RequestInit): Promise<{
     data: AgentCard;
 }> =>{
     const res = await fetch("/api/agents/register", {
@@ -210,6 +218,24 @@ export const registerAgent = async (data: RegisterRequest, options?: RequestInit
         method: "POST",
         headers: {
             "Content-Type": "application/json",
+            ...(params?.["X-Forwarded-Host"] != null && {
+                "X-Forwarded-Host": params["X-Forwarded-Host"]
+            }),
+            ...(params?.["X-Forwarded-Preferred-Username"] != null && {
+                "X-Forwarded-Preferred-Username": params["X-Forwarded-Preferred-Username"]
+            }),
+            ...(params?.["X-Forwarded-User"] != null && {
+                "X-Forwarded-User": params["X-Forwarded-User"]
+            }),
+            ...(params?.["X-Forwarded-Email"] != null && {
+                "X-Forwarded-Email": params["X-Forwarded-Email"]
+            }),
+            ...(params?.["X-Request-Id"] != null && {
+                "X-Request-Id": params["X-Request-Id"]
+            }),
+            ...(params?.["X-Forwarded-Access-Token"] != null && {
+                "X-Forwarded-Access-Token": params["X-Forwarded-Access-Token"]
+            }),
             ...options?.headers
         },
         body: JSON.stringify(data)
@@ -231,10 +257,13 @@ export const registerAgent = async (data: RegisterRequest, options?: RequestInit
 export function useRegisterAgent(options?: {
     mutation?: UseMutationOptions<{
         data: AgentCard;
-    }, ApiError, RegisterRequest>;
+    }, ApiError, {
+        params: RegisterAgentParams;
+        data: RegisterRequest;
+    }>;
 }) {
     return useMutation({
-        mutationFn: (data)=>registerAgent(data),
+        mutationFn: (vars)=>registerAgent(vars.data, vars.params),
         ...options?.mutation
     });
 }

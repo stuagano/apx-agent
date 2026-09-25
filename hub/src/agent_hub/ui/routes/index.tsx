@@ -19,7 +19,7 @@ export const Route = createFileRoute("/")({
   component: AgentHub,
 });
 
-function useStatusColor(status: string): string {
+function useStatusColor(status: string | undefined): string {
   const { theme } = useDesignSystemTheme();
   const map: Record<string, string> = {
     live: theme.colors.textValidationSuccess,
@@ -27,10 +27,10 @@ function useStatusColor(status: string): string {
     stub: theme.colors.textValidationWarning,
     planned: theme.colors.textSecondary,
   };
-  return map[status] ?? theme.colors.textSecondary;
+  return (status && map[status]) || theme.colors.textSecondary;
 }
 
-function StatusDot({ status }: { status: string }) {
+function StatusDot({ status }: { status: string | undefined }) {
   const color = useStatusColor(status);
   return (
     <span

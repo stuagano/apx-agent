@@ -31,13 +31,13 @@ function safeHost(url: string): string {
 
 type TagColor = "lime" | "lemon" | "coral" | "charcoal";
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status }: { status: string | undefined }) {
   const config: Record<string, { label: string; color: TagColor }> = {
     live: { label: "Live", color: "lime" },
     stub: { label: "Stub", color: "lemon" },
     unreachable: { label: "Unreachable", color: "coral" },
   };
-  const c = config[status] ?? config.stub;
+  const c = (status && config[status]) || config.stub;
   return (
     <Tag color={c.color} componentId={`status-${status}`}>
       {c.label}
