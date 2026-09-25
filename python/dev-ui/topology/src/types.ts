@@ -154,21 +154,24 @@ export interface InspectResponse {
 }
 
 // Color map for node types — matches the visual contract in the spec.
+// Node fills use the Du Bois surface tones (--apx-panel #1F272D for agents,
+// --apx-bg #11171C for tools/resources); the stroke hues stay distinct because
+// they encode node TYPE (agent=blue, data=green, router=pink, genie=amber, …).
 export const NODE_STYLE: Record<NodeType, { fill: string; stroke: string }> = {
-  Agent: { fill: "#1e293b", stroke: "#60a5fa" },
-  LlmAgent: { fill: "#1e293b", stroke: "#60a5fa" },
-  DataAgent: { fill: "#1e293b", stroke: "#34d399" },
-  SequentialAgent: { fill: "#1e293b", stroke: "#a78bfa" },
-  ParallelAgent: { fill: "#1e293b", stroke: "#a78bfa" },
-  LoopAgent: { fill: "#1e293b", stroke: "#a78bfa" },
-  RouterAgent: { fill: "#1e293b", stroke: "#f472b6" },
-  KeywordRouter: { fill: "#1e293b", stroke: "#f472b6" },
-  HandoffAgent: { fill: "#1e293b", stroke: "#f472b6" },
-  Tool: { fill: "#0f172a", stroke: "#94a3b8" },
-  UCFunction: { fill: "#0f172a", stroke: "#34d399" },
-  GenieSpace: { fill: "#0f172a", stroke: "#fbbf24" },
-  VectorIndex: { fill: "#0f172a", stroke: "#22d3ee" },
-  ServingEndpoint: { fill: "#0f172a", stroke: "#fb923c" },
-  SubAgent: { fill: "#0f172a", stroke: "#c084fc" },
-  WarehouseSQL: { fill: "#0f172a", stroke: "#a3e635" },
+  Agent: { fill: "#1F272D", stroke: "#4299E0" },
+  LlmAgent: { fill: "#1F272D", stroke: "#4299E0" },
+  DataAgent: { fill: "#1F272D", stroke: "#3BA65E" },
+  SequentialAgent: { fill: "#1F272D", stroke: "#A78BFA" },
+  ParallelAgent: { fill: "#1F272D", stroke: "#A78BFA" },
+  LoopAgent: { fill: "#1F272D", stroke: "#A78BFA" },
+  RouterAgent: { fill: "#1F272D", stroke: "#EC7BA8" },
+  KeywordRouter: { fill: "#1F272D", stroke: "#EC7BA8" },
+  HandoffAgent: { fill: "#1F272D", stroke: "#EC7BA8" },
+  Tool: { fill: "#11171C", stroke: "#92A4B3" },
+  UCFunction: { fill: "#11171C", stroke: "#3BA65E" },
+  GenieSpace: { fill: "#11171C", stroke: "#FACB66" },
+  VectorIndex: { fill: "#11171C", stroke: "#22D3EE" },
+  ServingEndpoint: { fill: "#11171C", stroke: "#FB923C" },
+  SubAgent: { fill: "#11171C", stroke: "#A78BFA" },
+  WarehouseSQL: { fill: "#11171C", stroke: "#A3E635" },
 };

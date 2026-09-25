@@ -145,9 +145,9 @@ const actionsRowStyle: React.CSSProperties = {
 const dangerBtnStyle: React.CSSProperties = {
   font: "inherit",
   cursor: "pointer",
-  color: "#fca5a5",
-  background: "#2a1215",
-  border: "1px solid #7f1d1d",
+  color: "#F792A6",
+  background: "#37444F",
+  border: "1px solid #C83243",
   borderRadius: 6,
   padding: "6px 12px",
 };
@@ -419,7 +419,7 @@ export function NodeInspector(props: NodeInspectorProps) {
         {loading && <div style={{ color: "var(--muted)" }}>Loading…</div>}
 
         {error && !loading && (
-          <div style={{ color: "#f87171" }}>Could not load node details: {error}</div>
+          <div style={{ color: "#C83243" }}>Could not load node details: {error}</div>
         )}
 
         {data && !loading && !error && (
