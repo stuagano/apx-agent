@@ -119,6 +119,24 @@ def mock_workspace_client():
     return ws
 
 
+@pytest.fixture
+def dev_ui_app():
+    """A FastAPI app mounting the /_apx/* dev UI, for reskin/route tests."""
+    from fastapi import FastAPI
+
+    from apx_agent import AgentConfig, AgentContext
+    from apx_agent._dev import build_dev_ui_router
+    from apx_agent._models import AgentCard
+
+    config = AgentConfig(name="devui-test", model="claude-fake")
+    card = AgentCard(name="devui-test", description="", skills=[])
+    ctx = AgentContext(config=config, tools=[], card=card, agent=None)  # type: ignore[arg-type]
+    a = FastAPI()
+    a.state.agent_context = ctx
+    a.include_router(build_dev_ui_router())
+    return a
+
+
 def make_llm_response(content: str = "Hello!", tool_calls: list | None = None) -> dict:
     """Build a fake LLM response payload."""
     message: dict[str, Any] = {"role": "assistant", "content": content}

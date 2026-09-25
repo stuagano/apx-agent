@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
+from ._ui_theme import apx_theme_style
 
 
 def render_discover_ui() -> str:
@@ -12,6 +13,7 @@ def render_discover_ui() -> str:
 <head>
   <meta charset="UTF-8">
   <title>Discover · APX dev</title>
+  {apx_theme_style()}
   <style>
     {_apx_nav_css()}
     :root {{

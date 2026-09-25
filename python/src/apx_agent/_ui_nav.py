@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ._ui_theme import apx_theme_style
+
 
 def _apx_dev_fetch_js() -> str:
     """JS ``fetch`` wrapper for Dev UI writes.
