@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
+from ._ui_theme import apx_theme_style
 
 
 def render_discover_ui() -> str:
@@ -12,12 +13,13 @@ def render_discover_ui() -> str:
 <head>
   <meta charset="UTF-8">
   <title>Discover · APX dev</title>
+  {apx_theme_style()}
   <style>
     {_apx_nav_css()}
     :root {{
-      --bg:#0a0a0a; --panel:#111; --border:#2a2a2a; --text:#e5e7eb;
-      --muted:#888; --accent:#60b0ff; --accent-bg:#0d1f38; --accent-border:#1e3a5f;
-      --ok:#4ade80; --ok-bg:#052e1c;
+      --bg:#11171C; --panel:#1F272D; --border:#445461; --text:#E8ECF0;
+      --muted:#92A4B3; --accent:#2272B4; --accent-bg:#37444F; --accent-border:#445461;
+      --ok:#3BA65E; --ok-bg:#37444F;
     }}
     * {{ box-sizing:border-box; }}
     body {{ margin:0; background:var(--bg); color:var(--text);
@@ -29,52 +31,52 @@ def render_discover_ui() -> str:
     button, .btn {{ font:inherit; cursor:pointer; color:var(--accent); background:var(--accent-bg);
                     border:1px solid var(--accent-border); border-radius:6px; padding:6px 12px; }}
     button:disabled {{ opacity:.5; cursor:default; }}
-    button.secondary {{ color:#bbb; background:#161616; border-color:#333; }}
-    input, select {{ font:inherit; background:#0d0d0d; color:var(--text);
+    button.secondary {{ color:var(--text); background:var(--panel); border-color:var(--border); }}
+    input, select {{ font:inherit; background:var(--bg); color:var(--text);
                     border:1px solid var(--border); border-radius:6px; padding:6px 10px; }}
     .card {{ background:var(--panel); border:1px solid var(--border); border-radius:8px;
              padding:12px 14px; margin-bottom:8px; }}
     .card h3 {{ margin:0 0 4px; font-size:13px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }}
     .card-actions {{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }}
     .pill {{ font-size:10px; text-transform:uppercase; letter-spacing:.4px;
-             padding:2px 6px; border-radius:4px; background:#1a1a1a; color:var(--muted); }}
+             padding:2px 6px; border-radius:4px; background:var(--panel); color:var(--muted); }}
     .pill.app {{ color:#6ee7b7; background:#052e1c; }}
     .pill.uc {{ color:#fbbf24; background:#2a1f05; }}
     .pill.serving_endpoint {{ color:#93c5fd; background:#0c1a33; }}
     .pill.genie_space {{ color:#c4b5fd; background:#1e1533; }}
     .pill.vector_search_index {{ color:#5eead4; background:#042f2e; }}
     .desc {{ color:var(--muted); font-size:12px; margin:0 0 8px; }}
-    .meta {{ font-size:11px; color:#666; font-family:ui-monospace,monospace; }}
+    .meta {{ font-size:11px; color:var(--muted); font-family:var(--apx-mono); }}
     .tools {{ display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }}
-    .tool {{ font-size:11px; background:#161616; border:1px solid #2a2a2a;
-             border-radius:4px; padding:2px 7px; color:#bbb; }}
+    .tool {{ font-size:11px; background:var(--panel); border:1px solid var(--border);
+             border-radius:4px; padding:2px 7px; color:var(--text); }}
     .empty {{ color:var(--muted); padding:16px 0; }}
-    .err {{ color:#f87171; font-size:12px; }}
-    .hint {{ color:#666; font-size:11px; }}
+    .err {{ color:var(--apx-err); font-size:12px; }}
+    .hint {{ color:var(--muted); font-size:11px; }}
     a.url {{ color:var(--accent); text-decoration:none; word-break:break-all; }}
     a.url:hover {{ text-decoration:underline; }}
     section {{ margin-bottom:28px; }}
     section h2 {{ font-size:14px; margin:0 0 10px; }}
     #wire-banner {{ display:none; margin:0 0 16px; padding:10px 14px; border-radius:8px;
-                    background:var(--ok-bg); border:1px solid #14532d; color:var(--ok); }}
+                    background:var(--ok-bg); border:1px solid var(--ok); color:var(--ok); }}
     #wire-banner.show {{ display:block; }}
-    #wire-banner a {{ color:#86efac; }}
+    #wire-banner a {{ color:var(--ok); }}
     #target-bar {{ margin-bottom:16px; }}
     .data-controls {{ background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }}
     .data-controls select {{ min-width:150px; }}
     .data-tables {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:8px; }}
-    .data-table {{ background:#0d0d0d; border:1px solid var(--border); border-radius:8px; padding:12px; }}
+    .data-table {{ background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; }}
     .data-table h3 {{ margin:0 0 4px; font-size:13px; }}
     .data-table .columns {{ display:flex; flex-wrap:wrap; gap:4px; margin:8px 0; }}
-    .data-table .column {{ font-size:10px; color:#aaa; background:#161616; border:1px solid #2a2a2a; border-radius:4px; padding:2px 5px; }}
-    .data-table .column span {{ color:#666; }}
-    .data-inspector {{ margin-top:14px; background:#0d0d0d; border:1px solid var(--accent-border); border-radius:8px; padding:14px; }}
+    .data-table .column {{ font-size:10px; color:var(--muted); background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:2px 5px; }}
+    .data-table .column span {{ color:var(--muted); }}
+    .data-inspector {{ margin-top:14px; background:var(--bg); border:1px solid var(--accent-border); border-radius:8px; padding:14px; }}
     .data-inspector h3 {{ margin:0 0 4px; font-size:14px; }}
-    .data-preview {{ overflow:auto; max-height:360px; border:1px solid #222; border-radius:6px; }}
+    .data-preview {{ overflow:auto; max-height:360px; border:1px solid var(--border); border-radius:6px; }}
     .data-preview table {{ border-collapse:collapse; min-width:100%; font-size:11px; }}
-    .data-preview th, .data-preview td {{ text-align:left; vertical-align:top; padding:7px 9px; border-bottom:1px solid #222; white-space:nowrap; max-width:260px; overflow:hidden; text-overflow:ellipsis; }}
-    .data-preview th {{ position:sticky; top:0; background:#171717; color:#aaa; }}
-    .data-preview td {{ color:#ccc; font-family:ui-monospace,monospace; }}
+    .data-preview th, .data-preview td {{ text-align:left; vertical-align:top; padding:7px 9px; border-bottom:1px solid var(--border); white-space:nowrap; max-width:260px; overflow:hidden; text-overflow:ellipsis; }}
+    .data-preview th {{ position:sticky; top:0; background:var(--panel); color:var(--muted); }}
+    .data-preview td {{ color:var(--text); font-family:var(--apx-mono); }}
   </style>
 </head>
 <body>

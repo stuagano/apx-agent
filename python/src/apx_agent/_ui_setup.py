@@ -7,6 +7,7 @@ from typing import Any
 
 from ._ui_edit import _find_deploy_root
 from ._ui_nav import _apx_nav_css, _apx_nav_html, _deploy_overlay_html
+from ._ui_theme import apx_theme_style
 
 
 def _find_env_path() -> "Path | None":
@@ -62,6 +63,7 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
     """
     import html as _html
     import json as _json
+    _theme = apx_theme_style()
     nav = "" if embed else _apx_nav_html("setup")
     overlay = "" if embed else _deploy_overlay_html()
     body_attr = ' class="apx-embed"' if embed else ""
@@ -80,106 +82,107 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Setup — APX Dev</title>
+{_theme}
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: #0d0d0d; color: #ccc; font-family: system-ui, sans-serif; font-size: 13px; }}
+  body {{ background: var(--apx-bg); color: var(--apx-text); font-family: system-ui, sans-serif; font-size: 13px; }}
   {_apx_nav_css()}
   .page {{ max-width: 680px; margin: 72px auto 40px; padding: 0 20px; }}
   /* embedded in the Edit "Generate from data" modal: no nav, tighter top */
   .apx-embed .page {{ margin: 20px auto 28px; }}
   .apx-embed h2 {{ display: none; }}
-  h2 {{ font-size: 18px; font-weight: 600; color: #fff; margin-bottom: 4px; }}
-  .subtitle {{ color: #555; margin-bottom: 28px; font-size: 13px; }}
-  .section {{ background: #111; border: 1px solid #1e1e1e; border-radius: 10px;
+  h2 {{ font-size: 18px; font-weight: 600; color: var(--apx-on-accent); margin-bottom: 4px; }}
+  .subtitle {{ color: var(--apx-muted); margin-bottom: 28px; font-size: 13px; }}
+  .section {{ background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 10px;
               padding: 20px; margin-bottom: 16px; }}
-  .section-title {{ font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase;
+  .section-title {{ font-size: 11px; font-weight: 700; color: var(--apx-muted); text-transform: uppercase;
                     letter-spacing: .5px; margin-bottom: 14px; }}
   .field {{ margin-bottom: 14px; }}
   .field:last-child {{ margin-bottom: 0; }}
-  label {{ display: block; font-size: 11px; font-weight: 600; color: #888;
+  label {{ display: block; font-size: 11px; font-weight: 600; color: var(--apx-muted);
            text-transform: uppercase; letter-spacing: .4px; margin-bottom: 5px; }}
-  select, input[type=text] {{ width: 100%; background: #0d0d0d; border: 1px solid #2a2a2a;
-    color: #ccc; border-radius: 6px; padding: 8px 10px; font-size: 13px; }}
-  select:focus, input:focus {{ outline: none; border-color: #3a7bd5; }}
+  select, input[type=text] {{ width: 100%; background: var(--apx-bg); border: 1px solid var(--apx-border);
+    color: var(--apx-text); border-radius: 6px; padding: 8px 10px; font-size: 13px; }}
+  select:focus, input:focus {{ outline: none; border-color: var(--apx-accent-hover); }}
   select:disabled {{ opacity: .5; }}
   .btn-row {{ display: flex; gap: 8px; margin-top: 20px; align-items: center; }}
-  .btn-primary {{ background: #2563eb; color: #fff; border: none; border-radius: 6px;
+  .btn-primary {{ background: var(--apx-accent); color: var(--apx-on-accent); border: none; border-radius: 6px;
                   padding: 9px 20px; font-size: 13px; font-weight: 500; cursor: pointer; }}
-  .btn-primary:hover {{ background: #1d4ed8; }}
+  .btn-primary:hover {{ background: var(--apx-accent-hover); }}
   .btn-primary:disabled {{ opacity: .5; cursor: default; }}
-  .btn-secondary {{ background: transparent; color: #888; border: 1px solid #333;
+  .btn-secondary {{ background: transparent; color: var(--apx-muted); border: 1px solid var(--apx-border);
                     border-radius: 6px; padding: 9px 16px; font-size: 13px; cursor: pointer; }}
-  .btn-secondary:hover {{ color: #ccc; border-color: #555; }}
+  .btn-secondary:hover {{ color: var(--apx-text); border-color: var(--apx-muted); }}
   #status {{ flex: 1; font-size: 12px; }}
-  #status.ok {{ color: #4ade80; }}
-  #status.err {{ color: #f87171; }}
+  #status.ok {{ color: var(--apx-ok); }}
+  #status.err {{ color: var(--apx-err); }}
   #instructions-section {{ display: none; }}
-  #instructions-box {{ width: 100%; min-height: 160px; background: #0d0d0d;
-    border: 1px solid #2a2a2a; color: #ccc; border-radius: 6px; padding: 10px;
+  #instructions-box {{ width: 100%; min-height: 160px; background: var(--apx-bg);
+    border: 1px solid var(--apx-border); color: var(--apx-text); border-radius: 6px; padding: 10px;
     font-size: 12px; font-family: system-ui, sans-serif; line-height: 1.6; resize: vertical; }}
-  .note {{ font-size: 11px; color: #444; margin-top: 6px; }}
-  .current-tag {{ display: inline-block; background: #0d2a0d; color: #4ade80;
-                  border: 1px solid #1a4a1a; border-radius: 4px; padding: 1px 6px;
+  .note {{ font-size: 11px; color: var(--apx-muted); margin-top: 6px; }}
+  .current-tag {{ display: inline-block; background: var(--apx-panel-2); color: var(--apx-ok);
+                  border: 1px solid var(--apx-border); border-radius: 4px; padding: 1px 6px;
                   font-size: 10px; margin-left: 6px; vertical-align: middle; }}
   @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-  .pcard {{ background: #0a0a0a; border: 1px solid #222; border-radius: 8px; padding: 12px;
+  .pcard {{ background: var(--apx-bg); border: 1px solid var(--apx-border); border-radius: 8px; padding: 12px;
             cursor: pointer; transition: border-color .15s, background .15s; }}
-  .pcard:hover {{ border-color: #3a5a8a; background: #0d1520; }}
-  .pcard.active {{ border-color: #2563eb; background: #0d1a30; }}
-  .pcard-name {{ font-size: 12px; font-weight: 700; color: #ccc; margin-bottom: 3px; }}
-  .pcard.active .pcard-name {{ color: #60b0ff; }}
-  .pcard-tag {{ font-size: 10px; font-weight: 600; color: #555; text-transform: uppercase;
+  .pcard:hover {{ border-color: var(--apx-accent); background: var(--apx-panel); }}
+  .pcard.active {{ border-color: var(--apx-accent); background: var(--apx-panel-2); }}
+  .pcard-name {{ font-size: 12px; font-weight: 700; color: var(--apx-text); margin-bottom: 3px; }}
+  .pcard.active .pcard-name {{ color: var(--apx-accent-hover); }}
+  .pcard-tag {{ font-size: 10px; font-weight: 600; color: var(--apx-muted); text-transform: uppercase;
                 letter-spacing: .4px; margin-bottom: 6px; }}
-  .pcard.active .pcard-tag {{ color: #3a7bd5; }}
-  .pcard-desc {{ font-size: 11px; color: #444; line-height: 1.5; }}
-  .pcard.active .pcard-desc {{ color: #666; }}
-  .pcard code {{ background: #111; padding: 1px 3px; border-radius: 3px; font-size: 10px; }}
+  .pcard.active .pcard-tag {{ color: var(--apx-accent); }}
+  .pcard-desc {{ font-size: 11px; color: var(--apx-muted); line-height: 1.5; }}
+  .pcard.active .pcard-desc {{ color: var(--apx-text); }}
+  .pcard code {{ background: var(--apx-panel); padding: 1px 3px; border-radius: 3px; font-size: 10px; }}
   /* tool palette */
-  .tcard {{ background: #0a0a0a; border: 1px solid #1e1e1e; border-radius: 8px; padding: 12px 14px; }}
+  .tcard {{ background: var(--apx-bg); border: 1px solid var(--apx-border); border-radius: 8px; padding: 12px 14px; }}
   .tcard-header {{ display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }}
-  .tcard-name {{ font-family: monospace; font-size: 12px; font-weight: 700; color: #ccc; flex: 1;
+  .tcard-name {{ font-family: monospace; font-size: 12px; font-weight: 700; color: var(--apx-text); flex: 1;
                  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-  .tcard-btn {{ background: none; border: none; color: #444; cursor: pointer; font-size: 11px;
+  .tcard-btn {{ background: none; border: none; color: var(--apx-muted); cursor: pointer; font-size: 11px;
                 padding: 2px 7px; border-radius: 4px; line-height: 1.4; }}
-  .tcard-btn:hover {{ color: #ccc; background: #1a1a1a; }}
-  .tcard-del:hover {{ color: #f87171 !important; background: #1a0a0a !important; }}
-  .tcard-desc {{ font-size: 11px; color: #444; line-height: 1.5; margin-bottom: 6px;
+  .tcard-btn:hover {{ color: var(--apx-text); background: var(--apx-panel); }}
+  .tcard-del:hover {{ color: var(--apx-err) !important; background: var(--apx-panel-2) !important; }}
+  .tcard-desc {{ font-size: 11px; color: var(--apx-muted); line-height: 1.5; margin-bottom: 6px;
                  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
                  -webkit-box-orient: vertical; }}
   .tcard-params {{ display: flex; flex-wrap: wrap; gap: 3px; }}
-  .tcard-param {{ background: #111; border: 1px solid #1e1e1e; border-radius: 3px;
-                  padding: 1px 6px; font-size: 10px; color: #555; font-family: monospace; }}
+  .tcard-param {{ background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 3px;
+                  padding: 1px 6px; font-size: 10px; color: var(--apx-muted); font-family: monospace; }}
   @keyframes tcard-in {{ from {{ opacity:0; transform:scale(.97); }} to {{ opacity:1; transform:scale(1); }} }}
   .tcard-appear {{ animation: tcard-in .2s ease; }}
   /* agent composer nodes */
-  .anode {{ background: #0d0d0d; border: 1px solid #222; border-radius: 10px; padding: 16px 18px; margin-bottom: 10px; }}
+  .anode {{ background: var(--apx-bg); border: 1px solid var(--apx-border); border-radius: 10px; padding: 16px 18px; margin-bottom: 10px; }}
   .anode-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }}
-  .anode-name {{ font-family: monospace; font-size: 13px; font-weight: 700; color: #ddd; flex: 1; }}
-  .anode-wrapper {{ font-size: 10px; font-weight: 600; color: #3a7bd5; background: #0d1a30;
-                    border: 1px solid #1a3a6a; border-radius: 3px; padding: 1px 7px;
+  .anode-name {{ font-family: monospace; font-size: 13px; font-weight: 700; color: var(--apx-text); flex: 1; }}
+  .anode-wrapper {{ font-size: 10px; font-weight: 600; color: var(--apx-accent); background: var(--apx-panel-2);
+                    border: 1px solid var(--apx-border); border-radius: 3px; padding: 1px 7px;
                     text-transform: uppercase; letter-spacing: .3px; }}
-  .anode-label {{ font-size: 10px; font-weight: 700; color: #555; text-transform: uppercase;
+  .anode-label {{ font-size: 10px; font-weight: 700; color: var(--apx-muted); text-transform: uppercase;
                   letter-spacing: .4px; margin-bottom: 6px; }}
   .anode-tools {{ display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; min-height: 24px; }}
-  .anode-tool {{ display: flex; align-items: center; gap: 4px; background: #111;
-                 border: 1px solid #222; border-radius: 4px; padding: 2px 8px;
-                 font-size: 11px; font-family: monospace; color: #888; cursor: pointer; }}
-  .anode-tool:hover {{ border-color: #555; color: #ccc; }}
-  .anode-tool.assigned {{ background: #0d1a10; border-color: #1a4a20; color: #4ade80; }}
-  .anode-tool.assigned:hover {{ border-color: #22c55e; }}
-  .anode-instructions {{ width: 100%; min-height: 80px; background: #0a0a0a;
-    border: 1px solid #1e1e1e; color: #ccc; border-radius: 6px; padding: 8px 10px;
+  .anode-tool {{ display: flex; align-items: center; gap: 4px; background: var(--apx-panel);
+                 border: 1px solid var(--apx-border); border-radius: 4px; padding: 2px 8px;
+                 font-size: 11px; font-family: monospace; color: var(--apx-muted); cursor: pointer; }}
+  .anode-tool:hover {{ border-color: var(--apx-muted); color: var(--apx-text); }}
+  .anode-tool.assigned {{ background: var(--apx-panel-2); border-color: var(--apx-border); color: var(--apx-ok); }}
+  .anode-tool.assigned:hover {{ border-color: var(--apx-ok); }}
+  .anode-instructions {{ width: 100%; min-height: 80px; background: var(--apx-bg);
+    border: 1px solid var(--apx-border); color: var(--apx-text); border-radius: 6px; padding: 8px 10px;
     font-size: 11px; font-family: system-ui, sans-serif; line-height: 1.6; resize: vertical;
     margin-bottom: 8px; }}
-  .anode-instructions:focus {{ outline: none; border-color: #3a7bd5; }}
-  .anode-behavior {{ width: 100%; min-height: 60px; background: #0a0a0a;
-    border: 1px solid #2a2a2a; color: #ccc; border-radius: 6px; padding: 8px 10px;
+  .anode-instructions:focus {{ outline: none; border-color: var(--apx-accent); }}
+  .anode-behavior {{ width: 100%; min-height: 60px; background: var(--apx-bg);
+    border: 1px solid var(--apx-border); color: var(--apx-text); border-radius: 6px; padding: 8px 10px;
     font-size: 12px; font-family: system-ui, sans-serif; line-height: 1.6; resize: vertical;
     margin-bottom: 8px; }}
-  .anode-behavior:focus {{ outline: none; border-color: #3a7bd5; }}
-  .anode-wire-btn {{ background: #1a3a6a; border: 1px solid #2a5aba; color: #7ab3ff;
+  .anode-behavior:focus {{ outline: none; border-color: var(--apx-accent); }}
+  .anode-wire-btn {{ background: var(--apx-panel-2); border: 1px solid var(--apx-border); color: var(--apx-accent-hover);
     border-radius: 5px; padding: 5px 14px; font-size: 11px; font-weight: 600; cursor: pointer; }}
-  .anode-wire-btn:hover {{ background: #224a8a; border-color: #4a7aea; color: #aad0ff; }}
+  .anode-wire-btn:hover {{ background: var(--apx-accent); border-color: var(--apx-accent); color: var(--apx-on-accent); }}
   .anode-wire-btn:disabled {{ opacity: .5; cursor: not-allowed; }}
 </style>
 </head>
@@ -208,14 +211,14 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
   <div class="section" id="tools-section">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
       <div class="section-title" style="margin-bottom:0">Tools</div>
-      <span id="tools-count" style="font-size:11px;color:#444"></span>
+      <span id="tools-count" style="font-size:11px;color:var(--apx-muted)"></span>
     </div>
     <!-- palette grid -->
     <div id="tool-palette" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
-      <div style="color:#333;font-size:12px;grid-column:1/-1">Loading…</div>
+      <div style="color:var(--apx-border);font-size:12px;grid-column:1/-1">Loading…</div>
     </div>
     <!-- divider -->
-    <div style="border-top:1px solid #1a1a1a;margin-bottom:14px"></div>
+    <div style="border-top:1px solid var(--apx-border);margin-bottom:14px"></div>
     <!-- create from description -->
     <div class="field">
       <label>Describe a tool</label>
@@ -224,20 +227,20 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
                placeholder="e.g. Get the top 5 customers by total spend" style="flex:1">
         <button class="btn-primary" id="btn-desc-tool" style="white-space:nowrap">Generate</button>
       </div>
-      <div id="desc-tool-status" style="font-size:12px;margin-top:6px;min-height:16px"></div>
+      <div id="desc-tool-status" style="font-size:12px;margin-top:6px;min-height:16px;color:var(--apx-text)"></div>
     </div>
     <!-- create from table (collapsible) -->
     <details id="from-table-details">
-      <summary style="cursor:pointer;color:#555;font-size:12px;user-select:none;
+      <summary style="cursor:pointer;color:var(--apx-muted);font-size:12px;user-select:none;
                       padding:4px 0;list-style:none;display:flex;align-items:center;gap:6px">
         <span style="font-size:10px">▶</span>
         <span>Generate from table</span>
       </summary>
       <div style="margin-top:10px">
         <div id="tools-table-list">
-          <p style="color:#444;font-size:12px">Select a catalog and schema above to see tables.</p>
+          <p style="color:var(--apx-muted);font-size:12px">Select a catalog and schema above to see tables.</p>
         </div>
-        <div id="tools-gen-progress" style="margin-top:10px;font-size:12px;color:#60b0ff;min-height:18px"></div>
+        <div id="tools-gen-progress" style="margin-top:10px;font-size:12px;color:var(--apx-accent-hover);min-height:18px"></div>
         <div class="btn-row" style="margin-top:14px">
           <button class="btn-primary" id="btn-gen-tools" disabled>Generate Selected</button>
           <span id="tools-status" style="font-size:12px"></span>
@@ -255,22 +258,22 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
     <div id="agent-nodes"></div>
     <div class="btn-row" style="margin-top:14px">
       <button class="btn-primary" id="btn-apply-agents" disabled>Apply</button>
-      <span id="agents-status" style="font-size:12px"></span>
+      <span id="agents-status" style="font-size:12px;color:var(--apx-text)"></span>
     </div>
   </div>
 
   <details class="section" id="pattern-section" style="padding:0">
     <summary style="cursor:pointer;user-select:none;padding:20px;list-style:none;display:flex;align-items:center;justify-content:space-between">
       <span class="section-title" style="margin:0">▸ Agent Pattern</span>
-      <span style="font-size:11px;color:#555;text-transform:none;letter-spacing:0">
-        defaults to <code style="color:#888">LlmAgent</code> — click to change
+      <span style="font-size:11px;color:var(--apx-muted);text-transform:none;letter-spacing:0">
+        defaults to <code style="color:var(--apx-muted)">LlmAgent</code> — click to change
       </span>
     </summary>
     <div style="padding:0 20px 20px">
-    <p style="color:#555;font-size:12px;margin-bottom:14px;line-height:1.6">
+    <p style="color:var(--apx-muted);font-size:12px;margin-bottom:14px;line-height:1.6">
       Choose how your agent executes. Click a pattern to apply it or see the code.
     </p>
-    <div id="pattern-cards" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">
+    <div id="pattern-cards" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;color:var(--apx-text)">
       <div class="pcard" data-pattern="Agent" data-auto="1">
         <div class="pcard-name">LlmAgent</div>
         <div class="pcard-tag">Single loop</div>
@@ -303,31 +306,31 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-      <label style="font-size:11px;color:#888">Handoff start agent</label>
-      <select id="handoff-start" style="background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:4px 8px;font-size:12px"></select>
-      <span style="font-size:10px;color:#444">entry point for HandoffAgent</span>
+      <label style="font-size:11px;color:var(--apx-muted)">Handoff start agent</label>
+      <select id="handoff-start" style="background:var(--apx-bg);border:1px solid var(--apx-border);color:var(--apx-text);border-radius:5px;padding:4px 8px;font-size:12px"></select>
+      <span style="font-size:10px;color:var(--apx-muted)">entry point for HandoffAgent</span>
     </div>
     <div id="pattern-snippet-wrap" style="display:none;margin-top:8px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <span style="font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.4px">
+        <span style="font-size:11px;font-weight:700;color:var(--apx-muted);text-transform:uppercase;letter-spacing:.4px">
           Paste into agent_router.py
         </span>
         <div style="display:flex;gap:8px">
           <button class="btn-secondary" id="btn-copy-snippet" style="padding:5px 12px;font-size:11px">Copy</button>
-          <a href="/_apx/edit" style="color:#60b0ff;font-size:11px;text-decoration:none;
-             border:1px solid #2a4a6a;border-radius:6px;padding:5px 12px">Open Editor →</a>
+          <a href="/_apx/edit" style="color:var(--apx-accent-hover);font-size:11px;text-decoration:none;
+             border:1px solid var(--apx-border);border-radius:6px;padding:5px 12px">Open Editor →</a>
         </div>
       </div>
-      <pre id="pattern-snippet" style="background:#0a0a0a;border:1px solid #1e1e1e;border-radius:6px;
-           padding:12px;font-size:11px;color:#ccc;overflow-x:auto;white-space:pre;margin:0;line-height:1.5"></pre>
+      <pre id="pattern-snippet" style="background:var(--apx-bg);border:1px solid var(--apx-border);border-radius:6px;
+           padding:12px;font-size:11px;color:var(--apx-text);overflow-x:auto;white-space:pre;margin:0;line-height:1.5"></pre>
     </div>
-    <div id="pattern-status" style="margin-top:8px;font-size:12px;min-height:16px"></div>
+    <div id="pattern-status" style="margin-top:8px;font-size:12px;min-height:16px;color:var(--apx-text)"></div>
     </div>
   </details>
 
   <div class="section" id="instructions-section">
     <div class="section-title">Agent Instructions</div>
-    <p style="color:#555;font-size:12px;margin-bottom:12px">
+    <p style="color:var(--apx-muted);font-size:12px;margin-bottom:12px">
       Generated from your schema — edit before applying.
     </p>
     <div class="field">
@@ -339,7 +342,7 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
     <div class="btn-row">
       <button class="btn-secondary" id="btn-regen">↺ Regenerate</button>
       <button class="btn-primary" id="btn-apply">Apply Instructions</button>
-      <span id="apply-status" style="font-size:12px"></span>
+      <span id="apply-status" style="font-size:12px;color:var(--apx-text)"></span>
     </div>
   </div>
 
@@ -352,9 +355,9 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
     <div class="section-title">Diagnostics</div>
 
     <details style="margin-bottom:16px">
-      <summary style="cursor:pointer;color:#888;font-size:12px;user-select:none;padding:4px 0">▶ Connectivity Test</summary>
+      <summary style="cursor:pointer;color:var(--apx-muted);font-size:12px;user-select:none;padding:4px 0">▶ Connectivity Test</summary>
       <div style="margin-top:10px">
-        <p style="color:#555;font-size:12px;margin-bottom:10px;line-height:1.6">
+        <p style="color:var(--apx-muted);font-size:12px;margin-bottom:10px;line-height:1.6">
           Test outbound connectivity from this deployment. The request runs server-side,
           so results reflect the network path of your deployed app, not your browser.
         </p>
@@ -368,9 +371,9 @@ def _render_setup_ui(current: "dict[str, str]", embed: bool = False) -> str:
     </details>
 
     <details id="vs-details">
-      <summary style="cursor:pointer;color:#888;font-size:12px;user-select:none;padding:4px 0">▶ Vector Search Indexes</summary>
+      <summary style="cursor:pointer;color:var(--apx-muted);font-size:12px;user-select:none;padding:4px 0">▶ Vector Search Indexes</summary>
       <div id="vs-content" style="margin-top:10px">
-        <p style="color:#555;font-size:12px">Click to discover indexes in this workspace.</p>
+        <p style="color:var(--apx-muted);font-size:12px">Click to discover indexes in this workspace.</p>
       </div>
     </details>
   </div>
@@ -427,7 +430,8 @@ document.getElementById('btn-save').addEventListener('click', async () => {{
   const status  = document.getElementById('status');
   if (!catalog || !schema || !wh) {{
     status.textContent = 'Select catalog, schema, and warehouse.';
-    status.className = 'err'; return;
+    status.className = 'err';
+    status.style.color = 'var(--apx-err)'; return;
   }}
   const btn = document.getElementById('btn-save');
   btn.disabled = true; btn.textContent = 'Saving…';
@@ -439,8 +443,8 @@ document.getElementById('btn-save').addEventListener('click', async () => {{
       body: JSON.stringify({{catalog, schema, warehouse_id: wh, generate_instructions: true}}),
     }});
     const d = await r.json();
-    if (!d.ok) {{ status.textContent = d.error; status.className = 'err'; return; }}
-    status.textContent = '✓ Saved'; status.className = 'ok';
+    if (!d.ok) {{ status.textContent = d.error; status.className = 'err'; status.style.color = 'var(--apx-err)'; return; }}
+    status.textContent = '✓ Saved'; status.className = 'ok'; status.style.color = 'var(--apx-ok)';
     if (d.instructions) {{
       document.getElementById('instructions-box').value = d.instructions;
       document.getElementById('instructions-section').style.display = 'block';
@@ -484,7 +488,7 @@ document.getElementById('btn-apply').addEventListener('click', async () => {{
     }});
     const d = await r.json();
     st.textContent = d.ok ? '✓ Applied' : d.error;
-    st.style.color = d.ok ? '#4ade80' : '#f87171';
+    st.style.color = d.ok ? 'var(--apx-ok)' : 'var(--apx-err)';
   }} finally {{ btn.disabled = false; }}
 }});
 
@@ -497,7 +501,7 @@ async function loadTools() {{
     const tools = await r.json();
     countEl.textContent = tools.length ? `${{tools.length}} tool${{tools.length===1?'':'s'}}` : '';
     if (!tools.length) {{
-      palette.innerHTML = '<div style="color:#333;font-size:12px;grid-column:1/-1;padding:4px 0">No tools yet — generate from a table or describe one below.</div>';
+      palette.innerHTML = '<div style="color:var(--apx-border);font-size:12px;grid-column:1/-1;padding:4px 0">No tools yet — generate from a table or describe one below.</div>';
       return;
     }}
     palette.innerHTML = tools.map(t => {{
@@ -519,7 +523,7 @@ async function loadTools() {{
     palette.querySelectorAll('.tcard-del').forEach(btn =>
       btn.addEventListener('click', () => deleteTool(btn.dataset.delName)));
   }} catch(e) {{
-    palette.innerHTML = `<div style="color:#f87171;font-size:12px;grid-column:1/-1">${{escHtml(e.message)}}</div>`;
+    palette.innerHTML = `<div style="color:var(--apx-err);font-size:12px;grid-column:1/-1">${{escHtml(e.message)}}</div>`;
   }}
 }}
 
@@ -534,7 +538,7 @@ async function deleteTool(name) {{
     document.getElementById('tools-count').textContent =
       remaining ? `${{remaining}} tool${{remaining===1?'':'s'}}` : '';
     if (!remaining) document.getElementById('tool-palette').innerHTML =
-      '<div style="color:#333;font-size:12px;grid-column:1/-1;padding:4px 0">No tools yet.</div>';
+      '<div style="color:var(--apx-border);font-size:12px;grid-column:1/-1;padding:4px 0">No tools yet.</div>';
   }} else {{ alert(d.error || 'Delete failed'); }}
 }}
 
@@ -545,7 +549,7 @@ document.getElementById('btn-desc-tool').addEventListener('click', async () => {
   const btn = document.getElementById('btn-desc-tool');
   const st  = document.getElementById('desc-tool-status');
   btn.disabled = true;
-  st.style.color = '#60b0ff'; st.textContent = 'Generating…';
+  st.style.color = 'var(--apx-accent-hover)'; st.textContent = 'Generating…';
   try {{
     const r = await fetch('/_apx/setup/create-tool', {{
       method: 'POST',
@@ -554,14 +558,14 @@ document.getElementById('btn-desc-tool').addEventListener('click', async () => {
     }});
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || 'creation failed');
-    st.style.color = '#4ade80';
+    st.style.color = 'var(--apx-ok)';
     st.textContent = `✓ Created ${{d.tool_name || ''}}`;
     document.getElementById('tool-desc-input').value = '';
     await loadTools();
     const cards = document.querySelectorAll('.tcard');
     if (cards.length) cards[cards.length-1].classList.add('tcard-appear');
   }} catch(e) {{
-    st.style.color = '#f87171'; st.textContent = e.message;
+    st.style.color = 'var(--apx-err)'; st.textContent = e.message;
   }} finally {{ btn.disabled = false; }}
 }});
 
@@ -571,7 +575,7 @@ let tableList = [];
 async function loadTables(catalog, schema) {{
   const listEl = document.getElementById('tools-table-list');
   const btn    = document.getElementById('btn-gen-tools');
-  listEl.innerHTML = '<span style="color:#555;font-size:12px">Loading tables… <span style="display:inline-block;width:10px;height:10px;border:2px solid #333;border-top-color:#60b0ff;border-radius:50%;animation:spin .7s linear infinite"></span></span>';
+  listEl.innerHTML = '<span style="color:var(--apx-muted);font-size:12px">Loading tables… <span style="display:inline-block;width:10px;height:10px;border:2px solid var(--apx-border);border-top-color:var(--apx-accent-hover);border-radius:50%;animation:spin .7s linear infinite"></span></span>';
   btn.disabled = true;
   try {{
     const r = await fetch(`/_apx/wizard/tables?catalog=${{encodeURIComponent(catalog)}}&schema=${{encodeURIComponent(schema)}}`);
@@ -581,17 +585,17 @@ async function loadTables(catalog, schema) {{
     if (data.error) throw new Error(data.error);
     tableList = data.tables || [];
     if (!tableList.length) {{
-      listEl.innerHTML = '<p style="color:#444;font-size:12px">No tables found in this schema.</p>';
+      listEl.innerHTML = '<p style="color:var(--apx-muted);font-size:12px">No tables found in this schema.</p>';
       return;
     }}
     listEl.innerHTML = tableList.map((t, i) => {{
-      const cols = t.columns.map(c => `<span style="background:#1a1a1a;border:1px solid #222;border-radius:3px;padding:1px 6px;font-size:10px;color:#666;margin-right:3px">${{c.name}}</span>`).join('');
-      const rc = t.row_count != null ? `<span style="font-size:10px;color:#444;margin-left:auto">${{t.row_count.toLocaleString()}} rows</span>` : '';
-      return `<label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:#111;border:1px solid #1e1e1e;border-radius:6px;margin-bottom:6px;cursor:pointer">
+      const cols = t.columns.map(c => `<span style="background:var(--apx-panel);border:1px solid var(--apx-border);border-radius:3px;padding:1px 6px;font-size:10px;color:var(--apx-muted);margin-right:3px">${{c.name}}</span>`).join('');
+      const rc = t.row_count != null ? `<span style="font-size:10px;color:var(--apx-muted);margin-left:auto">${{t.row_count.toLocaleString()}} rows</span>` : '';
+      return `<label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:var(--apx-panel);border:1px solid var(--apx-border);border-radius:6px;margin-bottom:6px;cursor:pointer">
         <input type="checkbox" data-idx="${{i}}" checked style="margin-top:2px;flex-shrink:0">
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
-            <span style="font-weight:600;color:#ccc;font-size:13px">${{t.name}}</span>
+            <span style="font-weight:600;color:var(--apx-text);font-size:13px">${{t.name}}</span>
             ${{rc}}
           </div>
           <div style="flex-wrap:wrap;display:flex;gap:3px">${{cols}}</div>
@@ -600,7 +604,7 @@ async function loadTables(catalog, schema) {{
     }}).join('');
     btn.disabled = false;
   }} catch(e) {{
-    listEl.innerHTML = `<p style="color:#f87171;font-size:12px">${{e.message}}</p>`;
+    listEl.innerHTML = `<p style="color:var(--apx-err);font-size:12px">${{e.message}}</p>`;
   }}
 }}
 
@@ -617,7 +621,7 @@ document.getElementById('btn-gen-tools').addEventListener('click', async () => {
   let created = 0;
   for (const cb of checked) {{
     const t = tableList[+cb.dataset.idx];
-    prog.innerHTML += `<div id="tp-${{t.name}}"><span style="display:inline-block;width:8px;height:8px;border:1px solid #333;border-top-color:#60b0ff;border-radius:50%;animation:spin .7s linear infinite"></span> Generating <strong>${{t.name}}</strong>…</div>`;
+    prog.innerHTML += `<div id="tp-${{t.name}}"><span style="display:inline-block;width:8px;height:8px;border:1px solid var(--apx-border);border-top-color:var(--apx-accent-hover);border-radius:50%;animation:spin .7s linear infinite"></span> Generating <strong>${{t.name}}</strong>…</div>`;
     try {{
       const r = await fetch('/_apx/wizard/generate-tools', {{
         method: 'POST',
@@ -629,16 +633,16 @@ document.getElementById('btn-gen-tools').addEventListener('click', async () => {
       const d = await r.json();
       if (!d.ok) throw new Error(d.error || 'generation failed');
       document.getElementById(`tp-${{t.name}}`).innerHTML =
-        `<span style="color:#22c55e">✓</span> <strong>${{t.name}}</strong>: ${{d.tool_name || 'created'}}`;
+        `<span style="color:var(--apx-ok)">✓</span> <strong>${{t.name}}</strong>: ${{d.tool_name || 'created'}}`;
       created++;
     }} catch(e) {{
       document.getElementById(`tp-${{t.name}}`).innerHTML =
-        `<span style="color:#f87171">✗</span> <strong>${{t.name}}</strong>: ${{e.message}}`;
+        `<span style="color:var(--apx-err)">✗</span> <strong>${{t.name}}</strong>: ${{e.message}}`;
     }}
   }}
   btn.disabled = false;
   st.textContent = `${{created}}/${{checked.length}} tools created`;
-  st.style.color = created === checked.length ? '#22c55e' : '#f59e0b';
+  st.style.color = created === checked.length ? 'var(--apx-ok)' : 'var(--apx-warn)';
   if (created > 0) {{
     await loadTools();
   }}
@@ -677,7 +681,7 @@ async function loadAgentNodes() {{
     renderAgentNodes();
   }} catch(e) {{
     document.getElementById('agent-nodes').innerHTML =
-      `<div style="color:#f87171;font-size:12px">${{e.message}}</div>`;
+      `<div style="color:var(--apx-err);font-size:12px">${{e.message}}</div>`;
   }}
 }}
 
@@ -687,7 +691,7 @@ function renderAgentNodes() {{
   applyBtn.disabled = !agentNodeState.length;
 
   if (!agentNodeState.length) {{
-    container.innerHTML = '<div style="color:#333;font-size:12px;padding:4px 0">No agents yet — click "Add agent" to define one.</div>';
+    container.innerHTML = '<div style="color:var(--apx-border);font-size:12px;padding:4px 0">No agents yet — click "Add agent" to define one.</div>';
     return;
   }}
 
@@ -716,27 +720,27 @@ function renderAgentNodes() {{
       <button class="anode-wire-btn" id="anode-wire-${{idx}}"
               onclick="wireAgent(${{idx}})">Wire tools &amp; draft ✦</button>
       <div class="anode-label" style="margin-top:12px">Tools
-        <span style="font-size:10px;color:#444;font-weight:400;margin-left:6px">assigned by wiring · click to toggle</span>
+        <span style="font-size:10px;color:var(--apx-muted);font-weight:400;margin-left:6px">assigned by wiring · click to toggle</span>
       </div>
-      <div class="anode-tools" id="anode-tools-${{idx}}">${{toolPills || '<span style="color:#333;font-size:11px">Generate tools above, then wire this agent.</span>'}}</div>
+      <div class="anode-tools" id="anode-tools-${{idx}}">${{toolPills || '<span style="color:var(--apx-border);font-size:11px">Generate tools above, then wire this agent.</span>'}}</div>
       <div class="anode-label" style="margin-top:4px">Instructions
-        <span style="font-size:10px;color:#444;font-weight:400;margin-left:6px">drafted from wiring · editable</span>
+        <span style="font-size:10px;color:var(--apx-muted);font-weight:400;margin-left:6px">drafted from wiring · editable</span>
       </div>
       <textarea class="anode-instructions" id="anode-instr-${{idx}}"
                 oninput="agentNodeState[${{idx}}].instructions=this.value"
                 placeholder="Wire tools above to auto-draft, or write directly…">${{node.instructions||''}}</textarea>
       <details style="margin-top:8px">
         <summary class="anode-label" style="cursor:pointer;user-select:none;list-style:none">▸ Routing
-          <span style="font-size:10px;color:#444;font-weight:400;margin-left:6px">for Router / Handoff patterns</span>
+          <span style="font-size:10px;color:var(--apx-muted);font-weight:400;margin-left:6px">for Router / Handoff patterns</span>
         </summary>
         <input id="anode-rk-${{idx}}" type="text" value="${{node.route_key||''}}"
                placeholder="route key (default: ${{node.name}})"
                oninput="agentNodeState[${{idx}}].route_key=this.value"
-               style="width:100%;box-sizing:border-box;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px;margin:4px 0">
+               style="width:100%;box-sizing:border-box;background:var(--apx-bg);border:1px solid var(--apx-border);color:var(--apx-text);border-radius:5px;padding:5px 8px;font-size:12px;margin:4px 0">
         <textarea id="anode-rd-${{idx}}"
                   oninput="agentNodeState[${{idx}}].route_description=this.value"
                   placeholder="When should the router route here? (used by RouterAgent)"
-                  style="width:100%;box-sizing:border-box;min-height:38px;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:5px;padding:5px 8px;font-size:12px">${{node.route_description||''}}</textarea>
+                  style="width:100%;box-sizing:border-box;min-height:38px;background:var(--apx-bg);border:1px solid var(--apx-border);color:var(--apx-text);border-radius:5px;padding:5px 8px;font-size:12px">${{node.route_description||''}}</textarea>
       </details>
     </div>`;
   }}).join('');
@@ -816,7 +820,7 @@ document.getElementById('btn-add-node').addEventListener('click', () => {{
 document.getElementById('btn-apply-agents').addEventListener('click', async () => {{
   const btn = document.getElementById('btn-apply-agents');
   const st  = document.getElementById('agents-status');
-  btn.disabled = true; st.style.color = '#60b0ff'; st.textContent = 'Applying…';
+  btn.disabled = true; st.style.color = 'var(--apx-accent-hover)'; st.textContent = 'Applying…';
   try {{
     const r = await fetch('/_apx/setup/agents', {{
       method: 'POST',
@@ -825,11 +829,11 @@ document.getElementById('btn-apply-agents').addEventListener('click', async () =
     }});
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || 'Apply failed');
-    st.style.color = '#4ade80';
+    st.style.color = 'var(--apx-ok)';
     st.textContent = d.note ? ('✓ Applied — ' + d.note) : '✓ Applied to agent.py';
     await loadAgentNodes();
   }} catch(e) {{
-    st.style.color = '#f87171'; st.textContent = e.message;
+    st.style.color = 'var(--apx-err)'; st.textContent = e.message;
   }} finally {{ btn.disabled = false; }}
 }});
 
@@ -842,21 +846,21 @@ document.getElementById('btn-probe').addEventListener('click', async () => {{
   if (!url) return;
   const res = document.getElementById('probe-result');
   const btn = document.getElementById('btn-probe');
-  btn.disabled = true; res.innerHTML = '<span style="color:#555;font-size:12px">Testing…</span>';
+  btn.disabled = true; res.innerHTML = '<span style="color:var(--apx-muted);font-size:12px">Testing…</span>';
   try {{
     const r = await fetch('/_apx/setup/probe-json?url=' + encodeURIComponent(url));
     const d = await r.json();
     const ok = typeof d.status === 'number' && d.status < 400;
-    const color = ok ? '#4ade80' : '#f87171';
+    const color = ok ? 'var(--apx-ok)' : 'var(--apx-err)';
     const rows = Object.entries(d).map(([k,v]) =>
-      `<tr><td style="color:#666;font-family:monospace;font-size:11px;padding:3px 12px 3px 0;width:120px">${{k}}</td>`+
-      `<td style="font-family:monospace;font-size:11px;color:#ccc;word-break:break-all">${{String(v)}}</td></tr>`
+      `<tr><td style="color:var(--apx-muted);font-family:monospace;font-size:11px;padding:3px 12px 3px 0;width:120px">${{k}}</td>`+
+      `<td style="font-family:monospace;font-size:11px;color:var(--apx-text);word-break:break-all">${{String(v)}}</td></tr>`
     ).join('');
-    res.innerHTML = `<div style="background:#111;border:1px solid ${{ok?'#14532d':'#450a0a'}};border-radius:6px;padding:12px 14px">
+    res.innerHTML = `<div style="background:var(--apx-panel);border:1px solid ${{ok?'var(--apx-ok)':'var(--apx-err)'}};border-radius:6px;padding:12px 14px">
       <div style="color:${{color}};font-size:13px;font-weight:600;margin-bottom:8px">${{ok?'✓':'✗'}} ${{d.status||d.error}}</div>
       <table style="border-collapse:collapse;width:100%">${{rows}}</table></div>`;
   }} catch(e) {{
-    res.innerHTML = `<span style="color:#f87171;font-size:12px">${{e.message}}</span>`;
+    res.innerHTML = `<span style="color:var(--apx-err);font-size:12px">${{e.message}}</span>`;
   }} finally {{ btn.disabled = false; }}
 }});
 
@@ -866,25 +870,25 @@ document.getElementById('vs-details').addEventListener('toggle', async (e) => {{
   if (!e.target.open || vsLoaded) return;
   vsLoaded = true;
   const el = document.getElementById('vs-content');
-  el.innerHTML = '<span style="color:#555;font-size:12px">Loading…</span>';
+  el.innerHTML = '<span style="color:var(--apx-muted);font-size:12px">Loading…</span>';
   try {{
     const r = await fetch('/_apx/setup/vs-indexes');
     const indexes = await r.json();
-    if (!indexes.length) {{ el.innerHTML = '<p style="color:#444;font-size:12px">No Vector Search indexes found.</p>'; return; }}
+    if (!indexes.length) {{ el.innerHTML = '<p style="color:var(--apx-muted);font-size:12px">No Vector Search indexes found.</p>'; return; }}
     el.innerHTML = indexes.map(idx => {{
       const ready = idx.ready;
       const snippet = `VS_INDEX = "${{idx.index}}"\nVS_COLUMNS = ${{JSON.stringify(idx.columns||[])}}`;
-      return `<div style="background:#0d0d0d;border:1px solid #222;border-radius:6px;padding:12px 14px;margin-bottom:8px">
+      return `<div style="background:var(--apx-panel);border:1px solid var(--apx-border);border-radius:6px;padding:12px 14px;margin-bottom:8px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-          <span style="font-family:monospace;font-size:12px;color:#e8e8e8">${{idx.index}}</span>
-          <span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;${{ready?'color:#4ade80;background:#052e16':'color:#f87171;background:#2a0a0a'}}">${{ready?'● Ready':'○ Not ready'}}</span>
+          <span style="font-family:monospace;font-size:12px;color:var(--apx-text)">${{idx.index}}</span>
+          <span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;${{ready?'color:var(--apx-ok);background:var(--apx-panel-2)':'color:var(--apx-err);background:var(--apx-panel-2)'}}">${{ready?'● Ready':'○ Not ready'}}</span>
         </div>
-        ${{idx.source_table?`<div style="font-size:11px;color:#555;font-family:monospace;margin-bottom:8px">source: ${{idx.source_table}}</div>`:''}}
-        <pre style="background:#111;border:1px solid #1e1e1e;border-radius:4px;padding:8px 10px;font-size:11px;color:#a5f3fc;overflow-x:auto">${{snippet}}</pre>
+        ${{idx.source_table?`<div style="font-size:11px;color:var(--apx-muted);font-family:monospace;margin-bottom:8px">source: ${{idx.source_table}}</div>`:''}}
+        <pre style="background:var(--apx-bg);border:1px solid var(--apx-border);border-radius:4px;padding:8px 10px;font-size:11px;color:var(--apx-accent-hover);overflow-x:auto">${{snippet}}</pre>
       </div>`;
     }}).join('');
   }} catch(e) {{
-    el.innerHTML = `<p style="color:#f87171;font-size:12px">${{e.message}}</p>`;
+    el.innerHTML = `<p style="color:var(--apx-err);font-size:12px">${{e.message}}</p>`;
   }}
 }});
 
@@ -919,11 +923,11 @@ document.querySelectorAll('.pcard').forEach(card => {{
         // Composition: wire the defined leaf agents into this workflow root.
         const leaves = agentNodeState.filter(n => n.name !== 'agent');
         if (leaves.length < 2) {{
-          status.style.color = '#f87171';
+          status.style.color = 'var(--apx-err)';
           status.textContent = `Define at least 2 agents above (under "Agents"), then click ${{pattern}}.`;
           return;
         }}
-        status.style.color = '#60b0ff'; status.textContent = `Composing ${{pattern}}…`;
+        status.style.color = 'var(--apx-accent-hover)'; status.textContent = `Composing ${{pattern}}…`;
         const startSel = document.getElementById('handoff-start');
         const start = (pattern === 'HandoffAgent' && startSel) ? startSel.value : null;
         const cr = await fetch('/_apx/setup/compose', {{
@@ -931,14 +935,14 @@ document.querySelectorAll('.pcard').forEach(card => {{
           body: JSON.stringify({{pattern, nodes: leaves, start}}),
         }});
         const cd = await cr.json();
-        if (!cd.ok) {{ status.style.color = '#f87171'; status.textContent = cd.error || 'Compose failed'; return; }}
+        if (!cd.ok) {{ status.style.color = 'var(--apx-err)'; status.textContent = cd.error || 'Compose failed'; return; }}
         setActiveCard(pattern);
-        status.style.color = '#4ade80';
+        status.style.color = 'var(--apx-ok)';
         status.textContent = `✓ Composed ${{pattern}} over ${{cd.agents.join(', ')}} — written to agent.py`;
         await loadAgentNodes();
         return;
       }}
-      status.style.color = '#60b0ff'; status.textContent = 'Applying…';
+      status.style.color = 'var(--apx-accent-hover)'; status.textContent = 'Applying…';
       const r = await fetch('/_apx/setup/agent-pattern', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json'}},
@@ -946,16 +950,16 @@ document.querySelectorAll('.pcard').forEach(card => {{
       }});
       const d = await r.json();
       if (!d.ok) {{
-        status.style.color = '#f87171';
+        status.style.color = 'var(--apx-err)';
         status.textContent = d.error || 'Failed';
         return;
       }}
       setActiveCard(d.type);
-      status.style.color = '#4ade80';
+      status.style.color = 'var(--apx-ok)';
       status.textContent = d.changed ? 'Saved — restart `apx-agent run` to load' : `Already ${{d.type}}`;
       setTimeout(() => {{ status.textContent = ''; }}, 4000);
     }} catch(e) {{
-      status.style.color = '#f87171';
+      status.style.color = 'var(--apx-err)';
       status.textContent = e.message;
     }}
   }});
@@ -980,6 +984,7 @@ loadAgentPattern();
 def _render_eval_ui(eval_data: "list[dict[str, Any]]") -> str:
     """Eval page — run test questions through the agent and view responses."""
     import json as _json
+    _theme = apx_theme_style()
     nav = _apx_nav_html("eval")
     overlay = _deploy_overlay_html()
     rows_json = _json.dumps(eval_data)
@@ -990,40 +995,41 @@ def _render_eval_ui(eval_data: "list[dict[str, Any]]") -> str:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Eval — APX Dev</title>
+{_theme}
 <style>
   * {{ box-sizing:border-box;margin:0;padding:0; }}
-  body {{ background:#0d0d0d;color:#ccc;font-family:system-ui,sans-serif;font-size:13px; }}
+  body {{ background:var(--apx-bg);color:var(--apx-text);font-family:system-ui,sans-serif;font-size:13px; }}
   {_apx_nav_css()}
   .page {{ max-width:900px;margin:72px auto 40px;padding:0 20px; }}
-  h2 {{ font-size:18px;font-weight:600;color:#fff;margin-bottom:4px; }}
-  .subtitle {{ color:#555;margin-bottom:24px; }}
+  h2 {{ font-size:18px;font-weight:600;color:var(--apx-on-accent);margin-bottom:4px; }}
+  .subtitle {{ color:var(--apx-muted);margin-bottom:24px; }}
   .toolbar {{ display:flex;gap:8px;align-items:center;margin-bottom:16px; }}
-  .btn-primary {{ background:#2563eb;color:#fff;border:none;border-radius:6px;padding:8px 18px;font-size:13px;font-weight:500;cursor:pointer; }}
-  .btn-primary:hover {{ background:#1d4ed8; }}
+  .btn-primary {{ background:var(--apx-accent);color:var(--apx-on-accent);border:none;border-radius:6px;padding:8px 18px;font-size:13px;font-weight:500;cursor:pointer; }}
+  .btn-primary:hover {{ background:var(--apx-accent-hover); }}
   .btn-primary:disabled {{ opacity:.5;cursor:default; }}
-  .btn-secondary {{ background:transparent;color:#888;border:1px solid #333;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer; }}
-  .btn-secondary:hover {{ color:#ccc;border-color:#555; }}
-  #run-status {{ font-size:12px;color:#888; }}
+  .btn-secondary {{ background:transparent;color:var(--apx-muted);border:1px solid var(--apx-border);border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer; }}
+  .btn-secondary:hover {{ color:var(--apx-text);border-color:var(--apx-muted); }}
+  #run-status {{ font-size:12px;color:var(--apx-muted); }}
   table {{ width:100%;border-collapse:collapse; }}
-  th {{ text-align:left;padding:8px 12px;font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #1e1e1e; }}
-  td {{ padding:10px 12px;border-bottom:1px solid #1a1a1a;vertical-align:top; }}
+  th {{ text-align:left;padding:8px 12px;font-size:11px;font-weight:700;color:var(--apx-muted);text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--apx-border); }}
+  td {{ padding:10px 12px;border-bottom:1px solid var(--apx-border);vertical-align:top; }}
   tr:last-child td {{ border-bottom:none; }}
-  .q-cell {{ color:#ccc;max-width:280px; }}
-  .exp-cell {{ color:#555;font-size:12px;max-width:200px; }}
-  .resp-cell {{ font-size:12px;color:#888;max-width:360px; }}
+  .q-cell {{ color:var(--apx-text);max-width:280px; }}
+  .exp-cell {{ color:var(--apx-muted);font-size:12px;max-width:200px; }}
+  .resp-cell {{ font-size:12px;color:var(--apx-muted);max-width:360px; }}
   .status-cell {{ width:60px;text-align:center; }}
   .dot {{ width:10px;height:10px;border-radius:50%;display:inline-block; }}
-  .dot-pass {{ background:#4ade80; }}
-  .dot-fail {{ background:#f87171; }}
-  .dot-pending {{ background:#333; }}
-  .dot-running {{ background:#facc15;animation:pulse .8s infinite; }}
+  .dot-pass {{ background:var(--apx-ok); }}
+  .dot-fail {{ background:var(--apx-err); }}
+  .dot-pending {{ background:var(--apx-border); }}
+  .dot-running {{ background:var(--apx-warn);animation:pulse .8s infinite; }}
   @keyframes pulse {{ 0%,100%{{opacity:1}}50%{{opacity:.3}} }}
   .add-row {{ margin-top:12px; }}
-  .add-row input, .add-row textarea {{ background:#111;border:1px solid #2a2a2a;color:#ccc;border-radius:6px;padding:7px 10px;font-size:12px;width:100%; }}
+  .add-row input, .add-row textarea {{ background:var(--apx-panel);border:1px solid var(--apx-border);color:var(--apx-text);border-radius:6px;padding:7px 10px;font-size:12px;width:100%; }}
   .add-row textarea {{ resize:vertical;min-height:52px; }}
   .add-grid {{ display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px; }}
-  .progress-bar {{ height:3px;background:#1e1e1e;border-radius:2px;margin-bottom:16px;overflow:hidden; }}
-  .progress-fill {{ height:100%;background:#2563eb;border-radius:2px;transition:width .3s; }}
+  .progress-bar {{ height:3px;background:var(--apx-border);border-radius:2px;margin-bottom:16px;overflow:hidden; }}
+  .progress-fill {{ height:100%;background:var(--apx-accent);border-radius:2px;transition:width .3s; }}
 </style>
 </head>
 <body>
@@ -1045,7 +1051,7 @@ def _render_eval_ui(eval_data: "list[dict[str, Any]]") -> str:
   </table>
 
   <div class="add-row" style="margin-top:20px">
-    <div class="section-title" style="font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Add Test Case</div>
+    <div class="section-title" style="font-size:11px;font-weight:700;color:var(--apx-muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Add Test Case</div>
     <div class="add-grid">
       <textarea id="add-q" placeholder="Question…" rows="2"></textarea>
       <input id="add-exp" type="text" placeholder="Expected keywords (optional)">
@@ -1143,6 +1149,7 @@ renderTable();
 
 def _render_wizard_ui(current_env: "dict[str, str]") -> str:
     """First-run wizard: Connect → Explore → Generate Tools → Instructions → Launch."""
+    _theme = apx_theme_style()
     nav = _apx_nav_html("wizard")
     nav_css = _apx_nav_css()
     prefill_catalog = current_env.get("DEMO_CATALOG", current_env.get("CATALOG", ""))
@@ -1155,9 +1162,10 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Setup Wizard — APX Dev</title>
+{_theme}
 <style>
   * {{ box-sizing:border-box;margin:0;padding:0; }}
-  body {{ background:#0d0d0d;color:#ccc;font-family:system-ui,sans-serif;font-size:13px; }}
+  body {{ background:var(--apx-bg);color:var(--apx-text);font-family:system-ui,sans-serif;font-size:13px; }}
   {nav_css}
   .wiz-shell {{ max-width:680px;margin:72px auto 60px;padding:0 20px; }}
 
@@ -1165,81 +1173,81 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
   .wiz-progress {{ display:flex;align-items:center;gap:0;margin-bottom:40px; }}
   .wiz-step-dot {{ display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;position:relative; }}
   .wiz-step-dot:not(:last-child)::after {{
-    content:"";position:absolute;top:14px;left:50%;width:100%;height:1px;background:#333;z-index:0;
+    content:"";position:absolute;top:14px;left:50%;width:100%;height:1px;background:var(--apx-border);z-index:0;
   }}
-  .dot {{ width:28px;height:28px;border-radius:50%;border:2px solid #333;background:#111;
+  .dot {{ width:28px;height:28px;border-radius:50%;border:2px solid var(--apx-border);background:var(--apx-panel);
           display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;
-          color:#555;z-index:1;position:relative; }}
-  .dot.active {{ border-color:#60b0ff;background:#0d1f38;color:#60b0ff; }}
-  .dot.done {{ border-color:#22c55e;background:#052e16;color:#22c55e; }}
-  .step-label {{ font-size:10px;color:#555;text-align:center;white-space:nowrap; }}
-  .wiz-step-dot.s-active .step-label {{ color:#ccc; }}
+          color:var(--apx-muted);z-index:1;position:relative; }}
+  .dot.active {{ border-color:var(--apx-accent-hover);background:var(--apx-panel-2);color:var(--apx-accent-hover); }}
+  .dot.done {{ border-color:var(--apx-ok);background:var(--apx-panel-2);color:var(--apx-ok); }}
+  .step-label {{ font-size:10px;color:var(--apx-muted);text-align:center;white-space:nowrap; }}
+  .wiz-step-dot.s-active .step-label {{ color:var(--apx-text); }}
 
   /* Step panels */
   .wiz-panel {{ display:none; }}
   .wiz-panel.visible {{ display:block; }}
-  .wiz-panel h2 {{ font-size:20px;font-weight:700;color:#fff;margin-bottom:6px; }}
-  .wiz-panel .sub {{ color:#666;margin-bottom:28px;line-height:1.6; }}
+  .wiz-panel h2 {{ font-size:20px;font-weight:700;color:var(--apx-on-accent);margin-bottom:6px; }}
+  .wiz-panel .sub {{ color:var(--apx-muted);margin-bottom:28px;line-height:1.6; }}
 
   /* Form elements */
-  label {{ display:block;font-size:12px;color:#888;margin-bottom:4px;margin-top:14px; }}
+  label {{ display:block;font-size:12px;color:var(--apx-muted);margin-bottom:4px;margin-top:14px; }}
   label:first-of-type {{ margin-top:0; }}
   select, input[type=text], textarea {{
-    width:100%;background:#1a1a1a;border:1px solid #333;border-radius:6px;
-    color:#ccc;padding:8px 10px;font-size:13px;font-family:inherit;
+    width:100%;background:var(--apx-panel);border:1px solid var(--apx-border);border-radius:6px;
+    color:var(--apx-text);padding:8px 10px;font-size:13px;font-family:inherit;
   }}
   select:disabled {{ opacity:.5; }}
   textarea {{ min-height:160px;resize:vertical;font-size:12px;line-height:1.6; }}
 
   /* Table explorer */
   .table-cards {{ display:flex;flex-direction:column;gap:10px; }}
-  .tcard {{ background:#141414;border:1px solid #2a2a2a;border-radius:8px;padding:14px 16px; }}
+  .tcard {{ background:var(--apx-panel);border:1px solid var(--apx-border);border-radius:8px;padding:14px 16px; }}
   .tcard-header {{ display:flex;align-items:center;gap:10px;margin-bottom:8px; }}
-  .tcard-name {{ font-weight:600;color:#fff;font-size:14px; }}
-  .tcard-row-count {{ font-size:11px;color:#555;margin-left:auto; }}
+  .tcard-name {{ font-weight:600;color:var(--apx-on-accent);font-size:14px; }}
+  .tcard-row-count {{ font-size:11px;color:var(--apx-muted);margin-left:auto; }}
   .tcard-cols {{ display:flex;flex-wrap:wrap;gap:5px; }}
-  .col-chip {{ background:#1e1e1e;border:1px solid #2a2a2a;border-radius:4px;
-               padding:2px 7px;font-size:11px;color:#888; }}
-  .col-chip .ctype {{ color:#555; }}
+  .col-chip {{ background:var(--apx-bg);border:1px solid var(--apx-border);border-radius:4px;
+               padding:2px 7px;font-size:11px;color:var(--apx-muted); }}
+  .col-chip .ctype {{ color:var(--apx-muted); }}
 
   /* Tool proposals */
   .tool-proposals {{ display:flex;flex-direction:column;gap:8px; }}
-  .tool-prop {{ background:#141414;border:1px solid #2a2a2a;border-radius:8px;padding:12px 14px;
+  .tool-prop {{ background:var(--apx-panel);border:1px solid var(--apx-border);border-radius:8px;padding:12px 14px;
                 display:flex;align-items:flex-start;gap:12px; }}
   .tool-prop input[type=checkbox] {{ margin-top:2px;flex-shrink:0; }}
   .tool-prop-body {{ flex:1; }}
-  .tool-prop-name {{ font-weight:600;color:#a78bfa;font-size:13px;margin-bottom:3px; }}
-  .tool-prop-desc {{ color:#777;font-size:12px;line-height:1.5; }}
-  #gen-progress {{ margin-top:16px;font-size:12px;color:#60b0ff;min-height:20px; }}
+  .tool-prop-name {{ font-weight:600;color:var(--apx-accent);font-size:13px;margin-bottom:3px; }}
+  .tool-prop-desc {{ color:var(--apx-muted);font-size:12px;line-height:1.5; }}
+  #gen-progress {{ margin-top:16px;font-size:12px;color:var(--apx-accent-hover);min-height:20px; }}
 
   /* Instructions step */
-  .instr-preview {{ background:#141414;border:1px solid #2a2a2a;border-radius:8px;
+  .instr-preview {{ background:var(--apx-panel);border:1px solid var(--apx-border);border-radius:8px;
                     padding:16px;font-size:12px;line-height:1.7;white-space:pre-wrap;
-                    color:#ccc;margin-bottom:12px;max-height:280px;overflow-y:auto; }}
+                    color:var(--apx-text);margin-bottom:12px;max-height:280px;overflow-y:auto; }}
 
   /* Launch checklist */
   .checklist {{ display:flex;flex-direction:column;gap:10px;margin-bottom:28px; }}
   .check-item {{ display:flex;align-items:center;gap:10px;font-size:13px; }}
   .check-item .ck {{ width:20px;height:20px;border-radius:50%;display:flex;align-items:center;
                      justify-content:center;font-size:12px;flex-shrink:0; }}
-  .ck.ok {{ background:#052e16;border:1px solid #22c55e;color:#22c55e; }}
-  .ck.warn {{ background:#2a1a00;border:1px solid #5a3a00;color:#f59e0b; }}
+  .ck.ok {{ background:var(--apx-panel-2);border:1px solid var(--apx-ok);color:var(--apx-ok); }}
+  .ck.warn {{ background:var(--apx-panel-2);border:1px solid var(--apx-warn);color:var(--apx-warn); }}
 
   /* Footer nav */
   .wiz-footer {{ display:flex;align-items:center;justify-content:space-between;
-                 margin-top:32px;padding-top:20px;border-top:1px solid #1e1e1e; }}
+                 margin-top:32px;padding-top:20px;border-top:1px solid var(--apx-border); }}
   .btn {{ padding:9px 20px;border-radius:6px;font-size:13px;font-weight:600;
           cursor:pointer;border:1px solid transparent; }}
-  .btn-primary {{ background:#1e3a5f;color:#60b0ff;border-color:#2a5298; }}
-  .btn-primary:hover {{ background:#2a4f7a; }}
+  .btn-primary {{ background:var(--apx-panel-2);color:var(--apx-accent-hover);border-color:var(--apx-border); }}
+  .btn-primary:hover {{ background:var(--apx-accent); color:var(--apx-on-accent); }}
   .btn-primary:disabled {{ opacity:.45;cursor:default; }}
-  .btn-ghost {{ background:transparent;color:#555;border-color:#333; }}
-  .btn-ghost:hover {{ color:#ccc;border-color:#444; }}
-  .btn-success {{ background:#052e16;color:#22c55e;border-color:#166534; }}
-  .btn-success:hover {{ background:#0a4a22; }}
-  .err {{ color:#f87171;font-size:12px;margin-top:8px; }}
-  .spinner {{ display:inline-block;width:12px;height:12px;border:2px solid #333;
-              border-top-color:#60b0ff;border-radius:50%;animation:spin .7s linear infinite; }}
+  .btn-ghost {{ background:transparent;color:var(--apx-muted);border-color:var(--apx-border); }}
+  .btn-ghost:hover {{ color:var(--apx-text);border-color:var(--apx-muted); }}
+  .btn-success {{ background:var(--apx-panel-2);color:var(--apx-ok);border-color:var(--apx-ok); }}
+  .btn-success:hover {{ background:var(--apx-ok); color:var(--apx-on-accent); }}
+  .err {{ color:var(--apx-err);font-size:12px;margin-top:8px; }}
+  .spinner {{ display:inline-block;width:12px;height:12px;border:2px solid var(--apx-border);
+              border-top-color:var(--apx-accent-hover);border-radius:50%;animation:spin .7s linear infinite; }}
   @keyframes spin {{ to {{ transform:rotate(360deg); }} }}
 </style>
 </head>
@@ -1270,7 +1278,7 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
     <label>SQL Warehouse</label>
     <select id="w-warehouse" disabled><option value="">Select a catalog first</option></select>
 
-    <div id="s1-err" class="err"></div>
+    <div id="s1-err" class="err" style="color:var(--apx-err)"></div>
     <div class="wiz-footer">
       <span></span>
       <button class="btn btn-primary" id="s1-next" disabled>Next →</button>
@@ -1281,8 +1289,8 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
   <div class="wiz-panel" id="step-2">
     <h2>Your data</h2>
     <p class="sub">Here are the tables in the schema you selected. Review them — you'll generate tools for these next.</p>
-    <div class="table-cards" id="table-cards"><p style="color:#555">Loading tables…</p></div>
-    <div id="s2-err" class="err"></div>
+    <div class="table-cards" id="table-cards"><p style="color:var(--apx-muted)">Loading tables…</p></div>
+    <div id="s2-err" class="err" style="color:var(--apx-err)"></div>
     <div class="wiz-footer">
       <button class="btn btn-ghost" id="s2-back">← Back</button>
       <button class="btn btn-primary" id="s2-next">Next →</button>
@@ -1295,7 +1303,7 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
     <p class="sub">Select which tables to build tools for. The agent will be able to query each one.</p>
     <div class="tool-proposals" id="tool-proposals"></div>
     <div id="gen-progress"></div>
-    <div id="s3-err" class="err"></div>
+    <div id="s3-err" class="err" style="color:var(--apx-err)"></div>
     <div class="wiz-footer">
       <button class="btn btn-ghost" id="s3-back">← Back</button>
       <button class="btn btn-primary" id="s3-next">Generate →</button>
@@ -1306,9 +1314,9 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
   <div class="wiz-panel" id="step-4">
     <h2>Agent instructions</h2>
     <p class="sub">These instructions define how your agent behaves. They've been generated from your schema — edit as needed, then apply.</p>
-    <div id="instr-loading" style="color:#555">Generating instructions…  <span class="spinner"></span></div>
+    <div id="instr-loading" style="color:var(--apx-muted)">Generating instructions…  <span class="spinner"></span></div>
     <textarea id="instr-text" style="display:none"></textarea>
-    <div id="s4-err" class="err"></div>
+    <div id="s4-err" class="err" style="color:var(--apx-err)"></div>
     <div class="wiz-footer">
       <button class="btn btn-ghost" id="s4-back">← Back</button>
       <button class="btn btn-primary" id="s4-next">Apply &amp; Continue →</button>
@@ -1447,7 +1455,7 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
         }})
       }});
       const d = await r.json();
-      if (!r.ok) {{ throw new Error(d.detail || 'Save failed'); }}
+      if (!r.ok) {{ s1Err.style.color = 'var(--apx-err)'; throw new Error(d.detail || 'Save failed'); }}
       showStep(2);
       loadTables();
     }} catch(e) {{
@@ -1464,7 +1472,7 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
   const s2Err = document.getElementById('s2-err');
 
   async function loadTables() {{
-    tableCards.innerHTML = '<p style="color:#555">Loading tables… <span class="spinner"></span></p>';
+    tableCards.innerHTML = '<p style="color:var(--apx-muted)">Loading tables… <span class="spinner"></span></p>';
     try {{
       const r = await fetch(`/_apx/wizard/tables?catalog=${{encodeURIComponent(state.catalog)}}&schema=${{encodeURIComponent(state.schema)}}`);
       const data = await r.json();
@@ -1474,7 +1482,7 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
       const tables = data.tables || [];
       state.tables = tables;
       if (!tables.length) {{
-        tableCards.innerHTML = '<p style="color:#666">No tables found in this schema.</p>';
+        tableCards.innerHTML = '<p style="color:var(--apx-muted)">No tables found in this schema.</p>';
         return;
       }}
       tableCards.innerHTML = tables.map(t => `
@@ -1549,11 +1557,11 @@ def _render_wizard_ui(current_env: "dict[str, str]") -> str:
         }});
         const d = await r.json();
         genProgress.lastElementChild.innerHTML =
-          `<span style="color:#22c55e">✓</span> <strong>${{t.name}}</strong>: ${{d.tool_name || 'created'}}`;
+          `<span style="color:var(--apx-ok)">✓</span> <strong>${{t.name}}</strong>: ${{d.tool_name || 'created'}}`;
         state.toolsCreated++;
       }} catch(e) {{
         genProgress.lastElementChild.innerHTML =
-          `<span style="color:#f87171">✗</span> <strong>${{t.name}}</strong>: ${{e.message}}`;
+          `<span style="color:var(--apx-err)">✗</span> <strong>${{t.name}}</strong>: ${{e.message}}`;
       }}
     }}
     btn.disabled = false;

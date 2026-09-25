@@ -9,21 +9,21 @@ from typing import Any
 TABLE_CSS = r"""
   .outmeta { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; white-space:normal; }
   .outmeta .mchip { font-size:11px; padding:2px 8px; border-radius:10px;
-                                border:1px solid #262626; background:#0e0e0e; color:var(--muted); }
+                                border:1px solid var(--apx-border,#445461); background:var(--apx-panel,#1F272D); color:var(--apx-muted,#92A4B3); }
   table.out { width:100%; border-collapse:collapse; font-size:11.5px; white-space:normal; }
-  table.out th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px;
-                 border-bottom:1px solid #2a2a2a; white-space:nowrap;
-                 position:sticky; top:0; background:#0b0b0b; }
-  table.out td { padding:5px 8px; border-bottom:1px solid #161616; vertical-align:top;
+  table.out th { text-align:left; color:var(--apx-muted,#92A4B3); font-weight:600; padding:6px 8px;
+                 border-bottom:1px solid var(--apx-border,#445461); white-space:nowrap;
+                 position:sticky; top:0; background:var(--apx-panel,#1F272D); }
+  table.out td { padding:5px 8px; border-bottom:1px solid var(--apx-border,#445461); vertical-align:top;
                  max-width:340px; word-break:break-word; }
-  table.out tr:hover td { background:#101010; }
-  .muted { color:var(--dim, #555); }
-  .note { margin-top:8px; color:var(--dim, #555); font-size:11px; white-space:normal; }
-  details.out-raw { margin-top:10px; background:#0d0d0d; border:1px solid #1c1c1c; border-radius:8px; }
+  table.out tr:hover td { background:var(--apx-panel-2,#37444F); }
+  .muted { color:var(--apx-muted,#92A4B3); }
+  .note { margin-top:8px; color:var(--apx-muted,#92A4B3); font-size:11px; white-space:normal; }
+  details.out-raw { margin-top:10px; background:var(--apx-bg,#11171C); border:1px solid var(--apx-border,#445461); border-radius:8px; }
   details.out-raw > summary { padding:7px 11px; font-size:11.5px; }
   details.out-raw .body { padding:0 11px 11px; }
   details.out-raw pre { margin:0; white-space:pre-wrap; word-break:break-word;
-                            max-height:20rem; overflow:auto; font-size:11.5px; color:#c9d1d9; }
+                            max-height:20rem; overflow:auto; font-size:11.5px; color:var(--apx-text,#E8ECF0); }
 """
 
 TABLE_JS = r"""

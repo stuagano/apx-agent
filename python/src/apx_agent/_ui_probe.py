@@ -14,6 +14,7 @@ from ._env import resolve_env_var
 from ._models import AgentContext
 from ._ui_nav import _apx_nav_links, _deploy_overlay_html
 from ._ui_setup import _find_env_path, _read_env_file
+from ._ui_theme import apx_theme_style
 
 logger = logging.getLogger(__name__)
 
@@ -910,7 +911,7 @@ def _render_probe_ui(
     if result is not None:
         status = result.get("status")
         ok = isinstance(status, int) and status < 400
-        color = "#4ade80" if ok else "#f87171"
+        color = "var(--apx-ok)" if ok else "var(--apx-err)"
         rows = "".join(
             f'<tr><td class="k">{k}</td><td class="v">{_json.dumps(v) if not isinstance(v, str) else v}</td></tr>'
             for k, v in result.items()
@@ -977,76 +978,72 @@ def _render_probe_ui(
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Probe — APX Dev</title>
+{apx_theme_style()}
 <style>
   *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: #0d0d0d; color: #e8e8e8; min-height: 100vh;
-         display: flex; flex-direction: column; }}
-  header {{ padding: 12px 20px; background: #111; border-bottom: 1px solid #2a2a2a;
+  header {{ padding: 12px 20px; background: var(--apx-panel); border-bottom: 1px solid var(--apx-border);
             display: flex; align-items: center; gap: 12px; flex-shrink: 0; }}
-  .badge {{ background: #1e3a5f; color: #60b0ff; font-size: 11px; font-weight: 600;
-            padding: 2px 8px; border-radius: 4px; letter-spacing: .5px; text-transform: uppercase; }}
-  h1 {{ font-size: 16px; font-weight: 600; color: #fff; }}
+  h1 {{ font-size: 16px; font-weight: 600; color: var(--apx-text); }}
   nav {{ display: flex; gap: 4px; margin-left: auto; }}
-  nav a {{ font-size: 12px; color: #888; text-decoration: none; padding: 3px 10px;
+  nav a {{ font-size: 12px; color: var(--apx-muted); text-decoration: none; padding: 3px 10px;
            border-radius: 5px; border: 1px solid transparent; }}
-  nav a:hover {{ color: #ccc; border-color: #333; }}
-  nav a.active {{ color: #60b0ff; background: #0d1f38; border-color: #1e3a5f; }}
+  nav a:hover {{ color: var(--apx-text); border-color: var(--apx-border); }}
+  nav a.active {{ color: var(--apx-accent); background: var(--apx-bg); border-color: var(--apx-panel-2); }}
   main {{ padding: 32px 40px; max-width: 760px; }}
-  p.desc {{ color: #666; font-size: 13px; margin-bottom: 24px; line-height: 1.6; }}
+  p.desc {{ color: var(--apx-muted); font-size: 13px; margin-bottom: 24px; line-height: 1.6; }}
   .probe-form {{ display: flex; gap: 8px; margin-bottom: 24px; }}
-  input[type=text] {{ flex: 1; background: #1a1a1a; border: 1px solid #333; color: #e8e8e8;
-                      border-radius: 8px; padding: 9px 14px; font-size: 14px; font-family: monospace;
+  input[type=text] {{ flex: 1; background: var(--apx-panel); border: 1px solid var(--apx-border); color: var(--apx-text);
+                      border-radius: 8px; padding: 9px 14px; font-size: 14px; font-family: var(--apx-mono);
                       outline: none; }}
-  input[type=text]:focus {{ border-color: #3a7bd5; }}
-  button {{ background: #2563eb; color: #fff; border: none; border-radius: 8px;
+  input[type=text]:focus {{ border-color: var(--apx-accent); }}
+  button {{ background: var(--apx-accent); color: var(--apx-on-accent); border: none; border-radius: 8px;
             padding: 9px 18px; font-size: 14px; cursor: pointer; font-weight: 500;
             white-space: nowrap; transition: background .15s; }}
-  button:hover {{ background: #1d4ed8; }}
-  .result {{ background: #111; border: 1px solid #2a2a2a; border-radius: 8px;
+  button:hover {{ background: var(--apx-accent-hover); }}
+  .result {{ background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 8px;
              padding: 16px 20px; }}
-  .result.ok {{ border-color: #14532d; }}
-  .result.err {{ border-color: #450a0a; }}
+  .result.ok {{ border-color: var(--apx-ok); }}
+  .result.err {{ border-color: var(--apx-err); }}
   .result-head {{ font-size: 15px; font-weight: 600; margin-bottom: 12px; }}
-  .latency {{ font-size: 12px; color: #888; font-weight: 400; }}
+  .latency {{ font-size: 12px; color: var(--apx-muted); font-weight: 400; }}
   table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
   td {{ padding: 4px 0; vertical-align: top; }}
-  td.k {{ color: #888; width: 140px; font-family: monospace; padding-right: 16px; }}
-  td.v {{ color: #ccc; font-family: monospace; word-break: break-all; }}
+  td.k {{ color: var(--apx-muted); width: 140px; font-family: var(--apx-mono); padding-right: 16px; }}
+  td.v {{ color: var(--apx-text); font-family: var(--apx-mono); word-break: break-all; }}
   .vs-section {{ margin-top: 40px; }}
-  .vs-title {{ font-size: 14px; font-weight: 600; color: #888; text-transform: uppercase;
+  .vs-title {{ font-size: 14px; font-weight: 600; color: var(--apx-muted); text-transform: uppercase;
                letter-spacing: .6px; margin-bottom: 8px; }}
-  .vs-desc {{ color: #555; font-size: 12px; margin-bottom: 16px; line-height: 1.6; }}
-  .vs-card {{ background: #111; border: 1px solid #2a2a2a; border-radius: 8px;
+  .vs-desc {{ color: var(--apx-muted); font-size: 12px; margin-bottom: 16px; line-height: 1.6; }}
+  .vs-card {{ background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 8px;
               padding: 14px 16px; margin-bottom: 12px; }}
   .vs-card-head {{ display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }}
-  .vs-idx-name {{ font-family: monospace; font-size: 13px; color: #e8e8e8; font-weight: 500; }}
+  .vs-idx-name {{ font-family: var(--apx-mono); font-size: 13px; color: var(--apx-text); font-weight: 500; }}
   .vs-ready {{ font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 10px; }}
-  .vs-ready.ready {{ color: #4ade80; background: #052e16; }}
-  .vs-ready.not-ready {{ color: #f87171; background: #2a0a0a; }}
-  .vs-meta {{ font-size: 11px; color: #555; margin-bottom: 10px; font-family: monospace; }}
-  .vs-snippet {{ background: #0d0d0d; border: 1px solid #222; border-radius: 6px;
-                 padding: 10px 12px; font-size: 12px; font-family: monospace; color: #a5f3fc;
+  .vs-ready.ready {{ color: var(--apx-ok); background: rgba(59, 166, 94, 0.1); }}
+  .vs-ready.not-ready {{ color: var(--apx-err); background: rgba(200, 50, 67, 0.1); }}
+  .vs-meta {{ font-size: 11px; color: var(--apx-muted); margin-bottom: 10px; font-family: var(--apx-mono); }}
+  .vs-snippet {{ background: var(--apx-bg); border: 1px solid var(--apx-border); border-radius: 6px;
+                 padding: 10px 12px; font-size: 12px; font-family: var(--apx-mono); color: var(--apx-accent);
                  white-space: pre; overflow-x: auto; }}
-  .vs-error {{ color: #f87171; font-size: 12px; font-family: monospace; }}
-  .vs-empty {{ color: #444; font-size: 12px; font-style: italic; }}
+  .vs-error {{ color: var(--apx-err); font-size: 12px; font-family: var(--apx-mono); }}
+  .vs-empty {{ color: var(--apx-muted); font-size: 12px; font-style: italic; }}
   /* Health checks */
   .checks-section {{ margin-bottom: 32px; }}
   .check-row {{ display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px;
-                 background: #111; border: 1px solid #1f1f1f; border-radius: 8px;
+                 background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 8px;
                  margin-bottom: 8px; }}
   .check-dot {{ width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }}
   .check-body {{ flex: 1; min-width: 0; }}
-  .check-name {{ font-size: 13px; color: #e8e8e8; font-weight: 500; }}
-  .check-msg {{ font-size: 12px; color: #888; margin-top: 2px; word-break: break-word; }}
-  .check-hint {{ font-size: 11px; color: #555; margin-top: 4px; font-style: italic; }}
+  .check-name {{ font-size: 13px; color: var(--apx-text); font-weight: 500; }}
+  .check-msg {{ font-size: 12px; color: var(--apx-muted); margin-top: 2px; word-break: break-word; }}
+  .check-hint {{ font-size: 11px; color: var(--apx-muted); margin-top: 4px; font-style: italic; }}
   .check-status {{ font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
                     text-transform: uppercase; letter-spacing: .5px; flex-shrink: 0;
                     align-self: flex-start; margin-top: 2px; }}
-  .check-status-ok {{ color: #4ade80; background: #052e16; }}
-  .check-status-warn {{ color: #facc15; background: #2a2400; }}
-  .check-status-fail {{ color: #f87171; background: #2a0a0a; }}
-  .check-status-skip {{ color: #666; background: #1a1a1a; }}
+  .check-status-ok {{ color: var(--apx-ok); background: rgba(59, 166, 94, 0.1); }}
+  .check-status-warn {{ color: var(--apx-warn); background: rgba(250, 203, 102, 0.1); }}
+  .check-status-fail {{ color: var(--apx-err); background: rgba(200, 50, 67, 0.1); }}
+  .check-status-skip {{ color: var(--apx-muted); background: var(--apx-panel-2); }}
 </style>
 </head>
 <body>
@@ -1076,7 +1073,7 @@ def _render_probe_ui(
 <script>
 (async () => {{
   const list = document.getElementById('checks-list');
-  const dot = (s) => ({{ok:'#4ade80', warn:'#facc15', fail:'#f87171', skip:'#444'}})[s] || '#888';
+  const dot = (s) => ({{ok:'var(--apx-ok)', warn:'var(--apx-warn)', fail:'var(--apx-err)', skip:'var(--apx-muted)'}})[s] || 'var(--apx-muted)';
   // Escape so server/remote-controlled check name/message/hint can't inject HTML.
   const esc = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

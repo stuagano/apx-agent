@@ -41,6 +41,8 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementState
 from pydantic import BaseModel
 
+from ._ui_theme import apx_theme_style
+
 logger = logging.getLogger(__name__)
 
 # Module scanned for ``<name>_demo`` twins when a deployment keeps its
@@ -674,7 +676,8 @@ def _render_tools_ui() -> str:
     from ._ui_table import TABLE_CSS, TABLE_JS
 
     return (
-        _PAGE.replace("{APX_TOOLS_NAVLINKS}", _apx_nav_links("tools"))
+        _PAGE.replace("{APX_THEME}", apx_theme_style())
+        .replace("{APX_TOOLS_NAVLINKS}", _apx_nav_links("tools"))
         .replace("{APX_TABLE_CSS}", TABLE_CSS)
         .replace("{APX_TABLE_JS}", TABLE_JS)
         .replace("{APX_TOOLS_OVERLAY}", _deploy_overlay_html())
@@ -688,11 +691,12 @@ _PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tools — APX Dev</title>
+{APX_THEME}
 <style>
-  :root { --bg:#0a0a0a; --panel:#111; --border:#2a2a2a; --strong:#333;
-          --text:#e5e7eb; --muted:#888; --dim:#555; --accent:#60b0ff;
-          --accent-bg:#0d1f38; --accent-border:#1e3a5f;
-          --ok:#4ade80; --warn:#fbbf24; --err:#f87171; color-scheme:dark; }
+  :root { --bg:#11171C; --panel:#1F272D; --border:#445461; --strong:#445461;
+          --text:#E8ECF0; --muted:#92A4B3; --dim:#92A4B3; --accent:#2272B4;
+          --accent-bg:#37444F; --accent-border:#445461;
+          --ok:#3BA65E; --warn:#FACB66; --err:#C83243; color-scheme:dark; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { font-family:ui-sans-serif,system-ui,-apple-system,sans-serif; font-size:13px;
          background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
@@ -705,7 +709,7 @@ _PAGE = r"""<!doctype html>
   .spacer { margin-left:auto; }
   .link { color:var(--accent); text-decoration:none; font-size:12px; padding:4px 10px;
           border:1px solid var(--accent-border); border-radius:5px; background:var(--accent-bg); }
-  .link:hover { background:#112a4a; }
+  .link:hover { background:var(--accent-bg); }
   .btn { font:inherit; font-size:12px; color:var(--muted); background:transparent;
          border:1px solid var(--strong); border-radius:5px; padding:4px 11px; cursor:pointer; }
   .btn:hover { color:var(--text); border-color:var(--dim); }
@@ -715,13 +719,13 @@ _PAGE = r"""<!doctype html>
 
   .wrap { flex:1; display:flex; min-height:0; }
   aside { width:290px; flex-shrink:0; border-right:1px solid var(--border);
-          overflow-y:auto; background:#0b0b0b; }
+          overflow-y:auto; background:var(--bg); }
   aside .hd { padding:10px 14px; font-size:10px; font-weight:700; color:var(--dim);
-              text-transform:uppercase; letter-spacing:.06em; border-bottom:1px solid #161616; }
+              text-transform:uppercase; letter-spacing:.06em; border-bottom:1px solid var(--border); }
   .tool { display:block; width:100%; text-align:left; background:none; border:none;
-          border-bottom:1px solid #161616; border-left:2px solid transparent;
+          border-bottom:1px solid var(--border); border-left:2px solid transparent;
           padding:10px 14px; cursor:pointer; color:var(--text); font:inherit; }
-  .tool:hover { background:#141414; }
+  .tool:hover { background:var(--panel); }
   .tool.active { background:var(--accent-bg); border-left-color:var(--accent); }
   .tool .n { font-family:ui-monospace,monospace; font-size:12.5px; font-weight:500; }
   .tool .m { font-size:10.5px; color:var(--dim); margin-top:3px; font-family:ui-monospace,monospace; }
@@ -734,22 +738,22 @@ _PAGE = r"""<!doctype html>
          word-break:break-all; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
   .chip { font-size:11px; font-family:ui-monospace,monospace; padding:2px 8px;
-          border-radius:10px; border:1px solid var(--border); color:var(--muted); background:#0e0e0e; }
+          border-radius:10px; border:1px solid var(--border); color:var(--muted); background:var(--bg); }
   .chip.ok { color:var(--ok); border-color:#14532d; background:#04140a; }
   .chip.warn { color:var(--warn); border-color:#5a3a00; background:#1a1200; }
 
   .bar { display:flex; align-items:center; gap:8px; margin:20px 0 8px; }
   .bar .lbl { font-size:10px; font-weight:700; color:var(--dim); text-transform:uppercase;
               letter-spacing:.06em; margin-right:auto; }
-  .code { display:flex; background:#0d0d0d; border:1px solid #1e1e1e; border-radius:8px;
+  .code { display:flex; background:var(--bg); border:1px solid var(--border); border-radius:8px;
           overflow:auto; max-height:58vh; }
-  .code .gutter { padding:10px 8px 10px 12px; text-align:right; color:#3a3a3a;
+  .code .gutter { padding:10px 8px 10px 12px; text-align:right; color:var(--muted);
                   font-family:ui-monospace,monospace; font-size:11.5px; line-height:1.55;
-                  user-select:none; white-space:pre; border-right:1px solid #1a1a1a; }
+                  user-select:none; white-space:pre; border-right:1px solid var(--border); }
   .code pre { margin:0; padding:10px 14px; font-family:ui-monospace,monospace;
-              font-size:11.5px; line-height:1.55; color:#c9d1d9; white-space:pre; }
-  textarea { width:100%; min-height:58vh; background:#0d0d0d; border:1px solid var(--accent-border);
-             border-radius:8px; padding:12px 14px; color:#c9d1d9; resize:vertical;
+              font-size:11.5px; line-height:1.55; color:var(--text); white-space:pre; }
+  textarea { width:100%; min-height:58vh; background:var(--bg); border:1px solid var(--accent-border);
+             border-radius:8px; padding:12px 14px; color:var(--text); resize:vertical;
              font-family:ui-monospace,monospace; font-size:11.5px; line-height:1.55; }
   textarea:focus { outline:none; border-color:var(--accent); }
   textarea.run-args { min-height:7rem; border-color:var(--border); }
@@ -757,15 +761,15 @@ _PAGE = r"""<!doctype html>
   #run-status.run { color:var(--accent); }
   #run-status.ok { color:var(--ok); }
   #run-status.err { color:var(--err); }
-  #run-output { display:none; margin:12px 0 0; padding:12px 14px; background:#0b0b0b;
-                border:1px solid #1c1c1c; border-radius:8px;
-                font-family:ui-monospace,monospace; font-size:11.5px; line-height:1.55; color:#c9d1d9;
+  #run-output { display:none; margin:12px 0 0; padding:12px 14px; background:var(--panel);
+                border:1px solid var(--border); border-radius:8px;
+                font-family:ui-monospace,monospace; font-size:11.5px; line-height:1.55; color:var(--text);
                 white-space:pre-wrap; word-break:break-word; max-height:24rem; overflow:auto; }
   #run-output.show { display:block; }
-  #run-output.err { color:#fda4af; }
+  #run-output.err { color:var(--err); }
   {APX_TABLE_CSS}
 
-  details { margin-top:14px; border:1px solid #1c1c1c; border-radius:8px; background:#0d0d0d; }
+  details { margin-top:14px; border:1px solid var(--border); border-radius:8px; background:var(--bg); }
   details > summary { cursor:pointer; padding:9px 13px; font-size:12px; color:var(--muted);
                       list-style:none; user-select:none; }
   details > summary::-webkit-details-marker { display:none; }
@@ -773,7 +777,7 @@ _PAGE = r"""<!doctype html>
   details[open] > summary::before { content:"▾ "; }
   details .body { padding:0 13px 13px; }
   table.kv { width:100%; border-collapse:collapse; font-family:ui-monospace,monospace; font-size:11.5px; }
-  table.kv td { padding:4px 8px 4px 0; vertical-align:top; border-bottom:1px solid #161616;
+  table.kv td { padding:4px 8px 4px 0; vertical-align:top; border-bottom:1px solid var(--border);
                 word-break:break-all; }
   table.kv td:first-child { color:var(--muted); width:210px; white-space:nowrap; }
 
@@ -787,10 +791,10 @@ _PAGE = r"""<!doctype html>
   #banner code { font-family:ui-monospace,monospace; font-size:11.5px; }
 
   header nav { margin-left:auto; display:flex; gap:4px; }
-  header nav a { font-size:12px; color:#888; text-decoration:none; padding:3px 10px;
+  header nav a { font-size:12px; color:var(--muted); text-decoration:none; padding:3px 10px;
                  border-radius:5px; border:1px solid transparent; }
-  header nav a:hover { color:#ccc; border-color:#333; }
-  header nav a.active { color:#60b0ff; background:#0d1f38; border-color:#1e3a5f; }
+  header nav a:hover { color:var(--text); border-color:var(--border); }
+  header nav a.active { color:var(--accent); background:var(--accent-bg); border-color:var(--accent-border); }
 </style>
 </head>
 <body>
@@ -942,7 +946,7 @@ function loadFailure(message, raw) {
   const sample = String(raw || '').trim();
   document.getElementById('main').innerHTML =
     '<div class="empty"><strong>Tool logic did not load.</strong>' +
-    '<div style="margin-top:10px;color:#888;line-height:1.6;max-width:72ch">' + esc(message) +
+    '<div style="margin-top:10px;color:var(--apx-muted);line-height:1.6;max-width:72ch">' + esc(message) +
     '<br><br>If this page is inside the console iframe, the browser may have routed the fetch through the Databricks app login instead of returning JSON.' +
     '</div>' +
     (sample ? '<pre style="margin-top:12px;text-align:left;white-space:pre-wrap;background:#0f0f0f;border:1px solid #222;border-radius:8px;padding:12px;max-width:100%;overflow:auto">' + esc(sample.slice(0, 320)) + '</pre>' : '') +
@@ -1103,7 +1107,7 @@ function renderDetail() {
 
   if (t.source.indexOf('_demo_mode()') !== -1) {
     parts.push('<details><summary>Both branches — this function short-circuits on <code>_demo_mode()</code></summary>' +
-      '<div class="body"><p style="color:#888;font-size:12px;line-height:1.6">' +
+      '<div class="body"><p style="color:var(--apx-muted);font-size:12px;line-height:1.6">' +
       'This deployment is currently using the ' +
       '<strong>' + (demo ? 'synthetic (demo)' : 'live UC/SQL') + '</strong> branch.' +
       (demo ? '' : ' The tables it reads are shown in Runtime below.') +
@@ -1136,8 +1140,8 @@ function renderDetail() {
     '<table class="kv">' + cfg + '</table>' +
     '<table class="kv" style="margin-top:12px">' +
     '<tr><td>source file</td><td>' + esc(t.file || '—') +
-      (t.file_writable ? ' <span style="color:#4ade80">writable</span>'
-                       : ' <span style="color:#f87171">read-only</span>') + '</td></tr>' +
+      (t.file_writable ? ' <span style="color:var(--apx-ok)">writable</span>'
+                       : ' <span style="color:var(--apx-err)">read-only</span>') + '</td></tr>' +
     '<tr><td>agent context</td><td>' + (DATA.status.agent_context ? 'populated' : 'MISSING') + '</td></tr>' +
     '<tr><td>model-facing tools</td><td>' + DATA.status.llm_tool_count + '</td></tr>' +
     '</table>' +

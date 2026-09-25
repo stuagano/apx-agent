@@ -21,6 +21,8 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from ._ui_theme import apx_theme_style
+
 _VENDOR = Path(__file__).parent / "_static" / "vendor"
 
 
@@ -44,46 +46,44 @@ _PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
+__THEME__
 <style>
-  /* Palette mirrors the apx-agent dev UI (_ui_chat.py) — dark-only, same accent. */
+  /* Palette uses Du Bois design tokens from _ui_theme. */
   :root {
-    --bg: #0a0a0a; --panel: #111; --border: #2a2a2a; --border-strong: #333;
-    --text: #e5e7eb; --text-muted: #888; --accent: #60b0ff;
-    --accent-bg: #0d1f38; --accent-border: #1e3a5f;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  body { margin: 0; font-family: var(--apx-font);
          font-size: 14px; line-height: 1.5; display: flex; flex-direction: column;
-         height: 100vh; background: var(--bg); color: var(--text); }
-  header { padding: 12px 16px; border-bottom: 1px solid var(--border);
-           background: var(--panel); flex-shrink: 0;
+         height: 100vh; background: var(--apx-bg); color: var(--apx-text); }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--apx-border);
+           background: var(--apx-panel); flex-shrink: 0;
            display: flex; align-items: baseline; gap: 10px; }
   header .name { font-weight: 600; }
-  header .desc { font-size: 13px; color: var(--text-muted); }
+  header .desc { font-size: 13px; color: var(--apx-muted); }
   #log { flex: 1; overflow-y: auto; padding: 16px; display: flex;
          flex-direction: column; gap: 12px; }
   .msg { max-width: 760px; width: fit-content; padding: 10px 14px;
          border-radius: 12px; white-space: normal; word-wrap: break-word; }
-  .user { align-self: flex-end; background: var(--accent-bg); color: var(--text);
-          border: 1px solid var(--accent-border); }
-  .assistant { align-self: flex-start; background: var(--panel);
-               border: 1px solid var(--border); }
-  .assistant a { color: var(--accent); }
-  .assistant pre { overflow-x: auto; background: #000; padding: 8px;
-                   border-radius: 6px; border: 1px solid var(--border); }
+  .user { align-self: flex-end; background: var(--apx-accent); color: var(--apx-on-accent);
+          border: 1px solid var(--apx-accent-hover); }
+  .assistant { align-self: flex-start; background: var(--apx-panel);
+               border: 1px solid var(--apx-border); }
+  .assistant a { color: var(--apx-accent); }
+  .assistant pre { overflow-x: auto; background: var(--apx-bg); padding: 8px;
+                   border-radius: 6px; border: 1px solid var(--apx-border); }
   .assistant p:first-child { margin-top: 0; }
   .assistant p:last-child { margin-bottom: 0; }
-  .err { align-self: center; color: #f87171; font-size: 13px; }
+  .err { align-self: center; color: var(--apx-err); font-size: 13px; }
   form { display: flex; gap: 8px; padding: 12px 16px;
-         border-top: 1px solid var(--border); background: var(--panel); }
+         border-top: 1px solid var(--apx-border); background: var(--apx-panel); }
   textarea { flex: 1; resize: none; padding: 10px; border-radius: 8px;
-             border: 1px solid var(--border-strong); font: inherit;
-             background: var(--bg); color: var(--text); max-height: 160px; }
-  textarea:focus { outline: none; border-color: var(--accent-border); }
-  button { padding: 0 18px; border: 1px solid var(--accent-border); border-radius: 8px;
-           background: var(--accent-bg); color: var(--accent); font: inherit; cursor: pointer; }
-  button:hover:not(:disabled) { border-color: var(--accent); }
+             border: 1px solid var(--apx-border); font: inherit;
+             background: var(--apx-bg); color: var(--apx-text); max-height: 160px; }
+  textarea:focus { outline: none; border-color: var(--apx-accent); }
+  button { padding: 0 18px; border: 1px solid var(--apx-border); border-radius: 8px;
+           background: transparent; color: var(--apx-accent); font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--apx-accent); background: var(--apx-accent); color: var(--apx-on-accent); }
   button:disabled { opacity: .5; cursor: default; }
   .dots::after { content: '...'; animation: blink 1.2s steps(4) infinite; }
   @keyframes blink { to { clip-path: inset(0 100% 0 0); } }
@@ -200,8 +200,10 @@ def render_root_chat(name: str = "Agent", description: str | None = None) -> str
     if description:
         safe_desc = html.escape(description)
         header += f'<span class="desc">{safe_desc}</span>'
+    theme = apx_theme_style()
     return (
         _PAGE.replace("__VENDOR__", _inline_vendor())
+        .replace("__THEME__", theme)
         .replace("__TITLE__", title)
         .replace("__HEADER__", header)
     )

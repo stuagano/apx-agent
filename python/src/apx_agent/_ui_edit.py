@@ -15,6 +15,7 @@ from ._ui_nav import (
     _deploy_overlay_html,
     _topology_minimap_html,
 )
+from ._ui_theme import apx_theme_style
 
 # ---------------------------------------------------------------------------
 # /_apx/edit — in-browser agent_router.py editor
@@ -1312,167 +1313,169 @@ def _render_edit_ui(
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
+{apx_theme_style()}
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Edit — APX Dev</title>
 <style>
   *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
   html, body {{ height: 100%; overflow: hidden; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: #0d0d0d; color: #e8e8e8; display: flex; flex-direction: column; }}
+  body {{ font-family: var(--apx-font);
+         background: var(--apx-bg); color: var(--apx-text); display: flex; flex-direction: column; }}
   /* ── Header ── */
-  header {{ padding: 0 16px; background: #111; border-bottom: 1px solid #2a2a2a;
+  header {{ padding: 0 16px; background: var(--apx-panel); border-bottom: 1px solid var(--apx-border);
             display: flex; align-items: center; gap: 10px; flex-shrink: 0; height: 44px; }}
-  .badge {{ background: #1e3a5f; color: #60b0ff; font-size: 11px; font-weight: 600;
+  .badge {{ background: var(--apx-panel-2); color: var(--apx-accent); font-size: 11px; font-weight: 600;
             padding: 2px 8px; border-radius: 4px; letter-spacing: .5px; text-transform: uppercase; }}
-  h1 {{ font-size: 15px; font-weight: 600; color: #fff; }}
+  h1 {{ font-size: 15px; font-weight: 600; color: var(--apx-text); }}
   nav {{ margin-left: auto; display: flex; gap: 4px; }}
-  nav a {{ font-size: 12px; color: #888; text-decoration: none; padding: 3px 10px;
+  nav a {{ font-size: 12px; color: var(--apx-muted); text-decoration: none; padding: 3px 10px;
            border-radius: 5px; border: 1px solid transparent; }}
-  nav a:hover {{ color: #ccc; border-color: #333; }}
-  nav a.active {{ color: #60b0ff; background: #0d1f38; border-color: #1e3a5f; }}
-  #apx-banner {{ background: #2a1a00; border-bottom: 1px solid #5a3a00; color: #ffb84d;
+  nav a:hover {{ color: var(--apx-text); border-color: var(--apx-border); }}
+  nav a.active {{ color: var(--apx-accent); background: var(--apx-panel-2); border-color: var(--apx-panel-2); }}
+  #apx-banner {{ background: var(--apx-panel-2); border-bottom: 1px solid var(--apx-warn); color: var(--apx-warn);
                  padding: 8px 16px; font-size: 13px; flex-shrink: 0; }}
   /* ── Split layout ── */
   #workspace {{ flex: 1; display: flex; overflow: hidden; }}
   #editor-wrap {{ flex: 1; overflow: hidden; display: flex; flex-direction: column;
-                  border-right: 1px solid #1e1e1e; }}
+                  border-right: 1px solid var(--apx-border); }}
   #editor-wrap .cm-editor {{ flex: 1; min-height: 0; }}
   #editor-wrap > div {{ flex: 1; min-height: 0; display: flex; flex-direction: column; }}
   #editor-wrap .cm-scroller {{ overflow: auto; flex: 1; }}
   /* ── Schema / Tools panel ── */
   #schema-panel {{ width: 300px; flex-shrink: 0; display: flex; flex-direction: column;
-                   background: #0a0a0a; overflow: hidden; transition: width .15s ease; }}
+                   background: var(--apx-bg); overflow: hidden; transition: width .15s ease; }}
   #schema-panel.wide {{ width: min(720px, 55vw); }}
-  #schema-header {{ padding: 0; border-bottom: 1px solid #1e1e1e; flex-shrink: 0;
+  #schema-header {{ padding: 0; border-bottom: 1px solid var(--apx-border); flex-shrink: 0;
                     display: flex; align-items: center; justify-content: space-between; }}
-  #schema-header span {{ font-size: 11px; font-weight: 600; color: #555;
+  #schema-header span {{ font-size: 11px; font-weight: 600; color: var(--apx-muted);
                           text-transform: uppercase; letter-spacing: .6px; }}
-  #schema-header .schema-hint {{ font-size: 10px; color: #333; font-style: italic;
+  #schema-header .schema-hint {{ font-size: 10px; color: var(--apx-muted); font-style: italic;
                                  padding-right: 1px; }}
   #schema-subtabs {{ display: flex; padding: 6px 8px 0; gap: 8px; }}
   #schema-subtabs button {{ background: none; border: none; border-bottom: 2px solid transparent;
-                            color: #555; font-size: 12px; font-weight: 600; padding: 6px 10px;
+                            color: var(--apx-muted); font-size: 12px; font-weight: 600; padding: 6px 10px;
                             cursor: pointer; }}
-  #schema-subtabs button:hover {{ color: #aaa; }}
-  #schema-subtabs button.active {{ color: #60b0ff; border-bottom-color: #60b0ff; }}
+  #schema-subtabs button:hover {{ color: var(--apx-text); }}
+  #schema-subtabs button.active {{ color: var(--apx-accent); border-bottom-color: var(--apx-accent); }}
   #tools-embed {{ flex: 1; display: flex; flex-direction: column; min-height: 0; }}
-  #tools-embed iframe {{ flex: 1; border: none; background: #0a0a0a; width: 100%; }}
+  #tools-embed iframe {{ flex: 1; border: none; background: var(--apx-bg); width: 100%; }}
   #schema-list {{ flex: 1; overflow-y: auto; padding: 8px; }}
   .panel-section {{ margin-bottom: 12px; }}
-  .panel-section-title {{ font-size: 10px; font-weight: 700; color: #555;
+  .panel-section-title {{ font-size: 10px; font-weight: 700; color: var(--apx-muted);
                           text-transform: uppercase; letter-spacing: .6px;
                           margin: 4px 4px 8px; }}
-  .tool-card, .agent-card {{ background: #111; border: 1px solid #1e1e1e; border-radius: 6px;
+  .tool-card, .agent-card {{ background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 6px;
                 padding: 10px 12px; margin-bottom: 8px; }}
-  .tool-name, .agent-name {{ font-size: 12px; font-weight: 600; color: #e8e8e8; font-family: monospace;
+  .tool-name, .agent-name {{ font-size: 12px; font-weight: 600; color: var(--apx-text); font-family: var(--apx-mono);
                 margin-bottom: 4px; }}
-  .tool-desc, .agent-desc {{ font-size: 11px; color: #666; margin-bottom: 6px; line-height: 1.4; }}
-  .agent-url {{ font-size: 10px; color: #555; font-family: monospace; word-break: break-all; }}
+  .tool-desc, .agent-desc {{ font-size: 11px; color: var(--apx-muted); margin-bottom: 6px; line-height: 1.4; }}
+  .agent-url {{ font-size: 10px; color: var(--apx-muted); font-family: var(--apx-mono); word-break: break-all; }}
   .tool-params {{ display: flex; flex-direction: column; gap: 3px; }}
   .param-row {{ display: flex; gap: 6px; align-items: baseline; }}
-  .param-name {{ font-size: 11px; font-family: monospace; color: #a5f3fc; }}
-  .param-type {{ font-size: 10px; color: #555; }}
-  .param-desc {{ font-size: 10px; color: #444; }}
-  .no-params {{ font-size: 10px; color: #333; font-style: italic; }}
-  .schema-error {{ font-size: 11px; color: #f87171; font-family: monospace; padding: 8px; }}
+  .param-name {{ font-size: 11px; font-family: var(--apx-mono); color: var(--apx-accent); }}
+  .param-type {{ font-size: 10px; color: var(--apx-muted); }}
+  .param-desc {{ font-size: 10px; color: var(--apx-muted); }}
+  .no-params {{ font-size: 10px; color: var(--apx-muted); font-style: italic; }}
+  .no-description {{ color: var(--apx-muted); }}
+  .schema-error {{ font-size: 11px; color: var(--apx-err); font-family: var(--apx-mono); padding: 8px; }}
   /* ── Status bar ── */
-  #status-bar {{ background: #111; border-top: 1px solid #2a2a2a; padding: 7px 14px;
+  #status-bar {{ background: var(--apx-panel); border-top: 1px solid var(--apx-border); padding: 7px 14px;
                  display: flex; align-items: center; gap: 10px; flex-shrink: 0; }}
-  #btn-save {{ background: #2563eb; color: #fff; border: none; border-radius: 6px;
+  #btn-save {{ background: var(--apx-accent); color: var(--apx-on-accent); border: none; border-radius: 6px;
                padding: 5px 14px; font-size: 13px; cursor: pointer; font-weight: 500; }}
-  #btn-save:hover {{ background: #1d4ed8; }}
-  #btn-new-tool {{ background: transparent; color: #60b0ff; border: 1px solid #1e3a5f;
+  #btn-save:hover {{ background: var(--apx-accent-hover); }}
+  #btn-new-tool {{ background: transparent; color: var(--apx-accent); border: 1px solid var(--apx-panel-2);
                    border-radius: 6px; padding: 5px 14px; font-size: 13px; cursor: pointer; }}
-  #btn-new-tool:hover {{ background: #0d1f38; }}
-  #status-msg {{ font-size: 12px; font-family: monospace; }}
-  #status-msg.ok {{ color: #4ade80; }}
-  #status-msg.err {{ color: #f87171; }}
-  kbd {{ background: #222; border: 1px solid #333; border-radius: 3px;
-         padding: 1px 4px; font-size: 10px; color: #777; }}
+  #btn-new-tool:hover {{ background: var(--apx-panel-2); }}
+  #status-msg {{ font-size: 12px; font-family: var(--apx-mono); }}
+  #status-msg.ok {{ color: var(--apx-ok); }}
+  #status-msg.err {{ color: var(--apx-err); }}
+  kbd {{ background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 3px;
+         padding: 1px 4px; font-size: 10px; color: var(--apx-muted); }}
   /* ── New Tool modal ── */
   #modal-overlay {{ position: fixed; inset: 0; background: rgba(0,0,0,.7);
                     display: none; align-items: center; justify-content: center; z-index: 100; }}
   #modal-overlay.open {{ display: flex; }}
-  #modal {{ background: #141414; border: 1px solid #2a2a2a; border-radius: 10px;
+  #modal {{ background: var(--apx-bg); border: 1px solid var(--apx-border); border-radius: 10px;
             width: 560px; max-height: 90vh; overflow-y: auto; display: flex;
             flex-direction: column; }}
-  #modal-head {{ padding: 16px 20px; border-bottom: 1px solid #1e1e1e;
+  #modal-head {{ padding: 16px 20px; border-bottom: 1px solid var(--apx-border);
                  display: flex; align-items: center; justify-content: space-between; }}
   #modal-head h2 {{ font-size: 14px; font-weight: 600; }}
-  #modal-close {{ background: none; border: none; color: #555; font-size: 18px;
+  #modal-close {{ background: none; border: none; color: var(--apx-muted); font-size: 18px;
                   cursor: pointer; line-height: 1; padding: 2px 6px; }}
-  #modal-close:hover {{ color: #ccc; }}
-  #btn-from-data {{ background: transparent; color: #9d7bff; border: 1px solid #3a2d5f;
+  #modal-close:hover {{ color: var(--apx-text); }}
+  #btn-from-data {{ background: transparent; color: var(--apx-accent); border: 1px solid var(--apx-panel-2);
     border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; margin-left: 8px; }}
-  #btn-from-data:hover {{ background: #1a1230; }}
+  #btn-from-data:hover {{ background: var(--apx-panel-2); }}
   /* "From data" modal — hosts the Setup flow (data source + schema-grounded gen) in an iframe */
   #data-modal-overlay {{ position: fixed; inset: 0; background: rgba(0,0,0,.7);
     display: none; align-items: center; justify-content: center; z-index: 200; }}
   #data-modal-overlay.open {{ display: flex; }}
-  #data-modal {{ width: 88vw; max-width: 940px; height: 86vh; background: #0d0d0d;
-    border: 1px solid #2a2a2a; border-radius: 12px; display: flex; flex-direction: column;
+  #data-modal {{ width: 88vw; max-width: 940px; height: 86vh; background: var(--apx-bg);
+    border: 1px solid var(--apx-border); border-radius: 12px; display: flex; flex-direction: column;
     overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.6); }}
   #data-modal-head {{ display: flex; align-items: center; gap: 10px; padding: 12px 16px;
-    border-bottom: 1px solid #1e1e1e; }}
-  #data-modal-head h2 {{ font-size: 14px; color: #fff; flex: 1; margin: 0; }}
-  #data-modal-close {{ background: none; border: none; color: #555; font-size: 18px;
+    border-bottom: 1px solid var(--apx-border); }}
+  #data-modal-head h2 {{ font-size: 14px; color: var(--apx-text); flex: 1; margin: 0; }}
+  #data-modal-close {{ background: none; border: none; color: var(--apx-muted); font-size: 18px;
     cursor: pointer; line-height: 1; }}
-  #data-modal-close:hover {{ color: #ccc; }}
-  #data-modal iframe {{ flex: 1; width: 100%; border: none; background: #0d0d0d; }}
+  #data-modal-close:hover {{ color: var(--apx-text); }}
+  #data-modal iframe {{ flex: 1; width: 100%; border: none; background: var(--apx-bg); }}
   #apx-toast {{ position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
-    background: #0d2a0d; color: #4ade80; border: 1px solid #1a4a1a; border-radius: 8px;
+    background: var(--apx-panel-2); color: var(--apx-ok); border: 1px solid var(--apx-ok); border-radius: 8px;
     padding: 10px 18px; font-size: 13px; z-index: 300; opacity: 0; transition: opacity .2s;
     pointer-events: none; }}
   #apx-toast.show {{ opacity: 1; }}
   #modal-body {{ padding: 20px; display: flex; flex-direction: column; gap: 14px; }}
   .field {{ display: flex; flex-direction: column; gap: 5px; }}
-  .field label {{ font-size: 11px; font-weight: 600; color: #888;
+  .field label {{ font-size: 11px; font-weight: 600; color: var(--apx-muted);
                   text-transform: uppercase; letter-spacing: .4px; }}
   .field input, .field textarea, .field select {{
-    background: #0d0d0d; border: 1px solid #2a2a2a; color: #e8e8e8;
-    border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: monospace;
+    background: var(--apx-panel); border: 1px solid var(--apx-border); color: var(--apx-text);
+    border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: var(--apx-mono);
     outline: none; resize: vertical; }}
-  .field input:focus, .field textarea:focus, .field select:focus {{ border-color: #3a7bd5; }}
+  .field input:focus, .field textarea:focus, .field select:focus {{ border-color: var(--apx-accent); }}
   .field select {{ cursor: pointer; }}
   #param-rows {{ display: flex; flex-direction: column; gap: 6px; }}
   .param-row-form {{ display: grid; grid-template-columns: 1fr 100px 1fr auto;
                      gap: 6px; align-items: center; }}
   .param-row-form input, .param-row-form select {{
-    background: #0d0d0d; border: 1px solid #2a2a2a; color: #e8e8e8;
-    border-radius: 5px; padding: 5px 8px; font-size: 12px; font-family: monospace; outline: none; }}
-  .param-row-form input:focus, .param-row-form select:focus {{ border-color: #3a7bd5; }}
-  .btn-rm-param {{ background: none; border: none; color: #555; cursor: pointer;
+    background: var(--apx-panel); border: 1px solid var(--apx-border); color: var(--apx-text);
+    border-radius: 5px; padding: 5px 8px; font-size: 12px; font-family: var(--apx-mono); outline: none; }}
+  .param-row-form input:focus, .param-row-form select:focus {{ border-color: var(--apx-accent); }}
+  .btn-rm-param {{ background: none; border: none; color: var(--apx-muted); cursor: pointer;
                    font-size: 16px; line-height: 1; padding: 2px 4px; }}
-  .btn-rm-param:hover {{ color: #f87171; }}
-  #btn-add-param {{ background: none; border: 1px dashed #2a2a2a; color: #555;
+  .btn-rm-param:hover {{ color: var(--apx-err); }}
+  #btn-add-param {{ background: none; border: 1px dashed var(--apx-border); color: var(--apx-muted);
                     border-radius: 6px; padding: 6px; font-size: 12px;
                     cursor: pointer; text-align: center; margin-top: 2px; }}
-  #btn-add-param:hover {{ border-color: #3a7bd5; color: #60b0ff; }}
-  #modal-preview {{ background: #0d0d0d; border: 1px solid #1e1e1e; border-radius: 6px;
-                    padding: 12px; font-size: 12px; font-family: monospace;
-                    color: #a5f3fc; white-space: pre; overflow-x: auto; line-height: 1.5; }}
-  #modal-foot {{ padding: 14px 20px; border-top: 1px solid #1e1e1e;
+  #btn-add-param:hover {{ border-color: var(--apx-accent); color: var(--apx-accent); }}
+  #modal-preview {{ background: var(--apx-bg); border: 1px solid var(--apx-border); border-radius: 6px;
+                    padding: 12px; font-size: 12px; font-family: var(--apx-mono);
+                    color: var(--apx-accent); white-space: pre; overflow-x: auto; line-height: 1.5; }}
+  #modal-foot {{ padding: 14px 20px; border-top: 1px solid var(--apx-border);
                  display: flex; justify-content: flex-end; gap: 8px; }}
-  #btn-insert {{ background: #2563eb; color: #fff; border: none; border-radius: 6px;
+  #btn-insert {{ background: var(--apx-accent); color: var(--apx-on-accent); border: none; border-radius: 6px;
                  padding: 7px 18px; font-size: 13px; cursor: pointer; font-weight: 500; }}
-  #btn-insert:hover {{ background: #1d4ed8; }}
+  #btn-insert:hover {{ background: var(--apx-accent-hover); }}
   /* Natural-language generate section */
-  #f-gen {{ background: #0c1a2e; border: 1px solid #1e3a5f; border-radius: 8px;
+  #f-gen {{ background: var(--apx-panel-2); border: 1px solid var(--apx-panel-2); border-radius: 8px;
             padding: 12px; display: flex; flex-direction: column; gap: 8px; }}
-  #f-gen > label {{ font-size: 11px; font-weight: 600; color: #60b0ff;
+  #f-gen > label {{ font-size: 11px; font-weight: 600; color: var(--apx-accent);
                     text-transform: uppercase; letter-spacing: .4px; }}
   #f-gen-row {{ display: flex; gap: 8px; align-items: stretch; }}
   #f-prompt {{ flex: 1; }}
-  #btn-generate {{ background: #1e3a5f; color: #cfe6ff; border: 1px solid #2d568a;
+  #btn-generate {{ background: var(--apx-panel-2); color: var(--apx-accent); border: 1px solid var(--apx-border);
                    border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer;
                    font-weight: 500; white-space: nowrap; }}
-  #btn-generate:hover {{ background: #285080; }}
+  #btn-generate:hover {{ background: var(--apx-panel); }}
   #btn-generate:disabled {{ opacity: .5; cursor: default; }}
-  #gen-msg {{ font-size: 11px; color: #5a7fae; min-height: 14px; }}
-  #btn-cancel {{ background: transparent; color: #888; border: 1px solid #333;
+  #gen-msg {{ font-size: 11px; color: var(--apx-muted); min-height: 14px; }}
+  #btn-cancel {{ background: transparent; color: var(--apx-muted); border: 1px solid var(--apx-border);
                  border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer; }}
-  #btn-cancel:hover {{ color: #ccc; border-color: #555; }}
+  #btn-cancel:hover {{ color: var(--apx-text); border-color: var(--apx-accent); }}
 </style>
 </head>
 <body>
@@ -1504,7 +1507,7 @@ def _render_edit_ui(
   <button id="btn-new-tool">+ New Tool</button>
   <button id="btn-from-data">✨ From data</button>
   <span id="status-msg"></span>
-  <span style="margin-left:auto;font-size:11px;color:#333">{file_label}</span>
+  <span style="margin-left:auto;font-size:11px;color:var(--apx-muted)">{file_label}</span>
 </div>
 
 <!-- Generate-from-data modal: hosts the Setup flow (data source + schema-grounded tool gen) -->
@@ -1528,7 +1531,7 @@ def _render_edit_ui(
     </div>
     <div id="modal-body">
       <div id="f-gen">
-        <label>Describe it <span style="font-weight:400;text-transform:none;color:#5a7fae">— generate the tool from natural language</span></label>
+        <label>Describe it <span style="font-weight:400;text-transform:none;color:var(--apx-muted)">— generate the tool from natural language</span></label>
         <div id="f-gen-row">
           <textarea id="f-prompt" rows="2" placeholder="e.g. get a customer's total spend by month for a given year"></textarea>
           <button id="btn-generate" type="button">✨ Generate</button>
@@ -1540,7 +1543,7 @@ def _render_edit_ui(
         <input id="f-name" type="text" placeholder="my_tool" spellcheck="false">
       </div>
       <div class="field">
-        <label>Description <span style="font-weight:400;text-transform:none;color:#444">(shown to the model)</span></label>
+        <label>Description <span style="font-weight:400;text-transform:none;color:var(--apx-muted)">(shown to the model)</span></label>
         <textarea id="f-desc" rows="2" placeholder="What this tool does for the agent"></textarea>
       </div>
       <div class="field">
@@ -1564,7 +1567,7 @@ def _render_edit_ui(
         <select id="f-agent"><option value="agent">agent</option></select>
       </div>
       <div class="field">
-        <label>Body <span style="font-weight:400;text-transform:none;color:#444">(generated — edit before inserting; leave blank for a stub)</span></label>
+        <label>Body <span style="font-weight:400;text-transform:none;color:var(--apx-muted)">(generated — edit before inserting; leave blank for a stub)</span></label>
         <textarea id="f-body" rows="6" placeholder="# generated implementation appears here after Generate" spellcheck="false"></textarea>
       </div>
       <div class="field">
@@ -1720,7 +1723,7 @@ function renderSchemas(schemas) {{
   const el = document.getElementById('schema-list');
   const agents = INITIAL_AGENTS || [];
   if (!schemas.length && !agents.length) {{
-    el.innerHTML = '<p class="no-params" style="padding:12px;color:#333">No tools or agents found</p>';
+    el.innerHTML = '<p class="no-params" style="padding:12px">No tools or agents found</p>';
     return;
   }}
   const toolHtml = schemas.length ? `<div class="panel-section">
@@ -1737,7 +1740,7 @@ function renderSchemas(schemas) {{
       : '<span class="no-params">No parameters</span>';
     return `<div class="tool-card">
       <div class="tool-name">${{escHtml(s.name)}}</div>
-      <div class="tool-desc">${{s.description ? escHtml(s.description) : '<em style="color:#333">No description</em>'}}</div>
+      <div class="tool-desc">${{s.description ? escHtml(s.description) : '<em class="no-description">No description</em>'}}</div>
       <div class="tool-params">${{paramHtml}}</div>
     </div>`;
   }}).join('')}}</div>` : '';
@@ -1745,7 +1748,7 @@ function renderSchemas(schemas) {{
     <div class="panel-section-title">Available Agents</div>
     ${{agents.map(a => `<div class="agent-card">
       <div class="agent-name">${{escHtml(a.name)}}</div>
-      <div class="agent-desc">${{a.description ? escHtml(a.description) : '<em style="color:#333">No description</em>'}}</div>
+      <div class="agent-desc">${{a.description ? escHtml(a.description) : '<em class="no-description">No description</em>'}}</div>
       ${{a.url ? `<div class="agent-url">${{escHtml(a.url)}}</div>` : ''}}
     </div>`).join('')}}</div>` : '';
   el.innerHTML = toolHtml + agentHtml;
