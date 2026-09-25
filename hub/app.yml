@@ -1,1 +1,3 @@
-command: ["uvicorn", "agent_hub.backend.app:app", "--workers", "2"]
+command:
+  - bash
+  - start.sh
