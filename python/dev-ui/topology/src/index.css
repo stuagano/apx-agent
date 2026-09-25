@@ -1,19 +1,22 @@
 /* Tokens aligned with /_apx/discover and _ui_nav.py */
 
 :root {
-  --bg: #0a0a0a;
-  --panel: #111;
-  --border: #2a2a2a;
-  --text: #e5e7eb;
-  --muted: #888;
-  --dim: #666;
-  --accent: #60b0ff;
-  --accent-bg: #0d1f38;
-  --accent-border: #1e3a5f;
-  --ok: #4ade80;
-  --ok-bg: #052e1c;
-  --code-bg: #0d0d0d;
-  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  /* Du Bois palette — aligned with _ui_theme.py --apx-* tokens */
+  --bg: #11171C;
+  --panel: #1F272D;
+  --border: #445461;
+  --text: #E8ECF0;
+  --muted: #92A4B3;
+  --dim: #92A4B3;
+  --accent: #2272B4;
+  --accent-bg: #37444F;
+  --accent-border: #445461;
+  --ok: #3BA65E;
+  --ok-bg: #37444F;
+  --code-bg: #11171C;
+  --warn: #FACB66;
+  --err: #C83243;
+  font-family: "DM Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
   font-size: 13px;
   color-scheme: dark;
 }
@@ -71,8 +74,8 @@ pre {
   left: 0;
   right: 0;
   z-index: 1000;
-  background: #111;
-  border-bottom: 1px solid #2a2a2a;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
 }
 
 #apx-nav {
@@ -84,8 +87,8 @@ pre {
 }
 
 .badge {
-  background: #1e3a5f;
-  color: #60b0ff;
+  background: var(--accent-border);
+  color: var(--accent);
   font-size: 11px;
   font-weight: 600;
   padding: 2px 8px;
@@ -116,7 +119,7 @@ pre {
 #apx-nav nav a,
 .apx-nav-refresh {
   font-size: 12px;
-  color: #888;
+  color: var(--muted);
   text-decoration: none;
   padding: 3px 10px;
   border-radius: 5px;
@@ -127,21 +130,21 @@ pre {
 
 #apx-nav nav a:hover,
 .apx-nav-refresh:hover {
-  color: #ccc;
-  border-color: #333;
+  color: var(--text);
+  border-color: var(--border);
   text-decoration: none;
 }
 
 #apx-nav nav a.active {
-  color: #60b0ff;
-  background: #0d1f38;
-  border-color: #1e3a5f;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
 }
 
 .apx-nav-refresh.active {
-  color: #60b0ff;
-  background: #0d1f38;
-  border-color: #1e3a5f;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
 }
 
 .apx-nav-refresh:disabled {
@@ -152,9 +155,9 @@ pre {
 .apx-trace-badge {
   font-size: 11px;
   font-family: ui-monospace, monospace;
-  color: #fbbf24;
-  background: #1a1508;
-  border: 1px solid #5b4a1e;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
   border-radius: 5px;
   padding: 2px 8px;
   max-width: 220px;
@@ -168,15 +171,15 @@ pre {
 }
 
 .apx-trace-badge:hover {
-  color: #fde68a;
-  border-color: #92740f;
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
   text-decoration: none;
 }
 
 .apx-trace-badge.muted {
   color: var(--dim);
-  background: #151515;
-  border-color: #333;
+  background: var(--panel);
+  border-color: var(--border);
 }
 
 .apx-tracing-bar {
@@ -185,7 +188,7 @@ pre {
   gap: 10px;
   padding: 8px 16px 10px;
   border-top: 1px solid var(--border);
-  background: #0d0d0d;
+  background: var(--bg);
 }
 
 .apx-tracing-bar label {
@@ -235,9 +238,9 @@ pre {
 }
 
 .apx-btn.secondary {
-  color: #bbb;
-  background: #161616;
-  border-color: #333;
+  color: var(--text);
+  background: var(--panel);
+  border-color: var(--border);
 }
 
 /* react-flow */
@@ -247,7 +250,7 @@ pre {
 }
 
 .react-flow__edge-path {
-  stroke: #333;
+  stroke: var(--border);
   stroke-width: 1.5;
 }
 
@@ -317,7 +320,7 @@ pre {
   max-height: 290px;
   overflow: auto;
   border-bottom: 1px solid var(--border);
-  background: #0d0d0d;
+  background: var(--bg);
 }
 
 .apx-workflows-head {
@@ -347,7 +350,7 @@ pre {
 
 .apx-workflow-run-notice {
   margin: 0 14px 8px;
-  color: #fde68a;
+  color: var(--warn);
   font-size: 11px;
   line-height: 1.4;
 }
@@ -396,14 +399,14 @@ pre {
   border-radius: 4px;
   padding: 2px 5px;
   color: var(--muted);
-  background: #1a1a1a;
+  background: var(--panel);
   font-size: 10px;
 }
 
 .apx-workflow-status.partial,
 .apx-workflow-status.active {
-  color: #fde68a;
-  background: #1a1508;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
 .apx-workflow-status.completed {
@@ -412,8 +415,8 @@ pre {
 }
 
 .apx-workflow-status.failed {
-  color: #fca5a5;
-  background: #2a1215;
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 18%, transparent);
 }
 
 .apx-workflow-question,
@@ -426,7 +429,7 @@ pre {
 }
 
 .apx-workflow-question {
-  color: #dbeafe;
+  color: var(--text);
 }
 
 .apx-workflow-purpose,
@@ -443,14 +446,14 @@ pre {
 }
 
 .apx-workflow-route .unresolved {
-  color: #fde68a;
+  color: var(--warn);
 }
 
 .apx-workflow-route-note {
   display: grid;
   gap: 3px;
   margin-top: 7px;
-  color: #fde68a;
+  color: var(--warn);
   font-size: 10px;
   line-height: 1.35;
 }
@@ -510,7 +513,7 @@ pre {
   width: 100%;
   min-height: 0;
   border: 0;
-  background: #050505;
+  background: var(--bg);
 }
 
 .apx-empty,
@@ -542,7 +545,7 @@ pre {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 2px solid #333;
+  border: 2px solid var(--border);
   border-top-color: var(--accent);
   animation: apx-spin 0.9s linear infinite;
 }
@@ -620,7 +623,7 @@ pre {
 }
 
 .apx-palette-empty.err {
-  color: #f87171;
+  color: var(--err);
   white-space: pre-wrap;
 }
 
@@ -634,7 +637,7 @@ pre {
 .apx-card-drag {
   cursor: grab;
   user-select: none;
-  background: #0d0d0d;
+  background: var(--bg);
 }
 
 .apx-card-drag:hover {
@@ -677,29 +680,29 @@ pre {
   letter-spacing: 0.4px;
   padding: 2px 6px;
   border-radius: 4px;
-  background: #1a1a1a;
+  background: var(--panel);
   color: var(--muted);
   flex-shrink: 0;
 }
 
 .apx-pill.app {
-  color: #6ee7b7;
-  background: #052e1c;
+  color: var(--ok);
+  background: var(--ok-bg);
 }
 
 .apx-pill.uc {
-  color: #fbbf24;
-  background: #2a1f05;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
 .apx-pill.genie_space {
-  color: #c4b5fd;
-  background: #1e1533;
+  color: #A78BFA; /* genie = purple, kept distinct as a category hue */
+  background: color-mix(in srgb, #A78BFA 16%, transparent);
 }
 
 .apx-pill.vector_search_index {
-  color: #5eead4;
-  background: #042f2e;
+  color: #5EEAD4; /* vector index = teal, kept distinct as a category hue */
+  background: color-mix(in srgb, #5EEAD4 14%, transparent);
 }
 
 .react-flow__node.apx-droppable {
@@ -724,14 +727,14 @@ pre {
 
 .apx-toast.ok {
   background: var(--ok-bg);
-  border: 1px solid #14532d;
+  border: 1px solid color-mix(in srgb, var(--ok) 50%, transparent);
   color: var(--ok);
 }
 
 .apx-toast.err {
-  background: #2a0f0f;
-  border: 1px solid #7f1d1d;
-  color: #f87171;
+  background: color-mix(in srgb, var(--err) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--err) 50%, transparent);
+  color: var(--err);
 }
 
 button:focus-visible,

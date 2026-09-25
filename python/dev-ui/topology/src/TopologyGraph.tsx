@@ -47,7 +47,7 @@ export interface TopologyGraphProps {
   onWireDrop?: (nodeId: string, payload: WirePayload) => void;
 }
 
-const DEFAULT_NODE_STYLE = { fill: "#1e293b", stroke: "#64748b" };
+const DEFAULT_NODE_STYLE = { fill: "#37444F", stroke: "#92A4B3" };
 const styleFor = (type: string) =>
   NODE_STYLE[type as NodeType] ?? DEFAULT_NODE_STYLE;
 
@@ -129,20 +129,20 @@ function layout(
       style: {
         background: style.fill,
         border: `1.5px solid ${
-          isDropHover ? "#4ade80" : onRoute ? "#fbbf24" : style.stroke
+          isDropHover ? "#3BA65E" : onRoute ? "#FACB66" : style.stroke
         }`,
         borderRadius: 6,
-        color: "#e2e8f0",
+        color: "#E8ECF0",
         fontSize: 12,
         fontWeight: 500,
         padding: "8px 12px",
         width: NODE_WIDTH,
         boxShadow: isSelected
-          ? "0 0 0 2px var(--accent, #38bdf8)"
+          ? "0 0 0 2px var(--accent, #2272B4)"
           : onRoute
-            ? "0 0 0 2px #fbbf24, 0 0 12px rgba(251, 191, 36, 0.35)"
+            ? "0 0 0 2px #FACB66, 0 0 12px rgba(250, 203, 102, 0.35)"
             : isDropHover
-              ? "0 0 0 2px #4ade80"
+              ? "0 0 0 2px #3BA65E"
               : isDroppable
                 ? "0 0 0 1px rgba(74, 222, 128, 0.35)"
                 : undefined,
@@ -160,13 +160,13 @@ function layout(
       source: e.source,
       target: e.target,
       label: e.kind,
-      labelStyle: { fill: onRoute ? "#fde68a" : "#cbd5e1", fontSize: 10 },
-      labelBgStyle: { fill: "#0a0a0a", fillOpacity: 0.85 },
+      labelStyle: { fill: onRoute ? "#FACB66" : "#92A4B3", fontSize: 10 },
+      labelBgStyle: { fill: "#11171C", fillOpacity: 0.85 },
       labelBgPadding: [4, 2] as [number, number],
       labelBgBorderRadius: 3,
       animated: onRoute,
       style: {
-        stroke: onRoute ? "#fbbf24" : incident ? "var(--accent, #38bdf8)" : "#475569",
+        stroke: onRoute ? "#FACB66" : incident ? "var(--accent, #2272B4)" : "#445461",
         strokeWidth: onRoute ? 2.5 : incident ? 2 : 1,
       },
     };
@@ -288,22 +288,22 @@ function TopologyGraphInner(props: TopologyGraphProps) {
       onDragLeave={() => setDropHoverId(null)}
     >
       <FitOnResize />
-      <Background color="#1e293b" gap={20} />
+      <Background color="#37444F" gap={20} />
       {!EMBED && showMap && <Controls />}
       {!EMBED && showMap && (
         <MiniMap
           pannable
           zoomable
-          maskColor="rgba(10, 10, 10, 0.7)"
-          style={{ background: "#0f172a" }}
+          maskColor="rgba(17, 23, 28, 0.7)"
+          style={{ background: "#11171C" }}
           nodeColor={(node) => {
             const topoNode = data.nodes.find((n) => n.id === node.id);
-            if (!topoNode) return "#475569";
+            if (!topoNode) return "#445461";
             return styleFor(topoNode.type).stroke;
           }}
           nodeStrokeColor={(node) => {
             const topoNode = data.nodes.find((n) => n.id === node.id);
-            if (!topoNode) return "#475569";
+            if (!topoNode) return "#445461";
             return styleFor(topoNode.type).stroke;
           }}
         />
