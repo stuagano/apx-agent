@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from ._ui_table import TABLE_CSS
+from ._ui_theme import apx_theme_style
 
 from ._apx_models import (
     AgentNodeInfo,
@@ -276,8 +277,8 @@ class _JudgeOutput(NamedTuple):
 
 
 _TRACE_CSS = """
-  :root{--bg:#0a0a0a;--panel:#111;--border:#2a2a2a;--text:#e5e7eb;--muted:#888;
-        --accent:#60b0ff;--accent-bg:#0d1f38;--accent-border:#1e3a5f;}
+  :root{--bg:#11171C;--panel:#1F272D;--border:#445461;--text:#E8ECF0;--muted:#92A4B3;
+        --accent:#2272B4;--accent-bg:#37444F;--accent-border:#445461;}
   *{box-sizing:border-box;margin:0;padding:0;}
   body{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;
        font-size:13px;background:var(--bg);color:var(--text);min-height:100vh;}
@@ -290,7 +291,7 @@ _TRACE_CSS = """
   .back{margin-left:auto;font-size:12px;color:var(--accent);text-decoration:none;
         padding:4px 10px;border:1px solid var(--accent-border);border-radius:5px;
         background:var(--accent-bg);}
-  .back:hover{background:#112a4a;}
+  .back:hover{background:#2F3A49;}
   main{padding:24px 28px;max-width:960px;}
   .meta{color:var(--muted);font-size:11px;margin-bottom:20px;
         font-family:monospace;word-break:break-all;}
@@ -298,24 +299,24 @@ _TRACE_CSS = """
   table{width:100%;border-collapse:collapse;font-size:12px;}
   th{color:var(--muted);text-align:left;padding:6px 10px;
      border-bottom:1px solid var(--border);font-weight:500;white-space:nowrap;}
-  td{padding:7px 10px;border-bottom:1px solid #1a1a1a;vertical-align:top;}
-  tr:hover td{background:#111;}
+  td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top;}
+  tr:hover td{background:#1F272D;}
   td a{color:var(--accent);text-decoration:none;}
   td a:hover{text-decoration:underline;}
-  .st-ok{color:#4ade80;} .st-err{color:#f87171;} .st-run{color:#facc15;}
+  .st-ok{color:#3BA65E;} .st-err{color:#C83243;} .st-run{color:#FACB66;}
   .tool-fails-card{display:flex;flex-wrap:wrap;gap:8px 14px;padding:10px 12px;
-                   margin:0 0 12px;background:#0e1116;border:1px solid #1f242b;
+                   margin:0 0 12px;background:#2A3139;border:1px solid #37444F;
                    border-radius:10px;font-size:12px;}
   #tool-fails[hidden]{display:none;}
   .tool-fail{font-family:monospace;}
   .trace-diff-bar{display:flex;align-items:center;gap:10px;margin:0 0 12px;
                   font-size:12px;color:var(--muted);}
-  .trace-diff-go{background:#0d1f38;border:1px solid #1e3a5f;color:#60b0ff;
+  .trace-diff-go{background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent);
                  border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;}
   .trace-diff-go:disabled{opacity:.4;cursor:not-allowed;}
   .td-pick{margin-right:6px;}
   .trace-diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-  .trace-diff-card{background:#0e1116;border:1px solid #1f242b;border-radius:10px;
+  .trace-diff-card{background:#2A3139;border:1px solid #37444F;border-radius:10px;
                    padding:12px 14px;display:flex;flex-direction:column;gap:8px;}
   .trace-diff-label{font-size:11px;color:var(--muted);text-transform:uppercase;
                     letter-spacing:.04em;}
@@ -331,55 +332,55 @@ _TRACE_CSS = """
              border-radius:7px;overflow:hidden;}
   .span-head{display:flex;align-items:center;gap:10px;padding:9px 13px;
              cursor:pointer;user-select:none;}
-  .span-head:hover{background:#151515;}
+  .span-head:hover{background:#2A3139;}
   .stype{font-size:10px;font-weight:600;padding:2px 7px;border-radius:10px;
          text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;}
-  .stype-LLM{color:#22d3ee;background:#042929;}
-  .stype-TOOL{color:#facc15;background:#1a1500;}
-  .stype-CHAIN{color:#a78bfa;background:#1a1030;}
-  .stype-AGENT{color:#60b0ff;background:#0d1f38;}
-  .stype-OTHER{color:#94a3b8;background:#1a1a1a;}
+  .stype-LLM{color:#22d3ee;background:#0A2E3B;}
+  .stype-TOOL{color:#facc15;background:#3B3B0A;}
+  .stype-CHAIN{color:#a78bfa;background:#3B0A3B;}
+  .stype-AGENT{color:#4299E0;background:#1F2E42;}
+  .stype-OTHER{color:#92A4B3;background:#2A3139;}
   .sname{font-weight:500;font-size:13px;flex:1;overflow:hidden;
          text-overflow:ellipsis;white-space:nowrap;}
   .sdur{font-family:monospace;font-size:11px;color:var(--muted);white-space:nowrap;}
   .sstatus{font-size:10px;font-weight:600;white-space:nowrap;}
-  .sstatus-ok{color:#4ade80;} .sstatus-err{color:#f87171;}
+  .sstatus-ok{color:#3BA65E;} .sstatus-err{color:#C83243;}
   .span-body{padding:10px 14px;border-top:1px solid var(--border);
              display:none;flex-direction:column;gap:8px;}
   .span-body.open{display:flex;}
   .io-block{display:flex;flex-direction:column;gap:4px;}
   .io-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;
-            color:#555;font-weight:600;}
-  pre.io-pre{background:#0d0d0d;border:1px solid #1e1e1e;border-radius:5px;
+            color:#92A4B3;font-weight:600;}
+  pre.io-pre{background:#11171C;border:1px solid #445461;border-radius:5px;
              padding:8px 10px;font-size:11px;font-family:monospace;
-             color:#aaa;white-space:pre-wrap;word-break:break-all;
+             color:#92A4B3;white-space:pre-wrap;word-break:break-all;
              max-height:240px;overflow-y:auto;}
   /* Compact, deduped conversation view (chat payloads) */
   .convo{display:flex;flex-direction:column;gap:5px;}
   .tmsg{display:flex;gap:8px;font-size:12px;line-height:1.45;align-items:baseline;}
-  .trole{flex:none;min-width:74px;color:#6b7686;font-size:10px;font-weight:600;
+  .trole{flex:none;min-width:74px;color:#92A4B3;font-size:10px;font-weight:600;
          text-transform:uppercase;letter-spacing:.4px;font-family:ui-monospace,monospace;}
-  .trole-tool{color:#4a9060;}
-  .tcontent{color:#cbd2da;white-space:pre-wrap;word-break:break-word;
+  .trole-tool{color:#3BA65E;}
+  .tcontent{color:#E8ECF0;white-space:pre-wrap;word-break:break-word;
             font-family:ui-monospace,monospace;font-size:11.5px;}
   details.tsys{font-size:12px;}
-  details.tsys>summary,details.tprefix>summary{cursor:pointer;color:#6b7686;font-size:11px;
+  details.tsys>summary,details.tprefix>summary{cursor:pointer;color:#92A4B3;font-size:11px;
             list-style:none;padding:1px 0;}
   details.tsys>summary::-webkit-details-marker,
   details.tprefix>summary::-webkit-details-marker{display:none;}
-  details.tsys>summary::before,details.tprefix>summary::before{content:"▸ ";color:#4b5563;}
+  details.tsys>summary::before,details.tprefix>summary::before{content:"▸ ";color:#445461;}
   details.tsys[open]>summary::before,details.tprefix[open]>summary::before{content:"▾ ";}
-  details.tprefix{border-left:2px solid #1e1e1e;padding-left:8px;margin:2px 0;}
+  details.tprefix{border-left:2px solid #445461;padding-left:8px;margin:2px 0;}
   details.tprefix[open]{display:flex;flex-direction:column;gap:5px;}
-  pre.tpre{background:#0d0d0d;border:1px solid #1e1e1e;border-radius:5px;margin:4px 0 0;
-           padding:8px 10px;font-size:11px;font-family:monospace;color:#9aa3ad;
+  pre.tpre{background:#11171C;border:1px solid #445461;border-radius:5px;margin:4px 0 0;
+           padding:8px 10px;font-size:11px;font-family:monospace;color:#92A4B3;
            white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;}
-  .span-event{font-size:11px;color:#888;padding:3px 14px 3px 30px;
-              border-top:1px solid #161616;font-family:monospace;
+  .span-event{font-size:11px;color:#92A4B3;padding:3px 14px 3px 30px;
+              border-top:1px solid #37444F;font-family:monospace;
               white-space:pre-wrap;word-break:break-word;}
   .indent{border-left:2px solid var(--border);padding-left:16px;margin-top:4px;}
-  .err-banner{background:#2a0f0f;border:1px solid #7f1d1d;border-radius:6px;
-              padding:12px 16px;color:#fda4af;margin-bottom:16px;}
+  .err-banner{background:#3D1B1F;border:1px solid #8B3D47;border-radius:6px;
+              padding:12px 16px;color:#F5A0AA;margin-bottom:16px;}
 """
 _TRACE_CSS += "\n" + TABLE_CSS
 
@@ -442,9 +443,10 @@ def _render_traces_list(rows: list | None, agent_name: str | None) -> str:
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>{_html.escape(title)}</title>
+{apx_theme_style()}
 <style>{_TRACE_CSS}
 .fb-cell{{white-space:nowrap}}
-.fb-btn{{background:none;border:1px solid var(--border,#ccc);border-radius:4px;cursor:pointer;font-size:.9rem;padding:.1rem .4rem;opacity:.5}}
+.fb-btn{{background:none;border:1px solid var(--border,#445461);border-radius:4px;cursor:pointer;font-size:.9rem;padding:.1rem .4rem;opacity:.5}}
 .fb-btn:hover{{opacity:1}}
 .fb-btn.active.up{{opacity:1;border-color:#2e7d32}}
 .fb-btn.active.down{{opacity:1;border-color:#c62828}}
@@ -1092,23 +1094,24 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
     tid_js = tid_escaped.replace("'", "\\'")
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Trace {tid_escaped}</title>
+{apx_theme_style()}
 <style>{_TRACE_CSS}
 .feedback{{display:flex;flex-direction:column;gap:.4rem;margin-top:.5rem}}
 .fb-row{{display:flex;align-items:center;gap:.5rem}}
-.fb-btn{{background:none;border:1px solid var(--border,#ccc);border-radius:4px;cursor:pointer;font-size:1rem;padding:.1rem .5rem;opacity:.6}}
+.fb-btn{{background:none;border:1px solid var(--border,#445461);border-radius:4px;cursor:pointer;font-size:1rem;padding:.1rem .5rem;opacity:.6}}
 .fb-btn:hover{{opacity:1}}
 .fb-btn.active{{opacity:1;border-color:currentColor}}
-.fb-btn.up.active{{color:#2e7d32}}
-.fb-btn.down.active{{color:#c62828}}
-#fb-msg{{font-size:.75rem;color:#888}}
-#fb-rationale{{width:100%;max-width:520px;background:#161616;border:1px solid #2a2a2a;color:#e5e7eb;border-radius:4px;padding:5px 8px;font-size:12px;font-family:inherit;resize:vertical;min-height:48px;display:none}}
+.fb-btn.up.active{{color:#3BA65E}}
+.fb-btn.down.active{{color:#C83243}}
+#fb-msg{{font-size:.75rem;color:#92A4B3}}
+#fb-rationale{{width:100%;max-width:520px;background:#37444F;border:1px solid #445461;color:#E8ECF0;border-radius:4px;padding:5px 8px;font-size:12px;font-family:inherit;resize:vertical;min-height:48px;display:none}}
 #fb-rationale.visible{{display:block}}
-.fb-save-btn{{background:#1a3a1a;border:1px solid #2e7d32;color:#86efac;border-radius:4px;padding:3px 12px;font-size:12px;cursor:pointer;display:none}}
+.fb-save-btn{{background:#2A4A30;border:1px solid #3BA65E;color:#7ADB8B;border-radius:4px;padding:3px 12px;font-size:12px;cursor:pointer;display:none}}
 .fb-save-btn.visible{{display:inline-block}}
-.fb-save-btn:hover{{background:#1e4a1e}}
-.fb-screenshot{{margin-top:8px;max-width:480px;border-radius:4px;border:1px solid #2a2a2a}}
-#fb-prev-note{{font-size:11px;color:#666;font-style:italic}}
-.fb-hint{{font-size:11px;color:#555;margin-top:2px}}
+.fb-save-btn:hover{{background:#335D39}}
+.fb-screenshot{{margin-top:8px;max-width:480px;border-radius:4px;border:1px solid #445461}}
+#fb-prev-note{{font-size:11px;color:#92A4B3;font-style:italic}}
+.fb-hint{{font-size:11px;color:#92A4B3;margin-top:2px}}
 </style></head><body>
 <header>
   <span class="badge">APX</span><h1>Trace</h1>
@@ -2051,6 +2054,7 @@ def _render_trace_diff(left: dict[str, Any], right: dict[str, Any]) -> str:
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Trace diff</title>
+{apx_theme_style()}
 <style>{_TRACE_CSS}</style>
 </head><body>
 <header>

@@ -946,7 +946,7 @@ function loadFailure(message, raw) {
   const sample = String(raw || '').trim();
   document.getElementById('main').innerHTML =
     '<div class="empty"><strong>Tool logic did not load.</strong>' +
-    '<div style="margin-top:10px;color:#888;line-height:1.6;max-width:72ch">' + esc(message) +
+    '<div style="margin-top:10px;color:var(--apx-muted);line-height:1.6;max-width:72ch">' + esc(message) +
     '<br><br>If this page is inside the console iframe, the browser may have routed the fetch through the Databricks app login instead of returning JSON.' +
     '</div>' +
     (sample ? '<pre style="margin-top:12px;text-align:left;white-space:pre-wrap;background:#0f0f0f;border:1px solid #222;border-radius:8px;padding:12px;max-width:100%;overflow:auto">' + esc(sample.slice(0, 320)) + '</pre>' : '') +
@@ -1107,7 +1107,7 @@ function renderDetail() {
 
   if (t.source.indexOf('_demo_mode()') !== -1) {
     parts.push('<details><summary>Both branches — this function short-circuits on <code>_demo_mode()</code></summary>' +
-      '<div class="body"><p style="color:#888;font-size:12px;line-height:1.6">' +
+      '<div class="body"><p style="color:var(--apx-muted);font-size:12px;line-height:1.6">' +
       'This deployment is currently using the ' +
       '<strong>' + (demo ? 'synthetic (demo)' : 'live UC/SQL') + '</strong> branch.' +
       (demo ? '' : ' The tables it reads are shown in Runtime below.') +
