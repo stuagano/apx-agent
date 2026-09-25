@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ._ui_theme import apx_theme_style
+
 logger = logging.getLogger(__name__)
 
 
@@ -169,76 +171,78 @@ def _render_knowledge_html(
 </div>
 '''
 
+    theme_style = apx_theme_style()
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Knowledge — APX Dev</title>
+{theme_style}
 <style>
   *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: #0d0d0d; color: #e8e8e8; min-height: 100vh; }}
-  header {{ padding: 12px 20px; background: #111; border-bottom: 1px solid #2a2a2a;
+  body {{ font-family: var(--apx-font);
+         background: var(--apx-bg); color: var(--apx-text); min-height: 100vh; }}
+  header {{ padding: 12px 20px; background: var(--apx-panel); border-bottom: 1px solid var(--apx-border);
            display: flex; align-items: center; gap: 12px; }}
-  .badge {{ background: #1e3a5f; color: #60b0ff; font-size: 11px; font-weight: 600;
+  .badge {{ background: var(--apx-panel-2); color: var(--apx-accent); font-size: 11px; font-weight: 600;
            padding: 2px 8px; border-radius: 4px; letter-spacing: .5px; text-transform: uppercase; }}
-  h1 {{ font-size: 16px; font-weight: 600; color: #fff; }}
+  h1 {{ font-size: 16px; font-weight: 600; color: var(--apx-text); }}
   nav {{ display: flex; gap: 4px; margin-left: auto; }}
-  nav a {{ font-size: 12px; color: #888; text-decoration: none; padding: 3px 10px;
+  nav a {{ font-size: 12px; color: var(--apx-muted); text-decoration: none; padding: 3px 10px;
           border-radius: 5px; border: 1px solid transparent; }}
-  nav a:hover {{ color: #ccc; border-color: #333; }}
-  nav a.active {{ color: #60b0ff; background: #0d1f38; border-color: #1e3a5f; }}
+  nav a:hover {{ color: var(--apx-text); border-color: var(--apx-panel-2); }}
+  nav a.active {{ color: var(--apx-accent); background: var(--apx-bg); border-color: var(--apx-panel-2); }}
   main {{ padding: 28px 40px; max-width: 1200px; }}
 
   .section-title {{ font-size: 14px; color: #9bf; margin: 24px 0 12px; font-weight: 600; }}
 
   /* Functions */
-  .function-card {{ margin-bottom: 16px; padding: 12px; background: #0f0f0f;
-                    border: 1px solid #1a1a1a; border-radius: 6px; }}
-  .function-name {{ font-family: monospace; font-size: 13px; font-weight: 600;
-                   color: #a78bfa; margin-bottom: 4px; }}
-  .function-desc {{ font-size: 12px; color: #aaa; margin-bottom: 8px; }}
+  .function-card {{ margin-bottom: 16px; padding: 12px; background: var(--apx-panel);
+                    border: 1px solid var(--apx-border); border-radius: 6px; }}
+  .function-name {{ font-family: var(--apx-mono); font-size: 13px; font-weight: 600;
+                   color: var(--apx-accent); margin-bottom: 4px; }}
+  .function-desc {{ font-size: 12px; color: var(--apx-muted); margin-bottom: 8px; }}
   .function-content {{ font-size: 12px; line-height: 1.5; }}
-  .subsection {{ margin-top: 6px; padding: 6px; background: #0a0a0a;
-                border-left: 2px solid #4c1d95; padding-left: 10px; }}
+  .subsection {{ margin-top: 6px; padding: 6px; background: var(--apx-bg);
+                border-left: 2px solid var(--apx-accent); padding-left: 10px; }}
   pre {{ font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
-       color: #8b949e; background: #0a0a0a; padding: 4px 6px; border-radius: 3px; }}
+       color: var(--apx-muted); background: var(--apx-bg); padding: 4px 6px; border-radius: 3px; }}
   .example-block {{ max-height: 80px; }}
 
   /* Views */
-  .view-card {{ margin-bottom: 20px; padding: 14px; background: #0f0f0f;
-               border: 1px solid #1a1a1a; border-radius: 6px; }}
-  .view-name {{ font-family: monospace; font-size: 13px; font-weight: 600;
-               color: #4ade80; margin-bottom: 6px; }}
-  .view-desc {{ font-size: 12px; color: #aaa; margin-bottom: 10px; }}
+  .view-card {{ margin-bottom: 20px; padding: 14px; background: var(--apx-panel);
+               border: 1px solid var(--apx-border); border-radius: 6px; }}
+  .view-name {{ font-family: var(--apx-mono); font-size: 13px; font-weight: 600;
+               color: var(--apx-ok); margin-bottom: 6px; }}
+  .view-desc {{ font-size: 12px; color: var(--apx-muted); margin-bottom: 10px; }}
   .columns-table {{ width: 100%; border-collapse: collapse; font-size: 11px;
                    margin: 10px 0; }}
-  .columns-table th {{ background: #0a0a0a; padding: 6px; text-align: left;
-                      color: #60b0ff; font-weight: 600; border-bottom: 1px solid #1a1a1a; }}
-  .columns-table td {{ padding: 5px 6px; border-bottom: 1px solid #0a0a0a;
-                      color: #8b949e; }}
-  .columns-table code {{ font-size: 10px; color: #7dd3fc; }}
-  .golden-query {{ margin-top: 10px; padding: 8px; background: #0a0a0a;
-                  border-left: 2px solid #4ade80; padding-left: 10px; }}
+  .columns-table th {{ background: var(--apx-bg); padding: 6px; text-align: left;
+                      color: var(--apx-accent); font-weight: 600; border-bottom: 1px solid var(--apx-border); }}
+  .columns-table td {{ padding: 5px 6px; border-bottom: 1px solid var(--apx-border);
+                      color: var(--apx-muted); }}
+  .columns-table code {{ font-size: 10px; color: var(--apx-accent); }}
+  .golden-query {{ margin-top: 10px; padding: 8px; background: var(--apx-bg);
+                  border-left: 2px solid var(--apx-ok); padding-left: 10px; }}
 
   /* Glossary */
   .glossary-entries {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
                       gap: 12px; }}
-  .glossary-entry {{ padding: 10px; background: #0f0f0f; border: 1px solid #1a1a1a;
+  .glossary-entry {{ padding: 10px; background: var(--apx-panel); border: 1px solid var(--apx-border);
                     border-radius: 6px; }}
-  .term {{ font-family: monospace; font-size: 12px; font-weight: 600;
-          color: #f87171; margin-bottom: 4px; }}
-  .definition {{ font-size: 12px; color: #aaa; line-height: 1.4; margin-bottom: 6px; }}
+  .term {{ font-family: var(--apx-mono); font-size: 12px; font-weight: 600;
+          color: var(--apx-err); margin-bottom: 4px; }}
+  .definition {{ font-size: 12px; color: var(--apx-muted); line-height: 1.4; margin-bottom: 6px; }}
   .synonyms {{ display: flex; flex-wrap: wrap; gap: 4px; }}
-  .synonym-chip {{ display: inline-block; background: #1a1f2e; color: #60b0ff;
+  .synonym-chip {{ display: inline-block; background: var(--apx-panel-2); color: var(--apx-accent);
                   font-size: 10px; padding: 2px 6px; border-radius: 3px;
-                  border: 1px solid #4c1d95; }}
+                  border: 1px solid var(--apx-accent); }}
 
   .empty-state {{ margin-top: 40px; padding: 40px; text-align: center;
-                 background: #0f0f0f; border: 1px solid #1a1a1a; border-radius: 6px;
-                 color: #666; }}
-  .empty-state code {{ color: #9bf; }}
+                 background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 6px;
+                 color: var(--apx-muted); }}
+  .empty-state code {{ color: var(--apx-accent); }}
 </style>
 </head>
 <body>

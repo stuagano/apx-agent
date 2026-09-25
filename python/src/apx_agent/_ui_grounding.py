@@ -24,6 +24,7 @@ from typing import Any
 
 from ._okf import apply_uc_comments, dump_schema_cache, okf_columns, okf_manifest, write_okf_bundle
 from ._schema import APX_DIR, introspect_schema_columns, load_baked_schema
+from ._ui_theme import apx_theme_style
 
 logger = logging.getLogger(__name__)
 
@@ -350,60 +351,59 @@ _GROUNDING_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Grounding — APX Dev</title>
+{APX_THEME_STYLE}
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: #0d0d0d; color: #e8e8e8; min-height: 100vh; }
-  header { padding: 12px 20px; background: #111; border-bottom: 1px solid #2a2a2a;
+  header { padding: 12px 20px; background: var(--apx-panel); border-bottom: 1px solid var(--apx-border);
            display: flex; align-items: center; gap: 12px; }
-  .badge { background: #1e3a5f; color: #60b0ff; font-size: 11px; font-weight: 600;
+  .badge { background: var(--apx-panel-2); color: var(--apx-accent); font-size: 11px; font-weight: 600;
            padding: 2px 8px; border-radius: 4px; letter-spacing: .5px; text-transform: uppercase; }
-  h1 { font-size: 16px; font-weight: 600; color: #fff; }
+  h1 { font-size: 16px; font-weight: 600; color: var(--apx-text); }
   nav { display: flex; gap: 4px; margin-left: auto; }
-  nav a { font-size: 12px; color: #888; text-decoration: none; padding: 3px 10px;
+  nav a { font-size: 12px; color: var(--apx-muted); text-decoration: none; padding: 3px 10px;
           border-radius: 5px; border: 1px solid transparent; }
-  nav a:hover { color: #ccc; border-color: #333; }
-  nav a.active { color: #60b0ff; background: #0d1f38; border-color: #1e3a5f; }
+  nav a:hover { color: var(--apx-text); border-color: var(--apx-border); }
+  nav a.active { color: var(--apx-accent); background: var(--apx-panel); border-color: var(--apx-panel-2); }
   main { padding: 28px 40px; max-width: 920px; }
-  p.desc { color: #666; font-size: 13px; margin-bottom: 22px; line-height: 1.6; }
-  h2.tbl { font-size: 13px; color: #9bf; margin: 22px 0 8px; font-family: monospace; }
+  p.desc { color: var(--apx-muted); font-size: 13px; margin-bottom: 22px; line-height: 1.6; }
+  h2.tbl { font-size: 13px; color: var(--apx-accent); margin: 22px 0 8px; font-family: var(--apx-mono); }
   .col { display: grid; grid-template-columns: 220px 1fr auto; gap: 10px;
-         align-items: start; padding: 6px 0; border-top: 1px solid #1a1a1a; }
-  .col .name { font-family: monospace; font-size: 12px; color: #ccc; padding-top: 7px; }
-  .col .name .ty { color: #555; }
-  .col textarea { width: 100%; background: #1a1a1a; border: 1px solid #333; color: #e8e8e8;
+         align-items: start; padding: 6px 0; border-top: 1px solid var(--apx-panel); }
+  .col .name { font-family: var(--apx-mono); font-size: 12px; color: var(--apx-text); padding-top: 7px; }
+  .col .name .ty { color: var(--apx-muted); }
+  .col textarea { width: 100%; background: var(--apx-panel); border: 1px solid var(--apx-border); color: var(--apx-text);
                   border-radius: 6px; padding: 6px 9px; font-size: 12px; resize: vertical;
                   min-height: 34px; outline: none; font-family: inherit; }
-  .col textarea:focus { border-color: #3a7bd5; }
-  .col textarea.changed { border-color: #4ade80; }
-  .sug { font-size: 11px; color: #888; margin-top: 3px; }
+  .col textarea:focus { border-color: var(--apx-accent); }
+  .col textarea.changed { border-color: var(--apx-ok); }
+  .sug { font-size: 11px; color: var(--apx-muted); margin-top: 3px; }
   .sug[hidden] { display: none; }
-  .sug b { color: #aaa; font-weight: 600; }
+  .sug b { color: var(--apx-text); font-weight: 600; }
   .thead { display: flex; align-items: center; gap: 12px; margin: 22px 0 8px; }
   .thead h2.tbl { margin: 0; }
-  .suggest { background: #1a1040; color: #a78bfa; border: 1px solid #4c1d95;
+  .suggest { background: var(--apx-panel-2); color: var(--apx-accent); border: 1px solid var(--apx-border);
              border-radius: 5px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
-  .suggest:hover { background: #2d1b69; }
+  .suggest:hover { background: var(--apx-panel); }
   .suggest:disabled { opacity: .5; cursor: default; }
-  .accept { background: #0d2818; color: #4ade80; border: 1px solid #1d5a3a;
+  .accept { background: var(--apx-panel-2); color: var(--apx-ok); border: 1px solid var(--apx-border);
             border-radius: 5px; padding: 5px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; }
   .accept[hidden] { display: none; }
-  .accept:hover { background: #11401f; }
-  #bar { position: sticky; bottom: 0; background: #0d0d0d; border-top: 1px solid #222;
+  .accept:hover { background: var(--apx-panel); }
+  #bar { position: sticky; bottom: 0; background: var(--apx-bg); border-top: 1px solid var(--apx-panel);
          padding: 12px 0; margin-top: 18px; display: flex; align-items: center; gap: 14px; }
-  #save { background: #2563eb; color: #fff; border: none; border-radius: 6px;
+  #save { background: var(--apx-accent); color: var(--apx-on-accent); border: none; border-radius: 6px;
           padding: 7px 18px; font-size: 13px; font-weight: 600; cursor: pointer; }
-  #save:hover { background: #1d4ed8; }
+  #save:hover { background: var(--apx-accent-hover); }
   #save:disabled { opacity: .5; cursor: default; }
-  #status { font-size: 12px; color: #666; }
-  #status.ok { color: #4ade80; }
-  #status.err { color: #f87171; }
+  #status { font-size: 12px; color: var(--apx-muted); }
+  #status.ok { color: var(--apx-ok); }
+  #status.err { color: var(--apx-err); }
   .empty { margin-top: 8px; }
-  .empty .cta { background: #2563eb; color: #fff; border: none; border-radius: 6px;
+  .empty .cta { background: var(--apx-accent); color: var(--apx-on-accent); border: none; border-radius: 6px;
                 padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 12px; }
-  .empty .cta:hover { background: #1d4ed8; }
+  .empty .cta:hover { background: var(--apx-accent-hover); }
   .empty .cta:disabled { opacity: .5; cursor: default; }
-  .empty code { font-size: 12px; color: #9bf; }
+  .empty code { font-size: 12px; color: var(--apx-accent); }
   #bar[hidden] { display: none; }
 </style>
 </head>
@@ -578,7 +578,9 @@ def render_grounding_ui() -> str:
     descriptions, and POSTs the changed ones back."""
     from ._ui_nav import _apx_nav_links
 
-    return _GROUNDING_HTML.replace("{{NAV}}", _apx_nav_links("grounding"))
+    html = _GROUNDING_HTML.replace("{{NAV}}", _apx_nav_links("grounding"))
+    html = html.replace("{APX_THEME_STYLE}", apx_theme_style())
+    return html
 
 
 async def generate_column_descriptions(
