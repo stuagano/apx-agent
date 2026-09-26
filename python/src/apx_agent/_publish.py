@@ -372,6 +372,7 @@ def publish_to_registry(
     """
     import time
 
+    from ._data_governance import apply_default_agent_tags
     from ._sql import run_sql
     from ._memory import validate_table_name as _validate_table_name
 
@@ -395,6 +396,7 @@ def publish_to_registry(
     except Exception as e:
         logger.warning("Could not create registry table %s: %s", registry_table, e)
         raise
+    apply_default_agent_tags(registry_table, kind="registry", ws=ws, warehouse_id=warehouse_id)
 
     now = time.time()
     published_by = _current_principal(ws)
@@ -515,6 +517,7 @@ def publish_tools_to_registry(
     import json
     import time
 
+    from ._data_governance import apply_default_agent_tags
     from ._sql import run_sql
     from ._memory import validate_table_name as _validate_table_name
 
@@ -535,6 +538,7 @@ def publish_tools_to_registry(
     except Exception as e:
         logger.warning("Could not create tools table %s: %s", tools_table, e)
         raise
+    apply_default_agent_tags(tools_table, kind="tools", ws=ws, warehouse_id=warehouse_id)
 
     # Delete stale rows for this agent then re-insert.
     run_sql(
@@ -667,6 +671,7 @@ def publish_standalone_tools_to_registry(
     """
     import time
 
+    from ._data_governance import apply_default_agent_tags
     from ._sql import run_sql
     from ._memory import validate_table_name as _validate_table_name
 
@@ -686,6 +691,7 @@ def publish_standalone_tools_to_registry(
     except Exception as e:
         logger.warning("Could not create tools table %s: %s", tools_table, e)
         raise
+    apply_default_agent_tags(tools_table, kind="tools", ws=ws, warehouse_id=warehouse_id)
 
     now = time.time()
     count = 0

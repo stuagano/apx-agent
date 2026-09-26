@@ -14,10 +14,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from ._models import DataConfig
+from ._models import DataConfig, DataTableConfig, DataTagConfig
 from ._sql import run_sql
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_AGENT_TAG_MANAGED = "apx.agent.managed"
+DEFAULT_AGENT_TAG_KIND = "apx.agent.kind"
+DEFAULT_AGENT_KINDS = ["registry", "tools", "traces", "violations"]
 
 
 @dataclass
@@ -127,3 +131,62 @@ def apply_data_governance(
             run_sql(ws, ddl, warehouse_id=warehouse_id)
         executed.append(ddl)
     return executed
+
+
+def default_agent_tags_plan(table_name: str, *, kind: str) -> DataGovernancePlan:
+    """Compile the default ``apx.agent.*`` governed-tag plan for one agent table.
+
+    Every UC table an agent creates (violations, trace export, registry,
+    tools) carries ``apx.agent.managed = 'true'`` and
+    ``apx.agent.kind = '<kind>'`` so catalog/schema-level ABAC policies can
+    target agent data even without an explicit ``[tool.apx.agent.data]``
+    declaration. Raises ``ValueError`` for a kind outside the taxonomy —
+    extending it means adding to ``DEFAULT_AGENT_KINDS``.
+    """
+    if kind not in DEFAULT_AGENT_KINDS:
+        raise ValueError(
+            f"unknown agent table kind {kind!r}; expected one of {DEFAULT_AGENT_KINDS}"
+        )
+    return compile_data_governance_plan(
+        DataConfig(
+            governed_tags=[
+                DataTagConfig(name=DEFAULT_AGENT_TAG_MANAGED, values=["true"]),
+                DataTagConfig(name=DEFAULT_AGENT_TAG_KIND, values=DEFAULT_AGENT_KINDS),
+            ],
+            tables=[
+                DataTableConfig(
+                    name=table_name,
+                    tags={DEFAULT_AGENT_TAG_MANAGED: "true", DEFAULT_AGENT_TAG_KIND: kind},
+                )
+            ],
+        )
+    )
+
+
+def apply_default_agent_tags(
+    table_name: str,
+    *,
+    kind: str,
+    ws: Any,
+    warehouse_id: str | None = None,
+) -> bool:
+    """Best-effort default tagging for auto-created agent tables; True on success.
+
+    Unlike declared data governance — which fails deploy closed — the default
+    tag set is ambient: a workspace without ABAC support or a warehouse below
+    the DBR 16.4/serverless floor must not break violation reporting, trace
+    export, or registry publish. Failures log a warning and return ``False``;
+    ``apx-agent doctor`` is the surfacing vehicle for the compute floor.
+    """
+    plan = default_agent_tags_plan(table_name, kind=kind)
+    try:
+        apply_data_governance(plan, ws, warehouse_id=warehouse_id)
+    except Exception as e:
+        logger.warning(
+            "Default %s tags on %s not applied: %s — the table is untagged, so "
+            "catalog/schema ABAC policies will not see it. Run `apx-agent doctor` "
+            "to check the ABAC compute floor.",
+            DEFAULT_AGENT_TAG_MANAGED, table_name, e,
+        )
+        return False
+    return True

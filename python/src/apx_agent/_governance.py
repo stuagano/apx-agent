@@ -78,6 +78,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from ._audit import set_audit_attrs
 from ._apps_registry import uc_safe_tag_key
+from ._data_governance import apply_default_agent_tags
 from ._mlflow_tracing import current_active_span
 from ._sql import run_sql
 from ._sql import sql_str_literal as _sql_str_literal
@@ -826,6 +827,10 @@ def make_uc_violation_writer(
                 "make_uc_violation_writer: CREATE TABLE IF NOT EXISTS %s failed: %s — "
                 "subsequent inserts may fail.",
                 violations_table, e,
+            )
+        else:
+            apply_default_agent_tags(
+                violations_table, kind="violations", ws=ws, warehouse_id=warehouse_id,
             )
         created["_value"] = True
 

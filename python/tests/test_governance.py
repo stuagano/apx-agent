@@ -512,12 +512,40 @@ def test_violation_writer_passes_through_non_violation_requests() -> None:
 def test_violation_writer_auto_create_runs_once() -> None:
     ws = MagicMock()
     writer = make_uc_violation_writer("main.x.violations", ws=ws)
-    with patch("apx_agent._governance.run_sql") as mock_sql:
+    with patch("apx_agent._governance.run_sql") as mock_sql, \
+         patch("apx_agent._data_governance.run_sql"):
         writer({"type": "violation_report", "decision": {"action": "reject"}, "context": {}})
         writer({"type": "violation_report", "decision": {"action": "reject"}, "context": {}})
 
     create_calls = [c for c in mock_sql.call_args_list if "CREATE TABLE" in c.args[1]]
     assert len(create_calls) == 1
+
+
+def test_violation_writer_auto_create_applies_default_tags() -> None:
+    """Tag-at-auto_create: the violations table carries apx.agent.* governed tags."""
+    ws = MagicMock()
+    writer = make_uc_violation_writer("main.x.violations", ws=ws)
+    with patch("apx_agent._governance.run_sql"), \
+         patch("apx_agent._data_governance.run_sql") as tag_sql:
+        writer({"type": "violation_report", "decision": {"action": "reject"}, "context": {}})
+
+    stmts = [c.args[1] for c in tag_sql.call_args_list]
+    assert any("CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.managed`" in s for s in stmts)
+    assert any("CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.kind`" in s for s in stmts)
+    assert any(
+        "ALTER TABLE `main`.`x`.`violations` SET TAGS" in s
+        and "'apx.agent.kind' = 'violations'" in s
+        for s in stmts
+    )
+
+
+def test_violation_writer_skips_tagging_when_auto_create_disabled() -> None:
+    ws = MagicMock()
+    writer = make_uc_violation_writer("main.x.violations", ws=ws, auto_create=False)
+    with patch("apx_agent._governance.run_sql"), \
+         patch("apx_agent._data_governance.run_sql") as tag_sql:
+        writer({"type": "violation_report", "decision": {"action": "reject"}, "context": {}})
+    tag_sql.assert_not_called()
 
 
 def test_violation_writer_escapes_single_quotes_in_decision_strings() -> None:

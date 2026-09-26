@@ -17,7 +17,9 @@ import pytest
 from apx_agent._data_governance import (
     DataGovernancePlan,
     apply_data_governance,
+    apply_default_agent_tags,
     compile_data_governance_plan,
+    default_agent_tags_plan,
 )
 from apx_agent._models import (
     DataConfig,
@@ -340,3 +342,57 @@ class TestApply:
         ws = MagicMock()
         executed = apply_data_governance(plan, ws)
         assert executed == []
+
+
+# ===========================================================================
+# Default apx.agent.* tags for auto-created agent tables (tag-at-auto_create)
+# ===========================================================================
+
+
+class TestDefaultAgentTags:
+    def test_plan_compiles_managed_and_kind_tags(self) -> None:
+        plan = default_agent_tags_plan("main.apx.agent_registry", kind="registry")
+        ddl = plan.all_ddl
+        assert len(ddl) == 3
+        assert ddl[0] == (
+            "CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.managed` VALUES ('true')"
+        )
+        assert ddl[1].startswith("CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.kind`")
+        for kind in ("registry", "tools", "traces", "violations"):
+            assert f"'{kind}'" in ddl[1]
+        assert ddl[2] == (
+            "ALTER TABLE `main`.`apx`.`agent_registry` SET TAGS "
+            "('apx.agent.managed' = 'true', 'apx.agent.kind' = 'registry')"
+        )
+
+    def test_plan_kind_value_matches_table(self) -> None:
+        plan = default_agent_tags_plan("main.x.violations", kind="violations")
+        assert "'apx.agent.kind' = 'violations'" in plan.table_tag_ddl[0]
+
+    def test_unknown_kind_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown agent table kind"):
+            default_agent_tags_plan("c.s.t", kind="memory")
+
+    def test_apply_success_executes_all_ddl(self) -> None:
+        ws = MagicMock()
+        with patch("apx_agent._data_governance.run_sql") as mock_run:
+            assert apply_default_agent_tags(
+                "main.x.traces", kind="traces", ws=ws, warehouse_id="wh-1"
+            ) is True
+        stmts = [c.args[1] for c in mock_run.call_args_list]
+        assert len(stmts) == 3
+        assert all(c.kwargs["warehouse_id"] == "wh-1" for c in mock_run.call_args_list)
+        assert "GOVERNED TAG" in stmts[0] and "SET TAGS" in stmts[2]
+
+    def test_apply_failure_warns_and_returns_false(self, caplog) -> None:
+        ws = MagicMock()
+        with (
+            patch(
+                "apx_agent._data_governance.run_sql",
+                side_effect=RuntimeError("governed tags not supported"),
+            ),
+            caplog.at_level("WARNING", logger="apx_agent._data_governance"),
+        ):
+            assert apply_default_agent_tags("c.s.t", kind="violations", ws=ws) is False
+        assert "untagged" in caplog.text
+        assert "governed tags not supported" in caplog.text

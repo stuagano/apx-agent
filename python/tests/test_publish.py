@@ -502,6 +502,88 @@ def test_registry_owner_check_skips_on_select_error() -> None:
     assert any("DELETE FROM" in s for s in calls), "delete proceeds despite SELECT failure"
 
 
+def test_publish_to_registry_applies_default_tags() -> None:
+    from apx_agent._publish import publish_to_registry
+
+    tag_calls: list[str] = []
+    with (
+        patch("apx_agent._sql.run_sql", side_effect=_capture_run_sql([])),
+        patch(
+            "apx_agent._data_governance.run_sql",
+            side_effect=_capture_run_sql(tag_calls),
+        ),
+    ):
+        publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"))
+    ddl = "\n".join(tag_calls)
+    assert "ALTER TABLE `main`.`apx`.`agent_registry` SET TAGS" in ddl
+    assert "'apx.agent.managed' = 'true'" in ddl
+    assert "'apx.agent.kind' = 'registry'" in ddl
+
+
+def test_publish_tools_to_registry_applies_default_tags() -> None:
+    from apx_agent._publish import publish_tools_to_registry
+
+    tag_calls: list[str] = []
+    with (
+        patch("apx_agent._sql.run_sql", side_effect=_capture_run_sql([])),
+        patch(
+            "apx_agent._data_governance.run_sql",
+            side_effect=_capture_run_sql(tag_calls),
+        ),
+    ):
+        publish_tools_to_registry(
+            agent_id="a1",
+            agent_name="A1",
+            tool_fns=[],
+            ws=MagicMock(),
+            warehouse_id="wh",
+        )
+    ddl = "\n".join(tag_calls)
+    assert "ALTER TABLE `main`.`apx`.`agent_tools` SET TAGS" in ddl
+    assert "'apx.agent.kind' = 'tools'" in ddl
+
+
+def test_publish_standalone_tools_to_registry_applies_default_tags() -> None:
+    from apx_agent._publish import publish_standalone_tools_to_registry
+
+    def ping_tool(x: str) -> str:
+        """Ping."""
+        return x
+
+    tag_calls: list[str] = []
+    with (
+        patch("apx_agent._sql.run_sql", side_effect=_capture_run_sql([])),
+        patch(
+            "apx_agent._data_governance.run_sql",
+            side_effect=_capture_run_sql(tag_calls),
+        ),
+    ):
+        publish_standalone_tools_to_registry(
+            tool_fns=[ping_tool],
+            ws=MagicMock(),
+            warehouse_id="wh",
+        )
+    ddl = "\n".join(tag_calls)
+    assert "ALTER TABLE `main`.`apx`.`agent_tools` SET TAGS" in ddl
+    assert "'apx.agent.kind' = 'tools'" in ddl
+
+
+def test_publish_to_registry_continues_when_tagging_fails() -> None:
+    from apx_agent._publish import publish_to_registry
+
+    calls: list[str] = []
+    with (
+        patch("apx_agent._sql.run_sql", side_effect=_capture_run_sql(calls)),
+        patch(
+            "apx_agent._data_governance.run_sql",
+            side_effect=RuntimeError("governed tags unsupported"),
+        ),
+    ):
+        # Best-effort tagging must not break the publish path.
+        publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"))
+    assert any("MERGE INTO" in s for s in calls), "registration must still proceed"
+
+
 def test_find_registry_dependents_merges_registry_and_tools_hits() -> None:
     from apx_agent._publish import find_registry_dependents
 

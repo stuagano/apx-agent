@@ -41,6 +41,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ._data_governance import apply_default_agent_tags
 from ._sql import run_sql
 
 if TYPE_CHECKING:
@@ -242,6 +243,10 @@ def export_traces(
                 "export_traces: CREATE TABLE IF NOT EXISTS %s failed: %s — "
                 "subsequent inserts may fail.",
                 target_table, e,
+            )
+        else:
+            apply_default_agent_tags(
+                target_table, kind="traces", ws=ws, warehouse_id=warehouse_id,
             )
 
     from ._mlflow_tracing import search_traces_for_experiment

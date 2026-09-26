@@ -104,7 +104,8 @@ def test_export_traces_runs_create_table_when_auto_create() -> None:
     fake_traces = SimpleNamespace(to_dict=lambda orient: [])
 
     with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_traces), \
-         patch("apx_agent._trace_export.run_sql") as mock_sql:
+         patch("apx_agent._trace_export.run_sql") as mock_sql, \
+         patch("apx_agent._data_governance.run_sql"):
         export_traces(
             experiment_name="exp",
             target_table="main.x.traces",
@@ -113,6 +114,45 @@ def test_export_traces_runs_create_table_when_auto_create() -> None:
 
     create_calls = [c for c in mock_sql.call_args_list if "CREATE TABLE IF NOT EXISTS" in c.args[1]]
     assert len(create_calls) == 1
+
+
+def test_export_traces_auto_create_applies_default_tags() -> None:
+    """Tag-at-auto_create: the trace export table carries apx.agent.* governed tags."""
+    ws = MagicMock()
+    fake_traces = SimpleNamespace(to_dict=lambda orient: [])
+
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_traces), \
+         patch("apx_agent._trace_export.run_sql"), \
+         patch("apx_agent._data_governance.run_sql") as tag_sql:
+        export_traces(
+            experiment_name="exp",
+            target_table="main.x.traces",
+            ws=ws,
+        )
+
+    stmts = [c.args[1] for c in tag_sql.call_args_list]
+    assert any("CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.managed`" in s for s in stmts)
+    assert any(
+        "ALTER TABLE `main`.`x`.`traces` SET TAGS" in s
+        and "'apx.agent.kind' = 'traces'" in s
+        for s in stmts
+    )
+
+
+def test_export_traces_skips_tagging_when_auto_create_disabled() -> None:
+    ws = MagicMock()
+    fake_traces = SimpleNamespace(to_dict=lambda orient: [])
+
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", return_value=fake_traces), \
+         patch("apx_agent._trace_export.run_sql"), \
+         patch("apx_agent._data_governance.run_sql") as tag_sql:
+        export_traces(
+            experiment_name="exp",
+            target_table="main.x.traces",
+            ws=ws,
+            auto_create=False,
+        )
+    tag_sql.assert_not_called()
 
 
 def test_export_traces_skips_create_table_when_disabled() -> None:
