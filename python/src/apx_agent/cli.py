@@ -6952,6 +6952,12 @@ def deploy(
     effective_module = module or "agent:agent"
 
     if dry_run:
+        # Parse [tool.apx.agent.data] for the dry-run plan (fail-closed on
+        # invalid declaration — same as the real deploy path).
+        data_config = None
+        if "data" in config:
+            from ._models import DataConfig
+            data_config = DataConfig.model_validate(config["data"])
         _emit_serving_deploy_plan(
             uc_name=registered_model_name,
             model=model,
@@ -6967,6 +6973,7 @@ def deploy(
             workload_size=workload_size,
             json_output=json_output,
             timeout_seconds=timeout_seconds,
+            data_config=data_config,
         )
         return
 
@@ -7056,6 +7063,7 @@ def deploy(
     # mirroring delete's best-effort-then-aggregate pattern.
     step_outcomes: dict[str, str] = {
         "publish_tools": "skipped",
+        "data_governance": "skipped",
         "log": "skipped",
         "deploy": "skipped",
         "gate": "skipped",
@@ -7142,6 +7150,22 @@ def deploy(
                 "fail the command's exit code",
                 err=True,
             )
+
+    # 1b. Data governance — compile [tool.apx.agent.data] to ABAC DDL and apply.
+    # Runs after publish_tools so any UC tables the agent owns exist to tag.
+    # Fails closed: invalid declaration or DDL failure aborts the deploy.
+    if version is None and _deploy_config is not None and _deploy_config.data is not None:
+        try:
+            from ._data_governance import (
+                apply_data_governance,
+                compile_data_governance_plan,
+            )
+            plan = compile_data_governance_plan(_deploy_config.data)
+            executed = apply_data_governance(plan, ws=_deploy_ws(_deploy_config))
+            step_outcomes["data_governance"] = "ok"
+            _say(f"  data governance: {len(executed)} DDL statements applied")
+        except Exception as e:
+            _fail("data_governance", f"data governance failed: {e}")
 
     # MLflow captures the project's uv.lock into the logged model. Re-point its
     # internal Databricks PyPI proxy at public PyPI so the deployed serving
@@ -7472,6 +7496,7 @@ def _emit_serving_deploy_plan(
     workload_size: str | None,
     json_output: bool,
     timeout_seconds: int,
+    data_config: Any = None,
 ) -> None:
     """Print the ``--target model-serving`` deploy plan WITHOUT mutating (#414).
 
@@ -7490,6 +7515,11 @@ def _emit_serving_deploy_plan(
             "skipped (--version redeploy)" if redeploy
             else "run" if publish_tools
             else "skipped (--no-publish-tools)"
+        ),
+        "data_governance": (
+            "skipped (--version redeploy)" if redeploy
+            else "run" if data_config is not None
+            else "skipped (no [tool.apx.agent.data])"
         ),
         "log": "skipped (--version redeploy)" if redeploy else "run",
         "deploy": "skipped (--no-deploy)" if no_deploy else "run",
@@ -7532,6 +7562,12 @@ def _emit_serving_deploy_plan(
     click.echo("steps:")
     for step, disposition in steps.items():
         click.echo(f"  {step}: {disposition}")
+    if data_config is not None and not redeploy:
+        from ._data_governance import compile_data_governance_plan
+        plan = compile_data_governance_plan(data_config)
+        click.echo("data governance DDL:")
+        for ddl in plan.all_ddl:
+            click.echo(f"  {ddl}")
 
 
 def _serving_health_gate(

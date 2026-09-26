@@ -213,6 +213,115 @@ class SessionBackendConfig(_BackendConfig):
     validate_at_boot: bool = True
 
 
+class DataTagConfig(BaseModel):
+    """One governed tag to apply to agent-owned tables — maps to entries in
+    ``[tool.apx.agent.data.governed_tags]``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    """Tag key, e.g. ``apx.agent.owner``. Must be non-empty."""
+    values: list[str] | None = None
+    """Allowed values for the tag. ``None`` = free-form (no VALUES clause)."""
+
+    @model_validator(mode="after")
+    def _non_empty(self) -> "DataTagConfig":
+        if not self.name.strip():
+            raise ValueError("[tool.apx.agent.data.governed_tags] name must be non-empty")
+        if self.values is not None:
+            for v in self.values:
+                if not v.strip():
+                    raise ValueError(
+                        f"[tool.apx.agent.data.governed_tags] {self.name!r} has an empty value"
+                    )
+        return self
+
+
+class DataPolicyConfig(BaseModel):
+    """One row-filter or column-mask policy on a table — maps to entries in
+    ``[tool.apx.agent.data.tables[].policies]``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    """Policy name (UC identifier)."""
+    type: Literal["row_filter", "column_mask"]
+    function: str
+    """SQL function body for the policy, e.g. ``region = current_user()``."""
+    to: str
+    """Principal to grant the policy to (user, group, or service principal)."""
+    when: str | None = None
+    """Optional WHEN condition for row filters."""
+    match_columns: dict[str, str] | None = None
+    """For column masks: ``{tag_key: tag_value}`` to match tagged columns."""
+    using_columns: list[str] | None = None
+    """For column masks: columns to pass to the mask function."""
+
+    @model_validator(mode="after")
+    def _non_empty(self) -> "DataPolicyConfig":
+        for field_name in ("name", "function", "to"):
+            val = getattr(self, field_name)
+            if not val.strip():
+                raise ValueError(
+                    f"[tool.apx.agent.data.tables[].policies] {field_name} must be non-empty"
+                )
+        if self.type == "column_mask" and self.match_columns is None and self.using_columns is None:
+            raise ValueError(
+                f"[tool.apx.agent.data.tables[].policies] {self.name!r}: "
+                "column_mask requires match_columns or using_columns"
+            )
+        return self
+
+
+class DataTableConfig(BaseModel):
+    """One agent-owned table to tag + optionally policy-protect — maps to
+    entries in ``[tool.apx.agent.data.tables]``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    """Three-part UC name ``catalog.schema.table``."""
+    tags: dict[str, str]
+    """Tag key→value pairs to set via ``ALTER TABLE ... SET TAGS``."""
+    policies: list[DataPolicyConfig] = []
+    """Row-filter / column-mask policies on this table."""
+
+    @model_validator(mode="after")
+    def _non_empty(self) -> "DataTableConfig":
+        if not self.name.strip():
+            raise ValueError("[tool.apx.agent.data.tables] name must be non-empty")
+        parts = self.name.split(".")
+        if len(parts) != 3 or not all(p.strip() for p in parts):
+            raise ValueError(
+                f"[tool.apx.agent.data.tables] {self.name!r} must be a "
+                "three-part UC name (catalog.schema.table)"
+            )
+        if not self.tags:
+            raise ValueError(
+                f"[tool.apx.agent.data.tables] {self.name!r} must have at least one tag"
+            )
+        for k, v in self.tags.items():
+            if not k.strip() or not v.strip():
+                raise ValueError(
+                    f"[tool.apx.agent.data.tables] {self.name!r} has an empty tag key or value"
+                )
+        return self
+
+
+class DataConfig(BaseModel):
+    """Declared data governance — maps to ``[tool.apx.agent.data]``.
+
+    Compiles to UC ABAC DDL at deploy time: governed tags, table tags, and
+    row-filter / column-mask policies."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    governed_tags: list[DataTagConfig] = []
+    """Governed tags to create (``CREATE GOVERNED TAG``)."""
+    tables: list[DataTableConfig] = []
+    """Tables to tag + policy-protect."""
+
+
 class AutoscaleConfig(BaseModel):
     """Databricks Apps autoscale bounds — maps to ``[tool.apx.agent.deploy.autoscale]``."""
 
@@ -512,6 +621,9 @@ class AgentConfig(BaseModel):
 
     deploy: DeployConfig | None = None
     """Declared Apps horizontal scaling — see ``[tool.apx.agent.deploy]``."""
+
+    data: DataConfig | None = None
+    """Declared data governance (ABAC tags + policies) — see ``[tool.apx.agent.data]``."""
 
     tools: list[dict[str, Any]] = []
     """Tool declarations from a YAML spec ``tools:`` block.

@@ -1292,6 +1292,7 @@ def test_deploy_model_serving_json_output_success(
     assert payload["version"] == "1"
     assert payload["steps"] == {
         "publish_tools": "ok",
+        "data_governance": "skipped",  # no [tool.apx.agent.data] in test fixture
         "log": "ok",
         "deploy": "skipped",     # --no-deploy
         "gate": "skipped",       # --no-deploy: nothing to health-check (#406)

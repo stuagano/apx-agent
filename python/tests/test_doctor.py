@@ -885,3 +885,141 @@ class TestCheckSubAgents:
         groups = run_checks(tmp_path, online=False)
         project = dict(groups)["Project"]
         assert all(c.name != "Sub-agents" for c in project)
+
+
+# ---------------------------------------------------------------------------
+# check_abac_compute_floor — ABAC runtime floor (serverless / DBR 16.4+)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckAbacComputeFloor:
+    def _project(self, tmp_path: Path, extra: str = "") -> Path:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "x"\n' + extra
+        )
+        return tmp_path
+
+    def _data_block(self) -> str:
+        return (
+            '\n[tool.apx.agent.data]\n'
+            'governed_tags = [{name = "env", values = ["dev"]}]\n'
+            'tables = [{name = "c.s.t", tags = {env = "dev"}}]\n'
+        )
+
+    def test_none_outside_apx_project(self, tmp_path: Path):
+        assert doctor.check_abac_compute_floor(tmp_path, auth_ok=True) is None
+
+    def test_none_when_no_data_block(self, tmp_path: Path, monkeypatch):
+        self._project(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        assert doctor.check_abac_compute_floor(tmp_path, auth_ok=True) is None
+
+    def test_skip_when_auth_unavailable(self, tmp_path: Path, monkeypatch):
+        self._project(tmp_path, self._data_block())
+        monkeypatch.chdir(tmp_path)
+        c = doctor.check_abac_compute_floor(tmp_path, auth_ok=False)
+        assert c is not None and c.status is Status.SKIP
+        assert "auth unavailable" in c.detail
+
+    def test_ok_serverless_warehouse(self, tmp_path: Path, monkeypatch):
+        self._project(tmp_path, self._data_block())
+        monkeypatch.chdir(tmp_path)
+        from types import SimpleNamespace
+        ws = MagicMock()
+        ws.warehouses.get.return_value = SimpleNamespace(
+            name="wh-serverless",
+            enable_serverless_compute=True,
+            channel=SimpleNamespace(name="CHANNEL_NAME_CURRENT"),
+        )
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws), \
+                patch("apx_agent._sql.get_warehouse_id", return_value="wh-1"):
+            c = doctor.check_abac_compute_floor(tmp_path, auth_ok=True)
+        assert c is not None and c.status is Status.OK
+        assert "serverless" in c.detail
+
+    def test_ok_current_channel(self, tmp_path: Path, monkeypatch):
+        self._project(tmp_path, self._data_block())
+        monkeypatch.chdir(tmp_path)
+        from types import SimpleNamespace
+        ws = MagicMock()
+        ws.warehouses.get.return_value = SimpleNamespace(
+            name="wh-pro",
+            enable_serverless_compute=False,
+            channel=SimpleNamespace(name="CHANNEL_NAME_CURRENT"),
+        )
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws), \
+                patch("apx_agent._sql.get_warehouse_id", return_value="wh-1"):
+            c = doctor.check_abac_compute_floor(tmp_path, auth_ok=True)
+        assert c is not None and c.status is Status.OK
+        assert "tracks current DBR" in c.detail
+
+    def test_warn_custom_channel(self, tmp_path: Path, monkeypatch):
+        self._project(tmp_path, self._data_block())
+        monkeypatch.chdir(tmp_path)
+        from types import SimpleNamespace
+        ws = MagicMock()
+        ws.warehouses.get.return_value = SimpleNamespace(
+            name="wh-pinned",
+            enable_serverless_compute=False,
+            channel=SimpleNamespace(name="CHANNEL_NAME_CUSTOM"),
+        )
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws), \
+                patch("apx_agent._sql.get_warehouse_id", return_value="wh-1"):
+            c = doctor.check_abac_compute_floor(tmp_path, auth_ok=True)
+        assert c is not None and c.status is Status.WARN
+        assert "below the ABAC floor" in c.detail
+        assert c.fix is not None and "serverless" in c.fix
+
+    def test_warn_warehouse_unresolvable(self, tmp_path: Path, monkeypatch):
+        self._project(tmp_path, self._data_block())
+        monkeypatch.chdir(tmp_path)
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws), \
+                patch("apx_agent._sql.get_warehouse_id", side_effect=RuntimeError("no warehouse")):
+            c = doctor.check_abac_compute_floor(tmp_path, auth_ok=True)
+        assert c is not None and c.status is Status.WARN
+        assert "could not resolve" in c.detail
+
+    def test_session_warehouse_takes_precedence(self, tmp_path: Path, monkeypatch):
+        self._project(
+            tmp_path,
+            '\n[tool.apx.agent.session]\ntype = "lakebase"\nwarehouse_id = "sess-wh"\n'
+            + self._data_block(),
+        )
+        monkeypatch.chdir(tmp_path)
+        from types import SimpleNamespace
+        ws = MagicMock()
+        ws.warehouses.get.return_value = SimpleNamespace(
+            name="sess", enable_serverless_compute=True,
+            channel=SimpleNamespace(name="CHANNEL_NAME_CURRENT"),
+        )
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws), \
+                patch("apx_agent._sql.get_warehouse_id") as mock_discover:
+            c = doctor.check_abac_compute_floor(tmp_path, auth_ok=True)
+        assert c is not None and c.status is Status.OK
+        mock_discover.assert_not_called()
+        ws.warehouses.get.assert_called_once_with("sess-wh")
+
+    def test_run_checks_includes_abac_when_declared(self, tmp_path: Path, monkeypatch):
+        self._project(tmp_path, self._data_block())
+        monkeypatch.chdir(tmp_path)
+        # check_databricks_auth() runs even when online=False, and a dev
+        # machine with real Databricks auth would take the live path — force
+        # auth_ok=False so the check takes the deterministic SKIP branch.
+        monkeypatch.setattr(
+            doctor,
+            "check_databricks_auth",
+            lambda: Check("Databricks auth", Status.FAIL, "no auth in test"),
+        )
+        groups = run_checks(tmp_path, online=False)
+        project = dict(groups)["Project"]
+        # auth_ok=False → SKIP, but the check must be present
+        abac = next((c for c in project if c.name == "ABAC compute floor"), None)
+        assert abac is not None and abac.status is Status.SKIP
+
+    def test_run_checks_excludes_abac_when_undeclared(self, tmp_path: Path, monkeypatch):
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        monkeypatch.chdir(tmp_path)
+        groups = run_checks(tmp_path, online=False)
+        project = dict(groups)["Project"]
+        assert all(c.name != "ABAC compute floor" for c in project)

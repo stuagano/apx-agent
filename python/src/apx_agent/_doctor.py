@@ -197,6 +197,9 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
         project.append(memory_check)
+    abac_check = check_abac_compute_floor(cwd, auth_ok=auth.status is Status.OK)
+    if abac_check is not None:
+        project.append(abac_check)
     uc_check = check_uc_data_source(cwd, auth_ok=auth.status is Status.OK)
     if uc_check is not None:
         project.append(uc_check)
@@ -1018,6 +1021,82 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
                 engine.dispose()
 
     return Check(label, Status.SKIP, f"unknown type {mem.type!r}", None)
+
+
+def check_abac_compute_floor(cwd: Path, *, auth_ok: bool) -> Check | None:
+    """ABAC runtime-floor check: when [tool.apx.agent.data] declares governed
+    tags or policies, the SQL compute that will apply + evaluate them must be
+    serverless or track a current DBR (>= 16.4). Protected tables fail closed
+    on older runtimes — better surfaced here than mid-conversation.
+
+    Returns ``None`` when no data-governance declaration exists.
+    """
+    label = "ABAC compute floor"
+    if not _is_apx_project(cwd):
+        return None
+    try:
+        from ._inspection import _load_agent_config  # noqa: PLC0415
+        cfg = _load_agent_config()
+    except Exception:
+        return None
+    if cfg is None or cfg.data is None:
+        return None
+
+    data = cfg.data
+    n_tags = len(data.governed_tags)
+    n_tables = len(data.tables)
+    n_policies = sum(len(t.policies) for t in data.tables)
+    declared = f"{n_tags} governed tags, {n_tables} tables, {n_policies} policies"
+
+    if not auth_ok:
+        return Check(label, Status.SKIP, f"{declared} — skipped (auth unavailable)", None)
+
+    try:
+        from ._defaults import _make_workspace_client  # noqa: PLC0415
+        from ._sql import get_warehouse_id  # noqa: PLC0415
+        ws = _make_workspace_client()
+        # Mirror run_sql's resolution: session warehouse if declared, else
+        # auto-discovery (which already prefers serverless).
+        wh_id: str | None = None
+        if cfg.session is not None and cfg.session.warehouse_id:
+            wh_id = cfg.session.warehouse_id
+        if wh_id is None:
+            wh_id = get_warehouse_id(ws)
+        wh = ws.warehouses.get(wh_id)
+    except Exception as exc:
+        return Check(
+            label, Status.WARN,
+            f"{declared} — could not resolve a SQL warehouse to verify "
+            f"compute floor ({str(exc)[:120]})",
+            "ABAC needs serverless or DBR 16.4+. Create/select a serverless "
+            "warehouse (`apx-agent doctor` again after), or set warehouse_id "
+            "in [tool.apx.agent.session].",
+        )
+
+    if getattr(wh, "enable_serverless_compute", False):
+        return Check(
+            label, Status.OK,
+            f"{declared} — warehouse {wh.name!r} is serverless (current DBR)", None,
+        )
+
+    channel = getattr(getattr(wh, "channel", None), "name", None)
+    if channel is None:
+        channel = str(getattr(getattr(wh, "channel", None), "value", "unknown"))
+    if channel in ("CHANNEL_NAME_CURRENT", "CHANNEL_NAME_PREVIEW"):
+        return Check(
+            label, Status.OK,
+            f"{declared} — warehouse {wh.name!r} is pro/classic on channel "
+            f"{channel} (tracks current DBR ≥ 16.4)", None,
+        )
+    return Check(
+        label, Status.WARN,
+        f"{declared} — warehouse {wh.name!r} is pro/classic on channel "
+        f"{channel}, which may pin a DBR below the ABAC floor (16.4). "
+        "Protected tables fail closed on sub-floor runtimes.",
+        "Switch the warehouse channel to Current, use a serverless warehouse, "
+        "or confirm the pinned runtime is ≥ DBR 16.4 before deploying "
+        "ABAC-protected tables.",
+    )
 
 
 def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
