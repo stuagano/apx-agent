@@ -6,6 +6,11 @@ import { createRoot } from "react-dom/client";
 // or every component renders unstyled. Import both so either theme works.
 import "@databricks/design-system/index.css";
 import "@databricks/design-system/index-dark.css";
+// DM Sans / DM Mono @font-face — Du Bois's component CSS *references* these
+// fonts but does not bundle them; without these imports the UI falls back to a
+// serif system font and loses the Databricks look entirely.
+import "@databricks/design-system/fonts/dm-sans.css";
+import "@databricks/design-system/fonts/dm-mono.css";
 import "@/styles/globals.css";
 import { routeTree } from "@/types/routeTree.gen";
 

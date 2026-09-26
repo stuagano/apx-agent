@@ -10,3 +10,10 @@ body,
   margin: 0;
   height: 100%;
 }
+
+/* Du Bois components carry their own font, but page-level / plain-HTML text
+   (the app shell, custom cards, empty states) does not — set DM Sans on body
+   so everything uses the Databricks typeface instead of a serif fallback. */
+body {
+  font-family: "DM Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
