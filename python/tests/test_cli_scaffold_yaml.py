@@ -217,6 +217,36 @@ class TestScaffoldEmitsOKF:
             f"knowledge= must be absent when no bundle; agent section: {agent_section!r}"
         )
 
+    def test_apps_databricks_yml_has_no_experiment_resource(self, tmp_path):
+        # Task 1 removed the unsupported `experiment` app-resource from the
+        # apps-target scaffold's generated databricks.yml. Guard the fix:
+        # no `experiment` resource type, `serving_endpoint` still present
+        # (a valid, non-empty resource list), and the tracing env binding
+        # (MLFLOW_EXPERIMENT_ID) still wired into config.env.
+        result, target = self._invoke_apps(tmp_path)
+        assert result.exit_code == 0, result.output
+
+        dbx = target / "databricks.yml"
+        assert dbx.exists(), f"no databricks.yml generated: {list(target.iterdir())}"
+        raw = dbx.read_text()
+
+        doc = yaml.safe_load(raw)
+        app = next(iter(doc["resources"]["apps"].values()))
+        resource_types = {
+            # each entry is a {name, <type>: {...}} dict; the type key is the
+            # one that isn't 'name'/'description'
+            k
+            for entry in app.get("resources", [])
+            for k in entry
+            if k not in ("name", "description")
+        }
+        assert "experiment" not in resource_types, (
+            f"scaffold still emits an 'experiment' app resource: {resource_types}"
+        )
+        assert "serving_endpoint" in resource_types
+
+        assert "MLFLOW_EXPERIMENT_ID" in raw
+
     def test_model_serving_pyproject_no_knowledge_when_no_bundle(self, tmp_path):
         """Model-serving scaffold: when manifest is None, neither knowledge= nor bundle."""
         runner = CliRunner()

@@ -1872,10 +1872,6 @@ resources:
         - sql
         - model-serving
       resources:
-        - name: experiment
-          experiment:
-            experiment_id: ${var.mlflow_experiment_id}
-            permission: CAN_MANAGE
         # apx-agent agents deploy --target apps will auto-add resources from the agent's
         # ResourceSpec list. For now, list any extras here manually:
         - name: llm-endpoint
