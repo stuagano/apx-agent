@@ -19,8 +19,11 @@ from ._sql import run_sql
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_AGENT_TAG_MANAGED = "apx.agent.managed"
-DEFAULT_AGENT_TAG_KIND = "apx.agent.kind"
+# UC governed-tag keys may not contain reserved characters (``.``, ``=``), so
+# the default taxonomy uses the UC-safe undotted form — same ``.`` → ``_``
+# convention as ``uc_safe_tag_key`` for model-version tags.
+DEFAULT_AGENT_TAG_MANAGED = "apx_agent_managed"
+DEFAULT_AGENT_TAG_KIND = "apx_agent_kind"
 DEFAULT_AGENT_KINDS = ["registry", "tools", "traces", "violations"]
 
 
@@ -60,16 +63,18 @@ def compile_data_governance_plan(config: DataConfig) -> DataGovernancePlan:
     """
     plan = DataGovernancePlan()
 
-    # 1. Governed tags
+    # 1. Governed tags. ``CREATE GOVERNED TAG`` has no ``IF NOT EXISTS`` /
+    # ``OR REPLACE`` form on serverless — idempotency is handled at apply time
+    # (see ``apply_data_governance``), not in the DDL text.
     for tag in config.governed_tags:
         if tag.values is not None:
             values = ", ".join(_sql_str(v) for v in tag.values)
             plan.governed_tag_ddl.append(
-                f"CREATE GOVERNED TAG IF NOT EXISTS {_quote_ident(tag.name)} VALUES ({values})"
+                f"CREATE GOVERNED TAG {_quote_ident(tag.name)} VALUES ({values})"
             )
         else:
             plan.governed_tag_ddl.append(
-                f"CREATE GOVERNED TAG IF NOT EXISTS {_quote_ident(tag.name)}"
+                f"CREATE GOVERNED TAG {_quote_ident(tag.name)}"
             )
 
     # 2. Table tags
@@ -109,6 +114,17 @@ def compile_data_governance_plan(config: DataConfig) -> DataGovernancePlan:
     return plan
 
 
+def _is_already_exists_error(exc: Exception) -> bool:
+    """True when a governed-tag ``CREATE`` failed only because the tag exists.
+
+    The statement-execution API surfaces the failure as a ``RuntimeError``
+    whose message embeds either the prose (``... already exists``) or the
+    Databricks error code (``TAG_ALREADY_EXISTS`` / underscore form).
+    """
+    msg = str(exc).lower()
+    return "already exists" in msg or "already_exists" in msg
+
+
 def apply_data_governance(
     plan: DataGovernancePlan,
     ws: Any,
@@ -119,26 +135,44 @@ def apply_data_governance(
     """Apply a compiled plan via ``run_sql``.
 
     Returns the list of DDL statements executed (or that would be executed
-    when ``dry_run=True``). Raises on the first failure — governance DDL
-    must not be silently skipped.
+    when ``dry_run=True``).
+
+    Governed-tag ``CREATE`` statements tolerate "already exists" so re-deploys
+    and tags shared across tables (the default ``apx_agent_*`` tags land on
+    both the registry and tools tables) are idempotent — ``CREATE GOVERNED
+    TAG`` has no ``IF NOT EXISTS`` form. Every other failure raises:
+    governance DDL must not be silently skipped.
     """
     executed: list[str] = []
-    for ddl in plan.all_ddl:
+
+    def _run(ddl: str, *, tolerate_already_exists: bool) -> None:
         if dry_run:
             logger.info("DRY RUN — would execute: %s", ddl)
-        else:
-            logger.info("Executing: %s", ddl)
+            return
+        logger.info("Executing: %s", ddl)
+        try:
             run_sql(ws, ddl, warehouse_id=warehouse_id)
+        except Exception as e:
+            if tolerate_already_exists and _is_already_exists_error(e):
+                logger.info("Already exists, skipping: %s", ddl)
+                return
+            raise
+
+    for ddl in plan.governed_tag_ddl:
+        _run(ddl, tolerate_already_exists=True)
+        executed.append(ddl)
+    for ddl in plan.table_tag_ddl + plan.policy_ddl:
+        _run(ddl, tolerate_already_exists=False)
         executed.append(ddl)
     return executed
 
 
 def default_agent_tags_plan(table_name: str, *, kind: str) -> DataGovernancePlan:
-    """Compile the default ``apx.agent.*`` governed-tag plan for one agent table.
+    """Compile the default ``apx_agent_*`` governed-tag plan for one agent table.
 
     Every UC table an agent creates (violations, trace export, registry,
-    tools) carries ``apx.agent.managed = 'true'`` and
-    ``apx.agent.kind = '<kind>'`` so catalog/schema-level ABAC policies can
+    tools) carries ``apx_agent_managed = 'true'`` and
+    ``apx_agent_kind = '<kind>'`` so catalog/schema-level ABAC policies can
     target agent data even without an explicit ``[tool.apx.agent.data]``
     declaration. Raises ``ValueError`` for a kind outside the taxonomy —
     extending it means adding to ``DEFAULT_AGENT_KINDS``.

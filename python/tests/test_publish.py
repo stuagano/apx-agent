@@ -516,8 +516,8 @@ def test_publish_to_registry_applies_default_tags() -> None:
         publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"))
     ddl = "\n".join(tag_calls)
     assert "ALTER TABLE `main`.`apx`.`agent_registry` SET TAGS" in ddl
-    assert "'apx.agent.managed' = 'true'" in ddl
-    assert "'apx.agent.kind' = 'registry'" in ddl
+    assert "'apx_agent_managed' = 'true'" in ddl
+    assert "'apx_agent_kind' = 'registry'" in ddl
 
 
 def test_publish_tools_to_registry_applies_default_tags() -> None:
@@ -540,7 +540,7 @@ def test_publish_tools_to_registry_applies_default_tags() -> None:
         )
     ddl = "\n".join(tag_calls)
     assert "ALTER TABLE `main`.`apx`.`agent_tools` SET TAGS" in ddl
-    assert "'apx.agent.kind' = 'tools'" in ddl
+    assert "'apx_agent_kind' = 'tools'" in ddl
 
 
 def test_publish_standalone_tools_to_registry_applies_default_tags() -> None:
@@ -565,7 +565,7 @@ def test_publish_standalone_tools_to_registry_applies_default_tags() -> None:
         )
     ddl = "\n".join(tag_calls)
     assert "ALTER TABLE `main`.`apx`.`agent_tools` SET TAGS" in ddl
-    assert "'apx.agent.kind' = 'tools'" in ddl
+    assert "'apx_agent_kind' = 'tools'" in ddl
 
 
 def test_publish_to_registry_continues_when_tagging_fails() -> None:

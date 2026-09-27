@@ -522,7 +522,7 @@ def test_violation_writer_auto_create_runs_once() -> None:
 
 
 def test_violation_writer_auto_create_applies_default_tags() -> None:
-    """Tag-at-auto_create: the violations table carries apx.agent.* governed tags."""
+    """Tag-at-auto_create: the violations table carries apx_agent_* governed tags."""
     ws = MagicMock()
     writer = make_uc_violation_writer("main.x.violations", ws=ws)
     with patch("apx_agent._governance.run_sql"), \
@@ -530,11 +530,11 @@ def test_violation_writer_auto_create_applies_default_tags() -> None:
         writer({"type": "violation_report", "decision": {"action": "reject"}, "context": {}})
 
     stmts = [c.args[1] for c in tag_sql.call_args_list]
-    assert any("CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.managed`" in s for s in stmts)
-    assert any("CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.kind`" in s for s in stmts)
+    assert any("CREATE GOVERNED TAG `apx_agent_managed`" in s for s in stmts)
+    assert any("CREATE GOVERNED TAG `apx_agent_kind`" in s for s in stmts)
     assert any(
         "ALTER TABLE `main`.`x`.`violations` SET TAGS" in s
-        and "'apx.agent.kind' = 'violations'" in s
+        and "'apx_agent_kind' = 'violations'" in s
         for s in stmts
     )
 

@@ -185,7 +185,7 @@ class TestCompilePlan:
         )
         plan = compile_data_governance_plan(cfg)
         assert len(plan.governed_tag_ddl) == 1
-        assert "CREATE GOVERNED TAG IF NOT EXISTS `env`" in plan.governed_tag_ddl[0]
+        assert "CREATE GOVERNED TAG `env`" in plan.governed_tag_ddl[0]
         assert "'dev'" in plan.governed_tag_ddl[0]
         assert "'prod'" in plan.governed_tag_ddl[0]
 
@@ -303,16 +303,16 @@ class TestCompilePlan:
 class TestApply:
     def test_dry_run_no_execution(self) -> None:
         plan = DataGovernancePlan(
-            governed_tag_ddl=["CREATE GOVERNED TAG IF NOT EXISTS `env`"],
+            governed_tag_ddl=["CREATE GOVERNED TAG `env`"],
         )
         ws = MagicMock()
         executed = apply_data_governance(plan, ws, dry_run=True)
-        assert executed == ["CREATE GOVERNED TAG IF NOT EXISTS `env`"]
+        assert executed == ["CREATE GOVERNED TAG `env`"]
         ws.statement_execution.execute_statement.assert_not_called()
 
     def test_apply_executes(self) -> None:
         plan = DataGovernancePlan(
-            governed_tag_ddl=["CREATE GOVERNED TAG IF NOT EXISTS `env`"],
+            governed_tag_ddl=["CREATE GOVERNED TAG `env`"],
         )
         ws = MagicMock()
         mock_resp = MagicMock()
@@ -324,17 +324,52 @@ class TestApply:
             executed = apply_data_governance(plan, ws, warehouse_id="wh-1")
         assert len(executed) == 1
         mock_run.assert_called_once_with(
-            ws, "CREATE GOVERNED TAG IF NOT EXISTS `env`", warehouse_id="wh-1"
+            ws, "CREATE GOVERNED TAG `env`", warehouse_id="wh-1"
         )
 
     def test_apply_fails_closed(self) -> None:
         plan = DataGovernancePlan(
-            governed_tag_ddl=["CREATE GOVERNED TAG IF NOT EXISTS `env`"],
+            governed_tag_ddl=["CREATE GOVERNED TAG `env`"],
         )
         ws = MagicMock()
         with patch("apx_agent._data_governance.run_sql") as mock_run:
             mock_run.side_effect = RuntimeError("DDL failed")
             with pytest.raises(RuntimeError, match="DDL failed"):
+                apply_data_governance(plan, ws)
+
+    def test_governed_tag_already_exists_is_idempotent(self) -> None:
+        # Re-deploys + tags shared across tables re-run CREATE GOVERNED TAG;
+        # an already-exists failure must be skipped, not fail the deploy.
+        plan = DataGovernancePlan(
+            governed_tag_ddl=[
+                "CREATE GOVERNED TAG `apx_agent_managed` VALUES ('true')",
+                "CREATE GOVERNED TAG `apx_agent_kind` VALUES ('registry', 'tools')",
+            ],
+            table_tag_ddl=[
+                "ALTER TABLE `c`.`s`.`t` SET TAGS ('apx_agent_managed' = 'true')",
+            ],
+        )
+        ws = MagicMock()
+        with patch("apx_agent._data_governance.run_sql") as mock_run:
+            mock_run.side_effect = [
+                RuntimeError("[TAG_ALREADY_EXISTS] governed tag already exists"),
+                RuntimeError("Query failed: TAG_ALREADY_EXISTS"),
+                [],  # table tag succeeds
+            ]
+            executed = apply_data_governance(plan, ws)
+        assert len(executed) == 3  # all statements addressed, 2 skipped
+        assert mock_run.call_count == 3
+
+    def test_table_tag_already_exists_still_fails(self) -> None:
+        # Only governed-tag CREATEs tolerate already-exists; a table-tag or
+        # policy failure is real and must fail closed.
+        plan = DataGovernancePlan(
+            table_tag_ddl=["ALTER TABLE `c`.`s`.`t` SET TAGS ('k' = 'v')"],
+        )
+        ws = MagicMock()
+        with patch("apx_agent._data_governance.run_sql") as mock_run:
+            mock_run.side_effect = RuntimeError("unexpected already exists")
+            with pytest.raises(RuntimeError, match="unexpected already exists"):
                 apply_data_governance(plan, ws)
 
     def test_apply_empty_plan(self) -> None:
@@ -345,7 +380,7 @@ class TestApply:
 
 
 # ===========================================================================
-# Default apx.agent.* tags for auto-created agent tables (tag-at-auto_create)
+# Default apx_agent_* tags for auto-created agent tables (tag-at-auto_create)
 # ===========================================================================
 
 
@@ -355,19 +390,19 @@ class TestDefaultAgentTags:
         ddl = plan.all_ddl
         assert len(ddl) == 3
         assert ddl[0] == (
-            "CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.managed` VALUES ('true')"
+            "CREATE GOVERNED TAG `apx_agent_managed` VALUES ('true')"
         )
-        assert ddl[1].startswith("CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.kind`")
+        assert ddl[1].startswith("CREATE GOVERNED TAG `apx_agent_kind`")
         for kind in ("registry", "tools", "traces", "violations"):
             assert f"'{kind}'" in ddl[1]
         assert ddl[2] == (
             "ALTER TABLE `main`.`apx`.`agent_registry` SET TAGS "
-            "('apx.agent.managed' = 'true', 'apx.agent.kind' = 'registry')"
+            "('apx_agent_managed' = 'true', 'apx_agent_kind' = 'registry')"
         )
 
     def test_plan_kind_value_matches_table(self) -> None:
         plan = default_agent_tags_plan("main.x.violations", kind="violations")
-        assert "'apx.agent.kind' = 'violations'" in plan.table_tag_ddl[0]
+        assert "'apx_agent_kind' = 'violations'" in plan.table_tag_ddl[0]
 
     def test_unknown_kind_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown agent table kind"):

@@ -117,7 +117,7 @@ def test_export_traces_runs_create_table_when_auto_create() -> None:
 
 
 def test_export_traces_auto_create_applies_default_tags() -> None:
-    """Tag-at-auto_create: the trace export table carries apx.agent.* governed tags."""
+    """Tag-at-auto_create: the trace export table carries apx_agent_* governed tags."""
     ws = MagicMock()
     fake_traces = SimpleNamespace(to_dict=lambda orient: [])
 
@@ -131,10 +131,10 @@ def test_export_traces_auto_create_applies_default_tags() -> None:
         )
 
     stmts = [c.args[1] for c in tag_sql.call_args_list]
-    assert any("CREATE GOVERNED TAG IF NOT EXISTS `apx.agent.managed`" in s for s in stmts)
+    assert any("CREATE GOVERNED TAG `apx_agent_managed`" in s for s in stmts)
     assert any(
         "ALTER TABLE `main`.`x`.`traces` SET TAGS" in s
-        and "'apx.agent.kind' = 'traces'" in s
+        and "'apx_agent_kind' = 'traces'" in s
         for s in stmts
     )
 

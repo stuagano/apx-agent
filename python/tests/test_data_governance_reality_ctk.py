@@ -77,12 +77,12 @@ def test_declared_data_governance_live() -> None:
         # Declare → compile → apply
         config = DataConfig(
             governed_tags=[
-                DataTagConfig(name="apx.agent.env", values=["test"]),
+                DataTagConfig(name="apx_agent_env", values=["test"]),
             ],
             tables=[
                 DataTableConfig(
                     name=table,
-                    tags={"apx.agent.env": "test"},
+                    tags={"apx_agent_env": "test"},
                 ),
             ],
         )
@@ -98,23 +98,29 @@ def test_declared_data_governance_live() -> None:
             warehouse_id=warehouse_id,
         )
         tag_map = {r["tag_name"]: r["tag_value"] for r in rows}
-        assert tag_map.get("apx.agent.env") == "test", (
-            f"APX-DATA-GOV-PROOF FAILED: expected tag apx.agent.env=test, got {tag_map}"
+        assert tag_map.get("apx_agent_env") == "test", (
+            f"APX-DATA-GOV-PROOF FAILED: expected tag apx_agent_env=test, got {tag_map}"
         )
 
         # Read back: governed tag exists
         rows = run_sql(
             ws,
             f"SELECT tag_name FROM {catalog}.information_schema.governed_tags "
-            f"WHERE tag_name = 'apx.agent.env'",
+            f"WHERE tag_name = 'apx_agent_env'",
             warehouse_id=warehouse_id,
         )
         assert len(rows) >= 1, (
-            "APX-DATA-GOV-PROOF FAILED: governed tag apx.agent.env not found in "
+            "APX-DATA-GOV-PROOF FAILED: governed tag apx_agent_env not found in "
             "INFORMATION_SCHEMA.governed_tags"
         )
 
     finally:
-        # Cleanup
+        # Cleanup: table + schema first, then the catalog-level governed tag
+        # (best-effort — a workspace without DROP GOVERNED TAG support leaves it,
+        # and the idempotent re-apply in apply_data_governance keeps re-runs green).
         run_sql(ws, f"DROP TABLE IF EXISTS {table}", warehouse_id=warehouse_id)
         run_sql(ws, f"DROP SCHEMA IF EXISTS {catalog}.{schema}", warehouse_id=warehouse_id)
+        try:
+            run_sql(ws, "DROP GOVERNED TAG IF EXISTS apx_agent_env", warehouse_id=warehouse_id)
+        except Exception as cleanup_err:
+            print(f"cleanup: DROP GOVERNED TAG apx_agent_env skipped: {cleanup_err}")
