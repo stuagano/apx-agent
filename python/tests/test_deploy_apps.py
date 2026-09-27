@@ -296,7 +296,7 @@ def test_reconcile_apps_authorization_is_complete_additive_and_idempotent(
         for entry in resources
     )
     assert any(
-        entry.get("serving_endpoint", {}).get("endpoint_name")
+        entry.get("serving_endpoint", {}).get("name")
         == "model-endpoint"
         and entry["serving_endpoint"]["permission"] == "CAN_QUERY"
         for entry in resources
@@ -371,6 +371,51 @@ def test_explicit_apps_resource_summary_rejects_missing_typed_fields(
         """))
 
     with pytest.raises(click.ClickException, match="missing required fields: key"):
+        _explicit_apps_resource_summary_lines(tmp_path, "my-app")
+
+
+def test_explicit_apps_resource_summary_accepts_legacy_serving_endpoint_name(
+    tmp_path: Path,
+) -> None:
+    """Hand-written bundles put the endpoint id in ``name`` (no ``endpoint_name``).
+
+    The Apps API accepts both shapes — the validator must not require the
+    apx-generated dual-field shape.
+    """
+    from apx_agent.cli import _explicit_apps_resource_summary_lines
+
+    (tmp_path / "databricks.yml").write_text(textwrap.dedent("""\
+        resources:
+          apps:
+            my-app:
+              resources:
+                - name: llm-endpoint
+                  description: Foundation model endpoint used by the agent.
+                  serving_endpoint:
+                    name: databricks-claude-sonnet-4-6
+                    permission: CAN_QUERY
+        """))
+
+    assert _explicit_apps_resource_summary_lines(tmp_path, "my-app") == [
+        "serving_endpoint llm-endpoint: CAN_QUERY",
+    ]
+
+
+def test_explicit_apps_resource_summary_rejects_serving_endpoint_without_id(
+    tmp_path: Path,
+) -> None:
+    from apx_agent.cli import _explicit_apps_resource_summary_lines
+
+    (tmp_path / "databricks.yml").write_text(textwrap.dedent("""\
+        resources:
+          apps:
+            my-app:
+              resources:
+                - serving_endpoint:
+                    permission: CAN_QUERY
+        """))
+
+    with pytest.raises(click.ClickException, match="missing required fields"):
         _explicit_apps_resource_summary_lines(tmp_path, "my-app")
 
 
@@ -1277,14 +1322,18 @@ def test_apps_deploy_reconciles_resources_without_legacy_flag(
     assert result.exit_code == 0, result.output
     doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
     resources = doc["resources"]["apps"]["my-app"]["resources"]
-    # Each entry is {"<resource_type>": {"name": ..., ...}}.
-    rendered = [next(iter(r.values())) for r in resources]
+    # Each entry is {"<resource_type>": {"name": ..., ...}}, optionally with a
+    # resource-level ``name``/``description`` handle alongside the typed block.
+    rendered = [
+        next(v for k, v in r.items() if k not in {"name", "description"})
+        for r in resources
+    ]
     names = [r["name"] for r in rendered]
     assert any("claude-3-5" in n for n in names)
     assert any("abc123" in n for n in names)
     # Identifiers should match what we asked for.
     endpoint_block = next(r for r in resources if "serving_endpoint" in r)
-    assert endpoint_block["serving_endpoint"]["endpoint_name"] == "claude-3-5"
+    assert endpoint_block["serving_endpoint"]["name"] == "claude-3-5"
     warehouse_block = next(r for r in resources if "sql_warehouse" in r)
     assert warehouse_block["sql_warehouse"]["id"] == "abc123"
     assert "# Apps authorization summary" in result.output
@@ -1560,7 +1609,7 @@ def test_apps_deploy_resource_conflict_fails_before_bundle_deploy(
     if conflict == "permission":
         body["permission"] = "CAN_MANAGE"
     else:
-        body["endpoint_name"] = "operator-owned-endpoint"
+        body["name"] = "operator-owned-endpoint"
 
     doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
     doc["resources"]["apps"]["my-app"]["resources"] = [generated]

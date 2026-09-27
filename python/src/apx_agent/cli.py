@@ -9381,7 +9381,13 @@ def _explicit_apps_resource_summary_lines(
         "genie_space": ("name", "space_id"),
         "job": ("name", "id"),
         "secret": ("name", "scope", "key"),
-        "serving_endpoint": ("name", "endpoint_name"),
+        # serving_endpoint accepts two on-the-wire shapes: apx-generated bundles
+        # carry both a slug ``name`` and the real ``endpoint_name``, while
+        # hand-written bundles (all examples) put the endpoint id in ``name``.
+        # The Apps API accepts either; requiring both would reject every
+        # hand-written bundle, so the endpoint identifier is validated below
+        # as endpoint_name-or-name.
+        "serving_endpoint": ("name",),
         "sql_warehouse": ("name", "id"),
         "uc_securable": ("name", "securable_full_name", "securable_type"),
     }
@@ -9433,6 +9439,10 @@ def _explicit_apps_resource_summary_lines(
                 else body.get(field)
             )
         ]
+        if kind == "serving_endpoint" and not (
+            body.get("endpoint_name") or body.get("name") or entry.get("name")
+        ):
+            missing_fields.append("endpoint_name")
         if missing_fields:
             raise click.ClickException(
                 f"App resource entry {index} ({kind}) is missing required fields: "
@@ -9600,15 +9610,16 @@ def _reconcile_apps_authorization(
 
     def _entry_identity(entry: dict[str, Any]) -> str | None:
         """Return the DAB resource type plus its natural identifier."""
-        outer_name = entry.get("name")
         for resource_type, body in entry.items():
             if resource_type in {"name", "description"} or not isinstance(body, dict):
                 continue
             identifier: Any = None
             if resource_type == "serving_endpoint":
-                identifier = body.get("endpoint_name")
-                if identifier is None and isinstance(outer_name, str):
-                    identifier = body.get("name")
+                # Canonical inner ``name`` is the endpoint id; legacy apx bundles
+                # (pre-#55-fix) stored it in ``endpoint_name`` with a slug in
+                # ``name``. Prefer ``endpoint_name`` so those legacy entries still
+                # dedupe by endpoint id against newly generated ``name``-only ones.
+                identifier = body.get("endpoint_name") or body.get("name")
             elif resource_type == "uc_securable":
                 securable_type = body.get("securable_type")
                 full_name = body.get("securable_full_name")

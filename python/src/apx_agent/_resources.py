@@ -466,6 +466,34 @@ def _slugify(identifier: str, kind: str) -> str:
     return f"{slug}-{suffix}-{digest}"
 
 
+def _bounded_name(identifier: str, kind: str) -> str:
+    """Produce a databricks.yml resource-level ``name`` handle bounded at 30 chars.
+
+    The Apps ``resources[].name`` handle must be 2-30 characters. Unlike
+    :func:`_slugify` (which targets the inner per-kind identifier slug and can
+    overflow 30 once the kind suffix + digest are appended), this handle drops
+    the redundant kind suffix — the resource type is already explicit in the
+    entry key — and truncates the slug so ``slug + '-' + digest`` fits 30.
+    The 8-char kind+identifier digest keeps it deterministic and unique.
+    """
+    ident = identifier or ""
+    short = ident.rsplit(".", 1)[-1] if "." in ident else ident
+    lowered = short.lower()
+    out: list[str] = []
+    for ch in lowered:
+        if ch in _YML_NAME_SAFE:
+            out.append(ch)
+        elif ch in "./: ":
+            out.append("-")
+    slug = "".join(out).strip("-_")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    digest = hashlib.sha256(f"{kind}:{identifier}".encode()).hexdigest()[:8]
+    base = slug or "resource"
+    # 30 = len(base) + 1 (hyphen) + 8 (digest); cap base at 21.
+    return f"{base[:21]}-{digest}"
+
+
 def _spec_to_yml_entry(spec: "ResourceSpec") -> dict[str, Any] | None:
     """Project a single ``ResourceSpec`` onto its databricks.yml resource shape.
 
@@ -477,12 +505,16 @@ def _spec_to_yml_entry(spec: "ResourceSpec") -> dict[str, Any] | None:
     name = _slugify(spec.identifier, spec.kind)
 
     if spec.kind == "serving_endpoint":
+        # The Apps API shape is a resource-level ``name`` handle plus an inner
+        # ``name`` carrying the endpoint identifier. There is no ``endpoint_name``
+        # field on the wire; emitting one (or omitting the resource-level name)
+        # fails bundle deploy with a 2-30 char name error + unknown-field warning.
         return {
+            "name": _bounded_name(spec.identifier, spec.kind),
             "serving_endpoint": {
-                "name": name,
-                "endpoint_name": spec.identifier,
+                "name": spec.identifier,
                 "permission": "CAN_QUERY",
-            }
+            },
         }
 
     if spec.kind == "uc_function":
@@ -589,8 +621,8 @@ def resources_to_databricks_yml(
       +----------------------+------------------------------------------------+
       | ``ResourceSpec.kind``| databricks.yml resource entry                  |
       +======================+================================================+
-      | serving_endpoint     | ``{serving_endpoint: {name, endpoint_name,     |
-      |                      | permission: CAN_QUERY}}``                      |
+      | serving_endpoint     | ``{name, serving_endpoint: {name:              |
+      |                      | <endpoint-id>, permission: CAN_QUERY}}``       |
       | uc_function          | ``{uc_securable: {name, securable_full_name,   |
       |                      | securable_type: FUNCTION, permission: EXECUTE}}``|
       | genie_space          | ``{genie_space: {name, space_id,               |

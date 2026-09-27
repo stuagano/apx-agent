@@ -370,8 +370,12 @@ from apx_agent import resources_to_databricks_yml  # noqa: E402
 
 
 def _block_key(entry: dict) -> str:
-    """Top-level (and only) key of an entry — e.g. ``serving_endpoint``."""
-    keys = [k for k in entry.keys()]
+    """The typed resource key of an entry — e.g. ``serving_endpoint``.
+
+    Entries may also carry a resource-level ``name``/``description`` handle;
+    ignore those and return the single typed block key.
+    """
+    keys = [k for k in entry.keys() if k not in {"name", "description"}]
     assert len(keys) == 1, f"expected single typed block, got {keys}"
     return keys[0]
 
@@ -384,10 +388,22 @@ def test_yml_serving_endpoint_shape() -> None:
     specs = [ResourceSpec("serving_endpoint", "databricks-claude-sonnet-4-6")]
     [entry] = resources_to_databricks_yml(specs)
     assert _block_key(entry) == "serving_endpoint"
+    # Matches the live Apps API shape: a resource-level ``name`` handle plus an
+    # inner ``name`` carrying the endpoint identifier. No ``endpoint_name`` key.
+    assert isinstance(entry.get("name"), str) and entry["name"]
+    assert len(entry["name"]) <= 30
     body = _block(entry)
-    assert body["endpoint_name"] == "databricks-claude-sonnet-4-6"
+    assert body["name"] == "databricks-claude-sonnet-4-6"
     assert body["permission"] == "CAN_QUERY"
-    assert body["name"]  # auto-derived slug
+    assert "endpoint_name" not in body
+
+
+def test_yml_serving_endpoint_name_bounded_for_long_identifier() -> None:
+    long_id = "databricks-claude-sonnet-4-6-with-a-very-long-suffix-exceeding-thirty"
+    [entry] = resources_to_databricks_yml([ResourceSpec("serving_endpoint", long_id)])
+    assert len(entry["name"]) <= 30
+    # Inner name still carries the full endpoint identifier.
+    assert _block(entry)["name"] == long_id
 
 
 def test_yml_uc_function_shape() -> None:

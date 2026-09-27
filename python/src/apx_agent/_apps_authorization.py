@@ -255,7 +255,9 @@ def _operation_authorization_lines(
 
 def _resource_permission(resource: ResourceSpec) -> str:
     [entry] = resources_to_databricks_yml([resource])
-    [body] = entry.values()
+    # Entries may carry a resource-level ``name``/``description`` handle next to
+    # the single typed block; select the typed body by its dict value.
+    [body] = [v for v in entry.values() if isinstance(v, dict)]
     permission = body.get("permission")
     if not isinstance(permission, str):  # pragma: no cover - closed renderer table
         raise ValueError(
