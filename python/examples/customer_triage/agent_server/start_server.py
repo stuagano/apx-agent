@@ -20,12 +20,16 @@ import os
 
 from mlflow.genai.agent_server import AgentServer, invoke, stream
 
-from apx_agent import compile_to_responses_agent, mount_mcp_endpoints
+from apx_agent import compile_to_responses_agent, mount_mcp_endpoints, mount_readyz
 
 # Import the user's agent from the top-level module.
 from agent import agent
 
-MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
+# Default model endpoint — documented source: databricks.yml variable
+# ``llm_endpoint_name`` (default: databricks-claude-sonnet-4-6), surfaced to the
+# app as the APX_MODEL env var on deploy.
+_DEFAULT_MODEL = "databricks-claude-sonnet-4-6"
+MODEL = os.environ.get("APX_MODEL", _DEFAULT_MODEL)
 
 _invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL)
 
@@ -46,6 +50,7 @@ server = AgentServer(agent_type="ResponsesAgent")
 app = server.app
 
 mount_mcp_endpoints(app, agent)
+mount_readyz(app, agent, model=MODEL)
 
 
 if __name__ == "__main__":
