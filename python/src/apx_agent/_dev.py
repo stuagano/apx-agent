@@ -3756,6 +3756,28 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 detail=f"Failed to invoke agent: {exc}",
             ) from exc
 
+    @router.get("/_apx/hub/fleet", response_model=Any)
+    async def hub_fleet_view(
+        request: Request,
+    ) -> Any:
+        """List all agents from the UC registry under the caller's OBO.
+
+        Requires caller OBO identity; fails closed (401) on a deployed App
+        without OBO. AuthZ is the caller's UC grants on the registry table
+        (SELECT privilege required).
+        """
+        from ._defaults import _ws_prefer_obo
+        from ._publish import list_registry_agents
+
+        # Resolve identity via _ws_prefer_obo (fails closed → 401 on deployed App without OBO)
+        ws = _ws_prefer_obo(request)
+
+        # List agents from the registry using the caller's OBO credentials.
+        # The SQL execution uses the caller's UC grants, so authorization is
+        # naturally enforced (SELECT failure for a user without grants).
+        agents = list_registry_agents(ws=ws)
+        return agents
+
     @router.get("/_apx/workspace-functions", response_model=WorkspaceFunctionsResponse)
     async def workspace_functions(
         request: Request,

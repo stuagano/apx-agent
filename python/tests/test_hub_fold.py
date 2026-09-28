@@ -220,3 +220,61 @@ def test_allowlist_shared_helper_rejects_evil_hosts():
     host = parsed.hostname
     if host:
         assert _is_trusted_agent_host(host.lower()), f"Wire check should accept {host}"
+
+
+def test_hub_fleet_lists_from_registry_under_obo(dev_ui_app, monkeypatch):
+    """Verify fleet route lists agents from registry under caller OBO."""
+    import apx_agent._sql as sql
+    from starlette.testclient import TestClient
+
+    c = TestClient(dev_ui_app)
+    Ha = {
+        "X-Forwarded-Access-Token": "tok-alice",
+        "X-Forwarded-User": "alice@x.com",
+    }
+
+    # Patch run_sql to return two registry rows.
+    monkeypatch.setattr(
+        sql,
+        "run_sql",
+        lambda ws, q, **k: [
+            {
+                "agent_id": "agent-a",
+                "name": "agent-a",
+                "display_name": "Agent A",
+                "description": "First agent",
+                "endpoint_url": "https://a.databricksapps.com",
+                "endpoint_type": "apps",
+                "workspace_host": "https://example.databricks.com",
+                "published_by": "alice@example.com",
+                "updated_at": 1234567890.0,
+            },
+            {
+                "agent_id": "agent-b",
+                "name": "agent-b",
+                "display_name": "Agent B",
+                "description": "Second agent",
+                "endpoint_url": "https://b.databricksapps.com",
+                "endpoint_type": "apps",
+                "workspace_host": "https://example.databricks.com",
+                "published_by": "bob@example.com",
+                "updated_at": 1234567891.0,
+            },
+        ],
+    )
+
+    r = c.get("/_apx/hub/fleet", headers=Ha)
+    assert r.status_code == 200, f"Fleet route failed: {r.status_code} {r.text}"
+    rows = r.json()
+    assert len(rows) == 2, f"Expected 2 rows, got {len(rows)}: {rows}"
+    assert {r["name"] for r in rows} == {"agent-a", "agent-b"}
+
+
+def test_hub_fleet_fails_closed_without_obo(dev_ui_app, monkeypatch):
+    """Verify fleet route fails closed (401) without OBO on deployed App."""
+    monkeypatch.setattr("apx_agent._obo._in_databricks_app", lambda: True)
+    from starlette.testclient import TestClient
+
+    c = TestClient(dev_ui_app)
+    r = c.get("/_apx/hub/fleet")  # no OBO headers
+    assert r.status_code == 401, f"Should fail closed (401), got {r.status_code}: {r.text}"
