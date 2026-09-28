@@ -3619,6 +3619,59 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
         return {"deleted": agent_id}
 
+    @router.post("/_apx/hub/agents/{agent_id}/refresh", response_model=Any)
+    async def hub_refresh_agent(request: Request, agent_id: str) -> Any:
+        """Refresh an agent's card by re-crawling its /.well-known/agent.json.
+
+        Updates the card's status (live/unreachable) and last_seen timestamp.
+        Caller-scoped — 404 if the agent is not in the caller's store.
+        """
+        from datetime import datetime
+
+        from ._hub_store import HUB_STORE
+        from ._obo import extract_obo_headers
+
+        # Resolve caller principal
+        obo = extract_obo_headers(custom_inputs={}, headers=request.headers)
+        principal = obo.get("user_id") or obo.get("user_email")
+        if not principal:
+            raise HTTPException(
+                status_code=401,
+                detail="No user identity in request headers",
+            )
+
+        # Get the caller's card from the store
+        card = HUB_STORE.get(principal, agent_id)
+        if not card:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+        # Re-crawl the agent's URL
+        a2a = await _crawl_agent(card.url)
+
+        if not a2a:
+            # Mark as unreachable, clear last_seen
+            card.status = "unreachable"
+            card.last_seen = None
+        else:
+            # Update card with fresh data
+            from ._hub_models import AgentTool
+
+            card.status = "live"
+            card.last_seen = datetime.utcnow()
+            card.name = a2a.get("name", card.name)
+            card.description = a2a.get("description", card.description)
+            card.tools = [
+                AgentTool(name=s["name"], description=s.get("description", "")[:200])
+                for s in a2a.get("skills", [])
+            ]
+            if "mcpEndpoint" in a2a:
+                card.mcp_endpoint = a2a.get("mcpEndpoint")
+
+        # Store the updated card
+        HUB_STORE.put(principal, card)
+
+        return card.model_dump()
+
     @router.get("/_apx/workspace-functions", response_model=WorkspaceFunctionsResponse)
     async def workspace_functions(
         request: Request,

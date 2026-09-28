@@ -94,3 +94,54 @@ def test_hub_register_fails_closed_without_obo(dev_ui_app, monkeypatch):
         json={"url": "https://a.databricksapps.com", "tags": []},
     )
     assert r.status_code == 401, f"Should fail closed, got {r.status_code}: {r.text}"
+
+
+def test_hub_refresh_updates_status_for_caller(dev_ui_app, monkeypatch):
+    """Verify refresh route re-crawls and updates status (live/unreachable)."""
+    import apx_agent._dev as dev
+    from starlette.testclient import TestClient
+
+    c = TestClient(dev_ui_app)
+    H = lambda who: {
+        "X-Forwarded-Access-Token": f"tok-{who}",
+        "X-Forwarded-User": f"{who}@x.com",
+    }
+
+    # 1. crawl stub returns a live card → register succeeds
+    async def live(url):
+        return {"name": "A", "url": url, "skills": []}
+
+    monkeypatch.setattr(dev, "_crawl_agent", live)
+    r = c.post(
+        "/_apx/hub/agents",
+        headers=H("alice"),
+        json={"url": "https://a.databricksapps.com", "tags": []},
+    )
+    assert r.status_code == 200, f"Register failed: {r.text}"
+    aid = r.json()["id"]
+    initial_card = r.json()
+    assert initial_card["status"] == "live", f"Initial status should be live, got {initial_card}"
+
+    # 2. flip the stub to unreachable → refresh marks it unreachable
+    async def dead(url):
+        return None
+
+    monkeypatch.setattr(dev, "_crawl_agent", dead)
+    r = c.post(f"/_apx/hub/agents/{aid}/refresh", headers=H("alice"))
+    assert r.status_code == 200, f"Refresh failed: {r.text}"
+    refreshed = r.json()
+    assert refreshed["status"] == "unreachable", f"Status should be unreachable, got {refreshed}"
+    assert refreshed["last_seen"] is None, f"last_seen should be None on unreachable, got {refreshed}"
+
+
+def test_hub_refresh_unknown_id_is_404(dev_ui_app):
+    """Verify refresh of nonexistent agent returns 404."""
+    from starlette.testclient import TestClient
+
+    c = TestClient(dev_ui_app)
+    H = {
+        "X-Forwarded-Access-Token": "tok-alice",
+        "X-Forwarded-User": "alice@x.com",
+    }
+    r = c.post("/_apx/hub/agents/nope/refresh", headers=H)
+    assert r.status_code == 404, f"Should be 404, got {r.status_code}: {r.text}"
