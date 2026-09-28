@@ -90,6 +90,7 @@ package-lock.json
 # Personal/internal use-case writeup (not for the public repo)
 docs/Built on APX-Agent UseCase.md
 docs/omniagent/
+docs/*.internal.md
 
 # Local scratch — PR diffs, gap analysis, registry snapshots (not for the repo)
 .polly/
