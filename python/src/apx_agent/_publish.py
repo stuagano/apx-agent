@@ -913,7 +913,7 @@ def list_registry_agents(
         return rows
     except Exception as e:
         # Table doesn't exist (registry never created) — return empty list with log.
-        if "TABLE_OR_VIEW_NOT_FOUND" in str(e) or "not found" in str(e).lower():
+        if "TABLE_OR_VIEW_NOT_FOUND" in str(e):
             logger.info("Registry table %s does not exist; returning empty list", registry_table)
             return []
         # Other errors are real and should propagate.

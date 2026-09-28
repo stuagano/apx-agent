@@ -98,6 +98,11 @@ def render_hub_ui() -> str:
 </main>
 
 <script>
+// HTML escape agent-supplied data (prevent stored XSS).
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 // Fetch auth headers from the shell (forwarded headers set by the dev-UI frame)
 function getAuthHeaders() {{
   const token = document.querySelector('meta[name="apx-token"]')?.content;
@@ -149,25 +154,25 @@ function renderAgents(data) {{
   list.innerHTML = agents.map(agent => `
     <div class="card">
       <h3>
-        ${{agent.display_name || agent.url}}
-        <span class="card-status ${{agent.status}}">${{agent.status}}</span>
+        ${{esc(agent.display_name || agent.url)}}
+        <span class="card-status ${{esc(agent.status)}}">${{esc(agent.status)}}</span>
       </h3>
       <div class="card-meta">
-        <div>ID: <code>${{agent.id}}</code></div>
-        <div>URL: <a href="${{agent.url}}" target="_blank">${{agent.url}}</a></div>
+        <div>ID: <code>${{esc(agent.id)}}</code></div>
+        <div>URL: <a href="${{esc(agent.url)}}" target="_blank">${{esc(agent.url)}}</a></div>
       </div>
-      ${{agent.description ? `<div class="card-desc">${{agent.description}}</div>` : ''}}
+      ${{agent.description ? `<div class="card-desc">${{esc(agent.description)}}</div>` : ''}}
       ${{agent.tools && agent.tools.length > 0 ? `
         <div class="card-tools">
-          ${{agent.tools.map(t => `<span class="card-tool">${{t.name || t}}</span>`).join('')}}
+          ${{agent.tools.map(t => `<span class="card-tool">${{esc(t.name || t)}}</span>`).join('')}}
         </div>
       ` : ''}}
       <div class="card-actions">
-        <button class="secondary" onclick="refreshAgent('${{agent.id}}')">Refresh</button>
-        <button class="secondary" onclick="showInvokeModal('${{agent.id}}', '${{agent.display_name || agent.url}}')">Invoke</button>
-        <button class="danger secondary" onclick="deleteAgent('${{agent.id}}')">Delete</button>
+        <button class="secondary" onclick="refreshAgent('${{esc(agent.id)}}')">Refresh</button>
+        <button class="secondary" onclick="showInvokeModal('${{esc(agent.id)}}', '${{esc(agent.display_name || agent.url)}}')">Invoke</button>
+        <button class="danger secondary" onclick="deleteAgent('${{esc(agent.id)}}')">Delete</button>
       </div>
-      <div id="status-${{agent.id}}"></div>
+      <div id="status-${{esc(agent.id)}}"></div>
     </div>
   `).join('');
 }}
@@ -197,12 +202,12 @@ async function registerAgent() {{
     }}
     if (!res.ok) {{
       const err = await res.text();
-      status.innerHTML = `<div class="err">Error: ${{res.status}} ${{err}}</div>`;
+      status.innerHTML = `<div class="err">Error: ${{res.status}} ${{esc(err)}}</div>`;
       return;
     }}
 
     const agent = await res.json();
-    status.innerHTML = `<div class="success">Registered! ID: ${{agent.id}}</div>`;
+    status.innerHTML = `<div class="success">Registered! ID: ${{esc(agent.id)}}</div>`;
     document.getElementById('register-url').value = '';
     document.getElementById('register-tags').value = '';
     setTimeout(loadAgents, 500);
@@ -226,7 +231,7 @@ async function refreshAgent(agentId) {{
     }}
 
     const agent = await res.json();
-    statusEl.innerHTML = `<div class="success">Refreshed. Status: ${{agent.status}}</div>`;
+    statusEl.innerHTML = `<div class="success">Refreshed. Status: ${{esc(agent.status)}}</div>`;
     setTimeout(loadAgents, 500);
   }} catch (err) {{
     statusEl.innerHTML = `<div class="err">Error: ${{err.message}}</div>`;

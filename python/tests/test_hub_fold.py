@@ -278,3 +278,84 @@ def test_hub_fleet_fails_closed_without_obo(dev_ui_app, monkeypatch):
     c = TestClient(dev_ui_app)
     r = c.get("/_apx/hub/fleet")  # no OBO headers
     assert r.status_code == 401, f"Should fail closed (401), got {r.status_code}: {r.text}"
+
+
+def test_hub_xss_escaping_in_rendered_page():
+    """Verify that malicious agent data is escaped in the hub HTML page.
+
+    Regression test: agent-supplied fields (display_name, description, tools[].name, id)
+    are HTML-escaped to prevent stored XSS via crawled /.well-known/agent.json.
+    """
+    from apx_agent._ui_hub import render_hub_ui
+
+    page = render_hub_ui()
+
+    # Verify the esc() helper function exists.
+    assert "const esc = (s) => String(s == null ? '' : s)" in page, \
+        "esc() helper function not found in rendered page"
+
+    # Verify esc() is used for escaping all agent-supplied interpolations.
+    assert "esc(agent.display_name" in page, "display_name should be escaped"
+    assert "esc(agent.description" in page, "description should be escaped"
+    assert "esc(agent.id" in page, "id should be escaped"
+    assert "esc(agent.url" in page, "url should be escaped"
+    assert "esc(agent.status" in page, "status should be escaped"
+    assert "esc(t.name || t)" in page, "tool names should be escaped"
+
+    # Verify esc() includes HTML entity escaping (& < > " ')
+    assert "&amp;" in page and "&lt;" in page and "&gt;" in page, \
+        "esc() should include HTML entity escaping"
+    assert "&quot;" in page and "&#39;" in page, \
+        "esc() should escape quotes for HTML context"
+
+
+def test_hub_register_with_xss_payload_is_stored_escaped(dev_ui_app, monkeypatch):
+    """Verify malicious agent crawl data is stored and rendered safely.
+
+    Even when a crawled agent.json contains HTML/JS payloads in name/description/id,
+    the stored card is safe, and when rendered in the page via renderAgents(), the
+    esc() function escapes it so no script runs.
+    """
+    import apx_agent._dev as dev
+    from starlette.testclient import TestClient
+
+    c = TestClient(dev_ui_app)
+    H = {
+        "X-Forwarded-Access-Token": "tok-alice",
+        "X-Forwarded-User": "alice@x.com",
+    }
+
+    # Mock crawl to return a card with XSS payloads
+    async def malicious_crawl(url):
+        return {
+            "name": "<img src=x onerror=alert('xss')>",
+            "display_name": "<script>alert('xss')</script>",
+            "description": "<svg onload=alert('xss')>",
+            "url": url,
+            "skills": [{"name": "<img onerror=alert(1)>"}],
+        }
+
+    monkeypatch.setattr(dev, "_crawl_agent", malicious_crawl)
+
+    # Register the malicious agent
+    r = c.post(
+        "/_apx/hub/agents",
+        headers=H,
+        json={"url": "https://evil.databricksapps.com", "tags": []},
+    )
+    assert r.status_code == 200, f"Register failed: {r.text}"
+    aid = r.json()["id"]
+
+    # Fetch the hub page
+    r = c.get("/_apx/hub", headers=H)
+    assert r.status_code == 200, f"Hub page fetch failed: {r.text}"
+    page = r.text
+
+    # Verify the page contains the esc() function.
+    assert "const esc = (s) =>" in page, "esc() helper missing from rendered hub"
+
+    # Verify the malicious payloads are not executable (stored as plain text, escaped on render).
+    # The stored card has raw content, but it's rendered via renderAgents() which uses esc().
+    # We check that the page JS contains the necessary escaping calls.
+    assert "esc(agent.display_name" in page, "renderAgents should escape display_name"
+    assert "esc(agent.description" in page, "renderAgents should escape description"

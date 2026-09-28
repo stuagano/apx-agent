@@ -2098,12 +2098,24 @@ async def _refresh_traces_cache(experiment_id: str | None, max_results: int) -> 
 
 
 async def _crawl_agent(url: str) -> dict | None:
-    """Fetch /.well-known/agent.json from a deployed agent. Returns None on failure."""
+    """Fetch /.well-known/agent.json from a deployed agent. Returns None on failure.
+
+    Validates the URL against SSRF / redirect risks before crawling.
+    """
     import httpx as _httpx
+
+    # SSRF guard: validate URL before crawling (host allowlist + DNS check).
+    reason = validate_wire_peer_url(url)
+    if reason is not None:
+        logger.warning("Crawl rejected for %s: %s", url, reason)
+        return None
 
     try:
         async with _httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{url.rstrip('/')}/.well-known/agent.json")
+            r = await client.get(
+                f"{url.rstrip('/')}/.well-known/agent.json",
+                follow_redirects=False  # Prevent redirects to link-local / private space
+            )
             r.raise_for_status()
             return r.json()
     except Exception:
