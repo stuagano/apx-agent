@@ -3432,6 +3432,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         return HTMLResponse(render_discover_ui())
 
+    @router.get("/_apx/hub", include_in_schema=False)
+    async def hub_ui() -> Any:
+        """Hub: list caller's registered agents with register/refresh/invoke/delete."""
+        from ._ui_hub import render_hub_ui
+
+        return HTMLResponse(render_hub_ui())
+
     @router.get("/_apx/workspace-agents", response_model=WorkspaceAgentsResponse)
     async def workspace_agents(request: Request) -> Any:
         """Discover apx agents in the workspace (Apps A2A cards + UC tags).
