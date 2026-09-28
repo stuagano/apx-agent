@@ -3672,6 +3672,83 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         return card.model_dump()
 
+    @router.post("/_apx/hub/agents/{agent_id}/invoke", response_model=Any)
+    async def hub_invoke_agent(
+        request: Request,
+        agent_id: str,
+    ) -> Any:
+        """Invoke a registered agent under the caller's OBO token.
+
+        Forwards the request to the agent's URL using the caller's identity.
+        Caller-scoped — 404 if the agent is not in the caller's store.
+        Fails closed (401) on a deployed App with no OBO token.
+        """
+        from httpx import AsyncClient
+
+        from ._defaults import _ws_prefer_obo
+        from ._hub_models import InvokeRequest
+        from ._hub_store import HUB_STORE
+        from ._obo import extract_obo_headers
+
+        # Resolve identity via _ws_prefer_obo (fails closed → 401 on deployed App without OBO)
+        ws = _ws_prefer_obo(request)
+
+        # Resolve caller principal to look up the card in HUB_STORE
+        obo = extract_obo_headers(custom_inputs={}, headers=request.headers)
+        principal = obo.get("user_id") or obo.get("user_email")
+        if not principal:
+            raise HTTPException(
+                status_code=401,
+                detail="No user identity in request headers",
+            )
+
+        # Get the caller's card from the store (404 if absent)
+        card = HUB_STORE.get(principal, agent_id)
+        if not card:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+        # Parse the invoke request
+        body = await request.json()
+        invoke_req = InvokeRequest(**body)
+
+        # Forward the invocation to the agent's URL using the caller's OBO token.
+        # Reuse the forwarding pattern from _agent_tool.py: extract OBO headers
+        # and forward them to the downstream agent.
+        token = (request.headers.get("X-Forwarded-Access-Token") or "").strip()
+        forwarded: dict[str, str] = {}
+        if token:
+            forwarded["X-Forwarded-Access-Token"] = token
+            # The Apps OAuth ingress authenticates on Authorization; with only
+            # X-Forwarded-Access-Token it 302s to login (live-proven app-to-app).
+            forwarded["Authorization"] = f"Bearer {token}"
+        if request.headers.get("X-Forwarded-Host"):
+            forwarded["X-Forwarded-Host"] = request.headers["X-Forwarded-Host"]
+
+        # POST to the agent's /invocations endpoint
+        url = f"{card.url.rstrip('/')}/invocations"
+        payload = {
+            "input": invoke_req.input,
+        }
+
+        try:
+            async with AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json", **forwarded},
+                )
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"Agent {card.id} returned {resp.status_code}: {resp.text}"
+                    )
+                return resp.json()
+        except Exception as exc:
+            logger.error("Failed to invoke agent %s at %s: %s", agent_id, url, exc)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to invoke agent: {exc}",
+            ) from exc
+
     @router.get("/_apx/workspace-functions", response_model=WorkspaceFunctionsResponse)
     async def workspace_functions(
         request: Request,

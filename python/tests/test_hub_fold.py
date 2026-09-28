@@ -145,3 +145,30 @@ def test_hub_refresh_unknown_id_is_404(dev_ui_app):
     }
     r = c.post("/_apx/hub/agents/nope/refresh", headers=H)
     assert r.status_code == 404, f"Should be 404, got {r.status_code}: {r.text}"
+
+
+def test_hub_invoke_uses_caller_obo_and_fails_closed(dev_ui_app, monkeypatch):
+    """Verify invoke route fails closed (401) without OBO on deployed App."""
+    monkeypatch.setattr("apx_agent._obo._in_databricks_app", lambda: True)
+    from starlette.testclient import TestClient
+
+    c = TestClient(dev_ui_app)
+    r = c.post(
+        "/_apx/hub/agents/x/invoke",
+        # no OBO headers
+        json={"input": "hi"},
+    )
+    assert r.status_code == 401, f"Should fail closed (401), got {r.status_code}: {r.text}"
+
+
+def test_hub_invoke_unknown_id_is_404(dev_ui_app):
+    """Verify invoke of nonexistent agent returns 404."""
+    from starlette.testclient import TestClient
+
+    c = TestClient(dev_ui_app)
+    H = {
+        "X-Forwarded-Access-Token": "tok-alice",
+        "X-Forwarded-User": "alice@x.com",
+    }
+    r = c.post("/_apx/hub/agents/nope/invoke", headers=H, json={"input": "hi"})
+    assert r.status_code == 404, f"Should be 404, got {r.status_code}: {r.text}"
