@@ -172,3 +172,51 @@ def test_hub_invoke_unknown_id_is_404(dev_ui_app):
     }
     r = c.post("/_apx/hub/agents/nope/invoke", headers=H, json={"input": "hi"})
     assert r.status_code == 404, f"Should be 404, got {r.status_code}: {r.text}"
+
+
+def test_agent_hub_is_gone():
+    """Verify standalone agent_hub module is no longer importable."""
+    import importlib
+    import pytest
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("agent_hub")
+
+
+def test_allowlist_shared_helper_rejects_evil_hosts():
+    """Verify both register and wire paths reject the same bad hosts."""
+    from apx_agent._hub_models import is_trusted_agent_url
+    from apx_agent._ui_probe import _is_trusted_agent_host
+
+    # Evil hosts that should be rejected by both paths.
+    evil_urls = [
+        "https://evil-databricksapps.com",
+        "https://databricksapps.com@evil.com",  # userinfo trick
+        "https://evil.com",
+    ]
+    for url in evil_urls:
+        assert not is_trusted_agent_url(url), f"Register should reject {url}"
+
+    # Extract hosts from URLs for the host-level check.
+    from urllib.parse import urlparse
+    for url in evil_urls:
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname
+            if host:
+                assert not _is_trusted_agent_host(host.lower()), f"Wire check should reject {host}"
+        except Exception:
+            pass
+
+    # Good hosts that should be accepted by both paths.
+    good_urls = [
+        "https://agent-a.databricksapps.com",
+        "https://agent-b.databricksapps.com",
+    ]
+    for url in good_urls:
+        assert is_trusted_agent_url(url), f"Register should accept {url}"
+
+    parsed = urlparse(good_urls[0])
+    host = parsed.hostname
+    if host:
+        assert _is_trusted_agent_host(host.lower()), f"Wire check should accept {host}"

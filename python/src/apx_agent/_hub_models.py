@@ -5,40 +5,13 @@ discovery in the folded hub-into-dev-ui architecture.
 """
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, HttpUrl, TypeAdapter, field_validator
 
-# ---------------------------------------------------------------------------
-# Trusted-host allowlist
-#
-# The hub forwards the caller's Databricks OBO token to the target agent when
-# invoking it.  To prevent credential exfiltration / SSRF, the token is only
-# ever sent to hosts on this allowlist:
-#   * any *.databricksapps.com host (the Databricks Apps domain), and
-#   * an optional operator-configured workspace host (DATABRICKS_HOST) for
-#     agents served outside the Apps domain.
-# This is enforced at registration time AND at invoke time (the authoritative
-# gate, since seed/auto-registered agents bypass the register path).
-# ---------------------------------------------------------------------------
-
-_APPS_HOST_SUFFIX = ".databricksapps.com"
-_DEFAULT_ALLOWED_HOST = ""  # DATABRICKS_HOST env var (empty if unset)
-
 _HttpUrlAdapter = TypeAdapter(HttpUrl)
-
-
-def _allowed_host() -> str | None:
-    """Return the optional operator-configured trusted host, if any."""
-    raw = os.environ.get("DATABRICKS_HOST", _DEFAULT_ALLOWED_HOST).strip()
-    if not raw:
-        return None
-    # Accept either a bare host or a full URL.
-    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
-    return (parsed.hostname or "").lower() or None
 
 
 def is_trusted_agent_url(url: str) -> bool:
@@ -47,6 +20,9 @@ def is_trusted_agent_url(url: str) -> bool:
     Parses the URL and matches on the *hostname* (never a raw-string suffix
     test, which would accept ``evil-databricksapps.com`` or a userinfo trick
     like ``https://databricksapps.com@evil.com``).
+
+    The allowlist check is delegated to :func:`apx_agent._ui_probe._is_trusted_agent_host`,
+    the single source of truth for host validation across register and wire paths.
     """
     if not url:
         return False
@@ -59,10 +35,10 @@ def is_trusted_agent_url(url: str) -> bool:
     host = (parsed.hostname or "").lower()
     if not host:
         return False
-    if host == "databricksapps.com" or host.endswith(_APPS_HOST_SUFFIX):
-        return True
-    allowed = _allowed_host()
-    return allowed is not None and host == allowed
+    # Use the shared allowlist check from _ui_probe.
+    from ._ui_probe import _is_trusted_agent_host
+
+    return _is_trusted_agent_host(host)
 
 
 class AgentTool(BaseModel):
