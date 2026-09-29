@@ -62,3 +62,10 @@ pre-commit run --all-files          # lint suite (.pre-commit-config.yaml)
 ```
 
 `make check` is the read-after-write gate; run it before claiming a change works.
+
+## Platform alignment (local only)
+
+Before building auth / identity / deploy surfaces, check
+`docs/platform-alignment.internal.md` — a gitignored, local-only map of which
+layers to build toward the platform vs. own in apx. Not in the repo; create it
+if missing.
