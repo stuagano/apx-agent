@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [main]
   # GITHUB_TOKEN auto-merge does not fire `push`. Post-merge-ci.yml dispatches
-  # this so the full 3.11 + 3.13 suite still runs after a bot squash.
+  # this so the full 3.13 suite still runs after a bot squash.
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a new push frees the runners and
@@ -69,12 +69,12 @@ jobs:
   test:
     needs: changes
     runs-on: ubuntu-latest
-    # Hard cap: the 3.11 job on #779 sat 5.5h after 97% with no output because this
+    # Hard cap: a job on #779 sat 5.5h after 97% with no output because this
     # job had no timeout and pytest had no per-test timeout. Green 3.13 is ~4 min.
     timeout-minutes: 20
     strategy:
       matrix:
-        python-version: ["3.11", "3.13"]
+        python-version: ["3.13"]
 
     defaults:
       run:
@@ -85,26 +85,25 @@ jobs:
       # docs-only path (where the real steps below are skipped).
       - uses: actions/checkout@v6
 
-      # Real suite: code PRs run 3.11 on a path-aware subset (runtime core +
-      # tests mapped from the diff). 3.13 stays in the matrix so the required
-      # check `test (3.13)` still exists; the work is deferred to push-to-main
-      # / workflow_dispatch. Docs-only still skip-succeeds both versions.
+      # Real suite: code PRs run 3.13 on a path-aware subset (runtime core +
+      # tests mapped from the diff). push-to-main / workflow_dispatch run the
+      # full suite. Docs-only skip-succeeds.
       - name: Install uv
-        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
+        if: needs.changes.outputs.code == 'true'
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true  # cache the uv download/build cache (keyed on uv.lock)
 
       - name: Set up Python ${{ matrix.python-version }}
-        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
+        if: needs.changes.outputs.code == 'true'
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
+        if: needs.changes.outputs.code == 'true'
         run: uv sync --group dev --all-extras  # incl. langgraph/eval/uc/lakebase so their tests run, not skip
 
       - name: Select pytest paths
-        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
+        if: needs.changes.outputs.code == 'true'
         id: pytest_paths
         # PRs: runtime core + tests mapped from the diff (see pr-pytest-paths.sh).
         # push / workflow_dispatch: full suite.
@@ -124,7 +123,7 @@ jobs:
           fi
 
       - name: Setup Node.js
-        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11') && steps.pytest_paths.outputs.need_ts == 'true'
+        if: needs.changes.outputs.code == 'true' && steps.pytest_paths.outputs.need_ts == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -132,24 +131,20 @@ jobs:
           cache-dependency-path: typescript/package-lock.json
 
       - name: Build internal TypeScript runtime
-        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11') && steps.pytest_paths.outputs.need_ts == 'true'
+        if: needs.changes.outputs.code == 'true' && steps.pytest_paths.outputs.need_ts == 'true'
         working-directory: typescript
         run: |
           npm ci
           npm run build
 
       - name: Run tests
-        if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || matrix.python-version == '3.11')
+        if: needs.changes.outputs.code == 'true'
         # paths is an intentionally space-separated list from the selector.
         run: uv run pytest ${{ steps.pytest_paths.outputs.paths }} -n auto --tb=short --timeout=90 --timeout-method=thread
 
       - name: Docs-only change — tests not required
         if: needs.changes.outputs.code != 'true'
         run: echo "Docs-only PR — skipping tests; required check passes."
-
-      - name: PR — 3.13 suite deferred to main
-        if: needs.changes.outputs.code == 'true' && github.event_name == 'pull_request' && matrix.python-version == '3.13'
-        run: echo "PR — 3.13 suite deferred to main; required check passes."
 
   typecheck:
     needs: changes
@@ -176,7 +171,7 @@ jobs:
 
       - name: Set up Python
         if: needs.changes.outputs.code == 'true'
-        run: uv python install 3.11
+        run: uv python install 3.13
 
       - name: Install dependencies
         if: needs.changes.outputs.code == 'true'
