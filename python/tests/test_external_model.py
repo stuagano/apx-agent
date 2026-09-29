@@ -173,7 +173,9 @@ def test_can_query_resource_emitted() -> None:
     assert entries
     body = entries[0]["serving_endpoint"]
     assert body["permission"] == "CAN_QUERY"
-    assert body["endpoint_name"] == spec.endpoint_name
+    # On-the-wire shape (887805b5): the endpoint id lives in the inner ``name``,
+    # not a non-existent ``endpoint_name`` field.
+    assert body["name"] == spec.endpoint_name
 
 
 # --- deploy wiring: _provision_external_model_endpoint is invoked on deploy ---
