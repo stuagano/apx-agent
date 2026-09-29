@@ -133,6 +133,10 @@ def dev_ui_app():
     ctx = AgentContext(config=config, tools=[], card=card, agent=None)  # type: ignore[arg-type]
     a = FastAPI()
     a.state.agent_context = ctx
+    # create_app() always populates app.state.workspace_client; the fixture must
+    # too, or _ws_prefer_obo's non-Apps fallthrough raises AttributeError on
+    # credential-free runners (CI) instead of exercising the route.
+    a.state.workspace_client = MagicMock()
     a.include_router(build_dev_ui_router())
     return a
 
