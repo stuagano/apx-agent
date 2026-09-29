@@ -869,3 +869,52 @@ def find_registry_dependents(
             "updated_at": row.get("updated_at"),
         })
     return dependents
+
+
+def list_registry_agents(
+    *,
+    registry_table: str = "main.apx.agent_registry",
+    ws: "WorkspaceClient | None" = None,
+    warehouse_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List all agents in the UC agent registry table.
+
+    Reads all rows from ``registry_table`` and returns them as dicts.
+    If the table doesn't exist (registry never created), returns an empty
+    list with a clear log message.
+
+    Args:
+        registry_table: Fully-qualified UC table, e.g. ``main.apx.agent_registry``.
+        ws: Optional ``WorkspaceClient``.
+        warehouse_id: SQL warehouse to use; auto-discovered when omitted.
+
+    Returns:
+        List of agent row dicts with agent_id, name, display_name, description,
+        endpoint_url, endpoint_type, workspace_host, published_by, updated_at.
+    """
+    from ._sql import run_sql
+    from ._memory import validate_table_name as _validate_table_name
+
+    _validate_table_name(registry_table)
+    ws = _ensure_ws(ws)
+
+    try:
+        rows: list[dict[str, Any]] = []
+        for row in run_sql(
+            ws,
+            (
+                "SELECT agent_id, name, display_name, description, endpoint_url, "
+                "endpoint_type, workspace_host, published_by, updated_at "
+                f"FROM {registry_table}"
+            ),
+            warehouse_id=warehouse_id,
+        ):
+            rows.append(row)
+        return rows
+    except Exception as e:
+        # Table doesn't exist (registry never created) — return empty list with log.
+        if "TABLE_OR_VIEW_NOT_FOUND" in str(e):
+            logger.info("Registry table %s does not exist; returning empty list", registry_table)
+            return []
+        # Other errors are real and should propagate.
+        raise

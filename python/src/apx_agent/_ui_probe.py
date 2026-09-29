@@ -1156,15 +1156,50 @@ def _validate_probe_url(url: str) -> str | None:
 
 
 _APPS_HOST_SUFFIX = ".databricksapps.com"
+# DATABRICKS_HOST env var is optional and specifies the operator-configured
+# workspace host for agents served outside the Apps domain. If not set, the
+# host allowlist contains only the Databricks Apps domain.
+_DATABRICKS_HOST_ENV_KEY = "DATABRICKS_HOST"
+
+
+def _is_trusted_agent_host(host: str) -> bool:
+    """True if ``host`` is on the trusted-host allowlist for agent invocation.
+
+    Validates that the host is either:
+      * a Databricks Apps URL (*.databricksapps.com or databricksapps.com), or
+      * the operator-configured workspace host (DATABRICKS_HOST env var)
+
+    This is the single source of truth for the hostname allowlist used by
+    both the hub register path and the wire peer / probe validation path.
+    """
+    if not host:
+        return False
+    host = host.lower()
+    # Check if it's a Databricks Apps host (exact match or suffix match).
+    if host == "databricksapps.com" or host.endswith(_APPS_HOST_SUFFIX):
+        return True
+    # Check if it matches the optional operator-configured workspace host.
+    from urllib.parse import urlparse
+
+    raw = os.environ.get(_DATABRICKS_HOST_ENV_KEY)
+    if not raw:
+        return False
+    raw = raw.strip()
+    if not raw:
+        return False
+    # Accept either a bare host or a full URL.
+    allowed_url = urlparse(raw if "://" in raw else f"https://{raw}")
+    allowed_host = (allowed_url.hostname or "").lower()
+    return allowed_host == host if allowed_host else False
 
 
 def validate_wire_peer_url(url: str) -> str | None:
     """SSRF + Apps-host allowlist for Discover ``wire-agent`` / hot-apply.
 
     Stricter than :func:`_validate_probe_url`: peers must be ``https`` and the
-    host must be a Databricks Apps URL (``*.databricksapps.com``). Then the
-    probe SSRF resolver check runs so a trusted-suffix name that DNS-rebinds
-    to link-local / private space is still rejected.
+    host must be on the trusted-host allowlist (via :func:`_is_trusted_agent_host`).
+    Then the probe SSRF resolver check runs so a trusted-suffix name that
+    DNS-rebinds to link-local / private space is still rejected.
 
     Returns ``None`` when safe, or a human-readable rejection reason.
     """
@@ -1179,12 +1214,13 @@ def validate_wire_peer_url(url: str) -> str | None:
     host = (parsed.hostname or "").lower()
     if not host:
         return "URL has no host"
-    # Suffix match on the hostname only — blocks evil.databricksapps.com.attacker.tld
-    if host != "databricksapps.com" and not host.endswith(_APPS_HOST_SUFFIX):
+    # Use the shared allowlist check; rejects evil-databricksapps.com and userinfo tricks.
+    if not _is_trusted_agent_host(host):
         return (
-            f"Host {host!r} is not a Databricks Apps URL "
-            "(must be https://*.databricksapps.com)"
+            f"Host {host!r} is not on the trusted allowlist "
+            "(must be *.databricksapps.com or the configured workspace host)"
         )
+    # DNS-SSRF check: reject names that resolve to link-local / private space.
     return _validate_probe_url(url)
 
 

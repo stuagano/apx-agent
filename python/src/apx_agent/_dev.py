@@ -2092,6 +2092,36 @@ async def _refresh_traces_cache(experiment_id: str | None, max_results: int) -> 
         _TRACES_LIST_CACHE._refreshing = False
 
 
+# ---------------------------------------------------------------------------
+# Hub agent crawl helper (mockable for testing)
+# ---------------------------------------------------------------------------
+
+
+async def _crawl_agent(url: str) -> dict | None:
+    """Fetch /.well-known/agent.json from a deployed agent. Returns None on failure.
+
+    Validates the URL against SSRF / redirect risks before crawling.
+    """
+    import httpx as _httpx
+
+    # SSRF guard: validate URL before crawling (host allowlist + DNS check).
+    reason = validate_wire_peer_url(url)
+    if reason is not None:
+        logger.warning("Crawl rejected for %s: %s", url, reason)
+        return None
+
+    try:
+        async with _httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(
+                f"{url.rstrip('/')}/.well-known/agent.json",
+                follow_redirects=False  # Prevent redirects to link-local / private space
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception:
+        return None
+
+
 def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     """Build the /_apx/* dev UI routes.
 
@@ -3414,6 +3444,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         return HTMLResponse(render_discover_ui())
 
+    @router.get("/_apx/hub", include_in_schema=False)
+    async def hub_ui() -> Any:
+        """Hub: list caller's registered agents with register/refresh/invoke/delete."""
+        from ._ui_hub import render_hub_ui
+
+        return HTMLResponse(render_hub_ui())
+
     @router.get("/_apx/workspace-agents", response_model=WorkspaceAgentsResponse)
     async def workspace_agents(request: Request) -> Any:
         """Discover apx agents in the workspace (Apps A2A cards + UC tags).
@@ -3475,6 +3512,283 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                     }
         agents = sorted(by_key.values(), key=lambda x: x["name"].lower())
         return {"agents": agents}
+
+    # -----------------------------------------------------------------------
+    # Hub routes: register/list/get/deregister per-caller agent registrations
+    # -----------------------------------------------------------------------
+
+    @router.post("/_apx/hub/agents", response_model=Any)
+    async def hub_register_agent(request: Request) -> Any:
+        """Register an agent by URL (caller-scoped).
+
+        Validates the URL against the SSRF/Apps-host allowlist, crawls
+        /.well-known/agent.json to populate the card, and stores it per caller.
+        Fails closed (401) without OBO on a deployed App.
+        """
+        from ._hub_models import RegisterRequest, AgentCard, AgentTool
+        from ._hub_store import HUB_STORE
+        from ._obo import extract_obo_headers
+
+        # Resolve caller principal from request headers
+        obo = extract_obo_headers(custom_inputs={}, headers=request.headers)
+        principal = obo.get("user_id") or obo.get("user_email")
+        if not principal:
+            raise HTTPException(
+                status_code=401,
+                detail="No user identity in request headers",
+            )
+
+        # Parse and validate the request
+        # RegisterRequest validates the URL hostname against the trusted-host allowlist
+        try:
+            body = await request.json()
+            reg = RegisterRequest(**body)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid request: {e}") from e
+
+        # Crawl the agent's A2A card
+        a2a = await _crawl_agent(reg.url)
+
+        if not a2a:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not fetch /.well-known/agent.json from {reg.url}",
+            )
+
+        # Build the agent card
+        name = a2a.get("name", "unknown")
+        tools = [
+            AgentTool(name=s["name"], description=s.get("description", "")[:200])
+            for s in a2a.get("skills", [])
+        ]
+        card = AgentCard(
+            id=name.replace("_", "-"),
+            name=name,
+            display_name=name.replace("_", " ").title(),
+            description=a2a.get("description", ""),
+            status="live",
+            url=reg.url.rstrip("/"),
+            tools=tools,
+            tags=reg.tags,
+            mcp_endpoint=a2a.get("mcpEndpoint"),
+        )
+
+        # Store in the per-caller registry
+        HUB_STORE.put(principal, card)
+
+        return card.model_dump()
+
+    @router.get("/_apx/hub/agents", response_model=Any)
+    async def hub_list_agents(request: Request) -> Any:
+        """List the caller's registered agents (caller-scoped)."""
+        from ._hub_store import HUB_STORE
+        from ._obo import extract_obo_headers
+
+        # Resolve caller principal from request headers
+        obo = extract_obo_headers(custom_inputs={}, headers=request.headers)
+        principal = obo.get("user_id") or obo.get("user_email")
+        if not principal:
+            raise HTTPException(
+                status_code=401,
+                detail="No user identity in request headers",
+            )
+
+        # Get the caller's agents
+        agents = HUB_STORE.list(principal)
+        return [a.model_dump() for a in agents]
+
+    @router.get("/_apx/hub/agents/{agent_id}", response_model=Any)
+    async def hub_get_agent(request: Request, agent_id: str) -> Any:
+        """Get a single agent by ID (caller-scoped, 404 if not the caller's)."""
+        from ._hub_store import HUB_STORE
+        from ._obo import extract_obo_headers
+
+        # Resolve caller principal
+        obo = extract_obo_headers(custom_inputs={}, headers=request.headers)
+        principal = obo.get("user_id") or obo.get("user_email")
+        if not principal:
+            raise HTTPException(
+                status_code=401,
+                detail="No user identity in request headers",
+            )
+
+        # Get the caller's agent
+        agent = HUB_STORE.get(principal, agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+        return agent.model_dump()
+
+    @router.delete("/_apx/hub/agents/{agent_id}", response_model=Any)
+    async def hub_deregister_agent(request: Request, agent_id: str) -> Any:
+        """Deregister an agent (caller-scoped, 404 if not the caller's)."""
+        from ._hub_store import HUB_STORE
+        from ._obo import extract_obo_headers
+
+        # Resolve caller principal
+        obo = extract_obo_headers(custom_inputs={}, headers=request.headers)
+        principal = obo.get("user_id") or obo.get("user_email")
+        if not principal:
+            raise HTTPException(
+                status_code=401,
+                detail="No user identity in request headers",
+            )
+
+        # Delete from the caller's store
+        if not HUB_STORE.delete(principal, agent_id):
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+        return {"deleted": agent_id}
+
+    @router.post("/_apx/hub/agents/{agent_id}/refresh", response_model=Any)
+    async def hub_refresh_agent(request: Request, agent_id: str) -> Any:
+        """Refresh an agent's card by re-crawling its /.well-known/agent.json.
+
+        Updates the card's status (live/unreachable) and last_seen timestamp.
+        Caller-scoped — 404 if the agent is not in the caller's store.
+        """
+        from datetime import datetime
+
+        from ._hub_store import HUB_STORE
+        from ._obo import extract_obo_headers
+
+        # Resolve caller principal
+        obo = extract_obo_headers(custom_inputs={}, headers=request.headers)
+        principal = obo.get("user_id") or obo.get("user_email")
+        if not principal:
+            raise HTTPException(
+                status_code=401,
+                detail="No user identity in request headers",
+            )
+
+        # Get the caller's card from the store
+        card = HUB_STORE.get(principal, agent_id)
+        if not card:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+        # Re-crawl the agent's URL
+        a2a = await _crawl_agent(card.url)
+
+        if not a2a:
+            # Mark as unreachable, clear last_seen
+            card.status = "unreachable"
+            card.last_seen = None
+        else:
+            # Update card with fresh data
+            from ._hub_models import AgentTool
+
+            card.status = "live"
+            card.last_seen = datetime.utcnow()
+            card.name = a2a.get("name", card.name)
+            card.description = a2a.get("description", card.description)
+            card.tools = [
+                AgentTool(name=s["name"], description=s.get("description", "")[:200])
+                for s in a2a.get("skills", [])
+            ]
+            if "mcpEndpoint" in a2a:
+                card.mcp_endpoint = a2a.get("mcpEndpoint")
+
+        # Store the updated card
+        HUB_STORE.put(principal, card)
+
+        return card.model_dump()
+
+    @router.post("/_apx/hub/agents/{agent_id}/invoke", response_model=Any)
+    async def hub_invoke_agent(
+        request: Request,
+        agent_id: str,
+    ) -> Any:
+        """Invoke a registered agent under the caller's OBO token.
+
+        Forwards the request to the agent's URL using the caller's identity.
+        Caller-scoped — 404 if the agent is not in the caller's store.
+        Fails closed (401) on a deployed App with no OBO token.
+        """
+        from httpx import AsyncClient
+
+        from ._defaults import _ws_prefer_obo
+        from ._hub_models import InvokeRequest
+        from ._hub_store import HUB_STORE
+        from ._obo import extract_obo_headers
+
+        # Resolve identity via _ws_prefer_obo (fails closed → 401 on deployed App without OBO)
+        ws = _ws_prefer_obo(request)
+
+        # Resolve caller principal to look up the card in HUB_STORE
+        obo = extract_obo_headers(custom_inputs={}, headers=request.headers)
+        principal = obo.get("user_id") or obo.get("user_email")
+        if not principal:
+            raise HTTPException(
+                status_code=401,
+                detail="No user identity in request headers",
+            )
+
+        # Get the caller's card from the store (404 if absent)
+        card = HUB_STORE.get(principal, agent_id)
+        if not card:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+        # Parse the invoke request
+        body = await request.json()
+        invoke_req = InvokeRequest(**body)
+
+        # Forward the invocation to the agent's URL using the caller's OBO token.
+        # Reuse the forwarding pattern from _agent_tool.py: extract OBO headers
+        # and forward them to the downstream agent.
+        token = (request.headers.get("X-Forwarded-Access-Token") or "").strip()
+        forwarded: dict[str, str] = {}
+        if token:
+            forwarded["X-Forwarded-Access-Token"] = token
+            # The Apps OAuth ingress authenticates on Authorization; with only
+            # X-Forwarded-Access-Token it 302s to login (live-proven app-to-app).
+            forwarded["Authorization"] = f"Bearer {token}"
+        if request.headers.get("X-Forwarded-Host"):
+            forwarded["X-Forwarded-Host"] = request.headers["X-Forwarded-Host"]
+
+        # POST to the agent's /invocations endpoint
+        url = f"{card.url.rstrip('/')}/invocations"
+        payload = {
+            "input": invoke_req.input,
+        }
+
+        try:
+            async with AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json", **forwarded},
+                )
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"Agent {card.id} returned {resp.status_code}: {resp.text}"
+                    )
+                return resp.json()
+        except Exception as exc:
+            logger.error("Failed to invoke agent %s at %s: %s", agent_id, url, exc)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to invoke agent: {exc}",
+            ) from exc
+
+    @router.get("/_apx/hub/fleet", response_model=Any)
+    async def hub_fleet_view(
+        request: Request,
+    ) -> Any:
+        """List all agents from the UC registry under the caller's OBO.
+
+        Requires caller OBO identity; fails closed (401) on a deployed App
+        without OBO. AuthZ is the caller's UC grants on the registry table
+        (SELECT privilege required).
+        """
+        from ._defaults import _ws_prefer_obo
+        from ._publish import list_registry_agents
+
+        # Resolve identity via _ws_prefer_obo (fails closed → 401 on deployed App without OBO)
+        ws = _ws_prefer_obo(request)
+
+        # List agents from the registry using the caller's OBO credentials.
+        # The SQL execution uses the caller's UC grants, so authorization is
+        # naturally enforced (SELECT failure for a user without grants).
+        agents = list_registry_agents(ws=ws)
+        return agents
 
     @router.get("/_apx/workspace-functions", response_model=WorkspaceFunctionsResponse)
     async def workspace_functions(
