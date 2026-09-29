@@ -4164,8 +4164,9 @@ def test_successful_deploy_writes_workspace_state(
     _install_subprocess_mock(monkeypatch)
     saved: list[dict[str, Any]] = []
 
-    def capture(**kwargs: Any) -> None:
+    def capture(**kwargs: Any) -> bool:
         saved.append(kwargs)
+        return True
 
     monkeypatch.setattr("apx_agent.cli._maybe_write_deploy_state", capture)
     runner = CliRunner()
@@ -4178,3 +4179,53 @@ def test_successful_deploy_writes_workspace_state(
     assert saved[0]["app_name"] == "my-app"
     assert saved[0]["bundle_target"] == "dev"
     assert saved[0]["app_url"] and "databricksapps.com" in saved[0]["app_url"]
+
+
+def test_maybe_write_deploy_state_returns_true_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#823: a successful state write returns True and logs the wrote-state line."""
+    from apx_agent import cli as _cli
+
+    monkeypatch.setattr(_cli, "_make_scaffold_workspace_client", lambda profile: object())
+    monkeypatch.setattr(_cli, "resolve_deployer", lambda ws: "alice@databricks.com")
+    monkeypatch.setattr(_cli, "save_deploy_state", lambda *a, **k: None)
+    lines: list[str] = []
+
+    ok = _cli._maybe_write_deploy_state(
+        profile=None, app_name="my-app", bundle_target="dev",
+        app_url="https://my-app.example.databricksapps.com", experiment_id=None,
+        pin=None, wheel_path=None, log=lines.append,
+    )
+
+    assert ok is True
+    assert any("wrote deploy state" in ln for ln in lines)
+
+
+def test_maybe_write_deploy_state_returns_false_and_is_loud_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#823: a swallowed state-write must return False AND surface a loud,
+    consequence-naming line — not a silent pass."""
+    from apx_agent import cli as _cli
+
+    def boom(profile: Any) -> Any:
+        raise PermissionError("workspace export denied")
+
+    monkeypatch.setattr(_cli, "_make_scaffold_workspace_client", boom)
+    lines: list[str] = []
+
+    ok = _cli._maybe_write_deploy_state(
+        profile=None, app_name="my-app", bundle_target="dev",
+        app_url=None, experiment_id=None, pin=None, wheel_path=None,
+        log=lines.append,
+    )
+
+    assert ok is False, "state-write failure must be reported, not swallowed"
+    joined = "\n".join(lines)
+    # Loud marker + names the consequence (audit/drift incomplete), not a
+    # buried "# warning:" line.
+    assert "⚠" in joined
+    assert "deploy state NOT recorded" in joined
+    assert "drift" in joined
+    assert "my-app" in joined

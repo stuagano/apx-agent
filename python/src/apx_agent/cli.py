@@ -10698,7 +10698,7 @@ def _deploy_apps_impl(
             if v.startswith("mlflow_experiment_id="):
                 experiment_id = v.split("=", 1)[1] or None
                 break
-        _maybe_write_deploy_state(
+        deploy_state_recorded = _maybe_write_deploy_state(
             profile=profile,
             app_name=app_name,
             bundle_target=bundle_target,
@@ -10735,6 +10735,9 @@ def _deploy_apps_impl(
                 "env_keys": injected_env_keys,
                 "secret_env_keys": injected_secret_env_keys,
                 "readyz": readyz_checks,
+                # #823: a swallowed state-write must be visible to CI, not just
+                # a human-readable warning line.
+                "deploy_state_recorded": deploy_state_recorded,
             }, default=str))
         elif no_run:
             log(f"# app not started (--no-run); run `databricks bundle run "
@@ -10760,8 +10763,15 @@ def _maybe_write_deploy_state(
     pin: Any,
     wheel_path: Path | None,
     log: Any,
-) -> None:
-    """Persist Apps deploy metadata to ``/Shared/apx-agent/.../_state/``."""
+) -> bool:
+    """Persist Apps deploy metadata to ``/Shared/apx-agent/.../_state/``.
+
+    Best-effort: never fails the deploy (the app is already up). Returns
+    ``True`` when the state was written, ``False`` when it could not be — the
+    caller surfaces that in the final report so a swallowed failure can't leave
+    the operator believing the "what's live + who deployed it" audit/drift
+    record exists when it does not (#823).
+    """
     try:
         ws = _make_scaffold_workspace_client(profile)
         state = ApxAppDeployState(
@@ -10781,8 +10791,17 @@ def _maybe_write_deploy_state(
             action="update",
         )
         log(f"# wrote deploy state: /Shared/apx-agent/{app_name}/_state/{bundle_target}.json")
+        return True
     except Exception as exc:
-        log(f"# warning: could not write deploy state ({exc})")
+        # Loud, not buried: name the consequence so it isn't lost in the
+        # deploy stream as a passing "# warning:" line (#823).
+        log(
+            f"# ⚠ deploy state NOT recorded ({exc}) — the audit/drift record "
+            f"for {app_name!r} ({bundle_target}) is missing; `agents status` "
+            f"and drift detection will be incomplete until the next successful "
+            f"deploy."
+        )
+        return False
 
 
 # ---------------------------------------------------------------------------
