@@ -132,9 +132,13 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(
     }
     assert env["APX_APPS_HOST"] == "python"
 
+    # The scaffold no longer emits an ``experiment`` app-resource (the Apps API
+    # rejects it — commit 64e51657). The experiment is bound via the
+    # ``MLFLOW_EXPERIMENT_ID`` env entry, asserted below.
     assert "experiments" not in parsed["resources"]
-    experiment_resource = apps["my_agent"]["resources"][0]["experiment"]
-    assert experiment_resource["experiment_id"] == "${var.mlflow_experiment_id}"
+    assert all(
+        "experiment" not in r for r in apps["my_agent"]["resources"]
+    )
 
     # Targets are pre-wired for laptop ``dev`` + CI ``staging`` / ``prod``.
     assert "dev" in parsed["targets"]
