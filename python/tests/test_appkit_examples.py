@@ -697,6 +697,12 @@ def _wait_pid_exit(pid: int, *, timeout: float = 10) -> None:
     raise AssertionError(f"child process {pid} did not exit")
 
 
+# Worst legitimate path: npm install (180s) + offline-miss retry (180s) +
+# build (60s) + host startup (90s) + lifecycle + failed-supervisor run (20s)
+# approaches 600s — far past the global 90s timeout. Without this mark the
+# suite-level timeout fires first and kills the test with a bare "Timeout"
+# dump, hiding the real npm/node error from the inner subprocess timeouts.
+@pytest.mark.timeout(600)
 def test_generated_appkit_host_build_and_supervisor_lifecycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -954,6 +960,10 @@ def test_generated_appkit_host_build_and_supervisor_lifecycle(
         _wait_pid_exit(int(failed_appkit_pid_file.read_text()))
 
 
+# The PROBE subprocess alone may run up to its own 180s timeout; give the
+# test enough room that the inner timeout (with the probe's real stderr) is
+# what fires on failure, not the global 90s suite timeout.
+@pytest.mark.timeout(240)
 @pytest.mark.parametrize(
     "example_dir",
     EXAMPLE_DIRS,
