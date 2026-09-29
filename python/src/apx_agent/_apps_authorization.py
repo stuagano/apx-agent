@@ -59,7 +59,12 @@ class OperationAuthorization:
 
 @dataclass(frozen=True)
 class AppDependency:
-    """One Databricks App peer that requires service A2A authorization."""
+    """One Databricks App peer for A2A.
+
+    Trust is per-hop user OBO. The native ``CAN_USE`` resource is only a
+    fallback for distinct-SP topologies; it is inapplicable where apps share
+    one service principal.
+    """
 
     url: str
 

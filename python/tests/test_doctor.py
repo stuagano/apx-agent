@@ -888,6 +888,90 @@ class TestCheckSubAgents:
 
 
 # ---------------------------------------------------------------------------
+# check_a2a_trust — per-hop OBO is the A2A boundary (issue #814)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckA2ATrust:
+    """App-peer declarations WARN that trust rides on OBO, not SP-to-SP CAN_USE."""
+
+    def _project(self, tmp_path: Path, extra: str) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.apx.agent]\nname = "orchestrator"\n' + extra
+        )
+
+    def test_none_outside_apx_project(self, tmp_path: Path):
+        assert doctor.check_a2a_trust(tmp_path) is None
+
+    def test_none_when_no_app_peers(self, tmp_path: Path):
+        self._project(tmp_path, 'sub_agents = ["https://example.com/agent"]\n')
+        assert doctor.check_a2a_trust(tmp_path) is None
+
+    def test_none_when_nothing_declared(self, tmp_path: Path):
+        self._project(tmp_path, "")
+        assert doctor.check_a2a_trust(tmp_path) is None
+
+    def test_warn_on_sub_agent_app_peer(self, tmp_path: Path):
+        self._project(
+            tmp_path,
+            'sub_agents = ["https://peer.cloud.databricksapps.com"]\n',
+        )
+        c = doctor.check_a2a_trust(tmp_path)
+        assert c is not None and c.status is Status.WARN
+        assert c.status is not Status.FAIL
+        assert "OBO" in c.detail
+        assert "CAN_USE" in c.detail
+        assert "share one SP" in c.detail
+        assert "https://peer.cloud.databricksapps.com" in c.detail
+        assert c.fix is not None and "X-Forwarded-Access-Token" in c.fix
+
+    def test_warn_on_named_binding_app_peer(self, tmp_path: Path):
+        self._project(
+            tmp_path,
+            "[tool.apx.agent.bindings]\n"
+            'pricing = "https://pricing.cloud.databricksapps.com/.well-known/agent.json"\n',
+        )
+        c = doctor.check_a2a_trust(tmp_path)
+        assert c is not None and c.status is Status.WARN
+        assert "https://pricing.cloud.databricksapps.com" in c.detail
+        assert "/.well-known/agent.json" not in c.detail
+
+    def test_resolves_env_backed_binding(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("PRICING_APP_URL", "https://pricing.cloud.databricksapps.com")
+        self._project(
+            tmp_path,
+            '[tool.apx.agent.bindings]\npricing = "$PRICING_APP_URL"\n',
+        )
+        c = doctor.check_a2a_trust(tmp_path)
+        assert c is not None and c.status is Status.WARN
+        assert "https://pricing.cloud.databricksapps.com" in c.detail
+
+    def test_unset_env_ref_is_skipped(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("PRICING_APP_URL", raising=False)
+        self._project(
+            tmp_path,
+            '[tool.apx.agent.bindings]\npricing = "$PRICING_APP_URL"\n',
+        )
+        assert doctor.check_a2a_trust(tmp_path) is None
+
+    def test_run_checks_includes_a2a_trust_when_declared(self, tmp_path: Path):
+        self._project(
+            tmp_path,
+            'sub_agents = ["https://peer.cloud.databricksapps.com"]\n',
+        )
+        groups = run_checks(tmp_path, online=False)
+        project = dict(groups)["Project"]
+        trust = next((c for c in project if c.name == "A2A trust"), None)
+        assert trust is not None and trust.status is Status.WARN
+
+    def test_run_checks_skips_when_no_app_peers(self, tmp_path: Path):
+        self._project(tmp_path, "")
+        groups = run_checks(tmp_path, online=False)
+        project = dict(groups)["Project"]
+        assert all(c.name != "A2A trust" for c in project)
+
+
+# ---------------------------------------------------------------------------
 # check_abac_compute_floor — ABAC runtime floor (serverless / DBR 16.4+)
 # ---------------------------------------------------------------------------
 

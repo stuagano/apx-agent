@@ -65,26 +65,36 @@ not introduce a second card format or a new transport protocol.
 
 ## App-to-app authentication
 
+The A2A trust boundary is **per-hop user OBO**. The caller's user token is
+forwarded to the peer; the hop runs under the user's Unity Catalog grants —
+not any app service principal. That holds whether the apps have distinct SPs,
+share one SP, or run across environments.
+
 For sibling Databricks Apps, authentication is enforced at the Apps SSO
 gateway and again at the APX A2A handler:
 
-1. The caller authenticates to the peer application through the gateway.
-2. The caller application's service principal needs `CAN_USE` on the peer.
-3. The gateway forwards caller identity headers to the application.
-4. APX forwards the calling user's OBO token to the bound leaf so its tools can
-   perform user-scoped governed access.
-5. **FMAPI uses the callee app's own identity.** The callee's model calls use
-   its own SP token, not A's OBO token (#633).
+1. The caller authenticates to the peer through the Apps gateway as the user.
+2. APX forwards the calling user's OBO token on every hop
+   (`X-Forwarded-Access-Token` and `Authorization: Bearer`) so the peer's
+   tools perform user-scoped governed access.
+3. The gateway injects caller identity headers into the application.
+4. **FMAPI uses the callee app's own identity.** When app A calls app B, B's
+   model calls use B's own SP token, not A's OBO token (#633).
 
-Each application keeps its own platform-created service principal. Share
-permission policy across an application family when appropriate; do not share
-credentials.
+SP-to-SP `CAN_USE` is a **fallback**, not the trust boundary. It is only
+meaningful when the platform provisions distinct per-app service principals
+*and* OBO is unavailable. Some admin-provisioned app groups share a single
+SP across every app in the group; in that topology a `CAN_USE` grant is a
+self-grant and cannot establish A2A trust. Do not hang mesh identity on it.
+
+Share permission policy across an application family when appropriate; do not
+share credentials. Do not assume every app has a distinct service principal.
 
 Unity Catalog ABAC policies that consume Databricks identity attributes
 evaluate them from the authenticated user identity carried by the forwarded
-OBO credential in step 4 — never from request headers. APX does not copy,
+OBO credential in step 2 — never from request headers. APX does not copy,
 synthesize, or accept identity attributes on the wire, and the contract does
-not extend to step 5's service-principal calls. See [Identity attributes and
+not extend to step 4's service-principal calls. See [Identity attributes and
 remote-agent ABAC](../reference/identity-attribute-abac.md).
 
 Inside the Apps runtime, A2A `POST /` fails closed if neither
@@ -104,7 +114,11 @@ direct Databricks Apps location to the existing native authorization plan. The
 configured peer location must resolve uniquely to one application under the
 explicitly selected deployment profile. APX then projects that application as
 a native bundle resource with `CAN_USE` while preserving existing resources
-and permissions. Zero or multiple matches fail closed.
+and permissions. That grant is the distinct-SP fallback: it does not replace
+per-hop user OBO, and it is inapplicable (a self-grant) where apps share one
+SP. Zero or multiple matches fail closed. `apx-agent doctor` WARNs when a
+project declares Databricks App peers so the OBO path stays the documented
+trust boundary.
 
 The authorization summary reports the resolved application identity without
 credentials. The reconciliation is additive: it does not delete or downgrade
@@ -130,7 +144,7 @@ no experiment field is added to the A2A card. See [Tracing](../running/tracing.m
 | Symptom | Cause | Fix |
 |---|---|---|
 | HTML login redirect | The Apps gateway intercepted an unauthenticated call | Authenticate through the Apps gateway. |
-| Gateway `401` | Caller application lacks `CAN_USE` on the peer | Verify the binding resolves to the intended app and inspect the generated authorization plan. |
+| Gateway `401` | Caller identity was not accepted at the peer gateway | Authenticate through the Apps gateway so the user token is forwarded. A compiled SP-to-SP `CAN_USE` grant is only a fallback for distinct-SP topologies; it is a self-grant where apps share one SP. |
 | APX `401` on A2A `POST /` | The request reached the handler without proxy or bearer identity | Call through the gateway, or explicitly opt into service-principal fallback when that is the intended trust model. |
 | Model API `401` inside the peer | The peer service identity lacks model permission | Grant the peer application's service identity access to its declared model resource. |
 | Startup binding error | Missing, ambiguous, blank, malformed, loop, or handoff binding | Correct the named leaf and environment-backed card location; do not bypass validation. |
