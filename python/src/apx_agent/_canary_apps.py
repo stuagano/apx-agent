@@ -350,10 +350,12 @@ def analyze_canary_app(
     1. Calls ``mlflow.search_traces`` for the experiment.
     2. Groups by ``apx.model_version`` / ``apx.git_sha`` when present
        (issue #404 — stamped by #404+ deploys), else the ``apx.app.name``
-       tag, else ``"unknown"``.
+       tag, else ``"unknown"``. An app name that is neither production nor
+       the canary is also bucketed as ``"unknown"`` — dropping it would
+       report zero canary traffic while traces were present (#822).
     3. Returns request count, error count, latency P50/P95/avg per
-       partition: always one row per App name, plus one row per observed
-       version key.
+       partition: always one row per App name, plus one ``unknown`` row
+       when unmatched traces exist, plus one row per observed version key.
 
     Args:
         prod_app_name: Workspace name of the production App.
@@ -415,8 +417,12 @@ def analyze_canary_app(
             key = version
         else:
             key = _trace_app(attrs)
-            if key not in (prod_app_name, canary_app_name, "unknown"):
-                continue
+            # An app name that isn't prod or this canary is not a reason to
+            # drop the trace. A name mismatch (or a pre-version-stamp deploy)
+            # would otherwise report zero canary traffic while traces exist
+            # (#822). Bucket it under "unknown" so the loss is visible.
+            if key not in (prod_app_name, canary_app_name):
+                key = "unknown"
         bucket = buckets.setdefault(key, {"requests": 0, "errors": 0, "latencies": []})
         bucket["requests"] += 1
         status = _trace_status(r)
@@ -448,8 +454,13 @@ def analyze_canary_app(
             continue
         apps.append(_metrics(name, bucket))
 
-    # Version-keyed rows (issue #404) follow the two app rows, sorted for
-    # stable output. "unknown" stays unreported, exactly as before.
+    # Unmatched traces (no app tag, or an app name that is neither prod nor
+    # this canary) stay visible as one "unknown" row so a name mismatch can't
+    # read as zero traffic (#822). Version-keyed rows (issue #404) follow,
+    # sorted for stable output.
+    unknown = buckets.get("unknown")
+    if unknown is not None:
+        apps.append(_metrics("unknown", unknown))
     for key in sorted(buckets):
         if key in (prod_app_name, canary_app_name, "unknown"):
             continue
