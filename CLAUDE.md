@@ -69,3 +69,7 @@ Before building auth / identity / deploy surfaces, check
 `docs/platform-alignment.internal.md` — a gitignored, local-only map of which
 layers to build toward the platform vs. own in apx. Not in the repo; create it
 if missing.
+
+For the A2A trust boundary across agent hops, see
+[`docs/design/a2a-trust-model.md`](docs/design/a2a-trust-model.md): trust is
+per-hop user OBO; SP-to-SP CAN_USE is infra reachability, not access control.

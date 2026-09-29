@@ -186,9 +186,15 @@ def authorization_summary_lines(
         ),
         ("Explicit/plugin resources:", sorted(explicit_resources)),
         (
+            # A2A trust is per-hop user OBO (the caller's token rides to the
+            # peer, which runs under the *user's* UC grants); the app-to-app
+            # CAN_USE grant is infra reachability, not access control. Surface
+            # that on every dependency so the boundary is visible where the
+            # grant is declared. See docs/design/a2a-trust-model.md (#814).
             "App-to-App dependencies:",
             [
-                f"{dependency.url} -> {dependency.name} (id: {dependency.id})"
+                f"{dependency.url} -> {dependency.name} (id: {dependency.id}) "
+                "| trust: per-hop user OBO (CAN_USE = infra reachability)"
                 for dependency in sorted(
                     resolved_dependencies,
                     key=lambda item: (item.url, item.name, item.id),

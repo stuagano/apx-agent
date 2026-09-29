@@ -725,6 +725,25 @@ def check_sub_agents(cwd: Path) -> Check | None:
         described = ", ".join(
             f"{p.url} ({p.name})" if p.name else p.url for p in probes
         )
+        # A2A trust rides on per-hop user OBO — the caller's token is forwarded
+        # to an Apps peer, which runs under the *user's* UC grants. The app SP's
+        # CAN_USE grant is infra reachability, not access control, and is
+        # degenerate where apps share one SP. Remind the operator when a peer is
+        # a Databricks App. See docs/design/a2a-trust-model.md (#814).
+        from ._apps_authorization import _is_apps_https_url  # noqa: PLC0415
+
+        apps_peers = [p for p in probes if _is_apps_https_url(p.url)]
+        if apps_peers:
+            return Check(
+                "Sub-agents",
+                Status.OK,
+                f"all {len(probes)} reachable: {described} — trust: per-hop "
+                "user OBO (CAN_USE = infra reachability)",
+                "Ensure the caller's user OBO reaches this served agent so it "
+                "forwards to Apps peers (fail-closed unless "
+                "APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true); SP-to-SP CAN_USE "
+                "is not the access boundary and is degenerate under a shared SP.",
+            )
         return Check(
             "Sub-agents", Status.OK, f"all {len(probes)} reachable: {described}", None
         )

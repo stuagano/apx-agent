@@ -518,7 +518,8 @@ def test_authorization_summary_is_deterministic_and_complete() -> None:
         "Explicit/plugin resources:",
         "  - secret llm-key: READ",
         "App-to-App dependencies:",
-        "  - https://peer.cloud.databricksapps.com -> peer-app (id: app-id-123)",
+        "  - https://peer.cloud.databricksapps.com -> peer-app (id: app-id-123) "
+        "| trust: per-hop user OBO (CAN_USE = infra reachability)",
         "Audience groups:",
         "  - audience-a: CAN_USE",
         "  - audience-b: CAN_USE",

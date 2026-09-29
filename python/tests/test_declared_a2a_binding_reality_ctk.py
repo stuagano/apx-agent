@@ -547,9 +547,16 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                     lambda calls: calls == ["ran"] * 3,
                     "declared internal leaf ran exactly once per remote route",
                 ).verify()
+                # #814 proof: trust rides on per-hop user OBO alone. This
+                # harness grants no SP-to-SP CAN_USE (there is no app SP or
+                # grant in scope), yet the caller's user token reaches the
+                # remote peer's tool logic on every route — so OBO, not
+                # CAN_USE, is the A2A access boundary. CAN_USE is infra
+                # reachability; here there is none and trust still holds.
                 expect(REMOTE_TOKENS).satisfies(
                     lambda tokens: tokens == [TEST_OBO_SENTINEL] * 3,
-                    "OBO reached remote tool logic",
+                    "OBO-only trust: user token reached remote tool logic on "
+                    "all routes with no SP-to-SP CAN_USE grant",
                 ).verify()
                 posts = [
                     request

@@ -871,6 +871,30 @@ class TestCheckSubAgents:
         assert "https://a.example.com:" not in c.detail  # reachable peer not blamed
         assert c.fix is not None and ".well-known/agent.json" in c.fix
 
+    def test_apps_peer_surfaces_obo_trust_note(self, tmp_path: Path):
+        """An Apps-peer sub-agent (*.databricksapps.com) reminds that A2A trust
+        rides on per-hop user OBO, not the SP-to-SP CAN_USE grant (#814)."""
+        self._project(tmp_path, '["https://peer.cloud.databricksapps.com"]')
+        probes = [
+            _sub_probe(
+                "https://peer.cloud.databricksapps.com", True, name="peer-agent"
+            ),
+        ]
+        with patch("apx_agent._doctor.probe_sub_agents", return_value=probes):
+            c = doctor.check_sub_agents(tmp_path)
+        assert c is not None and c.status is Status.OK
+        assert "per-hop user OBO" in c.detail
+        assert c.fix is not None and "OBO" in c.fix
+
+    def test_non_apps_peer_omits_obo_trust_note(self, tmp_path: Path):
+        """A non-Apps peer carries no CAN_USE/OBO relationship — stay quiet."""
+        self._project(tmp_path, '["https://a.example.com"]')
+        probes = [_sub_probe("https://a.example.com", True, name="orders-agent")]
+        with patch("apx_agent._doctor.probe_sub_agents", return_value=probes):
+            c = doctor.check_sub_agents(tmp_path)
+        assert c is not None and c.status is Status.OK
+        assert "per-hop user OBO" not in c.detail
+
     def test_run_checks_includes_sub_agents_when_declared(self, tmp_path: Path):
         self._project(tmp_path, '["https://a.example.com"]')
         probes = [_sub_probe("https://a.example.com", True, name="orders-agent")]
