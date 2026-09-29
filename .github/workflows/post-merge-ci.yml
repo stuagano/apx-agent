@@ -1,6 +1,6 @@
 name: Post-merge CI
 
-# GITHUB_TOKEN squash auto-merge does not fire `push`, so the full 3.11 + 3.13
+# GITHUB_TOKEN squash auto-merge does not fire `push`, so the full 3.13
 # suite never runs after bot merges. workflow_dispatch *does* create a run;
 # this job polls main and dispatches CI when HEAD has no non-PR run yet.
 on:
