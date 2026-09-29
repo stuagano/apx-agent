@@ -51,7 +51,13 @@ def _assert_no_private_terms(
     root: Path,
 ) -> None:
     for path in paths:
-        text = path.read_text(encoding="utf-8", errors="ignore").casefold()
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore").casefold()
+        except (FileNotFoundError, NotADirectoryError):
+            # The scan walks the live repo tree; a concurrent process (e.g. a
+            # local bundle deploy regenerating an example's .build/) can unlink
+            # a file between rglob and read. A vanished file carries no terms.
+            continue
         for term in terms:
             if term.casefold() in text:
                 raise AssertionError(
