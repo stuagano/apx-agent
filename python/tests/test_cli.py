@@ -3802,12 +3802,24 @@ def test_deploy_autodetects_model_serving_target() -> None:
     assert "--model is required" in result.output
 
 
-def test_run_friendly_error_when_auth_unresolved() -> None:
+def test_run_friendly_error_when_auth_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
     """When Databricks auth can't resolve, `apx-agent run` gives dev guidance, not a
     deep SDK traceback. The agent connects to a workspace at startup."""
     runner = CliRunner()
     fake_uvicorn = MagicMock()
     fake_config = MagicMock(side_effect=ValueError("ambiguous profile"))
+    # check_databricks_auth short-circuits to OK when DATABRICKS_CONFIG_PROFILE is
+    # set (and valid) or when DATABRICKS_HOST + token/client are in the env — a dev
+    # shell or a leaking sibling test would then fall through to the workspace
+    # check and never print the pick-a-profile guidance this asserts (#830).
+    for var in (
+        "DATABRICKS_CONFIG_PROFILE",
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "DATABRICKS_CLIENT_ID",
+        "DATABRICKS_CLIENT_SECRET",
+    ):
+        monkeypatch.delenv(var, raising=False)
     # Pin the configured-profiles lookup so the "pick a profile" guidance fires
     # deterministically: it depends on ~/.databrickscfg, which CI lacks (there
     # the doctor check falls back to the `databricks auth login` branch).
