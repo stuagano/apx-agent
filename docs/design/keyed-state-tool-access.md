@@ -157,5 +157,6 @@ def _wrapper(name: str,
 ## Out of scope
 
 - Persistence / scope prefixes (`user:`/`app:`/session) — phases 2–3.
-- Structured `output_key` values (depends on output_schema, not yet in apx).
+- Structured `output_key` values were outside this increment; they are now
+  supported by [typed output contracts](../agents/llm-agent.md#typed-output) (#835).
 - A general read/write `ToolContext` object beyond `state` (overlaps G4).

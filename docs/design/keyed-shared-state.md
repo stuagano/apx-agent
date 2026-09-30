@@ -1,17 +1,19 @@
 # Design: keyed shared state (G3)
 
-**Status:** proposed · **Date:** 2026-06-21 · **Source:** ADK functional-gap audit (G3)
+**Status:** historical proposal; typed output implementation documented below · **Date:** 2026-06-21 · **Source:** ADK functional-gap audit (G3)
 
-The highest-leverage workflow-reliability gap. apx-agent has no ADK-style keyed
-state: no `output_key`, no `session.state`, no scoping, no `{key}` instruction
-templating. Steps hand data to each other as **conversation text**, so threading
+The original proposal addressed a workflow-reliability gap: apx-agent had no
+ADK-style keyed state, `output_key`, scoping, or `{key}` instruction
+templating. Steps handed data to each other as **conversation text**, so threading
 a typed value (an id, a parsed object, a per-branch result) between steps is
-LLM-parse-dependent and lossy. This doc proposes a typed, named state channel
-and the surface around it, in phases.
+LLM-parse-dependent and lossy. This doc proposed a typed, named state channel
+and the surface around it, in phases. The background and phase plan below are
+historical; see the [public typed-output guide](../agents/llm-agent.md#typed-output)
+and [current typed-output contract](#typed-output-contracts-835) for shipped behavior.
 
 ---
 
-## Background — how state flows today
+## Background — state flow at the time of the original proposal
 
 Every compiled graph uses a single LangGraph `MessagesState` (one `messages`
 channel, merged by `add_messages`):

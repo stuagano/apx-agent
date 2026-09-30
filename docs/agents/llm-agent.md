@@ -41,10 +41,62 @@ model = "databricks-meta-llama-3-3-70b-instruct"
 | `max_tokens` | — | `int \| None` | Max output tokens; `None` uses the model default |
 | `max_iterations` | — | `int \| None` | Safety cap on tool-calling loops; `None` (default) defers to LangGraph's recursion limit |
 | `memory` | — | `str` | Memory tier: `"off"`, `"inmemory"`, or `"persistent"` |
+| `output_schema` | — | `type[BaseModel] \| None` | Pydantic model class for strict validation of the final JSON answer; `None` keeps free-text output |
+| `output_key` | — | `str \| None` | Named shared-state slot for the final text, or JSON-compatible validated data when `output_schema` is set |
 | `sub_agents` | — | `list[str]` | URLs of remote agents auto-wrapped as `agent_tool` at startup |
 | `tool_loading` | — | `"eager"` \| `"deferred"` | How tools are advertised to the model. `"eager"` (default) binds every author tool on the first hop. `"deferred"` sends only a client-side `tool_search` tool first; matched tools bind for later hops. Not Anthropic's server-side tool-search beta. |
 
 With `tool_loading="deferred"`, the first compiled model call advertises only `tool_search`. The model searches the agent's catalog by name/description; matching tools stay bound for later hops in that session. Loop `finish_loop` and Handoff `transfer_to_*` stay always visible — they are orchestration, not inventory.
+
+## Typed output
+
+Declare `output_schema` when the final answer must satisfy a data contract:
+
+```python
+from pydantic import BaseModel, ConfigDict, Field
+from apx_agent import Agent
+
+
+class Finding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    record_id: int
+    evidence: list[str] = Field(min_length=1)
+
+
+extract = Agent(
+    name="extract",
+    instructions="Extract a finding from the supplied records.",
+    output_schema=Finding,
+    output_key="finding",
+)
+```
+
+APX adds the model's JSON schema to the prompt and validates the completed answer
+strictly. Numeric strings do not become numbers, and Markdown fences or prose
+around JSON are rejected. The model's field constraints and extra-field policy
+apply. Validation proves the declared shape, not the factual accuracy of evidence.
+
+On success, `output_key` receives JSON-compatible data; it does not contain a
+Pydantic instance. `run()` still returns a string containing the validated JSON,
+and typed `stream()` output is buffered until validation. `output_key` is optional
+for a standalone typed answer. See [typed step contracts](composition.md#typed-step-contracts)
+for passing the value to another agent.
+
+Invalid output raises `OutputValidationError` before publishing the result or
+calling `after_agent_callback`. It exposes `agent_name`, `output_key`, and
+`errors` with validation locations and types, excluding raw input values and
+validator messages. Input/output guardrail rejection also stops a typed agent;
+replacement text is not accepted as a successful typed result. The sequence does
+not advance, and typed runs do not replay tools through a streaming fallback.
+Already completed external tool effects are not rolled back.
+
+This version supports typed leaves in sequential graphs and standalone typed
+agents. Parallel branches, loop bodies, and handoff members reject
+`output_schema`. There is no schema option on the composite itself, and no retry,
+JSON-repair, or escalation policy. Omitting `output_schema` preserves free-text
+behavior. The [implementation contract](../design/keyed-shared-state.md#typed-output-contracts-835)
+details execution and state semantics.
 
 ## Running agents
 

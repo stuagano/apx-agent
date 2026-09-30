@@ -107,6 +107,46 @@ instructions when a named state value is clearer than conversation context.
 Tools that read or write several values can use `Dependencies.State`; see
 [custom-tool state sharing](../tools/custom-tools.md#share-state-within-an-invocation).
 
+### Typed step contracts
+
+Add `output_schema` to a producing leaf when the next step needs validated data:
+
+```python
+from pydantic import BaseModel, ConfigDict, Field
+from apx_agent import Agent, SequentialAgent
+
+
+class Finding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    record_id: int
+    evidence: list[str] = Field(min_length=1)
+
+
+pipeline = SequentialAgent([
+    Agent(
+        name="extract",
+        instructions="Extract a finding from the supplied records.",
+        output_schema=Finding,
+        output_key="finding",
+    ),
+    Agent(name="summarize", instructions="Summarize this finding: {finding}"),
+])
+```
+
+The producer strictly validates its final JSON before writing `finding`.
+The consumer receives the validated dict rendered as JSON in its instructions.
+If validation or a guardrail rejects the result, `OutputValidationError` stops
+the sequence before the consumer runs. There is no automatic retry or escalation.
+
+Direct `run()` and `stream()` on a sequence with typed leaves use the compiled
+shared-state runtime. Nested sequence instructions remain scoped to their own
+children. Typed answers are buffered until accepted; typed sequences emit
+compiled step outputs instead of the untyped direct runner's Markdown step
+headers. These sequences require compiler-supported agent types. Parallel
+branches, loop bodies, and handoff members currently reject typed declarations.
+See [LlmAgent typed output](llm-agent.md#typed-output) for errors and schema options.
+
 ## ParallelAgent
 
 Use parallel composition for independent work that can run concurrently.

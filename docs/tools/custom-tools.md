@@ -165,6 +165,10 @@ executor = Agent(instructions="Execute this plan:\n{plan}", tools=[...])
 pipeline = SequentialAgent([planner, executor])
 ```
 
+`output_key` stores final text by default. Pair it with `output_schema`, a
+Pydantic model class, to publish validated JSON-compatible data and stop the
+sequence on invalid output. See [typed step contracts](../agents/composition.md#typed-step-contracts).
+
 State is available only during the current invocation; it is not cross-session
 memory. Reassign values after changing them (`state["items"] = [*state.get("items", []), item]`) because in-place mutation is not tracked. State
 merges are shallow last-write-wins, so concurrent writers should use distinct
