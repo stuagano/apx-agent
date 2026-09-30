@@ -200,3 +200,7 @@ single-user dev keeps its convenience.
 
 Related larger gaps tracked separately: keyed shared state (G3), ToolContext
 (G4), plugin layer (G5).
+
+See also: [`a2a-trust-model.md`](a2a-trust-model.md) — extends this single-app
+fail-closed OBO identity model across A2A hops (per-hop user OBO is the trust
+boundary; SP-to-SP CAN_USE is infra reachability).
