@@ -31,12 +31,13 @@ import json as _json
 import logging
 import os
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 from urllib.parse import urlparse
 
 from fastapi import Request
 
+from ._a2a_models import data_parts
 from ._agents import BaseAgent
 from ._models import (
     A2ASkill,
@@ -70,6 +71,7 @@ class _RemoteReply:
 
     text: str
     control: Any | None  # ControlSignal | None (typed lazily to dodge an import cycle)
+    data_parts: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _is_control_sentinel(name: str) -> bool:
@@ -118,9 +120,19 @@ def _extract_remote_control(data: Any) -> Any | None:
 def _responses_input(messages: Sequence[Message | dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep compiled Responses items intact and legacy text messages compatible."""
     return [
-        message if isinstance(message, dict) else {"role": message.role, "content": message.content}
+        {k: v for k, v in message.items() if k != "apx_data_parts"}
+        if isinstance(message, dict) else {"role": message.role, "content": message.content}
         for message in messages
     ]
+
+
+def _responses_data_inputs(messages: Sequence[Message | dict[str, Any]]) -> dict[str, Any]:
+    """Carry the latest structured context outside the standard Responses items."""
+    for message in reversed(messages):
+        if isinstance(message, dict) and "apx_data_parts" in message:
+            parts = data_parts(message)
+            return {"apx_data_parts": parts} if parts else {}
+    return {}
 
 
 def _obo_custom_inputs(headers: Mapping[str, str]) -> dict[str, str]:
@@ -264,6 +276,10 @@ def _reply_text(data: Any, *, url: str, agent_name: str) -> str:
                 and m["content"]
             ):
                 return m["content"]
+    parts = data_parts(data.get("custom_outputs")) if isinstance(data, dict) else []
+    if parts:
+        payloads = [part["data"] for part in parts]
+        return _json.dumps(payloads[0] if len(payloads) == 1 else payloads, ensure_ascii=False, allow_nan=False)
     shape = sorted(data) if isinstance(data, dict) else type(data).__name__
     raise RuntimeError(
         f"Remote agent {agent_name} at {url} replied with an unrecognized "
@@ -565,6 +581,10 @@ class RemoteDatabricksAgent(BaseAgent):
         if self._app_name:
             try:
                 return await self._call_via_sdk(messages, corr_headers)
+            except ValueError:
+                # A completed reply with invalid structured data is not a
+                # transport failure. Re-executing it could repeat tool effects.
+                raise
             except Exception as exc:
                 logger.warning(
                     "DatabricksOpenAI call to apps/%s failed (%s), falling back to direct HTTP",
@@ -717,13 +737,26 @@ class RemoteDatabricksAgent(BaseAgent):
         ``extra_headers`` carries the trace-correlation headers (#443) — the
         SDK handles auth itself, so no credential headers travel this way.
         """
+        response = await self._post_via_sdk(messages, extra_headers)
+        if not response.output_text:
+            data = response.model_dump()
+            if data_parts(data.get("custom_outputs")):
+                return _reply_text(data, url=self._last_http_url, agent_name=self.name)
+        return response.output_text
+
+    async def _post_via_sdk(
+        self, messages: Sequence[Message | dict[str, Any]], extra_headers: dict[str, str],
+    ) -> Any:
+        """Retain the SDK response envelope for structured compiled callers."""
         from databricks_openai import AsyncDatabricksOpenAI
 
         client = AsyncDatabricksOpenAI()
         # Use EasyInputMessage form (no "type": "message") so string content
         # survives. With type="message" the Responses API expects content as a
         # list of InputContent parts and drops a plain string.
-        response = await client.responses.create(
+        custom = _responses_data_inputs(messages)
+        options: dict[str, Any] = {"extra_body": {"custom_inputs": custom}} if custom else {}
+        return await client.responses.create(
             model=f"apps/{self._app_name}",
             # The EasyInputMessage dict form (above comment) is intentional; the
             # openai stub types `input` narrowly, so cast past it.
@@ -732,8 +765,8 @@ class RemoteDatabricksAgent(BaseAgent):
                 _responses_input(messages),
             ),
             extra_headers=extra_headers,
+            **options,
         )
-        return response.output_text
 
     async def _stream_via_sdk(
         self,
@@ -762,6 +795,9 @@ class RemoteDatabricksAgent(BaseAgent):
         options: dict[str, Any] = (
             {"databricks_options": {"long_task": True}} if self._long_task else {}
         )
+        custom = _responses_data_inputs(messages)
+        if custom:
+            options["extra_body"] = {"custom_inputs": custom}
         last_step: Any = None
 
         for _round in range(self._max_continuations + 1):
@@ -821,7 +857,7 @@ class RemoteDatabricksAgent(BaseAgent):
         payload: dict[str, Any] = {
             "input": _responses_input(messages),
         }
-        custom_inputs = _obo_custom_inputs(headers)
+        custom_inputs = {**_responses_data_inputs(messages), **_obo_custom_inputs(headers)}
         if custom_inputs:
             payload["custom_inputs"] = custom_inputs
         url = f"{self._base_url}/responses"
@@ -858,24 +894,33 @@ class RemoteDatabricksAgent(BaseAgent):
 
         The control-aware sibling of ``_run_with_incoming_headers`` used by the
         bound-leaf runnable so remote loop/handoff peers route like local ones.
-        Only the direct HTTP path recovers control — the ``apps/<name>`` SDK path
-        yields ``output_text`` alone, which cannot carry a ``function_call`` item.
-        # ponytail: SDK/OBO-gateway control round-trip unsupported (output_text is
-        # text-only); a bound leaf reaches its peer over direct HTTP in practice.
+        HTTP and ordinary SDK calls retain the response envelope, including
+        business DataParts. Long-task continuation remains text-only.
         """
         await self._init_quietly()
         obo_headers = self._obo_headers(incoming_headers)
         corr_headers = self._correlation_headers()
 
-        if self._app_name:
-            # No structured items over the SDK path — fall back to text-only run.
+        if self._app_name and self._long_task:
+            # Long-task continuation remains a text API; no structured guarantee.
             text = await self._run_with_incoming_headers(messages, incoming_headers)
             return _RemoteReply(text=text, control=None)
 
-        data = await self._post_via_http(messages, {**obo_headers, **corr_headers})
+        if self._app_name:
+            try:
+                response = await self._post_via_sdk(messages, corr_headers)
+            except Exception as exc:
+                logger.warning("SDK call failed (%s); falling back to direct HTTP", exc)
+                data = await self._post_via_http(messages, {**obo_headers, **corr_headers})
+            else:
+                data = response.model_dump()
+        else:
+            data = await self._post_via_http(messages, {**obo_headers, **corr_headers})
+        parts = data_parts(data.get("custom_outputs"))
         return _RemoteReply(
             text=_reply_text(data, url=self._last_http_url, agent_name=self.name),
             control=_extract_remote_control(data),
+            data_parts=parts,
         )
 
     async def _call_via_http(
@@ -893,36 +938,8 @@ class RemoteDatabricksAgent(BaseAgent):
         accept the input shape on ``/invocations`` since #438) get the
         fallback POST. Reply parsing accepts both shapes either way.
         """
-        from httpx import AsyncClient
-
-        payload: dict[str, Any] = {
-            "input": _responses_input(messages),
-        }
-        custom_inputs = _obo_custom_inputs(headers)
-        if custom_inputs:
-            payload["custom_inputs"] = custom_inputs
-        url = f"{self._base_url}/responses"
-
-        async with AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json", **headers},
-            )
-            if resp.status_code in (404, 405):
-                url = f"{self._base_url}/invocations"
-                resp = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json", **headers},
-                )
-
-        if resp.status_code >= 400:
-            raise RuntimeError(
-                f"Remote agent {self.name} returned {resp.status_code}: {resp.text}"
-            )
-
-        return _reply_text(resp.json(), url=url, agent_name=self.name)
+        data = await self._post_via_http(messages, headers)
+        return _reply_text(data, url=self._last_http_url, agent_name=self.name)
 
     async def _stream_via_http(
         self,
@@ -936,7 +953,7 @@ class RemoteDatabricksAgent(BaseAgent):
             "input": _responses_input(messages),
             "stream": True,
         }
-        custom_inputs = _obo_custom_inputs(headers)
+        custom_inputs = {**_responses_data_inputs(messages), **_obo_custom_inputs(headers)}
         if custom_inputs:
             payload["custom_inputs"] = custom_inputs
 

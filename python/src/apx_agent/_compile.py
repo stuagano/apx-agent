@@ -1160,7 +1160,14 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
         )
         text = _ai_message_text(last_ai) if last_ai is not None else ""
 
-        replacement = await agent._apply_output_guardrails(text)
+        guard_text = text
+        if last_ai is not None and agent._output_guardrails:
+            from ._a2a_models import data_parts
+
+            guard_parts = data_parts(last_ai.additional_kwargs)
+            if guard_parts:
+                guard_text += "\n" + json.dumps(guard_parts, ensure_ascii=False, allow_nan=False)
+        replacement = await agent._apply_output_guardrails(guard_text)
         if replacement is not None:
             if agent._output_schema is not None:
                 raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "output_guardrail"}])
@@ -1180,7 +1187,19 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
             if last_ai is None or last_ai.tool_calls:
                 raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "missing_final_answer"}])
             try:
-                validated = agent._output_schema.model_validate_json(text, strict=True)
+                from ._a2a_models import data_parts
+
+                parts = data_parts(last_ai.additional_kwargs)
+                if parts:
+                    if len(parts) != 1:
+                        raise ValueError("A typed output requires exactly one DataPart")
+                    # Preserve strict JSON semantics (e.g. date/UUID strings)
+                    # while validating the attached object, never the prose.
+                    validated = agent._output_schema.model_validate_json(
+                        json.dumps(parts[0]["data"], ensure_ascii=False, allow_nan=False), strict=True,
+                    )
+                else:
+                    validated = agent._output_schema.model_validate_json(text, strict=True)
             except ValidationError as exc:
                 raise OutputValidationError(
                     agent._name, agent._output_key,
@@ -1203,7 +1222,13 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
             # Explicit text blocks keep application JSON arrays with a `type`
             # key from being mistaken for provider reasoning/content blocks.
             content = [{"type": "text", "text": text}]
-            new_msgs = [m.model_copy(update={"content": content}) if m is last_ai else m for m in new_msgs]
+            extra = dict(last_ai.additional_kwargs)
+            # A2A DataPart is object-valued. RootModel arrays/scalars retain the
+            # existing canonical text contract rather than inventing a wrapper.
+            extra.pop("apx_data_parts", None)
+            if isinstance(payload, dict):
+                extra["apx_data_parts"] = [{**(parts[0] if parts else {}), "kind": "data", "data": payload}]
+            new_msgs = [m.model_copy(update={"content": content, "additional_kwargs": extra}) if m is last_ai else m for m in new_msgs]
 
         await agent._invoke_callback(agent._after_agent_callback, text)
         update: dict[str, Any] = {"messages": new_msgs}
@@ -1291,13 +1316,19 @@ def _compile_bound_remote_leaf(
                 messages.append(
                     Message.model_validate(_from_langchain_message(message, index).model_dump())
                 )
+            parts = getattr(message, "additional_kwargs", {}).get("apx_data_parts")
+            if parts:
+                last = messages[-1]
+                item = last if isinstance(last, dict) else last.model_dump()
+                messages[-1] = {**item, "apx_data_parts": parts}
         try:
             reply = await remote.run_with_control(messages, _incoming_headers())
         except Exception as exc:
             raise RuntimeError(f"Stage {binding.logical_name!r} failed") from exc
         control = reply.control
+        extra = {"apx_data_parts": reply.data_parts} if reply.data_parts else {}
         if control is None:
-            return {"messages": [AIMessage(content=reply.text)]}
+            return {"messages": [AIMessage(content=reply.text, additional_kwargs=extra)]}
         # A control reply: reconstruct the sentinel tool_call so the existing
         # router (_last_ai_tool_call_name) consumes it exactly as in-process,
         # while reply.text stays on the AIMessage content (FR-6 coexistence).
@@ -1315,6 +1346,7 @@ def _compile_bound_remote_leaf(
             "messages": [
                 AIMessage(
                     content=reply.text,
+                    additional_kwargs=extra,
                     tool_calls=[
                         {
                             "name": control.name,

@@ -33,13 +33,79 @@ transport type.
 
 A binding fails closed unless it resolves to one uniquely named leaf and a
 valid card location. Bound leaves are supported in sequential, parallel,
-model-routed, and keyword-routed positions. Remote loop completion and remote
-handoff are not supported by the current A2A control surface, so a bound leaf
-cannot occupy `LoopAgent` or `HandoffAgent` control positions.
+model-routed, and keyword-routed positions. Remote loop completion and handoff
+use the existing structured control-signal channel. `output_schema` remains
+unsupported on parallel branches, loop bodies, and handoff members.
 
 Existing URL-based sub-agent declarations remain supported for compatibility.
 Use a named binding for a deterministic graph edge so the authored graph stays
 about roles and control rather than transport.
+
+## Structured step payloads
+
+A leaf with [`output_schema`](../agents/llm-agent.md#typed-output) publishes its
+validated JSON object as a structured data part alongside the existing text
+answer. A bound remote leaf with `output_schema` validates that object directly
+before publishing `output_key`; it does not need to extract JSON from prose.
+Both peers need this structured-payload support. A legacy text-only peer still
+works if its final text satisfies the declared output schema.
+
+The wire carrier depends on the endpoint:
+
+| Endpoint | Input | Output |
+|---|---|---|
+| Native A2A `POST /`, `message/send` | `message.parts` accepts text and data parts | Reply history and task artifacts contain text and data parts; `tasks/get` retains them |
+| `/responses` (including named bindings) | `custom_inputs.apx_data_parts` | `custom_outputs.apx_data_parts`; streaming publishes this on the terminal `response.completed` event |
+| ChatAgent `/invocations` | `custom_inputs.apx_data_parts` | Non-streaming `custom_outputs.apx_data_parts` |
+
+For example, a data part is:
+
+```json
+{
+  "kind": "data",
+  "data": {"record_id": 42, "evidence": ["record 42"]},
+  "metadata": {"schema_id": "urn:example:finding:v1"}
+}
+```
+
+The optional `metadata.schema_id` is an application convention, not a schema
+registry or a validation instruction. APX never fetches or executes it. The
+receiver's locally declared Pydantic schema decides what is accepted. A typed
+leaf expects exactly one data part; malformed parts and schema violations stop
+the sequence before downstream execution.
+
+Send the same part to `/responses` using the supported MLflow extension:
+
+```json
+{
+  "input": [{"role": "user", "content": "Review the finding"}],
+  "custom_inputs": {
+    "apx_data_parts": [
+      {"kind": "data", "data": {"record_id": 42, "evidence": ["record 42"]}}
+    ]
+  }
+}
+```
+
+The receiver preserves these parts on an additional user message and gives the
+model a JSON rendering. Data never becomes system instructions, authentication
+fields, or a control signal. Output guardrails inspect both text and attached
+data. Loop/handoff control remains in its existing `function_call` channel.
+
+Named bindings forward the latest attached structured context separately from
+the ordinary message transcript. Only the final assistant result is published
+as structured output; an earlier step's data is not presented as the final
+answer when a later step returns plain text. Checkpointed graph messages retain
+their data; the conversation-store transcript remains a text representation.
+
+`run()` and `stream()` remain string APIs. Data-only replies have a JSON text
+rendering for text callers. A2A data parts require JSON objects: Pydantic
+`RootModel` arrays/scalars retain their existing text contract. Direct HTTP and
+ordinary Apps SDK Responses calls preserve structured reply envelopes; SDK
+long-task continuation and ChatAgent streaming remain text-only.
+
+The round-trip regression uses compiled agents and a local HTTP endpoint with
+fake model replies. It is not a live Databricks gateway/deployment proof.
 
 ## One root behind every ingress
 

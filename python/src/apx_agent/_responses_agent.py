@@ -57,6 +57,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 
+from ._a2a_models import output_data_parts, with_input_data_parts
 from ._agents import BaseAgent
 from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_turn
 from ._audit import (
@@ -1166,9 +1167,12 @@ def compile_to_responses_agent(
             lg_config = {"configurable": {"thread_id": thread_id}} if cp else None
 
             lc_history = _conv_items_to_lc_messages(conv_items)
-            lc_input = _responses_input_to_langchain(list(request.input))
+            lc_input = with_input_data_parts(
+                _responses_input_to_langchain(list(request.input)), custom_inputs,
+            )
             graph_input = lc_input if cp else lc_history + lc_input
 
+            structured_output: dict[str, Any] = {}
             _use_sdk = _executor_name == "claude-sdk"
             if _use_sdk:
                 from ._agents import LlmAgent as _LlmAgent
@@ -1300,10 +1304,12 @@ def compile_to_responses_agent(
                     enforce_after_turn(graph, budget_config, budget_prior, new_lc, budget_cap)
                 raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
                 output_items = _flatten_output_items(raw_items)
+                structured_output = output_data_parts(new_lc)
 
             response = ResponsesAgentResponse(
                 id=f"resp-{uuid.uuid4().hex[:12]}",
                 output=output_items,
+                custom_outputs=structured_output or None,
             )
             set_span_outputs(span, response.model_dump())
 
@@ -1396,7 +1402,9 @@ def compile_to_responses_agent(
             lg_config = {"configurable": {"thread_id": thread_id}} if cp else None
 
             lc_history = _conv_items_to_lc_messages(conv_items)
-            lc_input = _responses_input_to_langchain(list(request.input))
+            lc_input = with_input_data_parts(
+                _responses_input_to_langchain(list(request.input)), custom_inputs,
+            )
             graph_input = lc_input if cp else lc_history + lc_input
 
             _use_sdk = _executor_name == "claude-sdk"
@@ -1423,6 +1431,7 @@ def compile_to_responses_agent(
 
             output_items: list[dict[str, Any]] = []
             output_index = 0
+            structured_output: dict[str, Any] = {}
 
             if _use_sdk:
                 from ._agents import LlmAgent as _LlmAgent
@@ -1560,6 +1569,9 @@ def compile_to_responses_agent(
                         graph, budget_config, budget_prior, turn_lc_messages, budget_cap
                     )
 
+            if not _use_sdk:
+                structured_output = output_data_parts(turn_lc_messages)
+
             # Terminal event with the assembled response
             final_response = {
                 "id": f"resp-{uuid.uuid4().hex[:12]}",
@@ -1569,6 +1581,7 @@ def compile_to_responses_agent(
             yield ResponsesAgentStreamEvent(
                 type="response.completed",
                 response=final_response,
+                custom_outputs=structured_output or None,
             )
 
             if conv_id is not None:
