@@ -61,10 +61,11 @@ system.
 
 A remote sub-agent is a `RemoteDatabricksAgent` wrapped by the same
 `agent_tool`, or a `sub_agents=[url]` entry auto-resolved at startup. In-process and Model Serving deployments pass the caller's identity
-automatically — declared, not wired. A2A app-to-app crosses a service-principal
-boundary: the caller's SP needs CAN_USE on the callee, and the callee's internal
-model calls run under the callee's own SP (not the caller's token); for
-turnkey user-scoped passthrough across apps, prefer Model Serving deployment.
+automatically — declared, not wired. A2A app-to-app trust is per-hop user
+OBO (`X-Forwarded-Access-Token`); SP-to-SP `CAN_USE` is only a fallback when
+two distinct SPs exist and OBO is unavailable, and it is inapplicable where
+apps share one SP. The callee's internal model calls still run under the
+callee's own SP (not the caller's token).
 
 ## See also
 

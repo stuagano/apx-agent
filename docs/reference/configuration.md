@@ -53,13 +53,17 @@ Operators declare one group-only Apps permission block. APX compiles that
 configured policy during every Apps deploy; APX does not create or generate
 this TOML block.
 
-This is group policy only. Each deployed App retains one persistent
-platform-created service principal; family members do not share service
-principals or credentials. A group cannot appear in both lists.
+This is group policy only. Family members do not share credentials. A group
+cannot appear in both lists. Typical workspaces give each App its own
+platform-created service principal, but some admin-provisioned groups share
+one SP across every app; A2A trust must not depend on that topology. See
+[A2A app-to-app authentication](../multi-agent/a2a.md#app-to-app-authentication).
 
 On every `apx-agent agents deploy --target apps`, APX validates the compiled
 authorization contract and additively reconciles these groups, tool resources,
-OBO scopes, and resolved App-to-App `CAN_USE` bindings into `databricks.yml`.
+OBO scopes, and resolved App-to-App `CAN_USE` fallback bindings into
+`databricks.yml`. The A2A trust boundary is per-hop user OBO; `CAN_USE` is
+only meaningful when the platform provisions distinct per-app SPs.
 Existing declarations are preserved; the compiler never deletes or downgrades
 permissions. A conflict with an explicit bundle declaration fails before any
 write. `--auto-update-yml` remains accepted for compatibility, but no longer

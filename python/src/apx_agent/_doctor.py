@@ -212,6 +212,9 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
     sub_agents_check = check_sub_agents(cwd)
     if sub_agents_check is not None:
         project.append(sub_agents_check)
+    a2a_trust_check = check_a2a_trust(cwd)
+    if a2a_trust_check is not None:
+        project.append(a2a_trust_check)
     return [
         ("Environment", environment),
         ("Authentication", authentication),
@@ -755,6 +758,71 @@ def check_sub_agents(cwd: Path) -> Check | None:
         "Verify each URL serves /.well-known/agent.json (peer deployed and "
         "running, no typo in pyproject.toml [tool.apx.agent].sub_agents); "
         "for $VAR refs, export the variable.",
+    )
+
+
+_AGENT_CARD_SUFFIX = "/.well-known/agent.json"
+
+
+def _declared_app_peer_urls(cwd: Path) -> list[str] | None:
+    """Resolved Databricks App peer URLs from ``sub_agents`` and bindings.
+
+    Returns ``None`` when cwd is not an apx project or config cannot be
+    loaded. An empty list means the project has no App peers to check.
+    """
+    if not _is_apx_project(cwd):
+        return None
+    try:
+        from ._inspection import _load_agent_config  # noqa: PLC0415
+
+        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except Exception:
+        return None
+    if cfg is None:
+        return None
+    from ._apps_authorization import _is_apps_https_url  # noqa: PLC0415
+    from ._env import resolve_env_var  # noqa: PLC0415
+
+    raw_values = [*cfg.sub_agents, *cfg.bindings.values()]
+    peers: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        resolved = resolve_env_var(raw)
+        if not resolved:
+            continue
+        url = resolved.rstrip("/")
+        if url.endswith(_AGENT_CARD_SUFFIX):
+            url = url[: -len(_AGENT_CARD_SUFFIX)]
+        if not _is_apps_https_url(url) or url in seen:
+            continue
+        seen.add(url)
+        peers.append(url)
+    return peers
+
+
+def check_a2a_trust(cwd: Path) -> Check | None:
+    """WARN that A2A trust is per-hop user OBO, not SP-to-SP ``CAN_USE``.
+
+    Issue #814: some app groups share one service principal, so an SP-to-SP
+    ``CAN_USE`` grant is a self-grant and cannot establish trust. When the
+    project declares Databricks App peers, confirm the documented trust
+    path is user OBO and warn that ``CAN_USE`` is inapplicable in a shared-SP
+    topology. Shared-SP cannot be ruled out from the project alone, so this
+    is always a WARN when App peers exist. Never FAILs.
+    """
+    peers = _declared_app_peer_urls(cwd)
+    if peers is None or not peers:
+        return None
+    listed = ", ".join(peers)
+    return Check(
+        "A2A trust",
+        Status.WARN,
+        f"{len(peers)} Databricks App peer(s); per-hop user OBO is the trust "
+        f"boundary. SP-to-SP CAN_USE is a fallback for distinct-SP topologies "
+        f"and is inapplicable where apps share one SP: {listed}",
+        "Serve the caller behind the Apps gateway so X-Forwarded-Access-Token "
+        "is forwarded each hop. Do not rely on SP-to-SP CAN_USE in a shared-SP "
+        "app group. See docs/multi-agent/a2a.md.",
     )
 
 

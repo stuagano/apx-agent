@@ -330,7 +330,7 @@ def test_analyze_canary_app_partitions_by_app_tag(
         _trace_dict("my-app", 300, status="ERROR"),
         _trace_dict("my-app-canary-feat-x", 50),
         _trace_dict("my-app-canary-feat-x", 60),
-        _trace_dict("some-other-app", 999),  # filtered out
+        _trace_dict("some-other-app", 999),  # unmatched → unknown (#822)
     ]
     mlflow_stub.search_traces = lambda **_: fake_rows  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "mlflow", mlflow_stub)
@@ -343,14 +343,17 @@ def test_analyze_canary_app_partitions_by_app_tag(
     )
 
     assert isinstance(report, AppsCanaryReport)
-    assert len(report.apps) == 2
+    assert len(report.apps) == 3
     prod = report.by_name("my-app")
     canary = report.by_name("my-app-canary-feat-x")
-    assert prod is not None and canary is not None
+    unknown = report.by_name("unknown")
+    assert prod is not None and canary is not None and unknown is not None
     assert prod.requests == 3
     assert prod.errors == 1
     assert canary.requests == 2
     assert canary.errors == 0
+    # A name that matches neither app is counted, not dropped (#822).
+    assert unknown.requests == 1
     # P95 of the small canary set lands at 60.
     assert canary.latency_p95_ms == 60
     # Best by latency = canary (lower p95).
@@ -443,9 +446,48 @@ def test_analyze_canary_app_untagged_traces_fall_back_to_unknown(
         prod_app_name="my-app", canary_app_name="my-app-canary-x",
         experiment="exp", lookback_hours=24,
     )
-    # Exactly the two zero-filled app rows — no "unknown" row, no extras.
-    assert len(report.apps) == 2
-    assert all(a.requests == 0 for a in report.apps)
+    # The two zero-filled app rows stay. Untagged traces are visible as one
+    # "unknown" row so "no matching app name" is not reported as no traffic.
+    assert len(report.apps) == 3
+    unknown = report.by_name("unknown")
+    assert unknown is not None and unknown.requests == 2
+    named = [a for a in report.apps if a.app_name != "unknown"]
+    assert len(named) == 2
+    assert all(a.requests == 0 for a in named)
+
+
+def test_analyze_canary_app_mismatched_app_name_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A canary trace whose app name isn't the expected one must not vanish.
+
+    Before #822 the fallback dropped any name other than prod, canary, or
+    the literal "unknown", so an operator saw zero canary traffic while the
+    canary was receiving it.
+    """
+    mlflow_stub = SimpleNamespace()
+    mlflow_stub.get_experiment_by_name = lambda name: SimpleNamespace(experiment_id="0")
+    fake_rows = [
+        _trace_dict("my-app-canary-wrong-version", 80, status="ERROR"),
+        _trace_dict("my-app-canary-wrong-version", 90),
+    ]
+    mlflow_stub.search_traces = lambda **_: fake_rows  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mlflow", mlflow_stub)
+
+    report = analyze_canary_app(
+        prod_app_name="my-app",
+        canary_app_name="my-app-canary-feat-x",
+        experiment="exp",
+        lookback_hours=24,
+    )
+
+    canary = report.by_name("my-app-canary-feat-x")
+    unknown = report.by_name("unknown")
+    assert canary is not None and canary.requests == 0
+    assert unknown is not None
+    assert unknown.requests == 2
+    assert unknown.errors == 1
+    assert sum(a.requests for a in report.apps) == 2
 
 
 def test_analyze_canary_app_returns_zero_buckets_when_no_traces(

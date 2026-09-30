@@ -1,6 +1,7 @@
 # apx-agent documentation
 
 - [positioning.md](positioning.md) — **where apx-agent fits**: what it's for (governed data agents on Databricks), what it's not (a coding-agent orchestrator), and how the layers compose
+- [design/agent-mesh-from-data-products.md](design/agent-mesh-from-data-products.md) — **the agent mesh**: extending the UC data-product blueprint (domains, contracts, publishing topology) into a governed agent mesh, with the full architecture diagram
 
 ## Get Started
 
