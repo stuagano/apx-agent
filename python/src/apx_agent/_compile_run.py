@@ -191,6 +191,8 @@ async def run_via_compile(
         if isinstance(event, TurnComplete) and event.response is not None:
             final = event.response
         elif isinstance(event, ExecutorError):
+            if event.cause is not None:
+                raise event.cause
             raise RuntimeError(f"Executor error: {event.message}")
     return final
 
@@ -208,7 +210,7 @@ async def stream_via_compile(
     (matching the granularity of ``stream_mode="updates"`` in LangGraph).
     Tool-call AIMessages are skipped — only final-text AI messages stream.
     """
-    from ._executor import ExecutorConfig, TextChunk
+    from ._executor import ExecutorConfig, ExecutorError, TextChunk
     from ._langgraph_executor import LangGraphExecutor
 
     model = _get_model(request)
@@ -226,8 +228,10 @@ async def stream_via_compile(
     ):
         if isinstance(_event, TextChunk) and _event.text:
             yield _event.text
-        # TurnComplete and ExecutorError are not yielded — callers of
-        # stream_via_compile expect str chunks only.
+        elif isinstance(_event, ExecutorError) and _event.cause is not None:
+            raise _event.cause
+        # Preserve typed contract failures; other events retain the legacy
+        # string-stream behavior (no event objects yielded).
 
 
 def _get_model(request: "Request") -> str:

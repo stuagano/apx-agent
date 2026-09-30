@@ -1,17 +1,19 @@
 # Design: keyed shared state (G3)
 
-**Status:** proposed · **Date:** 2026-06-21 · **Source:** ADK functional-gap audit (G3)
+**Status:** historical proposal; typed output implementation documented below · **Date:** 2026-06-21 · **Source:** ADK functional-gap audit (G3)
 
-The highest-leverage workflow-reliability gap. apx-agent has no ADK-style keyed
-state: no `output_key`, no `session.state`, no scoping, no `{key}` instruction
-templating. Steps hand data to each other as **conversation text**, so threading
+The original proposal addressed a workflow-reliability gap: apx-agent had no
+ADK-style keyed state, `output_key`, scoping, or `{key}` instruction
+templating. Steps handed data to each other as **conversation text**, so threading
 a typed value (an id, a parsed object, a per-branch result) between steps is
-LLM-parse-dependent and lossy. This doc proposes a typed, named state channel
-and the surface around it, in phases.
+LLM-parse-dependent and lossy. This doc proposed a typed, named state channel
+and the surface around it, in phases. The background and phase plan below are
+historical; see the [public typed-output guide](../agents/llm-agent.md#typed-output)
+and [current typed-output contract](#typed-output-contracts-835) for shipped behavior.
 
 ---
 
-## Background — how state flows today
+## Background — state flow at the time of the original proposal
 
 Every compiled graph uses a single LangGraph `MessagesState` (one `messages`
 channel, merged by `add_messages`):
@@ -156,11 +158,74 @@ committing to the persistence surface.
 
 1. **Missing-key templating:** `{key}` with no value in state → leave the
    literal `{key}`, substitute empty, or raise? (Lean: leave literal, log once.)
-2. **`output_key` value:** the final assistant **text**, or a structured value
-   when the agent has structured output (which apx doesn't have yet — G-parity
-   "output_schema")? (Lean: text for now; revisit with output_schema.)
+2. **`output_key` value:** final assistant text by default; JSON-compatible
+   validated data when `output_schema` is declared (see #835 below).
 3. **Reducer for collisions:** last-write-wins vs an explicit list/append mode
    for ParallelAgent fan-in. (Lean: last-write-wins + documented guidance.)
 4. **Public surface:** is `output_key` + `{key}` enough for Phase 1, or do we
    also expose a `Dependencies.State` so **tools** can read/write keys
    mid-run (the ADK `tool_context.state` analogue, overlaps G4/ToolContext)?
+
+## Typed output contracts (#835)
+
+`Agent` / `LlmAgent` accepts `output_schema`, a Pydantic model class:
+
+```python
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+from apx_agent import Agent, SequentialAgent
+
+
+class Finding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    record_id: int
+    status: Literal["supported", "needs_review"]
+    evidence: list[str] = Field(min_length=1)
+
+
+pipeline = SequentialAgent([
+    Agent(
+        name="extract",
+        instructions="Extract a finding from the supplied records.",
+        output_key="finding",
+        output_schema=Finding,
+    ),
+    Agent(name="summarize", instructions="Summarize this finding: {finding}"),
+])
+```
+
+The producer prompt includes the model's JSON schema. Its completed answer is
+validated with Pydantic's strict JSON validation; numeric strings do not become
+numbers, Markdown fences are not stripped, and prose is not scraped for JSON.
+Field constraints and the model's extra-field policy apply. Schema validation
+does not establish that the finding or its evidence is factually correct.
+
+On success, `state["finding"]` contains JSON-compatible validated data, not a
+Pydantic instance. Dict/list values render as JSON in `{key}` templates. The
+final assistant message and `run()` result contain serialized validated JSON;
+the return type remains `str`. `output_key` is optional: standalone agents can
+validate their final answer without publishing a named value.
+
+On invalid output, `OutputValidationError` carries `agent_name`, `output_key`,
+and validation `errors` containing locations and error types, without raw input
+values or validator messages. The producer does not publish its result or call
+its success callback, and the sequence does not advance. An older value already
+in the same state key is not a successful result for this run. Input/output
+guardrail rejection also stops a typed producer, even if replacement text could
+parse as JSON. Completed external tool effects are not rolled back.
+
+Typed results are buffered until accepted. Direct `run()` / `stream()` and the
+compiled graph enforce the same producer boundary. Direct sequences containing
+typed producers use the compiled shared-state runtime; untyped direct sequences
+retain their existing behavior and custom `BaseAgent` support. A typed sequence
+must contain compiler-supported agent types. The compiled runtime's step output
+events replace the direct runner's Markdown step headers in typed streams.
+
+Loop bodies, handoff members, and parallel branches currently reject
+`output_schema`: control-tool completion and parallel state fan-in need explicit
+contracts before typed output can be supported there. There is no
+`output_schema` on the composite itself. No schema means the existing text
+contract. Retry, JSON repair, and escalation are intentionally outside this
+implementation.

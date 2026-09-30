@@ -25,6 +25,7 @@ Requires ``langgraph`` (included in apx-agent's required dependencies).
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import re
 from collections.abc import Mapping
@@ -51,6 +52,7 @@ from ._agents import (
     RouterAgent,
     SEQUENTIAL_CONTINUATION,
     SequentialAgent,
+    _has_typed_output,
     handoff_transfer_description,
 )
 from ._defaults import (
@@ -63,6 +65,7 @@ from ._defaults import (
     get_databricks_headers,
 )
 from ._budget import cap_for
+from ._errors import OutputValidationError
 from ._mlflow_tracing import emit_progress
 from ._tool_search import (
     deferred_tools_middleware,
@@ -470,17 +473,33 @@ def _sequential_continuation(state: dict[str, Any]) -> dict[str, Any]:
 
 def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> Any:
     """Compile a ``SequentialAgent`` into a linear ``StateGraph``."""
+    from langchain_core.messages import SystemMessage
+    from langchain_core.runnables import RunnableLambda
     from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(state_schema())
     node_names: list[str] = []
+
+    def _step(sub: BaseAgent) -> Any:
+        compiled = _compile_any(sub, ctx)
+        if not agent._instructions:
+            return compiled
+
+        async def _node(state: dict[str, Any]) -> dict[str, Any]:
+            # Inject only within this sequence; nested instructions must not
+            # become conversation state visible to later sibling sequences.
+            messages = [SystemMessage(content=agent._instructions), *state["messages"]]
+            result = await compiled.ainvoke({**state, "messages": messages})
+            return {**result, "messages": result["messages"][len(messages):]}
+
+        return RunnableLambda(lambda state: _invoke_node_sync(_node, state), afunc=_node)
 
     for i, sub in enumerate(agent._agents):
         name = getattr(sub, "_name", None) or f"step_{i}"
         if name in node_names:
             name = f"{name}_{i}"  # disambiguate accidental collisions
         node_names.append(name)
-        graph.add_node(name, _compile_any(sub, ctx))
+        graph.add_node(name, _step(sub))
 
     graph.add_edge(START, node_names[0])
     for i, (src, dst) in enumerate(zip(node_names, node_names[1:])):
@@ -504,6 +523,8 @@ def _compile_parallel_agent(agent: ParallelAgent, ctx: CompileContext) -> Any:
     """
     from langgraph.graph import END, START, StateGraph
 
+    if _has_typed_output(agent):
+        raise ValueError("output_schema is not supported on ParallelAgent branches")
     graph = StateGraph(state_schema())
     node_names: list[str] = []
     for i, sub in enumerate(agent._agents):
@@ -534,7 +555,7 @@ def _branch_leaf_instructions(sub: BaseAgent) -> str:
     instructions are rendered per-invocation by the node wrap, so folding them
     here would duplicate them).
     """
-    if isinstance(sub, LlmAgent) and not _has_template(sub):
+    if isinstance(sub, LlmAgent) and not _has_template(sub) and sub._output_schema is None:
         return sub._instructions
     return ""
 
@@ -732,6 +753,8 @@ def _compile_loop_agent(agent: LoopAgent, ctx: CompileContext) -> Any:
     from langgraph.graph import END, START, StateGraph
 
     inner = agent._inner
+    if inner._output_schema is not None:
+        raise ValueError("output_schema is not supported on LoopAgent bodies")
     max_iter = agent._max_iterations
 
     class LoopState(TypedDict):
@@ -919,6 +942,8 @@ def _compile_handoff_agent(agent: HandoffAgent, ctx: CompileContext) -> Any:
 
     def _build_node(current_name: str) -> Any:
         inner = agents[current_name]
+        if inner._output_schema is not None:
+            raise ValueError("output_schema is not supported on HandoffAgent members")
         binding = ctx.remote_leaf_bindings.get(current_name)
         if binding is not None:
             # Remote handoff peer: it signals transfer_to:<target> over the wire
@@ -1050,8 +1075,14 @@ def _has_template(agent: LlmAgent) -> bool:
 
 def _render_template(template: str, keyed: dict[str, Any]) -> str:
     """Substitute ``{key}`` from ``keyed``; leave unknown keys literal."""
+    def _value(match: re.Match[str]) -> str:
+        if match.group(1) not in keyed:
+            return match.group(0)
+        value = keyed[match.group(1)]
+        return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
+
     return _TEMPLATE_KEY.sub(
-        lambda m: str(keyed[m.group(1)]) if m.group(1) in keyed else m.group(0),
+        _value,
         template,
     )
 
@@ -1068,6 +1099,7 @@ def _agent_needs_node_wrap(agent: LlmAgent) -> bool:
         or agent._before_agent_callback is not None
         or agent._after_agent_callback is not None
         or getattr(agent, "_output_key", None)
+        or agent._output_schema is not None
         or _has_template(agent)
     )
 
@@ -1083,7 +1115,9 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
     ``stream_mode="updates"`` node update.
     """
     from langchain_core.messages import AIMessage, SystemMessage
+    from langchain_core.runnables import RunnableLambda
     from langgraph.graph import END, START, StateGraph
+    from pydantic import ValidationError
 
     async def _node(state: dict[str, Any]) -> dict[str, Any]:
         input_msgs = list(state["messages"])
@@ -1092,14 +1126,30 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
         await agent._invoke_callback(agent._before_agent_callback, input_msgs)
         rejection = await agent._apply_input_guardrails(input_msgs)
         if rejection is not None:
+            if agent._output_schema is not None:
+                raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "input_guardrail"}])
             return {"messages": [AIMessage(content=rejection)]}
 
         # {key} templating: the runnable was built with no baked system prompt;
         # render the instructions from state and inject them as a SystemMessage
         # (internal to this call — not added to the conversation).
-        if templated:
+        if templated or agent._output_schema is not None:
             rendered = _render_template(agent._instructions, keyed)
-            inner_msgs = [SystemMessage(content=rendered), *input_msgs]
+            if agent._output_schema is not None:
+                rendered += (
+                    "\nReturn your final answer as JSON matching this schema. "
+                    "Do not include Markdown fences or prose outside the JSON.\n"
+                    + json.dumps(agent._output_schema.model_json_schema(), ensure_ascii=False)
+                )
+            if agent._output_schema is not None:
+                # Keep parent instructions and the contract in one system turn.
+                parent = [str(m.content) for m in input_msgs if isinstance(m, SystemMessage)]
+                inner_msgs = [
+                    SystemMessage(content="\n".join([*parent, rendered])),
+                    *[m for m in input_msgs if not isinstance(m, SystemMessage)],
+                ]
+            else:
+                inner_msgs = [SystemMessage(content=rendered), *input_msgs]
         else:
             inner_msgs = input_msgs
         result = await runnable.ainvoke({**state, "messages": inner_msgs})
@@ -1112,6 +1162,8 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
 
         replacement = await agent._apply_output_guardrails(text)
         if replacement is not None:
+            if agent._output_schema is not None:
+                raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "output_guardrail"}])
             # Matches LlmAgent.run: a replacement is returned as-is, after_agent
             # is NOT fired, and it is NOT written to output_key.
             if last_ai is not None:
@@ -1123,21 +1175,66 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
                 new_msgs = [AIMessage(content=replacement)]
             return {"messages": new_msgs}
 
+        payload: Any = text
+        if agent._output_schema is not None:
+            if last_ai is None or last_ai.tool_calls:
+                raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "missing_final_answer"}])
+            try:
+                validated = agent._output_schema.model_validate_json(text, strict=True)
+            except ValidationError as exc:
+                raise OutputValidationError(
+                    agent._name, agent._output_key,
+                    exc.errors(include_url=False, include_context=False, include_input=False),
+                ) from None
+            except Exception as exc:
+                # Custom validators can raise outside Pydantic's ValidationError.
+                # Preserve a safe diagnostic without exposing their input values.
+                raise OutputValidationError(
+                    agent._name, agent._output_key,
+                    [{"loc": (), "type": f"validator_{type(exc).__name__}"}],
+                ) from None
+            try:
+                payload = validated.model_dump(mode="json", by_alias=True)
+                text = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+            except (ValueError, TypeError):
+                raise OutputValidationError(
+                    agent._name, agent._output_key, [{"loc": (), "type": "json_serialization"}],
+                ) from None
+            # Explicit text blocks keep application JSON arrays with a `type`
+            # key from being mistaken for provider reasoning/content blocks.
+            content = [{"type": "text", "text": text}]
+            new_msgs = [m.model_copy(update={"content": content}) if m is last_ai else m for m in new_msgs]
+
         await agent._invoke_callback(agent._after_agent_callback, text)
         update: dict[str, Any] = {"messages": new_msgs}
         inner_state = result.get("state")          # tool writes from the inner agent
         merged_state: dict[str, Any] = dict(inner_state) if inner_state else {}
         if agent._output_key:
-            merged_state[agent._output_key] = text
+            merged_state[agent._output_key] = payload
         if merged_state:
             update["state"] = merged_state
         return update
 
     graph = StateGraph(state_schema())
-    graph.add_node("agent", _node)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
+    graph.add_node("agent", RunnableLambda(lambda state: _invoke_node_sync(_node, state), afunc=_node))  # type: ignore[arg-type]  # StateNode generic cannot infer state->dict nodes
     graph.add_edge(START, "agent")
     graph.add_edge("agent", END)
     return graph.compile()
+
+
+def _invoke_node_sync(node: Any, state: dict[str, Any]) -> dict[str, Any]:
+    """Run an async producer node for sync predict/stream, preserving context."""
+    import asyncio
+    import concurrent.futures
+    import contextvars
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(node(state))
+    context = contextvars.copy_context()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(context.run, lambda: asyncio.run(node(state))).result()
 
 
 def _compile_bound_remote_leaf(
@@ -1229,23 +1326,9 @@ def _compile_bound_remote_leaf(
             ]
         }
 
-    def _sync_node(state: dict[str, Any]) -> dict[str, Any]:
-        import asyncio
-
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(_node(state))
-        import concurrent.futures
-        import contextvars
-
-        context = contextvars.copy_context()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(context.run, lambda: asyncio.run(_node(state))).result()
-
     name = getattr(logical_leaf, "_name", None) or binding.logical_name
     graph = StateGraph(state_schema())
-    graph.add_node(name, RunnableLambda(_sync_node, afunc=_node))  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
+    graph.add_node(name, RunnableLambda(lambda state: _invoke_node_sync(_node, state), afunc=_node))  # type: ignore[arg-type]  # StateNode generic cannot infer state->dict nodes
     graph.add_edge(START, name)
     graph.add_edge(name, END)
     return graph.compile()
@@ -1260,7 +1343,9 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
         if binding is not None:
             runnable = _compile_bound_remote_leaf(agent, binding, ctx)
         else:
-            runnable = _compile_llm_agent(agent, ctx, bake_prompt=not templated)
+            runnable = _compile_llm_agent(
+                agent, ctx, bake_prompt=not templated and agent._output_schema is None,
+            )
         if not _agent_needs_node_wrap(agent):
             return runnable
         return _wrap_agent_node(agent, runnable, templated=templated)

@@ -282,8 +282,9 @@ sessions"), then 3c.
 ## Out of scope
 
 - TTLs / size caps / per-key retention policy on scoped state.
-- Structured (non-text) `output_key` values into scoped keys (depends on
-  `output_schema`, not yet in apx).
+- Structured values in scoped keys were outside this increment. In-graph typed
+  `output_key` values are now supported by [typed output contracts](../agents/llm-agent.md#typed-output)
+  (#835); that change does not extend this document's scoped-persistence guarantees.
 - Scoped-key deletion / tombstones (§4).
 - Seeding/persisting on the bare `LangGraphExecutor` path (no conversation/identity
   handle; the served adapters remain the persistence surface).

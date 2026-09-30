@@ -41,6 +41,25 @@ through every caller.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+
+class OutputValidationError(ValueError):
+    """A typed producer failed its contract; no successful output is published."""
+
+    def __init__(
+        self, agent_name: str | None, output_key: str | None, errors: Sequence[Mapping[str, Any]],
+    ) -> None:
+        self.agent_name = agent_name
+        self.output_key = output_key
+        # Validation messages/context can contain model output or validator inputs.
+        self.errors = [{"loc": e["loc"], "type": e["type"]} for e in errors]
+        super().__init__(
+            f"Output contract failed for agent {agent_name!r}, "
+            f"output_key={output_key!r}: {self.errors}"
+        )
+
 
 class SessionBudgetExceeded(Exception):
     """A session's cumulative token usage crossed its declared cap.
