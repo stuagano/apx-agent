@@ -126,6 +126,13 @@ class LlmAgent(BaseAgent):
     pyproject.toml. Use the constructor param to override per-agent within a
     ``SequentialAgent`` or ``ParallelAgent`` composition.
 
+    ``output_schema`` declares a Pydantic model for the final JSON answer.
+    The compiled producer validates strictly before publishing JSON-compatible
+    data to ``output_key`` or calling ``after_agent_callback``. ``run`` still
+    returns a string (serialized validated JSON); ``stream`` buffers typed
+    answers until validation. A mismatch raises ``OutputValidationError`` and
+    stops the sequence, without retrying tools or escalating.
+
     Example::
 
         def query_genie(question: str, space_id: str, ws: Dependencies.UserClient) -> str:
@@ -168,6 +175,7 @@ class LlmAgent(BaseAgent):
         output_key: str | None = None,
         session_budget: dict[str, int] | None = None,
         tool_loading: str = "eager",
+        output_schema: type[BaseModel] | None = None,
     ) -> None:
         # tools is optional (#449): an orchestrator whose only capabilities are
         # config-declared sub_agents has no local tools. None → a fresh list
@@ -185,6 +193,13 @@ class LlmAgent(BaseAgent):
         # G3: when set, the agent's final text is written to the shared state
         # channel under this key (readable by later steps via {key} templating).
         self._output_key = output_key
+        if output_schema is not None and (
+            not isinstance(output_schema, type)
+            or not issubclass(output_schema, BaseModel)
+            or output_schema is BaseModel
+        ):
+            raise TypeError("output_schema must be a Pydantic BaseModel subclass")
+        self._output_schema = output_schema
         # Cumulative per-session token cap (#768). Only "tokens" is supported;
         # enforced at the served-turn boundary against the checkpointer-persisted
         # running total (see _budget.py). None = uncapped.
@@ -266,6 +281,9 @@ class LlmAgent(BaseAgent):
     async def run(self, messages: list[Message], request: Request) -> str:
         from ._compile_run import run_via_compile
 
+        if self._output_schema is not None:
+            # The producer wrapper owns validation, guards and success hooks.
+            return await run_via_compile(self, messages, request)
         await self._invoke_callback(self._before_agent_callback, messages)
         if rejection := await self._apply_input_guardrails(messages):
             return rejection
@@ -280,6 +298,10 @@ class LlmAgent(BaseAgent):
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
         from ._compile_run import stream_via_compile
 
+        if self._output_schema is not None:
+            async for chunk in stream_via_compile(self, messages, request):
+                yield chunk
+            return
         await self._invoke_callback(self._before_agent_callback, messages)
         if rejection := await self._apply_input_guardrails(messages):
             yield rejection
@@ -687,6 +709,15 @@ class LoopAgent(BaseAgent):
 SEQUENTIAL_CONTINUATION = "Continue with the next step based on the results above."
 
 
+def _has_typed_output(agent: BaseAgent) -> bool:
+    """Whether a composition needs the compiled typed-state handoff."""
+    from ._topology import _iter_child_agents
+
+    if isinstance(agent, LlmAgent):
+        return agent._output_schema is not None
+    return any(_has_typed_output(child) for _, child in _iter_child_agents(agent))
+
+
 class SequentialAgent(BaseAgent):
     """Runs agents in order, each receiving the previous agent's output as context."""
 
@@ -708,6 +739,10 @@ class SequentialAgent(BaseAgent):
         return [Message(role="system", content=self._instructions), *messages]
 
     async def run(self, messages: list[Message], request: Request) -> str:
+        if _has_typed_output(self):
+            from ._compile_run import run_via_compile
+
+            return await run_via_compile(self, messages, request)
         context = self._prepend_instructions(messages)
         result = ""
         for i, sub in enumerate(self._agents):
@@ -726,6 +761,12 @@ class SequentialAgent(BaseAgent):
         by yielding text between steps instead of waiting for everything to
         finish before streaming the last step.
         """
+        if _has_typed_output(self):
+            from ._compile_run import stream_via_compile
+
+            async for chunk in stream_via_compile(self, messages, request):
+                yield chunk
+            return
         context = self._prepend_instructions(messages)
         total = len(self._agents)
         result = ""
@@ -785,6 +826,8 @@ class ParallelAgent(BaseAgent):
     async def run(self, messages: list[Message], request: Request) -> str:
         import asyncio
 
+        if _has_typed_output(self):
+            raise ValueError("output_schema is not supported on ParallelAgent branches")
         context = self._prepend_instructions(messages)
         results = await asyncio.gather(*[sub.run(context, request) for sub in self._agents])
         return "\n\n".join(str(r) for r in results)

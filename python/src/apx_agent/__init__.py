@@ -252,7 +252,7 @@ from ._cancellation import (
 
 # Tool-facing exceptions — raise ToolError to contain a tool failure as a
 # legible finding instead of a turn-aborting 500 (#562).
-from ._errors import SessionBudgetExceeded, ToolError
+from ._errors import OutputValidationError, SessionBudgetExceeded, ToolError
 from ._tool_scope import ScopeDenied, ScopeGuard, ToolScope
 
 # Policies — ALLOW / ASK / DENY governance with human-in-the-loop approvals
@@ -642,6 +642,7 @@ __all__ = [
     # Tool-facing exceptions
     "SessionBudgetExceeded",
     "ToolError",
+    "OutputValidationError",
     "ScopeDenied",
     "ScopeGuard",
     "ToolScope",

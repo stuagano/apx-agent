@@ -165,6 +165,8 @@ class ExecutorError(ExecutorEvent):
 
     message: str | None = None
     retryable: bool = False
+    cause: Exception | None = field(default=None, repr=False)
+    """Optional in-process cause, retained for callers that need typed failures."""
 
 
 # ---------------------------------------------------------------------------
