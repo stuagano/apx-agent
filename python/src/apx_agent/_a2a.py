@@ -36,6 +36,8 @@ from ._a2a_models import (
     TaskState,
     TaskStatus,
     TextPart,
+    DataPart,
+    data_parts,
 )
 from ._agents import BaseAgent
 from ._audit import AuditAttrs
@@ -204,6 +206,9 @@ def mount_a2a_route(
         # contextId → session_id so multi-turn threads through the conversation
         # store exactly as the /invocations context bridge does.
         custom_inputs.setdefault("session_id", context_id)
+        inbound_data = [p.model_dump(mode="json", exclude_none=True) for p in message.parts if isinstance(p, DataPart)]
+        if inbound_data:
+            custom_inputs["apx_data_parts"] = inbound_data
         owner = custom_inputs.get("user_id")
 
         # Resume only when the client sent apx_resume AND this thread is actually
@@ -257,9 +262,10 @@ def mount_a2a_route(
                 return task
 
             reply = _reply_text(response)
+            reply_parts = [TextPart(text=reply), *[DataPart.model_validate(p) for p in data_parts(response.custom_outputs)]]
             agent_msg = Message(
                 role="agent",
-                parts=[TextPart(text=reply)],
+                parts=reply_parts,
                 messageId=_new_id(),
                 taskId=task_id,
                 contextId=context_id,
@@ -269,7 +275,7 @@ def mount_a2a_route(
                 contextId=context_id,
                 status=TaskStatus(state=TaskState.completed, timestamp=_now()),
                 history=[inbound, agent_msg],
-                artifacts=[Artifact(artifactId=_new_id(), parts=[TextPart(text=reply)])],
+                artifacts=[Artifact(artifactId=_new_id(), parts=reply_parts)],
             )
         except Exception as exc:  # noqa: BLE001 — surface as a failed Task, not a 500
             logger.exception("A2A message/send execution failed")

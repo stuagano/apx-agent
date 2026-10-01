@@ -59,15 +59,18 @@ Unknown methods → JSON-RPC `-32601` (Method not found).
 | A2A | apx |
 |---|---|
 | `Message.parts[TextPart].text` (role `user`) | concatenated → one `ChatAgentMessage(role="user", content=…)` |
+| `Message.parts[DataPart]` | `custom_inputs.apx_data_parts` → structured user context plus JSON rendering |
 | `Message.contextId` | bridged to `custom_inputs["session_id"]` → multi-turn via the conversation store (reuses the `/invocations` session bridge) |
 | agent reply (`ChatAgentResponse.messages` last assistant text) | `Task.artifacts[0]` (TextPart) **and** appended to `Task.history` as a `role="agent"` Message |
+| final reply `custom_outputs.apx_data_parts` | DataParts alongside text in the reply history and artifact; see [structured payloads](../multi-agent/a2a.md#structured-step-payloads) |
 | run-to-completion | `TaskStatus.state = "completed"`; an exception → `"failed"` with the error as the status message |
 
 ## Models (`_a2a_models.py`, A2A v0.3.0 camelCase for real-client interop)
 
 - `TaskState` (enum): `submitted | working | input-required | completed | canceled
   | failed | rejected | unknown` (MVP emits `completed` / `failed`).
-- `TextPart` `{kind:"text", text}`; `Message` `{role, parts, messageId, taskId?,
+- `TextPart` `{kind:"text", text}`; `DataPart` `{kind:"data", data, metadata?}`
+  (JSON object data; optional schema hint in metadata); `Message` `{role, parts, messageId, taskId?,
   contextId?, kind:"message"}`; `Artifact` `{artifactId, parts, name?}`;
   `TaskStatus` `{state, timestamp?, message?}`; `Task` `{id, contextId, status,
   history, artifacts, kind:"task"}`.

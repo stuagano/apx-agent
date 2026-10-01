@@ -83,6 +83,10 @@ and typed `stream()` output is buffered until validation. `output_key` is option
 for a standalone typed answer. See [typed step contracts](composition.md#typed-step-contracts)
 for passing the value to another agent.
 
+Object-shaped typed answers also carry a structured data part across supported
+remote bindings. See [structured step payloads](../multi-agent/a2a.md#structured-step-payloads)
+for wire formats, receiver validation, and transport limits.
+
 Invalid output raises `OutputValidationError` before publishing the result or
 calling `after_agent_callback`. It exposes `agent_name`, `output_key`, and
 `errors` with validation locations and types, excluding raw input values and

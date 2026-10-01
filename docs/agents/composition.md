@@ -147,6 +147,11 @@ headers. These sequences require compiler-supported agent types. Parallel
 branches, loop bodies, and handoff members currently reject typed declarations.
 See [LlmAgent typed output](llm-agent.md#typed-output) for errors and schema options.
 
+The same contract can be declared on a named remote leaf: an attached data part
+is validated directly before `output_key` is written. See
+[structured step payloads](../multi-agent/a2a.md#structured-step-payloads) for
+the A2A and Responses transport formats.
+
 ## ParallelAgent
 
 Use parallel composition for independent work that can run concurrently.

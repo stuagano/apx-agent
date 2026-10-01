@@ -49,6 +49,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generator, cast
 
+from ._a2a_models import output_data_parts, with_input_data_parts
 from ._agents import BaseAgent
 from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_turn
 from ._audit import (
@@ -880,7 +881,7 @@ def chat_agent_for(
                     else 0
                 )
 
-                lc_input = _to_langchain_messages(effective_messages)
+                lc_input = with_input_data_parts(_to_langchain_messages(effective_messages), custom_inputs)
                 input_count = len(lc_input)
                 # With a checkpointer, invoke returns the FULL thread state
                 # (prior history + this turn's input + output), not just
@@ -953,7 +954,9 @@ def chat_agent_for(
                     enforce_after_turn(
                         graph, budget_config, budget_prior, new_lc_messages, budget_cap
                     )
-                response = ChatAgentResponse(messages=new_messages)
+                response = ChatAgentResponse(
+                    messages=new_messages, custom_outputs=output_data_parts(new_lc_messages) or None,
+                )
                 set_span_outputs(span, response.model_dump())
 
                 self._persist_conv_turn(
@@ -1048,7 +1051,7 @@ def chat_agent_for(
                     else 0
                 )
 
-                lc_input = _to_langchain_messages(effective_messages)
+                lc_input = with_input_data_parts(_to_langchain_messages(effective_messages), custom_inputs)
                 emitted = 0
                 new_messages: list[ChatAgentMessage] = []
                 turn_lc_messages: list[Any] = []
