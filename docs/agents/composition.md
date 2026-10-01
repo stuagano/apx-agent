@@ -137,7 +137,8 @@ pipeline = SequentialAgent([
 The producer strictly validates its final JSON before writing `finding`.
 The consumer receives the validated dict rendered as JSON in its instructions.
 If validation or a guardrail rejects the result, `OutputValidationError` stops
-the sequence before the consumer runs. There is no automatic retry or escalation.
+the sequence before the consumer runs. There is no automatic retry; escalation
+requires the explicit policy described below.
 
 Direct `run()` and `stream()` on a sequence with typed leaves use the compiled
 shared-state runtime. Nested sequence instructions remain scoped to their own
@@ -151,6 +152,73 @@ The same contract can be declared on a named remote leaf: an attached data part
 is validated directly before `output_key` is written. See
 [structured step payloads](../multi-agent/a2a.md#structured-step-payloads) for
 the A2A and Responses transport formats.
+
+### Timeouts and opt-in escalation
+
+Give a leaf a positive finite `timeout_s` to limit its invocation. Set
+`on_failure="escalate"` on a sequence to turn a deadline, explicit typed
+unavailability, or output-schema failure into a terminal structured result:
+
+```python
+pipeline = SequentialAgent([
+    Agent(name="research", tools=[query_genie_space], timeout_s=30,
+          output_schema=Finding, output_key="finding"),
+    Agent(name="review", instructions="Review {finding}", timeout_s=30),
+], name="review_pipeline", on_failure="escalate")
+```
+
+`Finding` is the application's output model; `query_genie_space` is its tool.
+Omitting `timeout_s` leaves the step unbounded. `on_failure="raise"` is the
+default and preserves existing exception/tool-result behavior. A configured
+deadline still raises a `TimeoutError` when escalation is disabled.
+
+An opted-in chain recognizes a tool's top-level JSON
+`{"availability": "unavailable", "capability": "genie", "error": "..."}`
+before another model turn. It does not inspect arbitrary prose for failure
+words. A failed step publishes neither its success `output_key` nor partial
+keyed-state changes, and no downstream step runs. Completed typed outputs are
+included as evidence; rejected output and raw upstream errors are excluded.
+
+For example, a deadline after a completed research step produces:
+
+```json
+{
+  "status": "escalated",
+  "availability": "unavailable",
+  "capability": "agent",
+  "error": "Step exceeded its declared time budget.",
+  "reason": "timeout",
+  "failed_step": ["review_pipeline", "review"],
+  "evidence": [
+    {"step": ["review_pipeline", "research"], "output_key": "finding",
+     "data": {"record_id": 42, "evidence": ["record 42"]}}
+  ]
+}
+```
+
+Other reasons are `unavailable` and `schema_miss`. The final answer carries
+this JSON plus an A2A DataPart. Direct `run()` and `stream()` remain string
+APIs; served Responses and non-streaming ChatAgent calls expose the part in
+`custom_outputs.apx_data_parts`. Remote bindings validate the fixed escalation
+schema and propagate the failure without trying to accept it as the leaf's
+success schema. Text-only peers cannot propagate typed unavailability reliably.
+
+Nested sequence failures stop outer downstream steps as well. An outer
+escalation policy applies through its nested sequences; an inner opted-in
+sequence's terminal packet also stops an outer default sequence. Routing to
+sequences is supported. Parallel, loop, and handoff compositions containing
+step policies are rejected in this increment.
+
+The budget covers a leaf invocation, including its model/tool loop, guards,
+validation, and lifecycle hooks. Async cancellation is cooperative. For
+synchronous tools, the existing cancellable worker lets the chain stop waiting
+and discard a late result. Work already dispatched remotely or running in a
+worker may continue: timeout does not imply hard termination or rollback.
+Input/output guardrail rejections, approvals, external cancellation, and
+unexpected exceptions retain their existing behavior rather than becoming
+schema-failure packets. No automatic retry or repair is added.
+
+See the [implementation contract](../design/sequential-escalation.md).
 
 ## ParallelAgent
 

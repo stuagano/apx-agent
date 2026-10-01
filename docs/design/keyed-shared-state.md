@@ -208,7 +208,8 @@ final assistant message and `run()` result contain serialized validated JSON;
 the return type remains `str`. `output_key` is optional: standalone agents can
 validate their final answer without publishing a named value.
 
-On invalid output, `OutputValidationError` carries `agent_name`, `output_key`,
+With the default failure policy, invalid output raises `OutputValidationError`
+carrying `agent_name`, `output_key`,
 and validation `errors` containing locations and error types, without raw input
 values or validator messages. The producer does not publish its result or call
 its success callback, and the sequence does not advance. An older value already
@@ -227,5 +228,6 @@ Loop bodies, handoff members, and parallel branches currently reject
 `output_schema`: control-tool completion and parallel state fan-in need explicit
 contracts before typed output can be supported there. There is no
 `output_schema` on the composite itself. No schema means the existing text
-contract. Retry, JSON repair, and escalation are intentionally outside this
-implementation.
+contract. Retry and JSON repair remain outside this implementation.
+Sequential chains can opt into [structured escalation](sequential-escalation.md)
+for schema failures, typed unavailability, and declared step deadlines (#841).

@@ -34,6 +34,8 @@ def governance_guards_present(
     for attr in ("_before_tool", "_after_tool", "_before_model", "_after_model"):
         if getattr(agent, attr, None):
             return f"agent has a {attr.lstrip('_')} hook"
+    if getattr(agent, "_timeout_s", None) is not None:
+        return "agent declares timeout_s"
     if getattr(agent, "_input_guardrails", None):
         return "agent has input guardrails"
     if getattr(agent, "_output_guardrails", None):

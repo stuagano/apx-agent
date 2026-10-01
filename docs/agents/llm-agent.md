@@ -98,11 +98,22 @@ Already completed external tool effects are not rolled back.
 This version supports typed leaves in sequential graphs and standalone typed
 agents. Parallel branches, loop bodies, and handoff members reject
 `output_schema`. There is no schema option on the composite itself, and no retry,
-JSON-repair, or escalation policy. Omitting `output_schema` preserves free-text
+JSON-repair policy. Sequences can explicitly opt into
+[structured escalation](composition.md#timeouts-and-opt-in-escalation).
+Omitting `output_schema` preserves free-text
 behavior. The [implementation contract](../design/keyed-shared-state.md#typed-output-contracts-835)
 details execution and state semantics.
 
 ## Running agents
+
+An optional positive finite `timeout_s` bounds a leaf invocation, including
+its model/tool loop and lifecycle hooks. Omission means no deadline. Outside
+an opted-in escalation sequence, expiry raises `TimeoutError`. This is a limit
+on waiting, not a guarantee of stopping remote effects or arbitrary worker
+code. Timed leaves use the compiled runtime, including when another executor
+was selected, so the declaration cannot be silently ignored. See
+[timeouts and escalation](composition.md#timeouts-and-opt-in-escalation) for
+supported compositions, state isolation, and cancellation limits.
 
 > **Coming from OpenAI Agents SDK?** There is no `Runner` class — call `run_once(agent, prompt)`. `await Runner.run(agent, input)` → `run_once(agent, "...")`.
 

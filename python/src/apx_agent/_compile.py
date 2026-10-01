@@ -29,7 +29,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 # Hoisted so TypedDicts defined inside compile functions (e.g. LoopState) can
@@ -53,6 +53,7 @@ from ._agents import (
     SEQUENTIAL_CONTINUATION,
     SequentialAgent,
     _has_typed_output,
+    _has_step_policy,
     handoff_transfer_description,
 )
 from ._defaults import (
@@ -115,6 +116,8 @@ class CompileContext:
     across turns. Requires a ``thread_id`` in the invoke config."""
     request: "Request | None" = None
     remote_leaf_bindings: Mapping[str, _RemoteLeafBinding] = field(default_factory=dict)
+    escalate_failures: bool = False
+    step_path: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +258,9 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
         )
 
     def _sync_wrapper(**kwargs: Any) -> Any:
-        return fn(**kwargs, **resolved_deps)
+        from ._step_contract import run_sync_tool
+
+        return run_sync_tool(fn, **kwargs, **resolved_deps)
 
     _sync_wrapper.__name__ = fn.__name__
     _sync_wrapper.__doc__ = fn.__doc__
@@ -394,6 +399,10 @@ def _compile_llm_agent(
     if extra:
         tools = tools + extra
     middleware = [_governance_exception_middleware()]
+    if ctx.escalate_failures:
+        from ._step_contract import unavailable_middleware
+
+        middleware.append(unavailable_middleware())
     # Deferred loading (#767) still registers every author tool on create_agent
     # so ToolNode can execute a revealed call. Middleware hides those tools
     # from the model until tool_search writes their names into state.
@@ -473,24 +482,64 @@ def _sequential_continuation(state: dict[str, Any]) -> dict[str, Any]:
 
 def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> Any:
     """Compile a ``SequentialAgent`` into a linear ``StateGraph``."""
+    from copy import deepcopy
+
     from langchain_core.messages import SystemMessage
     from langchain_core.runnables import RunnableLambda
     from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(state_schema())
     node_names: list[str] = []
+    escalate = ctx.escalate_failures or agent._on_failure == "escalate"
+    protected = escalate or _has_step_policy(agent)
+    path = ctx.step_path or (agent._name or "sequence",)
 
-    def _step(sub: BaseAgent) -> Any:
-        compiled = _compile_any(sub, ctx)
-        if not agent._instructions:
+    def _step(sub: BaseAgent, name: str) -> Any:
+        step_path = (*path, name)
+        child_ctx = replace(ctx, escalate_failures=escalate, step_path=step_path if protected else ctx.step_path)
+        compiled = _compile_any(sub, child_ctx)
+        if not agent._instructions and not protected:
             return compiled
 
         async def _node(state: dict[str, Any]) -> dict[str, Any]:
+            from ._step_contract import StepTimeoutError, StepUnavailableError, escalation_message
+
             # Inject only within this sequence; nested instructions must not
             # become conversation state visible to later sibling sequences.
-            messages = [SystemMessage(content=agent._instructions), *state["messages"]]
-            result = await compiled.ainvoke({**state, "messages": messages})
-            return {**result, "messages": result["messages"][len(messages):]}
+            child_input = deepcopy(state) if protected else dict(state)
+            messages = child_input["messages"]
+            if agent._instructions:
+                messages = [SystemMessage(content=agent._instructions), *messages]
+            evidence = state.get("_apx_step_evidence", [])
+            try:
+                result = await compiled.ainvoke({**child_input, "messages": messages})
+            except (StepTimeoutError, StepUnavailableError, OutputValidationError) as exc:
+                if not escalate:
+                    raise
+                if isinstance(exc, OutputValidationError):
+                    if any(e["type"] in {"input_guardrail", "output_guardrail"} for e in exc.errors):
+                        raise
+                    reason, error, capability = "schema_miss", "Step output failed its declared schema.", "agent"
+                elif isinstance(exc, StepTimeoutError):
+                    reason, error, capability = "timeout", "Step exceeded its declared time budget.", "agent"
+                else:
+                    reason, error, capability = "unavailable", "Step capability is unavailable.", exc.capability
+                packet = {
+                    "status": "escalated", "availability": "unavailable", "capability": capability,
+                    "error": error, "reason": reason, "failed_step": list(step_path), "evidence": evidence,
+                }
+                return {"messages": [escalation_message(packet)], "_apx_escalation": packet}
+
+            packet = result.get("_apx_escalation")
+            if packet is not None:
+                return {"messages": [escalation_message(packet)], "_apx_escalation": packet}
+
+            if protected:
+                completed = result.get("_apx_step_evidence", evidence)
+                result = {**result, "_apx_step_evidence": completed}
+            if agent._instructions:
+                result = {**result, "messages": result["messages"][len(messages):]}
+            return result
 
         return RunnableLambda(lambda state: _invoke_node_sync(_node, state), afunc=_node)
 
@@ -499,15 +548,28 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
         if name in node_names:
             name = f"{name}_{i}"  # disambiguate accidental collisions
         node_names.append(name)
-        graph.add_node(name, _step(sub))
+        graph.add_node(name, _step(sub, name))
 
-    graph.add_edge(START, node_names[0])
+    if protected and not ctx.step_path:
+        # Do not let caller-supplied or prior-turn failure/evidence state affect
+        # a fresh sequence invocation. Nested sequences inherit this turn only.
+        init_name = "_apx_sequence_start"
+        while init_name in node_names:
+            init_name += "_"
+        graph.add_node(init_name, lambda state: {"_apx_escalation": None, "_apx_step_evidence": []})
+        graph.add_edge(START, init_name)
+        graph.add_edge(init_name, node_names[0])
+    else:
+        graph.add_edge(START, node_names[0])
     for i, (src, dst) in enumerate(zip(node_names, node_names[1:])):
         # Insert a continuation node so dst never receives a conversation that
         # ends with src's assistant message (see _sequential_continuation).
         cont = f"_continue_{i}"
         graph.add_node(cont, _sequential_continuation)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
-        graph.add_edge(src, cont)
+        if protected:
+            graph.add_conditional_edges(src, lambda state: "stop" if state.get("_apx_escalation") is not None else "next", {"stop": END, "next": cont})
+        else:
+            graph.add_edge(src, cont)
         graph.add_edge(cont, dst)
     graph.add_edge(node_names[-1], END)
 
@@ -821,6 +883,8 @@ def _compile_router_agent(agent: RouterAgent, ctx: CompileContext) -> Any:
     class RouterState(TypedDict):
         messages: Annotated[list, add_messages]
         state: Annotated[dict[str, Any], _merge_state]
+        _apx_escalation: dict[str, Any] | None
+        _apx_step_evidence: list[dict[str, Any]]
         chosen: str
 
     routes = list(agent._routes)  # [(name, description, sub_agent), ...]
@@ -883,6 +947,8 @@ def _compile_keyword_router(agent: KeywordRouter, ctx: CompileContext) -> Any:
     class KeywordRouterState(TypedDict):
         messages: Annotated[list, add_messages]
         state: Annotated[dict[str, Any], _merge_state]
+        _apx_escalation: dict[str, Any] | None
+        _apx_step_evidence: list[dict[str, Any]]
         chosen: str
 
     branches = list(agent._branches)
@@ -1064,6 +1130,8 @@ def state_schema() -> Any:
 
         class ApxState(MessagesState):
             state: Annotated[dict[str, Any], _merge_state]
+            _apx_escalation: dict[str, Any] | None
+            _apx_step_evidence: list[dict[str, Any]]
 
         _APX_STATE_CLS = ApxState
     return _APX_STATE_CLS
@@ -1104,7 +1172,7 @@ def _agent_needs_node_wrap(agent: LlmAgent) -> bool:
     )
 
 
-def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
+def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalate_failures: bool = False, step_path: tuple[str, ...] = ()) -> Any:
     """Wrap an ``LlmAgent``'s runnable in a graph node that applies the served
     hooks (G1) and keyed-state surface (G3): ``{key}`` instruction templating
     on the way in, ``output_key`` on the way out.
@@ -1114,10 +1182,13 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
     agent runs to completion in the node), which the served paths surface as one
     ``stream_mode="updates"`` node update.
     """
+    from copy import deepcopy
+
     from langchain_core.messages import AIMessage, SystemMessage
     from langchain_core.runnables import RunnableLambda
     from langgraph.graph import END, START, StateGraph
     from pydantic import ValidationError
+    from ._step_contract import StepTimeoutError
 
     async def _node(state: dict[str, Any]) -> dict[str, Any]:
         input_msgs = list(state["messages"])
@@ -1139,7 +1210,7 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
                 rendered += (
                     "\nReturn your final answer as JSON matching this schema. "
                     "Do not include Markdown fences or prose outside the JSON.\n"
-                    + json.dumps(agent._output_schema.model_json_schema(), ensure_ascii=False)
+                    + json.dumps(await agent._call_hook(agent._output_schema.model_json_schema), ensure_ascii=False)
                 )
             if agent._output_schema is not None:
                 # Keep parent instructions and the contract in one system turn.
@@ -1182,6 +1253,18 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
                 new_msgs = [AIMessage(content=replacement)]
             return {"messages": new_msgs}
 
+        if escalate_failures and last_ai is not None:
+            from ._a2a_models import data_parts
+            from ._step_contract import check_unavailable, escalation_message, get_escalation
+
+            packet = get_escalation(last_ai)
+            if packet is not None:
+                remote_evidence = [{**item, "step": [*step_path, *item["step"]]} for item in packet["evidence"]]
+                packet = {**packet, "failed_step": [*step_path, *packet["failed_step"]], "evidence": [*state.get("_apx_step_evidence", []), *remote_evidence]}
+                return {"messages": [escalation_message(packet)], "_apx_escalation": packet}
+            for part in data_parts(last_ai.additional_kwargs):
+                check_unavailable(part["data"])
+
         payload: Any = text
         if agent._output_schema is not None:
             if last_ai is None or last_ai.tool_calls:
@@ -1195,11 +1278,13 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
                         raise ValueError("A typed output requires exactly one DataPart")
                     # Preserve strict JSON semantics (e.g. date/UUID strings)
                     # while validating the attached object, never the prose.
-                    validated = agent._output_schema.model_validate_json(
+                    validated = await agent._call_hook(agent._output_schema.model_validate_json,
                         json.dumps(parts[0]["data"], ensure_ascii=False, allow_nan=False), strict=True,
                     )
                 else:
-                    validated = agent._output_schema.model_validate_json(text, strict=True)
+                    validated = await agent._call_hook(agent._output_schema.model_validate_json, text, strict=True)
+            except StepTimeoutError:
+                raise
             except ValidationError as exc:
                 raise OutputValidationError(
                     agent._name, agent._output_key,
@@ -1213,7 +1298,7 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
                     [{"loc": (), "type": f"validator_{type(exc).__name__}"}],
                 ) from None
             try:
-                payload = validated.model_dump(mode="json", by_alias=True)
+                payload = await agent._call_hook(validated.model_dump, mode="json", by_alias=True)
                 text = json.dumps(payload, ensure_ascii=False, allow_nan=False)
             except (ValueError, TypeError):
                 raise OutputValidationError(
@@ -1235,13 +1320,25 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool) -> Any:
         inner_state = result.get("state")          # tool writes from the inner agent
         merged_state: dict[str, Any] = dict(inner_state) if inner_state else {}
         if agent._output_key:
-            merged_state[agent._output_key] = payload
+            merged_state[agent._output_key] = deepcopy(payload) if step_path else payload
         if merged_state:
             update["state"] = merged_state
+        if step_path and agent._output_schema is not None:
+            update["_apx_step_evidence"] = [*state.get("_apx_step_evidence", []), {"step": list(step_path), "output_key": agent._output_key, "data": deepcopy(payload)}]
         return update
 
+    node = RunnableLambda(lambda state: _invoke_node_sync(_node, state), afunc=_node)
+    if agent._timeout_s is not None:
+        from ._step_contract import invoke_with_timeout
+
+        untimed_node = node
+
+        async def _timed(state: dict[str, Any]) -> dict[str, Any]:
+            return await invoke_with_timeout(untimed_node, deepcopy(state), agent._timeout_s)
+
+        node = RunnableLambda(lambda state: _invoke_node_sync(_timed, state), afunc=_timed)
     graph = StateGraph(state_schema())
-    graph.add_node("agent", RunnableLambda(lambda state: _invoke_node_sync(_node, state), afunc=_node))  # type: ignore[arg-type]  # StateNode generic cannot infer state->dict nodes
+    graph.add_node("agent", node)  # type: ignore[arg-type]  # StateNode generic cannot infer state->dict nodes
     graph.add_edge(START, "agent")
     graph.add_edge("agent", END)
     return graph.compile()
@@ -1368,6 +1465,8 @@ def _compile_bound_remote_leaf(
 
 def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     """Dispatch to the right per-agent compiler."""
+    if isinstance(agent, (ParallelAgent, LoopAgent, HandoffAgent)) and (ctx.escalate_failures or _has_step_policy(agent)):
+        raise ValueError("Step timeouts and escalation are supported on sequential leaves, not parallel/loop/handoff compositions")
     if isinstance(agent, LlmAgent):
         leaf_name = agent._name
         binding = None if leaf_name is None else ctx.remote_leaf_bindings.get(leaf_name)
@@ -1378,9 +1477,9 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
             runnable = _compile_llm_agent(
                 agent, ctx, bake_prompt=not templated and agent._output_schema is None,
             )
-        if not _agent_needs_node_wrap(agent):
-            return runnable
-        return _wrap_agent_node(agent, runnable, templated=templated)
+        if _agent_needs_node_wrap(agent) or ctx.escalate_failures or agent._timeout_s is not None:
+            runnable = _wrap_agent_node(agent, runnable, templated=templated, escalate_failures=ctx.escalate_failures, step_path=ctx.step_path)
+        return runnable
     if isinstance(agent, SequentialAgent):
         return _compile_sequential_agent(agent, ctx)
     if isinstance(agent, ParallelAgent):
