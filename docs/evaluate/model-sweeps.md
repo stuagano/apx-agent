@@ -62,9 +62,11 @@ configuration; it does not select or switch a Databricks profile.
 Live sweeps reject an active `APX_AGENT_MODEL_OVERRIDE`: that hot-swap setting
 would otherwise route every candidate to the same endpoint. Unset it before
 running a live comparison. Fixture sweeps compile their requested models directly.
+Replace `your-profile` and the endpoint names below with your chosen profile
+and model endpoints.
 
 ```bash
-DATABRICKS_CONFIG_PROFILE=<your-profile> apx-agent eval sweep evalset.jsonl \
+DATABRICKS_CONFIG_PROFILE="your-profile" apx-agent eval sweep evalset.jsonl \
   --module agent:agent \
   --model endpoint-a --model endpoint-b \
   --judge-model databricks \
@@ -77,7 +79,7 @@ for a machine-readable list. Evaluator progress goes to stderr so stdout can
 be saved directly as JSON.
 
 ```bash
-DATABRICKS_CONFIG_PROFILE=<your-profile> apx-agent eval sweep fixtures.json \
+DATABRICKS_CONFIG_PROFILE="your-profile" apx-agent eval sweep fixtures.json \
   --module agent:agent --fixtures \
   --model endpoint-a --model endpoint-b --format json > comparison.json
 ```
