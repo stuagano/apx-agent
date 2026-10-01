@@ -580,17 +580,21 @@ class RemoteDatabricksAgent(BaseAgent):
         # Try DatabricksOpenAI first (automatic OBO via Supervisor)
         if self._app_name:
             try:
-                return await self._call_via_sdk(messages, corr_headers)
-            except ValueError:
-                # A completed reply with invalid structured data is not a
-                # transport failure. Re-executing it could repeat tool effects.
-                raise
+                response = await self._post_via_sdk(messages, corr_headers)
             except Exception as exc:
                 logger.warning(
                     "DatabricksOpenAI call to apps/%s failed (%s), falling back to direct HTTP",
                     self._app_name,
                     exc,
                 )
+            else:
+                # Parse completed replies outside the transport fallback: an
+                # invalid payload must not replay a call with tool effects.
+                if not response.output_text:
+                    data = response.model_dump()
+                    if data_parts(data.get("custom_outputs")):
+                        return _reply_text(data, url=self._last_http_url, agent_name=self.name)
+                return response.output_text
 
         # Fallback: direct POST /invocations
         return await self._call_via_http(messages, {**obo_headers, **corr_headers})
@@ -727,23 +731,6 @@ class RemoteDatabricksAgent(BaseAgent):
     # Internal: DatabricksOpenAI SDK path
     # ------------------------------------------------------------------
 
-    async def _call_via_sdk(
-        self,
-        messages: Sequence[Message | dict[str, Any]],
-        extra_headers: dict[str, str],
-    ) -> str:
-        """Call via ``DatabricksOpenAI.responses.create(model="apps/<name>")``.
-
-        ``extra_headers`` carries the trace-correlation headers (#443) — the
-        SDK handles auth itself, so no credential headers travel this way.
-        """
-        response = await self._post_via_sdk(messages, extra_headers)
-        if not response.output_text:
-            data = response.model_dump()
-            if data_parts(data.get("custom_outputs")):
-                return _reply_text(data, url=self._last_http_url, agent_name=self.name)
-        return response.output_text
-
     async def _post_via_sdk(
         self, messages: Sequence[Message | dict[str, Any]], extra_headers: dict[str, str],
     ) -> Any:
@@ -790,7 +777,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
         client = AsyncDatabricksOpenAI()
         # EasyInputMessage dict form (no "type": "message") so string content
-        # survives — same as _call_via_sdk.
+        # survives — same as _post_via_sdk.
         payload: list[Any] = _responses_input(messages)
         options: dict[str, Any] = (
             {"databricks_options": {"long_task": True}} if self._long_task else {}

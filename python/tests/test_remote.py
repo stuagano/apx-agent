@@ -83,8 +83,11 @@ async def test_sdk_preserves_preconverted_responses_tool_pairs() -> None:
     client = MagicMock()
     client.responses.create = AsyncMock(return_value=MagicMock(output_text="approved"))
     remote = RemoteDatabricksAgent("https://pricing.example/card", app_name="pricing")
-    with patch("databricks_openai.AsyncDatabricksOpenAI", return_value=client):
-        result = await remote._call_via_sdk(items, {})
+    with (
+        patch("databricks_openai.AsyncDatabricksOpenAI", return_value=client),
+        patch.object(remote, "_init_quietly", AsyncMock()),
+    ):
+        result = await remote._run_with_incoming_headers(items, {})
     assert result == "approved"
     assert client.responses.create.call_args.kwargs["input"] == items
 
@@ -611,7 +614,6 @@ class TestRun:
         request = make_request(incoming)
         transport = AsyncMock(return_value="private result")
         agent._run_with_incoming_headers = transport  # type: ignore[attr-defined, method-assign]
-        agent._call_via_sdk = AsyncMock(return_value="legacy result")  # type: ignore[method-assign]
 
         result = await agent.run([Message(role="user", content="Hello")], request)
 
