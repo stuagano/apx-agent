@@ -149,52 +149,39 @@ async def test_edit_ui_has_improve_button():
     assert "view.dispatch" in html
 
 
-def test_edit_ui_improve_uses_function_replacer():
-    """#770: rendered splice must use a function replacer, not a $ string."""
+@pytest.mark.parametrize("changed_during_request", [False, True])
+def test_improve_selected_node_preserves_text_and_concurrent_edits(changed_during_request):
+    """Execute the rendered JS: send the target, preserve $, and reject stale edits."""
     from apx_agent._ui_edit import _render_edit_ui
 
-    html = _render_edit_ui('agent = Agent(instructions="old")')
-    assert "src.replace(re, (m, p1) => p1 + JSON.stringify(d.candidate))" in html
-    assert "'$1' + JSON.stringify(d.candidate)" not in html
-
-
-def _splice_improve_candidate(html: str, src: str, candidate: str) -> str:
-    """Execute the rendered Edit-tab splice the same way the browser would."""
-    regex_m = re.search(r"const re = (/.*?/);", html)
-    replace_m = re.search(r"src\.replace\(re, .*?\);", html)
-    assert regex_m is not None, "improve-instructions regex missing from Edit UI"
-    assert replace_m is not None, "improve-instructions replace missing from Edit UI"
+    source = 'second = Agent(instructions="old")\n'
+    candidate_source = 'second = Agent(instructions="Charge $1 $$ $& $` é")\n'
+    html = _render_edit_ui(source)
+    function = re.search(r"async function improveInstructions\(\) \{[\s\S]*?\n\}\ndocument.getElementById\('btn-improve'\)", html)
+    assert function is not None
+    function_js = function.group(0).rsplit("\ndocument.getElementById", 1)[0]
     node = shutil.which("node")
-    assert node is not None, "node is required to execute the browser splice"
-    script = (
-        "const src = "
-        + json.dumps(src)
-        + ";\nconst d = { candidate: "
-        + json.dumps(candidate)
-        + " };\nconst re = "
-        + regex_m.group(1)
-        + ";\nconst next = "
-        + replace_m.group(0).removesuffix(";")
-        + ";\nprocess.stdout.write(next);\n"
-    )
-    completed = subprocess.run(
-        [node, "-e", script],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return completed.stdout
-
-
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute the browser splice")
-def test_improve_instructions_preserves_dollar_sequences_in_candidate():
-    """#770: $1 / $$ in a GEPA candidate must survive the editor splice."""
-    from apx_agent._ui_edit import _render_edit_ui
-
-    html = _render_edit_ui('agent = Agent(instructions="old")')
-    src = 'agent = Agent(instructions="old")\n'
-    candidate = "Charge $1 then escape $$ and keep $& plus $`"
-    spliced = _splice_improve_candidate(html, src, candidate)
-    assert json.dumps(candidate) in spliced
-    assert candidate in spliced
-    assert spliced.startswith("agent = Agent(instructions=")
+    assert node is not None, "node is required to execute the editor workflow"
+    script = f"""
+let text = {json.dumps(source)};
+const original = text, changed = {json.dumps(changed_during_request)};
+const candidate = {json.dumps(candidate_source)};
+const controls = {{'btn-improve': {{textContent:'Improve'}}, 'status-msg': {{}}}};
+const document = {{getElementById: id => controls[id]}};
+const optimizeNode = {{value: 'second'}};
+const prompt = () => 'judge';
+let request;
+const window = {{apxDevFetch: async (url, options) => {{
+  request = JSON.parse(options.body);
+  if (changed) text = 'user edits';
+  return {{json: async () => ({{ok:true, node:'second', source:candidate}})}};
+}}}};
+const view = {{state:{{doc:{{toString:()=>text}}}}, dispatch: event => {{text=event.changes.insert;}}}};
+function schedulePreview() {{}}
+{function_js}
+improveInstructions().then(()=>process.stdout.write(JSON.stringify({{text,request,status:controls['status-msg']}})));
+"""
+    result = json.loads(subprocess.run([node, "-e", script], check=True, capture_output=True, text=True).stdout)
+    assert result["request"] == {"judge_name": "judge", "node": "second", "source": source}
+    assert result["text"] == ("user edits" if changed_during_request else candidate_source)
+    assert result["status"]["className"] == ("err" if changed_during_request else "ok")

@@ -660,9 +660,9 @@ def _py_str_literal(s: str) -> str:
 
 
 def _abs_offset(source: str, lineno: int, col: int) -> int:
-    """Convert a 1-based (lineno, col) AST position to an absolute char index."""
+    """Convert an AST line / UTF-8 byte column to an absolute character index."""
     lines = source.splitlines(keepends=True)
-    return sum(len(line) for line in lines[: lineno - 1]) + col
+    return sum(len(line) for line in lines[: lineno - 1]) + len(lines[lineno - 1].encode("utf-8")[:col].decode("utf-8"))
 
 
 def _find_root_agent_call(source: str, target: str) -> Any:
@@ -1283,6 +1283,8 @@ def _render_edit_ui(
     import re as _re
 
     content_js = _json.dumps(content)
+    optimize_nodes_js = _json.dumps([entry["name"] for entry in _parse_agent_nodes(content)
+                                    if _find_root_agent_call(content, entry["name"]) is not None])
     # Surface the actual filename in the status bar so users know which file
     # the editor is bound to.
     _ar = _find_agent_router_path()
@@ -1503,6 +1505,8 @@ def _render_edit_ui(
 </div>
 <div id="status-bar">
   <button id="btn-save">Save &nbsp;<kbd>⌘S</kbd></button>
+  <label for="optimize-node">Instructions</label>
+  <select id="optimize-node" aria-label="Agent instructions to improve"></select>
   <button id="btn-improve" title="Propose better instructions with GEPA, scored against your eval set">✨ Improve instructions</button>
   <button id="btn-new-tool">+ New Tool</button>
   <button id="btn-from-data">✨ From data</button>
@@ -1650,11 +1654,21 @@ document.getElementById('btn-save').addEventListener('click', save);
 // Runs mlflow.genai.optimize_prompts against the agent's eval set + a judge and
 // loads the winning instructions into the editor for review. Never auto-saves —
 // the human lands it via the existing Save control.
+const optimizeNode = document.getElementById('optimize-node');
+for (const name of {optimize_nodes_js}) {{
+  const option = document.createElement('option');
+  option.value = name; option.textContent = name;
+  optimizeNode.appendChild(option);
+}}
+if (Array.from(optimizeNode.options).some(option => option.value === 'agent')) optimizeNode.value = 'agent';
+document.getElementById('btn-improve').disabled = !optimizeNode.options.length;
 async function improveInstructions() {{
   const btn = document.getElementById('btn-improve');
   const msg = document.getElementById('status-msg');
   const judge_name = (prompt('Judge (scorer) name to score candidate instructions:') || '').trim();
   if (!judge_name) return;
+  const node = optimizeNode.value;
+  const source = view.state.doc.toString();
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = 'Improving…';
   msg.textContent = 'Optimizing instructions…'; msg.className = '';
@@ -1662,28 +1676,18 @@ async function improveInstructions() {{
     const r = await (window.apxDevFetch||fetch)('/_apx/edit/optimize-instructions', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ judge_name }}),
+      body: JSON.stringify({{ judge_name, node, source }}),
     }});
     const d = await r.json();
     if (d.ok) {{
-      // Splice the candidate into the source's first instructions= literal so the
-      // human sees the diff in the editor and applies it via Save (no auto-write).
-      // ponytail: naive first-match splice; if a file has multiple instructions=
-      //   args this hits the root agent's (declared first). Server-side Save owns
-      //   the authoritative write-back.
-      const src = view.state.doc.toString();
-      const re = /(instructions\\s*=\\s*)('{{3}}[\\s\\S]*?'{{3}}|"{{3}}[\\s\\S]*?"{{3}}|'(?:\\\\.|[^'\\\\])*'|"(?:\\\\.|[^"\\\\])*")/;
-      // Function replacer: a string replacement treats $ in the candidate
-      // as JS patterns ($$, $&, $1, …) and silently mangles GEPA text (#770).
-      const next = src.replace(re, (m, p1) => p1 + JSON.stringify(d.candidate));
-      if (next !== src) {{
-        view.dispatch({{ changes: {{ from: 0, to: src.length, insert: next }} }});
-        schedulePreview();
-      }} else {{
-        alert('Candidate instructions (paste into the editor):\\n\\n' + d.candidate);
-      }}
+      if (view.state.doc.toString() !== source) throw new Error('Editor changed while optimizing; candidate was not applied. Run again after saving.');
+      if (d.node !== node || typeof d.source !== 'string') throw new Error('Invalid candidate response');
+      // The server patches the selected AST node; no regex or replacement-string
+      // interpretation can redirect the edit or mangle dollar sequences (#770).
+      view.dispatch({{ changes: {{ from: 0, to: source.length, insert: d.source }} }});
+      schedulePreview();
       const b = d.scores ? d.scores.before : null, a = d.scores ? d.scores.after : null;
-      msg.textContent = '✓ Candidate loaded — review & Save' + (a != null ? ` (judge ${{b}} → ${{a}})` : '');
+      msg.textContent = `✓ Candidate for ${{node}} loaded — review & Save` + (a != null ? ` (judge ${{b}} → ${{a}})` : '');
       msg.className = 'ok';
     }} else {{
       msg.textContent = '✗ ' + d.error; msg.className = 'err';
@@ -1987,4 +1991,3 @@ document.getElementById('btn-insert').addEventListener('click', async () => {{
 {_topology_minimap_html()}
 </body>
 </html>"""
-
