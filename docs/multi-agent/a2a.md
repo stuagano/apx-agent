@@ -107,6 +107,16 @@ long-task continuation and ChatAgent streaming remain text-only.
 The round-trip regression uses compiled agents and a local HTTP endpoint with
 fake model replies. It is not a live Databricks gateway/deployment proof.
 
+Sequences declaring `on_failure="escalate"` use the same carrier for terminal
+failure packets. The fixed hint `urn:apx:sequential-escalation:v1` identifies the
+locally validated escalation schema; it does not trigger schema lookup. An
+opted-in receiver applies output guardrails to the attached packet, then stops
+its chain without publishing the packet under the leaf's successful
+`output_key`. Remote step paths and evidence are prefixed with the local binding
+path. An explicit unavailability DataPart is also recognized before validation
+against the success schema. See the
+[packet example and limits](../agents/composition.md#timeouts-and-opt-in-escalation).
+
 ## One root behind every ingress
 
 `create_app()` finalizes the declared root once and serves it through:

@@ -7,7 +7,7 @@ import inspect
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -131,7 +131,9 @@ class LlmAgent(BaseAgent):
     data to ``output_key`` or calling ``after_agent_callback``. ``run`` still
     returns a string (serialized validated JSON); ``stream`` buffers typed
     answers until validation. A mismatch raises ``OutputValidationError`` and
-    stops the sequence, without retrying tools or escalating.
+    stops the sequence. ``SequentialAgent(on_failure="escalate")`` opts into a
+    structured failure packet; no retry occurs. ``timeout_s`` optionally bounds
+    waiting for a leaf invocation, without promising rollback of tool effects.
 
     Example::
 
@@ -176,6 +178,7 @@ class LlmAgent(BaseAgent):
         session_budget: dict[str, int] | None = None,
         tool_loading: str = "eager",
         output_schema: type[BaseModel] | None = None,
+        timeout_s: float | None = None,
     ) -> None:
         # tools is optional (#449): an orchestrator whose only capabilities are
         # config-declared sub_agents has no local tools. None → a fresh list
@@ -200,6 +203,12 @@ class LlmAgent(BaseAgent):
         ):
             raise TypeError("output_schema must be a Pydantic BaseModel subclass")
         self._output_schema = output_schema
+        if timeout_s is not None:
+            import math
+
+            if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or not math.isfinite(timeout_s) or timeout_s <= 0:
+                raise ValueError("timeout_s must be a positive finite number")
+        self._timeout_s = timeout_s
         # Cumulative per-session token cap (#768). Only "tokens" is supported;
         # enforced at the served-turn boundary against the checkpointer-persisted
         # running total (see _budget.py). None = uncapped.
@@ -259,14 +268,14 @@ class LlmAgent(BaseAgent):
 
     async def _apply_input_guardrails(self, messages: list[Message]) -> str | None:
         for guard in self._input_guardrails:
-            result = (await guard(messages)) if inspect.iscoroutinefunction(guard) else guard(messages)  # type: ignore[arg-type]
+            result = await self._call_hook(guard, messages)
             if result is not None:
                 return result
         return None
 
     async def _apply_output_guardrails(self, text: str) -> str | None:
         for guard in self._output_guardrails:
-            result = (await guard(text)) if inspect.iscoroutinefunction(guard) else guard(text)  # type: ignore[arg-type]
+            result = await self._call_hook(guard, text)
             if result is not None:
                 return result
         return None
@@ -274,14 +283,26 @@ class LlmAgent(BaseAgent):
     async def _invoke_callback(self, callback: Any, *args: Any) -> None:
         if callback is None:
             return
-        result = callback(*args)
+        await self._call_hook(callback, *args)
+
+    @staticmethod
+    async def _call_hook(callback: Any, *args: Any, **kwargs: Any) -> Any:
+        from ._step_contract import has_deadline, run_sync_tool
+
+        if has_deadline() and not inspect.iscoroutinefunction(callback):
+            import asyncio
+
+            result = await asyncio.to_thread(run_sync_tool, callback, *args, **kwargs)
+        else:
+            result = callback(*args, **kwargs)
         if inspect.isawaitable(result):
-            await result
+            return await result
+        return result
 
     async def run(self, messages: list[Message], request: Request) -> str:
         from ._compile_run import run_via_compile
 
-        if self._output_schema is not None:
+        if self._output_schema is not None or self._timeout_s is not None:
             # The producer wrapper owns validation, guards and success hooks.
             return await run_via_compile(self, messages, request)
         await self._invoke_callback(self._before_agent_callback, messages)
@@ -298,7 +319,7 @@ class LlmAgent(BaseAgent):
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
         from ._compile_run import stream_via_compile
 
-        if self._output_schema is not None:
+        if self._output_schema is not None or self._timeout_s is not None:
             async for chunk in stream_via_compile(self, messages, request):
                 yield chunk
             return
@@ -718,6 +739,17 @@ def _has_typed_output(agent: BaseAgent) -> bool:
     return any(_has_typed_output(child) for _, child in _iter_child_agents(agent))
 
 
+def _has_step_policy(agent: BaseAgent) -> bool:
+    """Whether invocation must preserve the compiled deadline/failure contract."""
+    from ._topology import _iter_child_agents
+
+    if isinstance(agent, LlmAgent):
+        return agent._timeout_s is not None
+    if isinstance(agent, SequentialAgent) and agent._on_failure == "escalate":
+        return True
+    return any(_has_step_policy(child) for _, child in _iter_child_agents(agent))
+
+
 class SequentialAgent(BaseAgent):
     """Runs agents in order, each receiving the previous agent's output as context."""
 
@@ -726,12 +758,16 @@ class SequentialAgent(BaseAgent):
         agents: list[BaseAgent],
         instructions: str = "",
         name: str | None = None,
+        on_failure: Literal["raise", "escalate"] = "raise",
     ) -> None:
         if not agents:
             raise ValueError("SequentialAgent requires at least one agent")
         self._agents = agents
         self._instructions = instructions
         self._name = name
+        if on_failure not in {"raise", "escalate"}:
+            raise ValueError("on_failure must be 'raise' or 'escalate'")
+        self._on_failure = on_failure
 
     def _prepend_instructions(self, messages: list[Message]) -> list[Message]:
         if not self._instructions:
@@ -739,7 +775,7 @@ class SequentialAgent(BaseAgent):
         return [Message(role="system", content=self._instructions), *messages]
 
     async def run(self, messages: list[Message], request: Request) -> str:
-        if _has_typed_output(self):
+        if _has_typed_output(self) or _has_step_policy(self):
             from ._compile_run import run_via_compile
 
             return await run_via_compile(self, messages, request)
@@ -761,7 +797,7 @@ class SequentialAgent(BaseAgent):
         by yielding text between steps instead of waiting for everything to
         finish before streaming the last step.
         """
-        if _has_typed_output(self):
+        if _has_typed_output(self) or _has_step_policy(self):
             from ._compile_run import stream_via_compile
 
             async for chunk in stream_via_compile(self, messages, request):
@@ -828,6 +864,8 @@ class ParallelAgent(BaseAgent):
 
         if _has_typed_output(self):
             raise ValueError("output_schema is not supported on ParallelAgent branches")
+        if _has_step_policy(self):
+            raise ValueError("Step timeouts and escalation are not supported on ParallelAgent branches")
         context = self._prepend_instructions(messages)
         results = await asyncio.gather(*[sub.run(context, request) for sub in self._agents])
         return "\n\n".join(str(r) for r in results)

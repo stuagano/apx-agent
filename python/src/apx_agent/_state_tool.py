@@ -116,7 +116,9 @@ def _make_stateful_langchain_tool(
         **kwargs: Any,
     ) -> Any:
         proxy = StateProxy(__apx_state)
-        ret = fn(**kwargs, **resolved_deps, **{state_param: proxy})
+        from ._step_contract import run_sync_tool
+
+        ret = run_sync_tool(fn, **kwargs, **resolved_deps, **{state_param: proxy})
         return _finish(proxy, tool_call_id, ret)
 
     _sync_wrapper.__name__ = fn.__name__

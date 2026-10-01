@@ -284,9 +284,9 @@ class LangGraphExecutor:
         :returns: An async iterator of :class:`~apx_agent._executor.ExecutorEvent`
             objects ending with :class:`~apx_agent._executor.TurnComplete`.
         """
-        from ._agents import _has_typed_output
+        from ._agents import _has_step_policy, _has_typed_output
 
-        typed_output = _has_typed_output(self._agent)
+        protected_run = _has_typed_output(self._agent) or _has_step_policy(self._agent)
         resolved_model = (config.model if config and config.model else None) or self._model or ""
 
         thread_id = config.thread_id if config else None
@@ -320,9 +320,9 @@ class LangGraphExecutor:
                         yield TextChunk(text=text)
                 streamed_ok = True
             except (TypeError, AttributeError, NotImplementedError):
-                if typed_output:
+                if protected_run:
                     # A completion hook may fail after tools have written.
-                    # Never replay a typed run as a streaming fallback.
+                    # Never replay a contract-protected run as a streaming fallback.
                     raise
                 # astream not available on this graph — fall through to ainvoke.
                 pass
@@ -347,4 +347,4 @@ class LangGraphExecutor:
             yield ExecutorError(message=str(exc), retryable=False, cause=exc)
         except Exception as exc:
             logger.exception("LangGraphExecutor.run_turn failed: %s", exc)
-            yield ExecutorError(message=str(exc), retryable=False, cause=exc if typed_output else None)
+            yield ExecutorError(message=str(exc), retryable=False, cause=exc if protected_run else None)
