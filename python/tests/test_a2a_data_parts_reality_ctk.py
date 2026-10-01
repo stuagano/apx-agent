@@ -282,11 +282,12 @@ async def test_invalid_remote_data_does_not_retry_execution(monkeypatch):
 async def test_sdk_text_api_renders_data_only_reply(monkeypatch):
     from apx_agent._remote import RemoteDatabricksAgent
 
-    remote = RemoteDatabricksAgent("https://peer.example")
+    remote = RemoteDatabricksAgent("https://peer.example", app_name="peer")
+    monkeypatch.setattr(remote, "_init_quietly", AsyncMock())
     response = MagicMock(output_text="")
     response.model_dump.return_value = {"output": [], "custom_outputs": {"apx_data_parts": [PART]}}
     monkeypatch.setattr(remote, "_post_via_sdk", AsyncMock(return_value=response))
-    assert json.loads(await remote._call_via_sdk([], {})) == DATA
+    assert json.loads(await remote._run_with_incoming_headers([], {})) == DATA
 
 
 @pytest.mark.asyncio
@@ -303,6 +304,26 @@ async def test_sdk_request_uses_supported_custom_inputs(monkeypatch):
     sent = client.responses.create.call_args.kwargs
     assert sent["input"] == [{"role": "user", "content": "Review"}]
     assert sent["extra_body"] == {"custom_inputs": {"apx_data_parts": [PART]}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("structured", [False, True])
+async def test_sdk_setup_value_error_falls_back_before_execution(monkeypatch, structured):
+    import databricks_openai
+    from apx_agent._remote import RemoteDatabricksAgent
+
+    remote = RemoteDatabricksAgent("https://peer.example", app_name="peer")
+    monkeypatch.setattr(remote, "_init_quietly", AsyncMock())
+    setup = MagicMock(side_effect=ValueError("SDK credentials unavailable"))
+    monkeypatch.setattr(databricks_openai, "AsyncDatabricksOpenAI", setup)
+    http = AsyncMock(return_value={"output": [{
+        "type": "message", "content": [{"type": "output_text", "text": "Recovered"}],
+    }]})
+    monkeypatch.setattr(remote, "_post_via_http", http)
+    result = await remote.run_with_control([], {}) if structured else await remote._run_with_incoming_headers([], {})
+    assert (result.text if structured else result) == "Recovered"
+    setup.assert_called_once()
+    http.assert_awaited_once()
 
 
 @pytest.mark.asyncio
