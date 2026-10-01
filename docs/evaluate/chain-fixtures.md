@@ -1,5 +1,15 @@
 # Evaluate chains with recorded tool results
 
+From your agent project, run `apx-agent eval run chain-eval.json --fixtures`.
+It uses `[tool.apx.agent].model` unless you pass `--model`, prints each case's
+outcome and failing step paths, and exits 1 if any case is `wrong`. Expected
+escalations with evidence pass. Choose your authentication explicitly through
+the process environment. Fixture mode rejects live-evaluation options and
+does not inherit the project's MLflow experiment.
+
+For structured reports in Python, use the API below. To compare candidate
+models on the same fixtures, use [model sweeps](model-sweeps.md).
+
 Use `evaluate_chain(..., fixtures=...)` to run today's model and instructions
 against fixed tool results. It runs the normal sequential compiler, including
 typed output validation, guardrails, and opt-in escalation. The original tool

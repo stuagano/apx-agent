@@ -2,6 +2,11 @@
 
 `apx-agent` is the command-line wrapper. Every command maps to a single library primitive — the CLI is ergonomics, not logic.
 
+For a first evaluation, start with [Evaluate your agent](../evaluate/overview.md).
+Use `eval run` for scored cases, `eval run --fixtures` for typed step checks,
+and `eval sweep` to compare models. `eval run` uses the configured project
+model unless `--model` is supplied. The commands below are the full reference.
+
 ```bash
 apx-agent generate "an agent that answers questions about X"  # natural language -> a real project
 apx-agent agents scaffold my_agent          # flags/wizard -> a real, editable Apps project directory
@@ -16,6 +21,7 @@ apx-agent agents advertise --description "Handles X for users asking about Y"
 apx-agent supervisor add --endpoint my_agent --supervisor sa-12345
 apx-agent uc mcp-config --host https://workspace.cloud.databricks.com
 apx-agent eval run evalset.jsonl --model databricks-claude-sonnet-4-6
+apx-agent eval run chain-cases.json --fixtures  # typed step checks using recorded tool results
 apx-agent eval sweep evalset.jsonl --model endpoint-a --model endpoint-b  # compare quality, latency, estimated LLM cost
 apx-agent agents logs --endpoint my_agent           # runtime logs from Model Serving
 apx-agent agents logs --endpoint my_agent --build   # build-time logs

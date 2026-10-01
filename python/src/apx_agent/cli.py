@@ -6292,6 +6292,7 @@ def _warn_empty_predictions(result: Any) -> None:
 
 @eval_group.command("run")
 @click.argument("evalset", type=click.Path(exists=True, dir_okay=False))
+@click.option("--fixtures", is_flag=True, help="Check typed chain steps against recorded tool results; fail if any case is wrong.")
 @click.option(
     "--module",
     default=None,
@@ -6300,7 +6301,7 @@ def _warn_empty_predictions(result: Any) -> None:
 )
 @click.option(
     "--model", default=None,
-    help="Databricks serving endpoint for the LLM. Required for in-process eval. "
+    help="Databricks serving endpoint for the LLM. Defaults to [tool.apx.agent].model. "
          "Mutually exclusive with --endpoint-url.",
 )
 @click.option(
@@ -6344,6 +6345,7 @@ def _warn_empty_predictions(result: Any) -> None:
 )
 def eval_cmd(
     evalset: str,
+    fixtures: bool,
     module: str | None,
     model: str | None,
     endpoint_url: str | None,
@@ -6354,16 +6356,23 @@ def eval_cmd(
     experiment: str | None,
     judge_model: str | None,
 ) -> None:
-    """Run Mosaic AI Agent Evaluation against EVALSET.
+    """Evaluate your agent against EVALSET.
 
-    Two modes:
-
-      In-process (default): compile the agent and run eval directly.
-        apx-agent eval evalset.jsonl --model databricks-claude-sonnet-4-6
-
-      Endpoint: drive a deployed App's /invocations endpoint over HTTP.
-        apx-agent eval evalset.jsonl --endpoint-url https://<app>.databricksapps.com
+    Use --fixtures for recorded-tool checks with per-step results.
+    Otherwise run MLflow scoring locally, or use --endpoint-url to score a
+    deployed App. --model overrides the model in your project configuration.
     """
+    if fixtures:
+        live_options = {
+            "--endpoint-url": endpoint_url, "--experiment": experiment,
+            "--judge-model": judge_model, "--user-token": user_token,
+            "--token": token, "--profile": profile,
+        }
+        offenders = [flag for flag, value in live_options.items() if value is not None]
+        if click.get_current_context().get_parameter_source("stream") == click.core.ParameterSource.COMMANDLINE:
+            offenders.append("--stream/--no-stream")
+        if offenders:
+            raise click.UsageError(f"--fixtures cannot be combined with {', '.join(offenders)}")
     # Mutex: --endpoint-url is incompatible with the in-process eval flags.
     if endpoint_url and (model or module):
         offenders = [f for f, v in [("--model", model), ("--module", module)] if v]
@@ -6390,7 +6399,8 @@ def eval_cmd(
     except json.JSONDecodeError as e:
         raise click.ClickException(f"Failed to parse evalset {evalset}: {e}") from e
 
-    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    config = _read_apx_agent_config()
+    effective_experiment = experiment or config.get("experiment")
 
     if endpoint_url:
         from apx_agent import eval_against_endpoint
@@ -6411,9 +6421,10 @@ def eval_cmd(
         return
 
     # In-process eval path.
-    if model is None:
+    effective_model = model if model is not None else config.get("model")
+    if not effective_model:
         raise click.UsageError(
-            "--model is required for in-process eval. "
+            "--model is required when [tool.apx.agent].model is not configured. "
             "Pass --endpoint-url to evaluate a deployed App instead."
         )
     effective_module = module or "agent:agent"
@@ -6421,9 +6432,27 @@ def eval_cmd(
     from apx_agent import evaluate
 
     agent = _load_finalized_agent(effective_module)
+    if fixtures:
+        from apx_agent import evaluate_chain
+
+        try:
+            report = evaluate_chain(agent, model=effective_model, fixtures=data)
+        except (TypeError, ValueError) as exc:
+            raise click.UsageError(str(exc)) from exc
+        for case in report.cases:
+            click.echo(f"{case.case_id}: {case.outcome}")
+            for error in case.errors:
+                click.echo(f"  {error}")
+            for step in case.steps:
+                for error in step.errors:
+                    click.echo(f"  {' > '.join(step.step)}: {error}")
+        click.echo("; ".join(f"{name}: {count}" for name, count in report.outcome_counts.items()))
+        if report.outcome_counts.get("wrong", 0):
+            raise click.exceptions.Exit(1)
+        return
     result = evaluate(
         agent,
-        model=model,
+        model=effective_model,
         evalset=data,
         judge_model=judge_model,
         user_token=user_token,
@@ -12827,8 +12856,8 @@ def test_cmd(
     """Compile the agent locally and send sample prompts through it.
 
     Smoke test for "did I break the import / can the agent at least
-    accept a message and return something?" — cheaper than apx-agent eval,
-    no MLflow / eval dataset required.
+    accept a message and return something?" No eval dataset or quality scorers
+    required. Uses the eval extra (MLflow) for the ChatAgent runtime.
     """
     agent = _load_finalized_agent(module)
 
@@ -14414,7 +14443,7 @@ def eval_chain_cmd(
     experiment: str,
     user_token: str | None,
 ) -> None:
-    """Eval a multi-agent chain — per-prompt + per-sub-agent coverage."""
+    """Inspect sub-agent trace coverage; use run --fixtures for typed step checks."""
     agent = _load_finalized_agent(module)
 
     # Load the evalset same way apx-agent eval does
