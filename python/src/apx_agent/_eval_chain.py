@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from ._eval import evaluate
 
@@ -29,6 +29,17 @@ if TYPE_CHECKING:
     from ._agents import BaseAgent
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StepEvalResult:
+    """One fixture step's validated output compared with its expectation."""
+
+    step: tuple[str, ...]
+    expected_output: Any = None
+    actual_output: Any = None
+    passed: bool = False
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,6 +52,10 @@ class ChainCaseResult:
     tool_calls: tuple[str, ...]
     duration_ms: int | None = None
     trace_id: str | None = None
+    case_id: str | None = None
+    steps: tuple[StepEvalResult, ...] = ()
+    outcome: Literal["correct", "escalated_with_evidence", "wrong"] | None = None
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -50,20 +65,29 @@ class ChainEvalReport:
     cases: tuple[ChainCaseResult, ...]
     raw_eval_result: Any = None
     sub_agent_coverage: dict[str, int] = field(default_factory=dict)
+    outcome_counts: dict[str, int] = field(default_factory=dict)
 
 
 def evaluate_chain(
     agent: "BaseAgent",
     *,
     model: str,
-    evalset: Any,
-    experiment: str,
+    evalset: Any = None,
+    experiment: str | None = None,
     scorers: list[Any] | None = None,
     user_token: str | None = None,
     workspace_host: str | None = None,
     lookback_traces: int = 50,
+    fixtures: list[dict[str, Any]] | None = None,
 ) -> ChainEvalReport:
-    """Run an evalset through ``agent`` and correlate sub-agent invocations.
+    """Evaluate trace coverage, or score a chain using recorded tool fixtures.
+
+    With ``fixtures``, calls the real model through the normal compiler while
+    substituting recorded tool results. Returns explicit per-step results and
+    ``correct`` / ``escalated_with_evidence`` / ``wrong`` outcomes. This mode
+    requires named sequential leaves with output schemas and does not call
+    MLflow evaluation or execute the real tools. Live-eval arguments cannot be
+    combined with fixtures. See ``docs/evaluate/chain-fixtures.md``.
 
     Calls ``apx_agent.evaluate`` (which compiles the agent and runs
     each evalset row through ``predict``), then queries MLflow for the
@@ -85,13 +109,23 @@ def evaluate_chain(
         workspace_host: Optional workspace host for the OBO token.
         lookback_traces: How many recent traces to fetch when
             correlating. Default 50.
+        fixtures: Explicit recorded-tool cases; mutually exclusive with the
+            evalset, experiment, scorers, identity, and trace lookback options.
 
     Returns:
         ``ChainEvalReport`` with per-prompt results + aggregate
         sub-agent coverage counts.
 
-    Requires the ``eval`` extra (mlflow).
+    Trace-coverage mode requires the ``eval`` extra (mlflow).
     """
+    if fixtures is not None:
+        if any(value is not None for value in (evalset, experiment, scorers, user_token, workspace_host)) or lookback_traces != 50:
+            raise ValueError("fixtures cannot be combined with live evalset, experiment, scorers, identity, or lookback options")
+        from ._eval_fixtures import evaluate_fixtures
+
+        return evaluate_fixtures(agent, model=model, fixtures=fixtures)
+    if evalset is None or experiment is None:
+        raise ValueError("Trace-coverage evaluation requires evalset and experiment")
     try:
         import mlflow  # noqa: F401
     except ImportError as e:  # pragma: no cover

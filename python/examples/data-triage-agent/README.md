@@ -6,6 +6,13 @@ A `SequentialAgent` composes six focused `Agent`s that each handle one phase of 
 
 > **Optional Jira integration:** A Jira-webhook-triggered investigation flow lives under [`integrations/jira/`](integrations/jira/README.md) — opt-in, ignore it and the agent still works.
 
+For a small typed-chain evaluation example, see [`eval/replay_example.py`](eval/replay_example.py)
+and its [synthetic recorded tool results](fixtures/chain-eval.json). It evaluates
+a separate three-step local chain with real model calls, checks intermediate
+outputs, and distinguishes success from escalation with evidence. See the
+[fixture evaluation guide](../../../docs/evaluate/chain-fixtures.md) for the
+format and limits; this does not replace the deployed pipeline's live evalset.
+
 ---
 
 ## What makes this simple

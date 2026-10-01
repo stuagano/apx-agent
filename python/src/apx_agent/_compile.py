@@ -87,6 +87,7 @@ from ._state_tool import _make_stateful_langchain_tool
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
     from fastapi import Request
+    from ._eval_fixtures import _FixtureReplay
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ class CompileContext:
     remote_leaf_bindings: Mapping[str, _RemoteLeafBinding] = field(default_factory=dict)
     escalate_failures: bool = False
     step_path: tuple[str, ...] = ()
+    fixture_replay: _FixtureReplay | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +396,11 @@ def _compile_llm_agent(
     from ._callbacks import build_callback_handler
 
     author_fns = list(agent._tool_fns)
-    tools = [_make_langchain_tool(fn, ctx) for fn in author_fns]
+    tools = [
+        ctx.fixture_replay.tool(fn, ctx.step_path) if ctx.fixture_replay is not None
+        else _make_langchain_tool(fn, ctx)
+        for fn in author_fns
+    ]
     extra = list(extra_tools) if extra_tools else []
     if extra:
         tools = tools + extra
@@ -403,6 +409,8 @@ def _compile_llm_agent(
         from ._step_contract import unavailable_middleware
 
         middleware.append(unavailable_middleware())
+    if ctx.fixture_replay is not None:
+        middleware.append(ctx.fixture_replay.middleware(ctx.step_path))
     # Deferred loading (#767) still registers every author tool on create_agent
     # so ToolNode can execute a revealed call. Middleware hides those tools
     # from the model until tool_search writes their names into state.
@@ -491,7 +499,7 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
     graph = StateGraph(state_schema())
     node_names: list[str] = []
     escalate = ctx.escalate_failures or agent._on_failure == "escalate"
-    protected = escalate or _has_step_policy(agent)
+    protected = escalate or _has_step_policy(agent) or ctx.fixture_replay is not None
     path = ctx.step_path or (agent._name or "sequence",)
 
     def _step(sub: BaseAgent, name: str) -> Any:
@@ -1172,7 +1180,7 @@ def _agent_needs_node_wrap(agent: LlmAgent) -> bool:
     )
 
 
-def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalate_failures: bool = False, step_path: tuple[str, ...] = ()) -> Any:
+def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalate_failures: bool = False, step_path: tuple[str, ...] = (), fixture_replay: _FixtureReplay | None = None) -> Any:
     """Wrap an ``LlmAgent``'s runnable in a graph node that applies the served
     hooks (G1) and keyed-state surface (G3): ``{key}`` instruction templating
     on the way in, ``output_key`` on the way out.
@@ -1325,6 +1333,8 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
             update["state"] = merged_state
         if step_path and agent._output_schema is not None:
             update["_apx_step_evidence"] = [*state.get("_apx_step_evidence", []), {"step": list(step_path), "output_key": agent._output_key, "data": deepcopy(payload)}]
+        if fixture_replay is not None:
+            fixture_replay.record(step_path, payload)
         return update
 
     node = RunnableLambda(lambda state: _invoke_node_sync(_node, state), afunc=_node)
@@ -1477,8 +1487,8 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
             runnable = _compile_llm_agent(
                 agent, ctx, bake_prompt=not templated and agent._output_schema is None,
             )
-        if _agent_needs_node_wrap(agent) or ctx.escalate_failures or agent._timeout_s is not None:
-            runnable = _wrap_agent_node(agent, runnable, templated=templated, escalate_failures=ctx.escalate_failures, step_path=ctx.step_path)
+        if _agent_needs_node_wrap(agent) or ctx.escalate_failures or agent._timeout_s is not None or ctx.fixture_replay is not None:
+            runnable = _wrap_agent_node(agent, runnable, templated=templated, escalate_failures=ctx.escalate_failures, step_path=ctx.step_path, fixture_replay=ctx.fixture_replay)
         return runnable
     if isinstance(agent, SequentialAgent):
         return _compile_sequential_agent(agent, ctx)
