@@ -18,7 +18,7 @@ from apx_agent.cli import main
 
 @pytest.mark.parametrize("explicit,expected", [(None, "configured"), ("chosen", "chosen")])
 def test_run_uses_project_model_unless_explicit(monkeypatch, tmp_path, explicit, expected):
-    monkeypatch.setattr("apx_agent.cli._read_apx_agent_config", lambda: {"model": "configured", "experiment": "experiment"})
+    monkeypatch.setattr("apx_agent.cli._read_apx_agent_config", lambda path=None: {"model": "configured", "experiment": "experiment"})
     monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: Agent())
     calls = []
 
@@ -39,7 +39,7 @@ def test_run_uses_project_model_unless_explicit(monkeypatch, tmp_path, explicit,
 
 
 def test_endpoint_mode_does_not_inherit_local_model(monkeypatch, tmp_path):
-    monkeypatch.setattr("apx_agent.cli._read_apx_agent_config", lambda: {"model": "configured"})
+    monkeypatch.setattr("apx_agent.cli._read_apx_agent_config", lambda path=None: {"model": "configured"})
     calls = []
     monkeypatch.setattr("apx_agent.eval_against_endpoint", lambda *a, **k: calls.append(a) or SimpleNamespace(metrics={}))
     path = tmp_path / "cases.json"
@@ -64,7 +64,7 @@ def test_fixture_run_reports_failed_step_using_real_compiler(monkeypatch, tmp_pa
 
     monkeypatch.setattr(_compile, "_build_chat_databricks", build)
     monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: agent)
-    monkeypatch.setattr("apx_agent.cli._read_apx_agent_config", lambda: {"model": "configured", "experiment": "must-not-be-used"})
+    monkeypatch.setattr("apx_agent.cli._read_apx_agent_config", lambda path=None: {"model": "configured", "experiment": "must-not-be-used"})
     path = tmp_path / "fixtures.json"
     path.write_text(json.dumps([{"id": "example", "request": "go", "expected_outcome": "correct", "steps": [
         {"path": ["root", "first"], "tools": [], "expected_output": {"answer": 1}},
@@ -128,6 +128,42 @@ def test_documented_first_run_loads_the_real_project(monkeypatch, tmp_path):
     assert calls[0]["model"] == "your-model-endpoint"
     assert calls[0]["judge_model"] == "databricks"
     assert calls[0]["evalset"] == [{"inputs": {"question": "What is 2 + 2?"}, "expectations": {"expected_response": "4"}}]
+
+
+@pytest.mark.parametrize("discovery", ["parent", "explicit-project"])
+@pytest.mark.parametrize("override", [None, "local", "explicit"])
+def test_run_model_follows_agent_project_discovery(monkeypatch, tmp_path, discovery, override):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text('[tool.apx.agent]\nname = "project-agent"\nmodel = "project-model"\n')
+    (project / "review_agent.py").write_text('from apx_agent import Agent\nagent = Agent(instructions="Use the selected project.")\n')
+    (project / "cases.json").write_text('[{"inputs": {"question": "hello"}}]')
+    if override:
+        (project / ".apx.local").write_text('[tool.apx.agent]\nmodel = "local-model"\n')
+    cwd = project / "nested" if discovery == "parent" else tmp_path / "elsewhere"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("APX_PYPROJECT", raising=False)
+    if discovery == "explicit-project":
+        (cwd / "pyproject.toml").write_text('[tool.apx.agent]\nname = "other"\nmodel = "wrong-model"\n')
+        monkeypatch.setenv("APX_PYPROJECT", str(project / "pyproject.toml"))
+    monkeypatch.syspath_prepend(str(project))
+    monkeypatch.setitem(sys.modules, "review_agent", None)
+    monkeypatch.delitem(sys.modules, "review_agent")
+    calls = []
+
+    def evaluate(agent, **kwargs):
+        assert agent._instructions == "Use the selected project."
+        calls.append(kwargs)
+        return SimpleNamespace(metrics={})
+
+    monkeypatch.setattr("apx_agent.evaluate", evaluate)
+    args = ["eval", "run", str(project / "cases.json"), "--module", "review_agent:agent"]
+    if override == "explicit":
+        args.extend(["--model", "explicit-model"])
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, result.output
+    assert calls[0]["model"] == (f"{override}-model" if override else "project-model")
 
 
 def test_expected_escalation_passes_fixture_cli(monkeypatch, tmp_path):

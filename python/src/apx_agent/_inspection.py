@@ -204,11 +204,27 @@ def _patch_handler_signature(
 # ---------------------------------------------------------------------------
 
 
-def _load_agent_config(
+def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str, Any] | None:
+    """AgentConfig fields declared at ``section_path`` in *path*, or None."""
+    import tomllib
+
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    section = data
+    for key in section_path:
+        section = section.get(key, {})
+        if not section:
+            return None
+    fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields}
+    # Deploy-envelope keys alone do not declare an agent config.
+    return fields if fields else None
+
+
+def _resolve_agent_pyproject(
     section_path: tuple[str, ...] = ("tool", "apx", "agent"),
     pyproject_path: Path | str | None = None,
-) -> AgentConfig | None:
-    """Read agent config from pyproject.toml. Returns None if absent.
+) -> Path | None:
+    """Locate the project used by agent loading and evaluation.
 
     ``section_path`` defaults to ``("tool", "apx", "agent")`` for APX compatibility.
     Override to e.g. ``("tool", "agent")`` for standalone projects.
@@ -227,10 +243,8 @@ def _load_agent_config(
     3. Walk up from ``Path.cwd()`` unconditionally — final fallback for
        interactive / test use.
     """
-    import logging
     import os
     import sys
-    import tomllib
 
     def _find_pyproject(start: Path) -> Path | None:
         for directory in [start, *start.parents]:
@@ -238,20 +252,6 @@ def _load_agent_config(
             if candidate.exists():
                 return candidate
         return None
-
-    def _config_fields(path: Path) -> dict[str, Any] | None:
-        """AgentConfig fields declared at ``section_path`` in *path*, or None."""
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-        section = data
-        for key in section_path:
-            section = section.get(key, {})
-            if not section:
-                return None
-        fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields}
-        # A section holding only deploy-envelope keys (registered_model,
-        # experiment, ...) declares no agent config — same as no section.
-        return fields if fields else None
 
     env_pyproject = os.environ.get("APX_PYPROJECT")
     if pyproject_path is not None:
@@ -266,7 +266,7 @@ def _load_agent_config(
         resolved = None
         # 1. cwd, when its pyproject actually declares agent config (#437).
         cwd_pyproject = _find_pyproject(Path.cwd())
-        if cwd_pyproject is not None and _config_fields(cwd_pyproject) is not None:
+        if cwd_pyproject is not None and _agent_config_fields(cwd_pyproject, section_path) is not None:
             resolved = cwd_pyproject
         # 2. __main__'s location — the consumer's entry point when serving
         #    from outside the project directory.
@@ -279,10 +279,22 @@ def _load_agent_config(
         if resolved is None:
             resolved = cwd_pyproject
 
+    return resolved
+
+
+def _load_agent_config(
+    section_path: tuple[str, ...] = ("tool", "apx", "agent"),
+    pyproject_path: Path | str | None = None,
+) -> AgentConfig | None:
+    """Read config from the resolved agent project. Returns None if absent."""
+    import logging
+    import os
+
+    resolved = _resolve_agent_pyproject(section_path, pyproject_path)
     if resolved is None or not resolved.exists():
         return None
 
-    fields = _config_fields(resolved)
+    fields = _agent_config_fields(resolved, section_path)
     if fields is None:
         return None
     runtime_name = os.environ.get("APX_AGENT_NAME")

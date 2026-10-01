@@ -6399,7 +6399,9 @@ def eval_cmd(
     except json.JSONDecodeError as e:
         raise click.ClickException(f"Failed to parse evalset {evalset}: {e}") from e
 
-    config = _read_apx_agent_config()
+    from ._inspection import _resolve_agent_pyproject
+
+    config = _read_apx_agent_config() if endpoint_url else _read_apx_agent_config(_resolve_agent_pyproject())
     effective_experiment = experiment or config.get("experiment")
 
     if endpoint_url:

@@ -12,6 +12,9 @@ Use the same entry point as you add cases, inspect typed steps, or compare model
 The first two commands use `[tool.apx.agent].model` from your project, unless you
 pass `--model`. A sweep names its candidates explicitly. Commands load
 `agent:agent` by default; use `--module module:variable` for another declaration.
+Model defaults follow the same project discovery as agent loading, including
+parent directories and `APX_PYPROJECT`. The selected project's `.apx.local`
+overrides its `pyproject.toml`; an explicit `--model` takes precedence over both.
 
 ## Run your first evaluation
 
