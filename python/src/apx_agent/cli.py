@@ -6433,6 +6433,55 @@ def eval_cmd(
     _warn_empty_predictions(result)
 
 
+@eval_group.command("sweep")
+@click.argument("evalset", type=click.Path(exists=True, dir_okay=False))
+@click.option("--model", "models", multiple=True, required=True, help="Repeat for each model to compare (at least two).")
+@click.option("--module", default="agent:agent", show_default=True)
+@click.option("--fixtures", is_flag=True, help="Read recorded-tool chain fixtures instead of live eval rows.")
+@click.option("--experiment", default=None, help="MLflow experiment for live evaluation.")
+@click.option("--judge-model", default=None, help="Use the same judge for every model's default scorers.")
+@click.option("--user-token", default=None, help="OBO identity for live evaluation only.")
+@click.option("--format", "fmt", type=click.Choice(["table", "json"]), default="table", show_default=True)
+def eval_sweep_cmd(evalset: str, models: tuple[str, ...], module: str, fixtures: bool,
+                   experiment: str | None, judge_model: str | None,
+                   user_token: str | None, fmt: str) -> None:
+    """Compare models using the same JSON/JSONL EVALSET and current authentication."""
+    from contextlib import redirect_stdout
+    from dataclasses import asdict
+    import sys
+
+    from apx_agent import evaluate_sweep
+
+    path = Path(evalset)
+    try:
+        data = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.suffix.lower() == ".jsonl" else json.loads(path.read_text())
+    except (ValueError, OSError) as exc:
+        raise click.ClickException("Cannot read EVALSET as JSON/JSONL") from exc
+    try:
+        with redirect_stdout(sys.stderr):
+            agent = _load_finalized_agent(module)
+            results = evaluate_sweep(
+                agent, models=list(models), fixtures=data if fixtures else None,
+                evalset=None if fixtures else data, judge_model=judge_model, user_token=user_token,
+                experiment=experiment if fixtures else experiment or _read_apx_agent_config().get("experiment"),
+            )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    if fmt == "json":
+        click.echo(json.dumps([asdict(row) for row in results], indent=2, allow_nan=False))
+    else:
+        click.echo("Model | Quality | p50 ms | p95 ms | Timed cases | LLM estimate USD | Priced cases | Status")
+        for row in results:
+            quality = json.dumps(row.outcome_counts or row.metrics, sort_keys=True)
+            p50 = str(row.latency_p50_ms) if row.latency_p50_ms is not None else "unavailable"
+            p95 = str(row.latency_p95_ms) if row.latency_p95_ms is not None else "unavailable"
+            cost = f"{row.cost_usd:.6f}" if row.cost_usd is not None else "unavailable"
+            status = "; ".join(row.errors) if row.errors else "complete"
+            click.echo(f"{row.model} | {quality} | {p50} | {p95} | {row.latency_cases}/{row.case_count} | {cost} | {row.cost_cases}/{row.case_count} | {status}")
+    if any(row.errors for row in results):
+        raise click.exceptions.Exit(1)
+
+
 # ---------------------------------------------------------------------------
 # deploy
 # ---------------------------------------------------------------------------

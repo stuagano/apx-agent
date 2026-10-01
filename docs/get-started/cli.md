@@ -16,6 +16,7 @@ apx-agent agents advertise --description "Handles X for users asking about Y"
 apx-agent supervisor add --endpoint my_agent --supervisor sa-12345
 apx-agent uc mcp-config --host https://workspace.cloud.databricks.com
 apx-agent eval run evalset.jsonl --model databricks-claude-sonnet-4-6
+apx-agent eval sweep evalset.jsonl --model endpoint-a --model endpoint-b  # compare quality, latency, estimated LLM cost
 apx-agent agents logs --endpoint my_agent           # runtime logs from Model Serving
 apx-agent agents logs --endpoint my_agent --build   # build-time logs
 apx-agent agents logs --app my-app --profile prod   # Databricks Apps logs (via the CLI)
@@ -57,6 +58,6 @@ apx-agent examples save --agent-id triage --input "..." --output "..." --score 0
 
 Trace feedback commands require the `eval` extra and use the active MLflow tracking configuration. See [Trace-linked human feedback](../evaluate/overview.md#trace-linked-human-feedback) for the external-review workflow, authentication expectations, and idempotency behavior.
 
-Commands that load the agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`): the `agents run`, `agents deploy`, `agents describe`, `agents publish`, and `agents advertise` commands; the `uc publish` / `uc mcp-config` commands; and the `eval run` / `eval lint` / `eval test` / `eval chain` commands. (Commands like `agents scaffold`, `agents cost`, and the `agents pull-comments` / `agents migrate-to-okf` / `agents refresh-schema` OKF commands don't take `--module`.)
+Commands that load the agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`): the `agents run`, `agents deploy`, `agents describe`, `agents publish`, and `agents advertise` commands; the `uc publish` / `uc mcp-config` commands; and the `eval run` / `eval sweep` / `eval lint` / `eval test` / `eval chain` commands. (Commands like `agents scaffold`, `agents cost`, and the `agents pull-comments` / `agents migrate-to-okf` / `agents refresh-schema` OKF commands don't take `--module`.)
 
 A worked example exercising the full surface — `@tool(uc=...)`, `genie_tool`, `vector_search_tool`, `sql`-style tools, and `HandoffAgent` routing — lives in [`python/examples/customer_triage/`](../python/examples/customer_triage/). Read its README for the end-to-end flow from scaffold to deploy to publish.

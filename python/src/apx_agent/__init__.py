@@ -80,6 +80,8 @@ from ._eval import (
     evaluate,
 )
 
+from ._eval_sweep import SweepResult, evaluate_sweep
+
 # Genie tool factories
 from .genie import genie_query_tool, genie_tool
 
@@ -514,6 +516,8 @@ __all__ = [
     "endpoint_predict_fn",
     "eval_against_endpoint",
     "evaluate",
+    "evaluate_sweep",
+    "SweepResult",
     # Tool factories
     "genie_query_tool",
     "genie_tool",
