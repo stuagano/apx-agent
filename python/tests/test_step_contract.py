@@ -1,6 +1,7 @@
 """Runtime boundaries for opt-in step policies."""
 
 import asyncio
+import gc
 import json
 import threading
 import time
@@ -38,6 +39,21 @@ def test_deadline_and_original_timeout_are_distinct():
     with pytest.raises(TimeoutError, match="upstream") as exc:
         asyncio.run(invoke_with_timeout(SimpleNamespace(ainvoke=own_timeout), {}, 1))
     assert type(exc.value) is TimeoutError
+
+
+def test_deadline_uses_python310_asyncio_api(monkeypatch):
+    from apx_agent import _step_contract
+
+    monkeypatch.setattr(_step_contract, "asyncio", SimpleNamespace(
+        ensure_future=asyncio.ensure_future, wait=asyncio.wait,
+        CancelledError=asyncio.CancelledError,
+    ))
+    test_deadline_and_original_timeout_are_distinct()
+
+    async def ready(state):
+        return state
+
+    assert asyncio.run(invoke_with_timeout(SimpleNamespace(ainvoke=ready), {"ok": True}, 1)) == {"ok": True}
 
 
 def test_sync_worker_does_not_delay_executor_shutdown_and_copies_context():
@@ -82,6 +98,67 @@ def test_external_cancellation_and_tool_cancellation_survive():
         asyncio.run(invoke_with_timeout(SimpleNamespace(ainvoke=cancel), {}, 1))
     with pytest.raises(ToolCancelled, match="governance"):
         asyncio.run(invoke_with_timeout(SimpleNamespace(ainvoke=invoke), {}, 1))
+
+
+@pytest.mark.parametrize("caller_cancels", [False, True])
+def test_supervisor_cancels_child_without_waiting_for_suppressed_cancellation(caller_cancels):
+    async def scenario():
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+        released = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def stubborn(state):
+            entered.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.set()
+                await released.wait()
+            finally:
+                finished.set()
+            raise RuntimeError("late failure is consumed")
+
+        task = asyncio.create_task(invoke_with_timeout(
+            SimpleNamespace(ainvoke=stubborn), {}, 10 if caller_cancels else 0.02,
+        ))
+        await entered.wait()
+        if caller_cancels:
+            task.cancel()
+        try:
+            with pytest.raises(asyncio.CancelledError if caller_cancels else StepTimeoutError):
+                await asyncio.wait_for(task, timeout=0.5)
+            await asyncio.wait_for(cancelled.wait(), timeout=0.5)
+            assert not finished.is_set()
+        finally:
+            released.set()
+            await asyncio.wait_for(finished.wait(), timeout=0.5)
+
+    asyncio.run(scenario())
+
+
+def test_simultaneous_child_failure_and_caller_cancellation_consumes_failure():
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        unhandled = []
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        parent = asyncio.current_task()
+
+        async def fails(state):
+            parent.cancel()
+            raise RuntimeError("simultaneous failure")
+
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await invoke_with_timeout(SimpleNamespace(ainvoke=fails), {}, 1)
+            await asyncio.sleep(0)
+            gc.collect()
+            await asyncio.sleep(0)
+            assert not unhandled
+        finally:
+            loop.set_exception_handler(None)
+
+    asyncio.run(scenario())
 
 
 def test_deadline_resets_and_catches_synchronous_overrun():

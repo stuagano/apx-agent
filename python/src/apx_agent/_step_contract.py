@@ -44,14 +44,21 @@ async def invoke_with_timeout(runnable: Any, state: dict[str, Any], timeout_s: f
     try:
         if deadline is None:
             return await runnable.ainvoke(state)
-        timer = asyncio.timeout(max(0, deadline - time.monotonic()))
+        task = asyncio.ensure_future(runnable.ainvoke(state))
+
+        def consume_result(completed: asyncio.Future[Any]) -> None:
+            if not completed.cancelled():
+                completed.exception()
+
         try:
-            async with timer:
-                result = await runnable.ainvoke(state)
-        except TimeoutError:
-            if timer.expired():
-                raise StepTimeoutError("Step deadline exceeded") from None
-            raise
+            done, _ = await asyncio.wait({task}, timeout=max(0, deadline - time.monotonic()))
+            if not done:
+                raise StepTimeoutError("Step deadline exceeded")
+            result = task.result()
+        finally:
+            if not task.done():
+                task.cancel()
+            task.add_done_callback(consume_result)
         if time.monotonic() >= deadline:
             raise StepTimeoutError("Step deadline exceeded")
         return result
