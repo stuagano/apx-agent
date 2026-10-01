@@ -58,7 +58,7 @@ async def invoke_with_timeout(runnable: Any, state: dict[str, Any], timeout_s: f
         finally:
             if not task.done():
                 task.cancel()
-                task.add_done_callback(consume_result)
+            task.add_done_callback(consume_result)
         if time.monotonic() >= deadline:
             raise StepTimeoutError("Step deadline exceeded")
         return result

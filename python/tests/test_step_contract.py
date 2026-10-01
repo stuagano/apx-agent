@@ -1,6 +1,7 @@
 """Runtime boundaries for opt-in step policies."""
 
 import asyncio
+import gc
 import json
 import threading
 import time
@@ -132,6 +133,30 @@ def test_supervisor_cancels_child_without_waiting_for_suppressed_cancellation(ca
         finally:
             released.set()
             await asyncio.wait_for(finished.wait(), timeout=0.5)
+
+    asyncio.run(scenario())
+
+
+def test_simultaneous_child_failure_and_caller_cancellation_consumes_failure():
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        unhandled = []
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        parent = asyncio.current_task()
+
+        async def fails(state):
+            parent.cancel()
+            raise RuntimeError("simultaneous failure")
+
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await invoke_with_timeout(SimpleNamespace(ainvoke=fails), {}, 1)
+            await asyncio.sleep(0)
+            gc.collect()
+            await asyncio.sleep(0)
+            assert not unhandled
+        finally:
+            loop.set_exception_handler(None)
 
     asyncio.run(scenario())
 
