@@ -1,0 +1,41 @@
+[
+  {
+    "id": "synthetic-customer-found",
+    "request": "Check whether customer EXAMPLE-001 exists.",
+    "expected_outcome": "correct",
+    "steps": [
+      {
+        "path": ["triage", "identify"],
+        "tools": [],
+        "expected_output": {"customer_id": "EXAMPLE-001"}
+      },
+      {
+        "path": ["triage", "lookup"],
+        "tools": [{"name": "lookup_customer", "args": {"customer_id": "EXAMPLE-001"}, "output": {"customer_id": "EXAMPLE-001", "exists": true}}],
+        "expected_output": {"customer_id": "EXAMPLE-001", "exists": true}
+      },
+      {
+        "path": ["triage", "verdict"],
+        "tools": [],
+        "expected_output": {"customer_id": "EXAMPLE-001", "status": "found"}
+      }
+    ]
+  },
+  {
+    "id": "synthetic-lookup-unavailable",
+    "request": "Check whether customer EXAMPLE-002 exists.",
+    "expected_outcome": "escalated_with_evidence",
+    "expected_failure": {"step": ["triage", "lookup"], "reason": "unavailable"},
+    "steps": [
+      {
+        "path": ["triage", "identify"],
+        "tools": [],
+        "expected_output": {"customer_id": "EXAMPLE-002"}
+      },
+      {
+        "path": ["triage", "lookup"],
+        "tools": [{"name": "lookup_customer", "args": {"customer_id": "EXAMPLE-002"}, "output": {"availability": "unavailable", "capability": "customer_lookup", "error": "Synthetic fixture: source unavailable"}}]
+      }
+    ]
+  }
+]

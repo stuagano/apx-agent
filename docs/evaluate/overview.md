@@ -30,6 +30,10 @@ On Databricks-hosted MLflow, experiment names are workspace paths (e.g. `/Users/
 
 ## Evaluation
 
+For step-by-step regression checks, use [recorded-tool chain evaluation](chain-fixtures.md).
+It runs the real model against fixed tool results, checks intermediate typed
+outputs, and reports `correct`, `escalated_with_evidence`, or `wrong` per case.
+
 `apx_agent.evaluate(agent, model=..., evalset=..., scorers=...)` runs Mosaic AI Agent Evaluation against the agent in-process — no deploy, no HTTP, fast feedback during authoring and CI. The agent compiles to a `ChatAgent` once; each evalset entry runs through the compiled graph; results come back as a standard `mlflow.genai.evaluate` result.
 
 ```python

@@ -346,7 +346,7 @@ from ._apx_models import (
 from ._industry_models import industry_model_question_pairs, industry_model_topology_metadata
 
 # Cross-agent evaluation
-from ._eval_chain import ChainCaseResult, ChainEvalReport, evaluate_chain
+from ._eval_chain import ChainCaseResult, ChainEvalReport, StepEvalResult, evaluate_chain
 
 # Canary / A-B deployment helpers (Model Serving target)
 from ._canary import (
@@ -723,6 +723,7 @@ __all__ = [
     # Cross-agent eval
     "ChainCaseResult",
     "ChainEvalReport",
+    "StepEvalResult",
     "evaluate_chain",
     # Canary / A-B helpers (Model Serving)
     "CanaryConfig",
