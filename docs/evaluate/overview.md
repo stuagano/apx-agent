@@ -30,6 +30,10 @@ On Databricks-hosted MLflow, experiment names are workspace paths (e.g. `/Users/
 
 ## Evaluation
 
+Use [model sweeps](model-sweeps.md) to compare the same cases across model
+endpoints with quality metrics or fixture outcomes, p50/p95 latency, and
+trace-attributed LLM cost estimates where available.
+
 For step-by-step regression checks, use [recorded-tool chain evaluation](chain-fixtures.md).
 It runs the real model against fixed tool results, checks intermediate typed
 outputs, and reports `correct`, `escalated_with_evidence`, or `wrong` per case.
