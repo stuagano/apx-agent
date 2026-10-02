@@ -180,10 +180,9 @@ def test_compile_partitions_resources_scopes_and_structural_dependencies() -> No
     )
     assert plan.service_resources == (
         ResourceSpec("job", "telemetry-job"),
-        ResourceSpec("serving_endpoint", "databricks-claude-sonnet-4-6"),
         ResourceSpec("uc_table", "main.shared.accounts"),
     )
-    assert plan.user_api_scopes == ("catalog.tables:read", "sql")
+    assert plan.user_api_scopes == ("ai-gateway", "catalog.tables:read", "sql")
     assert plan.app_dependencies == (
         AppDependency("https://peer.cloud.databricksapps.com"),
     )

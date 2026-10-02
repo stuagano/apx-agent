@@ -141,11 +141,10 @@ def managed_mcp_urls(
         workspace_host: Databricks workspace host (e.g.
             ``"https://my-workspace.cloud.databricks.com"`` — scheme
             optional, trailing slash optional).
-        model: Optional model serving endpoint name to include in the
-            walk. Passed through to ``collect_resource_specs``; usually
-            irrelevant for Managed MCP since model endpoints aren't
-            exposed as MCP servers, but kept for symmetry with
-            ``log_agent``.
+        model: Optional chat model name, forwarded to
+            ``collect_resource_specs`` for caller symmetry. The chat model
+            is not a ``serving_endpoint`` resource, so it does not appear
+            in the Managed MCP list.
 
     Returns:
         One ``ManagedMCPEndpoint`` per declared resource. Endpoints whose

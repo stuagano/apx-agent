@@ -774,18 +774,13 @@ resources:
       description: {name} apx-agent
       source_code_path: ./.build
 {scaling_fields}      user_api_scopes:
+        - ai-gateway
         - sql
-        - model-serving
       resources:
         - name: experiment
           experiment:
             experiment_id: ${{resources.experiments.{name}_experiment.id}}
             permission: CAN_MANAGE
-        - name: llm-endpoint
-          description: Foundation model endpoint used by the agent.
-          serving_endpoint:
-            name: ${{var.llm_endpoint_name}}
-            permission: CAN_QUERY
       config:
         command:
           - python

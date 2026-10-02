@@ -1,12 +1,16 @@
-"""Provider compatibility layer for Databricks Model Serving.
+"""Provider compatibility layer for the Unity Catalog AI Gateway chat client.
 
 Why this module exists
 ----------------------
 ``ChatDatabricks`` exposes a single LangChain interface over many providers
-(Anthropic, OpenAI, Google, Meta, ...) routed through Databricks Model Serving.
-The base client assumes the OpenAI chat-completions request shape — but each
-provider accepts a different *subset* of that shape, and the working subsets
-drift over time as providers ship new model generations and the
+(Anthropic, OpenAI, Google, Meta, ...). apx-agent always routes that client
+through Unity Catalog AI Gateway (``use_ai_gateway=True`` →
+``{host}/ai-gateway/mlflow/v1``). It does not use the Model Serving query
+client for the agent chat model. The authored ``model`` string is sent
+unchanged — typically a ``databricks-*`` foundation-model name. The base
+client assumes the OpenAI chat-completions request shape — but each provider
+accepts a different *subset* of that shape, and the working subsets drift
+over time as providers ship new model generations and the
 ``databricks-langchain`` adapter releases new versions.
 
 Rather than scatter provider-specific branches through user code (tool
@@ -124,11 +128,17 @@ GPT_REASONING_PREFIXES: tuple[str, ...] = ("databricks-gpt-5",)
 
 
 def get_llm(endpoint: str, **kwargs: Any) -> Any:
-    """Return the right ChatDatabricks variant for a given serving endpoint.
+    """Return the right ChatDatabricks variant for a chat model.
 
-    Routing is by endpoint-name prefix, not by config — the caller passes the
-    exact endpoint they want to hit, and this function picks the wrapper that
-    knows that endpoint's quirks.
+    Every returned client has ``use_ai_gateway=True``. That is the only LLM
+    transport: requests go to ``{host}/ai-gateway/mlflow/v1``, not
+    ``{host}/serving-endpoints``. This is Unity Catalog AI Gateway, not Mosaic
+    AI Gateway attached to a Model Serving endpoint, and not a factory that
+    picks a transport from the model name.
+
+    Routing is by model-name prefix, not by config — the caller passes the
+    exact model they want to hit, and this function picks the wrapper that
+    knows that model's quirks. The model string is forwarded unchanged.
 
     Verified rules (2026-05-18, ``databricks-langchain==0.19.0``):
       * ``databricks-gpt-5*``         → ``ChatDatabricksGptReasoning``
@@ -147,6 +157,15 @@ def get_llm(endpoint: str, **kwargs: Any) -> Any:
         llm = get_llm("databricks-claude-sonnet-4-6")
         result = llm.invoke([HumanMessage(content="Summarize this report...")])
     """
+    # Callers cannot opt the chat model back onto Model Serving. A kwargs
+    # override would reintroduce the dual path this factory exists to close.
+    if "use_ai_gateway" in kwargs and kwargs["use_ai_gateway"] is not True:
+        raise ValueError(
+            "get_llm always routes the chat model through Unity Catalog AI "
+            "Gateway (use_ai_gateway=True). Model Serving is not a chat-model "
+            "transport."
+        )
+    kwargs["use_ai_gateway"] = True
     if any(endpoint.startswith(p) for p in GPT_REASONING_PREFIXES):
         return _make_gpt_reasoning_class()(model=endpoint, **kwargs)
     from databricks_langchain import ChatDatabricks

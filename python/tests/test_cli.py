@@ -4392,7 +4392,7 @@ def test_apps_databricks_yml_has_staging_target_for_all_templates(tmp_path):
     cli._scaffold_apps(tmp_path, "demo", force=True, catalog="", schema="", template="base")
     yml = (tmp_path / "databricks.yml").read_text()
     app = yaml.safe_load(yml)["resources"]["apps"]["demo"]
-    assert app["user_api_scopes"] == ["sql", "model-serving"]
+    assert app["user_api_scopes"] == ["ai-gateway", "sql"]
     assert "serving.serving-endpoints" not in yml
     assert "  staging:" in yml
     assert "    mode: production" in yml
@@ -4991,7 +4991,7 @@ class TestDatabricksYmlMergePreservesComments:
         assert changed is True
         assert pyyaml.safe_load(yml_path.read_text())["resources"]["apps"][
             "my-agent"
-        ]["user_api_scopes"] == ["sql"]
+        ]["user_api_scopes"] == ["ai-gateway", "sql"]
         assert _reconcile_apps_authorization(
             tmp_path,
             plan=compile_authorization_plan(
@@ -5080,6 +5080,7 @@ class TestDatabricksYmlMergePreservesComments:
 
         scopes = pyyaml.safe_load(yml_path.read_text())["resources"]["apps"]["my-agent"]["user_api_scopes"]
         assert set(scopes) == {
+            "ai-gateway",
             "sql",
             "dashboards.genie",
             "serving.serving-endpoints",
