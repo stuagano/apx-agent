@@ -517,22 +517,22 @@ class TestCheckModelEndpoint:
     def test_model_service_found_returns_ok(self, tmp_path: Path):
         self._make_pyproject(tmp_path, "system.ai.claude-sonnet-4-6")
         ws = MagicMock()
-        ws.ai_gateway.get_model_service.return_value = MagicMock(
-            name="model-services/system.ai.claude-sonnet-4-6"
-        )
+        ws.api_client.do.return_value = {
+            "name": "model-services/system.ai.claude-sonnet-4-6"
+        }
         with patch("databricks.sdk.WorkspaceClient", return_value=ws):
             c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
         assert c is not None
         assert c.status is Status.OK
-        ws.ai_gateway.get_model_service.assert_called_once_with(
-            "model-services/system.ai.claude-sonnet-4-6"
+        ws.api_client.do.assert_called_once_with(
+            "GET", "/api/2.1/unity-catalog/model-services/system.ai.claude-sonnet-4-6"
         )
         ws.serving_endpoints.get.assert_not_called()
 
     def test_model_service_not_found_returns_fail(self, tmp_path: Path):
         self._make_pyproject(tmp_path, "system.ai.missing-model")
         ws = MagicMock()
-        ws.ai_gateway.get_model_service.side_effect = Exception("404 Not Found")
+        ws.api_client.do.side_effect = Exception("404 Not Found")
         with patch("databricks.sdk.WorkspaceClient", return_value=ws):
             c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
         assert c is not None
@@ -543,7 +543,7 @@ class TestCheckModelEndpoint:
     def test_model_service_other_error_returns_warn(self, tmp_path: Path):
         self._make_pyproject(tmp_path, "system.ai.claude-sonnet-4-6")
         ws = MagicMock()
-        ws.ai_gateway.get_model_service.side_effect = Exception("connection timeout")
+        ws.api_client.do.side_effect = Exception("connection timeout")
         with patch("databricks.sdk.WorkspaceClient", return_value=ws):
             c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
         assert c is not None

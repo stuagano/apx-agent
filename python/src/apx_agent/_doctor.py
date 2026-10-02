@@ -463,9 +463,9 @@ def check_databricks_workspace(*, auth_ok: bool) -> Check:
 
 
 def _ai_gateway_model_service_name(model: str) -> str | None:
-    """Resource name for ``ai_gateway.get_model_service``, or None.
+    """Resource name for ``GET /api/2.1/unity-catalog/{name}``, or None.
 
-    The SDK requires ``model-services/{catalog}.{schema}.{id}``. A three-part
+    That API requires ``model-services/{catalog}.{schema}.{id}``. A three-part
     UC name (``system.ai.claude-sonnet-4-5``) maps directly. A ``databricks-*``
     foundation-model name is the string ``get_llm`` sends unchanged; it is not
     that resource name, so doctor does not guess a rewrite.
@@ -484,9 +484,12 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
     Only runs when inside an apx project (reads `model` from pyproject.toml)
     and auth is available. Returns None when there's nothing to check.
 
-    Looks the model up with ``WorkspaceClient.ai_gateway.get_model_service``.
-    Does not call ``serving_endpoints.get``: the chat LLM is not a Model
-    Serving endpoint.
+    Looks the model up with ``GET /api/2.1/unity-catalog/{name}``. Newer SDK
+    versions expose that as ``WorkspaceClient.ai_gateway.get_model_service``;
+    this process pins a release that does not, so the call goes through
+    ``api_client`` instead of an attribute the type stubs do not have. Does
+    not call ``serving_endpoints.get``: the chat LLM is not a Model Serving
+    endpoint.
     """
     if not auth_ok:
         return None
@@ -524,8 +527,8 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
     try:
         from databricks.sdk import WorkspaceClient
         ws = WorkspaceClient()
-        service = ws.ai_gateway.get_model_service(service_name)
-        name = getattr(service, "name", None)
+        service = ws.api_client.do("GET", f"/api/2.1/unity-catalog/{service_name}")
+        name = service.get("name") if isinstance(service, dict) else None
         if not name:
             return Check(
                 label, Status.WARN,
