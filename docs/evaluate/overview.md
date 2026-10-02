@@ -114,6 +114,27 @@ cases. Use `--format json` to save a comparison.
 A completed sweep can contain wrong answers; apply your own quality threshold.
 Missing cost is unavailable, not zero.
 
+## Improve a failing step
+
+In the Edit tab, choose the agent variable in the **Instructions** selector,
+then select **Improve instructions** and name your registered judge. GEPA
+scores candidates through the full running agent using the existing eval
+dataset, changing only the selected leaf's instructions for each trial.
+The candidate appears in the editor for review; **Save** is the only action
+that writes it to the source file. Restart afterward to load the saved code.
+
+The target must be a local leaf declared in the editable source, with nonempty
+literal instructions, and reachable from the running agent. Remote-bound children
+must be edited and evaluated in their owning project. Save pending edits and
+restart before optimizing. Changes made in the editor or source file while
+optimization runs cause the candidate preview to be rejected. Model, judge,
+reflection, and live tool calls may incur cost and retain their normal effects.
+Use representative cases that exercise the selected child; a higher aggregate
+score does not prove every step improved.
+
+This improves agent instructions. [MemAlign](advanced.md#golden-set-and-judge-calibration)
+aligns the judge to human feedback and remains a separate action.
+
 ## Other checks and advanced workflows
 
 Use these when the task calls for them; they are not prerequisites for a first

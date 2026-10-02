@@ -1553,6 +1553,57 @@ def _current_root_instructions(ctx: "AgentContext | None") -> str:
     return instr
 
 
+def _instruction_target(agent: Any, node: str, path: Path) -> Any:
+    """Resolve an editor variable to a reachable, local instruction-bearing agent."""
+    import sys
+    from ._agents import LlmAgent, LoopAgent
+    from ._topology import _iter_child_agents
+
+    matches = [vars(module).get(node) for module in list(sys.modules.values())
+               if module is not None and vars(module).get("__file__") == str(path)]
+    target = agent if node == "agent" else next((value for value in matches if value is not None), None)
+    while isinstance(target, LoopAgent):
+        target = target._inner
+    pending, seen = [agent], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if current is target and isinstance(target, LlmAgent):
+            if target._name in getattr(agent, "_apx_remote_leaf_bindings", {}):
+                raise ValueError(f"Instruction node {node!r} runs remotely; edit and evaluate it in its owning project")
+            return target
+        pending.extend(child for _, child in _iter_child_agents(current))
+    raise ValueError(f"Instruction node {node!r} is not a local leaf in the running agent. Restart after changing composition.")
+
+
+def _instruction_candidate_agent(agent: Any, target: Any, instructions: str) -> Any:
+    """Copy the declaration graph, preserving tool/config objects and live instructions."""
+    from copy import copy, deepcopy
+    from ._agents import LoopAgent
+    from ._topology import _iter_child_agents
+
+    while isinstance(target, LoopAgent):
+        target = target._inner
+    pending, nodes = [agent], {}
+    while pending:
+        current = pending.pop()
+        if id(current) in nodes:
+            continue
+        nodes[id(current)] = current
+        pending.extend(child for _, child in _iter_child_agents(current))
+    if id(target) not in nodes:
+        raise ValueError("Selected instruction node is not in the running agent")
+    copies = {key: copy(value) for key, value in nodes.items()}
+    for key, original in nodes.items():
+        for attr in ("_agents", "_routes", "_branches", "_inner", "_default"):
+            if hasattr(original, attr):
+                setattr(copies[key], attr, deepcopy(getattr(original, attr), dict(copies)))
+    copies[id(target)]._instructions = instructions
+    return copies[id(agent)]
+
+
 def _optimize_instructions_sync(
     *,
     judge_name: str,
@@ -1562,6 +1613,7 @@ def _optimize_instructions_sync(
     current_instructions: str,
     experiment_id: str | None,
     reflection_model: str,
+    target: Any = None,
 ) -> dict[str, Any]:
     """Run GEPA prompt optimization against the eval rows + judge (synchronous —
     called via ``asyncio.to_thread``).
@@ -1575,7 +1627,7 @@ def _optimize_instructions_sync(
     import uuid
 
     from mlflow import MlflowClient
-    from mlflow.genai import optimize_prompts, register_prompt
+    from mlflow.genai import load_prompt, optimize_prompts, register_prompt
     from mlflow.genai.optimize import GepaPromptOptimizer
     from mlflow.genai.scorers import get_scorer
 
@@ -1586,20 +1638,23 @@ def _optimize_instructions_sync(
     except Exception as exc:  # noqa: BLE001 — unknown/unavailable judge → clear error, no optimize call
         return {"ok": False, "error": f"Judge {judge_name!r} is not available: {exc}", "status": 422}
 
-    # Compile lazily on first predict so a mocked optimize (tests) never builds
-    # a graph, and a real run compiles exactly once across all metric calls.
-    compiled: dict[str, Any] = {}
-
     def predict_fn(inputs: Any) -> str:
         from mlflow.types.agent import ChatAgentMessage
+        from apx_agent import compile_to_chat_agent
 
-        if "agent" not in compiled:
-            compiled["agent"] = _eval.compile_to_chat_agent(agent, model=model)
+        # MLflow substitutes candidate templates at load_prompt().template.
+        # Compile each prediction independently so concurrent trials cannot
+        # reuse stale instructions or mutate the served agent.
+        template = load_prompt(uri).template
+        if not isinstance(template, str):
+            raise ValueError("Instruction optimization requires a text prompt")
+        candidate = _instruction_candidate_agent(agent, agent if target is None else target, template)
+        compiled = compile_to_chat_agent(candidate, model=model)
         chat_messages = [
             ChatAgentMessage(role=m.get("role", "user"), content=m.get("content", ""), id=m.get("id"))
             for m in _eval._extract_messages(inputs)
         ]
-        return _eval._extract_response_text(compiled["agent"].predict(chat_messages))
+        return _eval._extract_response_text(compiled.predict(chat_messages))
 
     prompt_name = f"apx_optimize_{uuid.uuid4().hex}"
     registered = register_prompt(name=prompt_name, template=current_instructions)
@@ -1614,6 +1669,8 @@ def _optimize_instructions_sync(
         )
         optimized = result.optimized_prompts or []
         candidate = optimized[0].template if optimized else current_instructions
+        if not isinstance(candidate, str):
+            raise ValueError("Optimized instructions must be text")
         return {
             "ok": True,
             "candidate": candidate,
@@ -2131,6 +2188,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     # Router-level guard: enforces auth on write methods + the SSRF probe.
     # See _dev_write_guard / _enforce_dev_write_auth for the posture (H17/H18).
     router = APIRouter(dependencies=[Depends(_dev_write_guard)])
+    # Save changes the file without reloading the running graph. Scores must
+    # refer to the source generation present when these routes were mounted.
+    instruction_source_path = _find_agent_router_path()
+    instruction_source = instruction_source_path.read_text() if instruction_source_path and instruction_source_path.is_file() else None
 
     @router.get("/_apx/agent", include_in_schema=False)
     async def agent_dev_ui(request: Request) -> HTMLResponse:
@@ -2964,19 +3025,25 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     @router.post("/_apx/edit/optimize-instructions")
     async def optimize_instructions(request: Request) -> Any:
-        """Propose better root-agent instructions via GEPA (mlflow.genai.optimize_prompts).
+        """Propose instructions for a selected node, scored through the full agent.
 
         Scores candidate instructions against the agent's existing eval dataset +
-        judge, bridges through a transient prompt-registry entry, and returns only
-        the winning text + before/after scores — writing nothing to agent.py. The
-        Edit tab loads the candidate for review; the human lands it via the
-        existing Save path (POST /_apx/edit → _persist_instructions).
+        judge, bridges through a transient prompt-registry entry, and returns
+        the winning text, scores, and patched source without writing agent.py.
+        The Edit tab previews the candidate; the existing Save route persists it.
         """
         from fastapi.responses import JSONResponse
         import asyncio as _asyncio
 
         ctx: AgentContext | None = request.app.state.agent_context
         body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "Expected a JSON object"}, status_code=422)
+        node = body.get("node", "agent")
+        if not isinstance(node, str) or not node.isidentifier():
+            return JSONResponse({"ok": False, "error": "node must be an agent variable name"}, status_code=422)
+        if not isinstance(body.get("judge_name"), str):
+            return JSONResponse({"ok": False, "error": "judge_name is required"}, status_code=422)
         judge_name = (body.get("judge_name") or "").strip()
         if not judge_name:
             return JSONResponse({"ok": False, "error": "judge_name is required"}, status_code=422)
@@ -2988,6 +3055,38 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 status_code=422,
             )
 
+        from ._ui_edit import _find_agent_router_path, _find_root_agent_call, _set_agent_instructions
+
+        source = None
+        target = ctx.agent if ctx else None
+        current_instructions = _current_root_instructions(ctx)
+        if "node" in body or "source" in body:
+            path = _find_agent_router_path()
+            if path is None or not path.exists() or ctx is None:
+                return JSONResponse({"ok": False, "error": "A running agent with editable source is required"}, status_code=422)
+            source = path.read_text()
+            if "source" in body and body["source"] != source:
+                return JSONResponse({"ok": False, "error": "Save your editor changes and restart before optimizing."}, status_code=409)
+            if path != instruction_source_path or source != instruction_source:
+                return JSONResponse({"ok": False, "error": "Agent source changed since startup. Restart before optimizing."}, status_code=409)
+            try:
+                import ast
+
+                selected = next((entry for entry in _parse_agent_nodes(source) if entry["name"] == node), None)
+                if selected is None:
+                    raise ValueError(f"Unknown instruction node {node!r}")
+                call = _find_root_agent_call(source, node)
+                if call is None:
+                    raise ValueError(f"Node {node!r} has no editable leaf instructions")
+                keyword = next((kw for kw in call.keywords if kw.arg == "instructions"), None)
+                if keyword is None or not (isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str) and keyword.value.value):
+                    raise ValueError("Optimization requires nonempty literal instructions in the selected declaration")
+                current_instructions = selected["instructions"]
+                _set_agent_instructions(source, current_instructions, target=node)
+                target = _instruction_target(ctx.agent, node, path)
+            except ValueError as exc:
+                return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+
         experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip() or None
         try:
             result = await _asyncio.to_thread(
@@ -2996,15 +3095,21 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 rows=rows,
                 agent=ctx.agent if ctx else None,
                 model=getattr(ctx.config, "model", "") if ctx else "",
-                current_instructions=_current_root_instructions(ctx),
+                current_instructions=current_instructions,
                 experiment_id=experiment_id,
                 reflection_model="databricks:/databricks-claude-sonnet-4-6",
+                target=target,
             )
         except Exception as exc:  # noqa: BLE001 — optimize/predict failure → clean 500 (transient prompt already cleaned in finally)
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
         status = result.pop("status")
         if not result["ok"]:
             return JSONResponse(result, status_code=status)
+        result["node"] = node
+        if source is not None:
+            if path.read_text() != source:
+                return JSONResponse({"ok": False, "error": "Agent source changed while optimizing; reload and try again."}, status_code=409)
+            result["source"] = _set_agent_instructions(source, result["candidate"], target=node)
         return result
 
     @router.get("/_apx/tools/schema", response_model=ToolSchemaResponse)
