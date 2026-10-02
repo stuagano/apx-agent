@@ -118,7 +118,6 @@ def test_manifest_projects_agent_tools_resources_and_scopes() -> None:
         )
     assert [r.model_dump() for r in manifest.resources] == [
         {"kind": "job", "identifier": "telemetry-job"},
-        {"kind": "serving_endpoint", "identifier": "model-a"},
         {"kind": "uc_table", "identifier": "main.sales.orders"},
     ]
     assert [r.model_dump() for r in manifest.user_resources] == [
@@ -217,7 +216,13 @@ def test_manifest_does_not_fetch_remote_cards() -> None:
     manifest = compile_apps_host_manifest(agent)
 
     assert manifest.tools == []
-    assert manifest.resources
+    # Apps peers are app-to-app permissions, not ResourceSpecs. The chat model
+    # is an ai-gateway scope, not a serving_endpoint resource.
+    assert manifest.resources == []
+    assert [p.url for p in manifest.app_to_app_permissions] == [
+        "https://peer.cloud.databricksapps.com",
+    ]
+    assert manifest.user_api_scopes == ["ai-gateway"]
 
 
 def test_manifest_separates_apps_peers_from_resource_specs() -> None:
@@ -235,10 +240,6 @@ def test_manifest_separates_apps_peers_from_resource_specs() -> None:
     manifest = compile_apps_host_manifest(agent)
 
     assert [r.model_dump() for r in manifest.resources] == [
-        {
-            "kind": "serving_endpoint",
-            "identifier": "databricks-meta-llama-3-3-70b-instruct",
-        },
         {"kind": "serving_endpoint", "identifier": "model-peer"},
     ]
     assert [p.model_dump() for p in manifest.app_to_app_permissions] == [

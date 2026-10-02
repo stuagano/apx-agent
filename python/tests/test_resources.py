@@ -10,7 +10,7 @@ Covers:
   4. collect_resource_specs walks the agent tree:
        * LlmAgent direct tools
        * SequentialAgent / ParallelAgent / LoopAgent / RouterAgent / HandoffAgent
-       * The model serving endpoint is included when ``model=...`` is given
+       * The chat model is not emitted as a serving_endpoint when ``model=...`` is given
        * Sub-agent URLs become serving_endpoint specs
        * Apps URLs are skipped (no MLflow resource for them)
        * Duplicates are deduped, order preserved
@@ -167,10 +167,12 @@ def _plain_tool(question: str) -> str:
     return question
 
 
-def test_collect_includes_model_endpoint() -> None:
+def test_collect_does_not_emit_chat_model_as_serving_endpoint() -> None:
+    """The chat model is UC AI Gateway, not a serving_endpoint grant."""
     agent = Agent(tools=[_plain_tool])
     specs = collect_resource_specs(agent, model="databricks-claude-sonnet-4-6")
-    assert ResourceSpec("serving_endpoint", "databricks-claude-sonnet-4-6") in specs
+    assert specs == []
+    assert ResourceSpec("serving_endpoint", "databricks-claude-sonnet-4-6") not in specs
 
 
 def test_collect_includes_tool_resources_from_llm_agent() -> None:
@@ -184,7 +186,7 @@ def test_collect_includes_tool_resources_from_llm_agent() -> None:
     specs = collect_resource_specs(agent, model="m")
     assert ResourceSpec("genie_space", "space-abc") in specs
     assert ResourceSpec("uc_function", "main.tools.classify") in specs
-    assert ResourceSpec("serving_endpoint", "m") in specs
+    assert ResourceSpec("serving_endpoint", "m") not in specs
 
 
 def test_collect_walks_sequential_agent() -> None:
@@ -269,8 +271,8 @@ def test_collect_preserves_first_occurrence_order() -> None:
     )
     specs = collect_resource_specs(agent, model="m")
     kinds = [s.kind for s in specs]
-    # model endpoint is added first, then tool resources in registration order
-    assert kinds == ["serving_endpoint", "genie_space", "uc_function"]
+    # Chat model is not a resource. Tool resources stay in registration order.
+    assert kinds == ["genie_space", "uc_function"]
 
 
 def test_collect_includes_sub_agent_endpoints() -> None:
@@ -289,9 +291,9 @@ def test_collect_skips_apps_sub_agents() -> None:
         sub_agents=["https://data-triage-12345678.cloud.databricksapps.com"],
     )
     specs = collect_resource_specs(agent, model="m")
-    # No serving_endpoint entry except the model itself
+    # Apps sub-agents and the chat model both contribute no serving_endpoint.
     endpoint_idents = [s.identifier for s in specs if s.kind == "serving_endpoint"]
-    assert endpoint_idents == ["m"]
+    assert endpoint_idents == []
 
 
 def test_collect_accepts_extra_resources() -> None:
@@ -542,6 +544,14 @@ def test_user_api_scopes_per_kind() -> None:
 
     assert user_api_scopes_for([ResourceSpec("serving_endpoint", "m")]) == [
         "model-serving"
+    ]
+    # A tool/sub-agent serving endpoint stays model-serving. The chat model is
+    # a separate ai-gateway scope and does not remap that kind.
+    assert user_api_scopes_for(
+        [ResourceSpec("serving_endpoint", "m")], model="databricks-claude-sonnet-4-6"
+    ) == ["ai-gateway", "model-serving"]
+    assert user_api_scopes_for([], model="databricks-claude-sonnet-4-6") == [
+        "ai-gateway"
     ]
     assert user_api_scopes_for([ResourceSpec("genie_space", "sp")]) == [
         "genie"

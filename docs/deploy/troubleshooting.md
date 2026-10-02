@@ -147,18 +147,18 @@ databricks --profile prod schemas get-permissions main.agents \
 
 ### LLM endpoint not accessible / model name resolves wrong
 
-**Symptom.** Deploy succeeds, first `predict` against the endpoint returns `RESOURCE_DOES_NOT_EXIST` or `ENDPOINT_NOT_FOUND` from inside the agent.
+**Symptom.** Deploy succeeds, first chat call returns `RESOURCE_DOES_NOT_EXIST` or the model name is rejected.
 
-**Diagnosis.** The `--model` value passed to `apx-agent agents deploy` is a **serving endpoint name**, not a UC path or a foundation-model alias. `databricks-claude-sonnet-4-6` is an endpoint name. `system.ai.claude-sonnet-4-6` is not — that's a UC function reference and won't work here.
+**Diagnosis.** The agent chat model is called through **Unity Catalog AI Gateway** (`{host}/ai-gateway/mlflow/v1`), not the Model Serving query API. `get_llm` sends the `--model` string unchanged. `databricks-claude-sonnet-4-6` is a valid foundation-model name on that path. `system.ai.claude-sonnet-4-6` is a UC **model service** name (`catalog.schema.id`), not a UC function — it is also a valid chat-model string when that service exists. Do not debug a chat 404 with `serving-endpoints get`; that looks up a different API. Serving endpoints still matter for embeddings, sub-agent endpoints, and `bedrock:` external models.
 
 **Fix.**
 
 ```bash
-# Confirm the endpoint exists in this workspace before deploying.
-databricks --profile prod serving-endpoints get databricks-claude-sonnet-4-6 \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['ready'])"
+# For a UC model-service name (catalog.schema.id), confirm it exists:
+databricks api get \
+  /api/2.1/unity-catalog/model-services/system.ai.claude-sonnet-4-6
 
-# If it returns READY, use that exact string for --model.
+# Foundation-model names (databricks-*) are sent as-is. Use that exact string.
 apx-agent agents deploy --module agent:agent \
   --model databricks-claude-sonnet-4-6 \
   --name main.agents.my_agent

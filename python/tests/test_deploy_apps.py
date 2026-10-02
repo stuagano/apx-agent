@@ -1598,12 +1598,42 @@ def test_apps_deploy_resource_conflict_fails_before_bundle_deploy(
     conflict: str,
     match: str,
 ) -> None:
-    """Normal deploy validates existing bundle conflicts before baking."""
-    from apx_agent.cli import _APPS_DEFAULT_MODEL
+    """Normal deploy validates existing bundle conflicts before baking.
+
+    The chat model is not a serving resource. Conflict detection still applies
+    to a tool or sub-agent serving endpoint the plan actually grants.
+    """
     from apx_agent._resources import resources_to_databricks_yml
 
+    (scaffold / "agent.py").write_text(textwrap.dedent("""\
+        from apx_agent import Dependencies, ResourceSpec
+
+        class _StubAgent:
+            def __init__(self):
+                self._tool_fns = [_make_tool()]
+                self._sub_agent_urls = []
+
+        def _make_tool():
+            def t(ws: Dependencies.Client): return "ok"
+            t._apx_resources = [
+                ResourceSpec("serving_endpoint", "tool-endpoint"),
+            ]
+            return t
+
+        agent = _StubAgent()
+        """))
+    sys.modules.pop("agent", None)
+    monkeypatch.setattr(
+        "apx_agent._resources._iter_tool_fns",
+        lambda agent: iter(agent._tool_fns),
+    )
+    monkeypatch.setattr(
+        "apx_agent._resources._iter_sub_agents",
+        lambda agent: iter([]),
+    )
+
     [generated] = resources_to_databricks_yml([
-        ResourceSpec("serving_endpoint", _APPS_DEFAULT_MODEL),
+        ResourceSpec("serving_endpoint", "tool-endpoint"),
     ])
     body = generated["serving_endpoint"]
     if conflict == "permission":

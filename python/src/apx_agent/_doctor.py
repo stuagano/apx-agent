@@ -462,11 +462,31 @@ def check_databricks_workspace(*, auth_ok: bool) -> Check:
         )
 
 
+def _ai_gateway_model_service_name(model: str) -> str | None:
+    """Resource name for ``ai_gateway.get_model_service``, or None.
+
+    The SDK requires ``model-services/{catalog}.{schema}.{id}``. A three-part
+    UC name (``system.ai.claude-sonnet-4-5``) maps directly. A ``databricks-*``
+    foundation-model name is the string ``get_llm`` sends unchanged; it is not
+    that resource name, so doctor does not guess a rewrite.
+    """
+    if model.startswith("model-services/"):
+        return model
+    parts = model.split(".")
+    if len(parts) == 3 and all(parts):
+        return f"model-services/{model}"
+    return None
+
+
 def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
-    """Verify the configured model endpoint exists in the workspace.
+    """Verify the configured chat model is reachable through UC AI Gateway.
 
     Only runs when inside an apx project (reads `model` from pyproject.toml)
     and auth is available. Returns None when there's nothing to check.
+
+    Looks the model up with ``WorkspaceClient.ai_gateway.get_model_service``.
+    Does not call ``serving_endpoints.get``: the chat LLM is not a Model
+    Serving endpoint.
     """
     if not auth_ok:
         return None
@@ -489,48 +509,57 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
     )
     if not model:
         return None
-    label = f"Model endpoint ({model})"
+    label = f"Model service ({model})"
+    service_name = _ai_gateway_model_service_name(model)
+    if service_name is None:
+        return Check(
+            label, Status.WARN,
+            f"chat model {model!r} is not a model-service name "
+            "(expected catalog.schema.id); UC AI Gateway is still the client",
+            "get_llm sends this name unchanged to /ai-gateway/mlflow/v1. "
+            "Doctor cannot look a databricks-* name up as a model service "
+            "without guessing a rewrite. Confirm the name on AI Gateway if "
+            "calls 404.",
+        )
     try:
         from databricks.sdk import WorkspaceClient
         ws = WorkspaceClient()
-        ep = ws.serving_endpoints.get(model)
-        state = getattr(getattr(ep, "state", None), "ready", None)
-        if state and str(state).upper() not in ("READY", "NOT_UPDATING"):
+        service = ws.ai_gateway.get_model_service(service_name)
+        name = getattr(service, "name", None)
+        if not name:
             return Check(
                 label, Status.WARN,
-                f"endpoint exists but state={state}",
-                "The model endpoint may be deploying or degraded — try again in a minute.",
+                "model service lookup returned no name",
+                "Confirm the model under Unity Catalog AI Gateway.",
             )
-        return Check(label, Status.OK, "exists and reachable", None)
+        return Check(label, Status.OK, "model service exists and is reachable", None)
     except Exception as e:
         msg = str(e)
         if "404" in msg or "does not exist" in msg.lower() or "not found" in msg.lower():
             return Check(
                 label, Status.FAIL,
-                f"endpoint not found: {model}",
-                "Check the endpoint name under Serving in your workspace. "
-                "Update `model` in pyproject.toml [tool.apx.agent] to match.",
+                f"model service not found: {service_name}",
+                "Update `model` in pyproject.toml [tool.apx.agent] to a "
+                "Unity Catalog AI Gateway model service (catalog.schema.id).",
             )
         return Check(
             label, Status.WARN,
-            f"could not verify endpoint ({msg})",
-            "Endpoint lookup failed — check auth and workspace access.",
+            f"could not verify model service ({msg})",
+            "Model-service lookup failed — check auth and workspace access.",
         )
 
 
 def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
-    """WARN when an Apps-target agent's model endpoint has no AI Gateway guardrails.
+    """Abstain: Serving-endpoint guardrails do not govern the chat model.
 
-    A Databricks App is NOT automatically wrapped by Mosaic AI Gateway
-    guardrails — they attach to the Model Serving endpoint the app calls, and
-    enforcement is server-side around inference. So an Apps deployment whose
-    ``model`` endpoint has no guardrails runs PII/injection/safety-unprotected,
-    and nothing surfaces it. This check reads that state back.
+    Mosaic AI Gateway guardrails attach to a Model Serving endpoint. The chat
+    LLM no longer calls one — ``get_llm`` uses Unity Catalog AI Gateway — and
+    a ``ModelService`` has no ``ai_gateway.guardrails`` field. Reporting OK
+    from a serving-endpoint lookup would be a false pass, so this check WARNs
+    and does not call ``serving_endpoints.get``.
 
     Returns None (nothing to check) unless: an apx project, auth is available,
-    a ``model`` is declared, and the target is ``apps`` — a model-serving deploy
-    *is* the governed endpoint, so there's no bypass to warn about. Never FAILs
-    (advisory finding) and never crashes doctor (lookup errors degrade to WARN).
+    a ``model`` is declared, and the target is ``apps``. Never FAILs.
     """
     if not auth_ok or not _is_apx_project(cwd):
         return None
@@ -558,34 +587,13 @@ def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
     if _detect_target(cwd).target != "apps":
         return None
 
-    label = f"AI Gateway guardrails ({model})"
-    try:
-        from databricks.sdk import WorkspaceClient
-        ws = WorkspaceClient()
-        ep = ws.serving_endpoints.get(model)
-    except Exception as e:
-        return Check(
-            label, Status.WARN,
-            f"could not verify guardrails ({e})",
-            "Guardrail lookup failed — check auth and workspace access.",
-        )
-
-    gateway = getattr(ep, "ai_gateway", None)
-    guardrails = getattr(gateway, "guardrails", None) if gateway is not None else None
-    active = guardrails is not None and (
-        getattr(guardrails, "input", None) is not None
-        or getattr(guardrails, "output", None) is not None
-    )
-    if active:
-        return Check(
-            label, Status.OK, "guardrails active on the endpoint this App calls", None
-        )
     return Check(
-        label, Status.WARN,
-        "endpoint has no AI Gateway guardrails — this Apps deployment calls it "
-        "unguarded (PII/injection/safety not enforced)",
-        f"Configure AI Gateway guardrails on the `{model}` serving endpoint "
-        "(Serving UI or the AI Gateway API) so the App's LLM calls are governed.",
+        f"AI Gateway guardrails ({model})", Status.WARN,
+        "Serving-endpoint guardrails do not apply — the chat model is called "
+        "through Unity Catalog AI Gateway, which has no serving guardrail config",
+        "Do not look this model up with `serving-endpoints get`. Govern it as "
+        "a UC AI Gateway model service. This check abstains rather than "
+        "reporting a serving-endpoint guardrail as if it covered the chat call.",
     )
 
 

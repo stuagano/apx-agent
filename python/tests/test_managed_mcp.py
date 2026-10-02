@@ -125,13 +125,15 @@ def test_host_normalised_consistently(host: str) -> None:
 
 
 def test_serving_endpoint_marked_unsupported() -> None:
-    # The model serving endpoint is auto-declared by collect_resource_specs
-    # when model=... is passed — it's "unsupported" by Managed MCP today.
-    @tool(uc="main.tools.f")
+    # A tool/sub-agent serving endpoint has no Managed MCP equivalent.
+    # The chat model is not a serving_endpoint (UC AI Gateway).
+    from apx_agent import attach_resources
+
     def f(x: str) -> str:
         """."""
         return x
 
+    attach_resources(f, [ResourceSpec("serving_endpoint", "tool-endpoint")])
     agent = Agent(tools=[f])
     endpoints = managed_mcp_urls(
         agent,
@@ -140,6 +142,7 @@ def test_serving_endpoint_marked_unsupported() -> None:
     )
     serving = [e for e in endpoints if e.kind == "serving_endpoint"]
     assert len(serving) == 1
+    assert serving[0].identifier == "tool-endpoint"
     assert serving[0].unsupported is True
     assert serving[0].url is None
     assert serving[0].oauth_scope is None

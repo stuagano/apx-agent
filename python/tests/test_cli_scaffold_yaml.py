@@ -220,8 +220,8 @@ class TestScaffoldEmitsOKF:
     def test_apps_databricks_yml_has_no_experiment_resource(self, tmp_path):
         # Task 1 removed the unsupported `experiment` app-resource from the
         # apps-target scaffold's generated databricks.yml. Guard the fix:
-        # no `experiment` resource type, `serving_endpoint` still present
-        # (a valid, non-empty resource list), and the tracing env binding
+        # no `experiment` resource type, no chat-model serving_endpoint
+        # (the LLM is an ai-gateway scope), and the tracing env binding
         # (MLFLOW_EXPERIMENT_ID) still wired into config.env.
         result, target = self._invoke_apps(tmp_path)
         assert result.exit_code == 0, result.output
@@ -243,7 +243,8 @@ class TestScaffoldEmitsOKF:
         assert "experiment" not in resource_types, (
             f"scaffold still emits an 'experiment' app resource: {resource_types}"
         )
-        assert "serving_endpoint" in resource_types
+        assert "serving_endpoint" not in resource_types
+        assert app["user_api_scopes"] == ["ai-gateway", "sql"]
 
         assert "MLFLOW_EXPERIMENT_ID" in raw
 

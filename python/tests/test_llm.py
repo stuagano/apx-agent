@@ -23,16 +23,19 @@ def test_claude_returns_plain_chat_databricks():
     assert isinstance(llm, ChatDatabricks)
     # Plain ChatDatabricks, NOT the reasoning subclass.
     assert type(llm).__name__ == "ChatDatabricks"
+    assert llm.use_ai_gateway is True
 
 
 def test_llama_returns_plain_chat_databricks():
     llm = get_llm("databricks-meta-llama-3-3-70b-instruct")
     assert type(llm).__name__ == "ChatDatabricks"
+    assert llm.use_ai_gateway is True
 
 
 def test_gemini_returns_plain_chat_databricks():
     llm = get_llm("databricks-gemini-2-5-flash")
     assert type(llm).__name__ == "ChatDatabricks"
+    assert llm.use_ai_gateway is True
 
 
 def test_gpt_5_returns_reasoning_subclass():
@@ -40,6 +43,13 @@ def test_gpt_5_returns_reasoning_subclass():
     # Subclass of ChatDatabricks, named ChatDatabricksGptReasoning.
     assert isinstance(llm, ChatDatabricks)
     assert type(llm).__name__ == "ChatDatabricksGptReasoning"
+    assert llm.use_ai_gateway is True
+
+
+def test_get_llm_rejects_serving_transport_opt_out():
+    """The chat model has one transport. Callers cannot turn the flag off."""
+    with pytest.raises(ValueError, match="use_ai_gateway"):
+        get_llm("databricks-claude-sonnet-4-6", use_ai_gateway=False)
 
 
 def test_gpt_5_5_pro_routes_to_reasoning_subclass():
@@ -52,6 +62,7 @@ def test_gpt_5_5_pro_routes_to_reasoning_subclass():
     """
     llm = get_llm("databricks-gpt-5-5-pro")
     assert type(llm).__name__ == "ChatDatabricksGptReasoning"
+    assert llm.use_ai_gateway is True
 
 
 # ---------------------------------------------------------------------------

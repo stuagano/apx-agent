@@ -275,7 +275,7 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Model factory — drops `temperature` for Anthropic-on-Databricks
+# Model factory — UC AI Gateway client, with provider request-shape quirks
 # ---------------------------------------------------------------------------
 
 
@@ -287,15 +287,16 @@ def _build_chat_databricks(
 ) -> Any:
     """Build the ChatDatabricks for an agent's compile path.
 
-    Delegates to the public ``get_llm`` factory, which routes by endpoint
-    prefix and applies provider-specific quirk defenses (e.g., stripping
-    ``temperature``/``top_p`` for GPT-5 family endpoints). See
-    ``apx_agent._llm`` for the full provider-compat rationale.
+    Delegates to the public ``get_llm`` factory, which always sets
+    ``use_ai_gateway=True`` and routes by model-name prefix for
+    provider-specific quirk defenses (e.g., stripping ``temperature``/``top_p``
+    for GPT-5 family models). See ``apx_agent._llm`` for the full
+    provider-compat rationale.
 
     ``temperature``/``max_tokens`` are forwarded to the underlying client only
-    when set, so ``LlmAgent`` generation knobs take effect. Endpoints that
-    reject a knob (e.g. the GPT-5 reasoning family strips ``temperature``)
-    still drop it defensively inside ``get_llm``.
+    when set, so ``LlmAgent`` generation knobs take effect. Models that reject
+    a knob (e.g. the GPT-5 reasoning family strips ``temperature``) still drop
+    it defensively inside ``get_llm``.
     """
     from ._llm import get_llm
 

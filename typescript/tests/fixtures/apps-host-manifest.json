@@ -32,10 +32,6 @@
       "kind": "job"
     },
     {
-      "identifier": "model-a",
-      "kind": "serving_endpoint"
-    },
-    {
       "identifier": "main.sales.orders",
       "kind": "uc_table"
     }
@@ -44,10 +40,6 @@
     {
       "identifier": "telemetry-job",
       "kind": "job"
-    },
-    {
-      "identifier": "model-a",
-      "kind": "serving_endpoint"
     }
   ],
   "tools": [
@@ -155,6 +147,7 @@
     }
   ],
   "user_api_scopes": [
+    "ai-gateway",
     "catalog.catalogs:read",
     "sql"
   ],

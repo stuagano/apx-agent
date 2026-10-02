@@ -95,6 +95,10 @@ class AuthorizationPlan:
     service_resources: tuple[ResourceSpec, ...]
     user_api_scopes: tuple[str, ...]
     app_dependencies: tuple[AppDependency, ...]
+    # Chat model this plan was compiled for. None when there is no chat model.
+    # ``user_api_scopes`` includes ``ai-gateway`` when this is set; the model is
+    # not a ``serving_endpoint`` resource.
+    model: str | None = None
 
 
 _USER_DEPENDENCIES = frozenset({_get_user_client, _get_sql_runner})
@@ -357,17 +361,13 @@ def compile_authorization_plan(
             raise ValueError(f"Duplicate reachable operation name {operation.name!r}.")
         names.add(operation.name)
     user_resources: set[ResourceSpec] = set()
-    # A provider-scheme model (``bedrock:…``) resolves to the external-model
-    # endpoint apx provisions on deploy; the CAN_QUERY resource must name that
-    # endpoint, not the raw scheme string. A bare model passes through.
-    from ._external_model import parse_model_scheme
-
-    ext = parse_model_scheme(model)
-    endpoint_name = ext.endpoint_name if ext is not None else model
-    service_resources: set[ResourceSpec] = {
-        ResourceSpec("serving_endpoint", endpoint_name),
-    }
-    raw_user_scopes: set[str] = set()
+    # The chat model is not a serving_endpoint grant. get_llm always calls it
+    # through Unity Catalog AI Gateway, so the OBO scope is ``ai-gateway``
+    # (added below). A ``bedrock:…`` scheme still provisions an external-model
+    # serving endpoint (``_external_model``), but that endpoint is not the
+    # chat-model transport and is not granted here.
+    service_resources: set[ResourceSpec] = set()
+    raw_user_scopes: set[str] = {"ai-gateway"} if model else set()
 
     for operation in operations:
         if operation.execution_identity == "user":
@@ -412,7 +412,7 @@ def compile_authorization_plan(
         key=lambda resource: (resource.kind, resource.identifier),
     ))
     user_api_scopes = tuple(sorted({
-        *user_api_scopes_for(ordered_user_resources),
+        *user_api_scopes_for(ordered_user_resources, model=model),
         *raw_user_scopes,
     }))
     return AuthorizationPlan(
@@ -424,6 +424,7 @@ def compile_authorization_plan(
             app_dependencies,
             key=lambda dependency: dependency.url,
         )),
+        model=model,
     )
 
 

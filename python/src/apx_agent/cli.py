@@ -1869,16 +1869,13 @@ resources:
       # need; add `genie` for genie_tool and `vector-search`
       # for vector_search_tool. (Changing scopes requires users to re-authorize.)
       user_api_scopes:
+        - ai-gateway
         - sql
-        - model-serving
-      resources:
-        # apx-agent agents deploy --target apps will auto-add resources from the agent's
-        # ResourceSpec list. For now, list any extras here manually:
-        - name: llm-endpoint
-          description: Foundation model endpoint used by the agent.
-          serving_endpoint:
-            name: ${var.llm_endpoint_name}
-            permission: CAN_QUERY
+      # Deploy adds ResourceSpec entries here. The chat model is not one of
+      # them: get_llm calls it through Unity Catalog AI Gateway (the
+      # ai-gateway scope above), not a serving_endpoint CAN_QUERY grant.
+      # APX_MODEL still carries the model name.
+      resources: []
 
       # NOTE: the DAB schema for ``apps.<name>.config`` uses ``env`` (a list
       # of {name, value} dicts) — NOT ``env_variables``. ``bundle validate``
@@ -9402,7 +9399,10 @@ def _validate_apps_authorization_plan(
             "Authorization plan assigns a user API scope to a service operation."
         )
     required_user_scopes = {
-        *user_api_scopes_for(plan.user_resources),
+        *user_api_scopes_for(
+            plan.user_resources,
+            model=plan.model,
+        ),
         *(
             scope
             for operation in plan.operations

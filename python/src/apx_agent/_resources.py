@@ -13,8 +13,9 @@ This module derives that list automatically from the agent's own structure:
     ``_apx_resources`` attribute — a list of ``ResourceSpec`` tuples.
   * ``collect_resource_specs(agent, model=...)`` walks the agent tree
     (LlmAgent, SequentialAgent, ParallelAgent, LoopAgent, RouterAgent,
-    HandoffAgent), gathers every tool's specs, adds the LLM serving endpoint,
-    and adds an endpoint reference for each sub-agent.
+    HandoffAgent), gathers every tool's specs, and adds an endpoint reference
+    for each sub-agent. The chat ``model`` is not a serving-endpoint resource;
+    it is called through Unity Catalog AI Gateway (OBO scope ``ai-gateway``).
   * ``mlflow_resources_for(agent, model=...)`` materializes the specs into
     concrete ``mlflow.models.resources.DatabricksResource`` instances ready to
     pass to ``mlflow.pyfunc.log_model(resources=...)``.
@@ -328,17 +329,23 @@ def collect_resource_specs(
     Includes:
 
       * Every tool's ``_apx_resources`` annotations.
-      * ``ResourceSpec("serving_endpoint", model)`` if ``model`` is given —
-        the LLM endpoint the compiled graph calls.
       * One ``ResourceSpec("serving_endpoint", ...)`` per sub_agent URL that
         resolves to a Model Serving endpoint reference. Apps URLs are skipped
         (they're declared via app-to-app permissions, not MLflow resources).
       * Any ``extra`` specs passed by the caller (escape hatch for warehouses,
         UC tables, vector indices, etc. that aren't auto-inferrable).
 
+    The chat ``model`` is not a ``serving_endpoint`` resource. The compiled
+    graph calls it through Unity Catalog AI Gateway, whose OBO scope is
+    ``ai-gateway`` (see :func:`user_api_scopes_for`). A tool or sub-agent that
+    really is a Model Serving endpoint still produces a ``serving_endpoint``
+    spec.
+
     Order is preserved for the first occurrence of each (kind, identifier)
-    pair; duplicates are dropped.
+    pair; duplicates are dropped. ``model`` is accepted so existing callers
+    stay compatible; it no longer adds a resource.
     """
+    del model  # chat LLM is an ai-gateway scope, not a serving_endpoint resource
     seen: set[tuple[str, str]] = set()
     out: list[ResourceSpec] = []
 
@@ -348,9 +355,6 @@ def collect_resource_specs(
             return
         seen.add(key)
         out.append(spec)
-
-    if model:
-        _add(ResourceSpec("serving_endpoint", model))
 
     for fn in _iter_tool_fns(agent):
         for spec in get_resources(fn):
@@ -679,18 +683,27 @@ _KIND_TO_SCOPE: dict[str, str] = {
 }
 
 
-def user_api_scopes_for(resources: Iterable["ResourceSpec"]) -> list[str]:
+def user_api_scopes_for(
+    resources: Iterable["ResourceSpec"],
+    *,
+    model: str | None = None,
+) -> list[str]:
     """Derive the OBO ``user_api_scopes`` an Apps deploy needs from its resources.
 
     e.g. a Genie space → ``genie``; a serving endpoint →
-    ``model-serving``. Returned sorted + de-duplicated. Note: a
-    ``sql_tool`` that auto-discovers its warehouse declares no SQL resource —
-    that path uses :func:`require_user_api_scopes` for ``sql`` instead, and
-    deploy unions both sources onto the scaffold baseline.
+    ``model-serving``. A chat ``model`` adds ``ai-gateway``: the compiled
+    graph calls it through Unity Catalog AI Gateway, not Model Serving, and
+    there is no ``ResourceSpec`` kind for that client. Returned sorted +
+    de-duplicated. Note: a ``sql_tool`` that auto-discovers its warehouse
+    declares no SQL resource — that path uses :func:`require_user_api_scopes`
+    for ``sql`` instead, and deploy unions both sources onto the scaffold
+    baseline.
     """
     scopes = {
         _KIND_TO_SCOPE[s.kind] for s in resources if s.kind in _KIND_TO_SCOPE
     }
+    if model:
+        scopes.add("ai-gateway")
     return sorted(scopes)
 
 

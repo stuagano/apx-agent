@@ -805,7 +805,13 @@ def test_generated_appkit_host_build_and_supervisor_lifecycle(
             pass
 
         def _respond(self) -> None:
-            if "/serving-endpoints/" in self.path:
+            # Chat LLM is Unity Catalog AI Gateway
+            # ({host}/ai-gateway/mlflow/v1/chat/completions). The serving
+            # path stays for any leftover client that still probes it.
+            if (
+                "/ai-gateway/mlflow/v1" in self.path
+                or "/serving-endpoints/" in self.path
+            ):
                 payload = json.dumps(
                     {
                         "id": "local-completion",
