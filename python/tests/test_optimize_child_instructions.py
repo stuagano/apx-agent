@@ -41,6 +41,8 @@ async def test_child_candidates_execute_without_mutating_live_agent_or_source(tm
     monkeypatch.setattr("mlflow.MlflowClient", lambda: client)
     prompt = SimpleNamespace(template="CANDIDATE A")
     monkeypatch.setattr("mlflow.genai.load_prompt", lambda uri: prompt)
+    # Keep the real compiler/prediction path, but never resolve ambient SDK auth.
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", MagicMock())
     monkeypatch.setattr(_compile, "_build_chat_databricks", lambda *a, **k: GenericFakeChatModel(messages=iter([AIMessage(content="OK")])))
     compiled_instructions = []
     compile_agent = _eval.compile_to_chat_agent
