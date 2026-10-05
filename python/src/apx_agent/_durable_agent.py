@@ -126,4 +126,21 @@ def compile_to_durable_agent_server(
     if app.auth_policy.requires_user:
         raise ValueError("user_identity: the selected Agent Bricks manifest requires request-user auth, which this APX target does not wire yet")
     app.invoke(handlers.invoke)
+
+    @app.get("/readyz")
+    async def readyz() -> Any:
+        import uuid
+        from fastapi.responses import JSONResponse
+
+        try:
+            await app._runtime.runtime_store.get(invocation_id=str(uuid.uuid4()))
+        except Exception:
+            return JSONResponse(status_code=503, content={
+                "status": "degraded", "checks": {"runtime_store": "unreachable"},
+            })
+        return {"status": "ready", "checks": {
+            "runtime_store": "ok", "durable": app._runtime.is_durable,
+            "agent_execution": "not_probed",
+        }}
+
     return app

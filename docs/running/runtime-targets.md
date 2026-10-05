@@ -145,6 +145,53 @@ than silently reinterpreted as SDK configuration. To bind another checkpointer,
 author the entrypoint with `compile_agent(..., checkpointer=...)`.
 No storage is provisioned by changing the host selector alone.
 
+## Deploy the durable target into an App Space
+
+Use the existing Apps deploy command with the native bundle `space` field.
+Keep the space and runtime configuration in the root app declaration:
+
+```yaml
+resources:
+  apps:
+    orders:
+      name: orders
+      space: your-space
+      source_code_path: ./.build
+      config:
+        env:
+          - name: APX_APPS_HOST
+            value: agentbricks
+          - name: AGENT_SESSION_STORE
+            value: orders-sessions
+```
+
+```sh
+apx-agent agents deploy --target apps --profile your-selected-profile
+```
+
+The space must already exist and provide the required scopes and service
+resources. Remove generated app-level resources, scopes, permissions and
+dedicated-instance scaling fields; pause or remove the generated keepalive job.
+Use a self-contained bundle without includes, bundle-level permissions or target
+presets; this initial route validates the root configuration directly.
+Configure tracing through the space. This route reads inherited policy and
+refuses to move an existing app between spaces or widen its grants.
+
+Deployment first applies the bundle, verifies the app's space and LIQUID compute,
+then uses the Agent Bricks SDK to create or reuse its managed Runtime Store.
+The SDK checks app and service-principal ownership. APX saves the non-secret
+connection coordinates in `databricks.yml`, reapplies the bundle and starts the
+app. Existing conflicting coordinates fail deployment. Leave package indexes
+to the workspace, and keep host/store settings out of source `app.yaml` so they
+cannot override the bundle binding.
+
+The managed Runtime Store records native invocations. `AGENT_SESSION_STORE`
+separately binds an existing conversation checkpoint store. Neither binding adds
+long-term memory or a recovery handler to this compiler. `/readyz` checks Runtime
+Store reachability and reports whether the SDK is durable; it does not execute a
+model or tool. Local tests cover SDK ownership validation and the deployment
+sequence with a fake workspace; they do not prove a new live deployment.
+
 The local tests exercise MLflow save/load with prediction and streaming, real graph/tool execution, an actual SDK HTTP invocation
 and result readback, idempotent invocation IDs, checkpoint history, approval
 pause/resume, and capability refusals. Managed session tests reconstruct the

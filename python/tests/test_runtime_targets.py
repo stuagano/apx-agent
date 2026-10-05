@@ -339,6 +339,9 @@ def test_real_durable_server_http_and_readback(execution: Any, monkeypatch: pyte
     invocation_id = str(uuid.uuid4())
     body = {"id": invocation_id, "input": {"messages": [{"role": "user", "content": "record"}]}}
     with TestClient(app) as client:
+        readiness = client.get("/readyz")
+        assert readiness.status_code == 200
+        assert readiness.json()["checks"]["runtime_store"] == "ok"
         response = client.post("/api/invocations", json=body)
         assert response.status_code == 200, response.text
         assert response.json()["output"]["messages"][-1]["content"] == "Recorded proof"
@@ -348,6 +351,10 @@ def test_real_durable_server_http_and_readback(execution: Any, monkeypatch: pyte
         # The runtime's idempotent invocation id must not execute the tool twice.
         repeated = client.post("/api/invocations", json=body)
         assert repeated.status_code == 200, repeated.text
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(app._runtime.runtime_store, "get", AsyncMock(side_effect=ConnectionError("offline")))
+        assert client.get("/readyz").status_code == 503
     assert execution.effects == ["proof"]
 
 
