@@ -40,6 +40,42 @@ class ToolModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=reply)])
 
 
+@pytest.mark.parametrize("identity", ["service", "user", "memory"])
+def test_native_manifest_uses_existing_authorization_contract(
+    identity: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ctk import Artifact, verify
+    from databricks_agentbricks.agent_project import AgentProject
+    from databricks_agentkit.runtime.auth import InvocationAuthPolicy
+    from apx_agent import AgentConfig, ResourceSpec, require_user_api_scopes
+    from apx_agent._apps_authorization import compile_authorization_plan
+    from apx_agent._durable_agent import build_native_manifest
+    from apx_agent._resources import attach_resources
+
+    def lookup(ws: Dependencies.UserClient) -> str:
+        """Use the authenticated user's SQL service."""
+        return "ok"
+
+    attach_resources(lookup, [ResourceSpec(kind="sql_warehouse", identifier="warehouse")])
+    require_user_api_scopes(lookup, ["sql", "catalog.catalogs:read"])
+    agent = LlmAgent(name="native", tools=[lookup] if identity == "user" else [])
+    config = AgentConfig(name="native", target="durable_agent_server",
+                         memory={"type": "managed", "store_name": "agent-memory"} if identity == "memory" else None)
+    plan = compile_authorization_plan(agent, model=config.model)
+    manifest = tmp_path / "agent.toml"
+    manifest.write_text(build_native_manifest(config=config, authorization_plan=plan))
+    verify(Artifact(str(manifest), must_contain="[auth.user]"))
+    project = AgentProject.load(tmp_path)
+    assert project.user_auth.required == (identity != "service")
+    assert project.user_auth.additional_api_scopes == (plan.user_api_scopes if identity != "service" else ())
+    if identity == "user":
+        assert project.user_auth.additional_api_scopes.count("sql") == 1
+        assert "catalog.catalogs:read" in project.user_auth.additional_api_scopes
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    assert InvocationAuthPolicy.from_manifest().requires_user == (identity != "service")
+
+
 @pytest.fixture
 def execution(monkeypatch: pytest.MonkeyPatch) -> Any:
     effects: list[str] = []
@@ -134,10 +170,10 @@ def test_mlflow_initialization_is_shared_across_concurrent_callers(execution: An
 def test_unsupported_requirement_fails_before_optional_import(execution: Any) -> None:
     from apx_agent import RuntimeRequirements, compile_agent
 
-    with pytest.raises(ValueError, match="user_identity"):
+    with pytest.raises(ValueError, match="recovery"):
         compile_agent(
             execution.agent, target="durable_agent_server", model="test-model",
-            requirements=RuntimeRequirements(user_identity=True),
+            requirements=RuntimeRequirements(recovery=True),
         )
     assert execution.effects == []
 
@@ -163,7 +199,7 @@ def test_unknown_target_is_rejected(execution: Any) -> None:
         inspect_target(execution.agent, target="typo")
 
 
-@pytest.mark.parametrize("requirement", ["sessions", "approvals", "long_term_memory", "recovery", "streaming"])
+@pytest.mark.parametrize("requirement", ["sessions", "approvals", "long_term_memory", "recovery"])
 def test_unbound_durable_requirements_fail(execution: Any, requirement: str) -> None:
     from apx_agent import RuntimeRequirements, compile_agent
 
@@ -253,15 +289,92 @@ def test_request_user_auth_never_falls_back_to_app(execution: Any) -> None:
     assert execution.effects == []
 
 
-def test_declared_user_tool_is_rejected_without_explicit_requirements() -> None:
+def test_declared_user_tool_requires_native_auth(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+    from apx_agent import compile_agent
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    received: list[Any] = []
+
+    def record(value: str, ws: Dependencies.UserClient, principal: Dependencies.Principal) -> str:
+        """Record with the current user's identity."""
+        received.append((ws, principal))
+        return value
+
+    agent = LlmAgent(name="identity", tools=[record])
+    handlers = compile_durable_handlers(agent, model="test", service_ws=execution.ws, checkpointer=InMemorySaver())
+    context = SimpleNamespace(request_auth=None, session_id="same", is_recovery=False)
+    with pytest.raises(ValueError, match="user_identity"):
+        asyncio.run(handlers.invoke([{"role": "user", "content": "record"}], context))
+    assert not received
+    user = MagicMock()
+    user.current_user.me.return_value.id = "user-a"
+    monkeypatch.setattr(RequestAuthContext, "client_for", lambda self, mode: user)
+    context.request_auth = RequestAuthContext(token=None, principal="user-a", local=True)
+    asyncio.run(handlers.invoke([{"role": "user", "content": "record"}], context))
+    assert received == [(user, "user-a")]
+    assert received[0][0] is not execution.ws
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    app = compile_agent(agent, target="durable_agent_server", model="test", service_ws=execution.ws)
+    assert app.auth_policy.requires_user
+
+
+@pytest.mark.parametrize("dependency", [Dependencies.Headers, Dependencies.Request])
+def test_raw_request_dependencies_remain_rejected(dependency: Any) -> None:
+    from apx_agent import inspect_target
+
+    def record(value: str, context: Any) -> str:
+        """Needs the complete original request context."""
+        return value
+
+    record.__annotations__["context"] = dependency
+    report = inspect_target(LlmAgent(tools=[record]), target="durable_agent_server")
+    assert report.unsatisfied == ["user_identity"]
+
+
+def test_native_http_auth_isolates_same_invocation_and_session_ids(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+    from fastapi.testclient import TestClient
     from apx_agent import compile_agent
 
-    def identity(ws: Dependencies.UserClient) -> str:
-        """Read the user's identity."""
-        return ws.current_user.me().user_name
+    principals: list[str] = []
 
-    with pytest.raises(ValueError, match="user_identity"):
-        compile_agent(LlmAgent(tools=[identity]), target="durable_agent_server", model="test")
+    def record(value: str, principal: Dependencies.Principal) -> str:
+        """Record the principal resolved from the SDK user client."""
+        principals.append(principal)
+        return value
+
+    def user_client(auth: Any, mode: str) -> Any:
+        assert mode == "user"
+        user = MagicMock()
+        user.current_user.me.return_value.id = auth.namespace("principal", "verified")
+        return user
+
+    monkeypatch.setattr(RequestAuthContext, "client_for", user_client)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    app = compile_agent(LlmAgent(name="users", tools=[record]), target="durable_agent_server",
+                        model="test", service_ws=execution.ws, checkpointer=InMemorySaver())
+    # Use the real SDK ingress parser and namespacing with a local Runtime Store;
+    # only the outbound user-client lookup is substituted above.
+    monkeypatch.delenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL")
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "identity-proof")
+    body = {"id": str(uuid.uuid4()), "session_id": "same-session",
+            "input": [{"role": "user", "content": "record"}]}
+    with TestClient(app) as client:
+        assert client.post("/api/invocations", json=body).status_code == 401
+        for principal in ["alice", "bob", "alice"]:
+            headers = {"X-Forwarded-User": principal, "X-Forwarded-Access-Token": "synthetic-test-credential"}
+            response = client.post("/api/invocations", json=body, headers=headers)
+            assert response.status_code == 200, response.text
+            assert len(response.json()["output"]["messages"]) == 3
+            saved = client.get(f"/api/invocations/{body['id']}", headers=headers)
+            assert saved.status_code == 200
+            assert "synthetic-test-credential" not in saved.text
+    assert len(principals) == 2 and principals[0] != principals[1]
 
 
 def test_declared_memory_is_not_silently_ignored() -> None:
@@ -269,6 +382,67 @@ def test_declared_memory_is_not_silently_ignored() -> None:
 
     with pytest.raises(ValueError, match="long_term_memory"):
         compile_agent(LlmAgent(memory="inmemory"), target="durable_agent_server", model="test")
+
+
+def test_native_declared_managed_memory_writes_under_verified_principal(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+    from apx_agent import AgentConfig, compile_agent
+    from apx_agent._memory import RecallOptions
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    class MemoryModel(ToolModel):
+        def _generate(self, messages: Any, **kwargs: Any) -> ChatResult:
+            if isinstance(messages[-1], ToolMessage):
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content="saved"))])
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[
+                {"name": "remember", "args": {"content": "Prefers tea"}, "id": "memory-call"},
+            ]))])
+
+    records: dict[str, list[dict[str, Any]]] = {}
+
+    def api(method: str, path: str, *, query: Any = None, body: Any = None) -> Any:
+        if path.endswith("/entries") and method == "POST":
+            entry = {**body, "name": "memory-stores/agent-memory/entries/entry-1"}
+            records.setdefault(body["actor_id"], []).append(entry)
+            return entry
+        if path.endswith(":search"):
+            return {"results": [{"managed_memory_entry": item, "score": 1.0}
+                                for item in records.get(body["actor_id"], [])]}
+        assert method == "GET" and path.endswith("agent-memory"), path
+        return {"name": "memory-stores/agent-memory", "display_name": "agent-memory"}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setattr("apx_agent._compile._build_chat_databricks", lambda *a, **k: MemoryModel())
+    execution.ws.api_client.do.side_effect = api
+    user = MagicMock()
+    user.current_user.me.return_value.id = "alice"
+    monkeypatch.setattr(RequestAuthContext, "client_for", lambda self, mode: user)
+    config = AgentConfig(name="memory-proof", target="durable_agent_server", model="test",
+                         memory={"type": "managed", "store_name": "agent-memory"})
+    agent = LlmAgent(name="memory-proof")
+    app = compile_agent(agent, config=config, service_ws=execution.ws)
+    assert app.auth_policy.requires_user
+    handlers = compile_durable_handlers(agent, model="test", service_ws=execution.ws)
+    context = SimpleNamespace(request_auth=RequestAuthContext(token=None, principal="alice", local=True),
+                              session_id="one", is_recovery=False)
+    assert asyncio.run(handlers.invoke([{"role": "user", "content": "remember"}], context))["status"] == "completed"
+    store = agent._apx_memory_store
+    assert [r.memory.content for r in store.recall(RecallOptions(principal_id="alice", query="tea"))] == ["Prefers tea"]
+    assert store.recall(RecallOptions(principal_id="bob", query="tea")) == []
+    assert set(records) == {"alice"}
+
+
+def test_native_memory_missing_store_fails_closed(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from apx_agent import AgentConfig, compile_agent
+
+    monkeypatch.chdir(tmp_path)
+    execution.ws.api_client.do.side_effect = ConnectionError("store unreachable")
+    with pytest.raises(ValueError, match="long_term_memory"):
+        compile_agent(LlmAgent(name="missing"), service_ws=execution.ws,
+                      config=AgentConfig(name="missing", target="durable_agent_server", model="test",
+                                         memory={"type": "managed", "store_name": "missing-memory"}))
 
 
 def test_native_service_tool_receives_only_explicit_service_client(execution: Any) -> None:
@@ -367,6 +541,148 @@ def test_real_durable_server_http_and_readback(execution: Any, monkeypatch: pyte
 
         monkeypatch.setattr(app._runtime.runtime_store, "get", AsyncMock(side_effect=ConnectionError("offline")))
         assert client.get("/readyz").status_code == 503
+    assert execution.effects == ["proof"]
+
+
+@pytest.mark.parametrize("buffered", [False, True])
+def test_native_stream_persists_chunks_and_replays_without_tool_effects(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, buffered: bool) -> None:
+    import json
+    from fastapi.testclient import TestClient
+    from langchain_core.messages import AIMessageChunk
+    from langchain_core.outputs import ChatGenerationChunk
+    from apx_agent import RuntimeRequirements, compile_agent
+
+    class StreamingModel(ToolModel):
+        def _stream(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> Any:
+            reply = self._generate(messages).generations[0].message
+            if reply.tool_calls:
+                yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_calls=reply.tool_calls,
+                                                                 usage_metadata=reply.usage_metadata))
+            else:
+                yield ChatGenerationChunk(message=AIMessageChunk(content="Recorded "))
+                yield ChatGenerationChunk(message=AIMessageChunk(content="proof", usage_metadata=reply.usage_metadata))
+
+    monkeypatch.setattr("apx_agent._compile._build_chat_databricks", lambda *a, **k: StreamingModel())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    if buffered:
+        execution.agent._after_model = lambda output: output
+    app = compile_agent(execution.agent, target="durable_agent_server", model="test", service_ws=execution.ws,
+                        requirements=RuntimeRequirements(streaming=True))
+    invocation_id = str(uuid.uuid4())
+    body = {"id": invocation_id, "stream": True,
+            "input": {"messages": [{"role": "user", "content": "record"}]}}
+    with TestClient(app) as client:
+        response = client.post("/api/invocations", json=body)
+        assert response.status_code == 200, response.text
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        chunks = [event["message"]["content"] for event in events if event.get("type") == "agent.message.delta"]
+        if buffered:
+            assert not chunks
+            completed = [event for event in events if event.get("type") == "agent.message.completed"]
+            assert len(completed) == 1 and completed[0]["message"]["content"] == "Recorded proof"
+        else:
+            assert "Recorded " in chunks and "proof" in chunks
+        saved = client.get(f"/api/invocations/{invocation_id}").json()
+        assert saved["output"]["messages"][-1]["content"] == "Recorded proof"
+        replay = client.get(f"/api/invocations/{invocation_id}/events")
+        assert replay.text == response.text
+        assert client.post("/api/invocations", json=body).status_code == 200
+    assert execution.effects == ["proof"]
+
+
+def test_native_stream_preserves_budget_and_approval(execution: Any) -> None:
+    from apx_agent import FunctionPolicy, PolicyAction, PolicyGate, PolicyResult, SessionBudgetExceeded
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    events: list[Any] = []
+
+    async def emit(event: Any) -> int:
+        events.append(event)
+        return len(events)
+
+    execution.agent._session_budget = {"tokens": 3}
+    execution.agent._before_tool = PolicyGate([
+        FunctionPolicy(lambda event: PolicyResult(action=PolicyAction.ASK, reason="approval required")),
+    ])
+    handlers = compile_durable_handlers(execution.agent, model="test", service_ws=execution.ws,
+                                        checkpointer=InMemorySaver())
+    context = SimpleNamespace(request_auth=None, session_id="streamed", is_recovery=False, emit=emit)
+    paused = asyncio.run(handlers.invoke([{"role": "user", "content": "record"}], context))
+    assert paused["status"] == "interrupted"
+    assert not execution.effects
+    with pytest.raises(SessionBudgetExceeded):
+        asyncio.run(handlers.invoke({"resume": "approve"}, context))
+    assert execution.effects == ["proof"]
+    with pytest.raises(SessionBudgetExceeded):
+        asyncio.run(handlers.invoke([{"role": "user", "content": "again"}], context))
+    assert execution.effects == ["proof"]
+
+
+def test_native_stream_write_failure_stops_execution(execution: Any) -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    async def emit(event: Any) -> int:
+        raise ConnectionError("event store unavailable")
+
+    context = SimpleNamespace(request_auth=None, session_id=None, is_recovery=False, emit=emit)
+    handlers = compile_durable_handlers(execution.agent, model="test", service_ws=execution.ws)
+    with pytest.raises(ConnectionError, match="event store"):
+        asyncio.run(handlers.invoke([{"role": "user", "content": "record"}], context))
+    assert not execution.effects
+
+
+def test_native_output_hooks_prevent_premature_chunk_publication(execution: Any) -> None:
+    from apx_agent import RuntimeRequirements, inspect_target
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    def reject(output: Any) -> None:
+        raise ValueError("output denied")
+
+    execution.agent._after_model = reject
+    report = inspect_target(execution.agent, target="durable_agent_server",
+                            requirements=RuntimeRequirements(streaming=True))
+    assert report.unsatisfied == []
+    assert report.streaming_buffered
+    events: list[Any] = []
+
+    async def emit(event: Any) -> int:
+        events.append(event)
+        return len(events)
+
+    context = SimpleNamespace(request_auth=None, session_id=None, is_recovery=False, emit=emit)
+    handlers = compile_durable_handlers(execution.agent, model="test", service_ws=execution.ws)
+    with pytest.raises(Exception, match="output denied"):
+        asyncio.run(handlers.invoke([{"role": "user", "content": "record"}], context))
+    assert not events
+    assert not execution.effects
+
+
+def test_native_checked_output_streams_only_after_validation(execution: Any) -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    events: list[Any] = []
+    checked: list[Any] = []
+
+    def accept(output: Any) -> Any:
+        assert not events
+        checked.append(output)
+        return output
+
+    execution.agent._after_model = accept
+
+    async def emit(event: Any) -> int:
+        assert checked
+        events.append(event)
+        return len(events)
+
+    context = SimpleNamespace(request_auth=None, session_id=None, is_recovery=False, emit=emit)
+    handlers = compile_durable_handlers(execution.agent, model="test", service_ws=execution.ws)
+    result = asyncio.run(handlers.invoke([{"role": "user", "content": "record"}], context))
+    assert result["status"] == "completed"
+    assert events == [{"type": "agent.message.completed", "message": result["messages"][-1]}]
+    assert "Recorded proof" in events[0]["message"]["content"]
     assert execution.effects == ["proof"]
 
 

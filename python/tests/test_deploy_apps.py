@@ -1017,9 +1017,9 @@ def _stub_compile_responses(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize("wrong_owner", [False, True])
-@pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("generated,memory", [(False, False), (True, False), (True, True)])
 def test_app_space_deploy_binds_sdk_owned_store(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch, wrong_owner: bool, generated: bool,
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, wrong_owner: bool, generated: bool, memory: bool,
 ) -> None:
     from apx_agent import LlmAgent
     from databricks.sdk.service.apps import App, Space
@@ -1034,6 +1034,7 @@ def test_app_space_deploy_binds_sdk_owned_store(
 
         generate_project(AgentConfig(name="my-app", target="durable_agent_server",
                                     deploy={"space": "app-space"},
+                                    memory={"type": "managed", "store_name": "agent-memory"} if memory else None,
                                     session={"type": "managed", "store_name": "remote-sessions"}), scaffold)
     original_bundle = (scaffold / "databricks.yml").read_text()
     calls = _install_subprocess_mock(monkeypatch)
@@ -1067,6 +1068,14 @@ def test_app_space_deploy_binds_sdk_owned_store(
     if not generated:
         args.extend(["--var", "mlflow_experiment_id=existing"])
     result = CliRunner().invoke(main, args)
+    if generated:
+        from ctk import Artifact, verify
+        from databricks_agentbricks.agent_project import AgentProject
+
+        verify(Artifact(str(scaffold / ".build" / "agent.toml"), must_contain="[auth.user]"))
+        native = AgentProject.load(scaffold / ".build")
+        assert native.user_auth.required == memory
+        assert native.user_auth.additional_api_scopes == (("ai-gateway",) if memory else ())
     constructor.assert_called_once_with("selected")
     grant.assert_not_called()
     saved = yaml.safe_load((scaffold / "databricks.yml").read_text())["resources"]["apps"]["my-app"]

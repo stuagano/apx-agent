@@ -55,7 +55,7 @@ What apx-agent adds is the layer the GA authoring workflow leaves to the develop
 | Retrieval / grounding (implement via MCP or custom tools) | open-format grounding auto-generated from Unity Catalog — the agent knows its tables and columns |
 | Built-in UC data tools (connect via MCP / custom endpoints) | `sql_tool`, `genie_tool`, `uc_function_tool`, `vector_search_tool` — built-in and governed |
 | End-user identity passthrough (manual `get_user_workspace_client()`) | identity passthrough wired declaratively; tools run as the asking user, and metadata writes run under their grants |
-| Memory / state backends (not configured for you) | Lakebase / UC managed semantic memory and sessions, declared |
+| Memory / state backends (not configured for you) | Lakebase / AgentKit managed memory and sessions, declared |
 | Multi-agent orchestration (structural primitives, no cross-app runtime or governed-per-hop story) | `SequentialAgent` / `ParallelAgent` / `RouterAgent` / `HandoffAgent` locally, **plus `sub_agents=[url]` + A2A across apps with the caller's identity passed through per hop for tool calls** (callee LLM calls use the callee's service principal) — shipped and demonstrated (`data-triage-agent` over A2A, `customer_triage` handoffs) |
 | Authoring (write a `ResponsesAgent`, wrap your framework) | declare a `[tool.apx.agent]` block or a Python object; apx-agent compiles it and normalizes the LLM, memory, and trace formats |
 

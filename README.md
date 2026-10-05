@@ -6,6 +6,12 @@
 
 Build governed Databricks agents. Write a Python object — apx-agent compiles it to whichever Databricks runtime you target.
 
+**Build a custom Agent Bricks app that scales to zero when idle.** Target
+`DurableAgentServer` and deploy into an App Space on the on-demand runtime.
+Managed sessions and memory keep conversation state and learned facts outside
+the app process, so they survive scale-down. See the
+[scale-to-zero deployment guide](docs/running/runtime-targets.md#custom-agent-bricks-apps-that-scale-to-zero).
+
 ## LlmAgent — you control the loop
 
 `LlmAgent` (aliased as `Agent`) is an LLM + tools + a loop. You decide what it can call, when it stops, and what happens before and after each step.
@@ -102,7 +108,7 @@ That declaration becomes: an agent grounded in its schema before the first quest
 |---|---|
 | **LLM API format** | Responses API and chat-completions traces both surface identically in the dev UI |
 | **Conversation history** | One canonical message format across all agent types and frameworks |
-| **Memory backends** | Lakebase, UC-managed memory (Beta), or in-memory — same interface, declared not implemented |
+| **Memory backends** | Lakebase, AgentKit managed memory (Beta), or in-memory — same interface, declared not implemented |
 | **Observation** | Tool calls, spans, and conversation deltas normalized before they reach any renderer |
 | **Governance** | Identity passthrough, UC grants, and audit logging wired from the declaration |
 | **Multi-agent** | `sub_agents=[url]` + A2A — agents call each other across apps; supported tool/data calls can forward caller identity per hop |

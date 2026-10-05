@@ -35,6 +35,16 @@ from apx_agent._models import (
 from apx_agent._project_gen import generate_project, render_agent_py
 
 
+@pytest.mark.parametrize("target", ["responses_agent", "durable_agent_server"])
+def test_managed_memory_generated_dependency(tmp_path: Path, target: str) -> None:
+    config = AgentConfig(name="memory-agent", target=target, model="test",
+                         memory={"type": "managed", "store_name": "agent-memory"})
+    generate_project(config, tmp_path)
+    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+    assert "apx-agent[langgraph,agentbricks]" in project["project"]["dependencies"]
+    assert project["tool"]["apx"]["agent"]["memory"]["store_name"] == "agent-memory"
+
+
 def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> None:
     from ctk import Artifact, verify
     from apx_agent._inspection import _load_agent_config
@@ -71,7 +81,6 @@ def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> Non
 @pytest.mark.parametrize("fields", [
     {"deploy": {"space": "shared"}},
     {"target": "durable_agent_server", "deploy": {"space": "shared", "instances": 2}},
-    {"target": "durable_agent_server", "memory": {"type": "managed", "store_name": "memory"}},
     {"target": "durable_agent_server", "session": {"type": "managed"}},
     {"target": "durable_agent_server", "session": {"type": "inmemory"}},
     {"session": {"type": "managed", "store_name": "sessions"}},

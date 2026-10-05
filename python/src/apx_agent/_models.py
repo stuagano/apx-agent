@@ -176,11 +176,19 @@ class MemoryBackendConfig(_BackendConfig):
     host: str | None = None
     ensure_extension: bool = True
     store_name: str | None = None
-    """For ``type='managed'``: the UC memory store's ``catalog.schema.name``."""
+    """For ``type='managed'``: the workspace memory store display name."""
     namespace_default: str = "default"
     tool_prefix: str = ""
     include: list[str] | None = None
     validate_at_boot: bool = True
+
+    @model_validator(mode="after")
+    def _validate_managed_store(self) -> "MemoryBackendConfig":
+        if self.type == "managed" and self.store_name is not None:
+            from ._memory_managed import validate_memory_store_name  # noqa: PLC0415
+
+            validate_memory_store_name(self.store_name)
+        return self
 
 
 class ExampleBackendConfig(_BackendConfig):
@@ -434,16 +442,10 @@ def normalize_memory_knob(
     if tier is None:
         return (None, None)
     if tier == "managed":
-        # Managed Agent Memory is a UC memory store named like the persistent
-        # memory table. It configures LONG-TERM memory only; short-term/session is
-        # deferred to the LangGraph checkpointer (or an explicit
-        # [tool.apx.agent.session] block) — so no session backend here.
-        if catalog and schema:
-            raw = (name or schema).lower()
-            slug = re.sub(r"[^a-z0-9_]", "_", raw).strip("_") or "agent"
-            store_name = f"{catalog}.{schema}.apx_{slug}_memory"
-        else:
-            store_name = "main.default.apx_memories"
+        # Workspace-scoped long-term memory; sessions are declared separately.
+        raw = "-".join(part for part in (catalog, schema, name) if part) or "agent"
+        slug = re.sub(r"[^a-z0-9-]", "-", raw.lower()).strip("-") or "agent"
+        store_name = f"apx-{slug[:45].rstrip('-')}-memory"
         return (MemoryBackendConfig(type="managed", store_name=store_name), None)
     if catalog and schema:
         raw = (name or schema).lower()
@@ -568,6 +570,8 @@ class AgentConfig(BaseModel):
     name: str
     target: RuntimeTarget = "responses_agent"
     """Compilation contract, independent of where the agent executes."""
+    recovery: bool = False
+    """Opt into checkpoint recovery; tools must tolerate replay of uncommitted work."""
     description: str = ""
     model: str = "databricks-meta-llama-3-3-70b-instruct"
     instructions: str = ""  # system prompt prepended to every conversation
@@ -686,9 +690,9 @@ class AgentConfig(BaseModel):
 
     @model_validator(mode="after")
     def _runtime_contract(self) -> "AgentConfig":
+        if self.recovery and self.target != "durable_agent_server":
+            raise ValueError("recovery requires target='durable_agent_server'")
         if self.target == "durable_agent_server":
-            if self.memory is not None:
-                raise ValueError("long_term_memory is not wired for durable_agent_server")
             if self.session is not None and self.session.type != "managed":
                 raise ValueError("Declared durable sessions require type='managed' and store_name; explicit checkpointers remain available through compile_agent")
         else:

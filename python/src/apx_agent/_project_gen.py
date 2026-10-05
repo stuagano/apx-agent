@@ -118,7 +118,10 @@ def _build_pyproject(config: "AgentConfig") -> str:
     lines.append('version = "0.1.0"')
     lines.append('requires-python = ">=3.11"')
     lines.append("dependencies = [")
-    extra = "langgraph,agentbricks" if config.target == "durable_agent_server" else "langgraph"
+    needs_agentkit = config.target == "durable_agent_server" or (
+        config.memory is not None and config.memory.type == "managed"
+    )
+    extra = "langgraph,agentbricks" if needs_agentkit else "langgraph"
     lines.append(f'    "apx-agent[{extra}]",')
     lines.append('    "mlflow[databricks]>=3.14",')
     lines.append("]")
@@ -129,6 +132,8 @@ def _build_pyproject(config: "AgentConfig") -> str:
     lines.append(f'name = "{config.name}"')
     if config.target != "responses_agent":
         lines.append(f"target = {_toml_value(config.target)}")
+    if config.recovery:
+        lines.append("recovery = true")
     if config.description:
         lines.append(f"description = {_toml_value(config.description)}")
     lines.append(f"model = {_toml_value(config.model)}")

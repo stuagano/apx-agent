@@ -20,7 +20,7 @@ memory knob on top of `DataAgent`:
    `join_key` when both are given.
 4. **`memory`** — a one-word tier knob: `"off"` (default) / `"inmemory"` /
    `"persistent"` (Lakebase, with generated host/database/embedding-model
-   defaults) / `"managed"` (UC managed memory). It normalizes into
+   defaults) / `"managed"` (workspace managed memory). It normalizes into
    `MemoryBackendConfig` + `SessionBackendConfig` carried as declared config;
    the framework's finalize/serve path does the wiring, so construction needs
    no `ws`. Typing `memory="lakebase"` literally deliberately raises — that's

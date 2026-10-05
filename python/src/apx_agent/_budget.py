@@ -86,6 +86,8 @@ def accrue_turn(
     lg_config: dict[str, Any] | None,
     prior: int,
     new_messages: list[Any],
+    *,
+    strict: bool = False,
 ) -> int:
     """Add this turn's usage to ``prior``, persist the new total, return it.
 
@@ -99,6 +101,8 @@ def accrue_turn(
         try:
             graph.update_state(lg_config, {"state": {_STATE_KEY: total}})
         except Exception as exc:  # pragma: no cover — checkpointer write failure
+            if strict:
+                raise
             logger.warning("session_budget: failed to persist token total: %s", exc)
     return total
 
@@ -109,8 +113,10 @@ def enforce_after_turn(
     prior: int,
     new_messages: list[Any],
     cap: int,
+    *,
+    strict: bool = False,
 ) -> None:
     """Accrue this turn's usage, persist the new total, raise if it crossed ``cap``."""
-    total = accrue_turn(graph, lg_config, prior, new_messages)
+    total = accrue_turn(graph, lg_config, prior, new_messages, strict=strict)
     if total >= cap:
         raise SessionBudgetExceeded(spent=total, cap=cap)

@@ -699,6 +699,7 @@ class TestBuildManagedStore:
     def _ws(self) -> Any:
         ws = MagicMock()
         ws.current_user.me.return_value.user_name = "me@corp.com"
+        ws.api_client.do.return_value = {"name": "memory-stores/agent-memory", "display_name": "agent-memory"}
         return ws
 
     def test_builds_managed_store_with_store_name_and_api(self) -> None:
@@ -706,16 +707,16 @@ class TestBuildManagedStore:
         from apx_agent._memory_managed import ManagedMemoryStore
         from apx_agent._models import MemoryBackendConfig
 
-        cfg = MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+        cfg = MemoryBackendConfig(type="managed", store_name="agent-memory")
         store = _build_memory_store(cfg, self._ws())
         assert isinstance(store, ManagedMemoryStore)
-        assert store._store == "main.agents.mem"
+        assert store._store == "agent-memory"
 
     def test_returns_none_without_ws(self) -> None:
         from apx_agent._memory_wiring import _build_memory_store
         from apx_agent._models import MemoryBackendConfig
 
-        cfg = MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+        cfg = MemoryBackendConfig(type="managed", store_name="agent-memory")
         assert _build_memory_store(cfg, None) is None
 
     def test_missing_store_name_raises(self) -> None:
@@ -733,29 +734,41 @@ class TestBuildManagedStore:
         from apx_agent._memory_tools import _PRINCIPAL_CTX
         from apx_agent._models import MemoryBackendConfig
 
-        cfg = MemoryBackendConfig(type="managed", store_name="main.agents.mem")
-        store = _build_memory_store(cfg, self._ws())
+        cfg = MemoryBackendConfig(type="managed", store_name="agent-memory")
+        ws = self._ws()
+        ws.api_client.do.side_effect = [
+            {"name": "memory-stores/agent-memory", "display_name": "agent-memory"},
+            {"name": "memory-stores/agent-memory/entries/entry-1", "actor_id": "alice",
+             "path": "/memories/prefs/one", "content": "tea"},
+            {},
+        ]
+        store = _build_memory_store(cfg, ws)
         token = _PRINCIPAL_CTX.set("alice")
         try:
-            store.delete("/prefs/1")
+            assert store.delete("entry-1")
         finally:
             _PRINCIPAL_CTX.reset(token)
-        deletes = [c for c in store._api.do.call_args_list if c.args[0] == "DELETE"]
-        assert deletes and deletes[0].kwargs["query"] == {
-            "scope": "alice",
-            "path": "/prefs/1",
-        }
+        assert ws.api_client.do.call_args.args == (
+            "DELETE", "/api/2.0/agents/memory-stores/agent-memory/entries/entry-1"
+        )
+        assert store._trusted_scope() == "me@corp.com"
 
     def test_delete_falls_back_to_default_principal(self) -> None:
         # No published principal → the local CLI identity (default) is used.
         from apx_agent._memory_wiring import _build_memory_store
         from apx_agent._models import MemoryBackendConfig
 
-        cfg = MemoryBackendConfig(type="managed", store_name="main.agents.mem")
-        store = _build_memory_store(cfg, self._ws())
-        store.delete("/prefs/1")
-        deletes = [c for c in store._api.do.call_args_list if c.args[0] == "DELETE"]
-        assert deletes and deletes[0].kwargs["query"]["scope"] == "me@corp.com"
+        cfg = MemoryBackendConfig(type="managed", store_name="agent-memory")
+        ws = self._ws()
+        ws.api_client.do.side_effect = [
+            {"name": "memory-stores/agent-memory", "display_name": "agent-memory"},
+            {"name": "memory-stores/agent-memory/entries/entry-1", "actor_id": "me@corp.com",
+             "path": "/memories/prefs/one", "content": "tea"},
+            {},
+        ]
+        store = _build_memory_store(cfg, ws)
+        assert store.delete("entry-1")
+        assert ws.api_client.do.call_args.args[0] == "DELETE"
 
     def test_attach_missing_store_marks_degraded_no_tools(self) -> None:
         # Boot probe: an un-provisioned managed store fails LOUD (degraded),
@@ -766,7 +779,7 @@ class TestBuildManagedStore:
 
         agent = Agent(tools=[])
         cfg = AgentConfig(
-            name="t", memory=MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+            name="t", memory=MemoryBackendConfig(type="managed", store_name="agent-memory")
         )
         ws = self._ws()
         ws.api_client.do.side_effect = RuntimeError("404")  # store_exists → False
@@ -782,10 +795,10 @@ class TestBuildManagedStore:
 
         agent = Agent(tools=[])
         cfg = AgentConfig(
-            name="t", memory=MemoryBackendConfig(type="managed", store_name="main.agents.mem")
+            name="t", memory=MemoryBackendConfig(type="managed", store_name="agent-memory")
         )
         ws = self._ws()
-        ws.api_client.do.return_value = {"name": "mem"}  # store_exists → True
+        ws.api_client.do.return_value = {"name": "memory-stores/agent-memory", "display_name": "agent-memory"}
         attach_declared_memory(agent, cfg, ws=ws)
         names = {fn.__name__ for fn in agent._tool_fns}
         assert {"recall", "remember", "forget"} <= names
