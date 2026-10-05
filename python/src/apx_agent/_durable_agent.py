@@ -55,8 +55,8 @@ def compile_durable_handlers(
             raise ValueError("recovery is not wired for durable_agent_server")
         if isinstance(value, list):
             value = {"messages": value}
-        if not isinstance(value, dict) or set(value) - {"messages", "resume", "session_id"}:
-            raise ValueError("Native input must be a message list or an object with messages, session_id and optional resume")
+        if not isinstance(value, dict) or set(value) - {"messages", "resume"}:
+            raise ValueError("Native input must contain messages and optional resume; session_id belongs in the top-level invocation envelope")
         messages = value.get("messages", [])
         if not isinstance(messages, list):
             raise ValueError("messages must be a list")
@@ -72,7 +72,7 @@ def compile_durable_handlers(
             raise ValueError("Approval resume requires a checkpointed session")
         config = None
         if checkpointer is not None:
-            session = value.get("session_id", context.session_id)
+            session = context.session_id
             if not isinstance(session, str) or not session:
                 raise ValueError("A checkpointed invocation requires a non-empty session_id")
             key = hashlib.sha256(json.dumps([getattr(agent, "_name", None), session]).encode()).hexdigest()
@@ -104,13 +104,24 @@ def compile_to_durable_agent_server(
     model: str,
     service_ws: Any,
     checkpointer: Any | None = None,
+    session_store: str | None = None,
 ) -> Any:
     """Create the optional SDK server without importing ResponsesAgent."""
-    handlers = compile_durable_handlers(agent, model=model, service_ws=service_ws, checkpointer=checkpointer)
+    from ._runtime_targets import inspect_target
+
+    inspect_target(agent, target="durable_agent_server", checkpointer=checkpointer,
+                   session_store=session_store).require_compatible()
     try:
         from databricks_agentkit.runtime.app import DurableAgentServer
     except ImportError as exc:
         raise ImportError("durable_agent_server requires the optional SDK; install apx-agent[agentbricks] in the host project") from exc
+    if session_store is not None:
+        if service_ws is None:
+            raise ValueError("session_store requires an explicit service_ws runtime binding")
+        from databricks_agentkit.langgraph.session_store import DatabricksSessionStoreSaver
+
+        checkpointer = DatabricksSessionStoreSaver(session_store, workspace_client=service_ws)
+    handlers = compile_durable_handlers(agent, model=model, service_ws=service_ws, checkpointer=checkpointer)
     app = DurableAgentServer()
     if app.auth_policy.requires_user:
         raise ValueError("user_identity: the selected Agent Bricks manifest requires request-user auth, which this APX target does not wire yet")

@@ -59,9 +59,64 @@ def test_responses_target_executes_existing_tool(execution: Any) -> None:
     from apx_agent import compile_agent
 
     compiled = compile_agent(execution.agent, target="responses_agent", model="test-model")
-    result = compiled.non_streaming({"input": [{"role": "user", "content": "record"}]})
+    from mlflow.pyfunc import ResponsesAgent
+
+    assert isinstance(compiled, ResponsesAgent)
+    result = compiled.predict({"input": [{"role": "user", "content": "record"}]})
     assert execution.effects == ["proof"]
     assert "Recorded proof" in result.model_dump_json()
+
+
+def test_mlflow_model_roundtrip_predict_and_stream(execution: Any, tmp_path: Path) -> None:
+    import mlflow.pyfunc
+    from ctk import Artifact, verify
+    from apx_agent import compile_agent
+
+    compiled = compile_agent(execution.agent, target="responses_agent", model="test-model")
+    request = {"input": [{"role": "user", "content": "record"}]}
+    # Save after use: cached runtime handlers must not leak into the artifact.
+    compiled.predict(request)
+    path = tmp_path / "model"
+    mlflow.pyfunc.save_model(str(path), python_model=compiled, pip_requirements=[])
+    verify(Artifact(str(path / "MLmodel"), min_bytes=100, must_contain="responses"))
+    loaded = mlflow.pyfunc.load_model(str(path))
+    import cloudpickle
+
+    with (path / "python_model.pkl").open("rb") as source:
+        restored = cloudpickle.load(source)
+    assert restored._handlers is None
+    assert "Recorded proof" in str(loaded.predict(request))
+    events = list(loaded.predict_stream(request))
+    assert any(event["type"] == "response.output_item.done" for event in events)
+    assert "Recorded proof" in str(events)
+
+
+def test_mlflow_initialization_is_shared_across_concurrent_callers(execution: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from apx_agent import compile_agent
+    from apx_agent import _mlflow_model
+
+    real_compile = _mlflow_model.compile_to_responses_agent
+    calls: list[Any] = []
+
+    def compile_once(*args: Any, **kwargs: Any) -> Any:
+        result = real_compile(*args, **kwargs)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(_mlflow_model, "compile_to_responses_agent", compile_once)
+    model = compile_agent(execution.agent, target="responses_agent", model="test")
+    barrier = Barrier(4)
+
+    def initialize() -> Any:
+        barrier.wait(timeout=5)
+        return model._compiled()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: initialize(), range(4)))
+    assert len(calls) == 1
+    assert all(result is results[0] for result in results)
 
 
 def test_unsupported_requirement_fails_before_optional_import(execution: Any) -> None:
@@ -152,6 +207,28 @@ def test_invalid_native_requests_do_not_execute(execution: Any, payload: Any) ->
     with pytest.raises(ValueError):
         asyncio.run(handlers.invoke(payload, context))
     assert execution.effects == []
+
+
+def test_payload_session_cannot_bypass_native_session_queue(execution: Any) -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    handlers = compile_durable_handlers(execution.agent, model="test", service_ws=execution.ws,
+                                        checkpointer=InMemorySaver())
+    context = SimpleNamespace(request_auth=None, session_id="native", is_recovery=False)
+    with pytest.raises(ValueError, match="top-level"):
+        asyncio.run(handlers.invoke({"session_id": "other", "messages": []}, context))
+    assert execution.effects == []
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"session_store": ""},
+    {"session_store": "managed", "checkpointer": InMemorySaver()},
+])
+def test_conflicting_session_bindings_rejected(execution: Any, kwargs: Any) -> None:
+    from apx_agent import compile_agent
+
+    with pytest.raises(ValueError, match="session_store"):
+        compile_agent(execution.agent, target="durable_agent_server", model="test", **kwargs)
 
 
 def test_request_user_auth_never_falls_back_to_app(execution: Any) -> None:
@@ -272,6 +349,67 @@ def test_real_durable_server_http_and_readback(execution: Any, monkeypatch: pyte
         repeated = client.post("/api/invocations", json=body)
         assert repeated.status_code == 200, repeated.text
     assert execution.effects == ["proof"]
+
+
+def test_managed_session_binding_survives_new_server(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Use the actual SDK saver against a local REST fake; reconstruct both servers."""
+    import copy
+    import hashlib
+    import json
+    from databricks.sdk.errors import NotFound
+    from databricks_agentkit.langgraph.session_store import DatabricksSessionStoreSaver
+    from fastapi.testclient import TestClient
+    from apx_agent import RuntimeRequirements, compile_agent
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    sessions: dict[str, Any] = {}
+    items: dict[str, list[Any]] = {}
+    root = "/api/2.0/agents/session-stores/managed-proof/sessions"
+
+    def rest(method: str, path: str, *, body: Any = None, query: Any = None) -> Any:
+        assert path.startswith(root)
+        if method == "POST" and path == root:
+            sid = query["session_id"]
+            sessions[sid] = {"session_id": sid, **body}
+            items.setdefault(sid, [])
+            return copy.deepcopy(sessions[sid])
+        sid = path.removeprefix(root + "/").split("/")[0]
+        if sid not in sessions:
+            raise NotFound("session missing")
+        if method == "GET" and path.endswith("/items"):
+            return {"session_items": copy.deepcopy(items[sid])}
+        if method == "GET" and path == root + "/" + sid:
+            return copy.deepcopy(sessions[sid])
+        if method == "POST" and path.endswith("/items:append"):
+            items[sid].extend(copy.deepcopy(body["items"]))
+            return {}
+        raise AssertionError(f"Unexpected SDK request: {method} {path}")
+
+    execution.ws.api_client.do.side_effect = rest
+    for _ in range(2):
+        app = compile_agent(
+            execution.agent, target="durable_agent_server", model="test",
+            service_ws=execution.ws, session_store="managed-proof",
+            requirements=RuntimeRequirements(sessions=True),
+        )
+        with TestClient(app) as client:
+            response = client.post("/api/invocations", json={
+                "id": str(uuid.uuid4()), "session_id": "conversation",
+                "input": {"messages": [{"role": "user", "content": "record"}]},
+            })
+            assert response.status_code == 200, response.text
+            assert response.json()["output"]["messages"][-1]["content"] == "Recorded proof"
+    # A third fresh saver reads persisted graph state independently of the hosts.
+    key = hashlib.sha256(json.dumps(["proof", "conversation"]).encode()).hexdigest()
+    saver = DatabricksSessionStoreSaver("managed-proof", workspace_client=execution.ws)
+    checkpoint = saver.get_tuple({"configurable": {"thread_id": key, "actor_id": key}})
+    assert checkpoint is not None
+    history = checkpoint.checkpoint["channel_values"]["messages"]
+    assert sum(message.type == "human" for message in history) == 2
+    assert execution.effects == ["proof", "proof"]
+    assert any(item["data"]["event_type"] == "checkpoint" for saved in items.values() for item in saved)
 
 
 def test_generated_entrypoint_selects_native_target(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

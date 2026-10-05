@@ -51,11 +51,19 @@ def inspect_target(
     requirements: RuntimeRequirements | None = None,
     checkpointer: Any | None = None,
     conversation_store: Any | None = None,
+    session_store: str | None = None,
 ) -> TargetReport:
     """Report this APX implementation's support, without contacting services."""
     if target not in ("responses_agent", "durable_agent_server"):
         raise ValueError(f"Unknown compilation target {target!r}; choose responses_agent or durable_agent_server")
     requirements = requirements or RuntimeRequirements()
+    if session_store is not None:
+        if not isinstance(session_store, str) or not session_store.strip():
+            raise ValueError("session_store must be a non-empty managed store name")
+        if target != "durable_agent_server" or checkpointer is not None:
+            raise ValueError("session_store requires durable_agent_server and cannot be combined with checkpointer")
+        if not isinstance(agent, LlmAgent):
+            raise ValueError("session_store currently requires LlmAgent")
     from ._apps_authorization import infer_operation_authorization
     from ._resources import _iter_tool_fns, _iter_sub_agents
     from ._topology import _iter_child_agents
@@ -70,7 +78,7 @@ def inspect_target(
         "sessions": any(getattr(node, "session_config", None) is not None for node in nodes),
     }
     responses = target == "responses_agent"
-    checkpointed = checkpointer is not None and isinstance(agent, LlmAgent)
+    checkpointed = (checkpointer is not None or session_store is not None) and isinstance(agent, LlmAgent)
     memory_bound = (
         getattr(agent, "_apx_memory_store", None) is not None
         and not getattr(agent, "_apx_memory_degraded", None)
@@ -96,23 +104,24 @@ def compile_agent(
     checkpointer: Any | None = None,
     conversation_store: Any | None = None,
     service_ws: Any | None = None,
+    session_store: str | None = None,
 ) -> Any:
     """Compile one declaration into a peer host target, rejecting unmet needs.
 
-    ResponsesAgent returns the existing pair of named handlers. The durable
+    ResponsesAgent returns a native MLflow ResponsesAgent model. The durable
     target returns the optional SDK's FastAPI application. Credentials are
     runtime bindings; they are never accepted in a durable invocation payload.
     """
     inspect_target(
         agent, target=target, requirements=requirements, checkpointer=checkpointer,
-        conversation_store=conversation_store,
+        conversation_store=conversation_store, session_store=session_store,
     ).require_compatible()
     if target == "responses_agent":
-        from ._responses_agent import compile_to_responses_agent
+        from ._mlflow_model import ApxResponsesAgent
 
-        return compile_to_responses_agent(agent, model=model, checkpointer=checkpointer, conversation_store=conversation_store)
+        return ApxResponsesAgent(agent, model=model, checkpointer=checkpointer, conversation_store=conversation_store)
     if conversation_store is not None:
         raise ValueError("durable_agent_server uses a native checkpointer; conversation_store is not wired")
     from ._durable_agent import compile_to_durable_agent_server
 
-    return compile_to_durable_agent_server(agent, model=model, service_ws=service_ws, checkpointer=checkpointer)
+    return compile_to_durable_agent_server(agent, model=model, service_ws=service_ws, checkpointer=checkpointer, session_store=session_store)

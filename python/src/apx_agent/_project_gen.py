@@ -269,6 +269,7 @@ finalize_agent(agent, config, ws=ws)
 app = compile_agent(
     agent, target="durable_agent_server",
     model=os.environ.get("APX_MODEL", config.model), service_ws=ws,
+    session_store=os.environ.get("AGENT_SESSION_STORE"),
 )
 '''
 
