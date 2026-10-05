@@ -246,6 +246,32 @@ config = _load_agent_config()
 app = create_app(agent=agent, config=config)
 '''
 
+_START_MANAGED_CONTENT = '''\
+"""Native APX DurableAgentServer target. Install databricks-agentbricks to use it."""
+import os
+
+from agent import agent
+from apx_agent import compile_agent
+from apx_agent._defaults import _make_workspace_client
+from apx_agent._inspection import _load_agent_config
+from apx_agent._wiring import finalize_agent
+
+config = _load_agent_config()
+if config is None:
+    raise ValueError("The durable target requires [tool.apx.agent] configuration")
+if config.memory is not None or config.session is not None:
+    raise ValueError(
+        "The generated durable entrypoint does not bind memory or sessions yet. "
+        "Use the Python target or explicitly bind a checkpointer with compile_agent."
+    )
+ws = _make_workspace_client()
+finalize_agent(agent, config, ws=ws)
+app = compile_agent(
+    agent, target="durable_agent_server",
+    model=os.environ.get("APX_MODEL", config.model), service_ws=ws,
+)
+'''
+
 _START_HOST_CONTENT = '''\
 """Databricks Apps host selector — framework boilerplate, do not edit."""
 from __future__ import annotations
@@ -270,8 +296,14 @@ def main() -> None:
                 os.environ["DATABRICKS_APP_PORT"],
             ],
         )
+    if host == "agentbricks":
+        os.execvp(
+            "uvicorn",
+            ["uvicorn", "agent_server.start_managed:app", "--host", "0.0.0.0",
+             "--port", os.environ["DATABRICKS_APP_PORT"]],
+        )
     if host != "appkit":
-        raise SystemExit("APX_APPS_HOST must be 'appkit' or 'python' when set.")
+        raise SystemExit("APX_APPS_HOST must be 'appkit', 'python', or 'agentbricks' when set.")
 
     source_root = Path(__file__).resolve().parents[1]
     appkit_dir = source_root / "apx_appkit_host"
@@ -898,6 +930,7 @@ def generate_project(
     (agent_server_dir / "__init__.py").write_text("")
     (agent_server_dir / "start_server.py").write_text(_START_SERVER_CONTENT)
     (agent_server_dir / "start_host.py").write_text(_START_HOST_CONTENT)
+    (agent_server_dir / "start_managed.py").write_text(_START_MANAGED_CONTENT)
     (agent_server_dir / "keepalive.py").write_text(_KEEPALIVE_CONTENT)
 
     # databricks.yml

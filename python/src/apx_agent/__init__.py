@@ -140,6 +140,8 @@ from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
 
 # Databricks Apps ResponsesAgent compile target (optional — same extras)
 from ._responses_agent import compile_to_responses_agent
+from ._runtime_targets import RuntimeRequirements, TargetCapability, TargetReport, compile_agent, inspect_target
+from ._durable_agent import compile_to_durable_agent_server
 
 # Unified OBO header extraction (both runtimes use this)
 from ._obo import extract_obo_headers, make_obo_workspace_client
@@ -550,6 +552,12 @@ __all__ = [
     "log_agent",
     # Databricks Apps ResponsesAgent compile target
     "compile_to_responses_agent",
+    "compile_agent",
+    "compile_to_durable_agent_server",
+    "inspect_target",
+    "RuntimeRequirements",
+    "TargetCapability",
+    "TargetReport",
     # Unified OBO header extraction
     "extract_obo_headers",
     "make_obo_workspace_client",

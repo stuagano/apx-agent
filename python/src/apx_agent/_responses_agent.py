@@ -1223,55 +1223,20 @@ def compile_to_responses_agent(
                         headers=req_headers,
                         **({"checkpointer": cp} if cp else {}),
                     )
-                # Session budget (#768): refuse before running if already over.
-                # Cross-turn persistence needs a checkpointer, so key it on `cp`,
-                # not lg_config (a conv-store-without-checkpointer config leaves
-                # lg_config truthy but has no state to read/write).
-                budget_cap = cap_for(_agent)
-                budget_config = lg_config if cp is not None else None
-                budget_prior = (
-                    enforce_before_turn(graph, budget_config, budget_cap)
-                    if budget_cap is not None
-                    else 0
-                )
-                input_count = len(graph_input)
-                # With a checkpointer, invoke returns the FULL thread state
-                # (prior history + this turn's input + output), not just
-                # input+output — so slice new output after the prior state too.
-                pre_count = 0
-                if cp is not None:
-                    try:
-                        pre_count = len(graph.get_state(lg_config).values.get("messages", []))
-                    except Exception:
-                        pre_count = 0
-                # Approval resume: a checkpointed thread resends
-                # {"resume": <decision>} to continue from the paused tool call
-                # instead of new input (mirrors the ChatAgent predict path).
+                from ._graph_turn import run_graph_turn
+
                 resume = _resume_decision(custom_inputs) if lg_config else None
                 if resume is not None:
                     set_audit_attrs(span, approval_decision=str(resume))
-                with safe_span("graph.invoke", span_type="CHAIN"):
-                    if resume is not None:
-                        from langgraph.types import Command  # noqa: PLC0415
-                        result = graph.invoke(Command(resume=resume), config=lg_config)
-                    else:
-                        result = graph.invoke(
-                            {"messages": graph_input},
-                            **({"config": lg_config} if lg_config else {}),
-                        )
+                turn = run_graph_turn(
+                    graph, _agent, graph_input, config=lg_config, resume=resume,
+                    read_interrupt=_pending_interrupt,
+                )
 
                 # Mid-turn approval: a gated tool suspended the run → return an
                 # approval-required response (tool NOT run) before persisting.
-                paused = _pending_interrupt(graph, lg_config)
+                paused = turn.approval_required
                 if paused is not None:
-                    # Count the model tokens spent up to the pause (#768) so an
-                    # approval-gated session can't spend unbounded by repeatedly
-                    # pausing; the next turn's enforce_before_turn refuses if over.
-                    if budget_cap is not None:
-                        accrue_turn(
-                            graph, budget_config, budget_prior,
-                            result["messages"][pre_count:],
-                        )
                     response = ResponsesAgentResponse(
                         id=f"resp-{uuid.uuid4().hex[:12]}",
                         output=[_approval_output_item(paused, thread_id)],
@@ -1293,15 +1258,7 @@ def compile_to_responses_agent(
                         )
                     return response
 
-                # On a resume there is no new input in graph state (Command was
-                # fed, not messages), so slice only past the prior state — else a
-                # client that resent its input would drop that many new messages
-                # (mirrors ChatAgent.predict's slice_start).
-                slice_start = pre_count if resume is not None else pre_count + input_count
-                new_lc = result["messages"][slice_start:]
-                # Session budget: add this turn's usage, persist, raise if crossed.
-                if budget_cap is not None:
-                    enforce_after_turn(graph, budget_config, budget_prior, new_lc, budget_cap)
+                new_lc = turn.messages
                 raw_items = [_langchain_to_output_item(m, i) for i, m in enumerate(new_lc)]
                 output_items = _flatten_output_items(raw_items)
                 structured_output = output_data_parts(new_lc)

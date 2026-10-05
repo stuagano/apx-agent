@@ -4160,7 +4160,7 @@ def _scaffold_apps(
     memory_block = _SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else ""
     pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT + session_block + memory_block)
 
-    from ._project_gen import _START_HOST_CONTENT
+    from ._project_gen import _START_HOST_CONTENT, _START_MANAGED_CONTENT
 
     files: dict[str, str] = {
         "pyproject.toml": pyproject,
@@ -4176,6 +4176,7 @@ def _scaffold_apps(
         ),
         "agent_server/__init__.py": "",
         "agent_server/start_host.py": _START_HOST_CONTENT,
+        "agent_server/start_managed.py": _START_MANAGED_CONTENT,
         "agent_server/start_server.py": _SCAFFOLD_APPS_START_SERVER,
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
@@ -8260,11 +8261,11 @@ def _stage_internal_appkit_host(
     """Stage generated AppKit internals only when the AppKit host is requested."""
     host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "python")
     host = host.strip().lower()
-    if host == "python":
+    if host in {"python", "agentbricks"}:
         return
     if host != "appkit":
         raise click.ClickException(
-            "APX_APPS_HOST must be 'appkit' or 'python' when set."
+            "APX_APPS_HOST must be 'appkit', 'python', or 'agentbricks' when set."
         )
 
     build_dir = cwd / ".build"

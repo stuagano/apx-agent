@@ -23,6 +23,7 @@
 
 ## Running agents
 
+- [running/runtime-targets.md](running/runtime-targets.md) — compile targets, compatibility reports, and native durable host limits
 - [agents/llm-agent.md#running](agents/llm-agent.md#running) — `agent.run()`, `agent.stream()`, `max_iterations` safety cap
 - [running/sessions-and-memory.md](running/sessions-and-memory.md) — session stores, memory stores, example stores
 - [running/lakebase-recipe.md](running/lakebase-recipe.md) — Lakebase provisioning, pgvector, pool tuning
