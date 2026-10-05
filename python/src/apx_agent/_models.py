@@ -134,6 +134,7 @@ class GatewayConfig(BaseModel):
 
 
 StoreType = Literal["inmemory", "lakebase", "managed"]
+RuntimeTarget = Literal["responses_agent", "durable_agent_server"]
 
 # Default embedding endpoint for the "persistent" knob's Lakebase memory —
 # a Databricks Foundation Model API pay-per-token endpoint present in every
@@ -211,6 +212,22 @@ class SessionBackendConfig(_BackendConfig):
     host: str | None = None
     warehouse_id: str | None = None
     validate_at_boot: bool = True
+    store_name: str | None = None
+    """Existing managed Session Store used by the native durable target."""
+
+    @model_validator(mode="after")
+    def _managed_binding(self) -> "SessionBackendConfig":
+        if self.type == "managed":
+            if not self.store_name or not self.store_name.strip():
+                raise ValueError("Managed sessions require session.store_name")
+            if any((self.host, self.database, self.table_name, self.warehouse_id)):
+                raise ValueError("Managed sessions use store_name, not Lakebase connection fields")
+            if self.auto_create and "auto_create" in self.model_fields_set:
+                raise ValueError("Managed sessions bind an existing store; auto_create must be false")
+            self.auto_create = False
+        elif self.store_name is not None:
+            raise ValueError("session.store_name requires type='managed'")
+        return self
 
 
 class DataTagConfig(BaseModel):
@@ -347,9 +364,16 @@ class DeployConfig(_BackendConfig):
 
     instances: StrictInt | None = Field(default=None, ge=1, le=5)
     autoscale: AutoscaleConfig | None = None
+    space: str | None = None
+    """Existing App Space destination; its platform controls instance scaling."""
 
     @model_validator(mode="after")
     def _exclusive(self) -> "DeployConfig":
+        if self.space is not None:
+            if not self.space.strip() or "${" in self.space:
+                raise ValueError("deploy.space must be a literal non-empty App Space name")
+            if self.instances is not None or self.autoscale is not None:
+                raise ValueError("App Space selects compute; omit deploy.instances and deploy.autoscale")
         if self.instances is not None and self.autoscale is not None:
             raise ValueError(
                 "[tool.apx.agent.deploy] set at most one of 'instances' or 'autoscale', not both"
@@ -542,6 +566,8 @@ class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 
     name: str
+    target: RuntimeTarget = "responses_agent"
+    """Compilation contract, independent of where the agent executes."""
     description: str = ""
     model: str = "databricks-meta-llama-3-3-70b-instruct"
     instructions: str = ""  # system prompt prepended to every conversation
@@ -657,6 +683,20 @@ class AgentConfig(BaseModel):
     tool list.  Agents with composite topologies fall back to ``'langgraph'``
     automatically with a warning.
     """
+
+    @model_validator(mode="after")
+    def _runtime_contract(self) -> "AgentConfig":
+        if self.target == "durable_agent_server":
+            if self.memory is not None:
+                raise ValueError("long_term_memory is not wired for durable_agent_server")
+            if self.session is not None and self.session.type != "managed":
+                raise ValueError("Declared durable sessions require type='managed' and store_name; explicit checkpointers remain available through compile_agent")
+        else:
+            if self.deploy is not None and self.deploy.space is not None:
+                raise ValueError("deploy.space currently requires target='durable_agent_server'")
+            if self.session is not None and self.session.type == "managed":
+                raise ValueError("Managed Session Store binding currently requires target='durable_agent_server'")
+        return self
 
 
 def workflow_prompts(

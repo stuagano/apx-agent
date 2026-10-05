@@ -7,6 +7,11 @@ from pathlib import Path
 
 import click
 
+RUNTIME_STORE_VARIABLES = {
+    "DATABRICKS_AGENTBRICKS_RUNTIME_STORE_" + suffix: "apx_runtime_store_" + suffix.lower()
+    for suffix in ("LAKEBASE_BRANCH", "DATABASE", "USERNAME", "SCHEMA")
+}
+
 
 def validate_space_env(env: list[dict[str, Any]]) -> None:
     forbidden = {"PIP_INDEX_URL", "UV_INDEX_URL", "UV_DEFAULT_INDEX",

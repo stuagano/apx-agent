@@ -5753,6 +5753,11 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
     if module is None:
         detected = _detect_target()
         module = _RUN_MODULE_BY_TARGET[detected.target]
+        from ._inspection import _load_agent_config
+
+        runtime_config = _load_agent_config(pyproject_path=Path.cwd() / "pyproject.toml")
+        if runtime_config is not None and runtime_config.target == "durable_agent_server":
+            module = "agent_server.start_managed:app"
         click.echo(
             f"target: {detected.target} (auto-detected: {detected.reason}) "
             f"→ serving {module}",
@@ -10393,15 +10398,26 @@ def _deploy_apps_impl(
 
     space_client = None
     space_name = doc["resources"]["apps"][bundle_key].get("space")
+    if effective_config is not None and effective_config.target == "durable_agent_server":
+        from ._runtime_targets import inspect_target
+
+        inspect_target(agent, config=effective_config).require_compatible()
+        if _apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") != "agentbricks":
+            raise click.ClickException("Bundle host disagrees with the declared durable target; regenerate the project.")
+        declared_space = effective_config.deploy.space if effective_config.deploy is not None else None
+        if declared_space != space_name:
+            raise click.ClickException("Bundle space disagrees with deploy.space; regenerate the project.")
     for target_config in doc.get("targets", {}).values():
         override = target_config.get("resources", {}).get("apps", {}).get(bundle_key, {})
         if "space" in override:
             raise click.ClickException("Declare App Space in the root app configuration, not a target override.")
     if space_name is not None:
-        from ._app_space import validate_space_deployment
+        from ._app_space import validate_space_deployment, RUNTIME_STORE_VARIABLES
         from ._runtime_targets import inspect_target
 
-        inspect_target(agent, target="durable_agent_server").require_compatible()
+        inspect_target(agent, target="durable_agent_server", config=effective_config).require_compatible()
+        if any(_bundle_var_value(vars, variable) is not None for variable in RUNTIME_STORE_VARIABLES.values()):
+            raise click.ClickException("Runtime Store variables are SDK-owned; omit explicit overrides.")
         target_app = doc.get("targets", {}).get(bundle_target, {}).get("resources", {}).get("apps", {}).get(bundle_key, {})
         if target_app.get("name", resolved_app_name) != app_name or "${" in app_name:
             raise click.ClickException("App Space requires an explicit app name matching the selected bundle target.")
@@ -10630,7 +10646,7 @@ def _deploy_apps_impl(
         log(f"  bundle deploy finished in {deploy_seconds:.1f}s")
 
         if space_client is not None:
-            from ._app_space import runtime_store_env
+            from ._app_space import runtime_store_env, RUNTIME_STORE_VARIABLES
 
             binding = runtime_store_env(space_client, app_name=app_name, space=space_name)
             bundle_path = cwd / "databricks.yml"
@@ -10639,14 +10655,25 @@ def _deploy_apps_impl(
             yml, bound_doc = _load_databricks_yml_roundtrip(cwd)
             config = bound_doc["resources"]["apps"][bundle_key].setdefault("config", {})
             env = config.setdefault("env", [])
-            for key, value in binding.items():
-                matches = [entry for entry in env if entry.get("name") == key]
-                if matches and (len(matches) != 1 or matches[0] != {"name": key, "value": value}):
-                    raise click.ClickException(f"Runtime Store binding conflicts with existing {key}; existing configuration preserved.")
-            for key, value in binding.items():
-                if not any(entry.get("name") == key for entry in env):
-                    env.append({"name": key, "value": value})
-            _write_databricks_yml_atomic(bundle_path, yml, bound_doc)
+            generated_binding = all(
+                [entry for entry in env if entry.get("name") == key] ==
+                [{"name": key, "value": "${var." + variable + "}"}]
+                for key, variable in RUNTIME_STORE_VARIABLES.items()
+            )
+            if generated_binding:
+                for key, value in binding.items():
+                    variable = RUNTIME_STORE_VARIABLES[key]
+                    deploy_var_args.extend(["--var", f"{variable}={value}"])
+            else:
+                # Preserve hand-authored bundles from before declaration-based generation.
+                for key, value in binding.items():
+                    matches = [entry for entry in env if entry.get("name") == key]
+                    if matches and (len(matches) != 1 or matches[0] != {"name": key, "value": value}):
+                        raise click.ClickException(f"Runtime Store binding conflicts with existing {key}; existing configuration preserved.")
+                for key, value in binding.items():
+                    if not any(entry.get("name") == key for entry in env):
+                        env.append({"name": key, "value": value})
+                _write_databricks_yml_atomic(bundle_path, yml, bound_doc)
             bound = _run_databricks_cmd(
                 ["bundle", "deploy", "--target", bundle_target] + deploy_var_args,
                 profile=profile,

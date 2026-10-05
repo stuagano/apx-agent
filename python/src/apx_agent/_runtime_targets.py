@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from typing import Any, Literal
+from typing import Any
 
 from ._agents import BaseAgent, LlmAgent
-
-RuntimeTarget = Literal["responses_agent", "durable_agent_server"]
+from ._models import AgentConfig, RuntimeTarget
 
 
 @dataclass(frozen=True)
@@ -37,6 +36,7 @@ class TargetReport:
     target: str
     capabilities: dict[str, TargetCapability]
     unsatisfied: list[str]
+    session_store: str | None = None
 
     def require_compatible(self) -> None:
         if self.unsatisfied:
@@ -47,13 +47,23 @@ class TargetReport:
 def inspect_target(
     agent: BaseAgent,
     *,
-    target: RuntimeTarget,
+    target: RuntimeTarget | None = None,
+    config: AgentConfig | None = None,
     requirements: RuntimeRequirements | None = None,
     checkpointer: Any | None = None,
     conversation_store: Any | None = None,
     session_store: str | None = None,
 ) -> TargetReport:
     """Report this APX implementation's support, without contacting services."""
+    if target is None:
+        target = config.target if config is not None else "responses_agent"
+    session = config.session if config is not None and config.session is not None else getattr(agent, "session_config", None)
+    if session is not None and session.type == "managed" and checkpointer is None:
+        if session_store is not None and session_store != session.store_name:
+            raise ValueError("session_store conflicts with the declared session.store_name")
+        session_store = session.store_name
+    if config is not None and config.session is not None and config.session.type == "managed" and checkpointer is not None:
+        raise ValueError("Declared managed sessions cannot be combined with an explicit checkpointer")
     if target not in ("responses_agent", "durable_agent_server"):
         raise ValueError(f"Unknown compilation target {target!r}; choose responses_agent or durable_agent_server")
     requirements = requirements or RuntimeRequirements()
@@ -74,8 +84,8 @@ def inspect_target(
         nodes.extend(child for _, child in _iter_child_agents(node) if child not in nodes)
     declared = {
         "user_identity": any(op.requires_request_context for op in operations) or bool(list(_iter_sub_agents(agent))),
-        "long_term_memory": any(getattr(node, "memory_config", None) is not None for node in nodes),
-        "sessions": any(getattr(node, "session_config", None) is not None for node in nodes),
+        "long_term_memory": (config is not None and config.memory is not None) or any(getattr(node, "memory_config", None) is not None for node in nodes),
+        "sessions": session is not None or any(getattr(node, "session_config", None) is not None for node in nodes),
     }
     responses = target == "responses_agent"
     checkpointed = (checkpointer is not None or session_store is not None) and isinstance(agent, LlmAgent)
@@ -92,14 +102,15 @@ def inspect_target(
         "streaming": TargetCapability(responses, "ResponsesAgent supports streaming; the durable target currently returns complete message results."),
     }
     unsatisfied = [f.name for f in fields(requirements) if (getattr(requirements, f.name) or declared.get(f.name)) and not capabilities[f.name].supported]
-    return TargetReport(target=target, capabilities=capabilities, unsatisfied=unsatisfied)
+    return TargetReport(target=target, capabilities=capabilities, unsatisfied=unsatisfied, session_store=session_store)
 
 
 def compile_agent(
     agent: BaseAgent,
     *,
-    target: RuntimeTarget,
-    model: str,
+    target: RuntimeTarget | None = None,
+    model: str | None = None,
+    config: AgentConfig | None = None,
     requirements: RuntimeRequirements | None = None,
     checkpointer: Any | None = None,
     conversation_store: Any | None = None,
@@ -112,10 +123,30 @@ def compile_agent(
     target returns the optional SDK's FastAPI application. Credentials are
     runtime bindings; they are never accepted in a durable invocation payload.
     """
-    inspect_target(
-        agent, target=target, requirements=requirements, checkpointer=checkpointer,
+    if target is None:
+        target = config.target if config is not None else "responses_agent"
+    model = model if model is not None else (config.model if config is not None else None)
+    if not model:
+        raise ValueError("compile_agent requires model or AgentConfig.model")
+    if config is not None:
+        if target == "durable_agent_server":
+            inspect_target(agent, config=config, target=target, requirements=requirements,
+                           checkpointer=checkpointer, conversation_store=conversation_store,
+                           session_store=session_store).require_compatible()
+        from ._wiring import finalize_agent
+
+        finalize_agent(agent, config, ws=service_ws)
+        if target == "responses_agent" and config.session is not None:
+            from ._memory_wiring import resolve_checkpointer, resolve_conversation_store
+
+            if checkpointer is None:
+                checkpointer = resolve_checkpointer(config, service_ws, agent, store_override=conversation_store)
+            conversation_store = resolve_conversation_store(config, service_ws, override=conversation_store, agent=agent)
+    report = inspect_target(
+        agent, target=target, config=config, requirements=requirements, checkpointer=checkpointer,
         conversation_store=conversation_store, session_store=session_store,
-    ).require_compatible()
+    )
+    report.require_compatible()
     if target == "responses_agent":
         from ._mlflow_model import ApxResponsesAgent
 
@@ -124,4 +155,4 @@ def compile_agent(
         raise ValueError("durable_agent_server uses a native checkpointer; conversation_store is not wired")
     from ._durable_agent import compile_to_durable_agent_server
 
-    return compile_to_durable_agent_server(agent, model=model, service_ws=service_ws, checkpointer=checkpointer, session_store=session_store)
+    return compile_to_durable_agent_server(agent, model=model, service_ws=service_ws, checkpointer=checkpointer, session_store=report.session_store)

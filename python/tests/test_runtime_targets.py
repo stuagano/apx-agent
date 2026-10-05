@@ -67,6 +67,18 @@ def test_responses_target_executes_existing_tool(execution: Any) -> None:
     assert "Recorded proof" in result.model_dump_json()
 
 
+def test_responses_target_resolves_declared_session(execution: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import AgentConfig, compile_agent
+
+    monkeypatch.chdir(tmp_path)
+    model = compile_agent(execution.agent, config=AgentConfig(name="proof", model="test", session={"type": "inmemory"}))
+    model.predict({"input": [{"role": "user", "content": "record"}], "custom_inputs": {"thread_id": "declared"}})
+    store = model.conversation_store
+    assert store.get_conversation("declared") is not None
+    assert "Recorded proof" in str(store.list_items("declared").data)
+    assert execution.effects == ["proof"]
+
+
 def test_mlflow_model_roundtrip_predict_and_stream(execution: Any, tmp_path: Path) -> None:
     import mlflow.pyfunc
     from ctk import Artifact, verify
@@ -358,7 +370,8 @@ def test_real_durable_server_http_and_readback(execution: Any, monkeypatch: pyte
     assert execution.effects == ["proof"]
 
 
-def test_managed_session_binding_survives_new_server(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("declarative", [False, True])
+def test_managed_session_binding_survives_new_server(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, declarative: bool) -> None:
     """Use the actual SDK saver against a local REST fake; reconstruct both servers."""
     import copy
     import hashlib
@@ -395,10 +408,15 @@ def test_managed_session_binding_survives_new_server(execution: Any, monkeypatch
         raise AssertionError(f"Unexpected SDK request: {method} {path}")
 
     execution.ws.api_client.do.side_effect = rest
+    from apx_agent import AgentConfig
+
+    options = {"config": AgentConfig(name="proof", target="durable_agent_server", model="test",
+                                    session={"type": "managed", "store_name": "managed-proof"})} if declarative else {
+        "target": "durable_agent_server", "model": "test", "session_store": "managed-proof",
+    }
     for _ in range(2):
         app = compile_agent(
-            execution.agent, target="durable_agent_server", model="test",
-            service_ws=execution.ws, session_store="managed-proof",
+            execution.agent, **options, service_ws=execution.ws,
             requirements=RuntimeRequirements(sessions=True),
         )
         with TestClient(app) as client:
@@ -443,8 +461,74 @@ def test_generated_entrypoint_selects_native_target(execution: Any, monkeypatch:
     namespace: dict[str, Any] = {}
     exec(compile(source, str(entrypoint), "exec"), namespace)
     assert selected["target"] == "durable_agent_server"
+    assert selected["config"] is config
     assert selected["service_ws"] is execution.ws
     assert namespace["app"] == "native-app"
+
+
+def test_local_run_uses_declared_native_target(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import sys
+    from click.testing import CliRunner
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+    from apx_agent.cli import main
+
+    generate_project(AgentConfig(name="local", target="durable_agent_server",
+                                session={"type": "managed", "store_name": "remote-sessions"}), tmp_path)
+    monkeypatch.chdir(tmp_path)
+    uvicorn = MagicMock()
+    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
+    monkeypatch.setattr("apx_agent.cli._preflight_databricks_auth", lambda: None)
+    monkeypatch.setattr("apx_agent.cli._probe_import", lambda _: None)
+    result = CliRunner().invoke(main, ["agents", "run"])
+    assert result.exit_code == 0, result.output
+    assert uvicorn.run.call_args.args[0] == "agent_server.start_managed:app"
+    from apx_agent._inspection import _load_agent_config
+
+    assert _load_agent_config(pyproject_path=tmp_path / "pyproject.toml").session.store_name == "remote-sessions"
+
+
+@pytest.mark.parametrize("target,entrypoint", [
+    ("responses_agent", "agent_server.start_server:app"),
+    ("durable_agent_server", "agent_server.start_managed:app"),
+])
+def test_generated_host_uses_declaration_without_environment_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str, entrypoint: str) -> None:
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+
+    generate_project(AgentConfig(name="native", target=target), tmp_path)
+    monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
+    monkeypatch.delenv("APX_APPS_HOST", raising=False)
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8123")
+    commands: list[Any] = []
+
+    def launch(binary: str, args: list[str]) -> None:
+        commands.append(args)
+        raise SystemExit(0)
+
+    monkeypatch.setattr("os.execvp", launch)
+    source = tmp_path / "agent_server" / "start_host.py"
+    namespace: dict[str, Any] = {"__name__": "selector"}
+    exec(compile(source.read_text(), str(source), "exec"), namespace)
+    with pytest.raises(SystemExit) as result:
+        namespace["main"]()
+    assert result.value.code == 0
+    assert commands[0] == ["uvicorn", entrypoint, "--host", "0.0.0.0", "--port", "8123"]
+
+
+@pytest.mark.parametrize("override", [
+    {"session_store": "different-store"},
+    {"checkpointer": InMemorySaver()},
+    {"target": "responses_agent"},
+])
+def test_declared_managed_sessions_reject_conflicting_bindings(execution: Any, override: dict[str, Any]) -> None:
+    from apx_agent import AgentConfig, compile_agent
+
+    config = AgentConfig(name="proof", target="durable_agent_server", model="test",
+                         session={"type": "managed", "store_name": "managed-proof"})
+    with pytest.raises(ValueError):
+        compile_agent(execution.agent, config=config, service_ws=execution.ws, **override)
+    assert not execution.effects
 
 
 def test_deploy_accepts_durable_host_without_appkit(tmp_path: Path) -> None:

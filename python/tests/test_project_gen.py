@@ -35,6 +35,53 @@ from apx_agent._models import (
 from apx_agent._project_gen import generate_project, render_agent_py
 
 
+def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> None:
+    from ctk import Artifact, verify
+    from apx_agent._inspection import _load_agent_config
+
+    config = AgentConfig(
+        name="native-proof", target="durable_agent_server", model="test-model",
+        deploy={"space": "shared-space"},
+        session={"type": "managed", "store_name": "conversation-store"},
+    )
+    from apx_agent._yaml_spec import load_spec
+
+    spec = tmp_path / "native.yaml"
+    spec.write_text(yaml.safe_dump(config.model_dump(mode="json", exclude_none=True)))
+    generate_project(load_spec(spec), tmp_path)
+    verify(Artifact(str(tmp_path / "databricks.yml"), must_contain="shared-space"))
+    loaded = _load_agent_config(pyproject_path=tmp_path / "pyproject.toml")
+    assert loaded == config
+    namespace: dict[str, Any] = {}
+    exec((tmp_path / "agent.py").read_text(), namespace)
+    assert namespace["agent"]._name == config.name
+    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+    assert "apx-agent[langgraph,agentbricks]" in project["project"]["dependencies"]
+    bundle = yaml.safe_load((tmp_path / "databricks.yml").read_text())
+    app = bundle["resources"]["apps"]["native-proof"]
+    assert app["space"] == "shared-space"
+    assert not {"resources", "user_api_scopes", "permissions", "compute_min_instances", "compute_max_instances"} & app.keys()
+    assert set(bundle["resources"]) == {"apps"}
+    env = {e["name"]: e["value"] for e in app["config"]["env"]}
+    assert env["APX_APPS_HOST"] == "agentbricks"
+    assert "AGENT_SESSION_STORE" not in env
+    assert "MLFLOW_EXPERIMENT_ID" not in env
+
+
+@pytest.mark.parametrize("fields", [
+    {"deploy": {"space": "shared"}},
+    {"target": "durable_agent_server", "deploy": {"space": "shared", "instances": 2}},
+    {"target": "durable_agent_server", "memory": {"type": "managed", "store_name": "memory"}},
+    {"target": "durable_agent_server", "session": {"type": "managed"}},
+    {"target": "durable_agent_server", "session": {"type": "inmemory"}},
+    {"session": {"type": "managed", "store_name": "sessions"}},
+])
+def test_unsupported_target_configuration_fails_before_generation(fields: dict[str, Any], tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        generate_project(AgentConfig(name="invalid", **fields), tmp_path / "output")
+    assert not (tmp_path / "output").exists()
+
+
 @pytest.fixture()
 def coworker_config() -> AgentConfig:
     """An AgentConfig that exercises the template + memory + session path."""

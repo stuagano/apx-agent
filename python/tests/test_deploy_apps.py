@@ -1017,8 +1017,9 @@ def _stub_compile_responses(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize("wrong_owner", [False, True])
+@pytest.mark.parametrize("generated", [False, True])
 def test_app_space_deploy_binds_sdk_owned_store(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch, wrong_owner: bool,
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, wrong_owner: bool, generated: bool,
 ) -> None:
     from apx_agent import LlmAgent
     from databricks.sdk.service.apps import App, Space
@@ -1027,6 +1028,14 @@ def test_app_space_deploy_binds_sdk_owned_store(
     app = doc["resources"]["apps"]["my-app"]
     app.update(space="app-space", config={"env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]})
     (scaffold / "databricks.yml").write_text(yaml.safe_dump(doc))
+    if generated:
+        from apx_agent import AgentConfig
+        from apx_agent._project_gen import generate_project
+
+        generate_project(AgentConfig(name="my-app", target="durable_agent_server",
+                                    deploy={"space": "app-space"},
+                                    session={"type": "managed", "store_name": "remote-sessions"}), scaffold)
+    original_bundle = (scaffold / "databricks.yml").read_text()
     calls = _install_subprocess_mock(monkeypatch)
     monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda _: LlmAgent(name="native"))
     monkeypatch.setattr("apx_agent.cli._check_readyz", lambda *a, **k: (True, {"durable": True, "runtime_store": "ok"}))
@@ -1054,7 +1063,10 @@ def test_app_space_deploy_binds_sdk_owned_store(
     sdk.create_runtime_store.side_effect = create_store
     constructor = MagicMock(return_value=sdk)
     monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", constructor)
-    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--profile", "selected", "--var", "mlflow_experiment_id=existing"])
+    args = ["agents", "deploy", "--target", "apps", "--profile", "selected"]
+    if not generated:
+        args.extend(["--var", "mlflow_experiment_id=existing"])
+    result = CliRunner().invoke(main, args)
     constructor.assert_called_once_with("selected")
     grant.assert_not_called()
     saved = yaml.safe_load((scaffold / "databricks.yml").read_text())["resources"]["apps"]["my-app"]
@@ -1063,14 +1075,21 @@ def test_app_space_deploy_binds_sdk_owned_store(
         assert result.exit_code != 0
         assert "does not belong" in result.output
         assert ["bundle", "run"] not in seq
-        assert len(saved["config"]["env"]) == 1
+        assert (scaffold / "databricks.yml").read_text() == original_bundle
     else:
         assert result.exit_code == 0, result.output
         assert seq.count(["bundle", "deploy"]) == 2
         assert seq.index(["bundle", "run"]) > max(i for i, c in enumerate(seq) if c == ["bundle", "deploy"])
         env = {e["name"]: e["value"] for e in saved["config"]["env"]}
-        assert env["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_USERNAME"] == "app-sp"
-        assert env["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LAKEBASE_BRANCH"] == "projects/p/branches/b"
+        if generated:
+            assert (scaffold / "databricks.yml").read_text() == original_bundle
+            assert env["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_USERNAME"] == "${var.apx_runtime_store_username}"
+            run_args = next(c for c in calls if c[:2] == ["bundle", "run"])
+            assert "apx_runtime_store_username=app-sp" in run_args
+            assert "apx_runtime_store_lakebase_branch=projects/p/branches/b" in run_args
+        else:
+            assert env["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_USERNAME"] == "app-sp"
+            assert env["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LAKEBASE_BRANCH"] == "projects/p/branches/b"
         assert "resources" not in saved and "user_api_scopes" not in saved
         sdk.create_runtime_store.assert_called_once_with("my-app", "app-sp", app_name="my-app", retry_transient=True)
 

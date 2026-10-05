@@ -98,8 +98,8 @@ does not erase those declarations.
 | Requirement | ResponsesAgent handlers | Native durable target in this release |
 |---|---|---|
 | `user_identity` | Existing OBO handling | Rejected; app-auth only |
-| `sessions` | Explicit conversation store or LlmAgent checkpointer | Explicit LlmAgent checkpointer or managed `session_store` |
-| `approvals` | Explicit LlmAgent checkpointer | Explicit LlmAgent checkpointer or managed `session_store`; app-scoped |
+| `sessions` | Declared session backend, explicit conversation store or LlmAgent checkpointer | Declared managed session or explicit LlmAgent checkpointer / `session_store` |
+| `approvals` | LlmAgent checkpointer | Declared managed session or explicit LlmAgent checkpointer / `session_store`; app-scoped |
 | `long_term_memory` | Already finalized, reachable declared store | Rejected |
 | `recovery` | Rejected by this factory | Rejected; no recovery handler is registered |
 | `streaming` | Existing streaming handler | Rejected; complete message output only |
@@ -136,56 +136,59 @@ changing the corresponding report entries to supported.
 
 ## Generated projects
 
-Both project generation and Apps scaffolding emit `agent_server/start_managed.py`.
-Set `APX_APPS_HOST=agentbricks` to select it after adding the optional dependency.
-`python` remains the default, and `appkit` retains its existing behavior.
-Set `AGENT_SESSION_STORE` to an existing managed store to bind generated durable
-entrypoints. APX's separate memory/session configuration is still rejected rather
-than silently reinterpreted as SDK configuration. To bind another checkpointer,
-author the entrypoint with `compile_agent(..., checkpointer=...)`.
-No storage is provisioned by changing the host selector alone.
+Declare `target: durable_agent_server` in your agent specification. Generation
+selects the native entrypoint and includes `apx-agent[langgraph,agentbricks]` in
+the project dependencies. Omitting `target` preserves the existing ResponsesAgent
+default. Existing Python and AppKit host choices remain available.
+
+Declare a managed session with `session.type: managed` and `session.store_name`.
+The same declaration is passed to `compile_agent(config=config, service_ws=ws)`
+and inspected by `inspect_target(agent, config=config)`. Local native execution
+keeps that remote store binding. Managed sessions bind an existing store and
+normalize `auto_create` to false; explicit provisioning requests are rejected.
+
+The older `AGENT_SESSION_STORE` environment variable remains compatible with
+hand-authored projects, but cannot disagree with a declared store. Explicit
+checkpointers remain available through `compile_agent(..., checkpointer=...)`;
+they cannot be combined with a declared managed store. Unsupported target/state
+combinations fail validation instead of silently substituting local memory.
 
 ## Deploy the durable target into an App Space
 
-Use the existing Apps deploy command with the native bundle `space` field.
-Keep the space and runtime configuration in the root app declaration:
+Put these choices in one agent specification, for example `orders.yaml`:
 
 ```yaml
-resources:
-  apps:
-    orders:
-      name: orders
-      space: your-space
-      source_code_path: ./.build
-      config:
-        env:
-          - name: APX_APPS_HOST
-            value: agentbricks
-          - name: AGENT_SESSION_STORE
-            value: orders-sessions
+name: orders
+target: durable_agent_server
+model: system.ai.claude-sonnet-4-6
+deploy:
+  space: your-space
+session:
+  type: managed
+  store_name: orders-sessions
 ```
 
 ```sh
-apx-agent agents deploy --target apps --profile your-selected-profile
+apx-agent agents run orders.yaml
+apx-agent agents deploy orders.yaml --target apps --profile your-selected-profile
 ```
 
-The space must already exist and provide the required scopes and service
-resources. Remove generated app-level resources, scopes, permissions and
-dedicated-instance scaling fields; pause or remove the generated keepalive job.
-Use a self-contained bundle without includes, bundle-level permissions or target
-presets; this initial route validates the root configuration directly.
-Configure tracing through the space. This route reads inherited policy and
-refuses to move an existing app between spaces or widen its grants.
+Use an APX installation with the `agentbricks` extra for native local execution
+or deployment. The space and Session Store must already exist, with the required
+access and tracing configured. APX generates the native `space` field and omits
+dedicated-app resources, scopes, scaling and the keepalive job. No manual bundle
+cleanup is needed. The route reads inherited policy and refuses to move an
+existing app between spaces or widen its grants.
 
 Deployment first applies the bundle, verifies the app's space and LIQUID compute,
 then uses the Agent Bricks SDK to create or reuse its managed Runtime Store.
-The SDK checks app and service-principal ownership. APX saves the non-secret
-connection coordinates in `databricks.yml`, reapplies the bundle and starts the
-app. Existing conflicting coordinates fail deployment. Leave package indexes
-to the workspace, and keep host/store settings out of source `app.yaml` so they
-cannot override the bundle binding.
+The SDK checks app and service-principal ownership. For generated projects APX
+passes the derived connection coordinates as bundle variables, reapplies the
+bundle and starts the app. Source configuration stays unchanged. Runtime Store
+variables are SDK-owned, not user overrides. Older hand-authored bundles retain
+their existing binding behavior and conflict checks.
 
-The managed Runtime Store records native invocations. `AGENT_SESSION_STORE`
+The managed Runtime Store records native invocations. `session.store_name`
 separately binds an existing conversation checkpoint store. Neither binding adds
 long-term memory or a recovery handler to this compiler. `/readyz` checks Runtime
 Store reachability and reports whether the SDK is durable; it does not execute a
