@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Generator
 from threading import Lock
 
-from mlflow.pyfunc import ResponsesAgent
+from mlflow.pyfunc.model import ResponsesAgent
 from mlflow.types.responses import ResponsesAgentRequest, ResponsesAgentResponse, ResponsesAgentStreamEvent
 
 from ._agents import BaseAgent
@@ -35,7 +35,8 @@ class ApxResponsesAgent(ResponsesAgent):
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        self.__dict__.update(state)
+        for name, value in state.items():
+            setattr(self, name, value)
         self._compile_lock = Lock()
 
     def _compiled(self) -> CompiledResponsesAgent:

@@ -6010,8 +6010,10 @@ def query_cmd(question: str | None, url: str, profile: str | None,
 
     # --- resolve question ---
     if not question:
-        if not click.get_text_stream("stdin").isatty():
-            question = click.get_text_stream("stdin").read().strip()
+        import sys
+
+        if not sys.stdin.isatty():
+            question = sys.stdin.read().strip()
         if not question:
             raise click.ClickException("Provide a question as an argument or via stdin.")
 
