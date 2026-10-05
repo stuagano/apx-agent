@@ -1016,6 +1016,116 @@ def _stub_compile_responses(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("wrong_owner", [False, True])
+@pytest.mark.parametrize("generated", [False, True])
+def test_app_space_deploy_binds_sdk_owned_store(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, wrong_owner: bool, generated: bool,
+) -> None:
+    from apx_agent import LlmAgent
+    from databricks.sdk.service.apps import App, Space
+
+    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    app = doc["resources"]["apps"]["my-app"]
+    app.update(space="app-space", config={"env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]})
+    (scaffold / "databricks.yml").write_text(yaml.safe_dump(doc))
+    if generated:
+        from apx_agent import AgentConfig
+        from apx_agent._project_gen import generate_project
+
+        generate_project(AgentConfig(name="my-app", target="durable_agent_server",
+                                    deploy={"space": "app-space"},
+                                    session={"type": "managed", "store_name": "remote-sessions"}), scaffold)
+    original_bundle = (scaffold / "databricks.yml").read_text()
+    calls = _install_subprocess_mock(monkeypatch)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda _: LlmAgent(name="native"))
+    monkeypatch.setattr("apx_agent.cli._check_readyz", lambda *a, **k: (True, {"durable": True, "runtime_store": "ok"}))
+    grant = MagicMock()
+    monkeypatch.setattr("apx_agent.cli._grant_experiment_to_sp", grant)
+    sdk = MagicMock()
+    sdk.workspace_client.apps.get_space.return_value = Space(name="app-space", effective_user_api_scopes=["ai-gateway"])
+    sdk.workspace_client.apps.get.return_value = App(
+        name="my-app", space="app-space",
+        service_principal_client_id="app-sp",
+    )
+    sdk.workspace_client.api_client.do.return_value = {
+        "space": "app-space", "compute_size": "LIQUID", "service_principal_client_id": "app-sp",
+    }
+
+    def create_store(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        assert [c[:2] for c in calls].count(["bundle", "deploy"]) == 1
+        assert ["bundle", "run"] not in [c[:2] for c in calls]
+        return {
+            "name": "runtime-stores/my-app",
+            "owner": {"app": {"name": "my-app", "service_principal_id": "other-sp" if wrong_owner else "app-sp"}},
+            "storage_backend": {"lakebase": {"branch": "projects/p/branches/b", "database_id": "runtime"}},
+        }
+
+    sdk.create_runtime_store.side_effect = create_store
+    constructor = MagicMock(return_value=sdk)
+    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", constructor)
+    args = ["agents", "deploy", "--target", "apps", "--profile", "selected"]
+    if not generated:
+        args.extend(["--var", "mlflow_experiment_id=existing"])
+    result = CliRunner().invoke(main, args)
+    constructor.assert_called_once_with("selected")
+    grant.assert_not_called()
+    saved = yaml.safe_load((scaffold / "databricks.yml").read_text())["resources"]["apps"]["my-app"]
+    seq = [c[:2] for c in calls]
+    if wrong_owner:
+        assert result.exit_code != 0
+        assert "does not belong" in result.output
+        assert ["bundle", "run"] not in seq
+        assert (scaffold / "databricks.yml").read_text() == original_bundle
+    else:
+        assert result.exit_code == 0, result.output
+        assert seq.count(["bundle", "deploy"]) == 2
+        assert seq.index(["bundle", "run"]) > max(i for i, c in enumerate(seq) if c == ["bundle", "deploy"])
+        env = {e["name"]: e["value"] for e in saved["config"]["env"]}
+        if generated:
+            assert (scaffold / "databricks.yml").read_text() == original_bundle
+            assert env["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_USERNAME"] == "${var.apx_runtime_store_username}"
+            run_args = next(c for c in calls if c[:2] == ["bundle", "run"])
+            assert "apx_runtime_store_username=app-sp" in run_args
+            assert "apx_runtime_store_lakebase_branch=projects/p/branches/b" in run_args
+        else:
+            assert env["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_USERNAME"] == "app-sp"
+            assert env["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LAKEBASE_BRANCH"] == "projects/p/branches/b"
+        assert "resources" not in saved and "user_api_scopes" not in saved
+        sdk.create_runtime_store.assert_called_once_with("my-app", "app-sp", app_name="my-app", retry_transient=True)
+
+
+def test_app_space_source_rejects_local_store_override(tmp_path: Path) -> None:
+    from apx_agent._app_space import validate_space_source
+
+    (tmp_path / "app.yaml").write_text("env:\n  - name: DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL\n    value: 'true'\n")
+    with pytest.raises(click.ClickException, match="local/legacy"):
+        validate_space_source(tmp_path, {"source_code_path": "."})
+
+
+@pytest.mark.parametrize("problem", ["profile", "scopes", "migration", "scaling", "overrides"])
+def test_app_space_rejects_unsafe_configuration(monkeypatch: pytest.MonkeyPatch, problem: str) -> None:
+    from apx_agent._app_space import validate_space_deployment
+    from databricks.sdk.service.apps import App, Space
+
+    app: dict[str, Any] = {"space": "shared", "config": {"env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]}}
+    doc: dict[str, Any] = {"resources": {"apps": {"agent": app}}}
+    sdk = MagicMock()
+    sdk.workspace_client.apps.get_space.return_value = Space(name="shared", effective_user_api_scopes=[] if problem == "scopes" else ["ai-gateway"])
+    sdk.workspace_client.apps.get.return_value = App(name="agent", space="other" if problem == "migration" else "shared")
+    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda _: sdk)
+    if problem == "scaling":
+        app["compute_min_instances"] = 1
+    if problem == "overrides":
+        doc["targets"] = {"dev": {"resources": {"apps": {"agent": {"config": {"env": []}}}}}}
+    with pytest.raises(click.ClickException):
+        validate_space_deployment(
+            doc, bundle_key="agent", app_name="agent", profile=None if problem == "profile" else "selected",
+            plan=AuthorizationPlan((), (), (), ("ai-gateway",), ()), family_permissions=AppFamilyPermissions(),
+        )
+    sdk.create_runtime_store.assert_not_called()
+    sdk.workspace_client.apps.update.assert_not_called()
+
+
 def test_target_apps_triggers_bundle_deploy(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

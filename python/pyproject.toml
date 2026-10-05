@@ -46,6 +46,8 @@ lakebase = [
     "langgraph-checkpoint-postgres>=2.0",
 ]
 all = ["apx-agent[eval,uc,lakebase,align]"]
+# Host integration is opt-in; ordinary imports and ResponsesAgent do not need it.
+agentbricks = ["databricks-agentbricks>=0.4.0,<0.5"]
 
 [dependency-groups]
 dev = [
@@ -57,7 +59,7 @@ dev = [
     "pyright>=1.1.380",
     "hatchling>=1.29.0",
     "hatch-vcs>=0.5.0",
-    "apx-agent[align]",
+    "apx-agent[align,agentbricks]",
     "databricks-agents>=1.12.0",
 ]
 

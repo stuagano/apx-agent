@@ -4160,7 +4160,7 @@ def _scaffold_apps(
     memory_block = _SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else ""
     pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT + session_block + memory_block)
 
-    from ._project_gen import _START_HOST_CONTENT
+    from ._project_gen import _START_HOST_CONTENT, _START_MANAGED_CONTENT
 
     files: dict[str, str] = {
         "pyproject.toml": pyproject,
@@ -4176,6 +4176,7 @@ def _scaffold_apps(
         ),
         "agent_server/__init__.py": "",
         "agent_server/start_host.py": _START_HOST_CONTENT,
+        "agent_server/start_managed.py": _START_MANAGED_CONTENT,
         "agent_server/start_server.py": _SCAFFOLD_APPS_START_SERVER,
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
@@ -5752,6 +5753,11 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
     if module is None:
         detected = _detect_target()
         module = _RUN_MODULE_BY_TARGET[detected.target]
+        from ._inspection import _load_agent_config
+
+        runtime_config = _load_agent_config(pyproject_path=Path.cwd() / "pyproject.toml")
+        if runtime_config is not None and runtime_config.target == "durable_agent_server":
+            module = "agent_server.start_managed:app"
         click.echo(
             f"target: {detected.target} (auto-detected: {detected.reason}) "
             f"→ serving {module}",
@@ -6004,8 +6010,10 @@ def query_cmd(question: str | None, url: str, profile: str | None,
 
     # --- resolve question ---
     if not question:
-        if not click.get_text_stream("stdin").isatty():
-            question = click.get_text_stream("stdin").read().strip()
+        import sys
+
+        if not sys.stdin.isatty():
+            question = sys.stdin.read().strip()
         if not question:
             raise click.ClickException("Provide a question as an argument or via stdin.")
 
@@ -8260,11 +8268,11 @@ def _stage_internal_appkit_host(
     """Stage generated AppKit internals only when the AppKit host is requested."""
     host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "python")
     host = host.strip().lower()
-    if host == "python":
+    if host in {"python", "agentbricks"}:
         return
     if host != "appkit":
         raise click.ClickException(
-            "APX_APPS_HOST must be 'appkit' or 'python' when set."
+            "APX_APPS_HOST must be 'appkit', 'python', or 'agentbricks' when set."
         )
 
     build_dir = cwd / ".build"
@@ -10390,6 +10398,38 @@ def _deploy_apps_impl(
         family_permissions,
     )
 
+    space_client = None
+    space_name = doc["resources"]["apps"][bundle_key].get("space")
+    if effective_config is not None and effective_config.target == "durable_agent_server":
+        from ._runtime_targets import inspect_target
+
+        inspect_target(agent, config=effective_config).require_compatible()
+        if _apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") != "agentbricks":
+            raise click.ClickException("Bundle host disagrees with the declared durable target; regenerate the project.")
+        declared_space = effective_config.deploy.space if effective_config.deploy is not None else None
+        if declared_space != space_name:
+            raise click.ClickException("Bundle space disagrees with deploy.space; regenerate the project.")
+    for target_config in doc.get("targets", {}).values():
+        override = target_config.get("resources", {}).get("apps", {}).get(bundle_key, {})
+        if "space" in override:
+            raise click.ClickException("Declare App Space in the root app configuration, not a target override.")
+    if space_name is not None:
+        from ._app_space import validate_space_deployment, RUNTIME_STORE_VARIABLES
+        from ._runtime_targets import inspect_target
+
+        inspect_target(agent, target="durable_agent_server", config=effective_config).require_compatible()
+        if any(_bundle_var_value(vars, variable) is not None for variable in RUNTIME_STORE_VARIABLES.values()):
+            raise click.ClickException("Runtime Store variables are SDK-owned; omit explicit overrides.")
+        target_app = doc.get("targets", {}).get(bundle_target, {}).get("resources", {}).get("apps", {}).get(bundle_key, {})
+        if target_app.get("name", resolved_app_name) != app_name or "${" in app_name:
+            raise click.ClickException("App Space requires an explicit app name matching the selected bundle target.")
+        space_client = validate_space_deployment(
+            doc, bundle_key=bundle_key, app_name=app_name, profile=profile,
+            plan=authorization_plan, family_permissions=family_permissions,
+        )
+        auto_experiment = False
+        log("# App Space: using inherited authorization and preconfigured tracing")
+
     # 2-pre. Provision the declared external-model endpoint (model = "bedrock:…")
     # before the bundle deploy references its CAN_QUERY resource. No-op for a
     # bare model name; fail-closed on a missing credential or a failing
@@ -10422,14 +10462,15 @@ def _deploy_apps_impl(
     if auto_update_yml:
         log("# --auto-update-yml: reconciliation is already automatic")
     log("# Apps authorization reconciliation")
-    _reconcile_apps_authorization(
-        cwd,
-        plan=authorization_plan,
-        resolved_dependencies=resolved_dependencies,
-        family_permissions=family_permissions,
-        bundle_key=bundle_key,
-        log=log,
-    )
+    if space_client is None:
+        _reconcile_apps_authorization(
+            cwd,
+            plan=authorization_plan,
+            resolved_dependencies=resolved_dependencies,
+            family_permissions=family_permissions,
+            bundle_key=bundle_key,
+            log=log,
+        )
     _bake_deploy_function_signatures(
         cwd, agent=agent, profile=profile, log=log,
     )
@@ -10500,6 +10541,11 @@ def _deploy_apps_impl(
                     log("  removed .build/.venv from deploy source")
         else:
             log("# --no-auto-build-wheel: skipping wheel build + artifacts step")
+
+        if space_client is not None:
+            from ._app_space import validate_space_source
+
+            validate_space_source(cwd, _read_databricks_yml(cwd)["resources"]["apps"][bundle_key])
 
         # 2c. Auto-resolve mlflow_experiment_id if the bundle wants it and the
         # caller didn't pass one. Looks up / creates an experiment at
@@ -10601,6 +10647,43 @@ def _deploy_apps_impl(
                 raise click.ClickException(msg)
         log(f"  bundle deploy finished in {deploy_seconds:.1f}s")
 
+        if space_client is not None:
+            from ._app_space import runtime_store_env, RUNTIME_STORE_VARIABLES
+
+            binding = runtime_store_env(space_client, app_name=app_name, space=space_name)
+            bundle_path = cwd / "databricks.yml"
+            if bundle_path.is_symlink():
+                raise click.ClickException("Refusing to bind a Runtime Store through symlinked databricks.yml")
+            yml, bound_doc = _load_databricks_yml_roundtrip(cwd)
+            config = bound_doc["resources"]["apps"][bundle_key].setdefault("config", {})
+            env = config.setdefault("env", [])
+            generated_binding = all(
+                [entry for entry in env if entry.get("name") == key] ==
+                [{"name": key, "value": "${var." + variable + "}"}]
+                for key, variable in RUNTIME_STORE_VARIABLES.items()
+            )
+            if generated_binding:
+                for key, value in binding.items():
+                    variable = RUNTIME_STORE_VARIABLES[key]
+                    deploy_var_args.extend(["--var", f"{variable}={value}"])
+            else:
+                # Preserve hand-authored bundles from before declaration-based generation.
+                for key, value in binding.items():
+                    matches = [entry for entry in env if entry.get("name") == key]
+                    if matches and (len(matches) != 1 or matches[0] != {"name": key, "value": value}):
+                        raise click.ClickException(f"Runtime Store binding conflicts with existing {key}; existing configuration preserved.")
+                for key, value in binding.items():
+                    if not any(entry.get("name") == key for entry in env):
+                        env.append({"name": key, "value": value})
+                _write_databricks_yml_atomic(bundle_path, yml, bound_doc)
+            bound = _run_databricks_cmd(
+                ["bundle", "deploy", "--target", bundle_target] + deploy_var_args,
+                profile=profile,
+            )
+            if bound.returncode != 0:
+                raise click.ClickException("Runtime Store binding deployment failed; app was not started.")
+            log("# managed Runtime Store ownership verified and binding deployed")
+
         # 5. databricks bundle run <bundle_key>
         # bundle run takes the YAML KEY under resources.apps, which may differ
         # from the workspace app name (which is what `apps get` consumes).
@@ -10614,6 +10697,8 @@ def _deploy_apps_impl(
             )
             run_seconds = round(time.monotonic() - run_t0, 2)
             if run_proc.returncode != 0:
+                if space_client is not None:
+                    raise click.ClickException("App Space bundle run failed; the new deployment was not verified.")
                 # Non-fatal — the app may already be running. Surface the tail
                 # and proceed to polling so we still verify readiness.
                 log(f"  bundle run returned {run_proc.returncode} (continuing)")
@@ -10643,7 +10728,7 @@ def _deploy_apps_impl(
             # the app runs as its SP — without this grant every span is dropped.
             # Best-effort.
             sp = payload.get("service_principal_client_id")
-            if sp and resolved_exp_id:
+            if space_client is None and sp and resolved_exp_id:
                 if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
                     log("  granted app SP CAN_MANAGE on tracing experiment")
                 if _grant_trace_uc_tables_to_sp(
@@ -10662,6 +10747,8 @@ def _deploy_apps_impl(
         if readyz_gate and app_url:
             log(f"# readyz gate: GET {app_url}/readyz")
             ok, checks = _check_readyz(app_url, profile=profile, attempts=readyz_attempts)
+            if space_client is not None:
+                ok = ok and isinstance(checks, dict) and checks.get("durable") is True
             readyz_checks = checks
             if ok:
                 log(f"  readyz: ready ({checks})")

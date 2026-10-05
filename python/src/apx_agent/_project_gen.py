@@ -118,7 +118,8 @@ def _build_pyproject(config: "AgentConfig") -> str:
     lines.append('version = "0.1.0"')
     lines.append('requires-python = ">=3.11"')
     lines.append("dependencies = [")
-    lines.append('    "apx-agent[langgraph]",')
+    extra = "langgraph,agentbricks" if config.target == "durable_agent_server" else "langgraph"
+    lines.append(f'    "apx-agent[{extra}]",')
     lines.append('    "mlflow[databricks]>=3.14",')
     lines.append("]")
     lines.append("")
@@ -126,6 +127,8 @@ def _build_pyproject(config: "AgentConfig") -> str:
     # [tool.apx.agent]
     lines.append("[tool.apx.agent]")
     lines.append(f'name = "{config.name}"')
+    if config.target != "responses_agent":
+        lines.append(f"target = {_toml_value(config.target)}")
     if config.description:
         lines.append(f"description = {_toml_value(config.description)}")
     lines.append(f"model = {_toml_value(config.model)}")
@@ -200,21 +203,16 @@ def _build_pyproject(config: "AgentConfig") -> str:
 
     # [tool.apx.agent.memory]
     if config.memory is not None:
-        mem = config.memory
-        mem_fields: dict[str, Any] = {"type": mem.type}
-        if mem.table_name is not None:
-            mem_fields["table_name"] = mem.table_name
-        mem_fields["auto_create"] = mem.auto_create
-        _write_toml_section(lines, "tool.apx.agent.memory", mem_fields)
+        _write_toml_section(lines, "tool.apx.agent.memory", config.memory.model_dump(exclude_none=True))
 
     # [tool.apx.agent.session]
     if config.session is not None:
-        sess = config.session
-        sess_fields: dict[str, Any] = {"type": sess.type}
-        if sess.table_name is not None:
-            sess_fields["table_name"] = sess.table_name
-        sess_fields["auto_create"] = sess.auto_create
-        _write_toml_section(lines, "tool.apx.agent.session", sess_fields)
+        _write_toml_section(lines, "tool.apx.agent.session", config.session.model_dump(exclude_none=True))
+
+    if config.deploy is not None:
+        _write_toml_section(lines, "tool.apx.agent.deploy", config.deploy.model_dump(exclude_none=True, exclude={"autoscale"}))
+        if config.deploy.autoscale is not None:
+            _write_toml_section(lines, "tool.apx.agent.deploy.autoscale", config.deploy.autoscale.model_dump())
 
     # [[tool.apx.tools]] — one array entry per tool declared in the YAML
     for tool_dict in config.tools:
@@ -246,6 +244,26 @@ config = _load_agent_config()
 app = create_app(agent=agent, config=config)
 '''
 
+_START_MANAGED_CONTENT = '''\
+"""Native APX DurableAgentServer target. Install databricks-agentbricks to use it."""
+import os
+
+from agent import agent
+from apx_agent import compile_agent
+from apx_agent._defaults import _make_workspace_client
+from apx_agent._inspection import _load_agent_config
+
+config = _load_agent_config()
+if config is None:
+    raise ValueError("The durable target requires [tool.apx.agent] configuration")
+ws = _make_workspace_client()
+app = compile_agent(
+    agent, config=config, target="durable_agent_server",
+    model=os.environ.get("APX_MODEL", config.model), service_ws=ws,
+    session_store=os.environ.get("AGENT_SESSION_STORE"),
+)
+'''
+
 _START_HOST_CONTENT = '''\
 """Databricks Apps host selector — framework boilerplate, do not edit."""
 from __future__ import annotations
@@ -257,7 +275,11 @@ from pathlib import Path
 
 
 def main() -> None:
-    host = os.environ.get("APX_APPS_HOST", "python").strip().lower()
+    from apx_agent._inspection import _load_agent_config
+
+    config = _load_agent_config()
+    default_host = "agentbricks" if config is not None and config.target == "durable_agent_server" else "python"
+    host = os.environ.get("APX_APPS_HOST", default_host).strip().lower()
     if host == "python":
         os.execvp(
             "uvicorn",
@@ -270,8 +292,14 @@ def main() -> None:
                 os.environ["DATABRICKS_APP_PORT"],
             ],
         )
+    if host == "agentbricks":
+        os.execvp(
+            "uvicorn",
+            ["uvicorn", "agent_server.start_managed:app", "--host", "0.0.0.0",
+             "--port", os.environ["DATABRICKS_APP_PORT"]],
+        )
     if host != "appkit":
-        raise SystemExit("APX_APPS_HOST must be 'appkit' or 'python' when set.")
+        raise SystemExit("APX_APPS_HOST must be 'appkit', 'python', or 'agentbricks' when set.")
 
     source_root = Path(__file__).resolve().parents[1]
     appkit_dir = source_root / "apx_appkit_host"
@@ -725,7 +753,7 @@ def _build_databricks_yml(config: "AgentConfig") -> str:
         if replica_bounds is not None
         else ""
     )
-    return f"""\
+    document = f"""\
 bundle:
   name: {name}
 
@@ -831,6 +859,29 @@ targets:
         {name}:
           name: {name}
 """
+    if config.target == "responses_agent":
+        return document
+
+    import yaml
+    from ._app_space import RUNTIME_STORE_VARIABLES
+
+    bundle = yaml.safe_load(document)
+    app = bundle["resources"]["apps"][name]
+    env = app["config"]["env"]
+    next(entry for entry in env if entry["name"] == "APX_APPS_HOST")["value"] = "agentbricks"
+    if config.deploy is not None and config.deploy.space is not None:
+        app["space"] = config.deploy.space
+        for key in ("resources", "user_api_scopes"):
+            app.pop(key, None)
+        for key in ("experiments", "jobs"):
+            bundle["resources"].pop(key, None)
+        for key in ("workspace_user", "mlflow_experiment_id"):
+            bundle["variables"].pop(key, None)
+        app["config"]["env"] = [entry for entry in env if entry["name"] not in {"MLFLOW_EXPERIMENT_ID", "APX_DECLARED_INSTANCES"}]
+        for key, variable in RUNTIME_STORE_VARIABLES.items():
+            bundle["variables"][variable] = {"description": "SDK-owned Runtime Store coordinate, bound by apx-agent deploy", "default": ""}
+            app["config"]["env"].append({"name": key, "value": "${var." + variable + "}"})
+    return yaml.safe_dump(bundle, sort_keys=False)
 
 
 def _build_app_yml(config: "AgentConfig") -> str:
@@ -889,7 +940,7 @@ def generate_project(
         # the leaf needs no constructor args. Without this file the container
         # dies on `from agent import agent` (start_server imports it).
         (target_dir / "agent.py").write_text(
-            "from apx_agent import LlmAgent\n\nagent = LlmAgent(tools=[])\n"
+            f"from apx_agent import LlmAgent\n\nagent = LlmAgent(name={config.name!r}, tools=[])\n"
         )
 
     # agent_server/
@@ -898,6 +949,7 @@ def generate_project(
     (agent_server_dir / "__init__.py").write_text("")
     (agent_server_dir / "start_server.py").write_text(_START_SERVER_CONTENT)
     (agent_server_dir / "start_host.py").write_text(_START_HOST_CONTENT)
+    (agent_server_dir / "start_managed.py").write_text(_START_MANAGED_CONTENT)
     (agent_server_dir / "keepalive.py").write_text(_KEEPALIVE_CONTENT)
 
     # databricks.yml

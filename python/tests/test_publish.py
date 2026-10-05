@@ -102,6 +102,11 @@ def _install_fake_sdk(
         "databricks.sdk.service.supervisoragents",
         fake_module,
     )
+    # Newer SDKs eagerly load this module on the parent package. A from-import
+    # reads that cached attribute before consulting sys.modules.
+    import databricks.sdk.service as service
+
+    monkeypatch.setattr(service, "supervisoragents", fake_module, raising=False)
 
 
 # ===========================================================================
@@ -338,6 +343,9 @@ def test_friendly_error_when_supervisor_sdk_missing(
 ) -> None:
     # Force the import to fail
     monkeypatch.setitem(sys.modules, "databricks.sdk.service.supervisoragents", None)
+    import databricks.sdk.service as service
+
+    monkeypatch.delattr(service, "supervisoragents", raising=False)
     from apx_agent import publish_to_supervisor
 
     with pytest.raises(ImportError, match="supervisoragents service"):
