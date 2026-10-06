@@ -72,7 +72,7 @@ cd my-agent && uv sync
 uv run apx-agent agents deploy --target apps
 ```
 
-`doctor` verifies your Databricks auth, tooling, and config before you scaffold. `scaffold` writes an editable `my-agent/` project directory containing the agent code and Apps bundle files. Run `deploy` from that directory; it bundles the project and prints the App URL when done. You can also deploy a hand-authored YAML spec by passing its path to `deploy`.
+`doctor` verifies your Databricks auth, tooling, and config before you scaffold. New Apps scaffolds write `agent.py` and `pyproject.toml` for the native runtime. Run `deploy` from that directory with your chosen `--profile`; APX compiles the native manifests and hands deployment to Agent Bricks. Use `--runtime responses_agent` when scaffolding to select the compatibility Bundle/dev-UI project. Existing projects retain their runtime.
 
 ---
 
@@ -142,7 +142,7 @@ uv add apx-agent
 uv run apx-agent agents scaffold my-agent
 ```
 
-The scaffold writes an editable `my-agent/` project in the current directory. It includes `agent.py`, `pyproject.toml`, `databricks.yml`, the generated Apps server, and the baked schema manifest when schema discovery succeeds.
+The scaffold writes an editable `my-agent/` project with `agent.py`, `pyproject.toml`, the native runtime declaration, and a baked schema manifest when schema discovery succeeds. APX supplies the launcher; you do not maintain generated server files or Bundle YAML. Managed sessions and memory are optional declarations.
 
 **3. Deploy the project**
 

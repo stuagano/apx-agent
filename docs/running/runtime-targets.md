@@ -69,17 +69,31 @@ uv run apx-agent agents deploy --target apps --profile your-selected-profile
 ```
 
 Replace the profile placeholder with your chosen Databricks profile. Edit the
-generated agent declaration as you develop. The standard Apps path uses MLflow
-AgentServer with Responses-compatible handlers; it does not require you to save
-or register an MLflow model.
+generated agent declaration as you develop. New Apps scaffolds declare
+`durable_agent_server` and use the packaged native launcher. They contain
+`agent.py` and `pyproject.toml`, without a generated server package, Bundle,
+Lakebase quickstart or Bundle CI pipeline. Managed sessions and memory remain
+opt-in declarations, so a fresh project does not require stores for local execution.
 
 ## Choose the server behavior when needed
 
 Apps is the deployment destination. The server determines how requests execute.
-The standard Apps server remains the default. For native durable invocations
-and managed session binding, declare
-`target: durable_agent_server` as shown below. APX currently requires this explicit
-choice; it does not automatically select a server from requested capabilities.
+New Apps projects default to `durable_agent_server`. To create a compatibility
+project with MLflow AgentServer, the dev UI and Bundle deployment, run
+`apx-agent agents scaffold my-agent --runtime responses_agent`.
+`--target model-serving` retains its existing layout and Responses-compatible
+contract; it rejects `--runtime durable_agent_server`.
+
+Existing declarations that omit `target` still mean `responses_agent`; this
+change applies to new scaffolds, not configuration loading or running agents.
+Re-scaffolding with `--force` preserves the existing runtime and refuses a
+runtime change. Gallery declarations with an explicit target also retain it
+unless `--runtime` is supplied. Unsupported state/runtime combinations fail
+validation rather than silently switching runtimes.
+
+The legacy `--lakebase` quickstart and `--ci github|gitlab` Bundle templates
+require `--runtime responses_agent`. Native projects omit these defaults;
+declare managed stores as shown below when persistence is needed.
 
 The native durable integration supports request-user clients, declared APX
 memory and persisted message streaming. Service-identity LlmAgents can opt into

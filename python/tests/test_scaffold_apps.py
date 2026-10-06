@@ -66,7 +66,7 @@ def test_scaffold_apps_creates_expected_file_tree(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
             "--template", "data", "--catalog", "samples", "--schema", "tpch",
             "--dir", str(tmp_path),
         ],
@@ -96,7 +96,7 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
             "--template", "data", "--catalog", "samples", "--schema", "tpch",
             "--dir", str(tmp_path),
         ],
@@ -222,7 +222,7 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
             "--template", "data", "--catalog", "samples", "--schema", "tpch",
             "--dir", str(tmp_path),
         ],
@@ -263,7 +263,7 @@ def test_scaffold_apps_base_omits_uc_registration_config(tmp_path: Path) -> None
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
             "--template", "base", "--dir", str(tmp_path),
         ],
     )
@@ -287,7 +287,7 @@ def test_scaffold_apps_defaults_to_lakebase_session(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
             "--template", "data", "--catalog", "samples", "--schema", "tpch",
             "--dir", str(tmp_path),
         ],
@@ -307,7 +307,7 @@ def test_scaffold_apps_no_lakebase_omits_session_block(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path),
+        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--dir", str(tmp_path),
          "--no-lakebase"],
     )
     assert result.exit_code == 0, result.output
@@ -323,7 +323,7 @@ def test_scaffold_apps_echoes_lakebase_guidance(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
             "--template", "data", "--catalog", "samples", "--schema", "tpch",
             "--dir", str(tmp_path),
         ],
@@ -341,7 +341,7 @@ def test_scaffold_apps_no_lakebase_skips_guidance(
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path),
+        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--dir", str(tmp_path),
          "--no-lakebase"],
     )
     assert result.exit_code == 0, result.output
@@ -368,7 +368,7 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
             "--template", "data", "--catalog", "samples", "--schema", "tpch",
             "--dir", str(tmp_path),
         ],
@@ -409,7 +409,7 @@ def test_scaffold_apps_writes_apx_timeline_sql(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
             "--template", "data", "--catalog", "samples", "--schema", "tpch",
             "--dir", str(tmp_path),
         ],
@@ -431,7 +431,7 @@ def test_scaffold_apps_writes_apx_timeline_sql(tmp_path: Path) -> None:
 
 
 def test_scaffold_default_target_is_apps(tmp_path: Path) -> None:
-    """No ``--target`` flag now emits the Databricks Apps bundle layout."""
+    """No ``--target`` flag now emits the native Databricks Apps layout."""
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -440,10 +440,13 @@ def test_scaffold_default_target_is_apps(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     base = tmp_path / "my_agent"
 
-    # Apps shape: agent.py + agent_server/ + databricks.yml bundle.
-    for rel in ("pyproject.toml", "agent.py", "databricks.yml",
-                "agent_server/start_server.py", "scripts/quickstart.py"):
+    # Native Apps use the packaged launcher and generated deployment manifests.
+    for rel in ("pyproject.toml", "agent.py"):
         assert (base / rel).exists(), f"missing {rel}"
+
+    assert not (base / "databricks.yml").exists()
+    assert not (base / "agent_server").exists()
+    assert tomllib.loads((base / "pyproject.toml").read_text())["tool"]["apx"]["agent"]["target"] == "durable_agent_server"
 
     # The flat model-serving app.py must NOT appear by default anymore.
     assert not (base / "app.py").exists()
@@ -464,7 +467,7 @@ def test_scaffold_apps_force_overwrites_existing_dir(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--force"],
+        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--force"],
     )
     assert result.exit_code == 0, result.output
 
@@ -484,7 +487,7 @@ def test_scaffold_apps_gitignore_includes_sidecar(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     gitignore = (tmp_path / "my_agent" / ".gitignore").read_text()
@@ -518,7 +521,7 @@ def test_scaffold_at_framework_repo_root_redirects_into_python(
 
     monkeypatch.chdir(framework_root)
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "scaffold", "myagent"])
+    result = runner.invoke(main, ["agents", "scaffold", "--runtime", "responses_agent", "myagent"])
 
     assert result.exit_code == 0, result.output
     assert (framework_python / "myagent" / "pyproject.toml").exists()
@@ -536,7 +539,7 @@ def test_scaffold_inside_python_does_not_redirect(
 
     monkeypatch.chdir(framework_python)
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "scaffold", "myagent"])
+    result = runner.invoke(main, ["agents", "scaffold", "--runtime", "responses_agent", "myagent"])
 
     assert result.exit_code == 0, result.output
     assert (framework_python / "myagent" / "pyproject.toml").exists()
@@ -553,7 +556,7 @@ def test_scaffold_here_overrides_auto_redirect(
 
     monkeypatch.chdir(framework_root)
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "scaffold", "myagent", "--here"])
+    result = runner.invoke(main, ["agents", "scaffold", "--runtime", "responses_agent", "myagent", "--here"])
 
     assert result.exit_code == 0, result.output
     assert (framework_root / "myagent" / "pyproject.toml").exists()
@@ -576,7 +579,7 @@ def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None
         result = runner.invoke(
             main,
             [
-                "agents", "scaffold", "my_coworker",
+                "agents", "scaffold", "--runtime", "responses_agent", "my_coworker",
                 "--dir", str(tmp_path),
                 "--target", "apps",
                 "--template", "coworker",
@@ -600,7 +603,7 @@ def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
         result = runner.invoke(
             main,
             [
-                "agents", "scaffold", "fraud_agent",
+                "agents", "scaffold", "--runtime", "responses_agent", "fraud_agent",
                 "--dir", str(tmp_path),
                 "--target", "apps",
                 "--template", "coworker",
@@ -627,7 +630,7 @@ def test_scaffold_coworker_without_persona_omits_kwarg(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_coworker2",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_coworker2",
             "--dir", str(tmp_path),
             "--target", "apps",
             "--template", "coworker",
@@ -655,7 +658,7 @@ def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path)
         result = runner.invoke(
             main,
             [
-                "agents", "scaffold", "interactive_agent",
+                "agents", "scaffold", "--runtime", "responses_agent", "interactive_agent",
                 "--dir", str(tmp_path),
                 "--target", "apps",
                 "--template", "coworker",
@@ -677,7 +680,7 @@ def test_scaffold_no_interactive_skips_prompts(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "silent_agent",
+            "agents", "scaffold", "--runtime", "responses_agent", "silent_agent",
             "--dir", str(tmp_path),
             "--target", "apps",
             "--no-interactive",
@@ -695,7 +698,7 @@ def test_start_server_loads_agent_config_for_session(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "sess_agent", "--target", "apps", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "--runtime", "responses_agent", "sess_agent", "--target", "apps", "--dir", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
 
@@ -728,7 +731,7 @@ def test_scaffold_explicit_target_non_tty_writes_apps_bundle(
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "np_agent", "--target", "apps", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "--runtime", "responses_agent", "np_agent", "--target", "apps", "--dir", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
 
@@ -753,7 +756,7 @@ def test_scaffold_explicit_target_non_tty_writes_model_serving_layout(
 
     result = CliRunner().invoke(
         main,
-        ["agents", "scaffold", "flat_agent", "--target", "model-serving", "--dir", str(tmp_path)],
+        ["agents", "scaffold", "--runtime", "responses_agent", "flat_agent", "--target", "model-serving", "--dir", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "flat_agent"
@@ -833,7 +836,7 @@ def test_scaffold_apps_ci_none_skips_workflows(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps", "--ci", "none",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--ci", "none",
             "--dir", str(tmp_path),
         ],
     )
@@ -849,7 +852,7 @@ def test_scaffold_apps_ci_gitlab(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "my_agent", "--target", "apps", "--ci", "gitlab",
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--ci", "gitlab",
             "--dir", str(tmp_path),
         ],
     )
