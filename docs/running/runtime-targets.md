@@ -75,6 +75,31 @@ generated agent declaration as you develop. New Apps scaffolds declare
 Lakebase quickstart or Bundle CI pipeline. Managed sessions and memory remain
 opt-in declarations, so a fresh project does not require stores for local execution.
 
+Use the same declaration to inspect and remove a native deployment:
+
+```sh
+uv run apx-agent status --profile your-selected-profile --json-output
+uv run apx-agent agents logs --profile your-selected-profile
+uv run apx-agent destroy --profile your-selected-profile
+```
+
+Status includes the live App even when the optional APX deploy-state record is
+missing. Logs use the native Databricks Apps command. Teardown uses the native
+SDK to check the Runtime Store's App name and service-principal ownership before
+deleting it, then deletes the App. Shared Session Stores and Memory Stores remain.
+If ownership cannot be verified or cleanup fails, teardown stops with the App
+and APX deploy-state record retained for a retry. An already-deleted Runtime
+Store is safe to retry; a store left behind without its App identity requires
+manual ownership investigation.
+
+The same cleanup guard applies to `agents delete` and its `--purge` canaries.
+Those commands stop before deleting model or registry records if App teardown
+fails. Native projects do not need Bundle teardown; existing named App Space
+projects resolve the selected Bundle target and clean its Runtime Store before
+running Bundle destroy. For a deployment made with an explicit App-name override,
+use `agents logs --app NAME` and `agents delete --app NAME --uc-name MODEL` to
+select that deployment explicitly.
+
 ## Choose the server behavior when needed
 
 Apps is the deployment destination. The server determines how requests execute.
