@@ -82,51 +82,6 @@ agent = _StubAgent()
 """
 
 
-_APPKIT_SUPPORTED_SURFACE_AGENT = """\
-import asyncio
-
-from apx_agent import Dependencies, LlmAgent, tool
-
-successful_calls = []
-stateful_calls = []
-
-@tool(effect="read")
-def who_am_i(headers: Dependencies.Headers) -> str:
-    return headers.user_id or "missing"
-
-@tool(effect="update")
-def apply_change(value: str) -> str:
-    return f"applied:{value}"
-
-@tool(effect="read")
-async def analyze_values(values: list[int]) -> dict[str, list[int] | dict[str, int]]:
-    await asyncio.sleep(0)
-    return {
-        "values": values,
-        "summary": {"count": len(values), "total": sum(values)},
-    }
-
-def remember(value: str, state: Dependencies.State) -> str:
-    stateful_calls.append(value)
-    state["value"] = value
-    return value
-
-def before_tool(name, args):
-    if name == "apply_change" and args == {"value": "deny"}:
-        raise PermissionError("blocked")
-
-def after_tool(name, args, output):
-    successful_calls.append((name, args, output))
-
-agent = LlmAgent(
-    name="supported-surface",
-    tools=[who_am_i, apply_change, analyze_values, remember],
-    before_tool=before_tool,
-    after_tool=after_tool,
-)
-"""
-
-
 def _write_scaffold(tmp_path: Path, *, with_yml: bool = True) -> Path:
     """Write a minimal Apps-shaped project under ``tmp_path``.
 
@@ -1416,198 +1371,6 @@ def test_no_run_skips_bundle_run(
     # ...and the deploy says how to start the app.
     assert "app not started (--no-run)" in result.output
     assert "databricks bundle run" in result.output
-
-
-def test_appkit_opt_in_stages_internal_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    databricks_yml = yaml.safe_load(_DATABRICKS_YML)
-    databricks_yml["artifacts"] = {
-        "default": {
-            "build": (
-                "mkdir -p .build\n"
-                "cp agent.py pyproject.toml .build/\n"
-                "cp -r agent_server .build/\n"
-            )
-        }
-    }
-    databricks_yml["resources"]["apps"]["my-app"]["config"] = {
-        "env": [{"name": "APX_APPS_HOST", "value": "appkit"}],
-    }
-    (tmp_path / "databricks.yml").write_text(
-        yaml.safe_dump(databricks_yml, default_flow_style=False, sort_keys=False),
-    )
-    (tmp_path / "pyproject.toml").write_text(
-        "[project]\n"
-        'name = "test-app"\n\n'
-        "[tool.apx.agent]\n"
-        'name = "test-app"\n'
-        'model = "databricks-claude-sonnet-4-6"\n'
-        'module = "agent:agent"\n'
-    )
-    (tmp_path / "agent.py").write_text(_APPKIT_SUPPORTED_SURFACE_AGENT)
-    server = tmp_path / "agent_server"
-    server.mkdir()
-    (server / "__init__.py").write_text("")
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("agent", None)
-    _install_subprocess_mock(monkeypatch)
-
-    result = CliRunner().invoke(
-        main,
-        ["agents", "deploy", "--target", "apps", "--no-run"],
-    )
-
-    assert result.exit_code == 0, result.output
-    host = tmp_path / ".build" / "apx_appkit_host"
-    runtime = tmp_path / ".build" / "apx_internal_runtime"
-    assert (host / "package.json").exists()
-    assert (host / "server" / "server.ts").exists()
-    assert (runtime / "package.json").exists()
-    assert (runtime / "dist" / "internal" / "appkit-host.mjs").exists()
-    package_json = json.loads((host / "package.json").read_text())
-    assert package_json["dependencies"]["apx-internal-runtime"] == (
-        "file:../apx_internal_runtime"
-    )
-    manifest = json.loads((host / "apx-host-manifest.json").read_text())
-    assert {
-        item["name"]: item["annotations"]["effect"] for item in manifest["tools"]
-    } == {
-        "who_am_i": "read",
-        "apply_change": "update",
-        "analyze_values": "read",
-        "remember": "update",
-    }
-
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from apx_agent import AgentConfig, _appkit_tool_bridge
-    from apx_agent._models import AgentCard, AgentContext
-
-    agent_module = importlib.import_module("agent")
-    bridge = FastAPI()
-    bridge.state.agent_context = AgentContext(
-        config=AgentConfig(name="supported-surface"),
-        tools=[],
-        card=AgentCard(name="supported-surface", description="Supported surface"),
-        agent=agent_module.agent,
-    )
-    from apx_agent._apps_host_manifest import AppsHostManifest
-    bridge.state.apx_appkit_host_manifest = AppsHostManifest.model_validate(manifest)
-    bridge.include_router(_appkit_tool_bridge.build_appkit_tool_bridge_router())
-    client = TestClient(bridge)
-    monkeypatch.setenv("DATABRICKS_APP_NAME", "local-appkit-test")
-    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", os.devnull)
-    monkeypatch.setenv("DATABRICKS_HOST", "https://fake.cloud.databricks.com")
-    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
-    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
-    monkeypatch.setattr(_appkit_tool_bridge, "_make_workspace_client", MagicMock)
-    identity = client.post(
-        "/_apx/internal/appkit/tools/who_am_i",
-        json={"args": {}},
-        headers={"X-Forwarded-User": "alice"},
-    )
-    token_headers = {
-        "X-Forwarded-Access-Token": "local-user-token",
-        "X-Forwarded-User": "alice",
-    }
-    denied = client.post(
-        "/_apx/internal/appkit/tools/apply_change",
-        json={"args": {"value": "deny"}},
-        headers=token_headers,
-    )
-    applied = client.post(
-        "/_apx/internal/appkit/tools/apply_change",
-        json={"args": {"value": "ok"}},
-        headers=token_headers,
-    )
-    analyzed = client.post(
-        "/_apx/internal/appkit/tools/analyze_values",
-        json={"args": {"values": [2, 3, 5]}},
-        headers=token_headers,
-    )
-    invalid = client.post(
-        "/_apx/internal/appkit/tools/analyze_values",
-        json={"args": {"values": [2, 3, 5]}, "unexpected": True},
-        headers=token_headers,
-    )
-    calls_before_stateful = list(agent_module.successful_calls)
-    stateful = client.post(
-        "/_apx/internal/appkit/tools/remember",
-        json={"args": {"value": "never"}},
-        headers=token_headers,
-    )
-
-    assert identity.json() == {"result": "alice"}
-    assert denied.status_code == 403
-    assert denied.json() == {"detail": "blocked"}
-    assert applied.json() == {"result": "applied:ok"}
-    assert analyzed.json() == {
-        "result": {
-            "values": [2, 3, 5],
-            "summary": {"count": 3, "total": 10},
-        }
-    }
-    assert invalid.status_code == 422
-    assert [call[0] for call in calls_before_stateful] == [
-        "who_am_i",
-        "apply_change",
-        "analyze_values",
-    ]
-    assert stateful.status_code == 400
-    assert stateful.json() == {
-        "detail": "APX AppKit bridge cannot execute stateful tool: remember"
-    }
-    assert agent_module.successful_calls == calls_before_stateful
-    assert agent_module.stateful_calls == []
-
-
-def test_python_default_skips_internal_appkit_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    databricks_yml = yaml.safe_load(_DATABRICKS_YML)
-    databricks_yml["artifacts"] = {
-        "default": {
-            "build": (
-                "mkdir -p .build\n"
-                "cp agent.py pyproject.toml .build/\n"
-                "cp -r agent_server .build/\n"
-            )
-        }
-    }
-    databricks_yml["resources"]["apps"]["my-app"]["config"] = {"env": []}
-    (tmp_path / "databricks.yml").write_text(
-        yaml.safe_dump(databricks_yml, default_flow_style=False, sort_keys=False),
-    )
-    (tmp_path / "pyproject.toml").write_text(
-        "[project]\n"
-        'name = "test-app"\n\n'
-        "[tool.apx.agent]\n"
-        'name = "test-app"\n'
-        'model = "databricks-claude-sonnet-4-6"\n'
-        'module = "agent:agent"\n'
-    )
-    (tmp_path / "agent.py").write_text(
-        "from apx_agent import LlmAgent\n\n"
-        "agent = LlmAgent(name='test-app')\n"
-    )
-    server = tmp_path / "agent_server"
-    server.mkdir()
-    (server / "__init__.py").write_text("")
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.syspath_prepend(str(tmp_path))
-    _install_subprocess_mock(monkeypatch)
-
-    result = CliRunner().invoke(
-        main,
-        ["agents", "deploy", "--target", "apps", "--no-run"],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert not (tmp_path / ".build" / "apx_appkit_host" / "package.json").exists()
 
 
 @pytest.mark.parametrize("legacy_flag", [False, True])
@@ -4591,3 +4354,15 @@ def test_maybe_write_deploy_state_returns_false_and_is_loud_on_failure(
     assert "deploy state NOT recorded" in joined
     assert "drift" in joined
     assert "my-app" in joined
+
+
+@pytest.mark.parametrize("host", ["appkit", " AppKit "])
+def test_retired_appkit_host_fails_before_build(scaffold: Path, monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
+    doc["resources"]["apps"]["my-app"]["config"] = {"env": [{"name": "APX_APPS_HOST", "value": host}]}
+    (scaffold / "databricks.yml").write_text(yaml.safe_dump(doc))
+    calls = _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
+    assert result.exit_code != 0
+    assert "AppKit host is retired" in result.output
+    assert not any(call[:2] == ["bundle", "deploy"] for call in calls)

@@ -75,8 +75,7 @@ class ToolMetadata:
             overriding the function's ``__doc__``. ``None`` if absent.
         name_override: Tool name supplied to the decorator, overriding the
             Python function name. ``None`` if absent.
-        effect: AppKit tool effect annotation. ``None`` means the AppKit
-            manifest conservatively uses ``update``.
+        effect: Declared tool effect metadata (read, write, update, or destructive).
         execution: Credential identity for the operation. ``None`` lets the
             Apps authorization compiler infer it from dependencies.
     """
@@ -195,8 +194,7 @@ def tool(
             for tools that use ``Dependencies.*`` parameters.
         grant: UC principals that should have ``EXECUTE`` on the synced
             function. Only meaningful when ``uc`` is set. Empty by default.
-        effect: AppKit effect annotation. If omitted, the manifest uses the
-            conservative ``update`` effect.
+        effect: Declared tool effect metadata (read, write, update, or destructive).
         execution: Credential identity for the operation. If omitted, Apps
             authorization infers it from the tool's dependencies.
 

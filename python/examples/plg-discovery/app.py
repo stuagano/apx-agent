@@ -7,10 +7,7 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 from apx_agent._serve import create_app
 
-from api import router
-
 app = create_app()
-app.include_router(router)
 
 client = Path.cwd() / "client" / "dist"
 if client.is_dir():

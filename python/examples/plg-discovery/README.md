@@ -1,77 +1,51 @@
 # PLG Discovery
 
-A barebones nonprofit technology-discovery app: users share an organization URL and operating documents, then a governed APX agent interviews them and builds a staged technology blueprint.
+Users share an organization URL and operating documents, then a governed APX
+agent interviews them and builds a staged technology blueprint.
 
-## Architecture
+`agent.py` declares the agent and Python tools. `app.py` mounts the React wizard
+directly on the native DurableAgentServer. The browser streams
+`POST /api/invocations`, then reads the persisted result before accepting its
+structured artifacts. Managed sessions retain conversation history. **New
+conversation** starts a fresh session without deleting the previous one.
 
-The app uses one native APX declaration and one generated TypeScript AppKit host:
+The declaration selects `durable_agent_server` and managed sessions. Agent Bricks
+owns the Runtime Store, Session Store provisioning, and MLflow tracing. The
+bundle retains only this example's wheel and browser build steps. There is no
+Node agent server, Python tool bridge, or process-local developer override API.
 
-```text
-React PLG wizard
-  └─ POST /api/agents/chat (AppKit SSE + real threads)
-       └─ generated APX AppKit host
-            ├─ Databricks foundation model
-            ├─ governed Python tools
-            └─ MLflow/AppKit OTLP traces, metrics, and logs
-```
-
-- [`agent.py`](agent.py) declares the discovery agent, web-research tool, and shipped nonprofit-discovery skill.
-- [`client/`](client/) keeps the original PLG wizard, validates `apx-artifact` output, and renders the profile, current-systems gate, domain relevance, and blueprint.
-- [`server/grounding.py`](server/grounding.py) composes the playbook, component catalog, skill inventory, and research brief into the system prompt.
-- [`databricks.yml`](databricks.yml) selects the shared native AppKit host and configures MLflow telemetry.
-
-The small **Dev** launcher is enabled by default in local and deployed builds. Its five inline tabs edit the live AppKit agent:
-
-1. Config
-2. Instructions
-3. Tools and markdown skills
-4. AppKit sessions
-5. Effective prompt
-
-Set `APX_DEV_UI=0` on the App only when the launcher and its routes should be disabled. Overrides are process-local and reset on restart or redeploy.
-
-## Local checks
-
-From `python/examples/plg-discovery`:
+## Check locally
 
 ```bash
-uv sync
-npm ci --prefix client
+npm install --prefix client
 npm test --prefix client
 npm run build --prefix client
 uv run pytest -q
 ```
 
-The tests do not require a live Databricks workspace. Text-like onboarding files are read in the browser; binary files are represented by filename rather than uploaded to a second backend.
+These checks need no live workspace. Text-like onboarding files are read in the
+browser; binary files are represented by filename.
 
 ## Deploy
 
-Build the client, then deploy through APX so it stages the local APX wheel, Python tool bridge, and generated TypeScript AppKit host:
+Install `apx-agent[agentbricks]`, enable the required agent services in the chosen
+workspace, and build the browser client. APX checks prerequisites before building
+or provisioning:
 
 ```bash
 npm run build --prefix client
-uv run apx-agent agents deploy . \
-  --target apps \
-  --profile <profile> \
-  --var catalog=<catalog> \
-  --var schema=<schema> \
-  --var sql_warehouse_id=<warehouse-id> \
-  --var llm_endpoint_name=databricks-claude-sonnet-4-6
+uv run apx-agent agents deploy . --target apps --profile <profile>
 ```
 
-The deploy command resolves or creates the MLflow experiment unless `--var mlflow_experiment_id=<id>` is supplied. Always pass the intended CLI profile explicitly; this example has no profile default.
-
-After deployment:
-
-```bash
-databricks apps get plg-discovery --profile <profile> -o json
-databricks apps logs plg-discovery --follow --profile <profile>
-```
+The app name is `agent-bricks-discovery`. For local execution after provisioning
+its managed stores, use the intended Databricks profile and run
+`DATABRICKS_APP_PORT=8000 uv run python -m app`. Local execution still connects
+to the remote managed session store. Do not substitute an in-memory session
+backend to make a missing store appear to work.
 
 ## Product files
 
-- `prompts/discovery_playbook.md` — staged interview and artifact contract
-- `prompts/skills/nonprofit_discovery.md` — callable discovery methodology
-- `data/component_catalog.json` — Databricks-hosted blueprint options
-- `nonprofit-saas-landscape-2025-2026.md` — grounding research brief
-- [`Discovery wizard design`](docs/superpowers/specs/2026-08-27-nonprofit-suite-discovery-wizard-design.md) — product scope and future slices
+- `prompts/discovery_playbook.md`: staged interview and artifact contract
+- `prompts/skills/nonprofit_discovery.md`: callable discovery methodology
+- `data/component_catalog.json`: blueprint options
+- `nonprofit-saas-landscape-2025-2026.md`: grounding research brief

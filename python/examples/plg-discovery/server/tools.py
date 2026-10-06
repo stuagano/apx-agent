@@ -1,4 +1,4 @@
-"""Python tools compiled into the native AppKit discovery agent."""
+"""Python tools compiled into the native DurableAgentServer discovery agent."""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ def list_skills() -> list[dict]:
 
 
 def active_tools() -> list:
-    """Return the fixed Python tool surface compiled into the AppKit manifest."""
+    """Return the fixed Python tool surface compiled into the DurableAgentServer manifest."""
     fns: list = [fetch_web_page]
     for name, s in _skills.items():
         fns.append(_make_skill_callable(name, s["description"], s["content"]))

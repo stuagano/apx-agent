@@ -1,10 +1,11 @@
 from io import BytesIO
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from reportlab.pdfgen import canvas
 
-from app import app
+from api import router
 
 
 @pytest.fixture
@@ -24,6 +25,8 @@ def client(tmp_path, monkeypatch):
         "api.get_settings",
         lambda: fake_settings,
     )
+    app = FastAPI()
+    app.include_router(router)
     yield TestClient(app)
 
 

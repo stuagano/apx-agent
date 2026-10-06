@@ -31,7 +31,6 @@ Same injectable-dependency philosophy as the rest of the framework:
 without writing or deleting. The id is a placeholder minted client-side
 and will NOT match what the store would mint on a real ``add()``.
 
-Mirrors ``typescript/src/memory-consolidate.ts``.
 """
 
 from __future__ import annotations

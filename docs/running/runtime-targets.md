@@ -435,8 +435,15 @@ the runtime declaration selects DurableAgentServer without `APX_APPS_HOST`.
 Project discovery reads that declaration before legacy filename conventions.
 
 Omitting `target` preserves the existing Responses-compatible Apps entrypoint.
-Existing Bundle and named App Space projects retain their generated launchers;
-Python and AppKit host choices remain available on those compatibility paths.
+Existing Bundle and named App Space projects retain their generated launchers.
+The Python compatibility host remains available for ResponsesAgent projects.
+The APX TypeScript runtime and generated AppKit host are retired. Move former
+AppKit projects to `target = "durable_agent_server"` with managed sessions.
+Browser clients call `POST /api/invocations` with an invocation UUID, `session_id`,
+and `input.messages`; the SDK owns persisted invocation and session handling.
+Use the [discovery example](../../python/examples/plg-discovery) for streaming
+and the [contract example](../../python/examples/contract-parsing-agent) for
+business API routes mounted directly on DurableAgentServer.
 
 Declare a managed session with `session.type: managed`; `session.store_name`
 optionally overrides the name derived from `AgentConfig.name`.

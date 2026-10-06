@@ -6,7 +6,6 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://localhost:8000',
-      '/invocations': 'http://localhost:8000',
     },
   },
   build: {

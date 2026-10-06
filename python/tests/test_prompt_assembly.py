@@ -1,6 +1,4 @@
 """Tests for ``_prompt_assembly.py`` — system-prompt-ready context strings.
-
-Mirrors ``typescript/tests/prompt-assembly.test.ts``.
 """
 
 from __future__ import annotations

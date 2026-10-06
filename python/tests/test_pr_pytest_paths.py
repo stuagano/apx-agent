@@ -106,3 +106,7 @@ def test_ci_yml_dispatches_full_suite_and_uses_selector() -> None:
     assert "secrets.GITHUB_TOKEN" in post
     assert "secrets.MY_TOKEN" not in post
     assert "personal access token" not in post.lower()
+
+
+def test_deleted_tests_select_full_suite_instead_of_missing_paths() -> None:
+    assert _select("python/tests/test_retired_runtime.py") == ["tests/"]

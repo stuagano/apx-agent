@@ -576,8 +576,6 @@ def _interactive_pick_profile() -> str | None:
     return chosen
 
 
-
-
 def _preflight_databricks_auth() -> None:
     """Fail `apx-agent agents run`/`deploy` with dev-time guidance when auth is unresolved.
 
@@ -1611,22 +1609,6 @@ if __name__ == "__main__":
 '''
 
 
-_INTERNAL_APPKIT_BRIDGE_SERVER = '''\
-"""Loopback APX sidecar for the generated AppKit host."""
-from pathlib import Path
-
-from apx_agent import create_app
-from apx_agent._apps_host_manifest import AppsHostManifest
-
-from agent import agent
-
-app = create_app(agent)
-app.state.apx_appkit_host_manifest = AppsHostManifest.model_validate_json(
-    (Path(__file__).resolve().parents[1] / "apx_appkit_host" / "apx-host-manifest.json").read_text()
-)
-'''
-
-
 _SCAFFOLD_APPS_QUICKSTART = '''\
 """quickstart — one-shot setup for the <APP_NAME> Apps deploy.
 
@@ -1846,7 +1828,6 @@ artifacts:
   default:
     build: |
       mkdir -p .build
-      mkdir -p .build/apx_appkit_host
       # User-authored: top-level agent.py (+ optional tools.py, sub_agents/).
       cp agent.py .build/ 2>/dev/null || true
       cp tools.py .build/ 2>/dev/null || true
@@ -8367,168 +8348,6 @@ def _apps_config_env_value(
     return None
 
 
-def _stage_internal_appkit_host(
-    cwd: Path,
-    *,
-    module: str,
-    doc: dict[str, Any],
-    bundle_key: str,
-    log: Any,
-) -> None:
-    """Stage generated AppKit internals only when the AppKit host is requested."""
-    host = (_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") or "python")
-    host = host.strip().lower()
-    if host in {"python", "agentbricks"}:
-        return
-    if host != "appkit":
-        raise click.ClickException(
-            "APX_APPS_HOST must be 'appkit', 'python', or 'agentbricks' when set."
-        )
-
-    build_dir = cwd / ".build"
-    if not build_dir.is_dir():
-        raise click.ClickException(
-            "APX_APPS_HOST=appkit requires .build to exist after bundle artifact staging."
-        )
-
-    source = _internal_appkit_runtime_source()
-    if not (source / "dist" / "internal" / "appkit-host.mjs").exists():
-        raise click.ClickException(
-            "APX_APPS_HOST=appkit requires a built internal TypeScript runtime. "
-            "Run `cd typescript && npm run build` from the apx-agent checkout."
-        )
-    _stage_internal_appkit_python_bridge(cwd, build_dir)
-    runtime_dir = build_dir / "apx_internal_runtime"
-    if runtime_dir.exists():
-        if runtime_dir.is_symlink():
-            raise click.ClickException(
-                f"refusing to replace symlinked internal AppKit runtime: {runtime_dir}"
-            )
-        shutil.rmtree(runtime_dir)
-    shutil.copytree(
-        source,
-        runtime_dir,
-        ignore=shutil.ignore_patterns("node_modules", ".git", "coverage"),
-    )
-
-    from ._appkit_host_generator import write_appkit_host_skeleton
-    from ._apps_host_manifest import compile_apps_host_manifest
-    from ._inspection import _load_agent_config
-
-    agent = _load_finalized_agent(module)
-    manifest = compile_apps_host_manifest(agent, _load_agent_config(pyproject_path=None))
-    host_dir = write_appkit_host_skeleton(
-        cwd,
-        manifest,
-        runtime_dependency="file:../apx_internal_runtime",
-    )
-    log(f"  staged internal AppKit host: {host_dir.relative_to(cwd)}")
-
-
-def _stage_internal_appkit_python_bridge(cwd: Path, build_dir: Path) -> None:
-    """Ensure the generated AppKit host has the Python bridge it starts."""
-    ignored_dirs = {
-        ".build",
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".venv",
-        "__pycache__",
-        "client",
-        "dist",
-        "node_modules",
-        "tests",
-    }
-    for child in cwd.iterdir():
-        if child.name in ignored_dirs or child.name.endswith(".egg-info"):
-            continue
-        if child.is_symlink():
-            raise click.ClickException(
-                f"refusing to stage symlinked AppKit bridge source: {child}"
-            )
-        target = build_dir / child.name
-        if target.is_symlink():
-            raise click.ClickException(
-                f"refusing to replace symlinked AppKit bridge target: {target}"
-            )
-        if child.is_file() and (
-            child.suffix == ".py" or _is_appkit_bridge_resource_file(child)
-        ):
-            shutil.copy2(child, target)
-        elif child.is_dir() and _contains_appkit_bridge_source(child):
-            shutil.copytree(
-                child,
-                target,
-                dirs_exist_ok=True,
-                ignore=shutil.ignore_patterns(
-                    ".mypy_cache",
-                    ".pytest_cache",
-                    "__pycache__",
-                    "*.egg-info",
-                    "*.pyc",
-                    "tests",
-                ),
-            )
-
-    agent_server_dir = build_dir / "agent_server"
-    if agent_server_dir.is_symlink():
-        raise click.ClickException(
-            f"refusing to write symlinked AppKit bridge package: {agent_server_dir}"
-        )
-    agent_server_dir.mkdir(exist_ok=True)
-    init_file = agent_server_dir / "__init__.py"
-    if init_file.is_symlink():
-        raise click.ClickException(
-            f"refusing to write symlinked AppKit bridge file: {init_file}"
-        )
-    if not init_file.exists():
-        init_file.write_text("")
-    start_host_file = agent_server_dir / "start_host.py"
-    if start_host_file.is_symlink():
-        raise click.ClickException(
-            f"refusing to write symlinked AppKit host selector: {start_host_file}"
-        )
-    from ._project_gen import _START_HOST_CONTENT
-
-    start_host_file.write_text(_START_HOST_CONTENT)
-    start_server_file = agent_server_dir / "start_server.py"
-    if start_server_file.is_symlink():
-        raise click.ClickException(
-            f"refusing to write symlinked AppKit bridge file: {start_server_file}"
-        )
-    if not start_server_file.exists():
-        start_server_file.write_text(_SCAFFOLD_APPS_START_SERVER)
-    appkit_bridge_file = agent_server_dir / "appkit_bridge.py"
-    if appkit_bridge_file.is_symlink():
-        raise click.ClickException(
-            f"refusing to write symlinked AppKit bridge file: {appkit_bridge_file}"
-        )
-    appkit_bridge_file.write_text(_INTERNAL_APPKIT_BRIDGE_SERVER)
-
-
-def _contains_appkit_bridge_source(path: Path) -> bool:
-    return any(
-        child.is_file()
-        and (child.suffix == ".py" or _is_appkit_bridge_resource_file(child))
-        for child in path.rglob("*")
-    )
-
-
-def _is_appkit_bridge_resource_file(path: Path) -> bool:
-    return path.suffix in {".json", ".md", ".toml", ".txt", ".yaml", ".yml"}
-
-
-def _internal_appkit_runtime_source() -> Path:
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "typescript"
-        if (candidate / "package.json").exists():
-            return candidate
-    raise click.ClickException(
-        "APX_APPS_HOST=appkit requires the internal TypeScript runtime to be "
-        "available next to the apx-agent source checkout."
-    )
-
-
 def _stage_build_manifest(
     build_dir: Path, wheel_path: Path | None,
 ) -> None:
@@ -10523,6 +10342,15 @@ def _deploy_apps_impl(
         doc = _read_databricks_yml(cwd)
         bundle_key, resolved_app_name = _resolve_app_name(doc)
         app = doc["resources"]["apps"][bundle_key]
+    hosts = [_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST")]
+    hosts.extend(value.split("=", 1)[1] for value in env_pairs if value.startswith("APX_APPS_HOST="))
+    for host in hosts:
+        if host is None:
+            continue
+        if host.strip().lower() == "appkit":
+            raise click.ClickException("AppKit host is retired; declare target = 'durable_agent_server' and use the native Python entrypoint.")
+        if host.strip().lower() not in {"python", "agentbricks"}:
+            raise click.ClickException("APX_APPS_HOST must be python or agentbricks.")
     app_name = app_name_override or resolved_app_name
     if app_name_override and app_name_override != resolved_app_name:
         log(f"# app-name override: polling {app_name} (target {bundle_target})")
@@ -10738,10 +10566,6 @@ def _deploy_apps_impl(
                 stage_native_source(cwd)
             else:
                 _run_bundle_artifacts(cwd)
-                current_doc = _read_databricks_yml(cwd)
-                _stage_internal_appkit_host(
-                    cwd, module=module, doc=current_doc, bundle_key=bundle_key, log=log,
-                )
             log("  populated .build/")
             # Stage the dependency manifest into .build/. The artifacts script
             # omits pyproject.toml/uv.lock by design — without them the Apps

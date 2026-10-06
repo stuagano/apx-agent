@@ -15,8 +15,6 @@ the supervisor or a sub-agent's logical name). ``intent`` is a free-form bucket
 the agent uses to partition the example space (e.g. ``"classify_intent"``,
 ``"extract_fields"``, ``"final_answer"``).
 
-Mirrors ``typescript/src/example.ts`` — same field names (snake_case here,
-camelCase there), same semantics.
 """
 
 from __future__ import annotations

@@ -118,8 +118,8 @@ promise.
 
 1. **`apps-scaffold-host-wiring`**  
    Given an Apps-target agent declaration, when scaffold/generate writes the
-   project, then the non-empty Python/AppKit host artifacts import the declared
-   agent and expose the serving bridge.
+   project, then the native Python entrypoint imports the declared agent and
+   exposes its compiled serving contract.
 
 2. **`served-runtime-readiness`**  
    Given a declared agent, when `create_app` starts, then `/invocations`,
@@ -209,10 +209,10 @@ non-zero for a contract failure, and print only sanitized evidence.
    A configured Lakebase-backed conversation/approval is written, the serving
    process is restarted, and the same scoped state reads back.
 
-6. **`live-appkit-runtime-parity`**  
-   A selected AppKit-hosted deployment answers the representative Chat,
-   Responses, bridge-tool, and readiness probes, and its recorded source SHA
-   matches the intended build.
+6. **Native runtime deployment proof**
+   A DurableAgentServer deployment answers native invocation and readiness
+   probes, persists session state, and records the intended source SHA. The old
+   `live-appkit-runtime-parity` check is retired with the TypeScript host.
 
 7. **`live-grounded-platform-tools-obo`**  
    Configured Genie and Knowledge Assistant resources return non-empty grounded
@@ -221,8 +221,8 @@ non-zero for a contract failure, and print only sanitized evidence.
 
 ## Capability-to-readiness mapping
 
-- **Performance/scalability:** serving concurrency, SQL cold path, AppKit
-  runtime parity.
+- **Performance/scalability:** serving concurrency, SQL cold path, native
+  runtime deployment proof.
 - **Resilience:** readiness degradation, external timeouts, terminal-state
   polling, cancellation, pool cleanup, restart durability.
 - **Observability:** trace write/read, correlation, deployed readiness evidence.

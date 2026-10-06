@@ -120,7 +120,7 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(
     # startup. Regression guard for the layout migration.
     build_script = parsed["artifacts"]["default"]["build"]
     assert "cp agent.py" in build_script, build_script
-    assert ".build/apx_appkit_host" in build_script, build_script
+    assert ".build/apx_appkit_host" not in build_script, build_script
     assert apps["my_agent"]["config"]["command"] == [
         "python",
         "-m",
@@ -394,7 +394,7 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     assert "APX_APPS_HOST" in start_host_src
     assert 'os.environ.get("APX_APPS_HOST", default_host)' in start_host_src
     assert "agent_server.start_server:app" in start_host_src
-    assert "apx_appkit_host" in start_host_src
+    assert "apx_appkit_host" not in start_host_src
 
     quickstart_src = (tmp_path / "my_agent" / "scripts" / "quickstart.py").read_text()
     ast.parse(quickstart_src)

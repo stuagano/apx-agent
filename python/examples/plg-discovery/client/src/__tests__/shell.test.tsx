@@ -3,24 +3,10 @@ import App from "../App";
 import { BlueprintView } from "../components/BlueprintView";
 import type { Artifact } from "../api";
 
-function chatResponse(): Response {
-  const body = new ReadableStream({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode(
-        'data: {"type":"appkit.metadata","data":{"threadId":"thread-123"}}\n\n'
-        + 'data: {"type":"response.output_text.delta","delta":"What email tool do you use?"}\n\n'
-        + 'data: {"type":"response.completed","response":{}}\n\n',
-      ));
-      controller.close();
-    },
-  });
-  return { ok: true, status: 200, body } as Response;
-}
-
 beforeEach(() => {
-  globalThis.fetch = (async (input: RequestInfo | URL) => String(input) === "/api/dev-ui"
-    ? { ok: true, json: async () => ({ enabled: true }) } as Response
-    : chatResponse()) as typeof fetch;
+  globalThis.fetch = vi.fn(async (_input, init) => init?.method === "POST"
+    ? { ok: true, body: new ReadableStream({ start(controller) { controller.close(); } }) }
+    : { ok: true, json: async () => ({ status: "completed", output: { status: "completed", messages: [{ role: "assistant", content: "What email tool do you use?" }] } }) }) as typeof fetch;
 });
 
 test("chat is hidden until onboarding is submitted", () => {
@@ -52,13 +38,12 @@ test("blueprint view renders decision lines", () => {
   expect(screen.getByText(/Keep&Integrate/)).toBeTruthy();
 });
 
-test("hides the default-on developer launcher only when explicitly disabled", async () => {
-  globalThis.fetch = (async (input: RequestInfo | URL) => ({
-    ok: true,
-    json: async () => String(input) === "/api/dev-ui" ? { enabled: false } : {},
-  })) as typeof fetch;
-
+test("new conversation resets onboarding without deleting managed history", async () => {
   render(<App />);
-
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Dev" })).toBeNull());
+  fireEvent.change(screen.getByPlaceholderText("https://yourorganization.org"), { target: { value: "https://example.org" } });
+  fireEvent.click(screen.getByText("Start Discovery"));
+  await screen.findByText(/what email tool/i);
+  fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  expect(screen.getByText(/chat will become available/i)).toBeTruthy();
+  expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
 });

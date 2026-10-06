@@ -21,12 +21,6 @@ agents authored in apx-agent get the protection automatically. Tools that
 need to make their own internal LLM calls (synthesis steps, classifiers,
 embedded judges) get the same protection by going through the factory.
 
-Cross-language note: the TypeScript framework solves the same problem
-structurally — ``typescript/src/agent/runner.ts`` builds a minimal request
-body (``{ model, messages, [tools, tool_choice, stream] }``) that never
-includes provider-rejectable fields like ``temperature`` or ``top_p``. This
-Python module is the equivalent guarantee for the LangChain runtime.
-
 Verified provider behavior
 --------------------------
 Probed against the ``fe-shared-builder`` workspace on 2026-05-18 with a
