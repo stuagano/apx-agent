@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from subprocess import CompletedProcess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -44,13 +45,6 @@ agent = _StubAgent()
 """
 
 
-class _FakeProc:
-    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
 @pytest.fixture
 def scaffold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "databricks.yml").write_text(_DATABRICKS_YML)
@@ -72,9 +66,11 @@ def test_destroy_runs_bundle_destroy_and_clears_state(
 
     calls: list[list[str]] = []
 
-    def fake(args: list[str], profile: str | None = None) -> _FakeProc:
+    def fake(args: list[str], profile: str | None = None) -> CompletedProcess[str]:
         calls.append(list(args))
-        return _FakeProc(0, stdout="ok\n")
+        if args[:2] == ["bundle", "validate"]:
+            return CompletedProcess(args, 0, stdout=json.dumps({"resources": {"apps": {"my-app": {"name": "my-app"}}}}), stderr="")
+        return CompletedProcess(args, 0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr(cli_mod, "_run_databricks_cmd", fake)
 

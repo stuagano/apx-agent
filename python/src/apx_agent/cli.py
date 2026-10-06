@@ -10142,7 +10142,9 @@ def _resolve_project_uc_name(cwd: Path) -> str | None:
     return None
 
 
-def _resolve_project_app_name(cwd: Path) -> str:
+def _resolve_project_app_name(
+    cwd: Path, *, bundle_target: str | None = None, profile: str | None = None,
+) -> str:
     """Use an existing Bundle's identity, otherwise the native declaration."""
     if not (cwd / "databricks.yml").exists() and not (cwd / "databricks.yml").is_symlink():
         from ._inspection import _load_agent_config
@@ -10150,6 +10152,16 @@ def _resolve_project_app_name(cwd: Path) -> str:
         config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
         if config is not None and config.target == "durable_agent_server" and (config.deploy is None or config.deploy.space is None):
             return compile_native_app(config)["name"]
+    if bundle_target is not None:
+        resolved = _run_databricks_cmd(
+            ["bundle", "validate", "--target", bundle_target, "--output", "json"], profile=profile,
+        )
+        if resolved.returncode != 0:
+            raise click.ClickException("Cannot resolve the deployed Bundle App; nothing deleted.")
+        try:
+            return _resolve_app_name(json.loads(resolved.stdout)).app_name
+        except (ValueError, TypeError) as exc:
+            raise click.ClickException("Bundle validation did not return resolved App configuration; nothing deleted.") from exc
     return _resolve_app_name(_read_databricks_yml(cwd))[1]
 
 
@@ -11288,16 +11300,19 @@ def destroy(
     assume_yes: bool,
     json_output: bool,
 ) -> None:
-    """Tear down a Databricks Apps bundle and clear workspace deploy state.
+    """Tear down the App and its owned Runtime Store, preserving session and memory stores."""
+    from ._inspection import _load_agent_config
+    from ._agentbricks_deploy import cleanup_app_runtime
 
-    Runs ``databricks bundle destroy --target <bundle-target> --auto-approve``
-    from the project root, then deletes
-    ``/Shared/apx-agent/<app>/_state/<target>.json`` (best-effort).
-    """
     cwd = Path.cwd()
-    _preflight_apps(cwd)
-    doc = _read_databricks_yml(cwd)
-    _bundle_key, app_name = _resolve_app_name(doc)
+    config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    native = config is not None and config.target == "durable_agent_server"
+    native_cli = native and config is not None and (config.deploy is None or config.deploy.space is None)
+    _preflight_apps(cwd, native=native_cli)
+    with _json_cli_errors(json_output):
+        if native and not profile:
+            raise click.ClickException("Native teardown requires an explicit --profile.")
+        app_name = _resolve_project_app_name(cwd, bundle_target=bundle_target, profile=profile)
 
     state_summary = ""
     try:
@@ -11318,21 +11333,24 @@ def destroy(
         err=True,
     )
     if not assume_yes:
-        click.confirm("Proceed with bundle destroy?", abort=True)
+        click.confirm("Delete the App and its owned Runtime Store data? Session and memory stores are preserved.", abort=True)
 
-    proc = _run_databricks_cmd(
-        ["bundle", "destroy", "--target", bundle_target, "--auto-approve"],
-        profile=profile,
-    )
-    if proc.returncode != 0:
-        msg = (
-            f"`databricks bundle destroy` failed (exit {proc.returncode}). "
-            f"Last lines:\n{_tail_lines(proc.stderr or proc.stdout)}"
-        )
-        if json_output:
-            click.echo(json.dumps({"ok": False, "error": msg, "app_name": app_name}))
-            raise click.exceptions.Exit(1)
-        raise click.ClickException(msg)
+    with _json_cli_errors(json_output, extra={"app_name": app_name}):
+        if ws is None:
+            raise click.ClickException("Cannot connect to the workspace for ownership checks; nothing deleted.")
+        app_exists = cleanup_app_runtime(ws, app_name, native=native)
+        if native_cli:
+            if app_exists:
+                try:
+                    ws.apps.delete(app_name)
+                except Exception as exc:
+                    raise click.ClickException("App deletion failed after Runtime Store cleanup; retry teardown. Deploy state retained.") from exc
+        else:
+            proc = _run_databricks_cmd(
+                ["bundle", "destroy", "--target", bundle_target, "--auto-approve"], profile=profile,
+            )
+            if proc.returncode != 0:
+                raise click.ClickException(f"`databricks bundle destroy` failed (exit {proc.returncode}). Retry teardown; deploy state retained.")
 
     try:
         if ws is None:
@@ -11365,13 +11383,31 @@ def _show_deploy_state_status(
     json_output: bool,
 ) -> None:
     """Show workspace-backed Apps deploy state for this project."""
+    from ._inspection import _load_agent_config
+
     cwd = Path.cwd()
-    app_name = _resolve_project_app_name(cwd)
+    config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    native = config is not None and config.target == "durable_agent_server"
+    with _json_cli_errors(json_output):
+        app_name = _resolve_project_app_name(cwd, bundle_target=bundle_target if native else None, profile=profile)
 
     from databricks.sdk import WorkspaceClient
 
     ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
     state = load_deploy_state(ws, app_name, bundle_target)
+    if native:
+        with _json_cli_errors(json_output):
+            try:
+                deployment = ws.apps.get(app_name).as_dict()
+            except Exception as exc:
+                raise click.ClickException("Cannot read native deployment status; check App name and workspace access.") from exc
+            if deployment.get("name") != app_name:
+                raise click.ClickException("Workspace returned an unexpected App identity.")
+        payload = {"ok": True, "app_name": app_name,
+                   "state": state.model_dump_workspace() if state is not None else None,
+                   "deployment": deployment}
+        click.echo(json.dumps(payload, indent=None if json_output else 2))
+        return
     if state is None:
         msg = f"no deploy state for {app_name}/{bundle_target}"
         if json_output:
@@ -12019,6 +12055,7 @@ def logs(
     Two modes:
 
     \b
+      apx-agent agents logs --profile P                 Logs for the current native project
       apx-agent agents logs --endpoint NAME              Runtime logs from a Model Serving endpoint
       apx-agent agents logs --endpoint NAME --build      Build-time logs from the endpoint's build
       apx-agent agents logs --app NAME [--profile P]     Logs from an apx-agent hosted as a Databricks App
@@ -12027,7 +12064,13 @@ def logs(
     endpoint's current config when not supplied explicitly.
     """
     if not endpoint and not app_name:
-        raise click.UsageError("Pass either --endpoint NAME or --app NAME.")
+        from ._inspection import _load_agent_config
+
+        config = _load_agent_config(pyproject_path=Path.cwd() / "pyproject.toml")
+        if config is not None and config.target == "durable_agent_server":
+            app_name = _resolve_project_app_name(Path.cwd(), bundle_target="dev", profile=profile)
+        else:
+            raise click.UsageError("Pass either --endpoint NAME or --app NAME.")
     if endpoint and app_name:
         raise click.UsageError("--endpoint and --app are mutually exclusive.")
 
@@ -14251,11 +14294,11 @@ def delete_agent_cmd(
     if resolved_endpoint:
         to_delete.append(f"  • Model Serving endpoint: {resolved_endpoint}")
     if resolved_app:
-        to_delete.append(f"  • Databricks App: {resolved_app}")
+        to_delete.append(f"  • Databricks App: {resolved_app} (including its owned native Runtime Store)")
     if experiment_label:
         to_delete.append(f"  • {experiment_label}")
     for capp in canary_apps:
-        to_delete.append(f"  • Canary App: {capp}")
+        to_delete.append(f"  • Canary App: {capp} (including its owned native Runtime Store)")
     if bundle_path:
         to_delete.append(f"  • Bundle workspace files: {bundle_path}")
     if registry_ready:
@@ -14294,6 +14337,25 @@ def delete_agent_cmd(
     errors: list[str] = []
     deleted: list[str] = []
 
+    # Keep the App's identity and registry/model records available for retries
+    # until its SDK-owned Runtime Store cleanup has succeeded.
+    from ._agentbricks_deploy import cleanup_app_runtime
+
+    app_victims = [(resolved_app, "app")] if resolved_app else []
+    app_victims.extend((name, "canary_app") for name in canary_apps if name != resolved_app)
+    for name, label in app_victims:
+        try:
+            if cleanup_app_runtime(ws, name):
+                ws.apps.delete(name)
+            deleted.append(f"{label}:{name}")
+            _out(f"Deleted {label}: {name}")
+        except Exception:
+            message = f"App {name!r} teardown failed; remaining resources retained. Resolve App access or Runtime Store cleanup and retry."
+            if as_json:
+                click.echo(json.dumps({"ok": False, "deleted": deleted, "errors": [message]}))
+                raise click.exceptions.Exit(1)
+            raise click.ClickException(message) from None
+
     # 1. Delete the serving endpoint first (it holds the model version lock).
     if resolved_endpoint:
         try:
@@ -14312,16 +14374,6 @@ def delete_agent_cmd(
     except Exception as exc:
         errors.append(f"UC model {uc_name!r}: {exc}")
         click.echo(f"Warning: could not delete UC model {uc_name!r}: {exc}", err=True)
-
-    # 3. Delete the Databricks App (best-effort).
-    if resolved_app:
-        try:
-            ws.apps.delete(resolved_app)
-            deleted.append(f"app:{resolved_app}")
-            _out(f"Deleted app: {resolved_app}")
-        except Exception as exc:
-            errors.append(f"app {resolved_app!r}: {exc}")
-            click.echo(f"Warning: could not delete app {resolved_app!r}: {exc}", err=True)
 
     # 4. Remove the advertise-registry rows (best-effort, aggregated) so
     # discovery stops advertising the deleted agent (#446).
@@ -14342,15 +14394,6 @@ def delete_agent_cmd(
                 )
 
     # 5. --purge extras (lists/ids are only populated when --purge was passed).
-    for capp in canary_apps:
-        try:
-            ws.apps.delete(capp)
-            deleted.append(f"canary_app:{capp}")
-            _out(f"Deleted canary app: {capp}")
-        except Exception as exc:
-            errors.append(f"canary app {capp!r}: {exc}")
-            click.echo(f"Warning: could not delete canary app {capp!r}: {exc}", err=True)
-
     if experiment_id:
         try:
             ws.experiments.delete_experiment(experiment_id)
