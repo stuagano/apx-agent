@@ -1,11 +1,10 @@
 /**
- * Runner — calls Databricks FMAPI (model serving) directly.
+ * Runner — calls Databricks AI Gateway chat completions.
  *
  * No @openai/agents SDK, no OpenAI client. Uses native fetch() with the
- * standard chat completions format. This matches the Python SDK's pattern
- * where DatabricksOpenAI wraps the serving API.
+ * standard chat completions format and the Python compiler's Gateway route.
  *
- * Auth: DATABRICKS_TOKEN env var, or OBO token from request headers.
+ * Auth: service credentials for chat; request OBO credentials for tools.
  * Host: DATABRICKS_HOST env var (Databricks Apps strips https://, we normalize).
  */
 
@@ -14,7 +13,7 @@ import type { AgentTool } from './tools.js';
 import { toStrictSchema, zodToJsonSchema } from './tools.js';
 import { runWithContext, getRequestContext } from './request-context.js';
 import { addSpan, endSpan, truncate, agentNameFromUrl, traceHeadersOut, traceIdFromResponse } from '../trace.js';
-import { resolveToken as resolveTokenFull } from '../connectors/types.js';
+import { resolveToken as resolveTokenFull, resolveHost as getHost } from '../connectors/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,28 +67,24 @@ interface ChatResponse {
 // Config
 // ---------------------------------------------------------------------------
 
-function getHost(): string {
-  const host = process.env.DATABRICKS_HOST;
-  if (!host) throw new Error('DATABRICKS_HOST env var required');
-  return host.startsWith('http') ? host.replace(/\/$/, '') : `https://${host}`;
-}
-
 /**
- * Resolve auth token for FMAPI calls.
- *
- * For FMAPI (model serving), the app should use its own identity — NOT the
- * caller's OBO token, which may be another app's SP that lacks FMAPI access.
+ * Resolve the service identity for Gateway chat, without ambient request OBO.
  *
  * Priority: DATABRICKS_TOKEN env → M2M OAuth (app's own SP credentials).
  * OBO headers are intentionally skipped here; they are used for data
  * operations (UC, SQL) where the caller's identity matters.
  */
-function resolveToken(_oboHeaders: Record<string, string>): string | Promise<string> | undefined {
+async function resolveToken(): Promise<string> {
+  if (!process.env.DATABRICKS_TOKEN && !(process.env.DATABRICKS_CLIENT_ID && process.env.DATABRICKS_CLIENT_SECRET)) {
+    throw new Error('AI Gateway chat requires service credentials: configure DATABRICKS_TOKEN or DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET for the workspace. Caller OBO tokens are reserved for tools.');
+  }
   try {
-    // Pass no OBO headers so the chain falls through to DATABRICKS_TOKEN or M2M OAuth
-    return resolveTokenFull();
-  } catch {
-    return undefined;
+    // Omitting headers alone still inherits OBO through AsyncLocalStorage.
+    return await runWithContext({ oboHeaders: {} }, () => resolveTokenFull());
+  } catch (error) {
+    // Preserve the resolver's HTTP status, never its potentially sensitive body.
+    const status = error instanceof Error ? /^M2M token exchange failed \((\d{3})\)/.exec(error.message)?.[1] : undefined;
+    throw new Error(`AI Gateway M2M token exchange failed${status ? ` (HTTP ${status})` : ''}; check workspace host, connectivity, and service credentials.`);
   }
 }
 
@@ -104,13 +99,13 @@ function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number): Pr
 }
 
 // ---------------------------------------------------------------------------
-// FMAPI call
+// Gateway chat
 // ---------------------------------------------------------------------------
 
 async function chatCompletions(
   model: string,
   messages: ChatMessage[],
-  token?: string,
+  token: string,
   tools?: ToolDef[],
 ): Promise<ChatResponse> {
   const host = getHost();
@@ -126,12 +121,12 @@ async function chatCompletions(
 
   try {
     const res = await fetchWithTimeout(
-      `${host}/serving-endpoints/chat/completions`,
+      `${host}/ai-gateway/mlflow/v1/chat/completions`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(body),
       },
@@ -140,7 +135,10 @@ async function chatCompletions(
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`FMAPI ${res.status}: ${text}`);
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(`AI Gateway ${res.status}: check service credentials and access to model service ${model}.`);
+      }
+      throw new Error(`AI Gateway ${res.status}: ${text}`);
     }
 
     const result = await res.json() as ChatResponse;
@@ -155,7 +153,7 @@ async function chatCompletions(
 async function chatCompletionsStream(
   model: string,
   messages: ChatMessage[],
-  token?: string,
+  token: string,
   tools?: ToolDef[],
 ): Promise<Response> {
   const host = getHost();
@@ -171,12 +169,12 @@ async function chatCompletionsStream(
 
   try {
     const res = await fetchWithTimeout(
-      `${host}/serving-endpoints/chat/completions`,
+      `${host}/ai-gateway/mlflow/v1/chat/completions`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(body),
       },
@@ -185,7 +183,10 @@ async function chatCompletionsStream(
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`FMAPI ${res.status}: ${text}`);
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(`AI Gateway ${res.status}: check service credentials and access to model service ${model}.`);
+      }
+      throw new Error(`AI Gateway ${res.status}: ${text}`);
     }
 
     if (span) { span.output = '[streaming response]'; endSpan(span); }
@@ -200,7 +201,7 @@ async function chatCompletionsStream(
 // SSE streaming parser
 // ---------------------------------------------------------------------------
 
-/** A streaming chat-completion delta (OpenAI / FMAPI `stream: true` format). */
+/** A streaming chat-completion delta (OpenAI-compatible `stream: true` format). */
 interface StreamDelta {
   content?: string;
   tool_calls?: Array<{
@@ -373,7 +374,7 @@ export async function callSubAgent(
 // ---------------------------------------------------------------------------
 
 /**
- * @deprecated FMAPI runner handles auth internally. This is a no-op kept
+ * @deprecated Gateway runner handles auth internally. Kept
  * for backward compatibility with plugin.ts setup().
  */
 export function initDatabricksClient(): void {
@@ -389,12 +390,12 @@ export function toFunctionTool(agentTool: AgentTool, ..._rest: any[]): any {
 }
 
 // ---------------------------------------------------------------------------
-// Runner — agent tool-calling loop via FMAPI
+// Runner — agent tool-calling loop via Gateway
 // ---------------------------------------------------------------------------
 
 /** Run the agent loop and return the final text. */
 export async function runViaSDK(params: RunParams): Promise<string> {
-  const token = await resolveToken(params.oboHeaders);
+  const token = await resolveToken();
   const toolMap = new Map(params.tools.map((t) => [t.name, t]));
   const subAgentMap = new Map(
     (params.subAgents ?? []).map((url, i) => [`sub_agent_${i}`, url]),
@@ -483,7 +484,7 @@ export async function runViaSDK(params: RunParams): Promise<string> {
  * whole response and emit it as one chunk.
  */
 export async function* streamViaSDK(params: RunParams): AsyncGenerator<string> {
-  const token = await resolveToken(params.oboHeaders);
+  const token = await resolveToken();
   const toolMap = new Map(params.tools.map((t) => [t.name, t]));
   const subAgentMap = new Map(
     (params.subAgents ?? []).map((url, i) => [`sub_agent_${i}`, url]),
