@@ -37,6 +37,9 @@ class TargetReport:
     capabilities: dict[str, TargetCapability]
     unsatisfied: list[str]
     session_store: str | None = None
+    user_identity_required: bool = False
+    streaming_buffered: bool = False
+    recovery_enabled: bool = False
 
     def require_compatible(self) -> None:
         if self.unsatisfied:
@@ -78,7 +81,15 @@ def inspect_target(
     from ._resources import _iter_tool_fns, _iter_sub_agents
     from ._topology import _iter_child_agents
 
-    operations = [infer_operation_authorization(fn) for fn in _iter_tool_fns(agent)]
+    tools = list(_iter_tool_fns(agent))
+    operations = [infer_operation_authorization(fn) for fn in tools]
+    from ._defaults import _get_request, get_databricks_headers
+    from ._inspection import _tool_dependency_callables
+
+    raw_request_required = any(
+        dependency in {_get_request, get_databricks_headers}
+        for fn in tools for dependency in _tool_dependency_callables(fn).values()
+    ) or bool(list(_iter_sub_agents(agent)))
     nodes = [agent]
     for node in nodes:
         nodes.extend(child for _, child in _iter_child_agents(node) if child not in nodes)
@@ -93,16 +104,47 @@ def inspect_target(
         getattr(agent, "_apx_memory_store", None) is not None
         and not getattr(agent, "_apx_memory_degraded", None)
     )
+    if not responses:
+        memory_nodes = [node for node in nodes if getattr(node, "memory_config", None) is not None
+                        or getattr(node, "_apx_memory_store", None) is not None
+                        or (node is agent and config is not None and config.memory is not None)]
+        memory_bound = bool(memory_nodes) and all(
+            getattr(node, "_apx_memory_store", None) is not None
+            and not getattr(node, "_apx_memory_degraded", None) for node in memory_nodes
+        )
+    buffered_output = any(
+        getattr(node, "_output_guardrails", None) or getattr(node, "_output_schema", None)
+        or getattr(node, "_after_model", None) or getattr(node, "_after_agent_callback", None)
+        for node in nodes
+    )
+    from ._compile import _agent_needs_node_wrap
+
+    durable_checkpoint = session_store is not None or (
+        checkpointer is not None
+        and type(checkpointer).__module__ == "databricks_agentkit.langgraph.session_store"
+        and type(checkpointer).__name__ == "DatabricksSessionStoreSaver"
+    )
+    needs_user = requirements.user_identity or declared["user_identity"] or declared["long_term_memory"]
+    recovery_supported = (
+        not responses and durable_checkpoint and isinstance(agent, LlmAgent)
+        and not needs_user and not _agent_needs_node_wrap(agent)
+        and agent._timeout_s is None
+    )
     capabilities = {
-        "user_identity": TargetCapability(responses, "ResponsesAgent preserves its existing OBO path; the durable target currently supports app-auth only."),
-        "approvals": TargetCapability(checkpointed, "Approvals require an explicit LlmAgent checkpointer and stable session; durable request-user approvals are unsupported."),
+        "user_identity": TargetCapability(responses or not raw_request_required, "The durable target supports SDK request-user clients, SQL and principal dependencies; raw headers, Request and remote OBO forwarding remain unsupported."),
+        "approvals": TargetCapability(checkpointed, "Approvals require an LlmAgent checkpoint binding and stable session; native request-user sessions are isolated by the SDK and authenticated principal."),
         "sessions": TargetCapability(checkpointed or (responses and conversation_store is not None), "An explicit checkpoint/history binding is required; restart persistence depends on the selected store."),
-        "long_term_memory": TargetCapability(responses and memory_bound, "Finalize a ResponsesAgent with a reachable declared memory store; managed memory is not wired by the durable target yet."),
-        "recovery": TargetCapability(False, "Crash recovery is not wired by these target factories yet; a checkpointer alone does not register safe recovery."),
-        "streaming": TargetCapability(responses, "ResponsesAgent supports streaming; the durable target currently returns complete message results."),
+        "long_term_memory": TargetCapability(memory_bound, "Bind a reachable declared store; managed memory uses AgentKit workspace memory stores and trusted caller actor IDs."),
+        "recovery": TargetCapability(recovery_supported, "Opt-in recovery requires a managed Session Store, service identity and an unwrapped LlmAgent. Tools and callbacks must tolerate replay of uncommitted work; request-user recovery is unsupported by the SDK."),
+        "streaming": TargetCapability(True, "Native events are persisted: incremental message deltas normally, or a validated final message when output checks require buffering."),
     }
+    recovery_enabled = requirements.recovery or (config is not None and config.recovery)
+    declared["recovery"] = recovery_enabled
     unsatisfied = [f.name for f in fields(requirements) if (getattr(requirements, f.name) or declared.get(f.name)) and not capabilities[f.name].supported]
-    return TargetReport(target=target, capabilities=capabilities, unsatisfied=unsatisfied, session_store=session_store)
+    return TargetReport(target=target, capabilities=capabilities, unsatisfied=unsatisfied, session_store=session_store,
+                        user_identity_required=requirements.user_identity or declared["user_identity"],
+                        streaming_buffered=not responses and buffered_output,
+                        recovery_enabled=recovery_enabled)
 
 
 def compile_agent(
@@ -130,9 +172,13 @@ def compile_agent(
         raise ValueError("compile_agent requires model or AgentConfig.model")
     if config is not None:
         if target == "durable_agent_server":
-            inspect_target(agent, config=config, target=target, requirements=requirements,
-                           checkpointer=checkpointer, conversation_store=conversation_store,
-                           session_store=session_store).require_compatible()
+            preflight = inspect_target(agent, config=config, target=target, requirements=requirements,
+                                       checkpointer=checkpointer, conversation_store=conversation_store,
+                                       session_store=session_store)
+            # Memory is bound by finalize_agent below, then checked again. All
+            # other unsupported contracts must fail before binding side effects.
+            if any(name != "long_term_memory" for name in preflight.unsatisfied):
+                preflight.require_compatible()
         from ._wiring import finalize_agent
 
         finalize_agent(agent, config, ws=service_ws)
@@ -155,4 +201,6 @@ def compile_agent(
         raise ValueError("durable_agent_server uses a native checkpointer; conversation_store is not wired")
     from ._durable_agent import compile_to_durable_agent_server
 
-    return compile_to_durable_agent_server(agent, model=model, service_ws=service_ws, checkpointer=checkpointer, session_store=report.session_store)
+    return compile_to_durable_agent_server(agent, model=model, service_ws=service_ws, checkpointer=checkpointer,
+                                           session_store=report.session_store, require_user=report.user_identity_required,
+                                           recovery=report.recovery_enabled)

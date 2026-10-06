@@ -6,6 +6,13 @@
 
 Build governed Databricks agents. Write a Python object — apx-agent compiles it to whichever Databricks runtime you target.
 
+**Build a custom agent; let Agent Bricks manage deployment.** Target
+`DurableAgentServer`; APX compiles the manifests and invokes the Agent Bricks CLI.
+Managed sessions and memory keep conversation state and learned facts outside
+the app process, so they survive app restarts and scale-down. See the
+[deployment and scale-to-zero guide](docs/running/runtime-targets.md#deploy-custom-agents-through-agent-bricks)
+for the product workflow and how to verify the resulting hosting behavior.
+
 ## LlmAgent — you control the loop
 
 `LlmAgent` (aliased as `Agent`) is an LLM + tools + a loop. You decide what it can call, when it stops, and what happens before and after each step.
@@ -55,7 +62,7 @@ Three agent types cover most use cases:
 | **`DataAgent`** | One line over a Unity Catalog schema. Grounded in real columns, runs as the calling user. |
 | **`CoworkerAgent`** | Joins two source systems on a shared key. Persona, join key, objective. |
 
-Deploy to Databricks Apps or Mosaic AI Model Serving — same agent definition, one flag changes the target.
+Deploy compatible declarations to Databricks Apps or Mosaic AI Model Serving. The compiler checks each runtime’s supported behavior before accepting the target.
 
 ```bash
 uv add apx-agent
@@ -71,9 +78,11 @@ uv run apx-agent agents deploy --target apps
 
 ## What is apx-agent?
 
-Building agents on Databricks means dealing with a stack of systems that all speak different languages: LLM APIs have incompatible wire formats, memory backends have different interfaces, conversation history looks different depending on the framework, and trace schemas differ by SDK. Wiring all of that together correctly — and keeping it working as the stack evolves — is the problem nobody wants to have.
+APX connects your agent to Databricks from one declaration. Declare the data and tools it needs, whose identity they use, how it remembers, how agents compose, and which policies apply. APX compiles the connections and behavior for a supported runtime and rejects requirements that target cannot preserve.
 
-**apx-agent is the normalization layer.** You declare what your agent should be. apx-agent makes it work and makes it observable, regardless of what's underneath.
+Databricks provides the runtime and permission enforcement. APX connects Unity Catalog data, Genie, Vector Search, tools, caller identity, memory, sessions, tracing and deployment through their native capabilities. Agent Bricks owns native store provisioning, grants and deployment; APX compiles the required bindings and hands them over. Generated native manifests are build output.
+
+Use APX to avoid assembling and maintaining those connections separately in each agent. Composition and policy compilation build on that integration. If a native Agent Bricks template already covers all your connections and behavior, APX is optional.
 
 ```toml
 [tool.apx.agent]
@@ -102,27 +111,18 @@ That declaration becomes: an agent grounded in its schema before the first quest
 |---|---|
 | **LLM API format** | Responses API and chat-completions traces both surface identically in the dev UI |
 | **Conversation history** | One canonical message format across all agent types and frameworks |
-| **Memory backends** | Lakebase, UC-managed memory (Beta), or in-memory — same interface, declared not implemented |
+| **Memory backends** | Lakebase, AgentKit managed memory (Beta), or in-memory — same interface, declared not implemented |
 | **Observation** | Tool calls, spans, and conversation deltas normalized before they reach any renderer |
 | **Governance** | Identity passthrough, UC grants, and audit logging wired from the declaration |
 | **Multi-agent** | `sub_agents=[url]` + A2A — agents call each other across apps; supported tool/data calls can forward caller identity per hop |
 
 You write a Python object or a TOML block. The normalization work is apx-agent's job.
 
-### The same agent, by hand vs. declared
+### What the compiler preserves
 
-A typical "build a support agent on Databricks" notebook — ground it in Vector Search, wire two tools, run an agentic loop, trace it, log a served model — is about **220 lines** across the setup, the hand-authored tool schemas, the tool-calling loop, and a second copy of the tools-and-loop re-implemented inside a `PythonModel` for serving. apx-agent collapses that to a declaration plus the tool factories:
+The current compiler targets are `responses_agent` and `durable_agent_server`. APX derives authorization from tool dependencies, attaches declared policy to execution, and checks the selected target before accepting requirements such as approval pauses, caller identity or recovery. Target support differs; switching targets can require declaration and client changes. See the [compiler guide](docs/running/runtime-targets.md#compatibility-checks).
 
-| Step | By hand (raw SDK notebook) | apx-agent |
-|---|---|---|
-| **Ground** | `query_index(...)` call + manual row unpacking | `vector_search_tool(index, columns=..., num_results=...)` |
-| **Tools** | Two functions **+ hand-written OpenAI JSON schemas** | `vector_search_tool(...)`, `uc_function_tool(...)` — schemas introspected |
-| **Loop** | Hand-rolled `run_agent` — `max_turns`, `tool_call_id` bookkeeping, `model_dump(exclude_none=True)` | runtime-owned; you set `max_iterations` |
-| **Trace** | `@mlflow.trace` + `with mlflow.start_run(...)` wrappers | automatic |
-| **Ship** | ~90 lines: tools **and loop re-implemented** inside a `PythonModel`, temp `.py`, `infer_signature`, pinned `pip_requirements` | `apx-agent agents deploy --target apps` (or `serving`) |
-| **Govern** | tools run as the *notebook user* (`spark.table`) | tools run under the **calling user's** UC grants (OBO) |
-
-Net: **~220 lines → ~15 lines + a TOML block (~90% less code)** — and the deleted parts are the drift-prone ones. The raw notebook maintains the loop and both tools *twice* (once to demo, once inside the logged model); apx-agent serves the same object you ran locally. The one thing that doesn't shrink is the eval golden-set — that's real domain work, not boilerplate. See [docs/positioning.md](docs/positioning.md#by-hand-vs-declared-a-worked-comparison) for the full worked example.
+Compare APX with the current [Agent Bricks workflow](https://docs.databricks.com/aws/en/agents/custom-agents/agent-bricks-cli), which already handles native resource declarations and deployment. The [raw notebook comparison](docs/positioning.md#by-hand-vs-declared-a-worked-comparison) illustrates historical hand-written wiring; its line counts are not a comparison with current native templates.
 
 ---
 

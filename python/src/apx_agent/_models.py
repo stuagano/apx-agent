@@ -176,11 +176,19 @@ class MemoryBackendConfig(_BackendConfig):
     host: str | None = None
     ensure_extension: bool = True
     store_name: str | None = None
-    """For ``type='managed'``: the UC memory store's ``catalog.schema.name``."""
+    """Managed memory display name; AgentConfig derives it from the agent name when omitted."""
     namespace_default: str = "default"
     tool_prefix: str = ""
     include: list[str] | None = None
     validate_at_boot: bool = True
+
+    @model_validator(mode="after")
+    def _validate_managed_store(self) -> "MemoryBackendConfig":
+        if self.type == "managed" and self.store_name is not None:
+            from ._memory_managed import validate_memory_store_name  # noqa: PLC0415
+
+            validate_memory_store_name(self.store_name)
+        return self
 
 
 class ExampleBackendConfig(_BackendConfig):
@@ -213,17 +221,17 @@ class SessionBackendConfig(_BackendConfig):
     warehouse_id: str | None = None
     validate_at_boot: bool = True
     store_name: str | None = None
-    """Existing managed Session Store used by the native durable target."""
+    """Managed Session Store name; AgentConfig derives it from the agent name when omitted."""
 
     @model_validator(mode="after")
     def _managed_binding(self) -> "SessionBackendConfig":
         if self.type == "managed":
-            if not self.store_name or not self.store_name.strip():
-                raise ValueError("Managed sessions require session.store_name")
+            if self.store_name is not None and not self.store_name.strip():
+                raise ValueError("session.store_name must be non-empty when supplied")
             if any((self.host, self.database, self.table_name, self.warehouse_id)):
                 raise ValueError("Managed sessions use store_name, not Lakebase connection fields")
             if self.auto_create and "auto_create" in self.model_fields_set:
-                raise ValueError("Managed sessions bind an existing store; auto_create must be false")
+                raise ValueError("Managed sessions are provisioned during deployment; runtime auto_create must be false")
             self.auto_create = False
         elif self.store_name is not None:
             raise ValueError("session.store_name requires type='managed'")
@@ -391,6 +399,14 @@ _KNOB_TO_TYPE: dict[str, StoreType | None] = {
 }
 
 
+def _managed_store_name(name: str, suffix: Literal["memory", "sessions"]) -> str:
+    """Keep the existing memory naming convention within managed-store limits."""
+    slug = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or "agent"
+    # Both resources use the conservative 56-character memory-store name limit.
+    limit = 56 - len("apx--") - len(suffix)
+    return f"apx-{slug[:limit].rstrip('-')}-{suffix}"
+
+
 def normalize_memory_knob(
     value: str,
     *,
@@ -434,16 +450,9 @@ def normalize_memory_knob(
     if tier is None:
         return (None, None)
     if tier == "managed":
-        # Managed Agent Memory is a UC memory store named like the persistent
-        # memory table. It configures LONG-TERM memory only; short-term/session is
-        # deferred to the LangGraph checkpointer (or an explicit
-        # [tool.apx.agent.session] block) — so no session backend here.
-        if catalog and schema:
-            raw = (name or schema).lower()
-            slug = re.sub(r"[^a-z0-9_]", "_", raw).strip("_") or "agent"
-            store_name = f"{catalog}.{schema}.apx_{slug}_memory"
-        else:
-            store_name = "main.default.apx_memories"
+        # Workspace-scoped long-term memory; sessions are declared separately.
+        raw = "-".join(part for part in (catalog, schema, name) if part) or "agent"
+        store_name = _managed_store_name(raw, "memory")
         return (MemoryBackendConfig(type="managed", store_name=store_name), None)
     if catalog and schema:
         raw = (name or schema).lower()
@@ -568,6 +577,8 @@ class AgentConfig(BaseModel):
     name: str
     target: RuntimeTarget = "responses_agent"
     """Compilation contract, independent of where the agent executes."""
+    recovery: bool = False
+    """Opt into checkpoint recovery; tools must tolerate replay of uncommitted work."""
     description: str = ""
     model: str = "databricks-meta-llama-3-3-70b-instruct"
     instructions: str = ""  # system prompt prepended to every conversation
@@ -686,16 +697,22 @@ class AgentConfig(BaseModel):
 
     @model_validator(mode="after")
     def _runtime_contract(self) -> "AgentConfig":
+        if self.recovery and self.target != "durable_agent_server":
+            raise ValueError("recovery requires target='durable_agent_server'")
         if self.target == "durable_agent_server":
-            if self.memory is not None:
-                raise ValueError("long_term_memory is not wired for durable_agent_server")
             if self.session is not None and self.session.type != "managed":
-                raise ValueError("Declared durable sessions require type='managed' and store_name; explicit checkpointers remain available through compile_agent")
+                raise ValueError("Declared durable sessions require type='managed'; explicit checkpointers remain available through compile_agent")
         else:
             if self.deploy is not None and self.deploy.space is not None:
                 raise ValueError("deploy.space currently requires target='durable_agent_server'")
             if self.session is not None and self.session.type == "managed":
                 raise ValueError("Managed Session Store binding currently requires target='durable_agent_server'")
+        # Copy nested models so reusing a backend declaration in another agent
+        # does not accidentally reuse the first agent's derived store name.
+        if self.memory is not None and self.memory.type == "managed" and self.memory.store_name is None:
+            self.memory = self.memory.model_copy(update={"store_name": _managed_store_name(self.name, "memory")})
+        if self.session is not None and self.session.type == "managed" and self.session.store_name is None:
+            self.session = self.session.model_copy(update={"store_name": _managed_store_name(self.name, "sessions")})
         return self
 
 

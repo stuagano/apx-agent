@@ -19,7 +19,11 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from ._models import AgentConfig
 
 MIN_PYTHON = (3, 11)
 
@@ -194,6 +198,17 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
         check_extras(cwd),
         check_databricks_yml(cwd),
     ]
+    from ._inspection import _load_agent_config
+
+    try:
+        agent_config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except (ValueError, OSError) as exc:
+        project.append(Check("Agent prerequisites", Status.FAIL, type(exc).__name__, "Fix the agent configuration."))
+    else:
+        project.extend(check_agent_prerequisites(agent_config, online=online and auth.status is Status.OK))
+        image_check = check_agent_image(cwd, agent_config)
+        if image_check is not None:
+            project.append(image_check)
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
         project.append(memory_check)
@@ -958,11 +973,12 @@ def check_project_layout(cwd: Path) -> Check:
             f"{cwd} is not an apx project",
             "Run `apx-agent scaffold my-agent` to create one, then cd into it.",
         )
-    from apx_agent.cli import _detect_target
+    from apx_agent.cli import _detect_target, _read_apx_agent_config
 
     target = _detect_target(cwd).target
-    marker = "agent_server/" if target == "apps" else "agent.py"
-    if target == "apps":
+    native = _read_apx_agent_config(cwd / "pyproject.toml").get("target") == "durable_agent_server"
+    marker = "agent_server/" if target == "apps" and not native else "agent.py"
+    if target == "apps" and not native:
         ok = (cwd / "agent_server").is_dir()
     else:
         ok = (cwd / "agent.py").exists()
@@ -989,10 +1005,15 @@ def check_target(cwd: Path) -> Check:
 def check_extras(cwd: Path) -> Check:
     if not _is_apx_project(cwd):
         return Check("Required extra", Status.SKIP, "not in an apx project", None)
-    from apx_agent.cli import _detect_target
+    from apx_agent.cli import _detect_target, _read_apx_agent_config
 
     target = _detect_target(cwd).target
-    if target == "apps":
+    if _read_apx_agent_config(cwd / "pyproject.toml").get("target") == "durable_agent_server":
+        module, label, fix = (
+            "databricks_agentkit.runtime.app", "AgentKit native runtime",
+            "uv add 'apx-agent[agentbricks]'",
+        )
+    elif target == "apps":
         module, label, fix = (
             "mlflow.genai.agent_server",
             "mlflow.genai (eval extra)",
@@ -1021,6 +1042,13 @@ def check_databricks_yml(cwd: Path) -> Check:
         return Check("databricks.yml", Status.SKIP, "not in an apx project", None)
     if (cwd / "databricks.yml").exists():
         return Check("databricks.yml", Status.OK, "present", None)
+    from ._inspection import _load_agent_config
+    try:
+        config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except (ValueError, OSError):
+        config = None  # The agent prerequisite check reports invalid declarations.
+    if config is not None and config.target == "durable_agent_server" and (config.deploy is None or config.deploy.space is None):
+        return Check("databricks.yml", Status.SKIP, "native Agent Bricks deployment does not require a Bundle", None)
     return Check(
         "databricks.yml",
         Status.WARN,
@@ -1028,6 +1056,127 @@ def check_databricks_yml(cwd: Path) -> Check:
         "Re-run `apx-agent scaffold <name> --target apps`, or `apx-agent deploy` "
         "for model-serving (no bundle required).",
     )
+
+
+def check_agent_prerequisites(
+    config: AgentConfig | None, *, online: bool, ws: Any = None, provision_stores: bool = False,
+) -> list[Check]:
+    """Read-only checks; native deployment may defer missing stores to its provisioner."""
+    if config is None:
+        return []
+    durable = config.target == "durable_agent_server"
+    managed_memory = config.memory is not None and config.memory.type == "managed"
+    if not durable and not managed_memory:
+        return []
+    fix_sdk = "Install/sync apx-agent[agentbricks] in the build environment and generated App dependencies."
+    try:
+        from databricks_agentkit import AgentKitClient
+        if durable:
+            from databricks_agentkit.runtime.app import DurableAgentServer
+            from databricks_agentkit.runtime.auth import InvocationAuthPolicy
+            from databricks_agentkit.runtime.tool_manifest import parse_user_auth
+            from databricks_agentkit.langgraph.session_store import DatabricksSessionStoreSaver
+
+            if not hasattr(InvocationAuthPolicy(), "user_required") or not callable(DurableAgentServer.recover) or not callable(DatabricksSessionStoreSaver):
+                raise ImportError("incompatible AgentKit runtime")
+            parse_user_auth({"auth": {"user": {"required": True}}})
+    except (ImportError, AttributeError):
+        return [Check("AgentKit SDK", Status.FAIL, "Required AgentKit APIs are missing or incompatible", fix_sdk)]
+    checks = [Check("AgentKit SDK", Status.OK, "Required local SDK APIs are installed")]
+    probes: list[tuple[str, str, str | None]] = []
+    if managed_memory:
+        assert config.memory is not None
+        probes.append(("Managed memory", "memory_stores", config.memory.store_name))
+    if config.session is not None and config.session.type == "managed":
+        probes.append(("Managed sessions", "session_stores", config.session.store_name))
+    if config.deploy is not None and config.deploy.space is not None:
+        probes.append(("App Space", "apps", config.deploy.space))
+    if not probes:
+        return checks
+    if not online:
+        checks.extend(Check(label, Status.SKIP, f"{name!r}: workspace availability unverified (offline or authentication unavailable)",
+                            "Run doctor online with the intended workspace profile.") for label, _, name in probes)
+        return checks
+    try:
+        if ws is None:
+            from ._defaults import _make_workspace_client
+
+            ws = _make_workspace_client()
+        client = AgentKitClient(workspace_client=ws)
+    except Exception:
+        checks.append(Check("Agent workspace access", Status.FAIL, "Workspace availability unverified: authentication/client initialization failed",
+                            "Authenticate to the intended workspace and rerun doctor."))
+        return checks
+    from databricks.sdk.errors import NotFound
+
+    for label, resource, name in probes:
+        if not name:
+            checks.append(Check(label, Status.FAIL, "No store_name is declared", "Declare a managed store_name before deploying."))
+            continue
+        try:
+            if resource == "apps":
+                result = ws.apps.get_space(name)
+            else:
+                result = getattr(client, resource).get(name)
+            if not isinstance(result.name, str) or not result.name:
+                raise ValueError("resource response has no name")
+        except Exception as exc:
+            code = getattr(exc, "error_code", None)
+            if code in {"FEATURE_DISABLED", "NOT_IMPLEMENTED", "UNIMPLEMENTED"}:
+                detail = "Required feature is disabled or unavailable in this workspace"
+                fix = "Ask the workspace administrator to verify preview enablement and regional availability for this capability."
+            elif code in {"PERMISSION_DENIED", "UNAUTHENTICATED"}:
+                detail = "Access denied; feature enablement is unverified"
+                fix = "Verify the selected profile and permissions on the declared resource."
+            elif isinstance(exc, NotFound) or isinstance(exc.__cause__, NotFound) or code in {"NOT_FOUND", "RESOURCE_DOES_NOT_EXIST"}:
+                detail = "Declared resource or API route was not found; feature enablement is unverified"
+                if provision_stores and resource in {"memory_stores", "session_stores"}:
+                    checks.append(Check(label, Status.WARN, f"{name!r}: {detail}",
+                                        "Agent Bricks deployment will create or resolve the declared store; provisioning must succeed before the app can run."))
+                    continue
+                fix = "Verify the store/space name and workspace. If the API is unavailable, ask the administrator to check preview availability."
+            else:
+                detail = "Workspace availability unverified: read-only probe failed"
+                fix = "Check workspace connectivity and credentials, then rerun doctor."
+            checks.append(Check(label, Status.FAIL, f"{name!r}: {detail}", fix))
+        else:
+            checks.append(Check(label, Status.OK, f"{name!r}: declared resource is readable with the checking identity; runtime write access is not proven"))
+    return checks
+
+
+def check_agent_image(cwd: Path, config: AgentConfig | None) -> Check | None:
+    """Check the dependencies that will be installed in the App image."""
+    if config is None or (config.target != "durable_agent_server" and not (config.memory is not None and config.memory.type == "managed")):
+        return None
+    import tomllib
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    label = "Agent image dependencies"
+    fix = "Add apx-agent[agentbricks] to project.dependencies, regenerate uv.lock, and rebuild the App."
+    try:
+        document = tomllib.loads((cwd / "pyproject.toml").read_text())
+        requirements = [Requirement(raw) for raw in document.get("project", {}).get("dependencies", [])]
+        declared = any(
+            req.marker is None and (
+                (canonicalize_name(req.name) == "apx-agent" and "agentbricks" in req.extras)
+                or canonicalize_name(req.name) == "databricks-agentbricks"
+            ) for req in requirements
+        )
+        if not declared:
+            return Check(label, Status.FAIL, "Image dependencies do not unconditionally include AgentKit", fix)
+        lock = cwd / "uv.lock"
+        if not lock.exists():
+            return Check(label, Status.WARN, "AgentKit is declared; resolved image version is unverified without uv.lock", fix)
+        packages = tomllib.loads(lock.read_text()).get("package", [])
+        versions = [p.get("version") for p in packages if canonicalize_name(p["name"]) == "databricks-agentbricks"]
+        sdk_requirement = next(Requirement(raw) for raw in importlib.metadata.requires("apx-agent") or []
+                               if canonicalize_name(Requirement(raw).name) == "databricks-agentbricks")
+        if not versions or any(not version or version not in sdk_requirement.specifier for version in versions):
+            return Check(label, Status.FAIL, "Image lock is missing a compatible databricks-agentbricks package", fix)
+    except (OSError, ValueError, KeyError, StopIteration):
+        return Check(label, Status.FAIL, "Could not verify the image dependency manifest/lock", fix)
+    return Check(label, Status.OK, "Image declares AgentKit and locks a compatible version; installed image has not been executed")
 
 
 def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
@@ -1047,6 +1196,8 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
         return None
 
     mem = cfg.memory
+    if mem.type == "managed":
+        return None  # Shared AgentKit prerequisite checks own this backend.
     label = "Memory backend"
 
     if not auth_ok:

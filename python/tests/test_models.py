@@ -17,6 +17,50 @@ from apx_agent._models import (
 )
 
 
+def test_managed_store_defaults_are_stable_and_do_not_mutate_shared_config() -> None:
+    from apx_agent._models import MemoryBackendConfig, SessionBackendConfig, normalize_memory_knob
+
+    memory = MemoryBackendConfig(type="managed")
+    session = SessionBackendConfig(type="managed")
+    orders = AgentConfig(name="orders", target="durable_agent_server", memory=memory, session=session)
+    billing = AgentConfig(name="billing", target="durable_agent_server", memory=memory, session=session)
+    assert orders.memory.store_name == "apx-orders-memory"
+    assert orders.session.store_name == "apx-orders-sessions"
+    assert billing.memory.store_name == "apx-billing-memory"
+    assert billing.session.store_name == "apx-billing-sessions"
+    assert memory.store_name is None and session.store_name is None
+    assert AgentConfig.model_validate(orders.model_dump()) == orders
+    assert normalize_memory_knob("managed", name="orders")[0].store_name == orders.memory.store_name
+
+
+def test_explicit_managed_store_names_survive_agent_rename() -> None:
+    config = AgentConfig(name="renamed", target="durable_agent_server",
+                         memory={"type": "managed", "store_name": "shared-memory"},
+                         session={"type": "managed", "store_name": "original-sessions"})
+    assert config.memory.store_name == "shared-memory"
+    assert config.session.store_name == "original-sessions"
+    assert config.session.auto_create is False
+
+
+@pytest.mark.parametrize("name", ["Orders_Team", "a" * 100])
+def test_managed_store_defaults_follow_existing_slug_and_length_rules(name: str) -> None:
+    from apx_agent._memory_managed import validate_memory_store_name
+
+    config = AgentConfig(name=name, target="durable_agent_server",
+                         memory={"type": "managed"}, session={"type": "managed"})
+    for backend in (config.memory, config.session):
+        assert validate_memory_store_name(backend.store_name) == backend.store_name
+    assert config.memory.store_name.endswith("-memory")
+    assert config.session.store_name.endswith("-sessions")
+
+
+@pytest.mark.parametrize("store_name", ["", " "])
+def test_explicit_blank_session_store_does_not_become_an_automatic_binding(store_name: str) -> None:
+    with pytest.raises(ValidationError, match="store_name"):
+        AgentConfig(name="orders", target="durable_agent_server",
+                    session={"type": "managed", "store_name": store_name})
+
+
 def _workflow(**overrides: Any) -> dict[str, Any]:
     value: dict[str, Any] = {
         "id": "pricing-review",

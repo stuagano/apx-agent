@@ -386,13 +386,16 @@ class _DetectedTarget(NamedTuple):
 def _detect_target(cwd: Path | None = None) -> _DetectedTarget:
     """Infer the project's target (model-serving vs apps) from its layout.
 
-    Rules, in order: apps when ``agent_server/start_server.py`` exists;
+    Rules, in order: apps for a declared native durable runtime;
+    otherwise apps when ``agent_server/start_server.py`` exists;
     model-serving when a top-level ``app.py`` exists without ``databricks.yml``;
     otherwise apps — the catch-all default (covers ``databricks.yml``-only and
     bare layouts). ``reason`` names the marker that decided, so callers can
     echo why a target was auto-detected. Pass ``--target`` to override.
     """
     cwd = cwd or Path.cwd()
+    if _read_apx_agent_config(cwd / "pyproject.toml").get("target") == "durable_agent_server":
+        return _DetectedTarget("apps", "declared durable_agent_server runtime")
     if (cwd / "agent_server" / "start_server.py").exists():
         return _DetectedTarget("apps", "agent_server/start_server.py present")
     if (cwd / "app.py").exists() and not (cwd / "databricks.yml").exists():
@@ -2517,7 +2520,13 @@ def _materialize_yaml_project(
             f"Cannot materialize YAML project: {target} exists and is not a directory."
         )
     if target.exists() and any(target.iterdir()) and not (
-        (target / "pyproject.toml").exists() and (target / "databricks.yml").exists()
+        (target / "pyproject.toml").exists() and (
+            (target / "databricks.yml").exists()
+            or (
+                config.target == "durable_agent_server" and (target / "agent.py").is_file()
+                and _read_apx_agent_config(target / "pyproject.toml").get("target") == "durable_agent_server"
+            )
+        )
     ):
         raise click.ClickException(
             f"Refusing to overwrite non-apx directory {target}. "
@@ -4235,6 +4244,18 @@ def _materialize_agent(
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _SCAFFOLD_APPS_QUICKSTART.replace("<APP_NAME>", config.name),
     }
+    if config.target == "durable_agent_server" and (config.deploy is None or config.deploy.space is None):
+        aux_files = {
+            ".gitignore": _SCAFFOLD_GITIGNORE,
+            "README.md": (
+                f"# {config.name}\n\n"
+                "Edit `agent.py` for agent behavior and `pyproject.toml` for runtime settings.\n\n"
+                "```sh\nuv sync\nuv run apx-agent agents run\n"
+                "uv run apx-agent agents deploy --target apps --profile <profile>\n```\n\n"
+                "APX generates `.build/agent.toml` and `.build/app.yaml` and deploys through Agent Bricks. "
+                "No customer-authored YAML or Bundle is required.\n"
+            ),
+        }
     for rel_path, content in aux_files.items():
         path = target / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -5654,13 +5675,14 @@ def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
 
     Searches the cwd itself, then up to two levels of subdirectories (so both
     ./my-agent/ and ./python/my-agent/ are found). A directory is "runnable"
-    when it contains the apps layout (agent_server/start_server.py) or the
-    model-serving layout (app.py without databricks.yml).
+    when it declares a native runtime with agent.py, contains the legacy Apps
+    layout, or contains the model-serving layout (app.py without databricks.yml).
     """
 
     def _is_runnable(d: Path) -> bool:
         return (
-            (d / "agent_server" / "start_server.py").exists()
+            (_read_apx_agent_config(d / "pyproject.toml").get("target") == "durable_agent_server" and (d / "agent.py").is_file())
+            or (d / "agent_server" / "start_server.py").exists()
             or ((d / "app.py").exists() and not (d / "databricks.yml").exists())
         )
 
@@ -5695,8 +5717,7 @@ def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
     "--module",
     default=None,
     help='ASGI app module spec, "module:variable". Auto-detected from the '
-         'project layout when omitted: "app:app" (model-serving) or '
-         '"agent_server.start_server:app" (apps).',
+         'declared native runtime or legacy project layout when omitted.',
 )
 @click.option("--port", default=8000, type=int, help="Port. Default: 8000.")
 @click.option("--host", default="127.0.0.1", help="Host. Default: 127.0.0.1.")
@@ -5750,6 +5771,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         if project_dir != cwd:
             os.chdir(project_dir)
 
+    factory = False
     if module is None:
         detected = _detect_target()
         module = _RUN_MODULE_BY_TARGET[detected.target]
@@ -5757,14 +5779,15 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
 
         runtime_config = _load_agent_config(pyproject_path=Path.cwd() / "pyproject.toml")
         if runtime_config is not None and runtime_config.target == "durable_agent_server":
-            module = "agent_server.start_managed:app"
+            module = "apx_agent._serve:create_app"
+            factory = True
         click.echo(
             f"target: {detected.target} (auto-detected: {detected.reason}) "
             f"→ serving {module}",
             err=True,
         )
         if detected.target == "apps":
-            model = os.environ.get("APX_MODEL", _APPS_DEFAULT_MODEL)
+            model = os.environ.get("APX_MODEL", runtime_config.model if runtime_config is not None else _APPS_DEFAULT_MODEL)
             click.echo(
                 f"# apps runtime uses APX_MODEL={model} (export APX_MODEL to override)",
                 err=True,
@@ -5803,7 +5826,8 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
     # --reload subprocess, which a bare sys.path.insert here would not.
     _probe_import(module)
     port = _find_free_port(port, host=host)
-    uvicorn.run(module, host=host, port=port, reload=reload, app_dir=str(Path.cwd()))
+    uvicorn.run(module, host=host, port=port, reload=reload, app_dir=str(Path.cwd()),
+                factory=factory)
 
 
 # ---------------------------------------------------------------------------
@@ -7469,8 +7493,24 @@ def _emit_apps_deploy_plan(
     ``--secret-env`` are reported as key names, never merged), no network.
     """
     cwd = Path.cwd()
-    doc = _read_databricks_yml(cwd)
-    bundle_key, app_name = _resolve_app_name(doc)
+    from ._inspection import _load_agent_config
+    config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    native_direct = (
+        config is not None and config.target == "durable_agent_server"
+        and (config.deploy is None or config.deploy.space is None)
+        and not (cwd / "databricks.yml").exists()
+    )
+    if native_direct:
+        from ._agentbricks_deploy import compile_native_app
+        assert config is not None
+        app_name = compile_native_app(config)["name"]
+        bundle_key = config.name
+        doc: dict[str, Any] = {}
+        if vars or secret_env_pairs or no_run:
+            raise click.ClickException("Native deployment does not support Bundle --var, --secret-env, or --no-run.")
+    else:
+        doc = _read_databricks_yml(cwd)
+        bundle_key, app_name = _resolve_app_name(doc)
     resolved_uc = _resolve_apps_uc_name(
         _read_apx_agent_config(), app_name, override=uc_name,
     )
@@ -7492,7 +7532,8 @@ def _emit_apps_deploy_plan(
             f"auto-resolve /Users/<current-user>/{app_name}-{bundle_target} "
             "at deploy time (created if missing)"
         )
-        plan_vars.append("mlflow_experiment_id=<auto-resolved>")
+        if not native_direct:
+            plan_vars.append("mlflow_experiment_id=<auto-resolved>")
     else:
         experiment = "none (--no-auto-experiment, no --var mlflow_experiment_id=)"
     from ._apps_registry import GIT_SHA_TAG
@@ -7525,6 +7566,10 @@ def _emit_apps_deploy_plan(
             else "skipped (no UC name resolves)"
         ),
     }
+    if native_direct:
+        steps["validate"] = "native prerequisites and compiled manifests"
+        steps["deploy"] = "agentbricks deploy (includes rollout)"
+        steps["run"] = "included in agentbricks deploy"
 
     if json_output:
         click.echo(json.dumps({
@@ -8989,26 +9034,31 @@ def _preflight_databricks_cli() -> None:
         )
 
 
-def _preflight_apps(cwd: Path) -> None:
+def _preflight_apps(cwd: Path, *, native: bool = False) -> None:
     """Verify the cwd looks like a scaffolded Apps project.
 
-    Checks for ``databricks.yml``, ``pyproject.toml``, and ``agent_server/``.
+    Native projects need ``pyproject.toml`` and ``agent.py``. Bundle projects
+    retain the ``databricks.yml`` and ``agent_server/`` requirements.
     Raises ``click.ClickException`` with a friendly message on the first
     missing piece.
     """
     missing: list[str] = []
-    if not (cwd / "databricks.yml").exists():
+    if not native and not (cwd / "databricks.yml").exists():
         missing.append("databricks.yml")
     if not (cwd / "pyproject.toml").exists():
         missing.append("pyproject.toml")
-    if not (cwd / "agent_server").is_dir():
+    if native and not (cwd / "agent.py").is_file():
+        missing.append("agent.py")
+    elif not native and not (cwd / "agent_server").is_dir():
         missing.append("agent_server/")
     if missing:
         msg = (
             "Pre-flight failed for --target apps. Missing in current "
             f"directory: {', '.join(missing)}."
         )
-        if (cwd / "app.py").exists() or (cwd / "agent.py").exists():
+        if native:
+            msg += " Restore the native project's agent.py and pyproject.toml."
+        elif (cwd / "app.py").exists() or (cwd / "agent.py").exists():
             # ADK-style / model-serving lookalike misrouted to apps by the
             # catch-all default — the likely fix is the other target, not a
             # rescaffold.
@@ -10016,7 +10066,7 @@ def _resolve_project_uc_name(cwd: Path) -> str | None:
     """
     config = _read_apx_agent_config(cwd / "pyproject.toml")
     try:
-        _bundle_key, app_name = _resolve_app_name(_read_databricks_yml(cwd))
+        app_name = _resolve_project_app_name(cwd)
     except Exception:
         app_name = None  # not an Apps bundle — registered_model may still resolve
     if app_name:
@@ -10025,6 +10075,17 @@ def _resolve_project_uc_name(cwd: Path) -> str | None:
     if isinstance(registered, str) and registered.strip():
         return registered.strip()
     return None
+
+
+def _resolve_project_app_name(cwd: Path) -> str:
+    """Use an existing Bundle's identity, otherwise the native declaration."""
+    if not (cwd / "databricks.yml").exists() and not (cwd / "databricks.yml").is_symlink():
+        from ._inspection import _load_agent_config
+        from ._agentbricks_deploy import compile_native_app
+        config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        if config is not None and config.target == "durable_agent_server" and (config.deploy is None or config.deploy.space is None):
+            return compile_native_app(config)["name"]
+    return _resolve_app_name(_read_databricks_yml(cwd))[1]
 
 
 def _register_apps_manifest_step(
@@ -10355,12 +10416,36 @@ def _deploy_apps_impl(
     if not pin.skipped:
         log(f"# framework pin: {pin.message}")
 
-    # 1. Pre-flight
+    from ._inspection import _load_agent_config
+
+    effective_config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    native_direct = (
+        effective_config is not None and effective_config.target == "durable_agent_server"
+        and (effective_config.deploy is None or effective_config.deploy.space is None)
+        and not (cwd / "databricks.yml").exists()
+        and not (cwd / "databricks.yml").is_symlink()
+    )
+    # Existing Bundle projects retain their explicit build/variable contract.
     _preflight_databricks_cli()
-    _preflight_apps(cwd)
-    _validate_responses_agent_compiler()
-    doc = _read_databricks_yml(cwd)
-    bundle_key, resolved_app_name = _resolve_app_name(doc)
+    _preflight_apps(cwd, native=native_direct)
+    if native_direct:
+        from ._agentbricks_deploy import compile_native_app
+        assert effective_config is not None
+        for filename in ("agent.toml", "app.yaml", "app.yml"):
+            if (cwd / filename).exists() or (cwd / filename).is_symlink():
+                raise click.ClickException(f"Native APX deployment generates {filename} in .build; refusing to ignore an existing root manifest.")
+        app = compile_native_app(effective_config)
+        doc: dict[str, Any] = {}
+        bundle_key, resolved_app_name = effective_config.name, app["name"]
+        if vars or secret_env_pairs:
+            raise click.ClickException("Native projects do not use Bundle --var or --secret-env references; declare agent settings or use --env.")
+        if bundle_target not in {"dev", "prod"}:
+            raise click.ClickException("Native projects support dev/prod deployment labels; custom Bundle targets require an existing databricks.yml.")
+    else:
+        _validate_responses_agent_compiler()
+        doc = _read_databricks_yml(cwd)
+        bundle_key, resolved_app_name = _resolve_app_name(doc)
+        app = doc["resources"]["apps"][bundle_key]
     app_name = app_name_override or resolved_app_name
     if app_name_override and app_name_override != resolved_app_name:
         log(f"# app-name override: polling {app_name} (target {bundle_target})")
@@ -10368,8 +10453,6 @@ def _deploy_apps_impl(
         log(f"# resolved bundle_key={bundle_key} app_name={resolved_app_name}")
     else:
         log(f"# resolved app_name: {resolved_app_name}")
-
-    agent = _load_finalized_agent(module)
 
     # 2. Compile and reconcile the complete Apps authorization contract on every
     #    deploy before signature baking can read the workspace or mutate schema.
@@ -10379,9 +10462,70 @@ def _deploy_apps_impl(
         compile_authorization_plan,
         read_app_family_permissions,
     )
-    from ._inspection import _load_agent_config
+    native_cli = (
+        effective_config is not None and effective_config.target == "durable_agent_server"
+        and app.get("space") is None
+    )
+    if native_cli:
+        from ._agentbricks_deploy import validate_cli_deployment, validate_native_app
 
-    effective_config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        if native_direct:
+            validate_native_app(app, app_name=app_name, profile=profile, no_run=no_run)
+        else:
+            validate_cli_deployment(doc, bundle_key=bundle_key, app_name=app_name,
+                                    profile=profile, no_run=no_run)
+        if doc.get("workspace") or any(target.get("workspace") for target in doc.get("targets", {}).values()):
+            raise click.ClickException("Agent Bricks selects the workspace through --profile; bundle workspace overrides are unsupported.")
+        if secret_env_pairs:
+            raise click.ClickException("Agent Bricks cannot carry bundle resource-backed --secret-env references.")
+        if any(value.startswith("mlflow_experiment_id=") for value in vars):
+            raise click.ClickException("Agent Bricks owns tracing; an explicit experiment ID override is unsupported.")
+    injected_env_keys: list[str] = []
+    injected_secret_env_keys: list[str] = []
+    if native_direct:
+        from ._agentbricks_deploy import validate_native_app
+        env = app["config"]["env"]
+        for value in env_pairs:
+            name, content = _parse_env_flag(value)
+            if name == "APX_APPS_HOST":
+                raise click.ClickException("The declared runtime selects the native host; omit APX_APPS_HOST.")
+            if any(entry["name"] == name for entry in env):
+                raise click.ClickException(f"--env conflicts with declared or repeated {name}; existing settings are preserved.")
+            env.append({"name": name, "value": content})
+            injected_env_keys.append(name)
+        from ._apps_registry import GIT_SHA_TAG
+        native_sha = (extra_version_tags or {}).get(GIT_SHA_TAG)
+        if native_sha and "APX_GIT_SHA" not in injected_env_keys:
+            env.append({"name": "APX_GIT_SHA", "value": native_sha})
+        validate_native_app(app, app_name=app_name, profile=profile, no_run=no_run)
+    # Check required beta APIs before image building, provisioning, or upload.
+    # The same read-only checks are visible in doctor.
+    needs_agentkit = effective_config is not None and (
+        effective_config.target == "durable_agent_server"
+        or (effective_config.memory is not None and effective_config.memory.type == "managed")
+    )
+    if needs_agentkit:
+        local_checks = _doctor_mod.check_agent_prerequisites(effective_config, online=False)
+        image_check = _doctor_mod.check_agent_image(cwd, effective_config)
+        if image_check is not None:
+            local_checks.append(image_check)
+        for check in local_checks:
+            if check.status is _doctor_mod.Status.FAIL:
+                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+        try:
+            workspace = _make_scaffold_workspace_client(profile)
+        except Exception as exc:
+            raise click.ClickException(
+                "Agent prerequisite checks could not connect/authenticate to the selected workspace. "
+                "Verify the profile and connectivity, then rerun doctor."
+            ) from exc
+        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli):
+            log(f"# {check.name}: {check.detail}")
+            if check.status is _doctor_mod.Status.WARN and check.fix:
+                log(f"  {check.fix}")
+            if check.status is _doctor_mod.Status.FAIL:
+                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+    agent = _load_finalized_agent(module)
     effective_model = (
         effective_config.model if effective_config is not None else _APPS_DEFAULT_MODEL
     )
@@ -10398,13 +10542,28 @@ def _deploy_apps_impl(
         family_permissions,
     )
 
+    if native_cli:
+        if authorization_plan.service_resources or authorization_plan.app_dependencies:
+            raise click.ClickException("Agent Bricks deployment cannot yet represent this agent's service-resource grants.")
+        if family_permissions.can_use_groups or family_permissions.can_manage_groups:
+            raise click.ClickException("Agent Bricks deployment cannot yet reconcile APX app-family group grants.")
+        extra_scopes = set(app.get("user_api_scopes", [])) - set(authorization_plan.user_api_scopes)
+        if extra_scopes:
+            raise click.ClickException("Declare user API scopes on agent tools before native deployment: " + ", ".join(sorted(extra_scopes)))
+
     space_client = None
-    space_name = doc["resources"]["apps"][bundle_key].get("space")
-    if effective_config is not None and effective_config.target == "durable_agent_server":
+    space_name = app.get("space")
+    if space_name is not None or (effective_config is not None and effective_config.target == "durable_agent_server"):
         from ._runtime_targets import inspect_target
 
-        inspect_target(agent, config=effective_config).require_compatible()
-        if _apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") != "agentbricks":
+        report = inspect_target(agent, target="durable_agent_server", config=effective_config)
+        # Deploy-time imports have no memory-store credentials. The generated
+        # server binds declared memory and fails closed at startup if unreachable.
+        declared_memory = effective_config is not None and effective_config.memory is not None
+        if not declared_memory or any(name != "long_term_memory" for name in report.unsatisfied):
+            report.require_compatible()
+    if effective_config is not None and effective_config.target == "durable_agent_server":
+        if not native_direct and _apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") != "agentbricks":
             raise click.ClickException("Bundle host disagrees with the declared durable target; regenerate the project.")
         declared_space = effective_config.deploy.space if effective_config.deploy is not None else None
         if declared_space != space_name:
@@ -10415,9 +10574,6 @@ def _deploy_apps_impl(
             raise click.ClickException("Declare App Space in the root app configuration, not a target override.")
     if space_name is not None:
         from ._app_space import validate_space_deployment, RUNTIME_STORE_VARIABLES
-        from ._runtime_targets import inspect_target
-
-        inspect_target(agent, target="durable_agent_server", config=effective_config).require_compatible()
         if any(_bundle_var_value(vars, variable) is not None for variable in RUNTIME_STORE_VARIABLES.values()):
             raise click.ClickException("Runtime Store variables are SDK-owned; omit explicit overrides.")
         target_app = doc.get("targets", {}).get(bundle_target, {}).get("resources", {}).get("apps", {}).get(bundle_key, {})
@@ -10449,7 +10605,7 @@ def _deploy_apps_impl(
         authorization_plan,
         resolved_dependencies,
     )
-    explicit_resource_lines = _explicit_apps_resource_summary_lines(cwd, bundle_key)
+    explicit_resource_lines = [] if native_direct else _explicit_apps_resource_summary_lines(cwd, bundle_key)
 
     log("# Apps authorization summary")
     for line in authorization_summary_lines(
@@ -10462,7 +10618,7 @@ def _deploy_apps_impl(
     if auto_update_yml:
         log("# --auto-update-yml: reconciliation is already automatic")
     log("# Apps authorization reconciliation")
-    if space_client is None:
+    if space_client is None and not native_cli:
         _reconcile_apps_authorization(
             cwd,
             plan=authorization_plan,
@@ -10480,9 +10636,7 @@ def _deploy_apps_impl(
     # Plaintext --env is ephemeral (scrubbed after deploy); --secret-env
     # value_from refs persist. Existing entries are never clobbered. Only
     # key NAMES are logged — never values.
-    injected_env_keys: list[str] = []
-    injected_secret_env_keys: list[str] = []
-    if env_pairs or secret_env_pairs:
+    if not native_direct and (env_pairs or secret_env_pairs):
         parsed_env = [_parse_env_flag(e) for e in env_pairs]
         parsed_secret = [_parse_secret_env_flag(s) for s in secret_env_pairs]
         log("# env config: merging --env/--secret-env into databricks.yml "
@@ -10502,16 +10656,16 @@ def _deploy_apps_impl(
             wheel_path = _ensure_apx_wheel(cwd)
             if wheel_path:
                 log(f"  built apx-agent wheel: {wheel_path}")
-            _run_bundle_artifacts(cwd)
+            if native_direct:
+                from ._agentbricks_deploy import stage_native_source
+                stage_native_source(cwd)
+            else:
+                _run_bundle_artifacts(cwd)
+                current_doc = _read_databricks_yml(cwd)
+                _stage_internal_appkit_host(
+                    cwd, module=module, doc=current_doc, bundle_key=bundle_key, log=log,
+                )
             log("  populated .build/")
-            current_doc = _read_databricks_yml(cwd)
-            _stage_internal_appkit_host(
-                cwd,
-                module=module,
-                doc=current_doc,
-                bundle_key=bundle_key,
-                log=log,
-            )
             # Stage the dependency manifest into .build/. The artifacts script
             # omits pyproject.toml/uv.lock by design — without them the Apps
             # container has no manifest and falls back to base-image packages
@@ -10542,6 +10696,31 @@ def _deploy_apps_impl(
         else:
             log("# --no-auto-build-wheel: skipping wheel build + artifacts step")
 
+        if needs_agentkit:
+            staged_source = cwd / app["source_code_path"]
+            image_check = _doctor_mod.check_agent_image(staged_source, effective_config)
+            if image_check is not None:
+                log(f"# Staged {image_check.name}: {image_check.detail}")
+                if image_check.status is _doctor_mod.Status.FAIL:
+                    raise click.ClickException(f"{image_check.name}: {image_check.detail}. {image_check.fix}")
+
+        if effective_config is not None and effective_config.target == "durable_agent_server":
+            from ._durable_agent import build_native_manifest
+
+            source = cwd / app["source_code_path"]
+            manifest = source / "agent.toml"
+            if source.is_symlink() or manifest.is_symlink():
+                raise click.ClickException("Refusing to write a symlinked native agent manifest.")
+            if not source.is_dir() or not source.resolve().is_relative_to(cwd.resolve()) or source.resolve() == cwd.resolve():
+                raise click.ClickException("The durable target requires a staged source directory inside the project.")
+            marker = "# Generated by APX from agent declarations; do not edit."
+            if manifest.exists() and not manifest.read_text().startswith(marker):
+                raise click.ClickException("Refusing to overwrite an authored agent.toml in the staged source directory.")
+            manifest.write_text(build_native_manifest(
+                config=effective_config, authorization_plan=authorization_plan,
+            ))
+            log("  compiled native auth contract: " + str(manifest))
+
         if space_client is not None:
             from ._app_space import validate_space_source
 
@@ -10563,7 +10742,7 @@ def _deploy_apps_impl(
         ) or _bundle_declared_var_value(
             doc, bundle_target, vars, "mlflow_tracing_sql_warehouse_id",
         )
-        if auto_experiment and resolved_exp_id is None:
+        if auto_experiment and resolved_exp_id is None and not native_cli:
             bundle_name = ((doc.get("bundle") or {}).get("name") or bundle_key)
             catalog_name = _bundle_declared_var_value(
                 doc, bundle_target, vars, "catalog",
@@ -10616,97 +10795,135 @@ def _deploy_apps_impl(
         for v in list(vars or ()) + extra_vars:
             deploy_var_args.extend(["--var", v])
 
-        # 3. databricks bundle validate
-        log("# databricks bundle validate")
-        validate_proc = _run_databricks_cmd(
-            ["bundle", "validate", "--target", bundle_target] + deploy_var_args,
-            profile=profile,
-        )
-        if validate_proc.returncode != 0:
-            msg = (
-                f"`databricks bundle validate` failed (exit {validate_proc.returncode}). "
-                f"Last lines:\n{_tail_lines(validate_proc.stderr or validate_proc.stdout)}"
+        if not native_direct:
+            log("# databricks bundle validate")
+            validate_proc = _run_databricks_cmd(
+                ["bundle", "validate", "--target", bundle_target] + deploy_var_args + (["--output", "json"] if native_cli else []),
+                profile=profile,
             )
-            with _json_cli_errors(json_output, extra={"app_name": app_name}):
-                raise click.ClickException(msg)
+            if validate_proc.returncode != 0:
+                msg = (
+                    f"`databricks bundle validate` failed (exit {validate_proc.returncode}). "
+                    f"Last lines:\n{_tail_lines(validate_proc.stderr or validate_proc.stdout)}"
+                )
+                with _json_cli_errors(json_output, extra={"app_name": app_name}):
+                    raise click.ClickException(msg)
 
-        # 4. databricks bundle deploy
-        log("# databricks bundle deploy")
-        deploy_t0 = time.monotonic()
-        deploy_proc = _run_databricks_cmd(
-            ["bundle", "deploy", "--target", bundle_target] + deploy_var_args,
-            profile=profile,
-        )
-        deploy_seconds = round(time.monotonic() - deploy_t0, 2)
-        if deploy_proc.returncode != 0:
-            msg = (
-                f"`databricks bundle deploy` failed (exit {deploy_proc.returncode}). "
-                f"Last lines:\n{_tail_lines(deploy_proc.stderr or deploy_proc.stdout)}"
-            )
-            with _json_cli_errors(json_output, extra={"app_name": app_name}):
-                raise click.ClickException(msg)
-        log(f"  bundle deploy finished in {deploy_seconds:.1f}s")
+        if native_cli:
+            from ._agentbricks_deploy import deploy_native_project, validate_cli_deployment
 
-        if space_client is not None:
-            from ._app_space import runtime_store_env, RUNTIME_STORE_VARIABLES
-
-            binding = runtime_store_env(space_client, app_name=app_name, space=space_name)
-            bundle_path = cwd / "databricks.yml"
-            if bundle_path.is_symlink():
-                raise click.ClickException("Refusing to bind a Runtime Store through symlinked databricks.yml")
-            yml, bound_doc = _load_databricks_yml_roundtrip(cwd)
-            config = bound_doc["resources"]["apps"][bundle_key].setdefault("config", {})
-            env = config.setdefault("env", [])
-            generated_binding = all(
-                [entry for entry in env if entry.get("name") == key] ==
-                [{"name": key, "value": "${var." + variable + "}"}]
-                for key, variable in RUNTIME_STORE_VARIABLES.items()
-            )
-            if generated_binding:
-                for key, value in binding.items():
-                    variable = RUNTIME_STORE_VARIABLES[key]
-                    deploy_var_args.extend(["--var", f"{variable}={value}"])
+            assert profile is not None  # Required by native preflight before building.
+            if native_direct:
+                resolved_app = app
             else:
-                # Preserve hand-authored bundles from before declaration-based generation.
-                for key, value in binding.items():
-                    matches = [entry for entry in env if entry.get("name") == key]
-                    if matches and (len(matches) != 1 or matches[0] != {"name": key, "value": value}):
-                        raise click.ClickException(f"Runtime Store binding conflicts with existing {key}; existing configuration preserved.")
-                for key, value in binding.items():
-                    if not any(entry.get("name") == key for entry in env):
-                        env.append({"name": key, "value": value})
-                _write_databricks_yml_atomic(bundle_path, yml, bound_doc)
-            bound = _run_databricks_cmd(
+                try:
+                    resolved_doc = json.loads(validate_proc.stdout)
+                    resolved_app = resolved_doc["resources"]["apps"][bundle_key]
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise click.ClickException("Bundle validation did not return resolved native app configuration.") from exc
+                validate_cli_deployment(resolved_doc, bundle_key=bundle_key, app_name=app_name,
+                                        profile=profile, no_run=no_run)
+            if not app_name_override and resolved_app.get("name") != app_name:
+                raise click.ClickException("Resolved native app name differs from the declaration; choose an explicit --app-name.")
+            if (cwd / resolved_app["source_code_path"]).resolve() != source.resolve():
+                raise click.ClickException("Resolved native source differs from the staged source that passed image checks.")
+            experiment_name = None
+            if auto_experiment:
+                user_name = workspace.current_user.me().user_name
+                if not isinstance(user_name, str) or not user_name:
+                    raise click.ClickException("Could not resolve the tracing experiment owner in the selected workspace.")
+                experiment_name = f"/Users/{user_name}/{app_name}-{bundle_target}"
+            log("# agentbricks deploy " + app_name)
+            deploy_t0 = time.monotonic()
+            native_result = deploy_native_project(
+                source, app=resolved_app, app_name=app_name, profile=profile,
+                experiment_name=experiment_name, transient_env_keys=injected_env_keys,
+            )
+            deploy_seconds = round(time.monotonic() - deploy_t0, 2)
+            run_seconds = None
+            resolved_exp_id = native_result.get("trace_experiment_id")
+            if resolved_exp_id:
+                extra_vars.append(f"mlflow_experiment_id={resolved_exp_id}")
+            log(f"  Agent Bricks rollout finished in {deploy_seconds:.1f}s")
+        else:
+            # 4. databricks bundle deploy
+            log("# databricks bundle deploy")
+            deploy_t0 = time.monotonic()
+            deploy_proc = _run_databricks_cmd(
                 ["bundle", "deploy", "--target", bundle_target] + deploy_var_args,
                 profile=profile,
             )
-            if bound.returncode != 0:
-                raise click.ClickException("Runtime Store binding deployment failed; app was not started.")
-            log("# managed Runtime Store ownership verified and binding deployed")
+            deploy_seconds = round(time.monotonic() - deploy_t0, 2)
+            if deploy_proc.returncode != 0:
+                msg = (
+                    f"`databricks bundle deploy` failed (exit {deploy_proc.returncode}). "
+                    f"Last lines:\n{_tail_lines(deploy_proc.stderr or deploy_proc.stdout)}"
+                )
+                with _json_cli_errors(json_output, extra={"app_name": app_name}):
+                    raise click.ClickException(msg)
+            log(f"  bundle deploy finished in {deploy_seconds:.1f}s")
 
-        # 5. databricks bundle run <bundle_key>
-        # bundle run takes the YAML KEY under resources.apps, which may differ
-        # from the workspace app name (which is what `apps get` consumes).
-        run_seconds: float | None = None
-        if not no_run:
-            log(f"# databricks bundle run {bundle_key}")
-            run_t0 = time.monotonic()
-            run_proc = _run_databricks_cmd(
-                ["bundle", "run", bundle_key, "--target", bundle_target] + deploy_var_args,
-                profile=profile,
-            )
-            run_seconds = round(time.monotonic() - run_t0, 2)
-            if run_proc.returncode != 0:
-                if space_client is not None:
-                    raise click.ClickException("App Space bundle run failed; the new deployment was not verified.")
-                # Non-fatal — the app may already be running. Surface the tail
-                # and proceed to polling so we still verify readiness.
-                log(f"  bundle run returned {run_proc.returncode} (continuing)")
-                log(f"  last lines:\n{_tail_lines(run_proc.stderr or run_proc.stdout)}")
+            if space_client is not None:
+                from ._app_space import runtime_store_env, RUNTIME_STORE_VARIABLES
+
+                assert isinstance(space_name, str)  # Validated before provisioning.
+                binding = runtime_store_env(space_client, app_name=app_name, space=space_name)
+                bundle_path = cwd / "databricks.yml"
+                if bundle_path.is_symlink():
+                    raise click.ClickException("Refusing to bind a Runtime Store through symlinked databricks.yml")
+                yml, bound_doc = _load_databricks_yml_roundtrip(cwd)
+                config = bound_doc["resources"]["apps"][bundle_key].setdefault("config", {})
+                env = config.setdefault("env", [])
+                generated_binding = all(
+                    [entry for entry in env if entry.get("name") == key] ==
+                    [{"name": key, "value": "${var." + variable + "}"}]
+                    for key, variable in RUNTIME_STORE_VARIABLES.items()
+                )
+                if generated_binding:
+                    for key, value in binding.items():
+                        variable = RUNTIME_STORE_VARIABLES[key]
+                        deploy_var_args.extend(["--var", f"{variable}={value}"])
+                else:
+                    # Preserve hand-authored bundles from before declaration-based generation.
+                    for key, value in binding.items():
+                        matches = [entry for entry in env if entry.get("name") == key]
+                        if matches and (len(matches) != 1 or matches[0] != {"name": key, "value": value}):
+                            raise click.ClickException(f"Runtime Store binding conflicts with existing {key}; existing configuration preserved.")
+                    for key, value in binding.items():
+                        if not any(entry.get("name") == key for entry in env):
+                            env.append({"name": key, "value": value})
+                    _write_databricks_yml_atomic(bundle_path, yml, bound_doc)
+                bound = _run_databricks_cmd(
+                    ["bundle", "deploy", "--target", bundle_target] + deploy_var_args,
+                    profile=profile,
+                )
+                if bound.returncode != 0:
+                    raise click.ClickException("Runtime Store binding deployment failed; app was not started.")
+                log("# managed Runtime Store ownership verified and binding deployed")
+
+            # 5. databricks bundle run <bundle_key>
+            # bundle run takes the YAML KEY under resources.apps, which may differ
+            # from the workspace app name (which is what `apps get` consumes).
+            run_seconds: float | None = None
+            if not no_run:
+                log(f"# databricks bundle run {bundle_key}")
+                run_t0 = time.monotonic()
+                run_proc = _run_databricks_cmd(
+                    ["bundle", "run", bundle_key, "--target", bundle_target] + deploy_var_args,
+                    profile=profile,
+                )
+                run_seconds = round(time.monotonic() - run_t0, 2)
+                if run_proc.returncode != 0:
+                    if space_client is not None:
+                        raise click.ClickException("App Space bundle run failed; the new deployment was not verified.")
+                    # Non-fatal — the app may already be running. Surface the tail
+                    # and proceed to polling so we still verify readiness.
+                    log(f"  bundle run returned {run_proc.returncode} (continuing)")
+                    log(f"  last lines:\n{_tail_lines(run_proc.stderr or run_proc.stdout)}")
+                else:
+                    log(f"  bundle run finished in {run_seconds:.1f}s")
             else:
-                log(f"  bundle run finished in {run_seconds:.1f}s")
-        else:
-            log("# --no-run: skipping `databricks bundle run`")
+                log("# --no-run: skipping `databricks bundle run`")
 
         # 6. Poll for ACTIVE/RUNNING via `databricks apps get`. Skipped with
         # --no-run (issue #413): the app was never started, so polling would just
@@ -10714,6 +10931,7 @@ def _deploy_apps_impl(
         # app_url. The UC manifest registration (6d) still runs — it records
         # intent/version and doesn't need the app up.
         app_url = ""
+        hosting: dict[str, Any] | None = None
         if no_run:
             log("# --no-run: app not started — skipping readiness poll + readyz gate")
         else:
@@ -10722,13 +10940,20 @@ def _deploy_apps_impl(
                 app_name, profile, timeout_seconds=poll_timeout_seconds, log=log,
             )
             app_url = payload.get("url") or ""
+            # Report platform placement without inferring it from CLI flags or
+            # the server class. Missing fields remain unknown; readiness does
+            # not prove idle scale-down or wake-up behavior.
+            hosting = {
+                "space": payload.get("space"),
+                "compute_size": payload.get("compute_size"),
+            }
 
             # 6b. Grant the app's service principal access to the tracing
             # experiment. The experiment is created under the deploying user, but
             # the app runs as its SP — without this grant every span is dropped.
             # Best-effort.
             sp = payload.get("service_principal_client_id")
-            if space_client is None and sp and resolved_exp_id:
+            if space_client is None and not native_cli and sp and resolved_exp_id:
                 if _grant_experiment_to_sp(resolved_exp_id, sp, profile=profile):
                     log("  granted app SP CAN_MANAGE on tracing experiment")
                 if _grant_trace_uc_tables_to_sp(
@@ -10747,7 +10972,7 @@ def _deploy_apps_impl(
         if readyz_gate and app_url:
             log(f"# readyz gate: GET {app_url}/readyz")
             ok, checks = _check_readyz(app_url, profile=profile, attempts=readyz_attempts)
-            if space_client is not None:
+            if space_client is not None or native_cli:
                 ok = ok and isinstance(checks, dict) and checks.get("durable") is True
             readyz_checks = checks
             if ok:
@@ -10905,6 +11130,8 @@ def _deploy_apps_impl(
                 # #823: a swallowed state-write must be visible to CI, not just
                 # a human-readable warning line.
                 "deploy_state_recorded": deploy_state_recorded,
+                "deployment_backend": "agentbricks" if native_cli else "databricks_bundle",
+                "hosting": hosting,
             }, default=str))
         elif no_run:
             log(f"# app not started (--no-run); run `databricks bundle run "
@@ -10914,7 +11141,7 @@ def _deploy_apps_impl(
             click.echo(app_url)
         return app_url
     finally:
-        if injected_env_keys:
+        if injected_env_keys and not native_direct:
             _scrub_plaintext_env_from_databricks_yml(
                 cwd, bundle_key=bundle_key, names=injected_env_keys, log=log,
             )
@@ -11074,9 +11301,7 @@ def _show_deploy_state_status(
 ) -> None:
     """Show workspace-backed Apps deploy state for this project."""
     cwd = Path.cwd()
-    _preflight_apps(cwd)
-    doc = _read_databricks_yml(cwd)
-    _bundle_key, app_name = _resolve_app_name(doc)
+    app_name = _resolve_project_app_name(cwd)
 
     from databricks.sdk import WorkspaceClient
 
@@ -13609,7 +13834,7 @@ def register_agent_cmd(
             # chosen profile the ambient one, like `uc publish` does.
             os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
 
-        _bundle_key, app_name = _resolve_app_name(_read_databricks_yml(cwd))
+        app_name = _resolve_project_app_name(cwd)
         resolved_uc = _resolve_apps_uc_name(config, app_name, override=uc_name)
         if resolved_uc is None:
             raise click.ClickException(
@@ -16393,7 +16618,7 @@ def memory() -> None:
 
 @memory.command("provision")
 @click.option("--store", "store_name", required=True,
-              help="UC memory store name: catalog.schema.name")
+              help="Workspace memory store display name, e.g. agent-memory.")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile.")
 @click.option("--description", default="apx-agent managed agent memory",
@@ -16403,7 +16628,7 @@ def memory_provision_cmd(
     profile: str | None,
     description: str,
 ) -> None:
-    """Create a Databricks Managed Agent Memory store (Unity Catalog).
+    """Create a workspace-scoped Databricks Managed Agent Memory store.
 
     Run once (per store) before deploying an agent configured with
     ``memory='managed'`` or ``[tool.apx.agent.memory] type='managed'``. The
@@ -16415,7 +16640,7 @@ def memory_provision_cmd(
     from ._memory_managed import provision_managed_memory  # noqa: PLC0415
 
     ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
-    click.echo(provision_managed_memory(ws.api_client, store_name, description=description))
+    click.echo(provision_managed_memory(ws, store_name, description=description))
 
 
 @memory.command("recall")

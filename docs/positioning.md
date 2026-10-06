@@ -5,7 +5,7 @@
 Define your agent's tools, data access, identity, memory, and policies once, then run it on the
 Databricks runtime that fits your workload.
 
-apx-agent is **infrastructure for building and serving governed data agents on Databricks**.
+apx-agent is **a declaration language that connects agents to Databricks**.
 You declare what an agent should be; apx-agent compiles it to a Databricks runtime, grounds it
 in your Unity Catalog data, runs its tools under UC governance, and makes it observable.
 
@@ -39,31 +39,36 @@ Use apx-agent when you want a **production data agent**:
 Canonical examples are `DataAgent` (one line over a UC schema) and `CoworkerAgent` (join two
 source systems on a shared key) — see [agents/overview.md](agents/overview.md).
 
-## apx-agent and the Databricks Agent Framework
+## APX and native Databricks tooling
 
-apx-agent builds **on** the official
-[Databricks Mosaic AI Agent Framework](https://docs.databricks.com/aws/en/generative-ai/agent-framework/author-agent),
-not beside it. It uses the same GA primitives — MLflow `ResponsesAgent` / `ChatAgent` served by
-the MLflow `AgentServer`, packaged and deployed through a Databricks asset bundle to Databricks
-Apps or Model Serving. An apx-built agent **is** a GA-compliant agent, so adopting apx-agent
-keeps you on the official path.
+APX compiles the connections between an agent and Databricks, together with its
+behavior and policy. Customers declare data, tools, identity, memory, sessions,
+tracing and deployment requirements instead of wiring each service separately.
+The current compiler
+outputs are MLflow `ResponsesAgent` and AgentKit `DurableAgentServer`; MLflow
+`AgentServer` is also used by the Responses-compatible Apps hosting path.
+Support is bounded by the [compiler capability checks](running/runtime-targets.md#compatibility-checks).
 
-What apx-agent adds is the layer the GA authoring workflow leaves to the developer:
+The [Agent Bricks CLI](https://docs.databricks.com/aws/en/agents/custom-agents/agent-bricks-cli)
+already supplies resource declarations, local development, deployment, managed
+stores, grants and tracing setup. APX uses that tooling to connect the declaration
+to the platform. Its value is removing repeated customer integration work while
+keeping identity, policy and runtime requirements consistent across those connections.
 
-| The GA workflow leaves to the developer | apx-agent provides |
-|---|---|
-| Retrieval / grounding (implement via MCP or custom tools) | open-format grounding auto-generated from Unity Catalog — the agent knows its tables and columns |
-| Built-in UC data tools (connect via MCP / custom endpoints) | `sql_tool`, `genie_tool`, `uc_function_tool`, `vector_search_tool` — built-in and governed |
-| End-user identity passthrough (manual `get_user_workspace_client()`) | identity passthrough wired declaratively; tools run as the asking user, and metadata writes run under their grants |
-| Memory / state backends (not configured for you) | Lakebase / UC managed semantic memory and sessions, declared |
-| Multi-agent orchestration (structural primitives, no cross-app runtime or governed-per-hop story) | `SequentialAgent` / `ParallelAgent` / `RouterAgent` / `HandoffAgent` locally, **plus `sub_agents=[url]` + A2A across apps with the caller's identity passed through per hop for tool calls** (callee LLM calls use the callee's service principal) — shipped and demonstrated (`data-triage-agent` over A2A, `customer_triage` handoffs) |
-| Authoring (write a `ResponsesAgent`, wrap your framework) | declare a `[tool.apx.agent]` block or a Python object; apx-agent compiles it and normalizes the LLM, memory, and trace formats |
+| Responsibility | APX contribution | Native responsibility |
+|---|---|---|
+| Databricks integration | Resolve declared data, tools, identity, state and tracing into consistent bindings | Supply Unity Catalog, Genie, Vector Search, managed stores and MLflow services |
+| Agent behavior | Compile declared composition, tools and data grounding | Execute the compiled graph and serve invocations |
+| Policy | Attach guards, approval gates and declared constraints to execution | Supply runtime primitives and enforce platform permissions |
+| Identity | Derive user/service requirements and scopes from tool dependencies; reject conflicts | Authenticate callers and enforce access |
+| Target compatibility | Reject requirements a target cannot preserve | Provide the actual runtime capabilities |
+| Managed resources | Compile bindings from the agent declaration | Create or reuse stores, configure grants, provision tracing and deploy |
 
-In short: apx-agent is a batteries-included, governed, data-grounded toolkit over the same
-primitives the GA framework exposes — the way an opinionated framework sits over a lower-level
-one. Use the raw framework when you want maximum control over a custom `ResponsesAgent`; use
-apx-agent when you want a governed, UC-grounded data agent without wiring the grounding,
-data-plane tools, identity passthrough, and memory yourself.
+Use APX when those declarations remove repeated Databricks integration, behavior or policy wiring, or when
+you need a supported migration between serving contracts. For a straightforward
+agent whose needs are already met by a native template, use Agent Bricks directly.
+APX does not make unsupported runtime capabilities portable, grant users data
+permissions, or supply scale-to-zero independently of the hosting platform.
 
 ## A governed fleet, not just one agent
 
@@ -101,6 +106,9 @@ decision matrix and [multi-agent/a2a.md](multi-agent/a2a.md) for the discovery c
 app-to-app auth.
 
 ## By hand vs. declared: a worked comparison
+
+This is a historical raw-SDK comparison. Its line counts do not measure savings
+against current Agent Bricks templates, which already supply substantial wiring.
 
 Here is the same agent — a support analyst grounded in a Vector Search index with two tools
 (KB search + account lookup) — written two ways. The hand-written version is a typical

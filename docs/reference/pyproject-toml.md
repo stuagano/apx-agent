@@ -76,14 +76,14 @@ database       = "agentdb"
 embedding_model = "databricks-bge-large-en"
 embedding_dim  = 1024
 
-# Beta: UC managed memory store, no extra infra (subject to preview availability)
+# Beta: workspace managed memory via AgentKit (requires apx-agent[agentbricks])
 [tool.apx.agent.memory]
 type       = "managed"
-store_name = "main.agents.apx_memory"
+store_name = "agent-memory"
 ```
 
-Memory is scoped per calling user (OBO principal). User A's memories are
-invisible to User B. Requests without a principal return `NO_PRINCIPAL`
+Memory tools scope operations to the trusted calling user. Managed-memory actor
+IDs partition data; store permissions are the access-control boundary. Requests without a principal return `NO_PRINCIPAL`
 without writing.
 
 | Key | Required | Description |
@@ -94,7 +94,7 @@ without writing.
 | `database` | lakebase | Postgres database name |
 | `host` | lakebase | Lakebase endpoint DNS; supports `$ENV_VAR` |
 | `table_name` | lakebase | UC table path (`catalog.schema.table`) |
-| `store_name` | managed | UC memory store (`catalog.schema.name`) |
+| `store_name` | managed | Workspace memory store display name |
 | `auto_create` | no | Create table on first use (default `true`) |
 | `namespace_default` | no | Default namespace (default `"default"`) |
 | `tool_prefix` | no | Prefix for tool names (e.g. `"mem_"`) |

@@ -86,7 +86,7 @@ A one-word tier controlling both facts memory and session continuity:
 | `"off"` | **Default.** Stateless — no memory tools wired | None |
 | `"inmemory"` | Remembers within a single process run | None |
 | `"persistent"` | Survives restarts via Lakebase (pgvector) | Lakebase instance |
-| `"managed"` | Survives restarts via UC managed memory (long-term memory only) | UC catalog |
+| `"managed"` | Survives restarts via AgentKit managed memory (long-term memory only) | Workspace memory store |
 | `"lakebase"` (typed literally) | Raises — see below | — |
 
 `"off"` is the default. Uncomment `memory="persistent"` to opt in — it

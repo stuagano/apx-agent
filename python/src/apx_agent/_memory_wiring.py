@@ -98,7 +98,7 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
         if not cfg.store_name:
             raise ValueError(
                 "[tool.apx.agent.memory] type='managed' requires store_name "
-                "(e.g. 'catalog.schema.name')."
+                "(a workspace memory store display name, e.g. 'agent-memory')."
             )
         from ._memory_managed import ManagedMemoryStore  # noqa: PLC0415
         from ._memory_tools import current_principal  # noqa: PLC0415
@@ -109,7 +109,7 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
         # own (dep-injected) args, so they don't use this resolver.
         default_principal = _resolve_default_principal(ws)
         return ManagedMemoryStore(
-            api=ws.api_client,
+            ws=ws,
             store_name=cfg.store_name,
             scope_resolver=lambda: current_principal() or default_principal,
         )
@@ -245,7 +245,7 @@ def attach_declared_memory(
                 "[tool.apx.agent.memory] build failed — skipping memory tools: %s",
                 exc,
             )
-        # Managed memory has no runtime auto-create, so probe that the UC store
+        # Managed memory has no runtime auto-create, so probe that the workspace store
         # actually exists/is reachable at boot. A missing or ungranted store
         # drops to degraded (loud /readyz) instead of silently no-op'ing every
         # recall/remember at request time.

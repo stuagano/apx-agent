@@ -154,7 +154,7 @@ Memory access patterns
 └─────────────────────────────────────────────┘
 ```
 
-Same backing stores as sessions (Lakebase pgvector, or UC managed memory), different access pattern: `principal_id` + `namespace` scoping, vector retrieval by query.
+Long-term memory uses Lakebase pgvector or AgentKit managed memory, with `principal_id` + `namespace` scoping. Lakebase offers vector retrieval; managed memory uses BM25 full-text retrieval.
 
 ```python
 from apx_agent import LakebaseMemoryStore, make_memory_tools, assemble_memory_context
@@ -228,12 +228,26 @@ def build_instructions(user_id: str, query: str) -> str:
 |-------|----------|
 | `InMemoryMemoryStore` | Tests, dev |
 | `LakebaseMemoryStore` | pgvector, low-latency chat-style recall |
-| `ManagedMemoryStore` | UC-managed memory store (Beta; preview availability and privileges required) |
+| `ManagedMemoryStore` | Workspace-scoped AgentKit memory store (Beta; store access required) |
 
-`ManagedMemoryStore` is a Beta Databricks capability, not a fully isolated per-user database.
-Memory scopes are partitioning/isolation keys, not access-control boundaries. Derive the
-principal and scope from trusted caller identity, reject missing identity for user-scoped memory,
-and review the app service principal's UC memory-store privileges separately from the caller's.
+[Managed memory](https://docs.databricks.com/aws/en/agents/agent-memory/managed-memory)
+uses the AgentKit SDK and Databricks-managed Lakebase storage. Declare
+`memory: {type: managed, store_name: agent-memory}` and install
+`apx-agent[agentbricks]`. Provision it explicitly with
+`apx-agent memory provision --store agent-memory --profile <profile>`, then grant
+the serving principal store access. Local execution can bind the same remote store.
+
+The store name is a workspace display name, not a UC three-part name. Legacy
+names are rejected; historical entries require an explicit export/import with a
+reviewed scope-to-actor mapping. Direct Python construction takes
+`ManagedMemoryStore(ws=workspace_client, store_name="agent-memory", scope_resolver=...)`.
+
+APX derives `actor_id` from trusted caller identity and checks entry ownership for
+ID-based reads and mutations. Actor IDs partition data but are not access-control
+boundaries: any principal with store access can reach every actor. Use separate
+stores for strict isolation. Retrieval is BM25, capped at 100 results; tags,
+importance and metadata are not persisted or filtered. Managed sessions are a
+separate declaration; see the [runtime guide](runtime-targets.md).
 
 ### Memory consolidation
 
@@ -290,5 +304,5 @@ A worked example lives in [`python/examples/memory_demo/`](../python/examples/me
 | Cross-session facts (user preferences, past decisions) | MemoryStore — `make_memory_tools` or `assemble_memory_context` |
 | Few-shot examples for a specific agent | `ExampleStore` — seed with `store.add`/`add_batch` (or `examples save`), recall via `make_example_tools` |
 | Fast dev/test, single process | `InMemoryConversationStore` / `InMemoryMemoryStore` |
-| Durable, Unity Catalog governed, no extra infra | `ManagedMemoryStore` (memory only — no managed session store) |
+| Managed long-term storage and full-text retrieval | `ManagedMemoryStore`; managed Session Store is declared separately |
 | Low-latency chat (high turns/sec), full session+memory parity | `LakebaseConversationStore` / `LakebaseMemoryStore` |

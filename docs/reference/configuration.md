@@ -396,7 +396,7 @@ type = "inmemory"
 | `embedding_model` | `str` | absent | Databricks serving-endpoint name for embeddings |
 | `embedding_dim` | `int` | absent | Embedding dimensionality (required for lakebase) |
 | `table_name` | `str` | absent | Plain table name (lakebase) |
-| `store_name` | `str` | absent | UC memory store `catalog.schema.name` (managed) |
+| `store_name` | `str` | absent | Workspace memory store display name (managed; AgentKit API) |
 | `database` | `str` | absent | Postgres database name |
 | `host` | `str` | absent | Lakebase endpoint DNS; supports `$ENV_VAR` |
 | `auto_create` | `bool` | `true` | Create table on first use |
