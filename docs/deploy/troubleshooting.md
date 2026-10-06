@@ -173,15 +173,25 @@ apx-agent agents deploy --target apps --dry-run
 
 If you need to swap the model on a deployed agent without re-logging, use `apx-agent agents hot-swap` — see `python/src/apx_agent/cli.py` for the command.
 
-### Apps mode vs Mosaic AI mode — which one am I deploying?
+### Apps vs Model Serving — which one am I deploying?
 
-`apx-agent agents deploy` chains `databricks.agents.deploy(...)` and produces a **Mosaic AI Agents serving endpoint**. That's the right path when the agent is going to be:
+`apx-agent agents deploy --target apps --profile <profile>` deploys an App.
+New native projects declare `target = "durable_agent_server"` in
+`[tool.apx.agent]`; APX compiles that declaration and delegates rollout to Agent
+Bricks. The normal native flow does not require an authored Bundle. Existing
+Bundle projects retain their build and configuration; native durable projects
+without a named space still delegate rollout to Agent Bricks.
 
-- Called via `/invocations` from another service.
-- Evaluated by `mlflow.evaluate` against a UC eval table.
-- Tagged + tracked in `apx-agent agents list` / topology / governance-monitoring.
+`apx-agent agents deploy --target model-serving` logs an MLflow model and calls
+`databricks.agents.deploy(...)` to create a serving endpoint. Use this destination
+when you need Model Serving packaging and deployment.
 
-It is **not** the path when the agent is the backend of a Databricks App (FastAPI on Apps compute). For that path you don't run `apx-agent agents deploy` at all — you run the agent inside a FastAPI app and deploy *that* with `databricks apps deploy`. The two surfaces are independent: the same agent can be served via both, but you only run `apx-agent agents deploy` for the Mosaic AI side.
+The command's `--target` selects the **deployment destination**. The declaration's
+`[tool.apx.agent].target` selects the **runtime contract**. Run
+`apx-agent agents deploy --dry-run` to inspect the detected destination and plan.
+MLflow tracing and evaluation also apply to Apps; they do not require deploying a
+serving endpoint. Native Apps `/readyz` verifies durable runtime initialization;
+use a separate invocation to prove model and tool execution.
 
 ## 3. Build queue and provisioning
 
