@@ -1183,6 +1183,12 @@ def test_native_project_dry_run_and_identity(scaffold: Path, monkeypatch: pytest
     assert "agentbricks deploy" in plan["steps"]["deploy"]
     assert plan["bundle_vars"] == []
     assert cli_mod._resolve_project_app_name(scaffold) == "agent-bricks-direct"
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "runtime: durable_agent_server" in result.stdout
+    assert "deployment: Agent Bricks" in result.stdout
+    assert "environment: dev" in result.stdout
+    assert "bundle" not in result.stdout.lower()
     assert not (scaffold / ".build").exists()
 
 

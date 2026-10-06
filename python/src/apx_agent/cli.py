@@ -6682,16 +6682,14 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--target", "target", default=None,
     type=click.Choice(["model-serving", "apps"]),
-    help="Deployment target. Auto-detected from the project layout when "
-         "omitted: apps if agent_server/start_server.py exists; model-serving "
-         "if app.py exists without databricks.yml; apps otherwise (the "
-         "catch-all default). 'model-serving' runs the canonical log_agent + "
-         "databricks.agents.deploy flow. 'apps' runs the Databricks Asset "
-         "Bundle deploy + run flow. The two targets accept different option "
-         "sets — see --help for details.",
+    help="Deployment destination, auto-detected from the project when omitted. "
+         "Apps uses Agent Bricks for native durable projects; existing Bundle "
+         "projects retain their configured deployment flow. Model Serving "
+         "logs an MLflow model and deploys a serving endpoint. Declare the "
+         "agent runtime separately in [tool.apx.agent].target.",
 )
-@click.option("--model", default=None, help="Databricks serving endpoint for "
-              "the LLM. Required when --target model-serving.")
+@click.option("--model", default=None, help="AI Gateway chat model binding. "
+              "Used by --target model-serving; Apps reads the model declaration.")
 @click.option(
     "--name", "registered_model_name", default=None,
     help="UC three-part name to register the model under (catalog.schema.model). "
@@ -6700,17 +6698,18 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 )
 @click.option(
     "--profile", default=None,
-    help="Databricks CLI profile to pass through to `databricks bundle ...` "
-         "and `databricks apps ...`. Only used by --target apps.",
+    help="Databricks workspace profile for Apps deployment. Required for "
+         "native Agent Bricks deployment.",
 )
 @click.option(
     "--bundle-target", default="dev",
-    help="DAB target name to deploy and run under. Only used by --target apps. "
-         "Default: dev.",
+    help="Apps deployment environment: dev or prod for native projects; "
+         "the Bundle target name for existing Bundle projects. Default: dev.",
 )
 @click.option(
     "--no-run", is_flag=True,
-    help="Skip the `databricks bundle run <app>` step. Only used by --target apps.",
+    help="Skip Bundle rollout. Unsupported by Agent Bricks, which deploys "
+         "and starts the native app together.",
 )
 @click.option(
     "--auto-update-yml", is_flag=True, default=False,
@@ -6720,32 +6719,26 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 )
 @click.option(
     "--auto-build-wheel/--no-auto-build-wheel", default=True,
-    help="When [tool.uv.sources].apx-agent in pyproject.toml points at a "
-         "local wheel that doesn't exist (or an editable parent path), "
-         "walk up to find the apx-agent source root, run `uv build --wheel`, "
-         "copy the result into cwd, execute the bundle's artifacts.default.build "
-         "script to populate .build/, and (for editable sources) rewrite "
-         ".build/pyproject.toml to use the wheel path. ON by default. Only "
-         "used by --target apps.",
+    help="Build a local APX wheel when the project needs one and stage it "
+         "for deployment. Native projects stage their declared sources; "
+         "Bundle projects use their build script. ON by default for Apps.",
 )
 @click.option(
     "--auto-experiment/--no-auto-experiment", default=True,
-    help="Auto-resolve an MLflow experiment id for the deploy: if the "
-         "caller didn't pass --var mlflow_experiment_id=, look up "
-         "/Users/<current-user>/<app_name>-<target> and create it if "
-         "missing, then pass it through to bundle deploy + bundle run. "
-         "ON by default. Only used by --target apps.",
+    help="Bind tracing to /Users/<current-user>/<app_name>-<environment>. "
+         "Agent Bricks manages native tracing; existing Bundle projects "
+         "resolve an experiment ID. Named App Spaces use preconfigured "
+         "tracing. ON by default for Apps.",
 )
 @click.option(
     "--readyz-gate/--no-readyz-gate", default=True,
     help="Post-deploy health gate, ON by default for BOTH targets. With "
          "--target apps: after the app reaches RUNNING, GET <app_url>/readyz "
-         "and FAIL the deploy if the agent doesn't report ready (answer + "
-         "trace). With --target model-serving: after databricks.agents.deploy, "
+         "and FAIL the deploy if the runtime doesn't report ready. Native "
+         "readiness checks durable initialization, not model/tool execution. "
+         "With --target model-serving: after databricks.agents.deploy, "
          "poll the serving endpoint to READY and send one smoke invocation, "
-         "FAILING the deploy if the endpoint never answers. A green deploy "
-         "then means the agent works, not just that the container booted / "
-         "the endpoint update was accepted.",
+         "FAILING the deploy if the endpoint never answers.",
 )
 @click.option(
     "--register-uc/--no-register-uc", default=True,
@@ -6767,11 +6760,13 @@ _APPS_ONLY_DEPLOY_FLAGS = (
     "--var", "vars", multiple=True,
     help="Extra `--var key=value` pairs to forward to `databricks bundle "
          "deploy + bundle run`. Repeatable. Use to override resources, "
-         "wire in a vector_search_index, etc.",
+         "wire in a vector_search_index, etc. Unsupported by native projects.",
 )
 @click.option(
     "--env", "env_pairs", multiple=True, metavar="KEY=VALUE",
-    help="Runtime env var for the deployed app. Repeatable. Merged into "
+    help="Runtime env var for the deployed app. Repeatable. Native projects "
+         "pass it to the staged deployment and reject declaration conflicts. "
+         "For Bundle projects, merged into "
          "resources.apps.<app>.config.env in databricks.yml BEFORE the "
          "bundle deploy so the value reaches the running app. The merge "
          "PERSISTS in databricks.yml — commit it to keep it, revert the "
@@ -6787,7 +6782,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
          "valueFrom, so the app resolves the value at runtime — the literal "
          "secret never appears in databricks.yml or the deploy output. Same "
          "persistence and never-clobber semantics as --env. Only used by "
-         "--target apps.",
+         "--target apps with a Bundle; unsupported by Agent Bricks deployment.",
 )
 @click.option(
     "--json-output", is_flag=True, default=False,
@@ -6931,12 +6926,20 @@ def deploy(
     version: int | None,
     assume_yes: bool,
 ) -> None:
-    """Log the agent to MLflow + deploy + UC-tag in one command.
+    """Deploy a declared agent to Databricks Apps or Model Serving.
 
     Pass ``--dry-run`` to print the resolved plan (target, names, experiment,
     step list) and exit without changing anything.
 
-    With ``--target model-serving`` (default) runs the canonical flow:
+    Native Apps projects compile the declaration and delegate deployment to
+    Agent Bricks. Use ``--profile`` to select the workspace. APX checks
+    prerequisites, stages the image inputs, hands off rollout, and checks
+    runtime readiness. No authored Bundle is required for this flow.
+
+    ``--target`` selects the deployment destination; the runtime comes from
+    ``[tool.apx.agent].target``. The destination is auto-detected when omitted.
+
+    With ``--target model-serving`` runs the canonical flow:
 
       1. publish_tools_to_uc(agent)    — register any @tool(uc=...) tools
       2. log_agent(agent, ...)         — log to MLflow + register in UC
@@ -6948,7 +6951,9 @@ def deploy(
     Toggle individual stages with --no-publish-tools, --no-deploy,
     --no-readyz-gate, or --no-set-uc-tags.
 
-    With ``--target apps`` runs the Databricks Asset Bundle deploy flow:
+    Existing Apps Bundle projects retain their build and configuration.
+    Native durable projects without a named space still use Agent Bricks
+    for rollout. Other Bundle projects use this flow:
 
       1. databricks bundle validate    — sanity check the bundle config
       2. databricks bundle deploy      — push the app + sync resources
@@ -7641,19 +7646,26 @@ def _emit_apps_deploy_plan(
     click.echo("# DRY RUN — plan only; nothing validated, written, or deployed")
     click.echo(f"target: apps ({target_reason})")
     click.echo(f"module: {module}")
-    click.echo(f"bundle_target: {bundle_target}")
-    click.echo(f"app_name: {app_name} (bundle key: {bundle_key})")
+    if native_direct:
+        click.echo("runtime: durable_agent_server")
+        click.echo("deployment: Agent Bricks")
+        click.echo(f"environment: {bundle_target}")
+        click.echo(f"app_name: {app_name}")
+    else:
+        click.echo(f"bundle_target: {bundle_target}")
+        click.echo(f"app_name: {app_name} (bundle key: {bundle_key})")
     click.echo(f"uc_name: {resolved_uc or '<none — UC registration would skip>'}")
     click.echo(f"wheel auto-build: {'on' if auto_build_wheel else 'off'}")
     click.echo(f"experiment: {experiment}")
     click.echo(
         "env keys to merge (names only): " + (", ".join(env_keys) or "(none)")
     )
-    click.echo(
-        "secret env keys to merge (names only): "
-        + (", ".join(secret_env_keys) or "(none)")
-    )
-    click.echo("bundle vars: " + (", ".join(plan_vars) or "(none)"))
+    if not native_direct:
+        click.echo(
+            "secret env keys to merge (names only): "
+            + (", ".join(secret_env_keys) or "(none)")
+        )
+        click.echo("bundle vars: " + (", ".join(plan_vars) or "(none)"))
     click.echo("steps:")
     for step, disposition in steps.items():
         click.echo(f"  {step}: {disposition}")
