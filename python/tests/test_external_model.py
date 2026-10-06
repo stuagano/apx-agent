@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import click
 import pytest
 from databricks.sdk.errors import NotFound
 
-from apx_agent import cli as _cli
-import apx_agent._external_model as _em
 
 from apx_agent._external_model import (
     _PROVIDER_REGISTRY,
@@ -65,7 +62,7 @@ def test_gateway_config_governance_on_defaults(tmp_path) -> None:
     pyproject.write_text(
         "[tool.apx.agent]\n"
         'name = "x"\n'
-        'model = "bedrock:anthropic.claude-3-5-sonnet"\n'
+        'model = "main.ai.bedrock_chat"\n'
         "[tool.apx.agent.gateway]\n"
         'credential = "my_cred"\n'
     )
@@ -176,94 +173,3 @@ def test_can_query_resource_emitted() -> None:
     # On-the-wire shape (887805b5): the endpoint id lives in the inner ``name``,
     # not a non-existent ``endpoint_name`` field.
     assert body["name"] == spec.endpoint_name
-
-
-# --- deploy wiring: _provision_external_model_endpoint is invoked on deploy ---
-def test_provision_bare_model_noop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A bare model name never builds a client or reconciles anything."""
-    ws_factory = MagicMock()
-    reconcile = MagicMock()
-    monkeypatch.setattr(_cli, "_make_ws_for_scaffold", ws_factory)
-    monkeypatch.setattr(_em, "reconcile_external_model_endpoint", reconcile)
-    _cli._provision_external_model_endpoint(
-        model="databricks-claude-sonnet-4-6",
-        gateway=None,
-        profile=None,
-        log=lambda _m: None,
-    )
-    ws_factory.assert_not_called()
-    reconcile.assert_not_called()
-
-
-def test_provision_bedrock_calls_reconcile(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A bedrock: model builds the payload + author client and reconciles once."""
-    ws = MagicMock()
-    reconcile = MagicMock()
-    monkeypatch.setattr(_cli, "_make_ws_for_scaffold", lambda _p: ws)
-    monkeypatch.setattr(_em, "reconcile_external_model_endpoint", reconcile)
-    _cli._provision_external_model_endpoint(
-        model="bedrock:anthropic.claude-3-5-sonnet",
-        gateway=GatewayConfig(credential="my_cred"),
-        profile=None,
-        log=lambda _m: None,
-    )
-    reconcile.assert_called_once()
-    called_ws, payload = reconcile.call_args[0]
-    assert called_ws is ws
-    entity = payload["config"]["served_entities"][0]["external_model"]
-    assert entity["provider"] == "amazon-bedrock"
-
-
-def test_provision_missing_credential_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No credential → ClickException before any client build or reconcile."""
-    ws_factory = MagicMock()
-    reconcile = MagicMock()
-    monkeypatch.setattr(_cli, "_make_ws_for_scaffold", ws_factory)
-    monkeypatch.setattr(_em, "reconcile_external_model_endpoint", reconcile)
-    with pytest.raises(click.ClickException, match="credential"):
-        _cli._provision_external_model_endpoint(
-            model="bedrock:m",
-            gateway=GatewayConfig(),
-            profile=None,
-            log=lambda _m: None,
-        )
-    ws_factory.assert_not_called()
-    reconcile.assert_not_called()
-
-
-def test_provision_reconcile_error_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A failing reconcile aborts the deploy fail-closed."""
-    monkeypatch.setattr(_cli, "_make_ws_for_scaffold", lambda _p: MagicMock())
-    monkeypatch.setattr(
-        _em,
-        "reconcile_external_model_endpoint",
-        MagicMock(side_effect=RuntimeError("boom")),
-    )
-    with pytest.raises(click.ClickException, match="fail-closed"):
-        _cli._provision_external_model_endpoint(
-            model="bedrock:m",
-            gateway=GatewayConfig(credential="c"),
-            profile=None,
-            log=lambda _m: None,
-        )
-
-
-def test_provision_no_author_client_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No author client → ClickException, no reconcile attempted."""
-    reconcile = MagicMock()
-    monkeypatch.setattr(_cli, "_make_ws_for_scaffold", lambda _p: None)
-    monkeypatch.setattr(_em, "reconcile_external_model_endpoint", reconcile)
-    with pytest.raises(click.ClickException, match="author client"):
-        _cli._provision_external_model_endpoint(
-            model="bedrock:m",
-            gateway=GatewayConfig(credential="c"),
-            profile=None,
-            log=lambda _m: None,
-        )
-    reconcile.assert_not_called()

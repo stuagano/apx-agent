@@ -52,6 +52,23 @@ def test_get_llm_rejects_serving_transport_opt_out():
         get_llm("databricks-claude-sonnet-4-6", use_ai_gateway=False)
 
 
+@pytest.mark.parametrize("model", ["bedrock:anthropic.claude", "quantum:model", " model "])
+def test_chat_model_rejects_unsupported_bindings(model):
+    from apx_agent import AgentConfig
+
+    for build in (lambda: AgentConfig(name="test", model=model), lambda: get_llm(model)):
+        with pytest.raises(ValueError, match="Set model to an existing AI Gateway model service"):
+            build()
+
+
+@pytest.mark.parametrize("model", ["databricks-claude-sonnet-4-6", "main.ai.customer_chat"])
+def test_gateway_model_binding_is_preserved(model):
+    from apx_agent import AgentConfig
+
+    assert AgentConfig(name="test", model=model).model == model
+    assert get_llm(model).model == model
+
+
 def test_gpt_5_5_pro_routes_to_reasoning_subclass():
     """All databricks-gpt-5* endpoints route to reasoning, including 5-5-pro.
 
