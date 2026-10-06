@@ -85,6 +85,21 @@ describe.each([false, true])('Gateway runner (stream=%s)', (stream) => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('private backend detail', { status })));
     await expect(run(stream)).rejects.toThrow(`AI Gateway ${status}: check service credentials and access to model service`);
   });
+
+  it.each([401, 503])('preserves M2M HTTP %s without exposing the response body', async (status) => {
+    vi.stubEnv('DATABRICKS_TOKEN', undefined);
+    vi.stubEnv('DATABRICKS_CLIENT_ID', 'test-client');
+    vi.stubEnv('DATABRICKS_CLIENT_SECRET', 'test-client-secret');
+    const fetch = vi.fn(async (url: string) => {
+      expect(url).toBe('https://workspace.example.com/oidc/v1/token');
+      return new Response('private authentication detail', { status });
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(run(stream)).rejects.toThrow(new Error(
+      `AI Gateway M2M token exchange failed (HTTP ${status}); check workspace host, connectivity, and service credentials.`,
+    ));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 it('reuses M2M credentials for chat without inheriting caller OBO', async () => {

@@ -75,11 +75,16 @@ interface ChatResponse {
  * operations (UC, SQL) where the caller's identity matters.
  */
 async function resolveToken(): Promise<string> {
+  if (!process.env.DATABRICKS_TOKEN && !(process.env.DATABRICKS_CLIENT_ID && process.env.DATABRICKS_CLIENT_SECRET)) {
+    throw new Error('AI Gateway chat requires service credentials: configure DATABRICKS_TOKEN or DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET for the workspace. Caller OBO tokens are reserved for tools.');
+  }
   try {
     // Omitting headers alone still inherits OBO through AsyncLocalStorage.
     return await runWithContext({ oboHeaders: {} }, () => resolveTokenFull());
-  } catch {
-    throw new Error('AI Gateway chat requires service credentials: configure DATABRICKS_TOKEN or DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET for the workspace. Caller OBO tokens are reserved for tools.');
+  } catch (error) {
+    // Preserve the resolver's HTTP status, never its potentially sensitive body.
+    const status = error instanceof Error ? /^M2M token exchange failed \((\d{3})\)/.exec(error.message)?.[1] : undefined;
+    throw new Error(`AI Gateway M2M token exchange failed${status ? ` (HTTP ${status})` : ''}; check workspace host, connectivity, and service credentials.`);
   }
 }
 
