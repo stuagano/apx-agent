@@ -148,19 +148,27 @@ databricks --profile prod schemas get-permissions main.agents \
 
 **Symptom.** Deploy succeeds, first chat call returns `RESOURCE_DOES_NOT_EXIST` or the model name is rejected.
 
-**Diagnosis.** The agent chat model is called through **Unity Catalog AI Gateway** (`{host}/ai-gateway/mlflow/v1`), not the Model Serving query API. `get_llm` sends the `--model` string unchanged. `databricks-claude-sonnet-4-6` is a valid foundation-model name on that path. `system.ai.claude-sonnet-4-6` is a UC **model service** name (`catalog.schema.id`), not a UC function — it is also a valid chat-model string when that service exists. Do not debug a chat 404 with `serving-endpoints get`; that looks up a different API. Serving endpoints still matter for explicit endpoint tools, embeddings, and sub-agent endpoints. Provider-prefixed chat declarations such as `bedrock:...` are rejected; configure the provider in AI Gateway and declare its model-service name instead. See [the migration guide](../reference/bedrock-via-ai-gateway.md).
+**Diagnosis.** The agent chat model is called through **Unity Catalog AI Gateway** (`{host}/ai-gateway/mlflow/v1`). `get_llm` sends the declared model string unchanged. `system.ai.claude-sonnet-4-6` is a Gateway **model service** name (`catalog.schema.name`). `databricks-claude-sonnet-4-6` names a Model Serving endpoint; finding that endpoint does not establish that the same string resolves through Gateway. Confirm the model service exists and that the caller can access it. Serving endpoints still matter for explicit endpoint tools, embeddings, and sub-agent endpoints. Provider-prefixed chat declarations such as `bedrock:...` are rejected; configure the provider in AI Gateway and declare its model-service name instead. See [the migration guide](../reference/bedrock-via-ai-gateway.md).
 
 **Fix.**
 
 ```bash
-# For a UC model-service name (catalog.schema.id), confirm it exists:
-databricks api get \
-  /api/2.1/unity-catalog/model-services/system.ai.claude-sonnet-4-6
+# Use the workspace profile selected for this project:
+databricks ai-gateway get-model-service \
+  model-services/system.ai.claude-sonnet-4-6 --profile <profile>
+```
 
-# Foundation-model names (databricks-*) are sent as-is. Use that exact string.
-apx-agent agents deploy --module agent:agent \
-  --model databricks-claude-sonnet-4-6 \
-  --name main.agents.my_agent
+For an Apps project, set the model in `pyproject.toml`:
+
+```toml
+[tool.apx.agent]
+model = "system.ai.claude-sonnet-4-6"
+```
+
+Then validate the deployment plan locally:
+
+```bash
+apx-agent agents deploy --target apps --dry-run
 ```
 
 If you need to swap the model on a deployed agent without re-logging, use `apx-agent agents hot-swap` — see `python/src/apx_agent/cli.py` for the command.

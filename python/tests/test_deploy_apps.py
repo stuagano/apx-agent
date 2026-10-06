@@ -972,8 +972,9 @@ def _stub_compile_responses(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize("target", ["responses_agent", "durable_agent_server"])
+@pytest.mark.parametrize("dry_run", [False, True])
 def test_provider_chat_model_fails_before_deploy_side_effects(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch, target: str,
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, target: str, dry_run: bool,
 ) -> None:
     from apx_agent import cli as cli_mod
 
@@ -988,7 +989,10 @@ def test_provider_chat_model_fails_before_deploy_side_effects(
     monkeypatch.setattr(cli_mod, "_make_scaffold_workspace_client", workspace)
     monkeypatch.setattr(cli_mod, "_make_ws_for_scaffold", workspace)
     monkeypatch.setattr(cli_mod, "_run_databricks_cmd", command)
-    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--profile", "chosen"])
+    args = ["agents", "deploy", "--target", "apps", "--profile", "chosen"]
+    if dry_run:
+        args.append("--dry-run")
+    result = CliRunner().invoke(main, args)
     assert result.exit_code != 0
     assert "Set model to an existing AI Gateway model service" in result.output
     workspace.assert_not_called()

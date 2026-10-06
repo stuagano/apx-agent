@@ -7540,7 +7540,10 @@ def _emit_apps_deploy_plan(
     """
     cwd = Path.cwd()
     from ._inspection import _load_agent_config
-    config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    try:
+        config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     native_direct = (
         config is not None and config.target == "durable_agent_server"
         and (config.deploy is None or config.deploy.space is None)
