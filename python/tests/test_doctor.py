@@ -5,8 +5,139 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import apx_agent._doctor as doctor
 from apx_agent._doctor import Check, Status, run_checks
+
+
+def test_agent_prerequisites_read_real_sdk_responses_only(monkeypatch):
+    from apx_agent import AgentConfig
+    from databricks.sdk.service.apps import Space
+
+    config = AgentConfig(name="native", target="durable_agent_server",
+                         memory={"type": "managed", "store_name": "agent-memory"},
+                         session={"type": "managed", "store_name": "agent-sessions"},
+                         deploy={"space": "agent-space"})
+    ws = MagicMock()
+    ws.apps.get_space.return_value = Space(name="agent-space")
+    calls = []
+
+    def read(method, path, **kwargs):
+        calls.append((method, path))
+        assert method == "GET"
+        return {"name": path.removeprefix("/api/2.0/agents/"), "display_name": path.rsplit("/", 1)[-1]}
+
+    ws.api_client.do.side_effect = read
+    checks = doctor.check_agent_prerequisites(config, online=True, ws=ws)
+    assert all(check.status is Status.OK for check in checks)
+    assert calls == [("GET", "/api/2.0/agents/memory-stores/agent-memory"),
+                     ("GET", "/api/2.0/agents/session-stores/agent-sessions")]
+    ws.apps.get_space.assert_called_once_with("agent-space")
+    assert all("write access is not proven" in c.detail for c in checks[1:])
+    ws.reset_mock()
+    offline = doctor.check_agent_prerequisites(config, online=False, ws=ws)
+    assert [c.status for c in offline] == [Status.OK, Status.SKIP, Status.SKIP, Status.SKIP]
+    ws.api_client.do.assert_not_called()
+    ws.apps.get_space.assert_not_called()
+
+
+@pytest.mark.parametrize("code,detail", [
+    ("FEATURE_DISABLED", "disabled or unavailable"),
+    ("NOT_IMPLEMENTED", "disabled or unavailable"),
+    ("PERMISSION_DENIED", "Access denied"),
+    ("RESOURCE_DOES_NOT_EXIST", "not found"),
+    ("UNAVAILABLE", "probe failed"),
+])
+def test_agent_prerequisites_classify_failures_without_exposing_errors(code, detail):
+    from apx_agent import AgentConfig
+    from databricks.sdk.errors import DatabricksError
+
+    ws = MagicMock()
+    ws.api_client.do.side_effect = DatabricksError("sensitive-response-must-not-leak", error_code=code)
+    config = AgentConfig(name="agent", memory={"type": "managed", "store_name": "agent-memory"})
+    checks = doctor.check_agent_prerequisites(config, online=True, ws=ws)
+    assert checks[-1].status is Status.FAIL
+    assert detail in checks[-1].detail
+    assert "sensitive-response" not in repr(checks)
+
+
+def test_agent_prerequisites_missing_sdk_fails_offline(monkeypatch):
+    import databricks_agentkit
+    from apx_agent import AgentConfig
+
+    monkeypatch.delattr(databricks_agentkit, "AgentKitClient")
+    checks = doctor.check_agent_prerequisites(AgentConfig(name="native", target="durable_agent_server"), online=False)
+    assert checks[0].status is Status.FAIL
+    assert "apx-agent[agentbricks]" in checks[0].fix
+
+
+def test_offline_prerequisites_show_automatic_store_names():
+    from apx_agent import AgentConfig
+
+    config = AgentConfig(name="orders", target="durable_agent_server",
+                         memory={"type": "managed"}, session={"type": "managed"})
+    checks = doctor.check_agent_prerequisites(config, online=False)
+    assert checks[1].status is Status.SKIP and "apx-orders-memory" in checks[1].detail
+    assert checks[2].status is Status.SKIP and "apx-orders-sessions" in checks[2].detail
+
+
+@pytest.mark.parametrize("code", ["NOT_FOUND", "RESOURCE_DOES_NOT_EXIST", "PERMISSION_DENIED", "UNAUTHENTICATED", "FEATURE_DISABLED", "UNAVAILABLE"])
+def test_native_provisioning_defers_only_missing_stores(code):
+    from apx_agent import AgentConfig
+    from databricks.sdk.errors import DatabricksError
+
+    config = AgentConfig(name="native", target="durable_agent_server",
+                         memory={"type": "managed", "store_name": "new-memory"},
+                         session={"type": "managed", "store_name": "new-sessions"},
+                         deploy={"space": "existing-space"})
+    ws = MagicMock()
+    failure = DatabricksError("sensitive-response-must-not-leak", error_code=code)
+    ws.api_client.do.side_effect = failure
+    ws.apps.get_space.side_effect = failure
+    checks = doctor.check_agent_prerequisites(config, online=True, ws=ws, provision_stores=True)
+    expected = Status.WARN if code in {"NOT_FOUND", "RESOURCE_DOES_NOT_EXIST"} else Status.FAIL
+    assert [check.status for check in checks] == [Status.OK, expected, expected, Status.FAIL]
+    assert "sensitive-response" not in repr(checks)
+    if expected is Status.WARN:
+        assert all("Agent Bricks" in check.fix and "unverified" in check.detail for check in checks[1:3])
+    assert all(call.args[0] == "GET" for call in ws.api_client.do.call_args_list)
+    strict = doctor.check_agent_prerequisites(config, online=True, ws=ws)
+    assert all(check.status is Status.FAIL for check in strict[1:])
+
+
+def test_offline_doctor_includes_unverified_agent_features(tmp_path, monkeypatch):
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+
+    generate_project(AgentConfig(name="native", target="durable_agent_server",
+                                memory={"type": "managed", "store_name": "agent-memory"}), tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(doctor, "check_databricks_auth", lambda: Check("Databricks auth", Status.OK, "test"))
+    client = MagicMock(side_effect=AssertionError("offline doctor must not make a workspace client"))
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", client)
+    checks = {c.name: c for _, group in doctor.run_checks(tmp_path, online=False) for c in group}
+    assert checks["Managed memory"].status is Status.SKIP
+    assert "unverified" in checks["Managed memory"].detail
+    assert checks["Agent image dependencies"].status is Status.WARN
+    client.assert_not_called()
+
+
+@pytest.mark.parametrize("dependency,version,expected", [
+    ("apx-agent[langgraph]", "0.4.0", Status.FAIL),
+    ("apx-agent[langgraph,agentbricks]", "0.3.0", Status.FAIL),
+    ("apx-agent[langgraph,agentbricks]", "0.4.0", Status.OK),
+    ("apx-agent[langgraph,agentbricks]", None, Status.WARN),
+])
+def test_agent_image_checks_declaration_and_lock(tmp_path, dependency, version, expected):
+    from apx_agent import AgentConfig
+
+    config = AgentConfig(name="native", target="durable_agent_server")
+    (tmp_path / "pyproject.toml").write_text(f'[project]\ndependencies = ["{dependency}"]\n')
+    if version is not None:
+        (tmp_path / "uv.lock").write_text(f'[[package]]\nname = "databricks-agentbricks"\nversion = "{version}"\n')
+    result = doctor.check_agent_image(tmp_path, config)
+    assert result.status is expected
 
 
 def test_check_is_frozen_dataclass():
@@ -281,6 +412,23 @@ def test_databricks_yml_missing_in_project(tmp_path: Path):
 def test_databricks_yml_skip_outside_project(tmp_path: Path):
     c = doctor.check_databricks_yml(tmp_path)
     assert c.status is doctor.Status.SKIP
+
+
+def test_native_project_doctor_does_not_require_a_bundle(tmp_path: Path, monkeypatch):
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+
+    generate_project(AgentConfig(name="direct", target="durable_agent_server"), tmp_path)
+    c = doctor.check_databricks_yml(tmp_path)
+    assert c.status is doctor.Status.SKIP
+    assert "native Agent Bricks" in c.detail
+    assert c.fix is None
+    assert not (tmp_path / "agent_server").exists()
+    assert doctor.check_project_layout(tmp_path).status is doctor.Status.OK
+    imports = []
+    monkeypatch.setattr(doctor.importlib, "import_module", lambda name: imports.append(name))
+    assert doctor.check_extras(tmp_path).status is doctor.Status.OK
+    assert imports == ["databricks_agentkit.runtime.app"]
 
 
 def _make_langgraph_project(tmp_path):

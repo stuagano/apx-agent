@@ -2,35 +2,53 @@
 
 Use Databricks Apps as the default destination for new APX agents. Declare the
 agent's tools, instructions, composition and governance, run it locally, then
-deploy the application. APX generates the server entrypoint, dependencies and
-bundle configuration.
+deploy the application. APX supplies the runtime launcher and compiles the
+dependencies and deployment manifests for the selected runtime.
 
-## Custom Agent Bricks apps that scale to zero
+APX connects the agent to the rest of Databricks from one declaration: data,
+tools, caller identity, memory, sessions, tracing and deployment. Its compiler
+turns those requirements, composition and policies into native bindings and
+executable behavior, checking whether the selected runtime can preserve them.
+Databricks supplies the runtime, authorization services and managed infrastructure.
+Agent Bricks owns native store provisioning, grants and deployment; generated
+manifests are compiler output, not another configuration customers must maintain.
 
-**Run your custom agent when it is needed; let its app compute scale to zero
-when idle.** APX compiles your agent declaration to `DurableAgentServer` and
-deploys it as a custom Agent Bricks app into an App Space on the on-demand
-runtime. This is the scale-to-zero deployment path described below.
+If a native Agent Bricks template already expresses the agent you need, use it
+directly. APX adds value when declarations replace repeated Databricks integration,
+composition or policy wiring, or when you need to move between supported serving contracts. The
+compiler currently supports `responses_agent` and `durable_agent_server`;
+the compatibility checks below define their limits.
+
+## Deploy custom agents through Agent Bricks
+
+**Declare the agent in APX; let Agent Bricks manage its deployment.** APX
+compiles your declaration to `DurableAgentServer`, emits the native manifests,
+and hands deployment to the Agent Bricks CLI. You do not need to select or
+understand an App Space to use this workflow. Infrastructure placement is a
+Databricks product responsibility, not another APX runtime target.
 
 Keep state outside the app process: the managed Runtime Store persists native
 invocations, the managed Session Store persists conversation checkpoints, and
 managed memory persists facts across conversations. The app can stop without
-discarding that external state. On the next request, the platform starts the
-app again; expect a cold start. Persisting state does not by itself provide
-automatic recovery of an interrupted tool execution.
+discarding that external state. On an on-demand hosting tier, the platform
+starts it again on the next request; expect a cold start. Persisting state does
+not by itself provide automatic recovery of an interrupted tool execution.
 
-Scale-to-zero belongs to the App Space hosting model; selecting a Python server
-class alone does not enable it. Use a workspace with the custom Agent Bricks
-App Space deployment path enabled. APX verifies App Space membership and
-`LIQUID` compute during deployment and omits dedicated-instance scaling and
-keepalive configuration. The standard dedicated Apps deployment remains a
-separate hosting choice.
+Scale-to-zero is a property of the hosting the platform supplies. Neither a
+Python server class nor the presence or absence of a CLI placement option proves
+it. APX leaves instance selection to Agent Bricks unless you explicitly declare
+an instance count, and generated native projects omit keepalive jobs. Deployment
+`--json-output` includes the actual `hosting.space` and `hosting.compute_size`
+returned by Databricks; absent fields are `null`. A successful `/readyz` check
+proves readiness, not an observed idle scale-down and subsequent wake-up.
 
 Databricks describes the on-demand, zero-to-one hosting behavior in
 [Serverless Micro Apps](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building).
-That page's Beta FAQ still restricts its documented creation flow to Genie App
-Builder; the custom Agent Bricks deployment route here requires the corresponding
-workspace support. Scale-to-zero describes app compute, not the billing or
+That page's Beta FAQ describes Genie App Builder's creation flow. The
+[Agent Bricks CLI guide](https://docs.databricks.com/aws/en/agents/custom-agents/agent-bricks-cli)
+defines the custom-agent product interface. Verify the hosting and idle/wake
+behavior of the resulting deployment before claiming scale-to-zero for a
+particular workspace. Scale-to-zero describes app compute, not the billing or
 lifecycle of separately provisioned memory, sessions, model endpoints or tools.
 
 ## Start with an Apps project
@@ -59,7 +77,7 @@ or register an MLflow model.
 
 Apps is the deployment destination. The server determines how requests execute.
 The standard Apps server remains the default. For native durable invocations
-and managed session binding in an App Space, declare
+and managed session binding, declare
 `target: durable_agent_server` as shown below. APX currently requires this explicit
 choice; it does not automatically select a server from requested capabilities.
 
@@ -82,38 +100,166 @@ for service-identity recovery. AgentKit reads this manifest at startup.
 The staged manifest is generated; change the APX agent/tool declarations to
 change it. APX refuses to overwrite an authored manifest there.
 
-The deployment still uses Databricks Bundles: APX reconciles scopes for ordinary
-Apps and checks inherited scopes for App Spaces. Generating the native manifest
-does not grant data permissions or enable request-user recovery.
+Generating the native manifest does not grant the calling user data permissions
+or enable request-user recovery.
 
-## Deploy the durable target into an App Space
+### Deploy through the Agent Bricks CLI
 
-Use this route for a custom Agent Bricks app that can scale to zero. Declare
-remote session and memory stores for state that must survive the app stopping:
+Native agents deploy through the installed `agentbricks` CLI by default.
+Keep using `apx-agent agents deploy --target apps --profile <profile>`. New native
+projects need no customer-authored YAML: edit `agent.py` and `pyproject.toml`.
+There is no generated `agent_server/` directory. APX supplies the launcher as
+part of its installed package, so launcher fixes arrive with APX upgrades.
+APX stages the source and dependencies, compiles authentication and managed store
+declarations into `.build/agent.toml`, and writes the native command and
+environment to `.build/app.yaml`. These are generated deployment artifacts.
+APX then invokes `agentbricks deploy` using the same Python environment and
+explicit profile. This path does not generate, validate, deploy or run a Bundle.
+Agent Bricks owns the runtime store, declared store grants, tracing
+experiment, source upload, and rollout. APX retains prerequisite checks, native
+readiness verification, and the deployment version record.
 
-Put these choices in one agent specification, for example `orders.yaml`:
+An existing `databricks.yml` keeps its compatibility path: APX honors its build
+script and resolves its variables with `databricks bundle validate` before
+handing native rollout to Agent Bricks. It never silently discards a Bundle's
+custom configuration. Bundle-specific canary, hot-swap and destroy commands
+remain Bundle workflows; native projects use the deployment product for lifecycle
+operations. For native model changes, edit the declaration and redeploy.
 
-```yaml
-name: orders
-target: durable_agent_server
-model: system.ai.claude-sonnet-4-6
-deploy:
-  space: your-space
-session:
-  type: managed
-  store_name: orders-sessions
-memory:
-  type: managed
-  store_name: orders-memory
+Generated deployment names use `agent-bricks-<name>` (30 characters
+maximum). Existing unprefixed Apps are never silently renamed: regenerate the
+project or explicitly select a prefixed `--app-name`, which targets a different
+App. Existing managed stores must still pass APX's read-access checks. The CLI
+binds tracing to `/Users/<deploying-user>/<app-name>-<bundle-target>` unless
+`--no-auto-experiment` is selected. CLI-reported store/tracing failures fail APX
+deployment even when the CLI exits zero.
+
+Customers do not need to declare `deploy.space` for this path. The installed CLI
+does not expose a named-space selector; that alone says nothing about the
+platform's internal placement. Existing explicit `deploy.space` declarations
+retain their compatibility path so APX does not silently drop a named governance
+boundary. ResponsesAgent deployments retain their existing path.
+
+The CLI path rejects unsupported configuration before rollout:
+additional Bundle resources, service-resource grants, app-family group grants,
+resource-backed environment references, arbitrary target configuration overrides,
+and `--no-run`. An explicit instance count must be fixed at 1–5; omit it to leave
+compute selection to the product. Declare user scopes on
+tools; do not supply SDK-owned runtime-store or tracing environment overrides.
+These checks prevent a migration from silently dropping an existing contract.
+New native projects also reject Bundle `--var` flags; use the agent declaration
+for model and store settings, and `--env KEY=VALUE` for additional runtime
+environment values. `--env` values are removed from staged `app.yaml` after the
+CLI returns, including on rollout failure. The dev/prod labels select tracing
+and deployment records; use a distinct declared agent name for a distinct App.
+
+### Check prerequisites before building the App
+
+Run `apx-agent doctor` in the generated project with the intended workspace
+profile selected. For durable agents and managed memory, doctor checks the local
+AgentKit APIs, declared image dependencies, and read access to each declared
+managed memory store, session store, and App Space. `doctor --offline` marks
+workspace availability as unverified. An installed SDK alone does not prove that
+the required workspace APIs are available.
+
+Deployment runs the same prerequisite checks before building or provisioning,
+then checks the staged image manifest and lock before uploading. Missing or
+incompatible AgentKit dependencies fail the gate; an absent lock produces a
+warning because the image must resolve its dependencies at build time.
+
+Explicit disabled/unsupported API responses point to workspace preview and
+regional availability. Permission errors, missing resources/API routes, and
+connectivity errors are reported separately. On the Agent Bricks deployment
+path, a missing managed store is a warning: the native CLI creates or reuses the
+declared store and configures its grants. A missing API route can return the same
+error, so APX keeps availability unverified until native provisioning succeeds.
+Permission, authentication, explicit feature-disabled and connectivity errors
+still stop deployment. Other deployment paths require existing stores; a named
+App Space must also exist. Doctor remains read-only and reports missing stores
+as failures for local execution. These checks do not enable previews, create
+stores, or change permissions. The Agent Bricks
+CLI itself [does not require a workspace enablement setting](https://docs.databricks.com/aws/en/agents/custom-agents/agent-bricks-cli).
+Successful resource reads prove access for the checking identity, not runtime
+write permissions. Durable Runtime Store provisioning and readiness remain
+deployment-time checks.
+
+## Deploy a durable agent
+
+Declare remote session and memory stores for state that must survive the app
+stopping. Placement is managed by Agent Bricks:
+
+In a generated native project, keep the agent in `agent.py`:
+
+```python
+from apx_agent import LlmAgent
+
+agent = LlmAgent(name="orders", tools=[])
 ```
+
+Declare its runtime and managed stores in `pyproject.toml`:
+
+```toml
+[tool.apx.agent]
+name = "orders"
+module = "agent:agent"
+target = "durable_agent_server"
+model = "system.ai.claude-sonnet-4-6"
+
+[tool.apx.agent.session]
+type = "managed"
+
+[tool.apx.agent.memory]
+type = "managed"
+```
+
+APX derives `apx-orders-sessions` and `apx-orders-memory` from the declared agent
+name. It resolves these names when loading the configuration, so doctor, local
+execution and native deployment use the same bindings. `apx-agent doctor --offline`
+shows the resolved names without connecting to a workspace. Online doctor and
+deployment prerequisite output also include them.
+
+Set `store_name` explicitly to bind a shared or existing store; an explicit name
+always wins. Names are workspace-scoped, so use distinct agent names such as
+`orders-dev` and `orders-prod` for separate environments in one workspace. The
+existing naming convention lowercases names, replaces non-alphanumeric characters
+other than hyphens with hyphens, and truncates to fit the store-name limit. Use
+explicit store names if two agent names normalize to the same resource name.
+
+When names are omitted, renaming the agent changes its derived bindings; pin the
+old `store_name` values to retain the existing state. Generated projects write
+the resolved names into `pyproject.toml`, making those bindings explicit and
+stable through later project renames. APX never migrates or deletes stores as
+part of name resolution.
 
 ```sh
-apx-agent agents run orders.yaml
-apx-agent agents deploy orders.yaml --target apps --profile your-selected-profile
+apx-agent agents deploy --target apps --profile your-selected-profile
+# Once the declared stores are provisioned, local execution uses the same stores:
+apx-agent agents run
 ```
 
+YAML agent specifications remain an optional authoring input. They compile to
+the same Python project and native deployment artifacts.
+
 Use an APX installation with the `agentbricks` extra for native local execution
-or deployment. The space, Session Store and memory store must already exist, with the required
+or deployment. The resolved Session Store and memory store names need not
+already exist when deploying through Agent Bricks. APX compiles their bindings
+into `agent.toml`; Agent Bricks creates or reuses the stores, provisions the
+Runtime Store and tracing, and reconciles grants. Local execution connects to
+those remote stores, so provision them through deployment before the first local
+run if they do not exist yet.
+
+### Compatibility: an explicitly named App Space
+
+An existing project may declare a particular governance boundary:
+
+```toml
+[tool.apx.agent.deploy]
+space = "your-space"
+```
+
+This is an advanced placement constraint, not a prerequisite for using Agent
+Bricks. APX preserves that explicit requirement through the existing Bundle
+deployment path. The space must already exist, with the required
 access and tracing configured. APX generates the native `space` field and omits
 dedicated-app resources, scopes, scaling and the keepalive job. No manual bundle
 cleanup is needed. The route reads inherited policy and refuses to move an
@@ -185,13 +331,13 @@ requires `LlmAgent`.
 
 Copy your agent specification, retaining the tools, instructions and other
 compatible declarations. Give the new deployment a distinct name, set
-`target: durable_agent_server`, and add `deploy.space` and the managed session
-binding shown in [the App Space example](#deploy-the-durable-target-into-an-app-space).
-Use an existing space and Session Store with the required access. Install the
+`target: durable_agent_server`, and add the managed session
+binding shown in [the durable-agent example](#deploy-a-durable-agent).
+Choose a stable Session Store name, or bind an existing store. Install the
 `agentbricks` extra in the APX environment used to run and deploy it.
 
-Run the copied specification locally, then deploy it with `--target apps` and
-your selected profile. Local execution retains the declared remote session
+Deploy it with `--target apps` and your selected profile to provision new stores.
+With existing stores, you can test locally first. Local execution retains the declared remote session
 binding. Keep the original endpoint available during validation; APX refuses
 to move an existing app between spaces. For Python-authored agents, use the
 [native server API](#python-api-construct-a-native-durable-server) with the
@@ -241,16 +387,25 @@ sessions and consumers have been accounted for.
 
 ## Generated projects
 
-Declare `target: durable_agent_server` in your agent specification. Generation
-selects the native entrypoint and includes `apx-agent[langgraph,agentbricks]` in
-the project dependencies. Omitting `target` preserves the existing Responses-compatible Apps
-entrypoint. Existing Python and AppKit host choices remain available.
+Declare `target: durable_agent_server` in your agent specification. New native
+projects contain `agent.py` and `pyproject.toml`, plus any declared skills or
+custom sources. They include `apx-agent[langgraph,agentbricks]` in their
+dependencies. Local `agents run` and the compiled deployment command use the same
+packaged ASGI factory. Deployment starts it with `python -m apx_agent._serve`;
+the runtime declaration selects DurableAgentServer without `APX_APPS_HOST`.
+Project discovery reads that declaration before legacy filename conventions.
 
-Declare a managed session with `session.type: managed` and `session.store_name`.
+Omitting `target` preserves the existing Responses-compatible Apps entrypoint.
+Existing Bundle and named App Space projects retain their generated launchers;
+Python and AppKit host choices remain available on those compatibility paths.
+
+Declare a managed session with `session.type: managed`; `session.store_name`
+optionally overrides the name derived from `AgentConfig.name`.
 The same declaration is passed to `compile_agent(config=config, service_ws=ws)`
 and inspected by `inspect_target(agent, config=config)`. Local native execution
-keeps that remote store binding. Managed sessions bind an existing store and
-normalize `auto_create` to false; explicit provisioning requests are rejected.
+keeps that remote store binding. At runtime, managed sessions bind the provisioned
+store and normalize `auto_create` to false. Store creation belongs to native
+deployment; requesting creation during agent execution is rejected.
 
 The older `AGENT_SESSION_STORE` environment variable remains compatible with
 hand-authored projects, but cannot disagree with a declared store. Explicit
@@ -409,8 +564,6 @@ name: background-agent
 target: durable_agent_server
 recovery: true
 model: system.ai.claude-sonnet-4-6
-deploy:
-  space: your-space
 session:
   type: managed
   store_name: background-sessions

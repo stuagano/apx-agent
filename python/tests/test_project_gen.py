@@ -81,7 +81,7 @@ def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> Non
 @pytest.mark.parametrize("fields", [
     {"deploy": {"space": "shared"}},
     {"target": "durable_agent_server", "deploy": {"space": "shared", "instances": 2}},
-    {"target": "durable_agent_server", "session": {"type": "managed"}},
+    {"target": "durable_agent_server", "session": {"type": "managed", "store_name": " "}},
     {"target": "durable_agent_server", "session": {"type": "inmemory"}},
     {"session": {"type": "managed", "store_name": "sessions"}},
 ])
@@ -89,6 +89,26 @@ def test_unsupported_target_configuration_fails_before_generation(fields: dict[s
     with pytest.raises(ValueError):
         generate_project(AgentConfig(name="invalid", **fields), tmp_path / "output")
     assert not (tmp_path / "output").exists()
+
+
+def test_automatic_store_names_survive_project_and_native_manifest_roundtrip(tmp_path: Path) -> None:
+    from ctk import Artifact, verify
+    from apx_agent import LlmAgent
+    from apx_agent._apps_authorization import compile_authorization_plan
+    from apx_agent._durable_agent import build_native_manifest
+    from apx_agent._inspection import _load_agent_config
+
+    config = AgentConfig(name="orders", target="durable_agent_server",
+                         memory={"type": "managed"}, session={"type": "managed"})
+    generate_project(config, tmp_path)
+    verify(Artifact(str(tmp_path / "pyproject.toml"), must_contain="apx-orders-sessions"))
+    loaded = _load_agent_config(pyproject_path=tmp_path / "pyproject.toml")
+    assert loaded.memory.store_name == "apx-orders-memory"
+    assert loaded.session.store_name == "apx-orders-sessions"
+    plan = compile_authorization_plan(LlmAgent(name="orders"), model=config.model)
+    manifest = tomllib.loads(build_native_manifest(config=loaded, authorization_plan=plan))
+    assert manifest["memory_store"]["name"] == loaded.memory.store_name
+    assert manifest["session_store"]["name"] == loaded.session.store_name
 
 
 @pytest.fixture()

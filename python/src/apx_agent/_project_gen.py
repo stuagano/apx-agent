@@ -3,12 +3,13 @@
 Given an ``AgentConfig`` and a target directory, ``generate_project`` writes:
 
   target_dir/pyproject.toml             — TOML envelope derived from AgentConfig
-  target_dir/agent_server/__init__.py   — empty package marker
-  target_dir/agent_server/start_server.py — Apps entry-point boilerplate
-  target_dir/databricks.yml             — DAB bundle definition
-  target_dir/app.yml                    — Apps compute config
+  target_dir/agent.py                   — Python agent declaration
+  target_dir/agent_server/              — Bundle compatibility hosts only
+  target_dir/databricks.yml             — Bundle compatibility targets only
+  target_dir/app.yml                    — Bundle compatibility targets only
 
-The generated project is immediately deployable via ``databricks bundle deploy``.
+Native projects compile deployment manifests during ``apx-agent agents deploy``;
+they use APX's packaged launcher and require no generated server package or Bundle.
 The agent always has a single Python definition: when ``config.template`` is set,
 ``render_agent_py`` codegens a top-level ``agent.py`` that constructs the template
 agent in code (ADK-style), and ``module = "agent:agent"`` is always written.
@@ -874,15 +875,23 @@ targets:
     app = bundle["resources"]["apps"][name]
     env = app["config"]["env"]
     next(entry for entry in env if entry["name"] == "APX_APPS_HOST")["value"] = "agentbricks"
+    # Native deployment delegates tracing and rollout to Agent Bricks.
+    for key in ("experiments", "jobs"):
+        bundle["resources"].pop(key, None)
+    app.pop("resources", None)
+    app.pop("user_api_scopes", None)
+    for key in ("workspace_user", "mlflow_experiment_id"):
+        bundle["variables"].pop(key, None)
+    app["config"]["env"] = [entry for entry in env if entry["name"] != "MLFLOW_EXPERIMENT_ID"]
+    env = app["config"]["env"]
+    if config.deploy is None or config.deploy.space is None:
+        app.pop("description", None)
+        deployment_name = name if name.startswith("agent-bricks-") else f"agent-bricks-{name}"
+        app["name"] = deployment_name
+        bundle["targets"]["prod"]["resources"]["apps"][name]["name"] = deployment_name
     if config.deploy is not None and config.deploy.space is not None:
         app["space"] = config.deploy.space
-        for key in ("resources", "user_api_scopes"):
-            app.pop(key, None)
-        for key in ("experiments", "jobs"):
-            bundle["resources"].pop(key, None)
-        for key in ("workspace_user", "mlflow_experiment_id"):
-            bundle["variables"].pop(key, None)
-        app["config"]["env"] = [entry for entry in env if entry["name"] not in {"MLFLOW_EXPERIMENT_ID", "APX_DECLARED_INSTANCES"}]
+        app["config"]["env"] = [entry for entry in env if entry["name"] != "APX_DECLARED_INSTANCES"]
         for key, variable in RUNTIME_STORE_VARIABLES.items():
             bundle["variables"][variable] = {"description": "SDK-owned Runtime Store coordinate, bound by apx-agent deploy", "default": ""}
             app["config"]["env"].append({"name": key, "value": "${var." + variable + "}"})
@@ -948,20 +957,24 @@ def generate_project(
             f"from apx_agent import LlmAgent\n\nagent = LlmAgent(name={config.name!r}, tools=[])\n"
         )
 
-    # agent_server/
-    agent_server_dir = target_dir / "agent_server"
-    agent_server_dir.mkdir(exist_ok=True)
-    (agent_server_dir / "__init__.py").write_text("")
-    (agent_server_dir / "start_server.py").write_text(_START_SERVER_CONTENT)
-    (agent_server_dir / "start_host.py").write_text(_START_HOST_CONTENT)
-    (agent_server_dir / "start_managed.py").write_text(_START_MANAGED_CONTENT)
-    (agent_server_dir / "keepalive.py").write_text(_KEEPALIVE_CONTENT)
-
-    # databricks.yml
-    (target_dir / "databricks.yml").write_text(_build_databricks_yml(config))
-
-    # app.yml
-    (target_dir / "app.yml").write_text(_build_app_yml(config))
+    native = config.target == "durable_agent_server" and (
+        config.deploy is None or config.deploy.space is None
+    )
+    if native:
+        # Validate scaling without generating a Bundle just to discard it.
+        from ._agentbricks_deploy import compile_native_app
+        compile_native_app(config)
+    else:
+        # Existing Bundle/App Space hosts retain their generated entrypoints.
+        agent_server_dir = target_dir / "agent_server"
+        agent_server_dir.mkdir(exist_ok=True)
+        (agent_server_dir / "__init__.py").write_text("")
+        (agent_server_dir / "start_server.py").write_text(_START_SERVER_CONTENT)
+        (agent_server_dir / "start_host.py").write_text(_START_HOST_CONTENT)
+        (agent_server_dir / "start_managed.py").write_text(_START_MANAGED_CONTENT)
+        (agent_server_dir / "keepalive.py").write_text(_KEEPALIVE_CONTENT)
+        (target_dir / "databricks.yml").write_text(_build_databricks_yml(config))
+        (target_dir / "app.yml").write_text(_build_app_yml(config))
 
     # skills/ — copy each declared skill file into the project
     if config.skills:

@@ -1016,6 +1016,211 @@ def _stub_compile_responses(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("failure,hosting", [
+    (None, {}),
+    (None, {"space": "platform-selected", "compute_size": "LIQUID"}),
+    (None, {"compute_size": "MEDIUM"}),
+    ("identity", {}), ("grant", {}), ("readyz", {}),
+])
+@pytest.mark.parametrize("legacy_bundle", [False, True])
+def test_native_deploy_hands_rollout_to_agentbricks(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None, hosting: dict[str, str],
+    legacy_bundle: bool,
+) -> None:
+    from apx_agent import AgentConfig, LlmAgent
+    from apx_agent import cli as cli_mod
+    from apx_agent._project_gen import generate_project, _build_databricks_yml
+    from databricks_agentbricks.agent_project import AgentProject
+
+    config = AgentConfig(name="my-app", target="durable_agent_server", model="declared-model",
+                         memory={"type": "managed"}, session={"type": "managed"})
+    (scaffold / "databricks.yml").unlink()
+    if legacy_bundle:
+        generate_project(config.model_copy(update={"target": "responses_agent"}), scaffold)
+    else:
+        (scaffold / "agent_server" / "__init__.py").unlink()
+        (scaffold / "agent_server").rmdir()
+    generate_project(config, scaffold)
+    if legacy_bundle:
+        (scaffold / "databricks.yml").write_text(_build_databricks_yml(config))
+    else:
+        assert not (scaffold / "databricks.yml").exists()
+        assert not (scaffold / "agent_server").exists()
+        monkeypatch.setattr(cli_mod, "_run_bundle_artifacts", lambda *_: pytest.fail("Native builds must not use Bundle artifacts"))
+        monkeypatch.setattr(cli_mod, "_validate_responses_agent_compiler", lambda: pytest.fail("Native deployment must not require the MLflow server"))
+    payload = json.loads(_ready_payload())
+    payload.update(hosting)
+    calls = _install_subprocess_mock(monkeypatch, get_payload=json.dumps(payload))
+    prior_run = cli_mod._run_databricks_cmd
+
+    def databricks(args, profile=None):
+        assert profile == "chosen"
+        if args[:2] == ["bundle", "validate"]:
+            assert legacy_bundle, "Native projects must not invoke Bundle validation"
+            calls.append(args)
+            assert args[-2:] == ["--output", "json"]
+            doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
+            env = doc["resources"]["apps"]["my-app"]["config"]["env"]
+            next(entry for entry in env if entry["name"] == "APX_MODEL")["value"] = "resolved-model"
+            return _FakeProc(stdout=json.dumps(doc))
+        return prior_run(args, profile=profile)
+
+    monkeypatch.setattr(cli_mod, "_run_databricks_cmd", databricks)
+    monkeypatch.setattr(cli_mod, "_ensure_apx_wheel", lambda cwd: None)
+    monkeypatch.setattr(cli_mod, "_load_finalized_agent", lambda _: LlmAgent(name="native"))
+    ws = MagicMock()
+    ws.apps.get_space.side_effect = AssertionError("Placement belongs to Agent Bricks")
+    from databricks.sdk.errors import NotFound
+    ws.api_client.do.side_effect = NotFound("Declared store does not exist yet")
+    ws.current_user.me.return_value.user_name = "owner@example.com"
+    monkeypatch.setattr(cli_mod, "_make_scaffold_workspace_client", lambda profile: ws)
+    ready = MagicMock(return_value=(True, {"durable": failure != "readyz"}))
+    monkeypatch.setattr(cli_mod, "_check_readyz", ready)
+    monkeypatch.setattr(cli_mod, "_fetch_app_log_tail", lambda *a, **kw: "test failure")
+    monkeypatch.setattr(cli_mod, "_apps_readyz_recovery_hint", lambda *a, **kw: "retry")
+    commands = []
+    original_run = subprocess.run
+
+    def run(command, **kwargs):
+        if "databricks_agentbricks.cli.app" not in command:
+            return original_run(command, **kwargs)
+        commands.append(command)
+        assert command[3:7] == ["--profile", "chosen", "--output", "json"]
+        assert command[7:9] == ["deploy", "agent-bricks-my-app"]
+        assert "--instances" not in command and "--space" not in command
+        source = scaffold / ".build"
+        project = AgentProject.load(source)
+        assert project.memory_store == "apx-my-app-memory"
+        assert project.session_store == "apx-my-app-sessions"
+        assert project.trace_experiment_name == "/Users/owner@example.com/agent-bricks-my-app-dev"
+        runtime = yaml.safe_load((source / "app.yaml").read_text())
+        assert runtime["command"] == ["python", "-m", "agent_server.start_host" if legacy_bundle else "apx_agent._serve"]
+        values = {entry["name"]: entry["value"] for entry in runtime["env"]}
+        assert values["APX_MODEL"] == ("resolved-model" if legacy_bundle else "declared-model")
+        if not legacy_bundle:
+            from ctk import Artifact, verify
+            verify(Artifact(str(source / "agent.py"), must_contain="LlmAgent"))
+            assert values["EPHEMERAL"] == "synthetic-secret"
+            assert (source / "pyproject.toml").is_file()
+            assert "APX_APPS_HOST" not in values
+            assert not (source / "agent_server").exists()
+        return subprocess.CompletedProcess(command, 0, "rollout progress\n" + json.dumps({
+            "deployment": "wrong-app" if failure == "identity" else "agent-bricks-my-app",
+            "trace_experiment_id": "trace-id", "trace_grant": "granted",
+            "store_grant": "granted",
+            "store_grant_error": "synthetic-secret" if failure == "grant" else None,
+        }), "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    args = ["agents", "deploy", "--target", "apps", "--profile", "chosen", "--no-register-uc", "--json-output"]
+    if not legacy_bundle:
+        args.extend(["--env", "EPHEMERAL=synthetic-secret"])
+    result = CliRunner().invoke(main, args)
+    assert len(commands) == 1, result.output
+    assert {call.args[1] for call in ws.api_client.do.call_args_list} == {
+        "/api/2.0/agents/memory-stores/apx-my-app-memory", "/api/2.0/agents/session-stores/apx-my-app-sessions",
+    }
+    assert not any(call[:2] in (["bundle", "deploy"], ["bundle", "run"]) for call in calls)
+    assert "synthetic-secret" not in result.output
+    if not legacy_bundle:
+        assert "synthetic-secret" not in (scaffold / ".build" / "app.yaml").read_text()
+        assert not (scaffold / "databricks.yml").exists()
+    if failure:
+        assert result.exit_code != 0, result.output
+    else:
+        assert result.exit_code == 0, result.output
+        ready.assert_called_once()
+        summary = json.loads(result.stdout)
+        assert summary["deployment_backend"] == "agentbricks"
+        assert summary["hosting"] == {key: hosting.get(key) for key in ("space", "compute_size")}
+        ws.apps.get_space.assert_not_called()
+        assert any(call[:3] == ["apps", "get", "agent-bricks-my-app"] for call in calls)
+
+
+@pytest.mark.parametrize("failure", ["feature", "image"])
+def test_agent_prerequisites_block_deployment_before_upload(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    from apx_agent import AgentConfig, LlmAgent
+    from apx_agent._project_gen import generate_project
+    from databricks.sdk.errors import DatabricksError
+
+    config = AgentConfig(name="my-app", target="durable_agent_server",
+                         memory={"type": "managed", "store_name": "agent-memory"} if failure == "feature" else None)
+    (scaffold / "databricks.yml").unlink()
+    generate_project(config, scaffold)
+    calls = _install_subprocess_mock(monkeypatch)
+    ws = MagicMock()
+    ws.api_client.do.side_effect = DatabricksError("hidden backend detail", error_code="FEATURE_DISABLED")
+    selected = []
+
+    def workspace(profile):
+        selected.append(profile)
+        return ws
+
+    monkeypatch.setattr("apx_agent.cli._make_scaffold_workspace_client", workspace)
+    loaded = MagicMock(return_value=LlmAgent(name="my-app"))
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", loaded)
+    build = MagicMock()
+    monkeypatch.setattr("apx_agent.cli._ensure_apx_wheel", build)
+    args = ["agents", "deploy", "--target", "apps", "--profile", "chosen"]
+    if failure == "image":
+        (scaffold / ".build").mkdir(exist_ok=True)
+        (scaffold / ".build" / "pyproject.toml").write_text('[project]\ndependencies = ["apx-agent"]\n')
+        args.append("--no-auto-build-wheel")
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code != 0
+    assert selected == ["chosen"]
+    build.assert_not_called()
+    assert not any(call[:2] in (["bundle", "deploy"], ["bundle", "run"]) for call in calls)
+    if failure == "feature":
+        loaded.assert_not_called()
+        assert "disabled or unavailable" in result.output
+        assert "hidden backend detail" not in result.output
+    else:
+        assert "Image dependencies" in result.output
+
+
+def test_native_project_dry_run_and_identity(scaffold: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import AgentConfig
+    from apx_agent import cli as cli_mod
+    from apx_agent._project_gen import generate_project
+
+    (scaffold / "databricks.yml").unlink()
+    generate_project(AgentConfig(name="direct", target="durable_agent_server"), scaffold)
+    monkeypatch.setattr(cli_mod, "_run_databricks_cmd", lambda *a, **kw: pytest.fail("Dry run must stay local"))
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--dry-run", "--json-output"])
+    assert result.exit_code == 0, result.output
+    plan = json.loads(result.stdout)
+    assert plan["app_name"] == "agent-bricks-direct"
+    assert "agentbricks deploy" in plan["steps"]["deploy"]
+    assert plan["bundle_vars"] == []
+    assert cli_mod._resolve_project_app_name(scaffold) == "agent-bricks-direct"
+    assert not (scaffold / ".build").exists()
+
+
+@pytest.mark.parametrize("args", [
+    ["--var", "llm_endpoint_name=override"], ["--secret-env", "KEY=scope/key"],
+    ["--env", "AGENT_SESSION_STORE=override"], ["--env", "APX_MODEL=override"],
+    ["--env", "APX_APPS_HOST=python"],
+    ["--no-run"], ["--bundle-target", "custom"],
+])
+def test_native_options_fail_before_workspace_access(scaffold: Path, monkeypatch: pytest.MonkeyPatch, args: list[str]) -> None:
+    from apx_agent import AgentConfig
+    from apx_agent import cli as cli_mod
+    from apx_agent._project_gen import generate_project
+
+    (scaffold / "databricks.yml").unlink()
+    generate_project(AgentConfig(name="direct", target="durable_agent_server"), scaffold)
+    _install_subprocess_mock(monkeypatch)
+    workspace = MagicMock(side_effect=AssertionError("must fail before workspace access"))
+    monkeypatch.setattr(cli_mod, "_make_scaffold_workspace_client", workspace)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--profile", "chosen", *args])
+    assert result.exit_code != 0
+    workspace.assert_not_called()
+    assert not (scaffold / ".build").exists()
+
+
 @pytest.mark.parametrize("wrong_owner", [False, True])
 @pytest.mark.parametrize("generated,memory", [(False, False), (True, False), (True, True)])
 def test_app_space_deploy_binds_sdk_owned_store(
@@ -1062,7 +1267,15 @@ def test_app_space_deploy_binds_sdk_owned_store(
         }
 
     sdk.create_runtime_store.side_effect = create_store
-    constructor = MagicMock(return_value=sdk)
+    from databricks_agentkit._api_client import _AgentBricksApiClient
+
+    probe_ws = MagicMock()
+    probe_ws.apps.get_space.return_value = Space(name="app-space")
+    probe_ws.api_client.do.side_effect = lambda method, path, **kw: {
+        "name": path.removeprefix("/api/2.0/agents/"), "display_name": path.rsplit("/", 1)[-1],
+    }
+    monkeypatch.setattr("apx_agent.cli._make_scaffold_workspace_client", lambda profile: probe_ws)
+    constructor = MagicMock(side_effect=lambda profile=None, **kw: _AgentBricksApiClient(**kw) if kw else sdk)
     monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", constructor)
     args = ["agents", "deploy", "--target", "apps", "--profile", "selected"]
     if not generated:
@@ -1076,7 +1289,7 @@ def test_app_space_deploy_binds_sdk_owned_store(
         native = AgentProject.load(scaffold / ".build")
         assert native.user_auth.required == memory
         assert native.user_auth.additional_api_scopes == (("ai-gateway",) if memory else ())
-    constructor.assert_called_once_with("selected")
+    assert sum(call.args == ("selected",) for call in constructor.call_args_list) == 1
     grant.assert_not_called()
     saved = yaml.safe_load((scaffold / "databricks.yml").read_text())["resources"]["apps"]["my-app"]
     seq = [c[:2] for c in calls]

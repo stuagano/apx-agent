@@ -796,9 +796,13 @@ def test_local_run_uses_declared_native_target(execution: Any, monkeypatch: pyte
     monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
     monkeypatch.setattr("apx_agent.cli._preflight_databricks_auth", lambda: None)
     monkeypatch.setattr("apx_agent.cli._probe_import", lambda _: None)
-    result = CliRunner().invoke(main, ["agents", "run"])
+    result = CliRunner().invoke(main, ["agents", "run", "--reload"])
     assert result.exit_code == 0, result.output
-    assert uvicorn.run.call_args.args[0] == "agent_server.start_managed:app"
+    assert uvicorn.run.call_args.args[0] == "apx_agent._serve:create_app"
+    assert uvicorn.run.call_args.kwargs["factory"] is True
+    assert uvicorn.run.call_args.kwargs["reload"] is True
+    assert uvicorn.run.call_args.kwargs["app_dir"] == str(tmp_path)
+    assert not (tmp_path / "agent_server").exists()
     from apx_agent._inspection import _load_agent_config
 
     assert _load_agent_config(pyproject_path=tmp_path / "pyproject.toml").session.store_name == "remote-sessions"
@@ -812,7 +816,9 @@ def test_generated_host_uses_declaration_without_environment_override(monkeypatc
     from apx_agent import AgentConfig
     from apx_agent._project_gen import generate_project
 
-    generate_project(AgentConfig(name="native", target=target), tmp_path)
+    # Named-space Bundle projects retain the existing generated launchers.
+    generate_project(AgentConfig(name="native", target=target,
+                                deploy={"space": "existing-space"} if target == "durable_agent_server" else None), tmp_path)
     monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
     monkeypatch.delenv("APX_APPS_HOST", raising=False)
     monkeypatch.setenv("DATABRICKS_APP_PORT", "8123")
@@ -830,6 +836,97 @@ def test_generated_host_uses_declaration_without_environment_override(monkeypatc
         namespace["main"]()
     assert result.value.code == 0
     assert commands[0] == ["uvicorn", entrypoint, "--host", "0.0.0.0", "--port", "8123"]
+
+
+def test_packaged_launcher_serves_native_invocations_without_generated_server(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import sys
+    from fastapi.testclient import TestClient
+    from ctk import Artifact, verify
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+    from apx_agent._serve import create_app
+
+    generate_project(AgentConfig(name="proof", target="durable_agent_server", model="test"), tmp_path)
+    verify(Artifact(str(tmp_path / "agent.py"), must_contain="LlmAgent"))
+    assert not (tmp_path / "agent_server").exists()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(agent=execution.agent))
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("AGENT_SESSION_STORE", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setenv("APX_APPS_HOST", "python")
+    monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "unrelated.toml"))
+    app = create_app()
+    with TestClient(app) as client:
+        assert client.get("/readyz").status_code == 200
+        response = client.post("/api/invocations", json={
+            "id": str(uuid.uuid4()), "input": {"messages": [{"role": "user", "content": "record"}]},
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["output"]["messages"][-1]["content"] == "Recorded proof"
+    assert execution.effects == ["proof"]
+
+
+def test_packaged_launcher_preserves_remote_session_binding(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import sys
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+    from apx_agent._serve import create_app
+
+    config = AgentConfig(name="proof", target="durable_agent_server", model="declared-model",
+                         session={"type": "managed", "store_name": "remote-sessions"})
+    generate_project(config, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(agent=execution.agent))
+    monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
+    monkeypatch.setenv("APX_MODEL", "bound-model")
+    monkeypatch.setenv("AGENT_SESSION_STORE", "remote-sessions")
+    compiler = MagicMock(return_value="native-app")
+    monkeypatch.setattr("apx_agent._runtime_targets.compile_agent", compiler)
+    assert create_app() == "native-app"
+    compiler.assert_called_once_with(execution.agent, config=config, model="bound-model",
+                                    service_ws=execution.ws, session_store="remote-sessions")
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_packaged_launcher_rejects_missing_or_other_runtime_before_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, declared: bool) -> None:
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+    from apx_agent._serve import create_app
+
+    if declared:
+        generate_project(AgentConfig(name="other"), tmp_path)
+    monkeypatch.chdir(tmp_path)
+    auth = MagicMock(side_effect=AssertionError("No auth for an incompatible runtime"))
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", auth)
+    with pytest.raises(ValueError, match="native launcher requires"):
+        create_app()
+    auth.assert_not_called()
+
+
+def test_packaged_deployment_launcher_uses_same_factory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from apx_agent._serve import main
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8123")
+    launch = MagicMock()
+    monkeypatch.setattr("uvicorn.run", launch)
+    main()
+    launch.assert_called_once_with("apx_agent._serve:create_app", factory=True,
+                                   host="0.0.0.0", port=8123, app_dir=str(tmp_path))
+
+
+def test_declared_native_project_detection_and_discovery_precede_filenames(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+    from apx_agent.cli import _detect_target, _find_runnable_agents, _preflight_apps
+
+    generate_project(AgentConfig(name="native", target="durable_agent_server"), tmp_path)
+    # A stray legacy-looking file must not select model-serving.
+    (tmp_path / "app.py").write_text("raise AssertionError('unused legacy module')\n")
+    assert _detect_target(tmp_path) == ("apps", "declared durable_agent_server runtime")
+    assert _find_runnable_agents(tmp_path) == [(tmp_path.name, tmp_path)]
+    _preflight_apps(tmp_path, native=True)
 
 
 @pytest.mark.parametrize("override", [
