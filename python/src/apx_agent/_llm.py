@@ -121,6 +121,19 @@ def _make_gpt_reasoning_class() -> type:
 GPT_REASONING_PREFIXES: tuple[str, ...] = ("databricks-gpt-5",)
 
 
+def validate_chat_model(model: str) -> str:
+    """Validate the Gateway binding without rewriting the authored name."""
+    if not model or model != model.strip() or ":" in model:
+        raise ValueError(
+            "Set model to an existing AI Gateway model service "
+            "(catalog.schema.name) or a supported databricks-* foundation-model name. "
+            "Provider-prefixed declarations such as bedrock:... are unsupported for chat. "
+            "Configure the provider in AI Gateway and use its model-service name; "
+            "APX does not provision a Model Serving endpoint for chat."
+        )
+    return model
+
+
 def get_llm(endpoint: str, **kwargs: Any) -> Any:
     """Return the right ChatDatabricks variant for a chat model.
 
@@ -151,6 +164,7 @@ def get_llm(endpoint: str, **kwargs: Any) -> Any:
         llm = get_llm("databricks-claude-sonnet-4-6")
         result = llm.invoke([HumanMessage(content="Summarize this report...")])
     """
+    validate_chat_model(endpoint)
     # Callers cannot opt the chat model back onto Model Serving. A kwargs
     # override would reintroduce the dual path this factory exists to close.
     if "use_ai_gateway" in kwargs and kwargs["use_ai_gateway"] is not True:

@@ -148,7 +148,7 @@ databricks --profile prod schemas get-permissions main.agents \
 
 **Symptom.** Deploy succeeds, first chat call returns `RESOURCE_DOES_NOT_EXIST` or the model name is rejected.
 
-**Diagnosis.** The agent chat model is called through **Unity Catalog AI Gateway** (`{host}/ai-gateway/mlflow/v1`), not the Model Serving query API. `get_llm` sends the `--model` string unchanged. `databricks-claude-sonnet-4-6` is a valid foundation-model name on that path. `system.ai.claude-sonnet-4-6` is a UC **model service** name (`catalog.schema.id`), not a UC function — it is also a valid chat-model string when that service exists. Do not debug a chat 404 with `serving-endpoints get`; that looks up a different API. Serving endpoints still matter for embeddings, sub-agent endpoints, and `bedrock:` external models.
+**Diagnosis.** The agent chat model is called through **Unity Catalog AI Gateway** (`{host}/ai-gateway/mlflow/v1`), not the Model Serving query API. `get_llm` sends the `--model` string unchanged. `databricks-claude-sonnet-4-6` is a valid foundation-model name on that path. `system.ai.claude-sonnet-4-6` is a UC **model service** name (`catalog.schema.id`), not a UC function — it is also a valid chat-model string when that service exists. Do not debug a chat 404 with `serving-endpoints get`; that looks up a different API. Serving endpoints still matter for explicit endpoint tools, embeddings, and sub-agent endpoints. Provider-prefixed chat declarations such as `bedrock:...` are rejected; configure the provider in AI Gateway and declare its model-service name instead. See [the migration guide](../reference/bedrock-via-ai-gateway.md).
 
 **Fix.**
 

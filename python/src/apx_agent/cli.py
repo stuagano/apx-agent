@@ -54,7 +54,7 @@ if TYPE_CHECKING:
         AuthorizationPlan,
         ResolvedAppDependency,
     )
-    from ._models import AgentConfig, GatewayConfig
+    from ._models import AgentConfig
 
 # Suppress noisy third-party deprecation warnings that users can't act on.
 warnings.filterwarnings(
@@ -10171,56 +10171,6 @@ def _json_cli_errors(
         raise click.exceptions.Exit(1) from e
 
 
-def _provision_external_model_endpoint(
-    *,
-    model: str,
-    gateway: "GatewayConfig | None",
-    profile: str | None,
-    log: Any,
-) -> None:
-    """Provision/reconcile a declared external-model endpoint before deploy.
-
-    ``model = "bedrock:…"`` (a provider scheme) → build the endpoint payload and
-    reconcile it (create-or-update, never delete) so the bundle's ``CAN_QUERY``
-    resource resolves to a real, governed endpoint. A bare model name (no
-    scheme) → no-op (today's existing-endpoint behavior).
-
-    Fail-closed: a missing credential, no author client, or a failing
-    create/update aborts the deploy (``ClickException``) rather than leave the
-    bundle pointing at an absent or ungoverned endpoint.
-    """
-    from ._external_model import (
-        build_endpoint_payload,
-        parse_model_scheme,
-        reconcile_external_model_endpoint,
-    )
-
-    spec = parse_model_scheme(model)
-    if spec is None:
-        return
-    try:
-        payload = build_endpoint_payload(spec, gateway)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    ws = _make_ws_for_scaffold(profile)
-    if ws is None:
-        raise click.ClickException(
-            "could not create a Databricks author client to provision the "
-            f"external-model endpoint {spec.endpoint_name!r}"
-        )
-    log(f"# external-model endpoint: reconciling {spec.endpoint_name} "
-        f"({spec.provider} ← {spec.model_name})")
-    try:
-        reconcile_external_model_endpoint(ws, payload)
-    except click.ClickException:
-        raise
-    except Exception as exc:
-        raise click.ClickException(
-            f"external-model endpoint provisioning failed for "
-            f"{spec.endpoint_name!r} (fail-closed): {exc}"
-        ) from exc
-
-
 def _deploy_apps(
     *,
     module: str,
@@ -10314,7 +10264,10 @@ def _deploy_apps_impl(
 
     from ._inspection import _load_agent_config
 
-    effective_config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    try:
+        effective_config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     native_direct = (
         effective_config is not None and effective_config.target == "durable_agent_server"
         and (effective_config.deploy is None or effective_config.deploy.space is None)
@@ -10490,17 +10443,6 @@ def _deploy_apps_impl(
         )
         auto_experiment = False
         log("# App Space: using inherited authorization and preconfigured tracing")
-
-    # 2-pre. Provision the declared external-model endpoint (model = "bedrock:…")
-    # before the bundle deploy references its CAN_QUERY resource. No-op for a
-    # bare model name; fail-closed on a missing credential or a failing
-    # create/update so the bundle never points at an absent/ungoverned endpoint.
-    _provision_external_model_endpoint(
-        model=effective_model,
-        gateway=effective_config.gateway if effective_config is not None else None,
-        profile=profile,
-        log=log,
-    )
 
     resolved_dependencies = _resolve_app_dependencies(
         authorization_plan.app_dependencies,

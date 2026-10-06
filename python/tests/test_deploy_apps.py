@@ -971,6 +971,31 @@ def _stub_compile_responses(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("target", ["responses_agent", "durable_agent_server"])
+def test_provider_chat_model_fails_before_deploy_side_effects(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, target: str,
+) -> None:
+    from apx_agent import cli as cli_mod
+
+    (scaffold / "pyproject.toml").write_text(
+        '[tool.apx.agent]\nname = "test"\n'
+        f'target = "{target}"\nmodel = "bedrock:anthropic.claude"\n'
+    )
+    if target == "durable_agent_server":
+        (scaffold / "databricks.yml").unlink()
+    workspace = MagicMock(side_effect=AssertionError("must fail before workspace access"))
+    command = MagicMock(side_effect=AssertionError("must fail before CLI execution"))
+    monkeypatch.setattr(cli_mod, "_make_scaffold_workspace_client", workspace)
+    monkeypatch.setattr(cli_mod, "_make_ws_for_scaffold", workspace)
+    monkeypatch.setattr(cli_mod, "_run_databricks_cmd", command)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--profile", "chosen"])
+    assert result.exit_code != 0
+    assert "Set model to an existing AI Gateway model service" in result.output
+    workspace.assert_not_called()
+    command.assert_not_called()
+    assert not (scaffold / ".build").exists()
+
+
 @pytest.mark.parametrize("failure,hosting", [
     (None, {}),
     (None, {"space": "platform-selected", "compute_size": "LIQUID"}),
@@ -987,6 +1012,8 @@ def test_native_deploy_hands_rollout_to_agentbricks(
     from apx_agent._project_gen import generate_project, _build_databricks_yml
     from databricks_agentbricks.agent_project import AgentProject
 
+    reconcile = MagicMock(side_effect=AssertionError("Chat must not provision serving endpoints"))
+    monkeypatch.setattr("apx_agent._external_model.reconcile_external_model_endpoint", reconcile)
     config = AgentConfig(name="my-app", target="durable_agent_server", model="declared-model",
                          memory={"type": "managed"}, session={"type": "managed"})
     (scaffold / "databricks.yml").unlink()
@@ -1072,6 +1099,7 @@ def test_native_deploy_hands_rollout_to_agentbricks(
         args.extend(["--env", "EPHEMERAL=synthetic-secret"])
     result = CliRunner().invoke(main, args)
     assert len(commands) == 1, result.output
+    reconcile.assert_not_called()
     assert {call.args[1] for call in ws.api_client.do.call_args_list} == {
         "/api/2.0/agents/memory-stores/apx-my-app-memory", "/api/2.0/agents/session-stores/apx-my-app-sessions",
     }
@@ -1307,6 +1335,8 @@ def test_target_apps_triggers_bundle_deploy(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Happy path: --target apps runs validate → deploy → run → apps get."""
+    reconcile = MagicMock(side_effect=AssertionError("Chat must not provision serving endpoints"))
+    monkeypatch.setattr("apx_agent._external_model.reconcile_external_model_endpoint", reconcile)
     calls = _install_subprocess_mock(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, [
@@ -1320,6 +1350,7 @@ def test_target_apps_triggers_bundle_deploy(
     assert ["apps", "get"] in seq
     # default (non-JSON) mode prints the URL on stdout
     assert "databricksapps.com" in result.output
+    reconcile.assert_not_called()
 
 
 def test_preflight_fails_without_databricks_yml(

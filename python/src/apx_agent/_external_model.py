@@ -1,17 +1,14 @@
-"""Declared external-model serving endpoints (``model = "bedrock:…"``).
+"""Legacy explicit external-model serving-endpoint payload helpers.
 
-An apx author normally declares ``model`` as the name of a serving endpoint
-that already exists. A *provider scheme* — ``bedrock:`` — instead declares a
-**non-native** model that apx provisions as a governed Databricks external-model
-serving endpoint (Mosaic AI Gateway: guardrails + usage tracking) on deploy.
+Agent chat deployment does not call these helpers. Chat declarations bind to
+AI Gateway model services; provider schemes are rejected at that boundary.
 
 A provider is a **data row** in ``_PROVIDER_REGISTRY``, not a code path: adding
 one is adding a dict entry. A bare ``model`` (no known scheme) is left alone —
 today's existing-endpoint behavior. An unknown scheme fails clear at parse time.
 
-The reconcile is **create-or-update, never delete** (v1) and **fail-closed**: a
-missing/unreachable credential or a failing create/update call raises, so a
-deploy never leaves a half-provisioned, ungoverned endpoint behind.
+The reconcile helper is **create-or-update, never delete** (v1). Missing
+credentials and failing create/update calls raise to its explicit caller.
 """
 
 from __future__ import annotations

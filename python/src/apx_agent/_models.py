@@ -108,17 +108,10 @@ class GuardrailsConfig(BaseModel):
 
 
 class GatewayConfig(BaseModel):
-    """Mosaic AI Gateway config for a declared external-model endpoint.
+    """Legacy settings for the explicit external-endpoint payload helpers.
 
-    Maps to ``[tool.apx.agent.gateway]``. Governance-ON by default: usage
-    tracking and guardrails on; ``credential`` (a UC service credential name)
-    is the preferred auth, a ``secret_scope``/``secret_key`` pair the documented
-    fallback. No invented default — a missing credential fails the deploy closed
-    (enforced in ``_external_model.build_endpoint_payload``), never silently.
-
-    Only meaningful when ``model`` carries a provider scheme (``bedrock:`` etc.);
-    ignored for a bare endpoint name. ``extra="forbid"`` so a typo'd key that
-    would silently drop governance fails loud at parse time.
+    Retained for compatibility; agent deployment does not apply these settings
+    to chat. Configure chat credentials and policies on the Gateway service.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -581,6 +574,15 @@ class AgentConfig(BaseModel):
     """Opt into checkpoint recovery; tools must tolerate replay of uncommitted work."""
     description: str = ""
     model: str = "databricks-meta-llama-3-3-70b-instruct"
+
+    @field_validator("model")
+    @classmethod
+    def _validate_chat_model(cls, value: str) -> str:
+        from ._llm import validate_chat_model
+
+        # Tool-only/dev configurations use an empty model to disable chat.
+        return validate_chat_model(value) if value else value
+
     instructions: str = ""  # system prompt prepended to every conversation
     temperature: float | None = None  # None = use model default
     max_tokens: int | None = None  # None = use model default
@@ -609,8 +611,8 @@ class AgentConfig(BaseModel):
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     """Built-in guard configuration — see ``[tool.apx.agent.guardrails]``."""
     gateway: GatewayConfig | None = None
-    """Mosaic AI Gateway config for a declared external-model endpoint —
-    see ``[tool.apx.agent.gateway]`` (only used when ``model`` has a scheme)."""
+    """Legacy external-endpoint settings; not applied to the chat model.
+    Configure chat providers and policies on the AI Gateway model service."""
     service_policies: ServicePoliciesConfig = Field(default_factory=ServicePoliciesConfig)
     """Portable Service Policy declaration and native/local lifecycle mode."""
     template: dict[str, Any] | None = None
