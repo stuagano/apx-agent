@@ -217,7 +217,7 @@ def test_scaffold_trace_warehouse_default_picks_running_warehouse(
 
 
 def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
-    """``pyproject.toml`` parses and lists apx-agent + mlflow[databricks]."""
+    """The scaffold requests the package-owned MLflow dependency contract."""
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -234,12 +234,11 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
 
     assert parsed["project"]["name"] == "my_agent"
     deps = parsed["project"]["dependencies"]
-    # apx-agent includes langgraph/langchain as required deps — no extra needed.
-    # The dep line references just "apx-agent" (or a git+https URL to the same).
-    assert any("apx-agent" in d for d in deps), deps
-    # The mlflow dependency is pinned with the [databricks] extra and a
-    # minimum version. Search loosely so the version pin can move.
-    assert any("mlflow[databricks]" in d for d in deps), deps
+    from packaging.requirements import Requirement
+    requirements = [Requirement(dep) for dep in deps]
+    apx = next(dep for dep in requirements if dep.name == "apx-agent")
+    assert apx.extras == {"eval", "lakebase"}
+    assert not any(dep.name == "mlflow" for dep in requirements)
 
     agent_cfg = parsed["tool"]["apx"]["agent"]
     assert agent_cfg["catalog"] == "samples"
@@ -300,6 +299,7 @@ def test_scaffold_apps_defaults_to_lakebase_session(tmp_path: Path) -> None:
     assert session["type"] == "lakebase"
     assert session["host"] == "${LAKEBASE_HOST}"  # endpoint from env
     assert session["database"] == "my_agent"  # per-agent database (name slug)
+    assert any("[eval,lakebase]" in dep for dep in parsed["project"]["dependencies"])
 
 
 def test_scaffold_apps_no_lakebase_omits_session_block(tmp_path: Path) -> None:
@@ -315,6 +315,7 @@ def test_scaffold_apps_no_lakebase_omits_session_block(tmp_path: Path) -> None:
     content = (tmp_path / "my_agent" / "pyproject.toml").read_text()
     parsed = tomllib.loads(content)
     assert "session" not in parsed.get("tool", {}).get("apx", {}).get("agent", {})
+    assert any("apx-agent[eval]" in dep for dep in parsed["project"]["dependencies"])
 
 
 def test_scaffold_apps_echoes_lakebase_guidance(tmp_path: Path) -> None:

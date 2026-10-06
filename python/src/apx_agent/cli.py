@@ -1356,14 +1356,9 @@ name = "<APP_NAME>"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    # The [langgraph] extra is REQUIRED at runtime for any app that calls
-    # ``compile_to_responses_agent``: it transitively pulls in langchain +
-    # langgraph + databricks-langchain, which the responses-agent compiler
-    # imports lazily under the hood. A bare ``apx-agent`` dep would let
-    # ``uv sync`` succeed but fail at first request inside the deployed App.
+    # APX owns the supported MLflow range through its eval extra.
+    # LangGraph and the chat dependencies are included in the base package.
     <APX_AGENT_DEP>
-    # mlflow.genai.agent_server plus Unity Catalog trace locations.
-    "mlflow[databricks]>=3.14",
     # Add your agent's deps here
 ]
 
@@ -4057,7 +4052,7 @@ def _scaffold_apps(
     # parent-dir source (fast dev loop). Outside, embed a pinned git+https
     # URL in the dep line so the user doesn't need a sibling checkout.
     if _is_inside_framework_repo(target):
-        apx_dep = '"apx-agent",'
+        apx_dep = '"apx-agent[eval]",'
         apx_source = (
             "[tool.uv.sources]\n"
             "# Editable local install — keeps `uv sync` working from this directory.\n"
@@ -4068,7 +4063,7 @@ def _scaffold_apps(
     else:
         ref = _scaffold_install_ref()
         apx_dep = (
-            f'"apx-agent @ '
+            f'"apx-agent[eval] @ '
             f'git+https://github.com/stuagano/apx-agent.git@{ref}#subdirectory=python",'
         )
         apx_source = (
@@ -4077,6 +4072,9 @@ def _scaffold_apps(
             "# in that URL to upgrade (prefer a commit SHA); then\n"
             "# `uv lock --upgrade-package apx-agent && uv sync`. See docs/upgrade.md.\n"
         )
+
+    if lakebase and runtime == "responses_agent":
+        apx_dep = apx_dep.replace("apx-agent[eval]", "apx-agent[eval,lakebase]", 1)
 
     persona_arg = f", persona={repr(persona)}" if persona else ""
     objective_arg = f", objective={repr(objective)}" if objective else ""
@@ -4181,9 +4179,9 @@ def _scaffold_apps(
             name=name, target=runtime, model="databricks-claude-sonnet-4-6",
             knowledge="./.apx/okf" if manifest is not None else None,
         )
-        native_dep = apx_dep.replace("apx-agent", "apx-agent[langgraph,agentbricks]", 1)
+        native_dep = apx_dep.replace("apx-agent[eval]", "apx-agent[eval,agentbricks]", 1)
         native_pyproject = _build_pyproject(config).replace(
-            '"apx-agent[langgraph,agentbricks]",', native_dep,
+            '"apx-agent[eval,agentbricks]",', native_dep,
         ) + "\n" + apx_source
         agent_source = files["agent.py"]
         if agent_source.startswith('"""'):

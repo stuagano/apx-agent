@@ -4059,13 +4059,13 @@ def test_stage_build_manifest_no_wheel_missing_lock_stages_pyproject_only(
 
 
 def test_scaffold_apps_pins_mlflow_with_genai_agent_server(tmp_path: Path) -> None:
-    """The Apps scaffold must pin mlflow to a version that ships
-    ``mlflow.genai.agent_server`` plus UC trace locations. ``>=3.0`` doesn't
-    guarantee it; the floor must be >=3.14."""
+    """Generated Apps rely on APX's bounded MLflow extra, not a second pin."""
     from apx_agent.cli import _SCAFFOLD_APPS_PYPROJECT
+    import tomllib
 
-    assert '"mlflow[databricks]>=3.14"' in _SCAFFOLD_APPS_PYPROJECT
-    assert '"mlflow[databricks]>=3.0"' not in _SCAFFOLD_APPS_PYPROJECT
+    package = tomllib.loads(Path(__file__).parents[1].joinpath("pyproject.toml").read_text())
+    assert "mlflow[databricks]>=3.14,<3.15" in package["project"]["optional-dependencies"]["eval"]
+    assert "mlflow[databricks]" not in _SCAFFOLD_APPS_PYPROJECT
 
 
 def test_scaffold_apps_readme_documents_promotion() -> None:

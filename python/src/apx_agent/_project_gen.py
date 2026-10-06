@@ -122,9 +122,11 @@ def _build_pyproject(config: "AgentConfig") -> str:
     needs_agentkit = config.target == "durable_agent_server" or (
         config.memory is not None and config.memory.type == "managed"
     )
-    extra = "langgraph,agentbricks" if needs_agentkit else "langgraph"
+    extra = "eval,agentbricks" if needs_agentkit else "eval"
+    if any(backend is not None and backend.type == "lakebase"
+           for backend in (config.session, config.memory, config.example)):
+        extra += ",lakebase"
     lines.append(f'    "apx-agent[{extra}]",')
-    lines.append('    "mlflow[databricks]>=3.14",')
     lines.append("]")
     lines.append("")
 
