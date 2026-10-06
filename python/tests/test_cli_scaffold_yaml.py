@@ -52,7 +52,7 @@ def test_scaffold_coworker_by_declared_gallery_name(tmp_path):
     # <name>.yaml — the gallery pick routes through _materialize_agent).
     runner = CliRunner()
     result = runner.invoke(main, [
-        "agents", "scaffold", "my-payroll-agent",
+        "agents", "scaffold", "my-payroll-agent", "--runtime", "responses_agent",
         "--coworker", "payroll-coworker",
         "--no-interactive",
         "--dir", str(tmp_path),
@@ -106,7 +106,7 @@ class TestScaffoldEmitsOKF:
             )
         return result, tmp_path / "proj"
 
-    def _invoke_apps(self, tmp_path):
+    def _invoke_apps(self, tmp_path, runtime="durable_agent_server"):
         runner = CliRunner()
         with patch("apx_agent.cli._schema_manifest_for_scaffold", return_value=self._manifest):
             result = runner.invoke(
@@ -114,6 +114,7 @@ class TestScaffoldEmitsOKF:
                 [
                     "agents", "scaffold", "proj",
                     "--target", "apps",
+                    "--runtime", runtime,
                     "--catalog", "c", "--schema", "s",
                     "--no-interactive",
                     "--dir", str(tmp_path),
@@ -223,7 +224,7 @@ class TestScaffoldEmitsOKF:
         # no `experiment` resource type, no chat-model serving_endpoint
         # (the LLM is an ai-gateway scope), and the tracing env binding
         # (MLFLOW_EXPERIMENT_ID) still wired into config.env.
-        result, target = self._invoke_apps(tmp_path)
+        result, target = self._invoke_apps(tmp_path, runtime="responses_agent")
         assert result.exit_code == 0, result.output
 
         dbx = target / "databricks.yml"

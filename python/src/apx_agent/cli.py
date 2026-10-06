@@ -4056,12 +4056,13 @@ def _scaffold_apps(
     ci: CiProvider | None = "github",
     trace_warehouse_default: str | None = None,
     profile: str | None = None,
+    runtime: str = "responses_agent",
 ) -> None:
     """Write a Databricks Apps-ready project layout into ``target``.
 
-    Produces the ``agent_server/`` + ``scripts/`` + ``databricks.yml``
-    bundle shape consumed by ``databricks bundle deploy``, plus optional
-    CI templates (``--ci github|gitlab``).
+    Native projects use the packaged launcher. ResponsesAgent compatibility
+    projects include ``agent_server/``, ``scripts/``, ``databricks.yml`` and
+    optional Bundle CI templates.
     """
     if template == "base":
         prelude = extra_tools = ""
@@ -4191,6 +4192,34 @@ def _scaffold_apps(
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
         "tests/test_agent_imports.py": _sub(_SCAFFOLD_APPS_TEST_IMPORT),
     }
+    if runtime == "durable_agent_server":
+        from ._models import AgentConfig
+        from ._project_gen import _build_pyproject
+
+        config = AgentConfig(
+            name=name, target=runtime, model="databricks-claude-sonnet-4-6",
+            knowledge="./.apx/okf" if manifest is not None else None,
+        )
+        native_dep = apx_dep.replace("apx-agent", "apx-agent[langgraph,agentbricks]", 1)
+        native_pyproject = _build_pyproject(config).replace(
+            '"apx-agent[langgraph,agentbricks]",', native_dep,
+        ) + "\n" + apx_source
+        agent_source = files["agent.py"]
+        if agent_source.startswith('"""'):
+            agent_source = agent_source.split('"""', 2)[2]
+        else:
+            agent_source = "\n" + agent_source
+        files = {
+            "agent.py": f'"""{name} — agent behavior, hosted by the packaged APX launcher."""' + agent_source,
+            "pyproject.toml": native_pyproject,
+            ".gitignore": _SCAFFOLD_GITIGNORE,
+            "README.md": (
+                f"# {name}\n\n"
+                "Edit `agent.py` for behavior and `pyproject.toml` for runtime settings.\n\n"
+                "```sh\nuv sync\nuv run apx-agent agents run\n"
+                "uv run apx-agent agents deploy --target apps --profile <profile>\n```\n"
+            ),
+        }
     if catalog and schema:
         files[".apx/sql/apx_agent_timeline.sql"] = _sub(_SCAFFOLD_APX_OBSERVABILITY_SQL)
     if manifest is not None:
@@ -4278,6 +4307,20 @@ def _materialize_agent(
         _deploy_receipt_gated(target, receipt, profile=profile)
         return
     _echo_post_materialize_next_steps(config.name)
+
+
+def _scaffold_runtime_config(config: "AgentConfig", runtime: str | None) -> "AgentConfig":
+    """Default new specs to native while preserving explicitly declared contracts."""
+    from ._models import AgentConfig
+
+    selected = runtime or (config.target if "target" in config.model_fields_set else "durable_agent_server")
+    try:
+        return AgentConfig.model_validate(config.model_dump() | {"target": selected})
+    except ValueError as exc:
+        raise click.ClickException(
+            f"The declaration is incompatible with {selected}: {exc}. "
+            "Use --runtime responses_agent for compatibility or update the declaration."
+        ) from exc
 
 
 def _scaffold_from_gallery(
@@ -4401,14 +4444,15 @@ def _echo_scaffold_next_steps(
     type=click.Choice(["apps", "model-serving"]),
     default=None,
     help=(
-        "Runtime to generate scaffolding for. "
-        "'apps' (default) generates a Databricks Apps bundle: agent_server/ + "
-        "databricks.yml, with the built-in dev UI (chat, edit, tool builder), "
-        "deployed via apx-agent agents deploy. 'model-serving' generates the flat "
+        "Deployment destination. 'apps' (default) generates a native Agent Bricks project. "
+        "Use --runtime responses_agent for the compatibility Bundle and dev UI. "
+        "'model-serving' generates the flat "
         "agent.py + app.py layout for a Mosaic AI ChatAgent serving endpoint. "
         "Prompted interactively when omitted in a TTY."
     ),
 )
+@click.option("--runtime", type=click.Choice(["durable_agent_server", "responses_agent"]), default=None,
+              help="Apps runtime: durable_agent_server for new projects; existing projects retain their runtime.")
 @click.option("--force", is_flag=True, help="Overwrite existing files.")
 @click.option(
     "--here", is_flag=True,
@@ -4454,8 +4498,8 @@ def _echo_scaffold_next_steps(
 @click.option("--data", "use_data", is_flag=True, default=False,
               help="Shorthand for --template data.")
 @click.option(
-    "--lakebase/--no-lakebase", "lakebase", default=True,
-    help="Enable a durable Lakebase session store by default (shared 'apx-agent' "
+    "--lakebase/--no-lakebase", "lakebase", default=None,
+    help="ResponsesAgent compatibility only: enable a durable Lakebase session store (shared 'apx-agent' "
     "instance, per-agent database, created by `uv run quickstart`). Use "
     "--no-lakebase for non-durable in-memory sessions.",
 )
@@ -4475,10 +4519,9 @@ def _echo_scaffold_next_steps(
     "--ci",
     "ci_provider",
     type=click.Choice(["github", "gitlab", "none"]),
-    default="github",
-    show_default=True,
+    default=None,
     help=(
-        "CI templates to emit for Apps scaffolds. "
+        "Bundle CI templates for ResponsesAgent Apps scaffolds (default: github; native: none). "
         "'github' writes .github/workflows (PR→main unit, PR→release staging "
         "deploy, push→release gated prod). 'gitlab' writes .gitlab-ci.yml. "
         "'none' skips CI files. Ignored for --target model-serving."
@@ -4488,14 +4531,14 @@ def scaffold(
     name: str, directory: str, scaffold_target: str | None, force: bool, here: bool,
     catalog: str | None, schema: str | None, profile: str | None,
     scaffold_template: str | None, coworker_spec: str | None, use_data: bool,
-    lakebase: bool, interactive: bool | None, deploy: bool,
-    ci_provider: str,
+    lakebase: bool | None, interactive: bool | None, deploy: bool,
+    ci_provider: str | None, runtime: str | None,
 ) -> None:
     """Generate a new agent project at <NAME>.
 
-    With ``--target apps`` (the default) writes a Databricks Apps bundle:
-    ``agent_server/`` package + ``databricks.yml`` + the dev UI, deployable
-    with ``apx-agent agents deploy``. With ``--target model-serving`` writes a flat
+    With ``--target apps`` (the default) writes agent.py and pyproject.toml for
+    the native Agent Bricks runtime. Use ``--runtime responses_agent`` for the
+    compatibility Bundle/dev UI. With ``--target model-serving`` writes a flat
     ``agent.py``/``app.py`` project for a Mosaic AI ChatAgent serving endpoint.
 
     The default agent is a ``DataAgent`` grounded in real data: unless you pass
@@ -4615,6 +4658,23 @@ def scaffold(
             "(model-serving deploy stays a separate `agents deploy` step)."
         )
 
+    existing = _read_apx_agent_config(target / "pyproject.toml")
+    existing_runtime = existing.get("target", "responses_agent") if existing else None
+    if existing_runtime is None and any((target / path).exists() for path in ("databricks.yml", "agent.py")):
+        existing_runtime = "responses_agent"
+    if runtime is not None and existing_runtime is not None and runtime != existing_runtime:
+        raise click.UsageError("Scaffold does not migrate existing runtimes; create a separate project for --runtime " + runtime)
+    scaffold_runtime = runtime or existing_runtime or (
+        "durable_agent_server" if scaffold_target == "apps" else "responses_agent"
+    )
+    if scaffold_target == "model-serving" and scaffold_runtime != "responses_agent":
+        raise click.UsageError("Model Serving requires --runtime responses_agent.")
+    if scaffold_runtime == "durable_agent_server":
+        if lakebase:
+            raise click.UsageError("--lakebase requires --runtime responses_agent. Native sessions use a declared managed store.")
+        if ci_provider not in (None, "none"):
+            raise click.UsageError("Bundle CI templates require --runtime responses_agent; native scaffolds omit them.")
+
     # -----------------------------------------------------------------------
     # Step 3: onboard TOML handoff — before demo data-source resolve so TBD
     # placeholders are not silently overwritten by samples.nyctaxi.
@@ -4625,6 +4685,7 @@ def scaffold(
             config = _scaffold_from_coworker_toml(
                 toml_coworker, project_name, catalog, schema,
             )
+            config = _scaffold_runtime_config(config, runtime or existing_runtime)
             _materialize_agent(
                 config, target, force=force, profile=profile, deploy=deploy,
             )
@@ -4660,12 +4721,16 @@ def scaffold(
         config = _scaffold_from_gallery(
             gallery_yaml_path, project_name, catalog, schema,
         )
+        config = _scaffold_runtime_config(config, runtime or existing_runtime)
         _materialize_agent(
             config, target, force=force, profile=profile, deploy=deploy,
         )
         return
 
     if scaffold_target == "apps":
+        native = scaffold_runtime == "durable_agent_server"
+        lakebase = False if native else (True if lakebase is None else lakebase)
+        ci_provider = ci_provider or ("none" if native else "github")
         ci: CiProvider | None = None
         if ci_provider in ("github", "gitlab"):
             ci = cast(CiProvider, ci_provider)
@@ -4675,7 +4740,7 @@ def scaffold(
             template=scaffold_template, persona=persona, objective=objective,
             join_key=join_key, lakebase=lakebase, instructions=instructions, ci=ci,
             trace_warehouse_default=trace_warehouse_default,
-            profile=profile,
+            profile=profile, runtime=scaffold_runtime,
         )
     else:
         _scaffold_model_serving(
