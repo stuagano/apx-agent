@@ -4,7 +4,6 @@ import { ContractTable } from './ContractTable'
 import { ChatPanel } from './ChatPanel'
 import { useChat } from './useChat'
 import { useUpload } from './useUpload'
-import { DevToolbar } from './DevToolbar'
 
 export default function App() {
   const [contracts, setContracts] = useState<Contract[]>([])
@@ -12,8 +11,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Contract | null>(null)
   const [pendingMessage, setPendingMessage] = useState('')
-  const [devEnabled, setDevEnabled] = useState(true)
-  const { messages, isLoading, sendMessage, threadId, reset } = useChat()
+  const { messages, isLoading, sendMessage, reset } = useChat()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleUploadSuccess = useCallback((filename: string, volumePath: string) => {
@@ -46,14 +44,6 @@ export default function App() {
       .finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => {
-    fetch('/api/dev-ui')
-      .then(r => r.ok ? r.json() as Promise<{ enabled: boolean }> : null)
-      .then(config => {
-        if (config?.enabled === false) setDevEnabled(false)
-      })
-      .catch(() => undefined)
-  }, [])
 
   const handleSelectContract = useCallback((c: Contract) => {
     setSelected(c)
@@ -129,9 +119,7 @@ export default function App() {
           pendingMessage={pendingMessage}
         />
       </div>
-      {devEnabled && (
-        <DevToolbar threadId={threadId} onReset={reset} />
-      )}
+      <button disabled={isLoading} onClick={reset}>New conversation</button>
     </div>
   )
 }

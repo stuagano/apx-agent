@@ -95,7 +95,7 @@ function TryItPanel({ agent }: { agent: AgentCard }) {
       <section>
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Try It</h2>
         <div className="rounded-xl border bg-card p-5 text-sm text-muted-foreground">
-          This agent uses the full AppKit UI.{" "}
+          This agent uses the dedicated agent UI.{" "}
           <a href={`${agent.url}/_apx/agent`} target="_blank" rel="noopener noreferrer" className="text-foreground underline underline-offset-2 hover:no-underline inline-flex items-center gap-1">
             Open agent UI <ExternalLink size={12} />
           </a>

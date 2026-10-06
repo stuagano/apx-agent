@@ -112,7 +112,7 @@ prompt and reads one short completion.
 
 ## Skipping the smoke test
 
-Don't touch the watched paths. Edits to `docs/`, `typescript/`, `hub/`,
+Don't touch the watched paths. Edits to `docs/`, `hub/`,
 or other Python examples won't trigger this workflow. If you need to
 land a known-bad change with the smoke test red, push to a feature
 branch and merge with admin override after a follow-up green run.

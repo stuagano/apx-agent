@@ -562,7 +562,7 @@ def test_databricks_yml_contains_agent_name(tmp_path: Path, coworker_config: Age
     data = yaml.safe_load(dab.read_text())
     assert "payroll-coworker" in str(data), "agent name not found in databricks.yml"
     app = data["resources"]["apps"]["payroll-coworker"]
-    assert ".build/apx_appkit_host" in data["artifacts"]["default"]["build"]
+    assert ".build/apx_appkit_host" not in data["artifacts"]["default"]["build"]
     assert app["config"]["command"] == ["python", "-m", "agent_server.start_host"]
     assert app["user_api_scopes"] == ["ai-gateway", "sql"]
     resource_names = [entry.get("name") for entry in app["resources"]]

@@ -5,7 +5,7 @@ description = "Extract structured data from contracts using GenAI — identifies
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent",
+    "apx-agent[agentbricks]",
     "databricks-tools-core",
     "fastapi>=0.119.0",
     "pydantic-settings>=2.11.0",
@@ -47,12 +47,19 @@ app-entrypoint = "app:app"
 api-prefix = "/api"
 
 [tool.apx.agent]
+target = "durable_agent_server"
 name = "contract_parsing_agent"
 description = "Extract structured data from contracts — identifies pricing terms, service periods, SLAs, and regulatory clauses from uploaded PDF or text documents"
 model = "databricks-claude-sonnet-4-6"
 module = "agent:agent"
 url = ""
 registry = ""
+
+[tool.apx.agent.deploy]
+space = "your-space"
+
+[tool.apx.agent.session]
+type = "managed"
 
 [build-system]
 requires = ["hatchling"]

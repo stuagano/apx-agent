@@ -195,7 +195,7 @@ tests/test_tools_summarize_contract.py::test_summarize_returns_dict PASSED
 ### Step 5: Run locally
 
 ```bash
-uv run uvicorn app:app --reload
+DATABRICKS_APP_PORT=8000 uv run python -m app
 ```
 
 The chat interface opens at `http://localhost:8000`. Try:
@@ -209,67 +209,38 @@ Extract the contract at /Volumes/my_catalog/contracts/uploads/new_agreement.pdf
 
 ---
 
-## Part 3: Deploy to Databricks Apps
+## Part 3: Deploy the managed durable app
 
-### Step 1: Set real values in `databricks.yml`
+This example uses `DurableAgentServer`, managed sessions, and an explicitly named
+App Space because its tools require service-resource grants. Replace `your-space`
+in both `pyproject.toml` and `databricks.yml` with the existing space name. Configure
+the space's inherited permissions for the SQL warehouse, UC data, and any declared
+sub-agent. APX validates those permissions and refuses to widen them.
 
-The bundle uses variables for all deployment-specific values. Pass them on the command line:
+The Agent Bricks CLI path currently cannot represent these service grants; removing
+them would make the example incorrect. The supported App Space route uses the
+native SDK to provision its Runtime Store and verifies ownership. Its declared
+Session Store and tracing experiment must already exist and be accessible to the
+app principal. Set the bundle's `mlflow_experiment_id` to that experiment.
 
-```bash
-databricks bundle deploy \
-  --var="catalog=my_catalog" \
-  --var="schema=contracts" \
-  --var="volumes_raw=/Volumes/my_catalog/contracts/raw_contracts" \
-  --var="volumes_uploads=/Volumes/my_catalog/contracts/uploaded_contracts"
-```
-
-Or set them permanently in the `targets.dev.variables` block in `databricks.yml`:
-
-```yaml
-targets:
-  dev:
-    mode: development
-    default: true
-    variables:
-      catalog: my_catalog
-      schema: contracts
-      volumes_raw: /Volumes/my_catalog/contracts/raw_contracts
-      volumes_uploads: /Volumes/my_catalog/contracts/uploaded_contracts
-```
-
-### Step 2: Deploy
+Build the browser and deploy through APX, which performs the native prerequisite,
+authorization, Runtime Store, and readiness checks:
 
 ```bash
-databricks bundle deploy
+npm install --prefix client
+npm run build --prefix client
+uv run apx-agent agents deploy . --target apps --profile <profile> \
+  --var catalog=<catalog> --var schema=<schema> \
+  --var volumes_raw=<raw-volume-path> --var volumes_uploads=<uploads-volume-path> \
+  --var sql_warehouse_id=<warehouse-id> --var mlflow_experiment_id=<experiment-id>
 ```
 
-This builds a wheel, writes a `requirements.txt`, and deploys the app to Databricks Apps.
+The browser calls `/api/invocations` with a session ID and only the latest message.
+The SDK owns conversation checkpoints. Business routes remain under `/api`, and
+the browser assets are mounted on the same native Python app. There is no AppKit
+host, tool bridge, or process-local developer toolbar. **New conversation** starts
+a new session without deleting existing history.
 
-### Step 3: Verify
-
-```bash
-databricks apps get contract-parsing-agent -o json | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print('URL:   ', d.get('url', 'not yet available'))
-print('State: ', d.get('app_status', {}).get('state', 'unknown'))
-"
-```
-
-Wait for `State: RUNNING` before testing. Then confirm the app is reachable:
-
-```bash
-curl -s https://<your-app-url>/version \
-  -H "Authorization: Bearer $(databricks auth token --profile my-workspace)"
-```
-
-### Redeploy after changes
-
-```bash
-databricks bundle deploy
-```
-
----
 
 ## Configuration
 

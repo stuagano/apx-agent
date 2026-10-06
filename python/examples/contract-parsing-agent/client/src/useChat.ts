@@ -16,21 +16,26 @@ export function useChat() {
     setMessages(prev => [...prev, userMsg])
     setIsLoading(true)
     try {
-      const fullHistory = [...messages, userMsg]
-      const resp = await fetch('/invocations', {
+      const sessionId = threadId ?? crypto.randomUUID()
+      setThreadId(sessionId)
+      const resp = await fetch('/api/invocations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input: fullHistory.map(m => ({ role: m.role, content: m.content })),
+          id: crypto.randomUUID(),
+          session_id: sessionId,
+          input: { messages: [userMsg] },
         }),
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const data = await resp.json()
-      if (typeof data?.thread_id === 'string') setThreadId(data.thread_id)
-      const outputText: string =
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        data?.output?.find((o: any) => o.type === 'message')
-          ?.content?.[0]?.text ?? 'No response.'
+      if (data.status !== 'completed' || data.output?.status !== 'completed') {
+        throw new Error('Agent invocation did not complete')
+      }
+      const outputText = data.output.messages
+        .filter((message: Message) => message.role === 'assistant')
+        .map((message: Message) => message.content).join('\n')
+      if (!outputText) throw new Error('Agent returned no response')
       setMessages(prev => [...prev, { role: 'assistant', content: outputText }])
     } catch {
       setMessages(prev => [
@@ -40,7 +45,7 @@ export function useChat() {
     } finally {
       setIsLoading(false)
     }
-  }, [messages])
+  }, [threadId])
 
   return { messages, isLoading, sendMessage, threadId, reset }
 }

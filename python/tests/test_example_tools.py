@@ -1,7 +1,5 @@
 """Tests for ``_example_tools.py`` — agent-facing tools wrapping an
 ExampleStore.
-
-Mirrors ``typescript/tests/example-tools.test.ts`` case-by-case.
 """
 
 from __future__ import annotations

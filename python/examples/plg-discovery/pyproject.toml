@@ -1,10 +1,10 @@
 [project]
 name = "plg-discovery"
 version = "0.1.0"
-description = "Nonprofit technology discovery powered by a native APX AppKit agent"
+description = "Nonprofit technology discovery powered by a managed durable agent"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["apx-agent"]
+dependencies = ["apx-agent[agentbricks]"]
 
 [dependency-groups]
 dev = ["pytest>=8.0", "pyyaml>=6.0"]
@@ -17,6 +17,7 @@ pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.apx.agent]
+target = "durable_agent_server"
 name = "discovery"
 description = "Discover a nonprofit's current systems and recommend a governed technology blueprint"
 model = "databricks-claude-sonnet-4-6"
@@ -25,7 +26,10 @@ module = "agent:agent"
 [tool.apx.deploy]
 target = "apps"
 bundle_name = "plg-discovery"
-app_name = "plg-discovery"
+app_name = "agent-bricks-discovery"
+
+[tool.apx.agent.session]
+type = "managed"
 
 [build-system]
 requires = ["hatchling"]
@@ -33,4 +37,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["server"]
-force-include = { "agent.py" = "agent.py", "data" = "data", "prompts" = "prompts", "nonprofit-saas-landscape-2025-2026.md" = "nonprofit-saas-landscape-2025-2026.md" }
+force-include = { "app.py" = "app.py", "agent.py" = "agent.py", "data" = "data", "prompts" = "prompts", "nonprofit-saas-landscape-2025-2026.md" = "nonprofit-saas-landscape-2025-2026.md" }

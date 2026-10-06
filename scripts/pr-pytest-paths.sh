@@ -118,7 +118,11 @@ while IFS= read -r f || [ -n "$f" ]; do
     python/tests/*)
       case "$f" in
         *.py)
-          printf 'tests/%s\n' "${f#python/tests/}" >>"$paths_file"
+          if [ -f "$ROOT/$f" ]; then
+            printf 'tests/%s\n' "${f#python/tests/}" >>"$paths_file"
+          else
+            unknown=1
+          fi
           ;;
       esac
       ;;
@@ -130,7 +134,7 @@ while IFS= read -r f || [ -n "$f" ]; do
       fi
       ;;
     typescript/*)
-      exist_glob 'test_appkit*.py' >>"$paths_file"
+      unknown=1
       ;;
     .github/*|scripts/*)
       if [ -f "$TESTS_DIR/test_pr_pytest_paths.py" ]; then

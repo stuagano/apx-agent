@@ -1,7 +1,4 @@
 """Tests for _memory.py — durable memory protocol and InMemoryMemoryStore.
-
-Mirrors typescript/tests/memory.test.ts case-by-case so the two
-implementations stay in lock-step.
 """
 
 from __future__ import annotations

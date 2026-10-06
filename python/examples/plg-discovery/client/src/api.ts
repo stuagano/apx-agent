@@ -118,66 +118,68 @@ type StreamChatOptions = {
 };
 
 export async function streamChat({ message, threadId, onText }: StreamChatOptions): Promise<ChatResult> {
-  const response = await fetch("/api/agents/chat", {
+  const id = crypto.randomUUID();
+  const sessionId = threadId ?? crypto.randomUUID();
+  const response = await fetch("/api/invocations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(threadId ? { message, threadId } : { message }),
+    body: JSON.stringify({ id, session_id: sessionId, input: { messages: [{ role: "user", content: message }] }, stream: true }),
   });
   if (!response.ok) throw new Error(`chat failed: ${response.status}`);
   if (!response.body) throw new Error("chat failed: streaming response body missing");
-
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let reply = "";
-  let nextThreadId = threadId;
-  const streamedItems = new Set<string>();
-
   const consume = (block: string) => {
-    const payload = block.split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart())
-      .join("\n");
-    if (!payload || payload === "[DONE]") return;
-    const event = JSON.parse(payload) as Record<string, unknown>;
-    if (event.type === "appkit.metadata" && record(event.data) && typeof event.data.threadId === "string") {
-      nextThreadId = event.data.threadId;
-    } else if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
-      if (typeof event.item_id === "string") streamedItems.add(event.item_id);
-      reply += event.delta;
+    const payload = block.split(/\r?\n/).filter(line => line.startsWith("data:"))
+      .map(line => line.slice(5).trimStart()).join("\n");
+    if (!payload) return;
+    const event = JSON.parse(payload);
+    if (event.type === "agent.message.delta" && event.message?.role === "assistant") {
+      if (typeof event.message.content !== "string") throw new Error("Invalid agent message");
+      reply += event.message.content;
       onText?.(reply);
-    } else if (event.type === "response.output_item.done" && record(event.item)
-      && event.item.type === "message"
-      && !(typeof event.item.id === "string" && streamedItems.has(event.item.id))
-      && Array.isArray(event.item.content)) {
-      const text = event.item.content.flatMap((part) =>
-        record(part) && part.type === "output_text" && typeof part.text === "string" ? [part.text] : [],
-      ).join("");
-      reply += text;
-      if (text) onText?.(reply);
-    } else if (event.type === "error" || event.type === "response.failed") {
-      throw new Error(typeof event.error === "string" ? event.error : "AppKit agent stream failed");
+    } else if (event.type === "agent.message.completed" && event.message?.role === "assistant") {
+      if (typeof event.message.content !== "string") throw new Error("Invalid agent message");
+      reply = event.message.content;
+      onText?.(reply);
+    } else if (event.type === "run.failed") {
+      throw new Error("Agent invocation failed");
     }
   };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() ?? "";
-    blocks.forEach(consume);
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() ?? "";
+      blocks.forEach(consume);
+      if (done) break;
+    }
+    if (buffer.trim()) consume(buffer);
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
   }
-  if (buffer.trim()) consume(buffer);
-
+  // Read the persisted result; a disconnected stream is not proof of success.
+  const result = await fetch(`/api/invocations/${id}`);
+  if (!result.ok) throw new Error(`Invocation lookup failed: ${result.status}`);
+  const invocation = await result.json();
+  if (invocation.status !== "completed" || invocation.output?.status !== "completed") {
+    throw new Error("Agent invocation did not complete");
+  }
+  const messages: unknown = invocation.output.messages;
+  if (!Array.isArray(messages)) throw new Error("Invalid agent response");
+  reply = messages.filter(item => record(item) && item.role === "assistant")
+    .map(item => {
+      if (typeof item.content !== "string") throw new Error("Invalid agent response");
+      return item.content;
+    }).join("\n");
+  if (!reply) throw new Error("Agent returned no response");
   const parsed = splitArtifacts(reply);
-  return {
-    reply: parsed.reply,
-    threadId: nextThreadId,
-    artifacts: parsed.artifacts,
-    gate: gateFor(parsed.artifacts),
-    artifactError: parsed.error,
-  };
+  return { reply: parsed.reply, threadId: sessionId, artifacts: parsed.artifacts,
+    gate: gateFor(parsed.artifacts), artifactError: parsed.error };
 }
 
 export async function buildOnboardingPrompt(url: string, files: File[]): Promise<string> {
@@ -196,42 +198,3 @@ export async function buildOnboardingPrompt(url: string, files: File[]): Promise
     + "\n\nPlease analyze this information and begin the technology discovery process. "
     + "Ask targeted follow-up questions about their operations, pain points, and goals.";
 }
-
-export type DevTool = { name: string; description: string; enabled: boolean; annotations: { effect: string } };
-export type DevSkill = { name: string; description: string; content: string };
-export type DevSnapshot = {
-  agentName: string;
-  model: string;
-  originalModel: string;
-  instructions: string;
-  instructionsOverridden: boolean;
-  tools: DevTool[];
-  skills: DevSkill[];
-  systemPrompt: string;
-  overridesEphemeral: true;
-};
-export type AppKitThread = { id: string; messages: unknown[]; createdAt: string; updatedAt: string };
-
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  if (!response.ok) throw new Error(`developer request failed: ${response.status}`);
-  return response.json() as Promise<T>;
-}
-
-const body = (value: unknown): Pick<RequestInit, "headers" | "body"> => ({
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(value),
-});
-
-export const devGetConfig = () => json<DevSnapshot>("/api/dev/config");
-export const devPatchConfig = (model: string) => json<DevSnapshot>("/api/dev/config", { method: "PATCH", ...body({ model }) });
-export const devGetInstructions = () => json<DevSnapshot>("/api/dev/instructions");
-export const devPatchInstructions = (instructions: string) => json<DevSnapshot>("/api/dev/instructions", { method: "PATCH", ...body({ instructions }) });
-export const devResetInstructions = () => json<DevSnapshot>("/api/dev/instructions", { method: "DELETE" });
-export const devGetToolset = () => json<DevSnapshot>("/api/dev/tools");
-export const devToggleTool = (name: string, enabled: boolean) => json<DevSnapshot>(`/api/dev/tools/${encodeURIComponent(name)}`, { method: "PATCH", ...body({ enabled }) });
-export const devAuthorSkill = (skill: DevSkill) => json<DevSnapshot>(`/api/dev/skills/${encodeURIComponent(skill.name)}`, { method: "PUT", ...body({ description: skill.description, content: skill.content }) });
-export const devDeleteSkill = (name: string) => json<DevSnapshot>(`/api/dev/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
-export const devGetFullPrompt = () => json<{ systemPrompt: string }>("/api/dev/prompt");
-export const devListSessions = () => json<{ threads: AppKitThread[] }>("/api/agents/threads");
-export const devDeleteSession = (id: string) => json<{ deleted: boolean }>(`/api/agents/threads/${encodeURIComponent(id)}`, { method: "DELETE" });

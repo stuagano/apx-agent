@@ -1,8 +1,8 @@
 # apx-agent Codex Guidance
 
 This repository builds governed data-agent infrastructure for Databricks. The
-Python package lives in `python/` (`src/apx_agent`), the TypeScript package
-lives in `typescript/`, and the hub UI lives in `hub/`.
+Python package lives in `python/` (`src/apx_agent`). Browser UI code lives in
+`hub/` and the example clients; agent runtimes are Python compiler targets.
 
 ## Operating Principles
 
@@ -21,9 +21,6 @@ Apply these to every change:
 
 Use the narrowest useful command while iterating, then run the full gate before
 claiming a change works:
-
-On a fresh worktree, run `cd typescript && npm ci && npm run build` before the
-Python gate so the ignored internal AppKit runtime exists.
 
 ```bash
 make check

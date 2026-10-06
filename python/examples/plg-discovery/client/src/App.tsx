@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { buildOnboardingPrompt, mergeArtifacts, streamChat, type Artifact, type Gate } from "./api";
 import { ChatPanel } from "./components/ChatPanel";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { ProgressRail } from "./components/ProgressRail";
 import { ArtifactInspector } from "./components/ArtifactInspector";
 import { BlueprintView } from "./components/BlueprintView";
-import { DevToolbar } from "./components/DevToolbar";
 import dbForGoodLogo from "./assets/databricks-for-good.png";
 
 export default function App() {
@@ -16,14 +15,7 @@ export default function App() {
   const [inspect, setInspect] = useState<Artifact | null>(null);
   const [busy, setBusy] = useState(false);
   const [seeded, setSeeded] = useState(false);
-  const [devEnabled, setDevEnabled] = useState(true);
 
-  useEffect(() => {
-    fetch("/api/dev-ui")
-      .then((response) => response.ok ? response.json() : null)
-      .then((value) => { if (value?.enabled === false) setDevEnabled(false); })
-      .catch(() => undefined);
-  }, []);
 
   const handleReset = useCallback(() => {
     setThreadId(null);
@@ -107,7 +99,7 @@ export default function App() {
       </div>
 
       <ArtifactInspector artifact={inspect} onClose={() => setInspect(null)} />
-      {devEnabled && <DevToolbar threadId={threadId} onReset={handleReset} />}
+      <button disabled={busy} onClick={handleReset}>New conversation</button>
     </div>
   );
 }

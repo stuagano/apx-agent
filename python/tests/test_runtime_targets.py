@@ -881,9 +881,11 @@ def test_packaged_launcher_preserves_remote_session_binding(execution: Any, monk
     monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
     monkeypatch.setenv("APX_MODEL", "bound-model")
     monkeypatch.setenv("AGENT_SESSION_STORE", "remote-sessions")
-    compiler = MagicMock(return_value="native-app")
+    native_app = SimpleNamespace(state=SimpleNamespace())
+    compiler = MagicMock(return_value=native_app)
     monkeypatch.setattr("apx_agent._runtime_targets.compile_agent", compiler)
-    assert create_app() == "native-app"
+    assert create_app() is native_app
+    assert native_app.state.workspace_client is execution.ws
     compiler.assert_called_once_with(execution.agent, config=config, model="bound-model",
                                     service_ws=execution.ws, session_store="remote-sessions")
 
@@ -944,11 +946,83 @@ def test_declared_managed_sessions_reject_conflicting_bindings(execution: Any, o
     assert not execution.effects
 
 
-def test_deploy_accepts_durable_host_without_appkit(tmp_path: Path) -> None:
-    from apx_agent.cli import _stage_internal_appkit_host
+@pytest.mark.parametrize("example", ["plg-discovery", "contract-parsing-agent"])
+def test_example_native_app_serves_ui_without_intercepting_invocations(
+    example: str, execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import runpy
+    import sys
+    from fastapi import APIRouter
+    from fastapi.testclient import TestClient
+    from apx_agent import compile_agent
 
-    doc = {"resources": {"apps": {"a": {"config": {"env": [
-        {"name": "APX_APPS_HOST", "value": "agentbricks"},
-    ]}}}}}
-    _stage_internal_appkit_host(tmp_path, module="agent:agent", doc=doc, bundle_key="a", log=lambda *a: None)
-    assert not (tmp_path / ".build").exists()
+    source = Path(__file__).parents[1] / "examples" / example / "app.py"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    native = compile_agent(execution.agent, target="durable_agent_server", model="test",
+                           service_ws=execution.ws, checkpointer=InMemorySaver())
+    monkeypatch.setattr("apx_agent._serve.create_app", lambda: native)
+    # Business route dependencies are checked separately; exercise route ordering
+    # against the real SDK ingress and graph here without a remote warehouse.
+    router = APIRouter()
+
+    @router.get("/api/business-proof")
+    def business() -> dict[str, bool]:
+        return {"ok": True}
+
+    monkeypatch.setitem(sys.modules, "api", SimpleNamespace(router=router))
+    dist = tmp_path / "client" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<h1>Native browser proof</h1>")
+    (tmp_path / "private.txt").write_text("do not serve")
+    app = runpy.run_path(str(source))["app"]
+    assert app is native
+    with TestClient(app) as client:
+        assert "Native browser proof" in client.get("/").text
+        assert client.get("/readyz").status_code == 200
+        assert client.get("/%2e%2e/private.txt").status_code == 404
+        if example == "contract-parsing-agent":
+            assert client.get("/api/business-proof").json() == {"ok": True}
+        for _ in range(2):
+            response = client.post("/api/invocations", json={
+                "id": str(uuid.uuid4()), "session_id": "browser-session",
+                "input": {"messages": [{"role": "user", "content": "record"}]},
+            })
+            assert response.status_code == 200, response.text
+            assert response.json()["output"]["messages"][-1]["content"] == "Recorded proof"
+    assert execution.effects == ["proof", "proof"]
+
+
+@pytest.mark.parametrize("example", ["plg-discovery", "contract-parsing-agent"])
+def test_native_example_build_stages_sources_without_a_tool_bridge(example: str, tmp_path: Path) -> None:
+    import ast
+    import shutil
+    import subprocess
+    import yaml
+    from ctk import Artifact, verify
+
+    source = Path(__file__).parents[1] / "examples" / example
+    project = tmp_path / example
+    shutil.copytree(source, project, ignore=shutil.ignore_patterns("node_modules", ".venv", ".build", "dist", "__pycache__"))
+    (project / "client" / "dist").mkdir()
+    (project / "client" / "dist" / "index.html").write_text("browser proof")
+    doc = yaml.safe_load((project / "databricks.yml").read_text())
+    build = doc["artifacts"]["default"]["build"]
+    # Wheel resolution/building is independent. Exercise the authored staging
+    # commands with prebuilt wheel placeholders and real example source files.
+    commands = [line for line in build.splitlines() if not line.startswith(("uv build", "basename"))]
+    subprocess.run(["sh", "-ec", "\n".join(commands)], cwd=project, check=True)
+    staged = project / ".build"
+    for name in ("app.py", "agent.py"):
+        verify(Artifact(str(staged / name), must_contain="apx_agent"))
+        ast.parse((staged / name).read_text())
+    verify(Artifact(str(staged / "client" / "dist" / "index.html"), must_contain="browser proof"))
+    if example == "plg-discovery":
+        assert (staged / "prompts" / "discovery_playbook.md").is_file()
+        assert (staged / "server" / "grounding.py").is_file()
+    else:
+        assert (staged / "tools" / "query_portfolio.py").is_file()
+        assert (staged / "api.py").is_file()
+        assert (staged / "agent.config.yaml").is_file()
+    assert not (staged / "apx_appkit_host").exists()

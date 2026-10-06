@@ -22,8 +22,6 @@ Same injectable-dependency philosophy as the rest of the framework: no
 actual embedding source (FMAPI, Vector Search endpoint, OpenAI, a local
 model, a test fake) via the :data:`EmbeddingFn` callable.
 
-Mirrors ``typescript/src/memory.ts`` — same field names (snake_case here,
-camelCase there), same semantics.
 """
 
 from __future__ import annotations

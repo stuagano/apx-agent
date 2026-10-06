@@ -4,13 +4,8 @@ import { useChat } from './useChat'
 describe('useChat', () => {
   it('appends user and assistant messages on successful send', async () => {
     const mockResponse = {
-      thread_id: 'thread-123',
-      output: [
-        {
-          type: 'message',
-          content: [{ type: 'output_text', text: 'Hello from agent!' }],
-        },
-      ],
+      status: 'completed',
+      output: { status: 'completed', messages: [{ role: 'assistant', content: 'Hello from agent!' }] },
     }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -27,13 +22,13 @@ describe('useChat', () => {
     expect(result.current.messages[0]).toEqual({ role: 'user', content: 'Hi' })
     expect(result.current.messages[1]).toEqual({ role: 'assistant', content: 'Hello from agent!' })
     expect(result.current.isLoading).toBe(false)
-    expect(result.current.threadId).toBe('thread-123')
+    expect(result.current.threadId).toMatch(/^[0-9a-f-]{36}$/)
 
     act(() => result.current.reset())
     expect(result.current.messages).toEqual([])
     expect(result.current.threadId).toBeNull()
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
-      '/invocations',
+      '/api/invocations',
       expect.objectContaining({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -72,4 +67,19 @@ describe('useChat', () => {
 
     expect(result.current.messages[1].content).toBe('Sorry, something went wrong.')
   })
+})
+
+
+it('reuses the managed session and sends only the new user message', async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'completed', output: { status: 'completed', messages: [{ role: 'assistant', content: 'Reply' }] } }) })
+  vi.stubGlobal('fetch', fetchMock)
+  const { result } = renderHook(() => useChat())
+  await act(async () => { await result.current.sendMessage('First') })
+  await act(async () => { await result.current.sendMessage('Second') })
+  const first = JSON.parse(fetchMock.mock.calls[0][1].body)
+  const second = JSON.parse(fetchMock.mock.calls[1][1].body)
+  expect(second.session_id).toBe(first.session_id)
+  expect(second.id).not.toBe(first.id)
+  expect(second.input.messages).toEqual([{ role: 'user', content: 'Second' }])
+  vi.unstubAllGlobals()
 })

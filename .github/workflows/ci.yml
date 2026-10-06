@@ -116,26 +116,6 @@ jobs:
           paths=$(bash ../scripts/pr-pytest-paths.sh)
           echo "Selected pytest paths: $paths"
           echo "paths=$paths" >> "$GITHUB_OUTPUT"
-          if echo " $paths " | grep -q ' tests/ ' || echo "$paths" | grep -q test_appkit; then
-            echo "need_ts=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "need_ts=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Setup Node.js
-        if: needs.changes.outputs.code == 'true' && steps.pytest_paths.outputs.need_ts == 'true'
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: typescript/package-lock.json
-
-      - name: Build internal TypeScript runtime
-        if: needs.changes.outputs.code == 'true' && steps.pytest_paths.outputs.need_ts == 'true'
-        working-directory: typescript
-        run: |
-          npm ci
-          npm run build
 
       - name: Run tests
         if: needs.changes.outputs.code == 'true'
@@ -194,43 +174,16 @@ jobs:
     strategy:
       matrix:
         node-version: ['22']
-    defaults:
-      run:
-        working-directory: typescript
-
     steps:
-      # Always check out so the per-job working-directory exists even on the
-      # docs-only path (where the real steps below are skipped).
       - uses: actions/checkout@v6
-
-      - name: Setup Node.js
-        if: needs.changes.outputs.code == 'true'
-        uses: actions/setup-node@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
-          cache-dependency-path: typescript/package-lock.json
-
-      - name: Guard lockfile registry
+      - name: Verify example browser clients
         if: needs.changes.outputs.code == 'true'
-        run: bash ../scripts/check-ts-lockfile-registry.sh
-
-      - name: Install dependencies
-        if: needs.changes.outputs.code == 'true'
-        run: npm ci
-
-      - name: Build
-        if: needs.changes.outputs.code == 'true'
-        run: npm run build
-
-      - name: Typecheck
-        if: needs.changes.outputs.code == 'true'
-        run: npm run typecheck
-
-      - name: Run tests
-        if: needs.changes.outputs.code == 'true'
-        run: npm test
-
-      - name: Docs-only change — TS checks not required
-        if: needs.changes.outputs.code != 'true'
-        run: echo "Docs-only PR — skipping TS build/typecheck/tests; required check passes."
+        run: |
+          for client in python/examples/{plg-discovery,contract-parsing-agent}/client; do
+            npm --prefix "$client" install
+            npm --prefix "$client" run build
+            npm --prefix "$client" test
+          done

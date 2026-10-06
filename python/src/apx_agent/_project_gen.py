@@ -275,9 +275,6 @@ _START_HOST_CONTENT = '''\
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
-from pathlib import Path
 
 
 def main() -> None:
@@ -304,23 +301,7 @@ def main() -> None:
             ["uvicorn", "agent_server.start_managed:app", "--host", "0.0.0.0",
              "--port", os.environ["DATABRICKS_APP_PORT"]],
         )
-    if host != "appkit":
-        raise SystemExit("APX_APPS_HOST must be 'appkit', 'python', or 'agentbricks' when set.")
-
-    source_root = Path(__file__).resolve().parents[1]
-    appkit_dir = source_root / "apx_appkit_host"
-    if not (appkit_dir / "package.json").exists():
-        raise SystemExit(f"generated AppKit host not found at {appkit_dir}")
-
-    env = {
-        **os.environ,
-        "PYTHON": sys.executable,
-        "APX_PYTHON_BRIDGE_CWD": str(source_root),
-    }
-    subprocess.run(["npm", "install", "--omit=dev"], cwd=appkit_dir, env=env, check=True)
-    os.chdir(appkit_dir)
-    os.execvpe("npm", ["npm", "start"], env)
-
+    raise SystemExit("APX_APPS_HOST must be python or agentbricks; the AppKit host is retired.")
 
 if __name__ == "__main__":
     main()
@@ -788,7 +769,6 @@ artifacts:
   default:
     build: |
       mkdir -p .build
-      mkdir -p .build/apx_appkit_host
       cp agent.py .build/ 2>/dev/null || true
       cp tools.py .build/ 2>/dev/null || true
       cp -r sub_agents .build/ 2>/dev/null || true

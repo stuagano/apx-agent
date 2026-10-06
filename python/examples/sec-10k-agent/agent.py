@@ -80,7 +80,7 @@ def get_agent() -> SequentialAgent:
 def _agent_for_import() -> SequentialAgent:
     """Always return a SequentialAgent so ``agent:agent`` is loadable.
 
-    AppKit staging and ``create_app`` import this module without a live KA.
+    Deployment staging and ``create_app`` import this module without a live KA.
     ``get_agent()`` still fails closed when the env is blank.
     """
     endpoint = os.environ.get("APX_KA_ENDPOINT_NAME")

@@ -68,7 +68,7 @@ def test_bare_tool_does_not_attach_uc_resource() -> None:
     assert get_resources(upper) == []
 
 
-def test_tool_records_appkit_effect() -> None:
+def test_tool_records_declared_effect() -> None:
     @tool(effect="read")
     def lookup(value: str) -> str:
         return value

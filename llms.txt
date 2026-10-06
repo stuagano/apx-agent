@@ -76,7 +76,6 @@ apx deploy --target model-serving --name main.agents.account_lookup
 
 ## Optional
 
-- [TypeScript Framework](https://raw.githubusercontent.com/stuagano/apx-agent/main/typescript/README.md): TS scaffold, `npm run dev`, deploy to Apps
 - [Apps Canary Hotswap Design](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/engine-scope/apps-canary-hotswap-design.md): Design doc for zero-downtime Apps deploys
 - [CI Smoke Test](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/reference/ci-smoke-test.md): How the repo's CI exercises the full scaffold → run → deploy loop
 - [Dev UI Hardening](https://raw.githubusercontent.com/stuagano/apx-agent/main/docs/design/apx-devui-hardening-fanout.md): In-flight Dev UI hardening work

@@ -1,29 +1,19 @@
 from pathlib import Path
-
+import tomllib
 import yaml
 
 
-def test_bundle_declares_runtime_resources_and_mlflow_tracing():
-    config = yaml.safe_load(
-        (Path(__file__).parents[1] / "databricks.yml").read_text()
-    )
-    app = config["resources"]["apps"]["contract-parsing-agent-app"]
-
-    resources = {item["name"]: item for item in app["resources"]}
-    assert resources["experiment"]["experiment"]["experiment_id"] == (
-        "${var.mlflow_experiment_id}"
-    )
-    assert resources["sql-warehouse"]["sql_warehouse"]["id"] == (
-        "${var.sql_warehouse_id}"
-    )
-    assert resources["llm-endpoint"]["serving_endpoint"]["name"] == (
-        "${var.llm_endpoint_name}"
-    )
-
-    env = {item["name"]: item["value"] for item in app["config"]["env"]}
-    assert env["MLFLOW_TRACKING_URI"] == "databricks"
-    assert env["MLFLOW_EXPERIMENT_ID"] == "${var.mlflow_experiment_id}"
+def test_bundle_preserves_inherited_governance_for_native_host():
+    root = Path(__file__).parents[1]
+    doc = yaml.safe_load((root / "databricks.yml").read_text())
+    app = doc["resources"]["apps"]["contract-parsing-agent-app"]
+    config = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["apx"]["agent"]
+    assert config["target"] == "durable_agent_server"
+    assert app["space"] == config["deploy"]["space"]
+    assert app["config"]["command"] == ["python", "-m", "app"]
+    assert "resources" not in app  # Inherited and validated by App Space deployment.
+    env = {entry["name"]: entry["value"] for entry in app["config"]["env"]}
+    assert env["APX_APPS_HOST"] == "agentbricks"
     assert env["SQL_WAREHOUSE_ID"] == "${var.sql_warehouse_id}"
-    assert env["MLFLOW_TRACING_SQL_WAREHOUSE_ID"] == "${var.sql_warehouse_id}"
-    assert env["MLFLOW_TRACING_DESTINATION"] == "${var.catalog}.${var.schema}"
-    assert env["APX_AGENT_MLFLOW_AUTOLOG"] == "1"
+    assert env["MLFLOW_EXPERIMENT_ID"] == "${var.mlflow_experiment_id}"
+    assert config["session"]["type"] == "managed"

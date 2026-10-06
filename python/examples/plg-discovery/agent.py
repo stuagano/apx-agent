@@ -1,4 +1,4 @@
-"""Native APX declaration for the PLG discovery AppKit host."""
+"""Native APX declaration for the PLG discovery durable host."""
 
 from apx_agent import Agent
 

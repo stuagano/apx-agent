@@ -1,6 +1,4 @@
 """Tests for _example.py — durable few-shot examples and InMemoryExampleStore.
-
-Mirrors typescript/tests/example.test.ts case-by-case.
 """
 
 from __future__ import annotations

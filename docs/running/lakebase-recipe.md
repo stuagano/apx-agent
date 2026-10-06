@@ -274,6 +274,5 @@ The same shape works for `LakebaseExampleStore` — swap principal for `agent_id
 ## Cross-references
 
 - Python store source: [`python/src/apx_agent/_conversation_lakebase.py`](../../python/src/apx_agent/_conversation_lakebase.py), [`_memory_lakebase.py`](../../python/src/apx_agent/_memory_lakebase.py), [`_example_lakebase.py`](../../python/src/apx_agent/_example_lakebase.py)
-- TypeScript equivalents: [`typescript/src/session-lakebase.ts`](../../typescript/src/session-lakebase.ts), [`memory-lakebase.ts`](../../typescript/src/memory-lakebase.ts), [`example-lakebase.ts`](../../typescript/src/example-lakebase.ts)
 - Worked example with `InMemoryMemoryStore` ready to swap: [`python/examples/customer_triage/`](../../python/examples/customer_triage/)
 - Full MemoryStore narrative: [root README](../../README.md)

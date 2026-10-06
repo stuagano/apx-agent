@@ -7,7 +7,6 @@ directly into a system message. Empty stores → empty strings, so
 callers can unconditionally concat without worrying about stray headers
 or whitespace.
 
-Mirrors ``typescript/src/prompt-assembly.ts``.
 """
 
 from __future__ import annotations

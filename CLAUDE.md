@@ -9,7 +9,7 @@ across apps, with identity passed through per hop — declared, never hand-wired
 Thesis: **declared, not wired** — for one agent and for many.
 
 The Python package lives in `python/` (`src/apx_agent`). The TypeScript surface
-is in `typescript/`; the deployable hub UI is in `hub/`.
+has been retired; the deployable hub UI is in `hub/`.
 
 ## Two disciplines (apply to every change)
 
