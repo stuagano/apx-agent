@@ -1168,7 +1168,8 @@ def test_agent_prerequisites_block_deployment_before_upload(
         assert "Image dependencies" in result.output
 
 
-def test_native_project_dry_run_and_identity(scaffold: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("environment", ["dev", "prod", "custom"])
+def test_native_project_dry_run_and_identity(scaffold: Path, monkeypatch: pytest.MonkeyPatch, environment: str) -> None:
     from apx_agent import AgentConfig
     from apx_agent import cli as cli_mod
     from apx_agent._project_gen import generate_project
@@ -1176,18 +1177,24 @@ def test_native_project_dry_run_and_identity(scaffold: Path, monkeypatch: pytest
     (scaffold / "databricks.yml").unlink()
     generate_project(AgentConfig(name="direct", target="durable_agent_server"), scaffold)
     monkeypatch.setattr(cli_mod, "_run_databricks_cmd", lambda *a, **kw: pytest.fail("Dry run must stay local"))
-    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--dry-run", "--json-output"])
+    args = ["agents", "deploy", "--target", "apps", "--dry-run", "--bundle-target", environment]
+    result = CliRunner().invoke(main, [*args, "--json-output"])
+    if environment == "custom":
+        assert result.exit_code != 0
+        assert "Native projects support dev/prod deployment labels" in result.output
+        assert not (scaffold / ".build").exists()
+        return
     assert result.exit_code == 0, result.output
     plan = json.loads(result.stdout)
     assert plan["app_name"] == "agent-bricks-direct"
     assert "agentbricks deploy" in plan["steps"]["deploy"]
     assert plan["bundle_vars"] == []
     assert cli_mod._resolve_project_app_name(scaffold) == "agent-bricks-direct"
-    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--dry-run"])
+    result = CliRunner().invoke(main, args)
     assert result.exit_code == 0, result.output
     assert "runtime: durable_agent_server" in result.stdout
     assert "deployment: Agent Bricks" in result.stdout
-    assert "environment: dev" in result.stdout
+    assert f"environment: {environment}" in result.stdout
     assert "bundle" not in result.stdout.lower()
     assert not (scaffold / ".build").exists()
 

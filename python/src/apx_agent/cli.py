@@ -7562,6 +7562,8 @@ def _emit_apps_deploy_plan(
         doc: dict[str, Any] = {}
         if vars or secret_env_pairs or no_run:
             raise click.ClickException("Native deployment does not support Bundle --var, --secret-env, or --no-run.")
+        if bundle_target not in {"dev", "prod"}:
+            raise click.ClickException("Native projects support dev/prod deployment labels; custom Bundle targets require an existing databricks.yml.")
     else:
         doc = _read_databricks_yml(cwd)
         bundle_key, app_name = _resolve_app_name(doc)
