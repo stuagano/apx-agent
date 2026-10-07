@@ -766,11 +766,15 @@ permissions, managed-store durability, or production deployment readiness.
 
 ### Observed deployed lifecycle
 
-The following was observed once on a live `DurableAgentServer` deployment
-(LIQUID compute, Agent Bricks Runtime Store on Lakebase, `durable=true`, recovery
-enabled). It is evidence from one workspace, not a per-workspace guarantee —
-verify your own deployment. Each observation maps onto the operating model in
-"How a durable agent operates" above.
+The following was observed once on a live `DurableAgentServer` deployment that
+was **deployed into an App Space** (hence `LIQUID` compute — see the LIQUID /
+App Space tie-in in
+[the platform page](../deploy/agentbricks-platform.md); a space-less deploy gets
+`MEDIUM` and does *not* scale to zero), with the Agent Bricks Runtime Store on
+Lakebase, `durable=true`, and recovery enabled. It is evidence from one
+workspace, not a per-workspace guarantee — verify your own deployment. Each
+observation maps onto the operating model in "How a durable agent operates"
+above.
 
 - **Idle scale-to-zero, then wake.** With no traffic, compute idled to
   `compute_status.state = STOPPED` ("App scaled to zero"), `app_status.state =
