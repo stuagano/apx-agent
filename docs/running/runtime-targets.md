@@ -42,6 +42,52 @@ discarding that external state. On an on-demand hosting tier, the platform
 starts it again on the next request; expect a cold start. Persisting state does
 not by itself provide automatic recovery of an interrupted tool execution.
 
+### How a durable agent operates
+
+A durable agent is a **stateless worker process in front of three managed
+stores.** The worker holds no durable state of its own; everything that must
+survive a restart lives in a store:
+
+| Store | Holds | Who reads/writes it |
+|---|---|---|
+| **Runtime Store** (per-deployment Postgres/Lakebase) | invocation requests, status, **heartbeats**, events, results | the runtime, to serve polling/streaming/reconnect and to detect interrupted work |
+| **Session Store** | conversation history and framework checkpoints | the agent loop (and a recovery handler, to resume) |
+| **Memory Store** | long-term facts recalled across conversations | memory tools during a run |
+
+Because state is external, two different events look similar from outside but
+work differently:
+
+- **Idle scale-to-zero** parks the *compute* when there is no traffic. The
+  deployment and all three stores are untouched; the next request cold-starts a
+  worker that reloads state from the stores. This is automatic and is the cheap
+  resting state. (Scale-to-zero is a property of the hosting Databricks
+  supplies, not of the server class — see below.)
+- **Worker failure mid-invocation** (crash, OOM, redeploy) is where *recovery*
+  matters, and recovery is **opt-in** (`@app.recover` / `RuntimeRequirements(recovery=True)`,
+  service-identity agents only). The mechanism: each running attempt refreshes a
+  **heartbeat** row in the Runtime Store; a recovery **scan loop** periodically
+  queries for attempts whose heartbeat has gone stale and schedules a replacement
+  attempt on an available worker, which re-enters `@app.recover`.
+
+The key operational fact that follows from this design: **the heartbeat and the
+recovery scan loop both run inside the worker process** (they are in-process
+async tasks against the Runtime Store). So recovery of a stale attempt can only
+be *scheduled by a live worker*. In a multi-replica deployment, a surviving
+replica's scan loop detects the stale heartbeat and runs the replacement. In a
+single-worker deployment, if that one worker dies there is no scan loop left to
+notice — the stale attempt waits in the Runtime Store until *some* worker exists
+again (a new request's cold start, or a redeploy), and that worker's scan loop
+then picks it up and replays it. The durable state is never lost; what's
+gated is *when* a worker is around to act on it. This is distinct from, and does
+not depend on, Databricks Apps restarting a crashed process.
+
+Request-user (`auth = "user"`) work is the one exception that cannot recover:
+the forwarded caller credential is deliberately process-local and never written
+to any store, so a replacement attempt fails with
+`MCP_USER_AUTH_RECOVERY_UNSUPPORTED` before agent code runs. Recovery is also
+**at-least-once** — a replaced attempt may re-run external side effects, so tools
+must be idempotent.
+
 Scale-to-zero is a property of the hosting the platform supplies. Neither a
 Python server class nor the presence or absence of a CLI placement option proves
 it. APX leaves instance selection to Agent Bricks unless you explicitly declare
@@ -702,10 +748,11 @@ streaming and automatic background recovery together requires SDK support for
 re-establishing the caller's authorized execution context.
 
 Waking from idle scale-to-zero and loading persisted sessions and memory is a
-separate supported path; it does not require enabling crash recovery. A hard
-process exit (`os._exit`) is also distinct: Databricks Apps does not auto-restart
-it, so durable replay only runs after a redeploy — see "Observed deployed
-lifecycle".
+separate supported path; it does not require enabling crash recovery. Recovery of
+an interrupted attempt is scheduled by a live worker's scan loop, so in a
+single-worker deployment a hard process exit leaves the stale attempt waiting in
+the Runtime Store until a worker exists again — see "How a durable agent
+operates" and "Observed deployed lifecycle".
 
 ## Optional: package an MLflow model
 
@@ -763,30 +810,32 @@ permissions, managed-store durability, or production deployment readiness.
 ### Observed deployed lifecycle
 
 The following was observed once on a live `DurableAgentServer` deployment
-(LIQUID compute, Agent Bricks runtime store on Lakebase, `durable=true`). It is
-evidence from one workspace, not a per-workspace guarantee — verify your own
-deployment per the caution above.
+(LIQUID compute, Agent Bricks Runtime Store on Lakebase, `durable=true`, recovery
+enabled). It is evidence from one workspace, not a per-workspace guarantee —
+verify your own deployment. Each observation maps onto the operating model in
+"How a durable agent operates" above.
 
-- **Idle scale-to-zero is automatic.** With no traffic, app compute idled to
+- **Idle scale-to-zero, then wake.** With no traffic, compute idled to
   `compute_status.state = STOPPED` ("App scaled to zero"), `app_status.state =
-  UNAVAILABLE`. The deployment, saved state, and runtime store were untouched.
-- **An authenticated request wakes it.** A request carrying a bearer token
-  returned HTTP 202 and compute returned to `ACTIVE`/`RUNNING` in under 10s. An
-  *unauthenticated* request only hit the OAuth edge redirect (HTTP 302) and did
-  **not** wake compute — the request never reached the app.
-- **Durable crash replay works across a process death.** An invocation killed
-  mid-flight by `os._exit` (attempt 1, `recovery=false`) was replayed on the
-  next boot (attempt 2, **`recovery=true`**) and completed with its original
-  input intact, out of the Lakebase runtime store. This requires an unwrapped
-  service-identity agent with recovery enabled (see "Opt into service-identity
-  recovery").
-- **A hard process exit is NOT auto-restarted by Databricks Apps.** After
-  `os._exit`, the control plane kept reporting `ACTIVE`/`RUNNING` (its health
-  model did not notice the dead process) while the app returned HTTP 502
-  indefinitely. `databricks apps start` was a no-op. Only a **redeploy**
-  relaunched the process — and only then did durable replay run. Idle
-  scale-to-zero recovers automatically on the next request; a crash does not.
-  Do not conflate the two.
+  UNAVAILABLE`; the deployment and all stores were untouched. An *authenticated*
+  request then returned HTTP 202 and compute returned to `ACTIVE`/`RUNNING` in
+  under 10s. An *unauthenticated* request only hit the OAuth edge redirect
+  (HTTP 302) and did **not** wake compute — it never reached the app. (This is
+  the "idle scale-to-zero" row of the model: compute parks, state persists, the
+  next authenticated request cold-starts a worker that reloads from the stores.)
+- **Durable replay survives a hard worker death.** An invocation killed
+  mid-flight by `os._exit` (attempt 1, `recovery=false`) later completed as
+  attempt 2 (**`recovery=true`**) with its original input intact, out of the
+  Lakebase Runtime Store. But it did **not** replay immediately: `os._exit` was
+  the only worker, so it killed the recovery scan loop along with the process,
+  and with no live worker nothing was left to notice the stale heartbeat. The
+  control plane kept reporting `ACTIVE`/`RUNNING` and the app returned HTTP 502;
+  `databricks apps start` was a no-op. Only a **redeploy** started a new worker —
+  whose scan loop then found the stale attempt in the Runtime Store and replayed
+  it to completion. (This is the "worker failure" path of the model, in its
+  single-worker form: durable state was never lost; what was gated was a live
+  worker to act on it. A multi-replica deployment would instead have a surviving
+  replica's scan loop pick it up without a redeploy.)
 
 Operational note: `databricks apps deploy` build steps can fail transiently
 with an opaque `[BUILD][ERROR] Unexpected error ... contact support`; a plain
