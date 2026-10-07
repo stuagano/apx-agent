@@ -50,7 +50,8 @@ worker* does. The "scan for abandoned jobs and restart them" routine runs
 **inside a worker** (a running job refreshes a heartbeat; a scan loop in the
 worker watches for heartbeats that have gone stale). So *when* a stale job gets
 restarted depends on whether another worker is alive — which is decided by the
-hosting tier (§3), and the two tiers are mutually exclusive:
+hosting mode (§3; the modes appear to be mutually exclusive — see the inference
+note there):
 
 - **Scale-to-zero tier (0↔1 instance)** — the default. Never more than one
   worker, so if it dies there is nobody left to notice. The job waits safely in
@@ -142,28 +143,68 @@ Server type and tools are *not* deploy flags; they live in `agent.toml`.
 verified, deploy stops *before* source upload and leaves the currently deployed
 version untouched. It won't ship a half-granted app.
 
-### The tiers are a choice, not a flag
+### Hosting: App Space, scale-to-zero, and horizontal scaling
 
-Scale-to-zero (§1) is not a universal property of every Databricks App — it
-comes from the hosting tier, and you pick the tier through `--instances`:
+Three terms get conflated here; keep them separate.
 
-- **Omit `--instances`** → the **App Space serverless runtime**: an on-demand
-  runtime that *"scales between zero and one instance and scales down after a
-  default 30 minutes of idle time."* This is where scale-to-zero comes from —
-  there is no `--scale-to-zero` switch because it is simply what that tier does.
-  The trade-off is in the name: 0↔1 means **at most one worker at a time**.
-- **Pass `--instances N`** → a **dedicated-instance app**: multiple always-on
-  workers behind one URL with best-effort sticky routing. Needed for an
-  always-on app or horizontal scaling — but it does **not** scale to zero.
+**An App Space is a governance boundary, not a compute tier.** Per Databricks,
+an App Space *"defines who can create apps, how apps can be shared, and what
+permissions apps have."* It's a container for *who / how / permissions* — it says
+nothing about how many workers run. Don't call the compute "the App Space
+runtime": the space governs, the runtime computes, and they're separate
+concerns.
 
-You pick one tier or the other; you **cannot** have idle-to-zero *and* multiple
-concurrent workers. This is the same tier split §1's recovery section depends
-on: the scale-to-zero tier is single-worker, so a crashed job waits for the next
-worker; the dedicated tier recovers instantly but stays warm.
+**Scale-to-zero is a property of the serverless app runtime.** Each serverless
+app *"scales between zero and one instance and scales down after a default 30
+minutes of idle time,"* and *"state in memory or on local disk is lost when the
+app scales down"* — which is exactly why durable state lives in the external
+stores (§1), not in the worker. The first request after scale-down pays a short
+cold start. There is no `--scale-to-zero` switch; it is simply what the
+serverless runtime does. The shape to remember: **0↔1 means at most one worker.**
 
-Databricks documents the underlying hosting in
-[Serverless Micro Apps](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building)
-and the product interface in the
+**Horizontal scaling is the other mode.** A horizontally scaled app runs a
+**fixed number of instances, 1–5** (*"Each horizontally scaled app can have at
+most 5 instances"*; Databricks recommends at least 2 for availability), set as a
+static count in the app's configuration — this is what `agentbricks deploy
+--instances N` (and APX's declared `instances`) drives. Multiple always-on
+workers sit behind one URL with best-effort sticky routing.
+
+**The compute size behind the serverless tier is `LIQUID`.** A Databricks App
+reports a `compute_size`. The public SDK enum lists only `MEDIUM`, `LARGE`, and
+`XLARGE` (the fixed T-shirt sizes), but an App-Space serverless deploy runs on
+`LIQUID` — a newer size the installed SDK enum does not yet know (it
+deserializes as `None`), so APX reads it from the raw REST payload and verifies
+`compute_size == "LIQUID"` on deploy readback (`_app_space.py`). The probe in
+"Observed deployed lifecycle" ran on `LIQUID` and is what scaled to zero. Two
+honest limits: public docs do not define what `LIQUID` means beyond being the
+App-Space compute size (the name reads as the elastic/serverless size versus the
+fixed M/L/XL, but that is inference), and it currently surfaces through a
+private-preview path — do not assume it is a stable public `compute_size` value.
+
+**What the docs do *not* say — flagged as inference, not fact:**
+
+- The Databricks docs do **not** explicitly state that a horizontally scaled app
+  *stops* scaling to zero. They present scale-to-zero as the serverless-runtime
+  behavior and *"use a dedicated-instance app"* as the path for *"an always-on
+  app or horizontal scaling"* — strongly implying the two are different modes and
+  that choosing fixed instances means always-on. We **infer** they are mutually
+  exclusive (0↔1 vs a fixed 1–5), but no single sentence confirms "you cannot
+  have both." Treat the mutual exclusivity as a well-supported reading, not a
+  quoted guarantee — and verify on your own deployment if it matters.
+- The docs give **no rationale** for the split. The reasonable reading is a
+  provisioning-model difference (on-demand/cheap vs always-on/load-balanced), but
+  that is our explanation, not a sourced one.
+
+This tier question is also what §1's recovery timing hinges on: *if* the modes
+are exclusive as inferred, a scale-to-zero app is single-worker (a crashed job
+waits for the next worker) and a horizontally scaled app has a surviving worker
+to recover instantly but stays warm.
+
+Sources: Databricks
+[governed-agentic app building](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building)
+(App Space, serverless runtime),
+[horizontal scaling](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/horizontal-scaling)
+(the 1–5 instance limit), and the
 [Agent Bricks CLI guide](https://docs.databricks.com/aws/en/agents/custom-agents/agent-bricks-cli).
 
 ---
