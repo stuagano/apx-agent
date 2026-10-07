@@ -544,6 +544,37 @@ def test_real_durable_server_http_and_readback(execution: Any, monkeypatch: pyte
     assert execution.effects == ["proof"]
 
 
+def test_native_server_exposes_invoke_readback_and_replay_only(
+    execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+) -> None:
+    """The installed SDK has no cancel, disconnect, or reconnect contract."""
+    from fastapi.routing import APIRoute
+    from fastapi.testclient import TestClient
+    from apx_agent import compile_agent
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    app = compile_agent(
+        execution.agent, target="durable_agent_server", model="test", service_ws=execution.ws,
+    )
+    routes = {
+        (method, route.path)
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods
+    }
+    assert ("POST", "/api/invocations") in routes
+    assert ("GET", "/api/invocations/{invocation_id}") in routes
+    assert ("GET", "/api/invocations/{invocation_id}/events") in routes
+    assert ("GET", "/readyz") in routes
+    assert not any("cancel" in path or "reconnect" in path for _, path in routes)
+    with TestClient(app) as client:
+        # "cancel" matches the invocation-id read-back route, and that route is GET-only.
+        missing = client.post("/api/invocations/cancel")
+    assert missing.status_code == 405
+
+
 @pytest.mark.parametrize("buffered", [False, True])
 def test_native_stream_persists_chunks_and_replays_without_tool_effects(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, buffered: bool) -> None:
     import json
