@@ -8854,8 +8854,11 @@ def _check_readyz(
     seconds after RUNNING before ``/readyz`` (which runs the agent) responds,
     so we retry up to ``attempts`` times with ``delay_s`` between — but a
     *parseable* response (ready OR degraded) returns immediately; only an
-    unreachable / unparseable endpoint triggers a retry. On total failure to
-    reach it, returns ``(False, {"error": "<short>"})``.
+    unreachable / unparseable endpoint triggers a retry. A gateway HTML page
+    (the HTTP 202 returned while a stopped App is waking) is unparseable: it
+    is retried, then reported with its status and content type rather than a
+    generic unreachable error. On total failure, returns
+    ``(False, {"error": "<short>"})``.
 
     Best-effort and self-contained: never raises — the CALLER decides whether
     a not-ready result should fail the deploy. The bearer token is NEVER
@@ -8880,13 +8883,20 @@ def _check_readyz(
     url = app_url.rstrip("/") + "/readyz"
     last_error = "unreachable"
     for attempt in range(max(1, attempts)):
+        status_code: int | None = None
+        content_type = ""
         try:
             req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
             with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+                status_code = getattr(resp, "status", None)
+                headers = getattr(resp, "headers", None)
+                content_type = headers.get("Content-Type", "") if headers is not None else ""
                 raw = resp.read()
         except urllib.error.HTTPError as http_err:
-            # 503 (degraded) and friends arrive as HTTPError but still carry a
-            # JSON body that is readable off the error object itself.
+            # 503 (degraded) and a waking App's 202 HTML both arrive as
+            # HTTPError. The body is readable off the error itself.
+            status_code = http_err.code
+            content_type = http_err.headers.get("Content-Type", "") if http_err.headers else ""
             try:
                 raw = http_err.read()
             except Exception:
@@ -8905,8 +8915,12 @@ def _check_readyz(
                 if not isinstance(checks, dict):
                     checks = {k: v for k, v in data.items() if k != "checks"}
                 return _ReadyzResult(is_ready=data.get("status") == "ready", checks=checks)
+            if status_code is not None:
+                media = content_type.split(";", 1)[0].strip().lower() or "unknown"
+                last_error = f"HTTP {status_code} {media}"
 
-        # Unreachable / unparseable — back off and retry.
+        # Unreachable / unparseable — back off and retry. Do not treat gateway
+        # HTML as application readiness.
         if attempt < max(1, attempts) - 1 and delay_s > 0:
             _time.sleep(delay_s)
 
