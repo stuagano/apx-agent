@@ -1004,7 +1004,7 @@ def test_provider_chat_model_fails_before_deploy_side_effects(
     (None, {}),
     (None, {"space": "platform-selected", "compute_size": "LIQUID"}),
     (None, {"compute_size": "MEDIUM"}),
-    ("identity", {}), ("grant", {}), ("readyz", {}),
+    ("identity", {}), ("grant", {}), ("readyz", {}), ("execution", {}),
 ])
 @pytest.mark.parametrize("legacy_bundle", [False, True])
 def test_native_deploy_hands_rollout_to_agentbricks(
@@ -1060,8 +1060,14 @@ def test_native_deploy_hands_rollout_to_agentbricks(
     ws.api_client.do.side_effect = NotFound("Declared store does not exist yet")
     ws.current_user.me.return_value.user_name = "owner@example.com"
     monkeypatch.setattr(cli_mod, "_make_scaffold_workspace_client", lambda profile: ws)
-    ready = MagicMock(return_value=(True, {"durable": failure != "readyz"}))
+    ready = MagicMock(return_value=(True, {"durable": failure != "readyz", "agent_execution": "not_probed"}))
     monkeypatch.setattr(cli_mod, "_check_readyz", ready)
+    smoke = MagicMock(return_value=cli_mod._NativeExecutionSmoke(
+        completed=failure != "execution",
+        detail="assistant message returned and session read back" if failure != "execution" else "model did not answer",
+        readback=failure != "execution",
+    ))
+    monkeypatch.setattr(cli_mod, "_check_native_execution", smoke)
     monkeypatch.setattr(cli_mod, "_fetch_app_log_tail", lambda *a, **kw: "test failure")
     monkeypatch.setattr(cli_mod, "_apps_readyz_recovery_hint", lambda *a, **kw: "retry")
     commands = []
@@ -1112,14 +1118,29 @@ def test_native_deploy_hands_rollout_to_agentbricks(
     if not legacy_bundle:
         assert "synthetic-secret" not in (scaffold / ".build" / "app.yaml").read_text()
         assert not (scaffold / "databricks.yml").exists()
+    if failure == "readyz":
+        smoke.assert_not_called()
+    elif failure not in {"identity", "grant"}:
+        smoke.assert_called_once()
+        assert smoke.call_args.args[0] == payload["url"]
+        assert smoke.call_args.kwargs["session_store"] == "apx-my-app-sessions"
+        assert smoke.call_args.kwargs["agent_name"] == "native"
     if failure:
         assert result.exit_code != 0, result.output
+        if failure == "execution":
+            assert "model did not answer" in result.output
+            assert "STILL LIVE" in result.output
     else:
         assert result.exit_code == 0, result.output
         ready.assert_called_once()
         summary = json.loads(result.stdout)
         assert summary["deployment_backend"] == "agentbricks"
-        assert summary["hosting"] == {key: hosting.get(key) for key in ("space", "compute_size")}
+        assert summary["hosting"] == {
+            "space": hosting.get("space"),
+            "compute_size": hosting.get("compute_size"),
+            "idle_scale_down_observed": None,
+            "wake_observed": None,
+        }
         ws.apps.get_space.assert_not_called()
         assert any(call[:3] == ["apps", "get", "agent-bricks-my-app"] for call in calls)
 
@@ -1139,6 +1160,10 @@ def test_agent_prerequisites_block_deployment_before_upload(
     calls = _install_subprocess_mock(monkeypatch)
     ws = MagicMock()
     ws.api_client.do.side_effect = DatabricksError("hidden backend detail", error_code="FEATURE_DISABLED")
+    if failure == "image":
+        # The automatic session probe is healthy here; only the image must fail.
+        ws.api_client.do.return_value = {"name": "session-stores/apx-my-app-sessions"}
+        ws.api_client.do.side_effect = None
     selected = []
 
     def workspace(profile):
@@ -1245,6 +1270,8 @@ def test_app_space_deploy_binds_sdk_owned_store(
     calls = _install_subprocess_mock(monkeypatch)
     monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda _: LlmAgent(name="native"))
     monkeypatch.setattr("apx_agent.cli._check_readyz", lambda *a, **k: (True, {"durable": True, "runtime_store": "ok"}))
+    smoke = MagicMock(side_effect=AssertionError("App Space deploys must not use the native CLI execution smoke"))
+    monkeypatch.setattr("apx_agent.cli._check_native_execution", smoke)
     grant = MagicMock()
     monkeypatch.setattr("apx_agent.cli._grant_experiment_to_sp", grant)
     sdk = MagicMock()

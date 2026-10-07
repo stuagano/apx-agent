@@ -33,6 +33,17 @@ def test_managed_store_defaults_are_stable_and_do_not_mutate_shared_config() -> 
     assert normalize_memory_knob("managed", name="orders")[0].store_name == orders.memory.store_name
 
 
+def test_native_agents_get_managed_sessions_without_a_declaration() -> None:
+    config = AgentConfig(name="orders", target="durable_agent_server")
+    assert config.session is not None
+    assert config.session.type == "managed"
+    assert config.session.store_name == "apx-orders-sessions"
+    assert config.session.auto_create is False
+    assert config.memory is None
+    responses = AgentConfig(name="orders")
+    assert responses.session is None and responses.memory is None
+
+
 def test_explicit_managed_store_names_survive_agent_rename() -> None:
     config = AgentConfig(name="renamed", target="durable_agent_server",
                          memory={"type": "managed", "store_name": "shared-memory"},

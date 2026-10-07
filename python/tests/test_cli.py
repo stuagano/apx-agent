@@ -4059,13 +4059,13 @@ def test_stage_build_manifest_no_wheel_missing_lock_stages_pyproject_only(
 
 
 def test_scaffold_apps_pins_mlflow_with_genai_agent_server(tmp_path: Path) -> None:
-    """The Apps scaffold must pin mlflow to a version that ships
-    ``mlflow.genai.agent_server`` plus UC trace locations. ``>=3.0`` doesn't
-    guarantee it; the floor must be >=3.14."""
+    """Generated Apps rely on APX's bounded MLflow extra, not a second pin."""
     from apx_agent.cli import _SCAFFOLD_APPS_PYPROJECT
+    import tomllib
 
-    assert '"mlflow[databricks]>=3.14"' in _SCAFFOLD_APPS_PYPROJECT
-    assert '"mlflow[databricks]>=3.0"' not in _SCAFFOLD_APPS_PYPROJECT
+    package = tomllib.loads(Path(__file__).parents[1].joinpath("pyproject.toml").read_text())
+    assert "mlflow[databricks]>=3.14,<3.15" in package["project"]["optional-dependencies"]["eval"]
+    assert "mlflow[databricks]" not in _SCAFFOLD_APPS_PYPROJECT
 
 
 def test_scaffold_apps_readme_documents_promotion() -> None:
@@ -4598,6 +4598,125 @@ def test_check_readyz_unreachable_returns_error(monkeypatch) -> None:
     )
     assert ok is False
     assert "error" in checks
+
+
+def _stub_execution_token(monkeypatch) -> None:
+    from apx_agent import cli
+
+    monkeypatch.setattr(
+        cli,
+        "_run_databricks_cmd",
+        lambda args, profile=None: SimpleNamespace(
+            returncode=0, stdout=json.dumps({"access_token": "secret-token-value"}), stderr=""
+        ),
+    )
+
+
+def test_native_execution_requires_completed_assistant(monkeypatch) -> None:
+    """A 200 without a completed assistant message fails the smoke."""
+    import io
+    import urllib.request
+
+    from apx_agent import cli
+
+    _stub_execution_token(monkeypatch)
+
+    def fake_urlopen(req, timeout=None):
+        assert req.get_header("Authorization") == "Bearer secret-token-value"
+        assert req.full_url == "https://app.example.com/api/invocations"
+        sent = json.loads(req.data.decode())
+        assert sent["input"] == {"messages": [{"role": "user", "content": "Reply with the single word pong."}]}
+        assert sent["session_id"].startswith("apx-deploy-smoke-")
+        assert "secret-token-value" not in req.data.decode()
+        body = json.dumps({"output": {"status": "interrupted", "messages": []}}).encode()
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    result = cli._check_native_execution(
+        "https://app.example.com", profile="fevm", session_store="apx-demo-sessions",
+    )
+    assert result.completed is False
+    assert result.readback is False
+    assert "completed assistant message" in result.detail
+
+
+def test_native_execution_reads_session_back(monkeypatch) -> None:
+    """A completed assistant message must be present in the managed checkpoint."""
+    import io
+    import urllib.request
+    from types import SimpleNamespace as Message
+
+    from apx_agent import cli
+
+    _stub_execution_token(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["session_id"] = json.loads(req.data.decode())["session_id"]
+        body = json.dumps({
+            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}]},
+        }).encode()
+        return io.BytesIO(body)
+
+    class _Saver:
+        def __init__(self, store: str, *, workspace_client: Any) -> None:
+            assert store == "apx-demo-sessions"
+            assert workspace_client.profile == "fevm"
+
+        def get_tuple(self, config: dict[str, Any]) -> Any:
+            expected = cli._native_session_thread("demo", seen["session_id"])
+            assert config == expected
+            return SimpleNamespace(checkpoint={
+                "channel_values": {"messages": [Message(type="ai", content="pong")]},
+            })
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda *, profile=None: SimpleNamespace(profile=profile))
+    monkeypatch.setattr(
+        "databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver,
+    )
+    result = cli._check_native_execution(
+        "https://app.example.com/", profile="fevm", session_store="apx-demo-sessions",
+        agent_name="demo",
+    )
+    assert result.completed is True
+    assert result.readback is True
+    assert "secret-token-value" not in result.detail
+
+
+def test_native_execution_fails_when_session_readback_misses(monkeypatch) -> None:
+    """Answering without a readable checkpoint is not an execution proof."""
+    import io
+    import urllib.request
+
+    from apx_agent import cli
+
+    _stub_execution_token(monkeypatch)
+
+    def fake_urlopen(req, timeout=None):
+        body = json.dumps({
+            "output": {"status": "completed", "messages": [{"role": "assistant", "content": "pong"}]},
+        }).encode()
+        return io.BytesIO(body)
+
+    class _Saver:
+        def __init__(self, store: str, *, workspace_client: Any) -> None:
+            assert workspace_client.profile is None
+
+        def get_tuple(self, config: dict[str, Any]) -> None:
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda *, profile=None: SimpleNamespace(profile=profile))
+    monkeypatch.setattr(
+        "databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver,
+    )
+    result = cli._check_native_execution(
+        "https://app.example.com", profile=None, session_store="apx-demo-sessions",
+        agent_name="demo",
+    )
+    assert result.completed is False
+    assert "did not contain the assistant message" in result.detail
 
 
 def _drive_deploy_to_gate(tmp_path, monkeypatch, *, readyz_gate, check_result):

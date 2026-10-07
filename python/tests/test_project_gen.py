@@ -36,12 +36,41 @@ from apx_agent._project_gen import generate_project, render_agent_py
 
 
 @pytest.mark.parametrize("target", ["responses_agent", "durable_agent_server"])
+def test_generated_dependencies_use_published_extras(tmp_path: Path, target: str) -> None:
+    from packaging.requirements import Requirement
+
+    generate_project(AgentConfig(name="dependencies", target=target), tmp_path)
+    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+    requirements = [Requirement(value) for value in project["project"]["dependencies"]]
+    package = tomllib.loads(Path(__file__).parents[1].joinpath("pyproject.toml").read_text())
+    published = package["project"]["optional-dependencies"]
+    apx = next(dep for dep in requirements if dep.name == "apx-agent")
+    assert apx.extras <= published.keys()
+    assert "eval" in apx.extras
+    assert ("agentbricks" in apx.extras) == (target == "durable_agent_server")
+    assert not any(dep.name == "mlflow" for dep in requirements)
+    assert "mlflow[databricks]>=3.14,<3.15" in published["eval"]
+
+
+@pytest.mark.parametrize("backend", ["session", "memory", "example"])
+@pytest.mark.parametrize("store_type", ["lakebase", "inmemory"])
+def test_declared_storage_selects_dependency_extra(tmp_path: Path, backend: str, store_type: str) -> None:
+    from packaging.requirements import Requirement
+
+    config = AgentConfig.model_validate({"name": "storage", backend: {"type": store_type}})
+    generate_project(config, tmp_path)
+    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+    dependency = Requirement(project["project"]["dependencies"][0])
+    assert ("lakebase" in dependency.extras) == (store_type == "lakebase")
+
+
+@pytest.mark.parametrize("target", ["responses_agent", "durable_agent_server"])
 def test_managed_memory_generated_dependency(tmp_path: Path, target: str) -> None:
     config = AgentConfig(name="memory-agent", target=target, model="test",
                          memory={"type": "managed", "store_name": "agent-memory"})
     generate_project(config, tmp_path)
     project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
-    assert "apx-agent[langgraph,agentbricks]" in project["project"]["dependencies"]
+    assert "apx-agent[eval,agentbricks]" in project["project"]["dependencies"]
     assert project["tool"]["apx"]["agent"]["memory"]["store_name"] == "agent-memory"
 
 
@@ -66,7 +95,7 @@ def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> Non
     exec((tmp_path / "agent.py").read_text(), namespace)
     assert namespace["agent"]._name == config.name
     project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
-    assert "apx-agent[langgraph,agentbricks]" in project["project"]["dependencies"]
+    assert "apx-agent[eval,agentbricks]" in project["project"]["dependencies"]
     bundle = yaml.safe_load((tmp_path / "databricks.yml").read_text())
     app = bundle["resources"]["apps"]["native-proof"]
     assert app["space"] == "shared-space"

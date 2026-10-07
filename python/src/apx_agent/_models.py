@@ -656,7 +656,12 @@ class AgentConfig(BaseModel):
     """Declarative example backend — see ``[tool.apx.agent.example]``."""
 
     session: SessionBackendConfig | None = None
-    """Declarative session backend — see ``[tool.apx.agent.session]``."""
+    """Declarative session backend — see ``[tool.apx.agent.session]``.
+
+    Native durable agents receive a managed Session Store when this is omitted.
+    Declare ``store_name`` only to override that derived binding. Long-term
+    memory stays a separate, explicit opt-in.
+    """
 
     deploy: DeployConfig | None = None
     """Declared Apps horizontal scaling — see ``[tool.apx.agent.deploy]``."""
@@ -704,6 +709,10 @@ class AgentConfig(BaseModel):
         if self.target == "durable_agent_server":
             if self.session is not None and self.session.type != "managed":
                 raise ValueError("Declared durable sessions require type='managed'; explicit checkpointers remain available through compile_agent")
+            # Agent Bricks provisions this store. Customers override the name;
+            # they do not opt into the managed session itself.
+            if self.session is None:
+                self.session = SessionBackendConfig(type="managed")
         else:
             if self.deploy is not None and self.deploy.space is not None:
                 raise ValueError("deploy.space currently requires target='durable_agent_server'")

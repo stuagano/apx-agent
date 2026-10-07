@@ -20,7 +20,9 @@ def offline_scaffold(monkeypatch):
 
 
 @pytest.mark.parametrize("template", ["base", "data", "coworker"])
-def test_new_apps_scaffold_defaults_to_native(tmp_path, template, monkeypatch):
+@pytest.mark.parametrize("editable", [False, True])
+def test_new_apps_scaffold_defaults_to_native(tmp_path, template, monkeypatch, editable):
+    monkeypatch.setattr(cli, "_is_inside_framework_repo", lambda _: editable)
     result = CliRunner().invoke(cli.main, ["agents", "scaffold", "orders", "--here", "--dir", str(tmp_path),
                                         "--template", template, "--no-interactive"])
     assert result.exit_code == 0, result.output
@@ -28,9 +30,19 @@ def test_new_apps_scaffold_defaults_to_native(tmp_path, template, monkeypatch):
     verify(Artifact(str(root / "pyproject.toml"), must_contain="durable_agent_server"),
            Artifact(str(root / "agent.py"), min_bytes=40))
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert any(dep.startswith("apx-agent[langgraph,agentbricks]") for dep in project["project"]["dependencies"])
+    assert any(dep.startswith("apx-agent[eval,agentbricks]") for dep in project["project"]["dependencies"])
+    from packaging.requirements import Requirement
+    dependency = Requirement(project["project"]["dependencies"][0])
+    if editable:
+        assert dependency.url is None
+        assert project["tool"]["uv"]["sources"]["apx-agent"]["editable"] is True
+    else:
+        assert dependency.url.startswith("git+https://github.com/stuagano/apx-agent.git@")
     assert not any((root / name).exists() for name in ("databricks.yml", "agent_server", "scripts/quickstart.py", ".github"))
-    assert "session" not in project["tool"]["apx"]["agent"]
+    assert project["tool"]["apx"]["agent"]["session"] == {
+        "type": "managed", "store_name": "apx-orders-sessions",
+        "auto_create": False, "validate_at_boot": True,
+    }
     assert "memory" not in project["tool"]["apx"]["agent"]
     monkeypatch.chdir(root)
     agent = runpy.run_path(str(root / "agent.py"))["agent"]
