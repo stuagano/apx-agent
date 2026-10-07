@@ -81,8 +81,8 @@ through a real A → B path — is **unverified** in the current environment:
 - The UC ABAC policy functions that consume identity attributes are delivered
   separately from the identity-attributes preview; their availability is
   account-dependent.
-- The installed `databricks-sdk` 0.102.0 exposes no identity-attribute or UC
-  ABAC policy client; read-back goes through account SCIM.
+- The installed `databricks-sdk` exposes no identity-attribute or UC
+  ABAC policy client (still true as of 0.146.0); read-back goes through account SCIM.
 
 `python/tests/test_identity_attribute_abac_live_reality_ctk.py` encodes the
 opt-in proof. It skips with an explicit unverified reason unless the operator
