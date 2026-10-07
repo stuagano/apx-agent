@@ -27,6 +27,14 @@ and hands deployment to the Agent Bricks CLI. You do not need to select or
 understand an App Space to use this workflow. Infrastructure placement is a
 Databricks product responsibility, not another APX runtime target.
 
+`DurableAgentServer`, the invocation API, and the managed Runtime/Session/Memory
+stores are the Agent Bricks product surface, documented canonically in
+[`databricks/databricks-ai-bridge` › `integrations/agentbricks`](https://github.com/databricks/databricks-ai-bridge/tree/main/integrations/agentbricks)
+(README + `cli.md`). This page tracks that contract and adds what APX layers on
+top: the declarative `[tool.apx.agent]` envelope, governance wiring, and
+behavior observed on live deployments. Where the two could drift, upstream is
+the source of truth for the API and stores; APX owns the declaration and policy.
+
 Keep state outside the app process: the managed Runtime Store persists native
 invocations, the managed Session Store persists conversation checkpoints, and
 managed memory persists facts across conversations. The app can stop without
@@ -41,7 +49,9 @@ an instance count, and generated native projects omit keepalive jobs. Deployment
 `--json-output` includes the actual `hosting.space` and `hosting.compute_size`
 returned by Databricks; absent fields are `null`. `hosting.idle_scale_down_observed`
 and `hosting.wake_observed` are also `null`: a successful `/readyz` check proves
-readiness, not an observed idle scale-down and subsequent wake-up. A gateway
+readiness, not an observed idle scale-down and subsequent wake-up (for one
+deployment where idle-down and wake *were* observed directly, see "Observed
+deployed lifecycle"). A gateway
 response such as HTTP 202 `text/html` is retried and then reported by status
 and content type; it is not treated as application readiness.
 
@@ -506,6 +516,23 @@ as a list or under `messages`. Responses API content items, tool results,
 credentials, `custom_inputs`, and caller-controlled model selection are not
 accepted by this target.
 
+The invocation body carries a client-generated UUID `id`, an optional top-level
+`session_id` (which groups invocations into one application session and is
+distinct from the invocation `id` and from the `X-Routing-Key` sticky-routing
+header), the agent `input`, and optional `background` / `stream` flags. The
+Agent Bricks endpoint behavior (upstream contract) is:
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /api/invocations` | Defaults to synchronous: `200` with the result under `output`. `stream: true` returns SSE events. `background: true` returns `202` with a status URL; adding `stream: true` also includes an events URL. |
+| `GET /api/invocations/{id}` | Invocation status, and its `output` once completed. |
+| `GET /api/invocations/{id}/events?after={cursor}` | Replays events after the given event ID, so a client can reconnect. |
+
+The `id` is also an idempotency key: repeating the same request reuses the
+existing invocation while its record is retained; reusing the `id` for a
+*different* request returns `409`. APX adds only `GET /readyz` on top of this
+contract.
+
 ## Compatibility checks
 
 `RuntimeRequirements` describes required behavior. `inspect_target` returns a
@@ -675,7 +702,10 @@ streaming and automatic background recovery together requires SDK support for
 re-establishing the caller's authorized execution context.
 
 Waking from idle scale-to-zero and loading persisted sessions and memory is a
-separate supported path; it does not require enabling crash recovery.
+separate supported path; it does not require enabling crash recovery. A hard
+process exit (`os._exit`) is also distinct: Databricks Apps does not auto-restart
+it, so durable replay only runs after a redeploy — see "Observed deployed
+lifecycle".
 
 ## Optional: package an MLflow model
 
@@ -729,3 +759,35 @@ pause/resume, and capability refusals. Managed session tests reconstruct the
 server and saver against a local REST fake and read persisted checkpoints back.
 They do not establish live workspace
 permissions, managed-store durability, or production deployment readiness.
+
+### Observed deployed lifecycle
+
+The following was observed once on a live `DurableAgentServer` deployment
+(LIQUID compute, Agent Bricks runtime store on Lakebase, `durable=true`). It is
+evidence from one workspace, not a per-workspace guarantee — verify your own
+deployment per the caution above.
+
+- **Idle scale-to-zero is automatic.** With no traffic, app compute idled to
+  `compute_status.state = STOPPED` ("App scaled to zero"), `app_status.state =
+  UNAVAILABLE`. The deployment, saved state, and runtime store were untouched.
+- **An authenticated request wakes it.** A request carrying a bearer token
+  returned HTTP 202 and compute returned to `ACTIVE`/`RUNNING` in under 10s. An
+  *unauthenticated* request only hit the OAuth edge redirect (HTTP 302) and did
+  **not** wake compute — the request never reached the app.
+- **Durable crash replay works across a process death.** An invocation killed
+  mid-flight by `os._exit` (attempt 1, `recovery=false`) was replayed on the
+  next boot (attempt 2, **`recovery=true`**) and completed with its original
+  input intact, out of the Lakebase runtime store. This requires an unwrapped
+  service-identity agent with recovery enabled (see "Opt into service-identity
+  recovery").
+- **A hard process exit is NOT auto-restarted by Databricks Apps.** After
+  `os._exit`, the control plane kept reporting `ACTIVE`/`RUNNING` (its health
+  model did not notice the dead process) while the app returned HTTP 502
+  indefinitely. `databricks apps start` was a no-op. Only a **redeploy**
+  relaunched the process — and only then did durable replay run. Idle
+  scale-to-zero recovers automatically on the next request; a crash does not.
+  Do not conflate the two.
+
+Operational note: `databricks apps deploy` build steps can fail transiently
+with an opaque `[BUILD][ERROR] Unexpected error ... contact support`; a plain
+retry succeeded and it was not a requirements problem.
