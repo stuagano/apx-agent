@@ -35,125 +35,26 @@ top: the declarative `[tool.apx.agent]` envelope, governance wiring, and
 behavior observed on live deployments. Where the two could drift, upstream is
 the source of truth for the API and stores; APX owns the declaration and policy.
 
-### How a durable agent works
+For how the underlying product works — the durable-agent model (worker + Runtime
+Store), the `agentbricks` CLI lifecycle, what `deploy` does, the two hosting
+tiers (scale-to-zero vs dedicated-instance), and the per-tool identity model —
+see **[How the Agent Bricks platform works](../deploy/agentbricks-platform.md)**.
+That page is the product-first explainer; this page covers the APX compile
+targets and their limits. The rest of this section is APX-specific.
 
-A durable agent is **a worker plus a database.** The worker runs your agent
-code. The database — the managed Runtime Store — holds the record of every job.
-The worker is disposable; the database is not. That split is the whole idea:
-because the record of what's happening lives in the database and not in the
-worker's memory, the worker can be stopped, killed, and replaced without losing
-anything.
+<!-- moved to deploy/agentbricks-platform.md: the durable-agent model, CLI
+lifecycle, deploy walkthrough, hosting tiers, and identity model. Keep that page
+as the single home for product explanation; add APX-compile specifics here. -->
 
-(There are actually three managed stores, each with its own job: the **Runtime
-Store** keeps the record of invocations — requests, status, heartbeats, events,
-results; the **Session Store** keeps conversation history; the **Memory Store**
-keeps long-term facts recalled across conversations. For the rest of this
-section "the database" means the Runtime Store, the one recovery depends on.)
+### Durable target: APX-specific notes
 
-Three things can happen to the worker:
-
-**1. Nobody's using it → it goes to sleep (scale to zero).** With no traffic for
-a while, Databricks shuts the worker off so you stop paying for idle compute.
-The database is untouched. The next request starts a fresh worker, which reads
-the database back and carries on — you pay a few seconds of cold start and lose
-nothing. This is automatic, needs no configuration, and is the normal resting
-state.
-
-**2. The worker dies mid-job → the job isn't lost.** If a worker crashes, OOMs,
-or is redeployed while running an invocation, the job's progress is already in
-the database, so a new worker can pick it up and finish it. That is what
-"durable" means. (This is opt-in: enable it with `@app.recover` /
-`RuntimeRequirements(recovery=True)`, service-identity agents only.)
-
-**3. The catch: who notices an abandoned job and restarts it?** A *living worker*
-does. The "scan for abandoned jobs and restart them" routine runs **inside a
-worker** (a running job refreshes a heartbeat; a scan loop in the worker watches
-for heartbeats that have gone stale). So *when* a stale job gets restarted
-depends on whether another worker is alive — and that is decided by which
-hosting tier you deployed on, because the two tiers are mutually exclusive
-(see "What the Agent Bricks CLI gives you out of the box" below):
-
-- **Scale-to-zero tier (0↔1 instance)** — the default for `agentbricks deploy`.
-  There is never more than one worker, so if it dies there is nobody left to
-  notice. The job sits safely in the database and waits until a worker exists
-  again — the next request's cold start, or a redeploy — and *that* worker's
-  scan loop finishes it. For a scale-to-zero agent this "waits for a worker" is
-  the normal case, not an edge case.
-- **Dedicated-instance tier (multiple always-on workers)** — if one worker dies,
-  a surviving worker's scan loop notices and restarts the job right away. True
-  instant recovery, but this tier does **not** scale to zero.
-
-**Either way the job is never lost — the only difference is how soon a worker is
-around to pick it up.** (This is why a scale-to-zero agent's hard crash doesn't
-replay until something starts a new worker — it has nothing to do with
-Databricks Apps restarting the process.)
-
-Two limits worth knowing: a **request-user** (`auth = "user"`) job can't be
-recovered — the forwarded caller credential is deliberately never written to the
-database, so a restart fails fast with `MCP_USER_AUTH_RECOVERY_UNSUPPORTED`
-before your code runs. And recovery is **at-least-once**: a restarted job may
-re-run external side effects, so tools must be idempotent (safe to run twice).
-
-### What the Agent Bricks CLI gives you out of the box
-
-`agentbricks deploy` (which APX calls under the hood) is the product that stands
-up all of the above. From one command you get, with no extra wiring:
-
-- A hosted app on Databricks Apps with a **URL** to share.
-- **Scale-to-zero** when idle and cold-start on the next request — the sleep/wake
-  behavior above (see the tier note below for exactly when you get it).
-- **The managed Runtime Store** (a dedicated Postgres/Lakebase database per
-  deployment) — provisioned, schema-initialized, and owned by the app's service
-  principal. No manual Lakebase grant or Postgres attachment.
-- **Model access through the AI Gateway using the app's own identity** — no model
-  keys to configure.
-- Any **Session / Memory store** declared in config, created if missing and
-  granted to the app, plus **tracing** wired in.
-- The invocation API (`POST /api/invocations` and friends), streaming, and
-  background/reconnect — the one HTTP contract.
-
-**Scale-to-zero comes from the hosting tier, and the tiers are a choice, not a
-flag.** A default `agentbricks deploy` lands on the **App Space serverless
-runtime**: an on-demand runtime that *"scales between zero and one instance and
-scales down after a default 30 minutes of idle time."* That is where
-scale-to-zero comes from — there is no `--scale-to-zero` switch because it is
-simply what that tier does. The trade-off is in the name: 0↔1 means **at most
-one worker at a time**. If you need an **always-on app or horizontal scaling**,
-you move to a **dedicated-instance app** — multiple workers, but it does **not**
-scale to zero. You pick one tier or the other; you cannot have idle-to-zero *and*
-multiple concurrent workers. (This is the tier split the recovery section above
-refers to: the scale-to-zero tier is single-worker, so a crashed job waits for
-the next worker; the dedicated tier recovers instantly but stays warm.)
-
-### What APX adds on top
-
-If the raw CLI already does all that, what is APX for? APX does not replace it —
-it **declares** the agent so you write intent instead of wiring. The CLI hands
-deployment to Agent Bricks; APX compiles your one declaration into the inputs
-that deployment consumes, and adds the parts the raw product leaves to you:
-
-- **One declarative envelope.** A single `[tool.apx.agent]` block in
-  `pyproject.toml` carries the agent's name, model, instructions, tools,
-  composition (`sub_agents`), memory/session choice, and deploy/scaling — instead
-  of hand-maintaining `agent.toml`, store bindings, and bundle files separately.
-  Generated manifests are compiler output, not config you keep in sync.
-- **Governance and identity wiring.** Per-tool identity and UC/secret ceilings
-  (tool-scoped auth), caller-identity passthrough (OBO) across tools and across
-  agents (A2A), and the guardrails that refuse unsafe combinations — e.g. a
-  scaled deployment with an in-memory session store is rejected at compile and at
-  boot, because that silently loses history across workers.
-- **Compatibility checking before you deploy.** `inspect_target` /
-  `compile_agent` check whether the chosen runtime can actually preserve what you
-  declared (identity, sessions, approvals, memory, streaming, recovery) and fail
-  with a named reason instead of silently degrading.
-- **Portability.** The same declaration compiles to the durable Apps target or to
-  a `ResponsesAgent` model for Model Serving, so moving between serving contracts
-  is a target switch, not a rewrite.
-
-Rule of thumb: **the CLI gives you the running, durable, scale-to-zero app; APX
-gives you the declaration, governance, and safety checks that make a fleet of
-them maintainable.** Where the two could drift, the CLI/product is the source of
-truth for the API and stores; APX owns the declaration and policy.
+A durable agent is **a worker plus a database** (full explanation in the
+platform page linked above): the worker runs your agent code; the managed
+Runtime Store holds the record of every job, so the worker can be replaced
+without losing work. The APX-specific point is only this: APX decides the
+durable target and checks its compatibility (below), declares the stores and
+scaling that the platform then provisions, and refuses unsafe combinations
+(e.g. a scaled deployment with an in-memory session store) at compile and boot.
 
 One honesty note for operators: deployment `--json-output` reports the real
 `hosting.space` and `hosting.compute_size`, but the
