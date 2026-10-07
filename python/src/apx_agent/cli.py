@@ -9067,6 +9067,32 @@ def _check_native_execution(
     return _NativeExecutionSmoke(completed=True, detail="assistant message returned and session read back", readback=True)
 
 
+class _HostingReport(NamedTuple):
+    """Platform placement reported by ``apps get``, plus idle behavior we did not watch.
+
+    ``space`` and ``compute_size`` are copied from the app payload and stay
+    ``None`` when Databricks omits them. Idle scale-down and wake stay
+    unobserved: a ready app is not evidence that it later scaled to zero and
+    came back.
+    """
+    space: str | None
+    compute_size: str | None
+    idle_scale_down_observed: None
+    wake_observed: None
+
+
+def _hosting_report(payload: dict[str, Any]) -> _HostingReport:
+    """Copy reported placement. Never treat readiness as an idle/wake observation."""
+    space = payload.get("space")
+    compute_size = payload.get("compute_size")
+    return _HostingReport(
+        space=space if isinstance(space, str) else None,
+        compute_size=compute_size if isinstance(compute_size, str) else None,
+        idle_scale_down_observed=None,
+        wake_observed=None,
+    )
+
+
 def _fetch_app_log_tail(app_name: str, *, profile: str | None, lines: int = 40) -> str:
     """Return the last *lines* of app stdout/stderr, or a fallback message on error.
 
@@ -10968,12 +10994,9 @@ def _deploy_apps_impl(
             )
             app_url = payload.get("url") or ""
             # Report platform placement without inferring it from CLI flags or
-            # the server class. Missing fields remain unknown; readiness does
-            # not prove idle scale-down or wake-up behavior.
-            hosting = {
-                "space": payload.get("space"),
-                "compute_size": payload.get("compute_size"),
-            }
+            # the server class. Missing fields stay unknown. Readiness does not
+            # observe idle scale-down or a later wake.
+            hosting = _hosting_report(payload)._asdict()
 
             # 6b. Grant the app's service principal access to the tracing
             # experiment. The experiment is created under the deploying user, but

@@ -39,8 +39,9 @@ Python server class nor the presence or absence of a CLI placement option proves
 it. APX leaves instance selection to Agent Bricks unless you explicitly declare
 an instance count, and generated native projects omit keepalive jobs. Deployment
 `--json-output` includes the actual `hosting.space` and `hosting.compute_size`
-returned by Databricks; absent fields are `null`. A successful `/readyz` check
-proves readiness, not an observed idle scale-down and subsequent wake-up.
+returned by Databricks; absent fields are `null`. `hosting.idle_scale_down_observed`
+and `hosting.wake_observed` are also `null`: a successful `/readyz` check proves
+readiness, not an observed idle scale-down and subsequent wake-up.
 
 Databricks describes the on-demand, zero-to-one hosting behavior in
 [Serverless Micro Apps](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building).

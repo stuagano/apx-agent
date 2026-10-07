@@ -1135,7 +1135,12 @@ def test_native_deploy_hands_rollout_to_agentbricks(
         ready.assert_called_once()
         summary = json.loads(result.stdout)
         assert summary["deployment_backend"] == "agentbricks"
-        assert summary["hosting"] == {key: hosting.get(key) for key in ("space", "compute_size")}
+        assert summary["hosting"] == {
+            "space": hosting.get("space"),
+            "compute_size": hosting.get("compute_size"),
+            "idle_scale_down_observed": None,
+            "wake_observed": None,
+        }
         ws.apps.get_space.assert_not_called()
         assert any(call[:3] == ["apps", "get", "agent-bricks-my-app"] for call in calls)
 
