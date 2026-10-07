@@ -16,16 +16,12 @@ sub_agents = ["endpoints/sql-explainer"]   # Model Serving target
 # sub_agents = ["$SQL_EXPLAINER_URL"]      # Apps target
 ```
 
-**TypeScript** — plugin options:
-
-```typescript
-createAgentPlugin({
-  model: 'databricks-claude-sonnet-4-6',
-  instructions: 'System prompt for the agent',
-  tools: [myTool],
-  subAgents: ['endpoints/sql-explainer'],
-})
-```
+The APX TypeScript agent runtime and `createAgentPlugin` have been retired.
+Do not add a standalone chat client to recover them. Python chat uses Unity
+Catalog AI Gateway only; see [AI Gateway model services](bedrock-via-ai-gateway.md).
+Browser TypeScript remains UI code. Former AppKit projects move to
+`target = "durable_agent_server"`, as described in
+[runtime targets](../running/runtime-targets.md).
 
 Environment variable references (`$VAR` or `${VAR}`) are resolved at startup.
 
@@ -71,7 +67,8 @@ controls whether reconciliation occurs.
 
 ## Declarative tools — `[[tool.apx.tools]]`
 
-> Python only. The TypeScript plugin has no `[[tool.apx.tools]]` equivalent — declare tools in code via the `tools` option.
+Declarative tools are Python declarations. The retired TypeScript plugin is
+not a second tool surface.
 
 Resource-reference tools can be declared as data instead of code. Each `[[tool.apx.tools]]` entry is a table-array sibling of `[tool.apx.agent]`; `type` selects a [platform tool factory](../tools/overview.md#platform-tool-factories) and the remaining keys are its arguments:
 
