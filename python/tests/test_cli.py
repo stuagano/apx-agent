@@ -4600,6 +4600,48 @@ def test_check_readyz_unreachable_returns_error(monkeypatch) -> None:
     assert "error" in checks
 
 
+def test_check_readyz_reports_gateway_status_and_content_type(monkeypatch) -> None:
+    """A waking App's 202 HTML is not readiness, and the error names it."""
+    import email.message
+    import io
+    import urllib.error
+    import urllib.request
+
+    from apx_agent import cli
+
+    monkeypatch.setattr(
+        cli,
+        "_run_databricks_cmd",
+        lambda args, profile=None: SimpleNamespace(
+            returncode=0, stdout=json.dumps({"access_token": "tok"}), stderr=""
+        ),
+    )
+    headers = email.message.Message()
+    headers["Content-Type"] = "text/html; charset=utf-8"
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        raise urllib.error.HTTPError(
+            "https://app.example.com/readyz",
+            202,
+            "Accepted",
+            headers,
+            io.BytesIO(b"<html>starting</html>"),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    ok, checks = cli._check_readyz(
+        "https://app.example.com", profile=None, attempts=2, delay_s=0.0
+    )
+    assert ok is False
+    assert checks == {"error": "readyz unreachable: HTTP 202 text/html"}
+    assert calls["n"] == 2
+
+
 def _stub_execution_token(monkeypatch) -> None:
     from apx_agent import cli
 
