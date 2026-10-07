@@ -142,7 +142,7 @@ uv add apx-agent
 uv run apx-agent agents scaffold my-agent
 ```
 
-The scaffold writes an editable `my-agent/` project with `agent.py`, `pyproject.toml`, the native runtime declaration, and a baked schema manifest when schema discovery succeeds. APX supplies the launcher; you do not maintain generated server files or Bundle YAML. Managed sessions and memory are optional declarations.
+The scaffold writes an editable `my-agent/` project with `agent.py`, `pyproject.toml`, the native runtime declaration, and a baked schema manifest when schema discovery succeeds. APX supplies the launcher and binds a managed Session Store automatically; declare a store name only to override it. Managed memory remains an explicit opt-in. You do not maintain generated server files or Bundle YAML.
 
 **3. Deploy the project**
 

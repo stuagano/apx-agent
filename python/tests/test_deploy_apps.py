@@ -1139,6 +1139,10 @@ def test_agent_prerequisites_block_deployment_before_upload(
     calls = _install_subprocess_mock(monkeypatch)
     ws = MagicMock()
     ws.api_client.do.side_effect = DatabricksError("hidden backend detail", error_code="FEATURE_DISABLED")
+    if failure == "image":
+        # The automatic session probe is healthy here; only the image must fail.
+        ws.api_client.do.return_value = {"name": "session-stores/apx-my-app-sessions"}
+        ws.api_client.do.side_effect = None
     selected = []
 
     def workspace(profile):

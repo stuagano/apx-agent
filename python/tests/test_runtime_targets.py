@@ -856,11 +856,38 @@ def test_packaged_launcher_serves_native_invocations_without_generated_server(ex
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
     monkeypatch.setenv("APX_APPS_HOST", "python")
     monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "unrelated.toml"))
+    sessions: dict[str, Any] = {}
+    items: dict[str, list[Any]] = {}
+    from databricks.sdk.errors import NotFound
+
+    def rest(method: str, path: str, *, body: Any = None, query: Any = None) -> Any:
+        root = "/api/2.0/agents/session-stores/apx-proof-sessions/sessions"
+        if not path.startswith(root):
+            raise AssertionError(path)
+        if method == "POST" and path == root:
+            session_id = query["session_id"]
+            sessions[session_id] = {"session_id": session_id, **body}
+            items.setdefault(session_id, [])
+            return dict(sessions[session_id])
+        session_id = path.removeprefix(root + "/").split("/")[0]
+        if session_id not in sessions:
+            raise NotFound("session missing")
+        if method == "GET" and path.endswith("/items"):
+            return {"session_items": list(items[session_id])}
+        if method == "GET" and path == root + "/" + session_id:
+            return dict(sessions[session_id])
+        if method == "POST" and path.endswith("/items:append"):
+            items[session_id].extend(body["items"])
+            return {}
+        raise AssertionError(f"{method} {path}")
+
+    execution.ws.api_client.do.side_effect = rest
     app = create_app()
     with TestClient(app) as client:
         assert client.get("/readyz").status_code == 200
         response = client.post("/api/invocations", json={
-            "id": str(uuid.uuid4()), "input": {"messages": [{"role": "user", "content": "record"}]},
+            "id": str(uuid.uuid4()), "session_id": "conversation",
+            "input": {"messages": [{"role": "user", "content": "record"}]},
         })
         assert response.status_code == 200, response.text
         assert response.json()["output"]["messages"][-1]["content"] == "Recorded proof"

@@ -72,8 +72,10 @@ Replace the profile placeholder with your chosen Databricks profile. Edit the
 generated agent declaration as you develop. New Apps scaffolds declare
 `durable_agent_server` and use the packaged native launcher. They contain
 `agent.py` and `pyproject.toml`, without a generated server package, Bundle,
-Lakebase quickstart or Bundle CI pipeline. Managed sessions and memory remain
-opt-in declarations, so a fresh project does not require stores for local execution.
+Lakebase quickstart or Bundle CI pipeline. APX binds a managed Session Store
+automatically; declare `session.store_name` only to override its derived name.
+Managed memory remains an explicit opt-in. Local execution uses those remote
+stores, so deploy once before the first local run if they do not exist yet.
 
 Use the same declaration to inspect and remove a native deployment:
 
@@ -224,8 +226,9 @@ deployment-time checks.
 
 ## Deploy a durable agent
 
-Declare remote session and memory stores for state that must survive the app
-stopping. Placement is managed by Agent Bricks:
+A native agent automatically gets a managed Session Store for conversation
+checkpoints. Declare managed memory only when facts must also survive across
+conversations. Placement is managed by Agent Bricks:
 
 In a generated native project, keep the agent in `agent.py`:
 
@@ -244,18 +247,16 @@ module = "agent:agent"
 target = "durable_agent_server"
 model = "system.ai.claude-sonnet-4-6"
 
-[tool.apx.agent.session]
-type = "managed"
-
+# Optional long-term memory. Sessions need no declaration.
 [tool.apx.agent.memory]
 type = "managed"
 ```
 
-APX derives `apx-orders-sessions` and `apx-orders-memory` from the declared agent
-name. It resolves these names when loading the configuration, so doctor, local
-execution and native deployment use the same bindings. `apx-agent doctor --offline`
-shows the resolved names without connecting to a workspace. Online doctor and
-deployment prerequisite output also include them.
+APX derives `apx-orders-sessions` automatically and `apx-orders-memory` when
+memory is declared. It resolves these names when loading the configuration, so
+doctor, local execution and native deployment use the same bindings.
+`apx-agent doctor --offline` shows the resolved names without connecting to a
+workspace. Online doctor and deployment prerequisite output also include them.
 
 Set `store_name` explicitly to bind a shared or existing store; an explicit name
 always wins. Names are workspace-scoped, so use distinct agent names such as
@@ -264,11 +265,11 @@ existing naming convention lowercases names, replaces non-alphanumeric character
 other than hyphens with hyphens, and truncates to fit the store-name limit. Use
 explicit store names if two agent names normalize to the same resource name.
 
-When names are omitted, renaming the agent changes its derived bindings; pin the
-old `store_name` values to retain the existing state. Generated projects write
-the resolved names into `pyproject.toml`, making those bindings explicit and
-stable through later project renames. APX never migrates or deletes stores as
-part of name resolution.
+Renaming the agent changes an automatic session binding and any omitted memory
+binding; pin the old `store_name` values to retain existing state. Generated
+projects write the resolved names into `pyproject.toml`, making those bindings
+explicit and stable through later project renames. APX never migrates or deletes
+stores as part of name resolution.
 
 ```sh
 apx-agent agents deploy --target apps --profile your-selected-profile
@@ -312,8 +313,9 @@ bundle and starts the app. Source configuration stays unchanged. Runtime Store
 variables are SDK-owned, not user overrides. Older hand-authored bundles retain
 their existing binding behavior and conflict checks.
 
-The managed Runtime Store records native invocations. `session.store_name`
-separately binds an existing conversation checkpoint store. Long-term memory is a separate `memory` declaration; neither session binding
+The managed Runtime Store records native invocations. Native agents also bind a
+managed Session Store for conversation checkpoints; `session.store_name`
+overrides only its name. Long-term memory is a separate `memory` declaration; neither session binding
 adds it or enables recovery; recovery requires an explicit `recovery: true`
 declaration and compatible agent. `/readyz` checks Runtime
 Store reachability and reports whether the SDK is durable; it does not execute a
@@ -369,10 +371,10 @@ requires `LlmAgent`.
 ### 2. Generate a separate Apps deployment
 
 Copy your agent specification, retaining the tools, instructions and other
-compatible declarations. Give the new deployment a distinct name, set
-`target: durable_agent_server`, and add the managed session
-binding shown in [the durable-agent example](#deploy-a-durable-agent).
-Choose a stable Session Store name, or bind an existing store. Install the
+compatible declarations. Give the new deployment a distinct name and set
+`target: durable_agent_server`. APX binds a managed Session Store automatically;
+declare `session.store_name` only when reusing an existing store.
+Install the
 `agentbricks` extra in the APX environment used to run and deploy it.
 
 Deploy it with `--target apps` and your selected profile to provision new stores.
@@ -438,20 +440,21 @@ Omitting `target` preserves the existing Responses-compatible Apps entrypoint.
 Existing Bundle and named App Space projects retain their generated launchers.
 The Python compatibility host remains available for ResponsesAgent projects.
 The APX TypeScript runtime and generated AppKit host are retired. Move former
-AppKit projects to `target = "durable_agent_server"` with managed sessions.
-Browser clients call `POST /api/invocations` with an invocation UUID, `session_id`,
+AppKit projects to `target = "durable_agent_server"`. APX adds the managed session
+binding automatically. Browser clients call `POST /api/invocations` with an invocation UUID, `session_id`,
 and `input.messages`; the SDK owns persisted invocation and session handling.
 Use the [discovery example](../../python/examples/plg-discovery) for streaming
 and the [contract example](../../python/examples/contract-parsing-agent) for
 business API routes mounted directly on DurableAgentServer.
 
-Declare a managed session with `session.type: managed`; `session.store_name`
-optionally overrides the name derived from `AgentConfig.name`.
-The same declaration is passed to `compile_agent(config=config, service_ws=ws)`
-and inspected by `inspect_target(agent, config=config)`. Local native execution
-keeps that remote store binding. At runtime, managed sessions bind the provisioned
-store and normalize `auto_create` to false. Store creation belongs to native
-deployment; requesting creation during agent execution is rejected.
+A durable `AgentConfig` with no session declaration receives a managed Session
+Store named from `AgentConfig.name`. Declare `session.type: managed` with
+`session.store_name` only to override that name. The resolved binding is passed
+to `compile_agent(config=config, service_ws=ws)` and inspected by
+`inspect_target(agent, config=config)`. Local native execution keeps that remote
+store binding. At runtime, managed sessions bind the provisioned store and
+normalize `auto_create` to false. Store creation belongs to native deployment;
+requesting creation during agent execution is rejected.
 
 The older `AGENT_SESSION_STORE` environment variable remains compatible with
 hand-authored projects, but cannot disagree with a declared store. Explicit
@@ -511,8 +514,8 @@ does not erase those declarations.
 | Requirement | ResponsesAgent handlers | Native durable target in this release |
 |---|---|---|
 | `user_identity` | Existing OBO handling | SDK request-user client for UserClient, SQL and Principal; raw Request/Headers and remote OBO forwarding rejected |
-| `sessions` | Declared session backend, explicit conversation store or LlmAgent checkpointer | Declared managed session or explicit LlmAgent checkpointer / `session_store` |
-| `approvals` | LlmAgent checkpointer | Declared managed session or explicit LlmAgent checkpointer / `session_store`; user-scoped when request-user auth is required |
+| `sessions` | Declared session backend, explicit conversation store or LlmAgent checkpointer | Automatic managed session, or an explicit LlmAgent checkpointer / `session_store` |
+| `approvals` | LlmAgent checkpointer | Automatic managed session, or an explicit LlmAgent checkpointer / `session_store`; user-scoped when request-user auth is required |
 | `long_term_memory` | Supported with a reachable declared store; managed memory uses AgentKit | Supported with AgentKit managed memory or another declared backend; actor comes from trusted caller identity |
 | `recovery` | Not implemented by this factory | Opt-in managed-checkpoint continuation for service-identity LlmAgents; request-user recovery remains unsupported |
 | `streaming` | Existing streaming handler | Supported: persisted incremental deltas, or a persisted validated final message when output checks require buffering |
@@ -546,7 +549,7 @@ never substitutes the service client. Raw Request/Headers dependencies and
 per-hop remote-agent forwarding remain rejected because their full trusted
 request context is not wired.
 
-Declare `memory` alongside `session` when long-term recall is required. APX uses
+Declare `memory` when long-term recall is required. The native session binding is automatic and separate. APX uses
 [workspace-scoped managed memory](https://docs.databricks.com/aws/en/agents/agent-memory/managed-memory)
 through the AgentKit SDK. This is separate from the managed Session Store and
 works with either ResponsesAgent or the native server targets.
@@ -610,9 +613,6 @@ name: background-agent
 target: durable_agent_server
 recovery: true
 model: system.ai.claude-sonnet-4-6
-session:
-  type: managed
-  store_name: background-sessions
 ```
 
 The equivalent Python requirement is `RuntimeRequirements(recovery=True)` with

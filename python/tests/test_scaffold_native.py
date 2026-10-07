@@ -39,7 +39,10 @@ def test_new_apps_scaffold_defaults_to_native(tmp_path, template, monkeypatch, e
     else:
         assert dependency.url.startswith("git+https://github.com/stuagano/apx-agent.git@")
     assert not any((root / name).exists() for name in ("databricks.yml", "agent_server", "scripts/quickstart.py", ".github"))
-    assert "session" not in project["tool"]["apx"]["agent"]
+    assert project["tool"]["apx"]["agent"]["session"] == {
+        "type": "managed", "store_name": "apx-orders-sessions",
+        "auto_create": False, "validate_at_boot": True,
+    }
     assert "memory" not in project["tool"]["apx"]["agent"]
     monkeypatch.chdir(root)
     agent = runpy.run_path(str(root / "agent.py"))["agent"]
