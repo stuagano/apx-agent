@@ -8938,17 +8938,21 @@ def _native_execution_completed(body: Any) -> str | None:
     return content
 
 
-def _native_session_thread(agent_name: str | None, session_id: str) -> dict[str, dict[str, str]]:
+def _native_session_thread(agent_name: str | None, session_id: str) -> Any:
     """The checkpoint key native execution derives from the agent and session.
 
     App-auth smoke has no request principal, matching the handler's unscoped
     ``[agent._name, session_id]`` hash. A principal-scoped session would not be
-    readable under that key.
+    readable under that key. The result is a LangGraph ``RunnableConfig`` so it
+    can be passed to ``DatabricksSessionStoreSaver.get_tuple``.
     """
     import hashlib
 
+    from langchain_core.runnables import RunnableConfig
+
     key = hashlib.sha256(json.dumps([agent_name, session_id]).encode()).hexdigest()
-    return {"configurable": {"thread_id": key, "actor_id": key}}
+    config: RunnableConfig = {"configurable": {"thread_id": key, "actor_id": key}}
+    return config
 
 
 def _native_session_has_message(checkpoint: Any, content: str) -> bool:
