@@ -212,6 +212,40 @@ through Genie App Builder (the natural-language app UI, Build tab → pick a
 space), or through APX's declared-space path. None of these *create* the space;
 they deploy into one that already exists.
 
+#### Deploying into a space: what worked vs. what didn't (observed on fevm)
+
+Inspecting the App-Space apps on this workspace shows a clear split, and a
+gotcha worth calling out:
+
+| App | Created by | Deployment | Launched? |
+|---|---|---|---|
+| `stu-appspace-probe-1002`, `stu-appspace-control-1002` | updater `apps+gateway+private+preview` | `status: SUCCEEDED` ("Traffic switched") | **yes** |
+| `agent-card-aggregator` | `stuart.gano` directly | **no deployments at all** | **no** — created in the space, never ran (logs 502, nothing serving) |
+
+The apps that launched were deployed through the governed-agentic/preview path
+(the preview service principal is the updater) and have a SUCCEEDED deployment.
+The one that didn't was created directly into the space but **never had a source
+deployment** — the app shell existed with nothing to run.
+
+The lesson: **putting an app in a space is two steps, and the space-membership
+step alone doesn't launch anything.** `apps create --space` makes the app
+resource (on `LIQUID`); you still need a successful *deployment* of source onto
+it. A manual `apps create --space` that stops there leaves exactly this state —
+an app in the space, on LIQUID, that never launches. This is part of what APX's
+space path does for you: it validates the space up front
+(`validate_space_deployment` checks `effective_user_api_scopes` and required
+service resources against the agent's needs, failing early with a named reason),
+drives the deployment, and then binds the Runtime Store
+(`runtime_store_env`) — so you don't end up with a created-but-never-launched
+shell. See `_app_space.py`.
+
+Not fully pinned (honest): the space here (`app-space`) carries a complete scope
+set (`sql`, `genie`, `postgres`, `model-serving`, `vector-search`, `mcp.*`, …),
+so the stalled app looks more like an incomplete two-step than a permissions
+denial — but a space missing scopes/resources *would* also fail, and APX's
+pre-flight is what turns that into an early, legible error instead of a silent
+non-launch.
+
 Honest limits still open:
 
 - Public docs don't define what `LIQUID` *is* beyond the App-Space compute size;
