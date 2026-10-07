@@ -115,7 +115,11 @@ Install the lakebase extra: `pip install 'apx-agent[lakebase]'`.
 
 ### Scaling — durable session state is required for >1 replica
 
-Databricks Apps can run 1–5 instances behind one URL. The router's
+Running more than one instance means the **dedicated-instance** hosting tier
+(1–5 instances behind one URL) — which is a different tier from the default
+scale-to-zero one and does **not** idle to zero (see "What the Agent Bricks CLI
+gives you out of the box" in the [runtime guide](runtime-targets.md)). You pick
+one: idle-to-zero single-worker, or always-on multi-worker. The router's
 `__Host-databricks-app-router` affinity cookie is **best-effort only** — a turn
 can land on a different replica, so **you must not rely on instance-local
 state**. In-memory session/checkpointer state (the default) lives in one

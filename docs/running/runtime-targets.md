@@ -68,19 +68,25 @@ the database, so a new worker can pick it up and finish it. That is what
 **3. The catch: who notices an abandoned job and restarts it?** A *living worker*
 does. The "scan for abandoned jobs and restart them" routine runs **inside a
 worker** (a running job refreshes a heartbeat; a scan loop in the worker watches
-for heartbeats that have gone stale). So:
+for heartbeats that have gone stale). So *when* a stale job gets restarted
+depends on whether another worker is alive — and that is decided by which
+hosting tier you deployed on, because the two tiers are mutually exclusive
+(see "What the Agent Bricks CLI gives you out of the box" below):
 
-- **Several workers** (`instances > 1`): if one dies, a surviving worker's scan
-  loop notices and restarts the job right away — true automatic recovery.
-- **One worker**: if the only worker dies, nobody is left to notice. The job
-  sits safely in the database and waits until *any* worker exists again — the
-  next request's cold start, or a redeploy — and that worker's scan loop then
-  finishes it.
+- **Scale-to-zero tier (0↔1 instance)** — the default for `agentbricks deploy`.
+  There is never more than one worker, so if it dies there is nobody left to
+  notice. The job sits safely in the database and waits until a worker exists
+  again — the next request's cold start, or a redeploy — and *that* worker's
+  scan loop finishes it. For a scale-to-zero agent this "waits for a worker" is
+  the normal case, not an edge case.
+- **Dedicated-instance tier (multiple always-on workers)** — if one worker dies,
+  a surviving worker's scan loop notices and restarts the job right away. True
+  instant recovery, but this tier does **not** scale to zero.
 
-**The job is never lost. It may just have to wait for a worker to be around to
-pick it up.** (This is why a single-worker hard crash doesn't replay until
-something starts a new worker — it has nothing to do with Databricks Apps
-restarting the process.)
+**Either way the job is never lost — the only difference is how soon a worker is
+around to pick it up.** (This is why a scale-to-zero agent's hard crash doesn't
+replay until something starts a new worker — it has nothing to do with
+Databricks Apps restarting the process.)
 
 Two limits worth knowing: a **request-user** (`auth = "user"`) job can't be
 recovered — the forwarded caller credential is deliberately never written to the
@@ -95,7 +101,7 @@ up all of the above. From one command you get, with no extra wiring:
 
 - A hosted app on Databricks Apps with a **URL** to share.
 - **Scale-to-zero** when idle and cold-start on the next request — the sleep/wake
-  behavior above. You don't turn it on; it's how the serverless Apps tier works.
+  behavior above (see the tier note below for exactly when you get it).
 - **The managed Runtime Store** (a dedicated Postgres/Lakebase database per
   deployment) — provisioned, schema-initialized, and owned by the app's service
   principal. No manual Lakebase grant or Postgres attachment.
@@ -106,11 +112,18 @@ up all of the above. From one command you get, with no extra wiring:
 - The invocation API (`POST /api/invocations` and friends), streaming, and
   background/reconnect — the one HTTP contract.
 
-Scale-to-zero is a property of that hosting tier, not a flag: there is no
-`--scale-to-zero` switch because it is the default, and no server-class setting
-turns it on or off. The scaling dial you *do* get is the instance count
-(`--instances` / a declared min–max), which sets how many workers run — and
-whether a warm floor stays up instead of idling to zero.
+**Scale-to-zero comes from the hosting tier, and the tiers are a choice, not a
+flag.** A default `agentbricks deploy` lands on the **App Space serverless
+runtime**: an on-demand runtime that *"scales between zero and one instance and
+scales down after a default 30 minutes of idle time."* That is where
+scale-to-zero comes from — there is no `--scale-to-zero` switch because it is
+simply what that tier does. The trade-off is in the name: 0↔1 means **at most
+one worker at a time**. If you need an **always-on app or horizontal scaling**,
+you move to a **dedicated-instance app** — multiple workers, but it does **not**
+scale to zero. You pick one tier or the other; you cannot have idle-to-zero *and*
+multiple concurrent workers. (This is the tier split the recovery section above
+refers to: the scale-to-zero tier is single-worker, so a crashed job waits for
+the next worker; the dedicated tier recovers instantly but stays warm.)
 
 ### What APX adds on top
 
