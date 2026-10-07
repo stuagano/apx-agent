@@ -35,67 +35,120 @@ top: the declarative `[tool.apx.agent]` envelope, governance wiring, and
 behavior observed on live deployments. Where the two could drift, upstream is
 the source of truth for the API and stores; APX owns the declaration and policy.
 
-### How a durable agent operates
+### How a durable agent works
 
-A durable agent is a **stateless worker process in front of three managed
-stores.** The worker keeps nothing durable of its own; everything that must
-survive a restart lives in a store, so the worker can stop and start freely
-without losing state:
+A durable agent is **a worker plus a database.** The worker runs your agent
+code. The database — the managed Runtime Store — holds the record of every job.
+The worker is disposable; the database is not. That split is the whole idea:
+because the record of what's happening lives in the database and not in the
+worker's memory, the worker can be stopped, killed, and replaced without losing
+anything.
 
-| Store | Holds | Read/written by |
-|---|---|---|
-| **Runtime Store** (per-deployment Postgres/Lakebase) | invocation requests, status, **heartbeats**, events, results | the runtime — to serve polling/streaming/reconnect and to detect interrupted work |
-| **Session Store** | conversation history and framework checkpoints | the agent loop, and a recovery handler resuming it |
-| **Memory Store** | long-term facts recalled across conversations | memory tools during a run |
+(There are actually three managed stores, each with its own job: the **Runtime
+Store** keeps the record of invocations — requests, status, heartbeats, events,
+results; the **Session Store** keeps conversation history; the **Memory Store**
+keeps long-term facts recalled across conversations. For the rest of this
+section "the database" means the Runtime Store, the one recovery depends on.)
 
-Two things can take the worker down, and they behave differently:
+Three things can happen to the worker:
 
-**Idle scale-to-zero (automatic).** With no traffic, Databricks parks the
-compute to save money. The deployment and all three stores are untouched. The
-next request cold-starts a worker that reloads state from the stores and serves
-it. Nothing is lost; expect a one-time cold start. This is the normal resting
-state, and it needs no configuration.
+**1. Nobody's using it → it goes to sleep (scale to zero).** With no traffic for
+a while, Databricks shuts the worker off so you stop paying for idle compute.
+The database is untouched. The next request starts a fresh worker, which reads
+the database back and carries on — you pay a few seconds of cold start and lose
+nothing. This is automatic, needs no configuration, and is the normal resting
+state.
 
-**Worker failure mid-invocation (recovered when enabled).** If a worker dies
-while running an invocation (crash, OOM, redeploy), the in-flight attempt is
-recovered — provided recovery is turned on (`@app.recover` /
-`RuntimeRequirements(recovery=True)`, service-identity agents only). It works by
-heartbeat: each running attempt refreshes a heartbeat row in the Runtime Store,
-and a recovery scan loop watches for attempts whose heartbeat has gone stale and
-schedules a replacement attempt that re-enters `@app.recover`. The durable
-state is in the Runtime Store the whole time, so the replacement resumes exactly
-where the dead attempt left off.
+**2. The worker dies mid-job → the job isn't lost.** If a worker crashes, OOMs,
+or is redeployed while running an invocation, the job's progress is already in
+the database, so a new worker can pick it up and finish it. That is what
+"durable" means. (This is opt-in: enable it with `@app.recover` /
+`RuntimeRequirements(recovery=True)`, service-identity agents only.)
 
-One subtlety decides *when* that replacement runs: **the heartbeat and the scan
-loop both run inside the worker process.** So a stale attempt is only noticed by
-a worker that is alive.
+**3. The catch: who notices an abandoned job and restarts it?** A *living worker*
+does. The "scan for abandoned jobs and restart them" routine runs **inside a
+worker** (a running job refreshes a heartbeat; a scan loop in the worker watches
+for heartbeats that have gone stale). So:
 
-- **Multi-replica** (`instances > 1`): a surviving replica's scan loop sees the
-  stale heartbeat and runs the replacement right away — true automatic recovery.
-- **Single worker**: if the only worker dies, nothing is left to notice. The
-  attempt sits safely in the Runtime Store until a worker exists again — the
+- **Several workers** (`instances > 1`): if one dies, a surviving worker's scan
+  loop notices and restarts the job right away — true automatic recovery.
+- **One worker**: if the only worker dies, nobody is left to notice. The job
+  sits safely in the database and waits until *any* worker exists again — the
   next request's cold start, or a redeploy — and that worker's scan loop then
-  replays it. The work is never lost; it just waits for a live worker. (This is
-  why a single-worker hard exit does not replay until something starts a new
-  worker — it has nothing to do with Databricks Apps restarting the process.)
+  finishes it.
 
-Two limits to know: **request-user** (`auth = "user"`) invocations cannot be
-recovered — the forwarded caller credential is deliberately never persisted, so
-a replacement fails fast with `MCP_USER_AUTH_RECOVERY_UNSUPPORTED` before agent
-code runs. And recovery is **at-least-once**: a replaced attempt may re-run
-external side effects, so tools must be idempotent.
+**The job is never lost. It may just have to wait for a worker to be around to
+pick it up.** (This is why a single-worker hard crash doesn't replay until
+something starts a new worker — it has nothing to do with Databricks Apps
+restarting the process.)
 
-Scale-to-zero is a hosting property Databricks supplies, not something a server
-class or CLI flag turns on; APX leaves instance selection to Agent Bricks unless
-you declare an instance count, and generated projects add no keepalive jobs. It
-describes app compute only — not the billing or lifecycle of separately
-provisioned stores, model endpoints, or tools. Deployment `--json-output`
-reports the real `hosting.space` and `hosting.compute_size`; the
-`hosting.idle_scale_down_observed` / `hosting.wake_observed` fields stay `null`
-because a `/readyz` check proves readiness, not that an idle-down and wake
-actually happened — for a deployment where they *were* observed directly, see
-"Observed deployed lifecycle" below. Databricks documents the underlying
-zero-to-one hosting in
+Two limits worth knowing: a **request-user** (`auth = "user"`) job can't be
+recovered — the forwarded caller credential is deliberately never written to the
+database, so a restart fails fast with `MCP_USER_AUTH_RECOVERY_UNSUPPORTED`
+before your code runs. And recovery is **at-least-once**: a restarted job may
+re-run external side effects, so tools must be idempotent (safe to run twice).
+
+### What the Agent Bricks CLI gives you out of the box
+
+`agentbricks deploy` (which APX calls under the hood) is the product that stands
+up all of the above. From one command you get, with no extra wiring:
+
+- A hosted app on Databricks Apps with a **URL** to share.
+- **Scale-to-zero** when idle and cold-start on the next request — the sleep/wake
+  behavior above. You don't turn it on; it's how the serverless Apps tier works.
+- **The managed Runtime Store** (a dedicated Postgres/Lakebase database per
+  deployment) — provisioned, schema-initialized, and owned by the app's service
+  principal. No manual Lakebase grant or Postgres attachment.
+- **Model access through the AI Gateway using the app's own identity** — no model
+  keys to configure.
+- Any **Session / Memory store** declared in config, created if missing and
+  granted to the app, plus **tracing** wired in.
+- The invocation API (`POST /api/invocations` and friends), streaming, and
+  background/reconnect — the one HTTP contract.
+
+Scale-to-zero is a property of that hosting tier, not a flag: there is no
+`--scale-to-zero` switch because it is the default, and no server-class setting
+turns it on or off. The scaling dial you *do* get is the instance count
+(`--instances` / a declared min–max), which sets how many workers run — and
+whether a warm floor stays up instead of idling to zero.
+
+### What APX adds on top
+
+If the raw CLI already does all that, what is APX for? APX does not replace it —
+it **declares** the agent so you write intent instead of wiring. The CLI hands
+deployment to Agent Bricks; APX compiles your one declaration into the inputs
+that deployment consumes, and adds the parts the raw product leaves to you:
+
+- **One declarative envelope.** A single `[tool.apx.agent]` block in
+  `pyproject.toml` carries the agent's name, model, instructions, tools,
+  composition (`sub_agents`), memory/session choice, and deploy/scaling — instead
+  of hand-maintaining `agent.toml`, store bindings, and bundle files separately.
+  Generated manifests are compiler output, not config you keep in sync.
+- **Governance and identity wiring.** Per-tool identity and UC/secret ceilings
+  (tool-scoped auth), caller-identity passthrough (OBO) across tools and across
+  agents (A2A), and the guardrails that refuse unsafe combinations — e.g. a
+  scaled deployment with an in-memory session store is rejected at compile and at
+  boot, because that silently loses history across workers.
+- **Compatibility checking before you deploy.** `inspect_target` /
+  `compile_agent` check whether the chosen runtime can actually preserve what you
+  declared (identity, sessions, approvals, memory, streaming, recovery) and fail
+  with a named reason instead of silently degrading.
+- **Portability.** The same declaration compiles to the durable Apps target or to
+  a `ResponsesAgent` model for Model Serving, so moving between serving contracts
+  is a target switch, not a rewrite.
+
+Rule of thumb: **the CLI gives you the running, durable, scale-to-zero app; APX
+gives you the declaration, governance, and safety checks that make a fleet of
+them maintainable.** Where the two could drift, the CLI/product is the source of
+truth for the API and stores; APX owns the declaration and policy.
+
+One honesty note for operators: deployment `--json-output` reports the real
+`hosting.space` and `hosting.compute_size`, but the
+`hosting.idle_scale_down_observed` / `hosting.wake_observed` fields stay `null` —
+a `/readyz` check proves the app is ready, not that an idle-down and wake
+actually happened. For a deployment where the full sleep → wake → crash → replay
+cycle *was* observed directly, see "Observed deployed lifecycle" below.
+Databricks documents the underlying hosting in
 [Serverless Micro Apps](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building)
 and the product interface in the
 [Agent Bricks CLI guide](https://docs.databricks.com/aws/en/agents/custom-agents/agent-bricks-cli).
