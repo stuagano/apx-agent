@@ -99,6 +99,18 @@ class _ReadyzResult(NamedTuple):
     checks: dict[str, Any]
 
 
+class _NativeExecutionSmoke(NamedTuple):
+    """Outcome of one post-readyz native invocation.
+
+    ``readback`` is True when the same session was read back from the
+    managed store. It stays False when the deploy has no managed store;
+    an invocation that never completed does not get here.
+    """
+    completed: bool
+    detail: str
+    readback: bool
+
+
 class _SplitOnboardingResponse(NamedTuple):
     """The two fenced blocks extracted from an onboarding LLM response."""
     plan_markdown: str | None
@@ -6733,10 +6745,13 @@ _APPS_ONLY_DEPLOY_FLAGS = (
     help="Post-deploy health gate, ON by default for BOTH targets. With "
          "--target apps: after the app reaches RUNNING, GET <app_url>/readyz "
          "and FAIL the deploy if the runtime doesn't report ready. Native "
-         "readiness checks durable initialization, not model/tool execution. "
-         "With --target model-serving: after databricks.agents.deploy, "
-         "poll the serving endpoint to READY and send one smoke invocation, "
-         "FAILING the deploy if the endpoint never answers.",
+         "Agent Bricks deploys then POST one /api/invocations smoke and FAIL "
+         "unless it returns a completed assistant message. A managed session "
+         "store is read back for that same session. --no-readyz-gate skips "
+         "both probes. /readyz itself does not call the model. With "
+         "--target model-serving: after databricks.agents.deploy, poll the "
+         "serving endpoint to READY and send one smoke invocation, FAILING "
+         "the deploy if the endpoint never answers.",
 )
 @click.option(
     "--register-uc/--no-register-uc", default=True,
@@ -8898,6 +8913,160 @@ def _check_readyz(
     return _ReadyzResult(is_ready=False, checks={"error": f"readyz unreachable: {last_error}"})
 
 
+def _native_execution_completed(body: Any) -> str | None:
+    """Return the assistant text when a native invocation completed, else None.
+
+    DurableAgentServer wraps the handler result in ``output``. The handler
+    reports ``status`` plus serialized LangChain messages. An interrupted or
+    empty turn is not an execution proof.
+    """
+    if not isinstance(body, dict):
+        return None
+    output = body.get("output")
+    if not isinstance(output, dict) or output.get("status") != "completed":
+        return None
+    messages = output.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return None
+    last = messages[-1]
+    if not isinstance(last, dict):
+        return None
+    content = last.get("content")
+    role = last.get("type") or last.get("role")
+    if role not in ("ai", "assistant") or not isinstance(content, str) or not content:
+        return None
+    return content
+
+
+def _native_session_thread(agent_name: str | None, session_id: str) -> dict[str, dict[str, str]]:
+    """The checkpoint key native execution derives from the agent and session.
+
+    App-auth smoke has no request principal, matching the handler's unscoped
+    ``[agent._name, session_id]`` hash. A principal-scoped session would not be
+    readable under that key.
+    """
+    import hashlib
+
+    key = hashlib.sha256(json.dumps([agent_name, session_id]).encode()).hexdigest()
+    return {"configurable": {"thread_id": key, "actor_id": key}}
+
+
+def _native_session_has_message(checkpoint: Any, content: str) -> bool:
+    """True when a LangGraph checkpoint stores this assistant text."""
+    if checkpoint is None:
+        return False
+    values = getattr(checkpoint, "checkpoint", None)
+    if not isinstance(values, dict):
+        return False
+    messages = (values.get("channel_values") or {}).get("messages")
+    if not isinstance(messages, list):
+        return False
+    for message in messages:
+        text = getattr(message, "content", None)
+        role = getattr(message, "type", None)
+        if role == "ai" and text == content:
+            return True
+    return False
+
+
+def _check_native_execution(
+    app_url: str,
+    *,
+    profile: str | None,
+    session_store: str | None,
+    agent_name: str | None = None,
+) -> _NativeExecutionSmoke:
+    """POST one ChatAgent invocation after native ``/readyz`` is durable.
+
+    ``/readyz`` stays a store probe. This is the separate execution smoke: the
+    deployed app must return a completed assistant message. When the deploy
+    knows the managed session store and agent name, the same thread is read
+    back through the SDK saver. The bearer token is never logged. Never raises.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+    import uuid
+
+    token: str | None = None
+    try:
+        tok_proc = _run_databricks_cmd(["auth", "token", "--output", "json"], profile=profile)
+        if getattr(tok_proc, "returncode", 1) == 0 and tok_proc.stdout:
+            token = (_json.loads(tok_proc.stdout) or {}).get("access_token")
+    except Exception as exc:  # pragma: no cover — defensive
+        return _NativeExecutionSmoke(completed=False, detail=f"could not mint token: {str(exc)[:120]}", readback=False)
+    if not token:
+        return _NativeExecutionSmoke(completed=False, detail="could not mint databricks auth token", readback=False)
+
+    invocation_id = str(uuid.uuid4())
+    session_id = f"apx-deploy-smoke-{invocation_id}"
+    payload = {
+        "id": invocation_id,
+        "session_id": session_id,
+        "input": {"messages": [{"role": "user", "content": "Reply with the single word pong."}]},
+    }
+    url = app_url.rstrip("/") + "/api/invocations"
+    raw = b""
+    status = 0
+    try:
+        req = urllib.request.Request(
+            url,
+            data=_json.dumps(payload).encode(),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+            status = getattr(resp, "status", 200)
+            raw = resp.read()
+    except urllib.error.HTTPError as http_err:
+        status = http_err.code
+        try:
+            raw = http_err.read()
+        except Exception:
+            raw = b""
+    except Exception as exc:
+        return _NativeExecutionSmoke(completed=False, detail=f"invocation unreachable: {str(exc)[:160]}", readback=False)
+
+    try:
+        body = _json.loads(raw) if raw else None
+    except Exception:
+        body = None
+    content = _native_execution_completed(body)
+    if content is None:
+        snippet = raw.decode("utf-8", errors="replace")[:160] if raw else "empty body"
+        return _NativeExecutionSmoke(
+            completed=False,
+            detail=f"invocation HTTP {status} did not return a completed assistant message: {snippet}",
+            readback=False,
+        )
+    if session_store is None:
+        return _NativeExecutionSmoke(completed=True, detail="assistant message returned", readback=False)
+
+    try:
+        from databricks.sdk import WorkspaceClient
+        from databricks_agentkit.langgraph.session_store import DatabricksSessionStoreSaver
+
+        ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+        saver = DatabricksSessionStoreSaver(session_store, workspace_client=ws)
+        saved = saver.get_tuple(_native_session_thread(agent_name, session_id))
+    except Exception as exc:
+        return _NativeExecutionSmoke(
+            completed=False,
+            detail=f"invocation answered but session store {session_store!r} was not readable: {str(exc)[:160]}",
+            readback=False,
+        )
+    if not _native_session_has_message(saved, content):
+        return _NativeExecutionSmoke(
+            completed=False,
+            detail=f"invocation answered but session store {session_store!r} did not contain the assistant message",
+            readback=False,
+        )
+    return _NativeExecutionSmoke(completed=True, detail="assistant message returned and session read back", readback=True)
+
+
 def _fetch_app_log_tail(app_name: str, *, profile: str | None, lines: int = 40) -> str:
     """Return the last *lines* of app stdout/stderr, or a fallback message on error.
 
@@ -10832,6 +11001,29 @@ def _deploy_apps_impl(
             ok, checks = _check_readyz(app_url, profile=profile, attempts=readyz_attempts)
             if space_client is not None or native_cli:
                 ok = ok and isinstance(checks, dict) and checks.get("durable") is True
+            if ok and native_cli:
+                # /readyz reports agent_execution: not_probed. Prove one model
+                # turn separately, and read the managed session back when this
+                # deploy knows the store name.
+                log(f"# execution smoke: POST {app_url}/api/invocations")
+                smoke = _check_native_execution(
+                    app_url,
+                    profile=profile,
+                    session_store=(
+                        effective_config.session.store_name
+                        if effective_config is not None and effective_config.session is not None
+                        else None
+                    ),
+                    agent_name=getattr(agent, "_name", None),
+                )
+                if smoke.completed:
+                    log(f"  execution: {smoke.detail}")
+                else:
+                    ok = False
+                    if isinstance(checks, dict):
+                        checks = {**checks, "agent_execution": smoke.detail}
+                    else:
+                        checks = {"agent_execution": smoke.detail}
             readyz_checks = checks
             if ok:
                 log(f"  readyz: ready ({checks})")
