@@ -1,0 +1,281 @@
+# How the Agent Bricks platform works (and where APX fits)
+
+APX deploys agents onto **Agent Bricks**, Databricks' managed product for custom
+agents. Most of what a deployed APX agent *does* at runtime — stay durable,
+scale to zero, run tools under an identity — is Agent Bricks behavior, not APX
+behavior. This page explains the product first, from the ground up, then shows
+where APX adds value on top. Read it once and the rest of the deploy docs make
+sense.
+
+The canonical product reference is
+[`databricks/databricks-ai-bridge` › `integrations/agentbricks`](https://github.com/databricks/databricks-ai-bridge/tree/main/integrations/agentbricks)
+(README + `cli.md`). Where this page and that reference could drift, upstream is
+the source of truth for the API, the CLI, and the stores; APX owns the
+declaration and policy layered on top.
+
+---
+
+## 1. How a durable agent works
+
+A durable agent is **a worker plus a database.** The worker runs your agent
+code. The database — the managed **Runtime Store** — holds the record of every
+job. The worker is disposable; the database is not. That split is the whole
+idea: because the record of what's happening lives in the database and not in
+the worker's memory, the worker can be stopped, killed, and replaced without
+losing anything.
+
+(There are actually three managed stores, each with its own job: the **Runtime
+Store** keeps the record of invocations — requests, status, heartbeats, events,
+results; the **Session Store** keeps conversation history; the **Memory Store**
+keeps long-term facts recalled across conversations. For the rest of this
+section "the database" means the Runtime Store, the one recovery depends on.)
+
+Three things can happen to the worker:
+
+**1. Nobody's using it → it goes to sleep (scale to zero).** With no traffic for
+a while, Databricks shuts the worker off so you stop paying for idle compute.
+The database is untouched. The next request starts a fresh worker, which reads
+the database back and carries on — you pay a few seconds of cold start and lose
+nothing. This is automatic and is the normal resting state. (Exactly which
+deployments get this is a tier choice — see §3.)
+
+**2. The worker dies mid-job → the job isn't lost.** If a worker crashes, OOMs,
+or is redeployed while running an invocation, the job's progress is already in
+the database, so a new worker can pick it up and finish it. That is what
+"durable" means. (This is opt-in: enable it with `@app.recover` /
+`RuntimeRequirements(recovery=True)`, service-identity agents only.)
+
+**3. The catch: who notices an abandoned job and restarts it?** A *living
+worker* does. The "scan for abandoned jobs and restart them" routine runs
+**inside a worker** (a running job refreshes a heartbeat; a scan loop in the
+worker watches for heartbeats that have gone stale). So *when* a stale job gets
+restarted depends on whether another worker is alive — which is decided by the
+hosting tier (§3), and the two tiers are mutually exclusive:
+
+- **Scale-to-zero tier (0↔1 instance)** — the default. Never more than one
+  worker, so if it dies there is nobody left to notice. The job waits safely in
+  the database until a worker exists again (next request's cold start, or a
+  redeploy), and *that* worker's scan loop finishes it. For a scale-to-zero
+  agent this "waits for a worker" is the normal case, not an edge case.
+- **Dedicated-instance tier (multiple always-on workers)** — if one dies, a
+  surviving worker's scan loop restarts the job right away. Instant recovery,
+  but this tier does **not** scale to zero.
+
+**Either way the job is never lost — the only difference is how soon a worker is
+around to pick it up.**
+
+Two limits worth knowing: a **request-user** (`auth = "user"`) job can't be
+recovered — the forwarded caller credential is deliberately never written to the
+database (§4), so a restart fails fast with `MCP_USER_AUTH_RECOVERY_UNSUPPORTED`
+before your code runs. And recovery is **at-least-once**: a restarted job may
+re-run external side effects, so tools must be idempotent (safe to run twice).
+
+---
+
+## 2. The CLI, end to end
+
+One CLI (`agentbricks`) takes you from an empty directory to a deployed,
+governed agent. The agent lives in a local project folder, and a file called
+**`agent.toml`** records everything about it — name, framework, server type,
+declared stores, tools, tracing. The commands all read and write that project.
+
+The happy path is five commands:
+
+```sh
+agentbricks login --profile <profile>   # 1. auth: save a default profile
+agentbricks init my-agent                # 2. scaffold a project (+ agent.toml)
+cd my-agent
+agentbricks dev                          # 3. run locally, chat UI at :8000
+agentbricks deploy my-agent              # 4. deploy to Databricks Apps
+agentbricks deployments get agent-bricks-my-agent   # 5. URL + status
+```
+
+| Step | Command | What it does |
+|---|---|---|
+| Auth | `login` | Saves a default Databricks profile so later commands don't need `--profile`. |
+| Scaffold | `init` | Creates the project + `agent.toml`. Picks the **framework** and **server type** (below) and declares default memory + session stores. |
+| Run locally | `dev` | Runs on `localhost:8000` wrapping the real Apps local runtime, so local == deployed behavior. Traces locally under `.agentbricks/`. |
+| Deploy | `deploy` | Stands up an App named `agent-bricks-<name>`, reconciles stores and tool access, wires tracing, prints a URL (§3). |
+| Operate | `deployments` | `list` / `get` / `logs` / `start` / `stop` / `delete` deployed apps. |
+
+**Two choices are baked in at `init`, not `deploy`** — because they shape the
+scaffolded code, not just the runtime:
+
+- **`--framework langgraph | openai`** — which agent framework your code uses.
+- **`--server agentbricks | custom`**:
+  - `agentbricks` (default) = the managed server = `DurableAgentServer`: the
+    Runtime Store, the invocation API, streaming/background/recovery — everything
+    in §1.
+  - `custom` = a minimal foreground-only FastAPI server, no Runtime Store.
+  - You **cannot change this on a live deployment** — switching means scaffolding
+    a new project.
+
+Supporting command groups edit `agent.toml`: `memory` / `sessions` (stores,
+entries, items; sessions can `fork`), `tools` (`add sandbox|mcp|uc-function|genie-one|genie-agent`,
+§4), `tracing` (bind/inspect the MLflow experiment, on by default), `mcp`
+(discover managed MCP services), `endpoint` (fire an HTTP request to exercise
+the agent), `doctor` (check onboarding).
+
+**Mental model:** `agent.toml` is the source of truth; the command groups edit
+it; `deploy` reconciles reality to it (creates missing stores, grants the SP,
+wires tracing) but never edits `agent.toml` for stores.
+
+---
+
+## 3. `deploy`, and the two hosting tiers
+
+```sh
+agentbricks deploy [NAME] [--source .] [--instances N] [--allow-user-scope-update] \
+                   [--pip-index-url ...] [--workspace-path ...]
+```
+
+`deploy` turns the project into a running App named `agent-bricks-<name>`. In
+order it: reconciles declared **stores** (creates missing, grants the SP);
+reconciles **tool access** (§4); wires **tracing**; uploads source and starts
+the app, reaching model serving **through the AI Gateway as the app's own
+service principal** — no model keys; and prints a **URL**.
+
+The options are few on purpose — only things safe to change on a live app.
+Server type and tools are *not* deploy flags; they live in `agent.toml`.
+
+**Fail-closed gate:** if any required direct grant cannot be read, applied, or
+verified, deploy stops *before* source upload and leaves the currently deployed
+version untouched. It won't ship a half-granted app.
+
+### The tiers are a choice, not a flag
+
+Scale-to-zero (§1) is not a universal property of every Databricks App — it
+comes from the hosting tier, and you pick the tier through `--instances`:
+
+- **Omit `--instances`** → the **App Space serverless runtime**: an on-demand
+  runtime that *"scales between zero and one instance and scales down after a
+  default 30 minutes of idle time."* This is where scale-to-zero comes from —
+  there is no `--scale-to-zero` switch because it is simply what that tier does.
+  The trade-off is in the name: 0↔1 means **at most one worker at a time**.
+- **Pass `--instances N`** → a **dedicated-instance app**: multiple always-on
+  workers behind one URL with best-effort sticky routing. Needed for an
+  always-on app or horizontal scaling — but it does **not** scale to zero.
+
+You pick one tier or the other; you **cannot** have idle-to-zero *and* multiple
+concurrent workers. This is the same tier split §1's recovery section depends
+on: the scale-to-zero tier is single-worker, so a crashed job waits for the next
+worker; the dedicated tier recovers instantly but stays warm.
+
+Databricks documents the underlying hosting in
+[Serverless Micro Apps](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building)
+and the product interface in the
+[Agent Bricks CLI guide](https://docs.databricks.com/aws/en/agents/custom-agents/agent-bricks-cli).
+
+---
+
+## 4. Identity: two identities, chosen per tool
+
+This is the heart of the governance model. Every tool runs as **one of two
+identities**, set by `--auth` when you add it and recorded on the tool entry in
+`agent.toml`:
+
+```toml
+[[tools]]
+id = "web_search"
+auth = "user"                                   # or "app"
+source = { kind = "mcp", service = "system.ai.web_search" }
+```
+
+|  | `auth = "app"` | `auth = "user"` |
+|---|---|---|
+| Runs as | the App's **service principal** | the **calling user** (OBO — their credential forwarded) |
+| Permissions | what the app SP is granted | what the end user is allowed |
+| Default? | — | **yes**, for managed tools (`mcp`, `sandbox`, `genie-one`, `genie-agent`) |
+| Deploy grants access? | **yes** — auto least-privilege (below) | **no** — skipped; the user's own permissions apply at call time |
+
+**What deploy auto-grants for `auth = "app"` tools** (least-privilege, *direct*
+resources only):
+
+| Declared resource | SP gets |
+|---|---|
+| UC function | `FUNCTION` / `EXECUTE` |
+| Genie Agent space | `CAN_RUN` |
+| Sandbox volume | `READ_VOLUME` / `WRITE_VOLUME` |
+| External MCP | effective `EXECUTE` + `USE_SCHEMA` + `USE_CATALOG` on named parents |
+
+Sharp edges:
+
+- **Only direct resources.** Deploy does **not** grant the tables a Genie Space
+  reads, objects a UC function calls, or what an MCP service wraps — grant those
+  transitive dependencies manually.
+- **UC-function bindings are app-identity only** — they don't accept `--auth user`.
+- **Missing/legacy `auth` means app identity**, and is never silently upgraded to
+  user.
+
+**How user-identity flows at runtime:** `DurableAgentServer` derives its
+request-auth policy straight from the `auth = "user"` tool bindings — no separate
+contract marker. A code-first tool gets the caller's client from a
+**request-bound resolver** inside the invocation and must not persist it:
+
+```python
+def sql_tools(workspace_client_for):
+    @tool
+    def run_statement(statement: str) -> str:
+        client = workspace_client_for("user")   # request-bound; closes after the attempt
+        ...
+    return [run_statement]
+```
+
+The forwarded credential is process-local and never written to the Runtime
+Store — which is exactly why user-auth work **can't be recovered** after a crash
+(`MCP_USER_AUTH_RECOVERY_UNSUPPORTED`, §1).
+
+**Scopes.** Deploy infers the API scopes a user-auth tool needs from its managed
+bindings; code-first tools declare extras explicitly:
+
+```toml
+[auth.user]
+required = true
+additional_api_scopes = ["sql"]
+```
+
+This is **additive** — deploy unions inferred + declared scopes, dedupes, and
+preserves existing ones. Adding *new* scopes to an already-deployed app needs
+`--allow-user-scope-update` once (later deploys don't).
+
+**One-sentence model:** deploy reconciles identity — it auto-grants the app SP
+least-privilege access for `app`-identity tools, skips `user`-identity tools
+(whose access is the caller's own, forwarded per-request via OBO), unions the
+required scopes, and refuses to ship if any grant can't be verified.
+
+---
+
+## 5. Where APX fits
+
+Everything above is the Agent Bricks product. APX does not replace it — it
+**declares** the agent so you write intent instead of wiring, and compiles that
+declaration into the inputs the product consumes.
+
+- **One declarative envelope.** A single `[tool.apx.agent]` block in
+  `pyproject.toml` carries name, model, instructions, tools, composition
+  (`sub_agents`), memory/session choice, and deploy/scaling — instead of
+  hand-maintaining `agent.toml`, store bindings, and bundle files separately.
+  Generated manifests are compiler output, not config you keep in sync. See
+  [`reference/pyproject-toml.md`](../reference/pyproject-toml.md).
+- **Governance and identity wiring.** Per-tool identity and UC/secret ceilings
+  (tool-scoped auth), caller-identity passthrough (OBO) across tools and across
+  agents (A2A), and guardrails that refuse unsafe combinations — e.g. a scaled
+  (dedicated-tier) deployment with an in-memory session store is rejected at
+  compile and at boot, because that silently loses history across workers (see
+  [`running/sessions-and-memory.md`](../running/sessions-and-memory.md)).
+- **Compatibility checking before you deploy.** `inspect_target` / `compile_agent`
+  check whether the chosen runtime can preserve what you declared (identity,
+  sessions, approvals, memory, streaming, recovery) and fail with a named reason
+  instead of silently degrading. See
+  [`running/runtime-targets.md`](../running/runtime-targets.md).
+- **Portability.** The same declaration compiles to the durable Apps target or to
+  a `ResponsesAgent` model for Model Serving, so moving between serving contracts
+  is a target switch, not a rewrite.
+
+**Rule of thumb:** the CLI gives you the running, durable, scale-to-zero app;
+APX gives you the declaration, governance, and safety checks that make a fleet
+of them maintainable.
+
+For a lifecycle actually observed on a live deployment (idle → wake → crash →
+replay), see the "Observed deployed lifecycle" note in
+[`running/runtime-targets.md`](../running/runtime-targets.md).
