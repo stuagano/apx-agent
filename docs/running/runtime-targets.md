@@ -530,6 +530,31 @@ APX emits model message chunks through the SDK's ordered event store. A model
 that does not support incremental output may emit a complete message in one
 chunk. Event replay does not re-execute tools; it is distinct from crash recovery.
 
+The installed `DurableAgentServer` contract is invoke, read-back, and event replay:
+`POST /api/invocations`, `GET /api/invocations/{id}`, and
+`GET /api/invocations/{id}/events`. APX adds only `GET /readyz`. There is no cancel,
+disconnect, or reconnect route. Closing an SSE client stops that connection; the
+SDK keeps the invocation running, and a later events request replays persisted
+events from `after`. That is not cancellation and does not roll back a tool that
+already ran. APX's `cancellable` tool wrapper and `CancellationRegistry` remain
+the legacy in-process kill switch. Native handlers do not register them, so a
+governance kill in that process does not stop a native invocation.
+
+Native handlers also do not continue an inbound MLflow trace. The invocation
+context passed by the SDK carries `invocation_id`, `session_id`, `attempt`,
+`request_auth`, and `emit`. It has no trace headers. AgentKit may open its own
+root span when its tracing destination and experiment are both configured.
+`continue_trace_from_headers` stays on the legacy `/invocations` and
+`/responses` routes, where those routes still own the caller-facing contract.
+
+Those routes are still live consumers, not leftovers. `create_app` mounts
+`POST /invocations` through `chat_agent_for` and `POST /responses` through the
+Responses compiler. Responses-target project generation still writes
+`create_app(agent=agent, config=config)` into `agent_server/start_server.py`.
+The discovery card, health check, and `/mcp` endpoints are mounted beside those
+routes. Dev-UI chat and trace browsing remain on this host. Retire any of them
+only after each remaining caller has moved to `/api/invocations`.
+
 With a session binding, supply top-level `session_id` for continuity across
 invocation IDs. Session IDs inside `input` are rejected: the SDK must see the
 session before scheduling execution, so it can serialize turns in that session. The
