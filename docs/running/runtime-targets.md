@@ -27,6 +27,14 @@ and hands deployment to the Agent Bricks CLI. You do not need to select or
 understand an App Space to use this workflow. Infrastructure placement is a
 Databricks product responsibility, not another APX runtime target.
 
+`DurableAgentServer`, the invocation API, and the managed Runtime/Session/Memory
+stores are the Agent Bricks product surface, documented canonically in
+[`databricks/databricks-ai-bridge` › `integrations/agentbricks`](https://github.com/databricks/databricks-ai-bridge/tree/main/integrations/agentbricks)
+(README + `cli.md`). This page tracks that contract and adds what APX layers on
+top: the declarative `[tool.apx.agent]` envelope, governance wiring, and
+behavior observed on live deployments. Where the two could drift, upstream is
+the source of truth for the API and stores; APX owns the declaration and policy.
+
 Keep state outside the app process: the managed Runtime Store persists native
 invocations, the managed Session Store persists conversation checkpoints, and
 managed memory persists facts across conversations. The app can stop without
@@ -507,6 +515,23 @@ the server's `output` envelope. Inputs are user text messages, supplied either
 as a list or under `messages`. Responses API content items, tool results,
 credentials, `custom_inputs`, and caller-controlled model selection are not
 accepted by this target.
+
+The invocation body carries a client-generated UUID `id`, an optional top-level
+`session_id` (which groups invocations into one application session and is
+distinct from the invocation `id` and from the `X-Routing-Key` sticky-routing
+header), the agent `input`, and optional `background` / `stream` flags. The
+Agent Bricks endpoint behavior (upstream contract) is:
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /api/invocations` | Defaults to synchronous: `200` with the result under `output`. `stream: true` returns SSE events. `background: true` returns `202` with a status URL; adding `stream: true` also includes an events URL. |
+| `GET /api/invocations/{id}` | Invocation status, and its `output` once completed. |
+| `GET /api/invocations/{id}/events?after={cursor}` | Replays events after the given event ID, so a client can reconnect. |
+
+The `id` is also an idempotency key: repeating the same request reuses the
+existing invocation while its record is retained; reusing the `id` for a
+*different* request returns `409`. APX adds only `GET /readyz` on top of this
+contract.
 
 ## Compatibility checks
 

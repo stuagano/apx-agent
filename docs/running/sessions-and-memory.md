@@ -4,6 +4,14 @@
 >
 > **Coming from OpenAI Agents SDK?** Sessions ≈ `session` strategy (persistent store) or `conversation_id` (server-managed). MemoryStore is the cross-session equivalent of `to_input_list()` with a vector index on top.
 
+> **Managed stores — upstream contract.** The managed Session Store and Memory
+> Store (the `managed` backends below) are the Agent Bricks product surface,
+> documented canonically in [`databricks/databricks-ai-bridge` ›
+> `integrations/agentbricks`](https://github.com/databricks/databricks-ai-bridge/tree/main/integrations/agentbricks).
+> This page tracks that contract (store semantics, `actor_id` scoping, BM25
+> retrieval, forking) and adds the APX `[tool.apx.agent]` declaration, the
+> `ConversationStore` / `MemoryStore` seams, and the local/Lakebase backends.
+
 ---
 
 ## Sessions — multi-turn conversation state
@@ -137,6 +145,28 @@ apx emits native Apps horizontal-scaling bounds into `databricks.yml` as
 bounds. This requires a Databricks CLI/bundle schema new enough to accept those
 private-preview fields.
 
+### Managed sessions: actor scoping and forking
+
+With the `managed` session backend (Agent Bricks), a session is grouped under an
+`actor_id` — who the session belongs to — and identified by a caller-chosen
+`session_id` (the service generates one if omitted). Each appended item is an
+opaque, ordered, JSON-compatible value that the store returns verbatim and never
+mutates once written.
+
+> **`actor_id` partitions data; it is not access control.** Managed stores are
+> workspace-scoped and authorized at the store level: any principal that can
+> reach a store can read and write *every* actor's entries. For strict isolation
+> between tenants or users, use a separate store per boundary. APX derives
+> `actor_id` from trusted caller identity — never a model- or user-supplied
+> value — but that is partitioning, not a security boundary.
+
+A managed session can be **forked** into an independent branch: a new session
+seeded with the original's history (whole, or up to a chosen item), linked back
+by `parent_session_id`. Use it to explore an alternate continuation without
+disturbing the original thread. Deleting a session that has such descendants
+requires a forced cascade (`force=True`). Forking is a managed-store capability;
+the local and Lakebase `ConversationStore` backends do not implement it.
+
 ---
 
 ## Memory bank — long-lived recall across conversations
@@ -241,6 +271,13 @@ The store name is a workspace display name, not a UC three-part name. Legacy
 names are rejected; historical entries require an explicit export/import with a
 reviewed scope-to-actor mapping. Direct Python construction takes
 `ManagedMemoryStore(ws=workspace_client, store_name="agent-memory", scope_resolver=...)`.
+
+A managed memory entry is a free-form `content` string plus a short
+`description` used for retrieval, keyed by `actor_id` (whose memory it is),
+`path` (a filesystem-like key within an actor, e.g. `/preferences/style.md`),
+and an optional `session_id` for provenance; those three identify an entry
+uniquely. Browse with `list(actor_id=..., path_prefix=...)` rather than search
+when you want entries directly.
 
 APX derives `actor_id` from trusted caller identity and checks entry ownership for
 ID-based reads and mutations. Actor IDs partition data but are not access-control
