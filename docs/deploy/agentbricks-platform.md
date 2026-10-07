@@ -165,47 +165,75 @@ serverless runtime does. The shape to remember: **0↔1 means at most one worker
 **Horizontal scaling is the other mode.** A horizontally scaled app runs a
 **fixed number of instances, 1–5** (*"Each horizontally scaled app can have at
 most 5 instances"*; Databricks recommends at least 2 for availability), set as a
-static count in the app's configuration — this is what `agentbricks deploy
---instances N` (and APX's declared `instances`) drives. Multiple always-on
-workers sit behind one URL with best-effort sticky routing.
+static count — this is what `--instances N` (and APX's declared `instances`)
+drives. Multiple always-on workers sit behind one URL with best-effort sticky
+routing.
 
-**The compute size behind the serverless tier is `LIQUID`.** A Databricks App
-reports a `compute_size`. The public SDK enum lists only `MEDIUM`, `LARGE`, and
-`XLARGE` (the fixed T-shirt sizes), but an App-Space serverless deploy runs on
-`LIQUID` — a newer size the installed SDK enum does not yet know (it
-deserializes as `None`), so APX reads it from the raw REST payload and verifies
-`compute_size == "LIQUID"` on deploy readback (`_app_space.py`). The probe in
-"Observed deployed lifecycle" ran on `LIQUID` and is what scaled to zero. Two
-honest limits: public docs do not define what `LIQUID` means beyond being the
-App-Space compute size (the name reads as the elastic/serverless size versus the
-fixed M/L/XL, but that is inference), and it currently surfaces through a
-private-preview path — do not assume it is a stable public `compute_size` value.
+### `LIQUID` and the App Space tie-in
 
-**What the docs do *not* say — flagged as inference, not fact:**
+Scale-to-zero rides on a compute size called **`LIQUID`**, and the surprising
+part — verified against the live API, not inferred — is that **you cannot select
+`LIQUID`. You get it by putting the app in an App Space.** The evidence:
 
-- The Databricks docs do **not** explicitly state that a horizontally scaled app
-  *stops* scaling to zero. They present scale-to-zero as the serverless-runtime
-  behavior and *"use a dedicated-instance app"* as the path for *"an always-on
-  app or horizontal scaling"* — strongly implying the two are different modes and
-  that choosing fixed instances means always-on. We **infer** they are mutually
-  exclusive (0↔1 vs a fixed 1–5), but no single sentence confirms "you cannot
-  have both." Treat the mutual exclusivity as a well-supported reading, not a
-  quoted guarantee — and verify on your own deployment if it matters.
-- The docs give **no rationale** for the split. The reasonable reading is a
-  provisioning-model difference (on-demand/cheap vs always-on/load-balanced), but
-  that is our explanation, not a sourced one.
+- `databricks apps create` exposes both `--space` and `--compute-size`, but
+  `--compute-size` accepts only **`MEDIUM | LARGE | XLARGE`**. `LIQUID` is not an
+  acceptable value — there is no way to *ask* for it.
+- A plain deploy with **no space** lands on **`MEDIUM`**, a fixed size, with no
+  scale-to-zero. (Verified: a vanilla `agentbricks deploy` with no `--instances`
+  and no space produced `space: null`, `compute_size: MEDIUM`.)
+- An app **in an App Space** runs on **`LIQUID`** and scales to zero. The space
+  payload itself carries *no* compute field — so `LIQUID` is not stored on the
+  space; **membership in the space is what switches the app onto the serverless
+  runtime** at create time.
 
-This tier question is also what §1's recovery timing hinges on: *if* the modes
-are exclusive as inferred, a scale-to-zero app is single-worker (a crashed job
-waits for the next worker) and a horizontally scaled app has a surviving worker
-to recover instantly but stays warm.
+So the tie-in is real and a little odd: an App Space is a *governance* object
+(who-can-create, scopes, usage policy — no compute setting on it), yet whether
+an app belongs to one is the de-facto toggle between the two compute models:
 
-Sources: Databricks
+| | No space | In an App Space |
+|---|---|---|
+| `compute_size` | `MEDIUM`/`LARGE`/`XLARGE` (you pick; default `MEDIUM`) | `LIQUID` (imposed; not selectable) |
+| Scaling | fixed instances, `--instances 1–5`, always-on | serverless 0↔1, scales to zero |
+| Set by | `apps create --compute-size` / `--instances` | `apps create --space`, or Genie App Builder, or APX's space path |
+
+This is why APX's App-Space deploy path *rejects* any `compute_size` /
+`--instances` in your declaration (*"App Space selects its compute"*,
+`_app_space.py`) and only verifies `compute_size == "LIQUID"` on readback — the
+space owns the compute decision, so declaring one would be a contradiction. The
+installed Databricks SDK's `ComputeSize` enum predates `LIQUID` and deserializes
+it as `None`, so APX reads it from the raw REST payload.
+
+**An App Space is a prerequisite you set up first — it is not created by a
+deploy.** It is a standalone governed resource (`databricks apps list-spaces` /
+`get-space`), and the **Governed agentic app-building** feature is **Beta**: a
+workspace admin must enable it from the **Previews** page before spaces can be
+created. Create an app into an existing space with `apps create --space <name>`,
+through Genie App Builder (the natural-language app UI, Build tab → pick a
+space), or through APX's declared-space path. None of these *create* the space;
+they deploy into one that already exists.
+
+Honest limits still open:
+
+- Public docs don't define what `LIQUID` *is* beyond the App-Space compute size;
+  the "elastic/serverless size" reading is inference, and it currently surfaces
+  through a private-preview path, so don't treat `LIQUID` as a stable public
+  `compute_size` value.
+- The docs don't state in one sentence that a horizontally scaled (fixed-instance)
+  app *can't also* scale to zero, but the create API makes it concrete: fixed
+  size + `--instances` is one shape, `LIQUID`-via-space is the other, and
+  `--compute-size` can't be `LIQUID` — so you pick one model, not both.
+
+This tier split is also what §1's recovery timing hinges on: a scale-to-zero
+(App-Space, 0↔1) app is single-worker — a crashed job waits for the next worker;
+a fixed-instance app with ≥2 workers has a surviving worker to recover instantly
+but stays warm.
+
+Sources: live `databricks apps create` / `list-spaces` / `get-space` on this
+workspace; Databricks
 [governed-agentic app building](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building)
-(App Space, serverless runtime),
+(App Space, Genie App Builder, Beta/Previews enablement) and
 [horizontal scaling](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/horizontal-scaling)
-(the 1–5 instance limit), and the
-[Agent Bricks CLI guide](https://docs.databricks.com/aws/en/agents/custom-agents/agent-bricks-cli).
+(the 1–5 limit); and `_app_space.py` for APX's space-deploy handling.
 
 ---
 
