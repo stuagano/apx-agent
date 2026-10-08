@@ -36,6 +36,7 @@ apx-agent agents deploy --target apps              # builds wheel, auto-resolves
 - **Stateful** — in-memory caches, background loops, websockets, custom UI all work
 - **Async-native** — `@invoke()` and `@stream()` decorators support `async def`
 - **Best for** — dev loop, agents with co-located UI, durable workflows, anything that benefits from fast iteration
+- **Scale-to-zero is tier-dependent** — only an **App Space** deploy (`LIQUID`) idles to zero; a plain/dedicated-instance Apps deploy is `MEDIUM` and always-on. See [agentbricks-platform.md](agentbricks-platform.md).
 
 The legacy `create_app(agent)` FastAPI wrapper still works for Apps hosting that doesn't go through MLflow GenAI Server — useful when you want apx-agent's full host (OBO middleware, `/mcp` MCP server, `/.well-known/agent.json` discovery card, hub auto-registration, dev UI at `/_apx/*`) without the bundle deploy flow.
 
