@@ -15,7 +15,7 @@ from uuid import UUID
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
 from fastapi import Depends, Header, Request
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 from ._state_marker import _STATE_DEP
 
@@ -76,6 +76,9 @@ class DatabricksAppsHeaders(BaseModel):
     user_email: str | None
     request_id: UUID | None
     token: SecretStr | None
+    # Durable host only: resolve outbound auth from the SDK's request-user
+    # client at call time, so apx never holds the token. Never serialized.
+    auth_headers: Callable[[], dict[str, str]] | None = Field(default=None, exclude=True, repr=False)
 
 
 def get_databricks_headers(
