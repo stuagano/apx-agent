@@ -77,6 +77,13 @@ def compile_durable_handlers(
     if checkpointer is not None and not isinstance(agent, LlmAgent):
         raise ValueError("Checkpoint sessions currently require LlmAgent")
 
+    from ._resources import _iter_sub_agents, _iter_tool_fns
+
+    # Declared sub_agents (materialized after compile) or hand-wired delegates:
+    # only then does any outbound call need request-user auth resolved.
+    has_delegates = bool(list(_iter_sub_agents(agent))) or any(
+        hasattr(fn, "__apx_sub_agent_url__") for fn in _iter_tool_fns(agent))
+
     def execute(value: Any, context: Any, emit_message: Callable[[Any], None] | None) -> dict[str, Any]:
         recovering = bool(getattr(context, "is_recovery", False))
         if recovering and not recovery:
@@ -99,9 +106,10 @@ def compile_durable_handlers(
                 raise ValueError("user_identity could not resolve the authenticated principal")
             # The SDK's per-request verdict is authoritative: a local context's
             # "user" client is the developer/app credential, never forward it.
+            forward = has_delegates and not auth._local
             headers = DatabricksAppsHeaders(
                 host=None, user_name=None, user_id=principal, user_email=None, request_id=None, token=None,
-                auth_headers=None if auth._local else (lambda: auth.client_for("user").config.authenticate()),
+                auth_headers=(lambda: auth.client_for("user").config.authenticate()) if forward else None,
             )
         if isinstance(value, list):
             value = {"messages": value}

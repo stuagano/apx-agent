@@ -63,10 +63,15 @@ This model is not aspirational — it is what the runtime does today:
 
 `durable_agent_server` keeps the same invariant. The SDK's `RequestAuthContext`
 holds the request-user token; apx never copies it. Each sub-agent call asks
-`request_auth.client_for("user").config.authenticate()` at call time and forwards
-the result as `X-Forwarded-Access-Token` + `Authorization: Bearer`. Local dev
-forwards nothing, a closed request context fails closed, and request-user
-invocations are never recovered in the background.
+`request_auth.client_for("user").config.authenticate()` at call time and hands the
+result to the outbound call, which forwards it as `X-Forwarded-Access-Token` +
+`Authorization: Bearer` on the direct-HTTP transport. Local dev forwards nothing,
+a closed request context fails closed, and request-user invocations are never
+recovered in the background.
+
+Known gap: for Databricks Apps peers the Apps SDK transport (`apps/<name>`) is
+tried first and does not yet carry the request-user token, so those calls
+currently run as the calling app's service principal.
 
 ## Operate-time signal
 
