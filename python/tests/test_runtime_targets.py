@@ -279,6 +279,20 @@ def test_conflicting_session_bindings_rejected(execution: Any, kwargs: Any) -> N
         compile_agent(execution.agent, target="durable_agent_server", model="test", **kwargs)
 
 
+def test_composite_agent_compiles_durable_without_managed_session(execution: Any) -> None:
+    """A durable target auto-attaches a managed session, but composite agents
+    (KeywordRouter/SequentialAgent — not LlmAgent) can't carry one. Compilation
+    must drop it gracefully, not raise, so composite agents reach durable."""
+    from apx_agent import AgentConfig, KeywordRouter, compile_agent
+
+    router = KeywordRouter(branches=[("x", execution.agent, ["x"])], default=execution.agent)
+    config = AgentConfig(name="composite", model="test", target="durable_agent_server")
+    assert config.session is not None and config.session.type == "managed"
+    # Must not raise "session_store currently requires LlmAgent".
+    app = compile_agent(router, config=config, model="test", service_ws=execution.ws)
+    assert app is not None
+
+
 def test_request_user_auth_never_falls_back_to_app(execution: Any) -> None:
     from apx_agent._durable_agent import compile_durable_handlers
 

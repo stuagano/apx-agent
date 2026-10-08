@@ -61,10 +61,17 @@ def inspect_target(
     if target is None:
         target = config.target if config is not None else "responses_agent"
     session = config.session if config is not None and config.session is not None else getattr(agent, "session_config", None)
-    if session is not None and session.type == "managed" and checkpointer is None:
-        if session_store is not None and session_store != session.store_name:
+    # The durable target auto-attaches a managed session (AgentConfig default),
+    # but a managed store currently binds only to LlmAgent. Composite agents
+    # (routers/pipelines) run durable statelessly-per-request — drop the
+    # auto-derived store rather than refuse to compile, and don't let it count
+    # as a declared session requirement below. An explicit session_store= for a
+    # composite agent still errors below (it's a real caller mistake).
+    effective_session = session if isinstance(agent, LlmAgent) else None
+    if effective_session is not None and effective_session.type == "managed" and checkpointer is None:
+        if session_store is not None and session_store != effective_session.store_name:
             raise ValueError("session_store conflicts with the declared session.store_name")
-        session_store = session.store_name
+        session_store = effective_session.store_name
     if config is not None and config.session is not None and config.session.type == "managed" and checkpointer is not None:
         raise ValueError("Declared managed sessions cannot be combined with an explicit checkpointer")
     if target not in ("responses_agent", "durable_agent_server"):
@@ -96,7 +103,7 @@ def inspect_target(
     declared = {
         "user_identity": any(op.requires_request_context for op in operations) or bool(list(_iter_sub_agents(agent))),
         "long_term_memory": (config is not None and config.memory is not None) or any(getattr(node, "memory_config", None) is not None for node in nodes),
-        "sessions": session is not None or any(getattr(node, "session_config", None) is not None for node in nodes),
+        "sessions": effective_session is not None or any(getattr(node, "session_config", None) is not None for node in nodes),
     }
     responses = target == "responses_agent"
     checkpointed = (checkpointer is not None or session_store is not None) and isinstance(agent, LlmAgent)
