@@ -1295,3 +1295,41 @@ def test_durable_startup_materializes_sub_agents(execution: Any, monkeypatch: py
     app = compile_agent(agent, target="durable_agent_server", model="test", service_ws=execution.ws)
     with TestClient(app):
         fetch.assert_awaited_once()
+
+
+@pytest.mark.parametrize("with_delegate", [False, True])
+def test_durable_resolver_only_installed_for_agents_with_delegates(
+        execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch, with_delegate: bool) -> None:
+    from apx_agent import _defaults
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    built: list[Any] = []
+
+    class _Spy(_defaults.DatabricksAppsHeaders):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            built.append(self.auth_headers)
+
+    monkeypatch.setattr(_defaults, "DatabricksAppsHeaders", _Spy)
+    agent = peer.agent if with_delegate else execution.agent
+    handlers = compile_durable_handlers(agent, model="test", service_ws=execution.ws, require_user=True)
+    asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, _user_context("tok-A")))
+    assert [resolver is not None for resolver in built] == [with_delegate]
+
+
+def test_durable_router_composite_leaf_delegate_forwards_each_callers_own_token(execution: Any, peer: Any) -> None:
+    from apx_agent import KeywordRouter, SequentialAgent
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    router = KeywordRouter(branches=[("go", SequentialAgent(agents=[peer.agent]), ["go"])], default=peer.agent)
+    handlers = compile_durable_handlers(router, model="test", service_ws=execution.ws, require_user=True)
+    body = {"messages": [{"role": "user", "content": "go"}]}
+
+    async def both() -> None:
+        await asyncio.gather(handlers.invoke(body, _user_context("tok-A")),
+                             handlers.invoke(body, _user_context("tok-B")))
+
+    asyncio.run(both())
+    assert sorted(h["X-Forwarded-Access-Token"] for h in peer.captured) == ["tok-A", "tok-B"]
+    assert all(h["Authorization"] == f"Bearer {h['X-Forwarded-Access-Token']}" for h in peer.captured)
+    assert len(peer.captured) == 2
