@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
@@ -85,7 +84,6 @@ def compile_durable_handlers(
         if recovery and (not isinstance(getattr(context, "invocation_id", None), str) or not context.invocation_id):
             raise ValueError("recovery requires a non-empty invocation_id")
         from databricks_agentkit.runtime.auth import RequestAuthContext
-        from databricks_agentkit.runtime.store import RUNTIME_STORE_LOCAL_ENV
         from ._defaults import DatabricksAppsHeaders
 
         auth = getattr(context, "request_auth", None)
@@ -95,17 +93,15 @@ def compile_durable_handlers(
             raise ValueError("user_identity requires the SDK's active RequestAuthContext")
         user_ws = auth.client_for("user") if auth is not None else None
         headers = None
-        if user_ws is not None:
+        if auth is not None and user_ws is not None:
             principal = user_ws.current_user.me().id
             if not isinstance(principal, str) or not principal:
                 raise ValueError("user_identity could not resolve the authenticated principal")
-            # Mirrors RequestAuthContext.from_headers' local test so local dev
-            # never forwards the developer's profile credentials to a peer.
-            local = (os.environ.get(RUNTIME_STORE_LOCAL_ENV) == "true"
-                     or not os.environ.get("DATABRICKS_APP_NAME"))
+            # The SDK's per-request verdict is authoritative: a local context's
+            # "user" client is the developer/app credential, never forward it.
             headers = DatabricksAppsHeaders(
                 host=None, user_name=None, user_id=principal, user_email=None, request_id=None, token=None,
-                auth_headers=None if local else (lambda: auth.client_for("user").config.authenticate()),
+                auth_headers=None if auth._local else (lambda: auth.client_for("user").config.authenticate()),
             )
         if isinstance(value, list):
             value = {"messages": value}

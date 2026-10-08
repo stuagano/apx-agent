@@ -1187,6 +1187,37 @@ def test_durable_local_dev_forwards_no_credentials(execution: Any, peer: Any, mo
     assert peer.captured == [{}]
 
 
+def _ambient_app_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    # What a local RequestAuthContext's "user" client resolves to: the app/developer credential.
+    monkeypatch.setattr("databricks_agentkit.runtime.workspace.workspace_client", lambda: _FakeUserClient(
+        host="h", token="ambient-app-credential", auth_type="pat"))
+
+
+def test_durable_sdk_local_verdict_with_odd_cased_env_forwards_nothing(
+        execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    _ambient_app_credential(monkeypatch)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "True")  # SDK lowercases -> local
+    auth = RequestAuthContext.from_headers({"X-Forwarded-User": "alice", "X-Forwarded-Access-Token": "tok-A"})
+    context = SimpleNamespace(request_auth=auth, session_id=None, is_recovery=False, invocation_id=str(uuid.uuid4()))
+    handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
+    asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, context))
+    assert peer.captured == [{}]
+
+
+def test_durable_local_context_in_deployed_env_forwards_nothing(
+        execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    _ambient_app_credential(monkeypatch)  # env stays deployed-looking: APP_NAME set, local flag unset
+    handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
+    asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, _user_context("x", local=True)))
+    assert peer.captured == [{}]
+
+
 def test_durable_closed_request_auth_fails_closed(peer: Any) -> None:
     from databricks_agentkit.runtime.auth import AuthError
 
@@ -1227,8 +1258,9 @@ def test_durable_forwarded_token_not_persisted(execution: Any, peer: Any, monkey
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    saver = InMemorySaver()
     app = compile_agent(peer.agent, target="durable_agent_server", model="test",
-                        service_ws=execution.ws, checkpointer=InMemorySaver())
+                        service_ws=execution.ws, checkpointer=saver)
     monkeypatch.delenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL")
     body = {"id": str(uuid.uuid4()), "session_id": "s", "input": [{"role": "user", "content": "go"}]}
     headers = {"X-Forwarded-User": "alice", "X-Forwarded-Access-Token": "tok-secret-A"}
@@ -1239,6 +1271,11 @@ def test_durable_forwarded_token_not_persisted(execution: Any, peer: Any, monkey
     assert peer.captured[-1]["X-Forwarded-Access-Token"] == "tok-secret-A"
     assert "tok-secret-A" not in response.text
     assert "tok-secret-A" not in saved.text
+    assert saver.storage, "checkpointer must have stored the run for this check to mean anything"
+    assert "tok-secret-A" not in repr(list(saver.list(None)))
+    assert "tok-secret-A" not in repr(saver.storage)
+    assert "tok-secret-A" not in repr(saver.writes)
+    assert "tok-secret-A" not in repr(saver.blobs)
 
 
 def test_durable_startup_materializes_sub_agents(execution: Any, monkeypatch: pytest.MonkeyPatch,
