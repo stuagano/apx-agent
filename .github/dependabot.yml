@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Watch the Agent Bricks SDK behind the `agentbricks` extra. It is in preview
+  # and ships breaking changes between minors, so every release gets a PR that
+  # CI (`uv sync --all-extras`) tests before anyone merges it.
+  - package-ecosystem: "uv"
+    directory: "/python"
+    schedule:
+      interval: "daily"
+    allow:
+      - dependency-name: "databricks-agentbricks"
+    commit-message:
+      prefix: "chore(deps)"
