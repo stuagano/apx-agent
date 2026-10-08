@@ -3,9 +3,9 @@
 Tool functions live in ``tools.py``; this module composes them into a
 SequentialAgent investigation pipeline plus a general-purpose fallback,
 wired via :class:`apx_agent.KeywordRouter` — substring-based routing with
-no LLM round trip. The router compiles cleanly via ``compile_to_*`` for
-both Model Serving and Apps targets; ``agent_server/start_server.py`` no
-longer needs to two-compile or dispatch at the request layer.
+no LLM round trip. The router compiles cleanly for both Model Serving and
+the native DurableAgentServer Apps target; routing happens inside the
+compiled graph, so ``app.py`` never dispatches at the request layer.
 """
 from __future__ import annotations
 
@@ -122,5 +122,8 @@ INVESTIGATION_KEYWORDS = [
 ]
 
 
-DATA_INSPECTOR_URL = os.environ.get("DATA_INSPECTOR_URL", "http://localhost:9000")
+# Local-dev address of the data-inspector sub-agent (see README "Local dev");
+# deploys set DATA_INSPECTOR_URL explicitly.
+_LOCAL_DATA_INSPECTOR_URL = "http://localhost:9000"
+DATA_INSPECTOR_URL = os.environ.get("DATA_INSPECTOR_URL", _LOCAL_DATA_INSPECTOR_URL)
 agent = create_investigation_pipeline(DATA_INSPECTOR_URL)

@@ -5,10 +5,10 @@ description = "Investigate why data is missing from Databricks tables — traces
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    # The [langgraph] extra is required at runtime for compile_to_responses_agent
-    # (Apps deploy path) — it pulls in langchain + langgraph + databricks-langchain.
-    # Same dep also covers the Model Serving compile_to_chat_agent path.
-    "apx-agent[langgraph]",
+    # [langgraph] drives graph execution (langchain + langgraph +
+    # databricks-langchain), [agentbricks] provides the native
+    # DurableAgentServer runtime the Apps deploy path targets.
+    "apx-agent[langgraph,agentbricks]",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.119.0",
     "pydantic-settings>=2.11.0",
@@ -48,9 +48,15 @@ name = "data_triage_agent"
 description = "Investigate why data is missing from Databricks tables or APIs — traces lineage, checks job failures, and inspects source code"
 model = "databricks-claude-sonnet-4-6"
 module = "agent:agent"
+target = "durable_agent_server"
 url = ""
 registry = ""
 registered_model = "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"
+
+# No managed session store: the agent is a KeywordRouter (not an LlmAgent, which
+# a managed store currently requires) and the investigation pipeline is
+# stateless per request. Durable still provides native /invocations + runtime
+# store crash-replay.
 
 [tool.apx.deploy]
 target = "apps"
@@ -65,9 +71,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # ADK shape: top-level user-facing files ride along as forced-includes.
-# agent_server/ + scripts/ are real packages. integrations/ holds opt-in
-# integrations (Jira, etc.) — see integrations/jira/README.md.
-packages = ["agent_server", "scripts", "integrations"]
+# scripts/ is a real package. integrations/ holds opt-in integrations
+# (Jira, etc.) — see integrations/jira/README.md.
+packages = ["scripts", "integrations"]
 force-include = { "agent.py" = "agent.py", "tools.py" = "tools.py", "app.py" = "app.py", "api.py" = "api.py" }
 
 [tool.pytest.ini_options]
