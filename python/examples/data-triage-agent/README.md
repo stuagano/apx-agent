@@ -201,7 +201,7 @@ The agent ships with two deploy paths. Pick by workload; the full tradeoff write
 
 ### Option A: Databricks Apps (`--target apps`, recommended for fast iteration)
 
-Code-push deploy via `databricks bundle deploy + bundle run`. No container build. `app.py` is the native entrypoint: `apx_agent._serve.create_app()` compiles the declared `target = "durable_agent_server"` runtime (durable `/invocations` + managed session store), then re-mounts `/mcp` + `/api/*` + the Jira webhook on top so Genie Code still discovers the tools.
+Code-push deploy via `databricks bundle deploy + bundle run`. No container build. `app.py` is the native entrypoint: `apx_agent._serve.create_app()` compiles the declared `target = "durable_agent_server"` runtime (native durable `/invocations`; stateless per request, with no managed session store because the root is a `KeywordRouter`. Invocation events are persisted in the runtime store, but request-user invocations are not recovered in the background), then re-mounts `/mcp` + `/api/*` + the Jira webhook on top so Genie Code still discovers the tools.
 
 ```bash
 cd python/examples/data-triage-agent

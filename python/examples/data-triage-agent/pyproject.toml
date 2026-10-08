@@ -55,8 +55,9 @@ registered_model = "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"
 
 # No managed session store: the agent is a KeywordRouter (not an LlmAgent, which
 # a managed store currently requires) and the investigation pipeline is
-# stateless per request. Durable still provides native /invocations + runtime
-# store crash-replay.
+# stateless per request. Durable provides native /invocations with invocation
+# events persisted in the runtime store; request-user invocations are not
+# recovered in the background (no background recovery).
 
 [tool.apx.deploy]
 target = "apps"

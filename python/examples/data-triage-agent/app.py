@@ -3,7 +3,10 @@
 One entrypoint for both local dev (``uvicorn app:app`` / ``apx-agent dev``) and
 the deployed App. ``apx_agent._serve.create_app`` compiles the declared
 ``target = "durable_agent_server"`` runtime (durable ``/invocations`` +
-``/readyz`` + managed session store); on top of it we re-mount the surface this
+``/readyz``; stateless per request, no managed session store since the root is
+a ``KeywordRouter``; invocation events persist in the runtime store, and
+request-user invocations are not recovered in the background); on top of it we
+re-mount the surface this
 example needs:
 
   * ``mount_mcp_endpoints`` — ``/mcp`` + ``/.well-known/agent.json`` + ``/health``
