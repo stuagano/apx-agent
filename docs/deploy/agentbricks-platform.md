@@ -373,28 +373,32 @@ declaration into the inputs the product consumes.
   [`running/runtime-targets.md`](../running/runtime-targets.md).
 - **One command that sequences a multi-step, multi-store setup.** Standing up a
   durable agent in an App Space is not one action — it is a create → bind →
-  redeploy dance across *three* managed stores, each provisioned by a different
-  owner, and the raw CLI leaves the sequencing to you (stop early and you get a
-  created-but-never-launched shell — see §3). APX's single `deploy` does it in
-  order:
+  redeploy dance that touches *three* managed stores, and the raw CLI leaves the
+  sequencing to you (stop early and you get a created-but-never-launched shell —
+  see §3). APX's single `deploy` does it in order:
   1. **Pre-flight everything that must already exist** — the App Space and each
      declared store are probed before anything is built, and a missing /
      feature-disabled / permission-denied resource fails fast with a named
      reason instead of a half-made app (`_doctor.py` `check_agent_prerequisites`).
   2. **Create the app** (first `bundle deploy`) so its service principal exists.
-  3. **Provision + bind the Runtime Store** against that just-created SP — APX
-     owns this step (`_app_space.py` `runtime_store_env`), reading the app back
-     to confirm `space` + `LIQUID` before proceeding.
-  4. **Redeploy with the store wired in** (second `bundle deploy`) — the deploy
-     that actually runs durably.
+  3. **Bind the Runtime Store** against that just-created SP, then **redeploy
+     with it wired in** (second `bundle deploy`) — the deploy that runs durably.
 
-  The three stores have three different provisioning owners: the **Runtime
-  Store** is APX's create→bind→redeploy step above; the **Session** and
-  **Memory** stores are the declared `session_store` / `memory_store` that the
-  Agent Bricks deploy creates-or-resolves (APX only pre-flights them, step 1).
-  You type one command; APX collapses the chicken-and-egg ordering (a store
-  owned by an SP that does not exist until the app is created) and the
-  three-store reconciliation into it. See
+  **APX never implements store creation itself** — the actual `.create()` for all
+  three stores lives in the Agent Bricks / AgentKit SDK. What differs is how APX
+  *triggers* it, and the three are **not** symmetric:
+
+  | Store | Who runs the create | APX's role |
+  |---|---|---|
+  | **Runtime** | Agent Bricks `get_or_create_backend` | calls it **inline during deploy** (after the SP exists), reads back `space` + `LIQUID`, wires the `DATABRICKS_AGENTBRICKS_RUNTIME_STORE_*` env (`_app_space.py` `runtime_store_env`) |
+  | **Memory** | AgentKit `memory_stores.create` | has its **own provisioning wrapper + CLI** (`provision_managed_memory`, create-only-on-404-never-on-permission; `apx-agent memory …`) |
+  | **Session** | AgentKit `session_stores` / `DatabricksSessionStoreSaver` | **declares and binds only** — writes `session_store` into the generated config and the `AGENT_SESSION_STORE` env, and pre-flights it (step 1); no APX create path |
+
+  So APX's contribution is **orchestration, not provisioning**: it collapses the
+  chicken-and-egg ordering (the Runtime Store is owned by an SP that doesn't
+  exist until the app is created) and the per-store reconciliation into one
+  command, calling the SDK's own create at the right moment and failing fast when
+  a prerequisite is missing. See
   [`running/sessions-and-memory.md`](../running/sessions-and-memory.md) for the
   stores themselves.
 - **Portability.** The same declaration compiles to the durable Apps target or to
