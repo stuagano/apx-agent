@@ -269,6 +269,34 @@ workspace; Databricks
 [horizontal scaling](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/horizontal-scaling)
 (the 1–5 limit); and `_app_space.py` for APX's space-deploy handling.
 
+### Where the stores live in Lakebase (and no, you don't pre-create them)
+
+The managed Runtime Store is a **Lakebase Project** — the top-level Lakebase
+container (its own branch / endpoint / compute), not a schema inside one shared
+database. On this workspace a durable deploy produced a per-deployment project
+named after the app, e.g. `projects/agent-bricks-<name>-runtime-store`, alongside
+a shared platform project (`projects/databricks-internal-custom-agents`); both
+were created *during* the deploy (timestamps within ~90s of the app's creation),
+by the platform, not by hand.
+
+So:
+
+- **You do not run `databricks postgres create-project` for a durable agent.**
+  The Runtime Store's Lakebase project is auto-provisioned at deploy — the call
+  is literally `get_or_create_backend` (`_app_space.py`), create-on-demand. The
+  only time you pre-create a Lakebase project yourself is the BYO path
+  (`[tool.apx.agent.memory] type="lakebase"` pointing at your own project), not
+  the managed/durable path.
+- **Each managed store is its own Lakebase project**, i.e. separate
+  branches/endpoints — not one database shared across stores. That means separate
+  compute, but each project is **scale-to-zero** (0.5 CU floor, idles out), so an
+  idle agent's stores cost essentially nothing until a request wakes them. It is
+  not N always-on databases.
+
+Source: live `databricks postgres list-projects` / `get-project` /
+`list-branches` on this workspace, cross-referenced with the probe's
+`DATABRICKS_AGENTBRICKS_RUNTIME_STORE_*` env.
+
 ---
 
 ## 4. Identity: two identities, chosen per tool
