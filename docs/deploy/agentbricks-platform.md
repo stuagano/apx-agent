@@ -371,6 +371,32 @@ declaration into the inputs the product consumes.
   sessions, approvals, memory, streaming, recovery) and fail with a named reason
   instead of silently degrading. See
   [`running/runtime-targets.md`](../running/runtime-targets.md).
+- **One command that sequences a multi-step, multi-store setup.** Standing up a
+  durable agent in an App Space is not one action — it is a create → bind →
+  redeploy dance across *three* managed stores, each provisioned by a different
+  owner, and the raw CLI leaves the sequencing to you (stop early and you get a
+  created-but-never-launched shell — see §3). APX's single `deploy` does it in
+  order:
+  1. **Pre-flight everything that must already exist** — the App Space and each
+     declared store are probed before anything is built, and a missing /
+     feature-disabled / permission-denied resource fails fast with a named
+     reason instead of a half-made app (`_doctor.py` `check_agent_prerequisites`).
+  2. **Create the app** (first `bundle deploy`) so its service principal exists.
+  3. **Provision + bind the Runtime Store** against that just-created SP — APX
+     owns this step (`_app_space.py` `runtime_store_env`), reading the app back
+     to confirm `space` + `LIQUID` before proceeding.
+  4. **Redeploy with the store wired in** (second `bundle deploy`) — the deploy
+     that actually runs durably.
+
+  The three stores have three different provisioning owners: the **Runtime
+  Store** is APX's create→bind→redeploy step above; the **Session** and
+  **Memory** stores are the declared `session_store` / `memory_store` that the
+  Agent Bricks deploy creates-or-resolves (APX only pre-flights them, step 1).
+  You type one command; APX collapses the chicken-and-egg ordering (a store
+  owned by an SP that does not exist until the app is created) and the
+  three-store reconciliation into it. See
+  [`running/sessions-and-memory.md`](../running/sessions-and-memory.md) for the
+  stores themselves.
 - **Portability.** The same declaration compiles to the durable Apps target or to
   a `ResponsesAgent` model for Model Serving, so moving between serving contracts
   is a target switch, not a rewrite.
