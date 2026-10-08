@@ -241,8 +241,12 @@ def remote_agent_tool(
         # The compile path resolves Headers to None outside Databricks Apps
         # (local dev / no user identity); forward OBO material only when real.
         if headers is not None:
-            if headers.token is not None:
-                token = headers.token.get_secret_value()
+            token = headers.token.get_secret_value() if headers.token is not None else None
+            if token is None and headers.auth_headers is not None:
+                # Durable host: ask the SDK's request-user client now. A closed
+                # request context raises here — fail closed, nothing is sent.
+                token = headers.auth_headers()["Authorization"].removeprefix("Bearer ")
+            if token is not None:
                 forwarded["X-Forwarded-Access-Token"] = token
                 # The Apps OAuth ingress authenticates on Authorization; with
                 # only X-Forwarded-Access-Token it 302s to login (live-proven
@@ -267,7 +271,9 @@ def remote_agent_tool(
         async def _delegate(message: str, headers: Dependencies.Headers) -> str:
             return await _send(message, headers)
 
-        return build_tool(_delegate, name=name, description=description)
+        tool = build_tool(_delegate, name=name, description=description)
+        tool.__apx_sub_agent_url__ = base_url  # type: ignore[attr-defined]
+        return tool
 
     async def _structured_delegate(headers: Dependencies.Headers, **kwargs: Any) -> str:
         # Optional parameters the LLM left unset arrive as None defaults —
@@ -276,4 +282,6 @@ def remote_agent_tool(
         return await _send(_json.dumps(args, ensure_ascii=False), headers)
 
     _stamp_structured_signature(_structured_delegate, input_schema)
-    return build_tool(_structured_delegate, name=name, description=description)
+    tool = build_tool(_structured_delegate, name=name, description=description)
+    tool.__apx_sub_agent_url__ = base_url  # type: ignore[attr-defined]
+    return tool

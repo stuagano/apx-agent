@@ -95,8 +95,9 @@ def inspect_target(
 
     raw_request_required = any(
         dependency in {_get_request, get_databricks_headers}
-        for fn in tools for dependency in _tool_dependency_callables(fn).values()
-    ) or bool(list(_iter_sub_agents(agent)))
+        for fn in tools if not hasattr(fn, "__apx_sub_agent_url__")
+        for dependency in _tool_dependency_callables(fn).values()
+    )
     nodes = [agent]
     for node in nodes:
         nodes.extend(child for _, child in _iter_child_agents(node) if child not in nodes)
@@ -138,7 +139,7 @@ def inspect_target(
         and agent._timeout_s is None
     )
     capabilities = {
-        "user_identity": TargetCapability(responses or not raw_request_required, "The durable target supports SDK request-user clients, SQL and principal dependencies; raw headers, Request and remote OBO forwarding remain unsupported."),
+        "user_identity": TargetCapability(responses or not raw_request_required, "The durable target supports SDK request-user clients, SQL and principal dependencies, and per-hop user OBO to sub-agents; raw headers and Request remain unsupported."),
         "approvals": TargetCapability(checkpointed, "Approvals require an LlmAgent checkpoint binding and stable session; native request-user sessions are isolated by the SDK and authenticated principal."),
         "sessions": TargetCapability(checkpointed or (responses and conversation_store is not None), "An explicit checkpoint/history binding is required; restart persistence depends on the selected store."),
         "long_term_memory": TargetCapability(memory_bound, "Bind a reachable declared store; managed memory uses AgentKit workspace memory stores and trusted caller actor IDs."),

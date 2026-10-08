@@ -59,6 +59,15 @@ This model is not aspirational — it is what the runtime does today:
   reachability)` (`_apps_authorization.py`, `authorization_summary_lines`). No
   code path asserts the grant as an access decision.
 
+### On the native durable host
+
+`durable_agent_server` keeps the same invariant. The SDK's `RequestAuthContext`
+holds the request-user token; apx never copies it. Each sub-agent call asks
+`request_auth.client_for("user").config.authenticate()` at call time and forwards
+the result as `X-Forwarded-Access-Token` + `Authorization: Bearer`. Local dev
+forwards nothing, a closed request context fails closed, and request-user
+invocations are never recovered in the background.
+
 ## Operate-time signal
 
 `apx-agent doctor` (`check_sub_agents`, `_doctor.py`) reminds, when a declared

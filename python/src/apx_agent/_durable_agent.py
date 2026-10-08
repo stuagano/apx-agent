@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
@@ -84,6 +85,7 @@ def compile_durable_handlers(
         if recovery and (not isinstance(getattr(context, "invocation_id", None), str) or not context.invocation_id):
             raise ValueError("recovery requires a non-empty invocation_id")
         from databricks_agentkit.runtime.auth import RequestAuthContext
+        from databricks_agentkit.runtime.store import RUNTIME_STORE_LOCAL_ENV
         from ._defaults import DatabricksAppsHeaders
 
         auth = getattr(context, "request_auth", None)
@@ -97,8 +99,14 @@ def compile_durable_handlers(
             principal = user_ws.current_user.me().id
             if not isinstance(principal, str) or not principal:
                 raise ValueError("user_identity could not resolve the authenticated principal")
-            headers = DatabricksAppsHeaders(host=None, user_name=None, user_id=principal,
-                                           user_email=None, request_id=None, token=None)
+            # Mirrors RequestAuthContext.from_headers' local test so local dev
+            # never forwards the developer's profile credentials to a peer.
+            local = (os.environ.get(RUNTIME_STORE_LOCAL_ENV) == "true"
+                     or not os.environ.get("DATABRICKS_APP_NAME"))
+            headers = DatabricksAppsHeaders(
+                host=None, user_name=None, user_id=principal, user_email=None, request_id=None, token=None,
+                auth_headers=None if local else (lambda: auth.client_for("user").config.authenticate()),
+            )
         if isinstance(value, list):
             value = {"messages": value}
         if not isinstance(value, dict) or set(value) - {"messages", "resume"}:
@@ -207,6 +215,18 @@ def compile_to_durable_agent_server(
     app.invoke(handlers.invoke)
     if recovery:
         app.recover(handlers.invoke)
+
+    from ._resources import _iter_sub_agents
+
+    if list(_iter_sub_agents(agent)):
+        from ._wiring import _chain_lifespan
+
+        async def _materialize_sub_agents() -> None:
+            # Card fetch registers each sub_agents URL as a callable delegate
+            # (#436); the per-invocation graph compile picks the delegates up.
+            await agent.fetch_remote_tools()
+
+        _chain_lifespan(app, _materialize_sub_agents)
 
     @app.get("/readyz")
     async def readyz() -> Any:
