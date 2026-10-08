@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from types import MappingProxyType
 from typing import Any
@@ -1370,6 +1370,32 @@ def create_app(
 # ---------------------------------------------------------------------------
 
 
+def _chain_lifespan(
+    app: FastAPI,
+    startup: Callable[[], Awaitable[None]],
+    shutdown: Callable[[], Awaitable[None]] | None = None,
+) -> None:
+    """Run ``startup``/``shutdown`` inside the app's existing lifespan.
+
+    ``@app.on_event`` handlers never fire on apps built with ``lifespan=``
+    (e.g. the SDK's DurableAgentServer), so wrap the lifespan instead. The
+    host's own lifespan enters first, so its stores are ready for startup.
+    """
+    inner = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(scope_app: FastAPI):  # noqa: ANN202 — ASGI lifespan
+        async with inner(scope_app) as state:
+            await startup()
+            try:
+                yield state
+            finally:
+                if shutdown is not None:
+                    await shutdown()
+
+    app.router.lifespan_context = lifespan
+
+
 def mount_mcp_endpoints(
     app: FastAPI,
     agent: BaseAgent,
@@ -1385,10 +1411,10 @@ def mount_mcp_endpoints(
     consume the same agent as an MCP source.
 
     Mounted routes are inert until the FastAPI lifespan completes startup
-    (they ``503`` if ``app.state.mcp_server`` isn't populated yet). The
-    lifespan registers an ``async def startup_event_handler`` that runs
-    ``setup_agent`` + ``_setup_mcp`` and stores the resulting state on
-    ``app.state``. Shutdown closes the MCP HTTP manager cleanly.
+    (they ``503`` if ``app.state.mcp_server`` isn't populated yet). Startup
+    runs ``setup_agent`` + ``_setup_mcp`` inside the host's lifespan (works
+    for hosts built with ``lifespan=``, such as DurableAgentServer) and
+    stores the resulting state on ``app.state``. Shutdown closes the MCP HTTP manager cleanly.
 
     Usage::
 
@@ -1435,8 +1461,7 @@ def mount_mcp_endpoints(
     # Track the in-flight MCP lifecycle so shutdown can close it cleanly.
     _state_key = "_apx_mount_state"
 
-    @app.on_event("startup")
-    async def _apx_mount_startup() -> None:  # type: ignore[misc]
+    async def _apx_mount_startup() -> None:
         # MLflow auto-tracing. This is the apps-target path (the AgentServer app
         # is not created via create_app, so create_app's lifespan never runs
         # here). Under ``apx-agent run --reload`` the worker subprocess re-imports the
@@ -1486,8 +1511,7 @@ def mount_mcp_endpoints(
         setattr(app.state, _state_key, mcp_lifecycle)
         logger.info("mount_mcp_endpoints: /mcp ready (HTTP + SSE)")
 
-    @app.on_event("shutdown")
-    async def _apx_mount_shutdown() -> None:  # type: ignore[misc]
+    async def _apx_mount_shutdown() -> None:
         lifecycle = getattr(app.state, _state_key, None)
         if lifecycle is None:
             return
@@ -1495,3 +1519,5 @@ def mount_mcp_endpoints(
             await lifecycle.__aexit__(None, None, None)
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("mount_mcp_endpoints: clean shutdown failed: %s", exc)
+
+    _chain_lifespan(app, _apx_mount_startup, _apx_mount_shutdown)
