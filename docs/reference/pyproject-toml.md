@@ -86,6 +86,19 @@ Memory tools scope operations to the trusted calling user. Managed-memory actor
 IDs partition data; store permissions are the access-control boundary. Requests without a principal return `NO_PRINCIPAL`
 without writing.
 
+**A managed memory store is a shared, independently-owned resource — by design.**
+Unlike a session store (which belongs to one agent's conversations and is
+provisioned when that agent deploys), a memory store is meant to outlive and be
+**shared across multiple agents**: provision it once, then have each agent bind
+the same `store_name` so a fleet accumulates and recalls common institutional
+memory. That is why memory has its own standalone provisioning path —
+`apx-agent memory provision --store <name>` (and `provision_managed_memory`,
+create-only-on-404) — separate from any agent's deploy. Create the store first,
+grant the agents' service principals access, then declare `store_name` in each.
+This asymmetry with sessions is intentional, not an inconsistency: shared
+lifetime (memory, provisioned independently) vs. per-agent lifetime (session,
+provisioned at deploy).
+
 | Key | Required | Description |
 |---|---|---|
 | `type` | yes | `"inmemory"` / `"lakebase"` / `"managed"` |
