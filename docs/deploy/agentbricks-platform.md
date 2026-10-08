@@ -394,6 +394,15 @@ declaration into the inputs the product consumes.
   | **Memory** | AgentKit `memory_stores.create` | has its **own provisioning wrapper + CLI** (`provision_managed_memory`, create-only-on-404-never-on-permission; `apx-agent memory …`) |
   | **Session** | AgentKit `session_stores` / `DatabricksSessionStoreSaver` | **declares and binds only** — writes `session_store` into the generated config and the `AGENT_SESSION_STORE` env, and pre-flights it (step 1); no APX create path |
 
+  The Memory-vs-Session difference is **intentional, and it tracks the store's
+  lifetime, not an inconsistency.** A memory store is meant to be *shared across
+  many agents* (provision once, every agent binds the same `store_name` to
+  accumulate common institutional memory), so it has a standalone provisioning
+  path that exists outside any single deploy. A session store belongs to one
+  agent's conversations, so it has no reason to exist before that agent — declare
+  it and let the deploy provision it. Shared lifetime → independent provisioning
+  (Memory); per-agent lifetime → deploy-time provisioning (Session).
+
   So APX's contribution is **orchestration, not provisioning**: it collapses the
   chicken-and-egg ordering (the Runtime Store is owned by an SP that doesn't
   exist until the app is created) and the per-store reconciliation into one
