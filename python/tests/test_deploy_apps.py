@@ -1193,6 +1193,34 @@ def test_agent_prerequisites_block_deployment_before_upload(
         assert "Image dependencies" in result.output
 
 
+@pytest.mark.parametrize("composite", [True, False])
+def test_managed_session_prerequisite_only_for_agents_that_bind_it(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, composite: bool,
+) -> None:
+    """#905: a composite durable agent never binds the auto-attached managed
+    session, so a missing session store must not block its deploy; an LlmAgent
+    still requires it."""
+    from apx_agent import AgentConfig, KeywordRouter, LlmAgent
+    from apx_agent._project_gen import generate_project
+    from databricks.sdk.errors import NotFound
+
+    config = AgentConfig(name="my-app", target="durable_agent_server")
+    (scaffold / "databricks.yml").unlink()
+    generate_project(config, scaffold)
+    _install_subprocess_mock(monkeypatch)
+    ws = MagicMock()
+    ws.api_client.do.side_effect = NotFound("no such session store")
+    monkeypatch.setattr("apx_agent.cli._make_scaffold_workspace_client", lambda profile: ws)
+    leaf = LlmAgent(name="my-app")
+    agent = KeywordRouter(branches=[("x", leaf, ["x"])], default=leaf) if composite else leaf
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", MagicMock(return_value=agent))
+    monkeypatch.setattr("apx_agent.cli._ensure_apx_wheel", MagicMock())
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--profile", "chosen"])
+    # Native CLI path: a missing store is deferred to the provisioner (WARN), so
+    # the LlmAgent is still checked (logged) while the composite is not.
+    assert ("Managed sessions" in result.output) is (not composite)
+
+
 @pytest.mark.parametrize("environment", ["dev", "prod", "custom"])
 def test_native_project_dry_run_and_identity(scaffold: Path, monkeypatch: pytest.MonkeyPatch, environment: str) -> None:
     from apx_agent import AgentConfig
@@ -4441,3 +4469,35 @@ def test_retired_appkit_host_fails_before_build(scaffold: Path, monkeypatch: pyt
     assert result.exit_code != 0
     assert "AppKit host is retired" in result.output
     assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
+
+
+@pytest.mark.parametrize(("effective", "declared", "ok"), [
+    (None, ["ai-gateway"], True),   # API leaves effective unset: fall back to the space's declared scopes
+    ([], ["ai-gateway"], False),    # effective, when populated, is authoritative
+    (None, [], False),              # nothing granted
+])
+def test_space_scope_check_uses_declared_scopes_when_effective_unset(
+    monkeypatch: pytest.MonkeyPatch, effective: Any, declared: Any, ok: bool,
+) -> None:
+    import click
+    from types import SimpleNamespace
+
+    from databricks.sdk.errors import NotFound
+    from databricks.sdk.service.apps import Space
+
+    from apx_agent._app_space import validate_space_deployment
+
+    client = MagicMock()
+    client.workspace_client.apps.get_space.return_value = Space(
+        name="app-space", effective_user_api_scopes=effective, user_api_scopes=declared)
+    client.workspace_client.apps.get.side_effect = NotFound("no app yet")
+    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda profile: client)
+    doc = {"resources": {"apps": {"a": {"space": "app-space", "config": {
+        "env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]}}}}}
+    plan = SimpleNamespace(user_api_scopes=["ai-gateway"], service_resources=[])
+    perms = SimpleNamespace(can_use_groups=[], can_manage_groups=[])
+    if ok:
+        validate_space_deployment(doc, bundle_key="a", app_name="mcp-x", profile="p", plan=plan, family_permissions=perms)
+    else:
+        with pytest.raises(click.ClickException, match="missing required scopes"):
+            validate_space_deployment(doc, bundle_key="a", app_name="mcp-x", profile="p", plan=plan, family_permissions=perms)
