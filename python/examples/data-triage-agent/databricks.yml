@@ -71,19 +71,11 @@ resources:
         Delegates SQL + Delta forensics to a data-inspector sub-agent via A2A.
       source_code_path: ./.build
 
-      # OBO scopes the forwarded-user token carries — the presence/lineage
-      # steps and the delegated data-inspector both hit the SQL APIs.
-      user_api_scopes:
-        - genie
-        - sql
-        - model-serving
-
-      resources:
-        - name: llm-endpoint
-          description: Foundation model endpoint used by the agent.
-          serving_endpoint:
-            name: ${var.llm_endpoint_name}
-            permission: CAN_QUERY
+      # App Space: the space grants the OBO scopes (genie, sql, model-serving)
+      # and service resources, so the app declares none of its own. Deploying
+      # into a space keeps the mcp- name (External MCP discovery) on the
+      # native durable runtime. Set this to an App Space in your workspace.
+      space: app-space
 
       config:
         command:

@@ -59,6 +59,10 @@ registered_model = "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"
 # events persisted in the runtime store; request-user invocations are not
 # recovered in the background (no background recovery).
 
+[tool.apx.agent.deploy]
+# Must match the bundle app's `space:` (see databricks.yml).
+space = "app-space"
+
 [tool.apx.deploy]
 target = "apps"
 # App name MUST start with 'mcp-' for Databricks External MCP discovery to
