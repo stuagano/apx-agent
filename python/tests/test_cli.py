@@ -3740,6 +3740,22 @@ def test_deploy_echoes_autodetected_target(
         assert "auto-detected" not in explicit.stderr
 
 
+def test_preflight_apps_durable_bundle_needs_agent_py_not_agent_server(tmp_path: Path) -> None:
+    """A durable bundle project (e.g. an App Space deploy) starts via _serve, not agent_server/."""
+    import click
+
+    from apx_agent.cli import _preflight_apps
+
+    (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname = 'x'\n")
+    with pytest.raises(click.ClickException) as excinfo:
+        _preflight_apps(tmp_path, durable=True)
+    assert "agent.py" in excinfo.value.message
+    assert "agent_server" not in excinfo.value.message
+    (tmp_path / "agent.py").write_text("agent = None\n")
+    _preflight_apps(tmp_path, durable=True)  # no agent_server/ needed
+
+
 def test_preflight_apps_suggests_model_serving_for_adk_layout(tmp_path: Path) -> None:
     """agent.py + databricks.yml misrouted to apps → suggest --target model-serving (#411)."""
     import click

@@ -63,7 +63,7 @@ def test_native_manifest_uses_existing_authorization_contract(
                          memory={"type": "managed", "store_name": "agent-memory"} if identity == "memory" else None)
     plan = compile_authorization_plan(agent, model=config.model)
     manifest = tmp_path / "agent.toml"
-    manifest.write_text(build_native_manifest(config=config, authorization_plan=plan))
+    manifest.write_text(build_native_manifest(config=config, authorization_plan=plan, agent=agent))
     verify(Artifact(str(manifest), must_contain="[auth.user]"))
     project = AgentProject.load(tmp_path)
     assert project.user_auth.required == (identity != "service")
@@ -291,6 +291,56 @@ def test_composite_agent_compiles_durable_without_managed_session(execution: Any
     # Must not raise "session_store currently requires LlmAgent".
     app = compile_agent(router, config=config, model="test", service_ws=execution.ws)
     assert app is not None
+
+
+def test_explicit_session_store_on_composite_still_requires_llm_agent(execution: Any) -> None:
+    """Dropping the auto-attached session must not hide a real caller mistake."""
+    from apx_agent import AgentConfig, KeywordRouter, compile_agent
+
+    router = KeywordRouter(branches=[("x", execution.agent, ["x"])], default=execution.agent)
+    config = AgentConfig(name="composite", model="test", target="durable_agent_server")
+    with pytest.raises(ValueError, match="session_store currently requires LlmAgent"):
+        compile_agent(
+            router, config=config, model="test", service_ws=execution.ws,
+            session_store="caller-sessions",
+        )
+
+
+@pytest.mark.parametrize("composite", [True, False])
+def test_staged_native_manifest_omits_session_store_for_composites(
+    execution: Any, tmp_path: Path, composite: bool,
+) -> None:
+    """#905: the staged agent.toml is the contract deploy ships. A composite
+    must not declare the auto-attached managed session; an LlmAgent must."""
+    import tomllib
+    from ctk import Artifact, verify
+    from apx_agent import AgentConfig, KeywordRouter
+    from apx_agent._apps_authorization import compile_authorization_plan
+    from apx_agent._durable_agent import build_native_manifest
+
+    config = AgentConfig(
+        name="staged", model="test", target="durable_agent_server",
+        memory={"type": "managed", "store_name": "agent-memory"},
+    )
+    assert config.session is not None and config.session.type == "managed"
+    leaf = execution.agent
+    agent = KeywordRouter(branches=[("x", leaf, ["x"])], default=leaf) if composite else leaf
+    # The router's two edges share one leaf; compile the plan from that leaf so
+    # this test stays about the staged session contract, not name uniqueness.
+    plan = compile_authorization_plan(leaf, model=config.model)
+    staged = tmp_path / ".build"
+    staged.mkdir()
+    manifest = staged / "agent.toml"
+    manifest.write_text(build_native_manifest(config=config, authorization_plan=plan, agent=agent))
+    verify(Artifact(str(manifest), min_bytes=1, must_contain="[auth.user]"))
+    loaded = tomllib.loads(manifest.read_text())
+    assert loaded["memory_store"]["name"] == "agent-memory"
+    if composite:
+        verify(Artifact(str(manifest), must_not_contain="[session_store]"))
+        assert "session_store" not in loaded
+    else:
+        verify(Artifact(str(manifest), must_contain="[session_store]"))
+        assert loaded["session_store"]["name"] == config.session.store_name
 
 
 def test_request_user_auth_never_falls_back_to_app(execution: Any) -> None:

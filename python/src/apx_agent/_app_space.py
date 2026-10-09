@@ -90,7 +90,12 @@ def validate_space_deployment(
 
     client = _AgentBricksApiClient(profile)
     inherited = client.workspace_client.apps.get_space(space)
-    missing = set(plan.user_api_scopes) - set(inherited.effective_user_api_scopes or [])
+    # Some workspaces leave effective_user_api_scopes unset; the space's declared
+    # scopes are then what it grants. When populated, effective is authoritative.
+    granted = inherited.effective_user_api_scopes
+    if granted is None:
+        granted = inherited.user_api_scopes
+    missing = set(plan.user_api_scopes) - set(granted if granted is not None else [])
     if missing:
         raise click.ClickException("App Space is missing required scopes: " + ", ".join(sorted(missing)))
     resources = [resource.as_dict() for resource in inherited.resources or []]
