@@ -460,3 +460,36 @@ def test_advisories_run_when_config_fails(tmp_path: Path) -> None:
     assert checks["Re-mount"].status is Status.WARN
     assert "could not scan entrypoint" in checks["Re-mount"].detail
     assert checks["History"].status is Status.SKIP
+
+
+@pytest.mark.parametrize("bundle", ["", "bundle:\n  name: x\n", "resources:\n  apps: {}\n", "resources:\n  apps:\n"])
+def test_malformed_bundle_is_a_clear_deploy_fail(tmp_path: Path, bundle: str) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "malformed", LLM_AGENT.format(name="malformed"), extra_files={"databricks.yml": bundle})
+    deploy = _by_name(check_durable_readiness(root))["Deploy"]
+    assert deploy.status is Status.FAIL
+    assert deploy.detail == "databricks.yml has no resources.apps entry"
+
+
+def test_delegate_agent_with_no_resolver_call_fails_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    # With no request-user client, durable skips building headers entirely: the
+    # agent has a delegate but the resolver is never installed.
+    monkeypatch.setattr(RequestAuthContext, "client_for", lambda self, kind: None)
+    root = _project(tmp_path, "noresolver", DELEGATE_AGENT.format(name="noresolver"))
+    request = _by_name(check_durable_readiness(root))["Request"]
+    assert request.status is Status.FAIL
+    assert "no call" in request.detail
+
+
+def test_delegate_less_agent_request_ok_without_resolver_call(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "nodelegate", LLM_AGENT.format(name="nodelegate"))
+    request = _by_name(check_durable_readiness(root))["Request"]
+    assert request.status is Status.OK
+    assert "0 delegate(s)" in request.detail

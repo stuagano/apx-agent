@@ -396,7 +396,11 @@ def _stage_deploy(loaded: _Loaded) -> Check:
         return Check("Deploy", Status.SKIP, "no databricks.yml (native deploy generates its own bundle)")
     try:
         doc = yaml.safe_load(bundle.read_text())
-        apps = doc["resources"]["apps"]
+        resources = doc.get("resources") if isinstance(doc, dict) else None
+        apps = resources.get("apps") if isinstance(resources, dict) else None
+        if not isinstance(apps, dict) or not apps:
+            return Check("Deploy", Status.FAIL, "databricks.yml has no resources.apps entry",
+                         "Declare the app under resources.apps (native deploy needs exactly one).")
         bundle_key = next(iter(apps))
         deploy = tomllib.loads((loaded.project / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("deploy", {})
         app_name = deploy["app_name"] if "app_name" in deploy else apps[bundle_key]["name"]
