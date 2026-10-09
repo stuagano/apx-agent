@@ -342,7 +342,8 @@ def _stage_request(loaded: _Loaded, started: _Started, harness: _Harness) -> Che
         if SENTINEL in response.text or SENTINEL in saved.text:
             return Check("Request", Status.FAIL, "request-user token persisted in the invocation")
         delegates = _delegates(loaded.agent)
-        if not seen or seen[-1] != (False, bool(delegates)):
+        # Without delegates durable has no request-user auth to resolve, so no call is expected.
+        if (delegates or seen) and (not seen or seen[-1] != (False, bool(delegates))):
             return Check("Request", Status.FAIL, "durable did not install the request-user resolver "
                          f"(observed (local, forward) = {seen[-1] if seen else 'no call'}, "
                          f"expected (False, {bool(delegates)}))")
@@ -375,13 +376,59 @@ def _cascade(results: list[Check]) -> list[Check]:
         if blocked is not None:
             out.append(Check(stage, Status.SKIP, f"blocked by {blocked}"))
             continue
-        check = by_name.get(stage)
-        if check is None:
-            check = Check(stage, Status.SKIP, "not yet implemented")
+        check = by_name[stage]  # every unblocked stage has produced a result
         out.append(check)
         if check.status is Status.FAIL:
             blocked = stage
     return out
+
+
+def _stage_deploy(loaded: _Loaded) -> Check:
+    import tomllib
+
+    import click
+    import yaml
+
+    from ._agentbricks_deploy import validate_cli_deployment
+
+    bundle = loaded.project / "databricks.yml"
+    if not bundle.exists():
+        return Check("Deploy", Status.SKIP, "no databricks.yml (native deploy generates its own bundle)")
+    try:
+        doc = yaml.safe_load(bundle.read_text())
+        apps = doc["resources"]["apps"]
+        bundle_key = next(iter(apps))
+        deploy = tomllib.loads((loaded.project / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("deploy", {})
+        app_name = deploy["app_name"] if "app_name" in deploy else apps[bundle_key]["name"]
+        # The real deploy needs --profile and runs the app; the preflight checks the bundle, not those flags.
+        validate_cli_deployment(doc, bundle_key=bundle_key, app_name=app_name, profile="apx-doctor", no_run=False)
+    except click.ClickException as exc:
+        return Check("Deploy", Status.FAIL, exc.message, "Fix the bundle for a native durable deploy and re-run (first rejection only).")
+    except BaseException as exc:
+        return _fail("Deploy", exc)
+    return Check("Deploy", Status.OK, f"native deploy preflight passes for {app_name}")
+
+
+def _advisory(loaded: _Loaded | None, project: Path) -> list[Check]:
+    try:
+        surface = _entrypoint_surface(project)
+    except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        remount = Check("Re-mount", Status.WARN, f"could not scan entrypoint: {type(exc).__name__}: {exc}")
+    else:
+        remount = (Check("Re-mount", Status.WARN, "entrypoint adds: " + ", ".join(surface),
+                         "Re-mount these on the durable app (see python/examples/data-triage-agent/app.py).")
+                   if surface else Check("Re-mount", Status.OK, "no hand-added FastAPI surface"))
+    if loaded is None:
+        return [remount, Check("History", Status.SKIP, "config did not load; declared stores unknown")]
+    stores = [f"{label}={store.type}"
+              for label, store in (("session", loaded.config.session), ("memory", loaded.config.memory))
+              if store is not None and store.type != "managed"]
+    history = (Check("History", Status.WARN, "non-managed stores: " + ", ".join(stores) +
+                     " — existing history will not move to a managed store")
+               if stores else Check("History", Status.OK, "no non-managed stores declared"))
+    return [remount, history]
 
 
 def check_durable_readiness(project: Path) -> list[Check]:
@@ -393,7 +440,7 @@ def check_durable_readiness(project: Path) -> list[Check]:
         if isinstance(loaded, Check):
             if loaded.status is Status.SKIP:
                 return [loaded]
-            return _cascade([loaded])
+            return _cascade([loaded]) + _advisory(None, project)
         results.append(Check("Config", Status.OK,
                              f"durable target valid; agent imported ({type(loaded.agent).__name__} "
                              f"{getattr(loaded.agent, '_name', loaded.config.name)})"))
@@ -407,4 +454,6 @@ def check_durable_readiness(project: Path) -> list[Check]:
                     results.append(Check("Startup", Status.OK,
                                          "lifespan ok; /readyz runtime_store=ok (in-memory store; Lakebase not exercised offline)" + ("; /mcp live" if started.mcp else "")))
                     results.append(_stage_request(loaded, started, harness))
-    return _cascade(results)
+        if len(results) == 4 and all(c.status is Status.OK for c in results):
+            results.append(_stage_deploy(loaded))
+    return _cascade(results) + _advisory(loaded, project)

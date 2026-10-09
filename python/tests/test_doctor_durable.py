@@ -374,3 +374,89 @@ def test_isolation_leaves_no_mlflow_db_or_error_noise(tmp_path: Path, caplog: py
     assert not list(here.rglob("mlflow.db")) and not list(root.rglob("mlflow.db"))
     assert not [r for r in caplog.records if "mlflow" in r.name.lower() and r.levelno >= logging.WARNING]
     assert is_tracing_enabled() is before
+
+
+BUNDLE = """\
+bundle:
+  name: {app}
+resources:
+  apps:
+    {app}:
+      name: {app}
+{extra}      source_code_path: ./.build
+"""
+
+
+def _bundle_project(tmp_path: Path, name: str, app: str, extra: str) -> Path:
+    root = _project(tmp_path, name, LLM_AGENT.format(name=name))
+    (root / "databricks.yml").write_text(BUNDLE.format(app=app, extra=extra))
+    return root
+
+
+def test_no_bundle_skips_deploy(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "nobundle", LLM_AGENT.format(name="nobundle"))))
+    assert checks["Deploy"].status is Status.SKIP
+    assert "generates its own bundle" in checks["Deploy"].detail
+
+
+def test_clean_bundle_passes_deploy(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_bundle_project(tmp_path, "okbundle", "agent-bricks-ok", "")))
+    assert checks["Deploy"].status is Status.OK
+
+
+@pytest.mark.parametrize(("app", "extra", "needle"), [
+    ("mcp-thing", "", "agent-bricks-"),
+    ("agent-bricks-thing", "      description: x\n", "description"),
+    ("agent-bricks-thing2", "      config:\n        env:\n          - name: MLFLOW_EXPERIMENT_ID\n            value: '1'\n", "MLFLOW_EXPERIMENT_ID"),
+])
+def test_deploy_preflight_rejections(tmp_path: Path, app: str, extra: str, needle: str) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_bundle_project(tmp_path, app.replace("-", "_"), app, extra)))
+    assert checks["Deploy"].status is Status.FAIL
+    assert needle in checks["Deploy"].detail
+
+
+def test_custom_surface_warns_remount(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    entry = (
+        "from fastapi import APIRouter\n"
+        "from fastapi.middleware.cors import CORSMiddleware\n"
+        "from apx_agent import create_app\n"
+        "from agent import agent\n"
+        "router = APIRouter()\n"
+        "app = create_app(agent)\n"
+        "app.include_router(router)\n"
+        "app.add_middleware(CORSMiddleware, allow_origins=['*'])\n"
+    )
+    root = _project(tmp_path, "custom", LLM_AGENT.format(name="custom"), extra_files={"app.py": entry})
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Re-mount"].status is Status.WARN
+    assert "include_router(router)" in checks["Re-mount"].detail
+    assert "add_middleware(CORSMiddleware)" in checks["Re-mount"].detail
+
+
+def test_non_managed_session_warns_history(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "hist", LLM_AGENT.format(name="hist"))
+    (root / "pyproject.toml").write_text(PYPROJECT.format(name="hist") + '\n[tool.apx.agent.memory]\ntype = "inmemory"\n')
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["History"].status is Status.WARN
+    assert "inmemory" in checks["History"].detail
+
+
+def test_advisories_run_when_config_fails(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "cfgfail", "raise RuntimeError('boom')\n", extra_files={"app.py": "def (:\n"})
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Config"].status is Status.FAIL
+    assert checks["Re-mount"].status is Status.WARN
+    assert "could not scan entrypoint" in checks["Re-mount"].detail
+    assert checks["History"].status is Status.SKIP
