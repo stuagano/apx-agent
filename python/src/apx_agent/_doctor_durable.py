@@ -270,13 +270,15 @@ def _stage_config(project: Path) -> _Loaded | Check:
     except ImportError:
         return Check("Config", Status.FAIL, "databricks-agentbricks is not installed in this environment", SDK_FIX)
     try:
-        from ._inspection import _load_agent_config
+        from ._inspection import _agent_config_fields
         from ._wiring import resolve_agent
 
-        current = _load_agent_config(pyproject_path=project / "pyproject.toml")
-        if current is None:
+        # Validate the declared fields once, as durable: validating the current
+        # target first rejects durable-only settings (e.g. deploy.space) mid-migration.
+        fields = _agent_config_fields(project / "pyproject.toml", ("tool", "apx", "agent"))
+        if fields is None:
             return Check("Config", Status.FAIL, "could not load [tool.apx.agent]")
-        config = AgentConfig.model_validate({**current.model_dump(), "target": "durable_agent_server"})
+        config = AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
         # The native host imports `agent:agent` (as _serve.create_app does); the
         # pyproject `module =` key is not read by the durable runtime.
         agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
@@ -529,6 +531,16 @@ def _stage_deploy(loaded: _Loaded) -> Check:
         bundle_key = next(iter(apps))
         deploy = tomllib.loads((loaded.project / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("deploy", {})
         app_name = deploy["app_name"] if "app_name" in deploy else apps[bundle_key]["name"]
+        declared_space = loaded.config.deploy.space if loaded.config.deploy is not None else None
+        if declared_space is not None:
+            # Mirrors deploy routing: a declared App Space goes through apx's own
+            # path (any app name, e.g. mcp-); its scopes/resources are checked online.
+            from ._app_space import validate_space_bundle
+
+            if validate_space_bundle(doc, bundle_key=bundle_key) != declared_space:
+                return Check("Deploy", Status.FAIL, "databricks.yml space disagrees with [tool.apx.agent.deploy] space")
+            return Check("Deploy", Status.OK, f"App Space deploy preflight passes for {app_name} (space {declared_space}; "
+                         "inherited scopes and resources are checked online at deploy)")
         # The real deploy needs --profile and runs the app; the preflight checks the bundle, not those flags.
         validate_cli_deployment(doc, bundle_key=bundle_key, app_name=app_name, profile="apx-doctor", no_run=False)
     except click.ClickException as exc:

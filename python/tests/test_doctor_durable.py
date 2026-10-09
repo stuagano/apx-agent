@@ -412,6 +412,41 @@ def _bundle_project(tmp_path: Path, name: str, app: str, extra: str) -> Path:
     return root
 
 
+SPACE_APP = (
+    "      space: app-space\n"
+    "      config:\n"
+    "        command: [python, -m, app]\n"
+    "        env:\n"
+    "          - name: APX_APPS_HOST\n"
+    "            value: agentbricks\n"
+)
+
+
+def _space_project(tmp_path: Path, name: str, app: str, extra: str) -> Path:
+    root = _bundle_project(tmp_path, name, app, extra)
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + '\n[tool.apx.agent.deploy]\nspace = "app-space"\n')
+    return root
+
+
+def test_space_deploy_allows_mcp_name(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_space_project(tmp_path, "mcpspace", "mcp-thing", SPACE_APP)))
+    assert checks["Deploy"].status is Status.OK, checks["Deploy"].detail
+    assert "App Space" in checks["Deploy"].detail
+    assert "mcp-thing" in checks["Deploy"].detail
+
+
+def test_space_deploy_rejects_own_scopes(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    extra = SPACE_APP + "      user_api_scopes: [sql]\n"
+    checks = _by_name(check_durable_readiness(_space_project(tmp_path, "mcpscopes", "mcp-thing2", extra)))
+    assert checks["Deploy"].status is Status.FAIL
+    assert "inherited" in checks["Deploy"].detail
+
+
 def test_no_bundle_skips_deploy(tmp_path: Path) -> None:
     from apx_agent._doctor_durable import check_durable_readiness
 

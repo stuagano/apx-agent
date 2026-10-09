@@ -39,17 +39,12 @@ def validate_space_source(cwd: Path, app: dict[str, Any]) -> None:
                 raise click.ClickException("Put the host selector and Runtime Store binding in databricks.yml, not source app.yaml/app.yml.")
 
 
-def validate_space_deployment(
-    doc: dict[str, Any], *, bundle_key: str, app_name: str, profile: str | None,
-    plan: Any, family_permissions: Any,
-) -> Any:
-    """Read inherited policy; never migrate an app or widen a space's grants."""
+def validate_space_bundle(doc: dict[str, Any], *, bundle_key: str) -> str:
+    """Offline App Space bundle-shape checks; returns the declared space name."""
     app = doc["resources"]["apps"][bundle_key]
     space = app.get("space")
     if not isinstance(space, str) or not space or "${" in space:
         raise click.ClickException("App Space must be a literal non-empty name in the root app declaration.")
-    if not profile:
-        raise click.ClickException("App Space deployment requires an explicit --profile.")
     if doc.get("include") or doc.get("permissions"):
         raise click.ClickException("App Space deployment requires a self-contained bundle without bundle-level permissions.")
     if any(key in app for key in ("compute_size", "compute_min_instances", "compute_max_instances")):
@@ -72,6 +67,17 @@ def validate_space_deployment(
     for name, job in doc.get("resources", {}).get("jobs", {}).items():
         if name.endswith("_keepalive") and job.get("schedule", {}).get("pause_status") != "PAUSED":
             raise click.ClickException("Pause or remove the generated keepalive job before deploying to an App Space.")
+    return space
+
+
+def validate_space_deployment(
+    doc: dict[str, Any], *, bundle_key: str, app_name: str, profile: str | None,
+    plan: Any, family_permissions: Any,
+) -> Any:
+    """Read inherited policy; never migrate an app or widen a space's grants."""
+    space = validate_space_bundle(doc, bundle_key=bundle_key)
+    if not profile:
+        raise click.ClickException("App Space deployment requires an explicit --profile.")
     if family_permissions.can_use_groups or family_permissions.can_manage_groups:
         raise click.ClickException("App Space deployment cannot reconcile app-family grants; configure access through the space.")
 
