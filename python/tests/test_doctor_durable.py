@@ -729,6 +729,39 @@ def test_missing_agent_module_has_native_import_hint(tmp_path: Path) -> None:
     assert "module =" in config.fix
 
 
+def test_project_without_agent_never_uses_a_stale_agent_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import types
+
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    stale = types.ModuleType("agent")
+    stale.agent = "stale"
+    monkeypatch.setitem(sys.modules, "agent", stale)
+    root = _project(tmp_path, "noagent", "")
+    (root / "agent.py").unlink()
+    config = _by_name(check_durable_readiness(root))["Config"]
+    assert config.status is Status.FAIL
+    assert sys.modules["agent"] is stale
+
+
+def test_agent_found_outside_the_project_is_a_config_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "agent.py").write_text(LLM_AGENT.format(name="elsewhere"))
+    monkeypatch.syspath_prepend(str(elsewhere))
+    root = _project(tmp_path, "noagent2", "")
+    (root / "agent.py").unlink()
+    config = _by_name(check_durable_readiness(root))["Config"]
+    assert config.status is Status.FAIL
+    assert "outside the project" in config.detail
+
+
 def test_stale_agent_module_from_elsewhere_is_shadowed_and_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import types
 

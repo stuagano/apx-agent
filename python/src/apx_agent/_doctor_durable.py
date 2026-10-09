@@ -26,6 +26,9 @@ STAGES = ("Config", "Compile", "Startup", "Request", "Deploy")
 SENTINEL = "apx-doctor-sentinel-token"
 PEER_URL = "https://apx-doctor-peer.invalid"
 SDK_FIX = 'uv run --with "databricks-agentbricks>=0.4.0,<0.5" apx-agent doctor --durable --offline'
+AGENT_MODULE_FIX = ("The native durable runtime imports `agent:agent` (as _serve.create_app does); "
+                    "the pyproject `module =` key is not used by the durable host. "
+                    "Expose the agent as `agent` in agent.py at the project root.")
 
 
 class _FakeWorkspaceClient:
@@ -199,7 +202,9 @@ def _isolated(project: Path) -> Iterator[_Harness]:
 
     # Same-named modules already imported from elsewhere (another project's
     # `agent`) would shadow the project's own; set them aside for the run.
-    tops = {p.stem for p in project.glob("*.py")} | {p.parent.name for p in project.glob("*/__init__.py")}
+    # `agent` is always set aside: it is the module the native runtime imports, so
+    # a project without one must not pick up another project's.
+    tops = {"agent"} | {p.stem for p in project.glob("*.py")} | {p.parent.name for p in project.glob("*/__init__.py")}
     env, cwd, path, modules = dict(os.environ), Path.cwd(), list(sys.path), set(sys.modules)
     bytecode = sys.dont_write_bytecode
     with tempfile.TemporaryDirectory(prefix="apx-doctor-") as tmp, contextlib.ExitStack() as stack:
@@ -275,14 +280,15 @@ def _stage_config(project: Path) -> _Loaded | Check:
         # The native host imports `agent:agent` (as _serve.create_app does); the
         # pyproject `module =` key is not read by the durable runtime.
         agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
+        origin = getattr(sys.modules.get("agent"), "__file__", None)
+        if origin is None or not Path(origin).resolve().is_relative_to(project):
+            return Check("Config", Status.FAIL, f"`agent` resolved outside the project ({origin})",
+                         AGENT_MODULE_FIX)
     except BaseException as exc:
         check = _fail("Config", exc)
         missing = exc.__cause__ if isinstance(exc.__cause__, ModuleNotFoundError) else exc
         if isinstance(missing, ModuleNotFoundError) and missing.name == "agent":
-            return Check("Config", Status.FAIL, check.detail,
-                         "The native durable runtime imports `agent:agent` (as _serve.create_app does); "
-                         "the pyproject `module =` key is not used by the durable host. "
-                         "Expose the agent as `agent` in agent.py at the project root.")
+            return Check("Config", Status.FAIL, check.detail, AGENT_MODULE_FIX)
         return check
     return _Loaded(config=config, agent=agent, project=project)
 
