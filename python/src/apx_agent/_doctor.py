@@ -163,7 +163,7 @@ def probe_sub_agents(
     return asyncio.run(_gather())
 
 
-def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
+def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[str, list[Check]]]:
     """Run all checks, grouped and ordered for presentation.
 
     `online=True` adds the live workspace round-trip; it is skipped when auth
@@ -230,11 +230,16 @@ def run_checks(cwd: Path, *, online: bool) -> list[tuple[str, list[Check]]]:
     a2a_trust_check = check_a2a_trust(cwd)
     if a2a_trust_check is not None:
         project.append(a2a_trust_check)
-    return [
+    groups = [
         ("Environment", environment),
         ("Authentication", authentication),
         ("Project", project),
     ]
+    if durable:
+        from ._doctor_durable import check_durable_readiness
+
+        groups.append(("Durable readiness", check_durable_readiness(cwd)))
+    return groups
 
 
 def check_python_version() -> Check:

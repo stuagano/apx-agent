@@ -1053,7 +1053,8 @@ _GLYPH = {
 @main.command()
 @click.option("--offline", is_flag=True, help="Skip the live workspace check.")
 @click.option("--json", "as_json", is_flag=True, help="Emit checks as JSON.")
-def doctor(offline: bool, as_json: bool) -> None:
+@click.option("--durable", is_flag=True, help="Also check readiness for the native durable_agent_server runtime (offline).")
+def doctor(offline: bool, as_json: bool, durable: bool) -> None:
     """Diagnose the apx-agent environment: tools, auth, and project layout.
 
     Runs a live workspace round-trip by default; pass --offline to skip it.
@@ -1067,13 +1068,13 @@ def doctor(offline: bool, as_json: bool) -> None:
         if isinstance(saved, str) and saved:
             os.environ["DATABRICKS_CONFIG_PROFILE"] = saved
 
-    groups = _doctor_mod.run_checks(Path.cwd(), online=not offline)
+    groups = _doctor_mod.run_checks(Path.cwd(), online=not offline, durable=durable)
     auth_failed = any(
         c.name == "Databricks auth" and c.status is _doctor_mod.Status.FAIL
         for _g, cs in groups for c in cs
     )
     if auth_failed and _interactive_pick_profile():
-        groups = _doctor_mod.run_checks(Path.cwd(), online=not offline)
+        groups = _doctor_mod.run_checks(Path.cwd(), online=not offline, durable=durable)
 
     fails = sum(
         1 for _g, cs in groups for c in cs if c.status is _doctor_mod.Status.FAIL

@@ -344,6 +344,32 @@ You can keep an APX agent's instructions, compatible tools and supported graph
 composition while changing how it is served. This is a serving migration, not
 an automatic conversion of an MLflow model artifact or its stored conversations.
 
+### Readiness check
+
+Before migrating, ask whether the project would work on the native runtime:
+
+```sh
+uv run apx-agent doctor --durable --offline [--json]
+```
+
+It runs the project, not just reads it, inside an isolated, offline context.
+It uses a temp working directory, fake workspace clients, a scripted model,
+and refuses all outbound network calls. It writes nothing under the project.
+It reports five stages in order, and the first failure skips the rest:
+
+1. **Config**: the declaration is valid for `durable_agent_server`, and `agent:agent` imports.
+2. **Compile**: no unsatisfied runtime capabilities.
+3. **Startup**: the lifespan starts, `/readyz` reports the runtime store, and a mounted `/mcp` goes live.
+4. **Request**: a real `POST /api/invocations` succeeds. Sub-agents receive the caller's token only from a deployed context, local contexts forward nothing, and the token is never persisted.
+5. **Deploy**: the native deploy preflight accepts `databricks.yml`. This stage is skipped if the project has no bundle.
+
+Two advisories always run:
+
+- **Re-mount**: lists FastAPI surface that the entrypoint adds by hand and that you must re-mount on the durable app.
+- **History**: lists non-managed session or memory stores whose existing history will not move.
+
+From the repository root, `make durable-readiness` runs the check over every `python/examples` project and prints a table. The table is a report and always exits 0.
+
 ### 1. Start from the agent source and check compatibility
 
 If your ResponsesAgent was produced by APX, reuse the original APX declaration,
