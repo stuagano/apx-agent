@@ -279,6 +279,20 @@ def test_conflicting_session_bindings_rejected(execution: Any, kwargs: Any) -> N
         compile_agent(execution.agent, target="durable_agent_server", model="test", **kwargs)
 
 
+def test_composite_agent_compiles_durable_without_managed_session(execution: Any) -> None:
+    """A durable target auto-attaches a managed session, but composite agents
+    (KeywordRouter/SequentialAgent — not LlmAgent) can't carry one. Compilation
+    must drop it gracefully, not raise, so composite agents reach durable."""
+    from apx_agent import AgentConfig, KeywordRouter, compile_agent
+
+    router = KeywordRouter(branches=[("x", execution.agent, ["x"])], default=execution.agent)
+    config = AgentConfig(name="composite", model="test", target="durable_agent_server")
+    assert config.session is not None and config.session.type == "managed"
+    # Must not raise "session_store currently requires LlmAgent".
+    app = compile_agent(router, config=config, model="test", service_ws=execution.ws)
+    assert app is not None
+
+
 def test_request_user_auth_never_falls_back_to_app(execution: Any) -> None:
     from apx_agent._durable_agent import compile_durable_handlers
 
@@ -1084,3 +1098,238 @@ def test_native_example_build_stages_sources_without_a_tool_bridge(example: str,
         assert (staged / "api.py").is_file()
         assert (staged / "agent.config.yaml").is_file()
     assert not (staged / "apx_appkit_host").exists()
+
+
+# --- Durable A2A per-hop user OBO -----------------------------------------
+
+_PEER = "https://peer.example.databricksapps.com"
+_VALUE_SCHEMA = {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}
+
+
+class _FakeUserClient:
+    """Stands in for databricks.sdk.WorkspaceClient inside RequestAuthContext.client_for."""
+
+    def __init__(self, *, host: str, token: str, auth_type: str, custom_headers: Any = None) -> None:
+        self.config = SimpleNamespace(authenticate=lambda: {"Authorization": f"Bearer {token}"})
+        self.current_user = SimpleNamespace(me=lambda: SimpleNamespace(id=f"user-{token}"))
+
+
+@pytest.fixture
+def peer(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A deployed-Apps request-user environment and a capturing remote peer."""
+    from apx_agent._agent_tool import remote_agent_tool
+    from apx_agent._remote import RemoteDatabricksAgent
+
+    captured: list[dict[str, str]] = []
+
+    async def fake_run(self: Any, messages: Any, forwarded: dict[str, str]) -> str:
+        captured.append(dict(forwarded))
+        return "peer ok"
+
+    monkeypatch.setattr(RemoteDatabricksAgent, "_run_with_incoming_headers", fake_run)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeUserClient)
+    monkeypatch.setenv("DATABRICKS_HOST", "https://ws.example.com")
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "caller")
+    monkeypatch.delenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", raising=False)
+    tool = remote_agent_tool(_PEER, name="record", description="Ask the peer.", input_schema=dict(_VALUE_SCHEMA))
+    return SimpleNamespace(agent=LlmAgent(name="caller", tools=[tool]), captured=captured)
+
+
+def _user_context(token: str, *, local: bool = False) -> Any:
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+
+    auth = RequestAuthContext(token=None if local else token,
+                              principal="local-developer" if local else f"p-{token}", local=local)
+    return SimpleNamespace(request_auth=auth, session_id=None, is_recovery=False, invocation_id=str(uuid.uuid4()))
+
+
+def test_sub_agent_delegate_is_not_a_raw_request_tool(peer: Any) -> None:
+    from apx_agent import inspect_target
+
+    report = inspect_target(peer.agent, target="durable_agent_server")
+    assert report.unsatisfied == []
+    assert report.capabilities["user_identity"].supported
+
+
+def test_durable_forwards_request_user_token_to_peer(execution: Any, peer: Any) -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
+    result = asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, _user_context("tok-A")))
+    assert result["status"] == "completed"
+    assert peer.captured == [{"X-Forwarded-Access-Token": "tok-A", "Authorization": "Bearer tok-A"}]
+
+
+def test_durable_concurrent_users_forward_only_their_own_token(execution: Any, peer: Any) -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
+    body = {"messages": [{"role": "user", "content": "go"}]}
+
+    async def both() -> None:
+        await asyncio.gather(handlers.invoke(body, _user_context("tok-A")),
+                             handlers.invoke(body, _user_context("tok-B")))
+
+    asyncio.run(both())
+    tokens = sorted(h["X-Forwarded-Access-Token"] for h in peer.captured)
+    assert tokens == ["tok-A", "tok-B"]
+    assert all(h["Authorization"] == f"Bearer {h['X-Forwarded-Access-Token']}" for h in peer.captured)
+
+
+def test_durable_local_dev_forwards_no_credentials(execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setattr("databricks_agentkit.runtime.workspace.workspace_client", lambda: _FakeUserClient(
+        host="h", token="developer-profile", auth_type="pat"))
+    handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
+    asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, _user_context("x", local=True)))
+    assert peer.captured == [{}]
+
+
+def _ambient_app_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    # What a local RequestAuthContext's "user" client resolves to: the app/developer credential.
+    monkeypatch.setattr("databricks_agentkit.runtime.workspace.workspace_client", lambda: _FakeUserClient(
+        host="h", token="ambient-app-credential", auth_type="pat"))
+
+
+def test_durable_sdk_local_verdict_with_odd_cased_env_forwards_nothing(
+        execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    _ambient_app_credential(monkeypatch)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "True")  # SDK lowercases -> local
+    auth = RequestAuthContext.from_headers({"X-Forwarded-User": "alice", "X-Forwarded-Access-Token": "tok-A"})
+    context = SimpleNamespace(request_auth=auth, session_id=None, is_recovery=False, invocation_id=str(uuid.uuid4()))
+    handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
+    asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, context))
+    assert peer.captured == [{}]
+
+
+def test_durable_local_context_in_deployed_env_forwards_nothing(
+        execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    _ambient_app_credential(monkeypatch)  # env stays deployed-looking: APP_NAME set, local flag unset
+    handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
+    asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, _user_context("x", local=True)))
+    assert peer.captured == [{}]
+
+
+def test_durable_closed_request_auth_fails_closed(peer: Any) -> None:
+    from databricks_agentkit.runtime.auth import AuthError
+
+    from apx_agent._defaults import DatabricksAppsHeaders
+
+    auth = _user_context("tok-A").request_auth
+    headers = DatabricksAppsHeaders(host=None, user_name=None, user_id="p", user_email=None,
+                                    request_id=None, token=None,
+                                    auth_headers=lambda: auth.client_for("user").config.authenticate())
+    auth.close()
+    delegate = peer.agent._tool_fns[0]
+    with pytest.raises(AuthError):
+        asyncio.run(delegate(value="x", headers=headers))
+    assert peer.captured == []
+    assert "auth_headers" not in headers.model_dump()
+
+
+def test_durable_peer_failure_degrades(execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+    from apx_agent._remote import RemoteDatabricksAgent
+
+    async def down(self: Any, messages: Any, forwarded: dict[str, str]) -> str:
+        raise ConnectionError("peer offline")
+
+    monkeypatch.setattr(RemoteDatabricksAgent, "_run_with_incoming_headers", down)
+    handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
+    result = asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, _user_context("tok-A")))
+    assert result["status"] == "completed"
+    assert "unreachable" in result["messages"][-1]["content"]
+
+
+def test_durable_forwarded_token_not_persisted(execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch,
+                                               tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from apx_agent import compile_agent
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    saver = InMemorySaver()
+    app = compile_agent(peer.agent, target="durable_agent_server", model="test",
+                        service_ws=execution.ws, checkpointer=saver)
+    monkeypatch.delenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL")
+    body = {"id": str(uuid.uuid4()), "session_id": "s", "input": [{"role": "user", "content": "go"}]}
+    headers = {"X-Forwarded-User": "alice", "X-Forwarded-Access-Token": "tok-secret-A"}
+    with TestClient(app) as client:
+        response = client.post("/api/invocations", json=body, headers=headers)
+        assert response.status_code == 200, response.text
+        saved = client.get(f"/api/invocations/{body['id']}", headers=headers)
+    assert peer.captured[-1]["X-Forwarded-Access-Token"] == "tok-secret-A"
+    assert "tok-secret-A" not in response.text
+    assert "tok-secret-A" not in saved.text
+    assert saver.storage, "checkpointer must have stored the run for this check to mean anything"
+    assert "tok-secret-A" not in repr(list(saver.list(None)))
+    assert "tok-secret-A" not in repr(saver.storage)
+    assert "tok-secret-A" not in repr(saver.writes)
+    assert "tok-secret-A" not in repr(saver.blobs)
+
+
+def test_durable_startup_materializes_sub_agents(execution: Any, monkeypatch: pytest.MonkeyPatch,
+                                                 tmp_path: Path) -> None:
+    from unittest.mock import AsyncMock
+
+    from fastapi.testclient import TestClient
+
+    from apx_agent import compile_agent
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    agent = LlmAgent(name="orchestrator", sub_agents=[_PEER])
+    fetch = AsyncMock(return_value=[])
+    monkeypatch.setattr(agent, "fetch_remote_tools", fetch)
+    app = compile_agent(agent, target="durable_agent_server", model="test", service_ws=execution.ws)
+    with TestClient(app):
+        fetch.assert_awaited_once()
+
+
+@pytest.mark.parametrize("with_delegate", [False, True])
+def test_durable_resolver_only_installed_for_agents_with_delegates(
+        execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch, with_delegate: bool) -> None:
+    from apx_agent import _defaults
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    built: list[Any] = []
+
+    class _Spy(_defaults.DatabricksAppsHeaders):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            built.append(self.auth_headers)
+
+    monkeypatch.setattr(_defaults, "DatabricksAppsHeaders", _Spy)
+    agent = peer.agent if with_delegate else execution.agent
+    handlers = compile_durable_handlers(agent, model="test", service_ws=execution.ws, require_user=True)
+    asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, _user_context("tok-A")))
+    assert [resolver is not None for resolver in built] == [with_delegate]
+
+
+def test_durable_router_composite_leaf_delegate_forwards_each_callers_own_token(execution: Any, peer: Any) -> None:
+    from apx_agent import KeywordRouter, SequentialAgent
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    router = KeywordRouter(branches=[("go", SequentialAgent(agents=[peer.agent]), ["go"])], default=peer.agent)
+    handlers = compile_durable_handlers(router, model="test", service_ws=execution.ws, require_user=True)
+    body = {"messages": [{"role": "user", "content": "go"}]}
+
+    async def both() -> None:
+        await asyncio.gather(handlers.invoke(body, _user_context("tok-A")),
+                             handlers.invoke(body, _user_context("tok-B")))
+
+    asyncio.run(both())
+    assert sorted(h["X-Forwarded-Access-Token"] for h in peer.captured) == ["tok-A", "tok-B"]
+    assert all(h["Authorization"] == f"Bearer {h['X-Forwarded-Access-Token']}" for h in peer.captured)
+    assert len(peer.captured) == 2

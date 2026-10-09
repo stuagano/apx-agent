@@ -77,6 +77,13 @@ def compile_durable_handlers(
     if checkpointer is not None and not isinstance(agent, LlmAgent):
         raise ValueError("Checkpoint sessions currently require LlmAgent")
 
+    from ._resources import _iter_sub_agents, _iter_tool_fns
+
+    # Declared sub_agents (materialized after compile) or hand-wired delegates:
+    # only then does any outbound call need request-user auth resolved.
+    has_delegates = bool(list(_iter_sub_agents(agent))) or any(
+        hasattr(fn, "__apx_sub_agent_url__") for fn in _iter_tool_fns(agent))
+
     def execute(value: Any, context: Any, emit_message: Callable[[Any], None] | None) -> dict[str, Any]:
         recovering = bool(getattr(context, "is_recovery", False))
         if recovering and not recovery:
@@ -93,12 +100,17 @@ def compile_durable_handlers(
             raise ValueError("user_identity requires the SDK's active RequestAuthContext")
         user_ws = auth.client_for("user") if auth is not None else None
         headers = None
-        if user_ws is not None:
+        if auth is not None and user_ws is not None:
             principal = user_ws.current_user.me().id
             if not isinstance(principal, str) or not principal:
                 raise ValueError("user_identity could not resolve the authenticated principal")
-            headers = DatabricksAppsHeaders(host=None, user_name=None, user_id=principal,
-                                           user_email=None, request_id=None, token=None)
+            # The SDK's per-request verdict is authoritative: a local context's
+            # "user" client is the developer/app credential, never forward it.
+            forward = has_delegates and not auth._local
+            headers = DatabricksAppsHeaders(
+                host=None, user_name=None, user_id=principal, user_email=None, request_id=None, token=None,
+                auth_headers=(lambda: auth.client_for("user").config.authenticate()) if forward else None,
+            )
         if isinstance(value, list):
             value = {"messages": value}
         if not isinstance(value, dict) or set(value) - {"messages", "resume"}:
@@ -207,6 +219,18 @@ def compile_to_durable_agent_server(
     app.invoke(handlers.invoke)
     if recovery:
         app.recover(handlers.invoke)
+
+    from ._resources import _iter_sub_agents
+
+    if list(_iter_sub_agents(agent)):
+        from ._wiring import _chain_lifespan
+
+        async def _materialize_sub_agents() -> None:
+            # Card fetch registers each sub_agents URL as a callable delegate
+            # (#436); the per-invocation graph compile picks the delegates up.
+            await agent.fetch_remote_tools()
+
+        _chain_lifespan(app, _materialize_sub_agents)
 
     @app.get("/readyz")
     async def readyz() -> Any:

@@ -61,10 +61,17 @@ def inspect_target(
     if target is None:
         target = config.target if config is not None else "responses_agent"
     session = config.session if config is not None and config.session is not None else getattr(agent, "session_config", None)
-    if session is not None and session.type == "managed" and checkpointer is None:
-        if session_store is not None and session_store != session.store_name:
+    # The durable target auto-attaches a managed session (AgentConfig default),
+    # but a managed store currently binds only to LlmAgent. Composite agents
+    # (routers/pipelines) run durable statelessly-per-request — drop the
+    # auto-derived store rather than refuse to compile, and don't let it count
+    # as a declared session requirement below. An explicit session_store= for a
+    # composite agent still errors below (it's a real caller mistake).
+    effective_session = session if isinstance(agent, LlmAgent) else None
+    if effective_session is not None and effective_session.type == "managed" and checkpointer is None:
+        if session_store is not None and session_store != effective_session.store_name:
             raise ValueError("session_store conflicts with the declared session.store_name")
-        session_store = session.store_name
+        session_store = effective_session.store_name
     if config is not None and config.session is not None and config.session.type == "managed" and checkpointer is not None:
         raise ValueError("Declared managed sessions cannot be combined with an explicit checkpointer")
     if target not in ("responses_agent", "durable_agent_server"):
@@ -88,15 +95,16 @@ def inspect_target(
 
     raw_request_required = any(
         dependency in {_get_request, get_databricks_headers}
-        for fn in tools for dependency in _tool_dependency_callables(fn).values()
-    ) or bool(list(_iter_sub_agents(agent)))
+        for fn in tools if not hasattr(fn, "__apx_sub_agent_url__")
+        for dependency in _tool_dependency_callables(fn).values()
+    )
     nodes = [agent]
     for node in nodes:
         nodes.extend(child for _, child in _iter_child_agents(node) if child not in nodes)
     declared = {
         "user_identity": any(op.requires_request_context for op in operations) or bool(list(_iter_sub_agents(agent))),
         "long_term_memory": (config is not None and config.memory is not None) or any(getattr(node, "memory_config", None) is not None for node in nodes),
-        "sessions": session is not None or any(getattr(node, "session_config", None) is not None for node in nodes),
+        "sessions": effective_session is not None or any(getattr(node, "session_config", None) is not None for node in nodes),
     }
     responses = target == "responses_agent"
     checkpointed = (checkpointer is not None or session_store is not None) and isinstance(agent, LlmAgent)
@@ -131,7 +139,7 @@ def inspect_target(
         and agent._timeout_s is None
     )
     capabilities = {
-        "user_identity": TargetCapability(responses or not raw_request_required, "The durable target supports SDK request-user clients, SQL and principal dependencies; raw headers, Request and remote OBO forwarding remain unsupported."),
+        "user_identity": TargetCapability(responses or not raw_request_required, "The durable target supports SDK request-user clients, SQL and principal dependencies, and per-hop user OBO to sub-agents; raw headers and Request remain unsupported."),
         "approvals": TargetCapability(checkpointed, "Approvals require an LlmAgent checkpoint binding and stable session; native request-user sessions are isolated by the SDK and authenticated principal."),
         "sessions": TargetCapability(checkpointed or (responses and conversation_store is not None), "An explicit checkpoint/history binding is required; restart persistence depends on the selected store."),
         "long_term_memory": TargetCapability(memory_bound, "Bind a reachable declared store; managed memory uses AgentKit workspace memory stores and trusted caller actor IDs."),
