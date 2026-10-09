@@ -9147,11 +9147,12 @@ def _preflight_databricks_cli() -> None:
         )
 
 
-def _preflight_apps(cwd: Path, *, native: bool = False) -> None:
+def _preflight_apps(cwd: Path, *, native: bool = False, durable: bool = False) -> None:
     """Verify the cwd looks like a scaffolded Apps project.
 
     Native projects need ``pyproject.toml`` and ``agent.py``. Bundle projects
-    retain the ``databricks.yml`` and ``agent_server/`` requirements.
+    need ``databricks.yml``, plus ``agent.py`` when durable (the native runtime
+    imports ``agent:agent``) or the legacy ``agent_server/`` otherwise.
     Raises ``click.ClickException`` with a friendly message on the first
     missing piece.
     """
@@ -9160,16 +9161,17 @@ def _preflight_apps(cwd: Path, *, native: bool = False) -> None:
         missing.append("databricks.yml")
     if not (cwd / "pyproject.toml").exists():
         missing.append("pyproject.toml")
-    if native and not (cwd / "agent.py").is_file():
-        missing.append("agent.py")
-    elif not native and not (cwd / "agent_server").is_dir():
+    if native or durable:
+        if not (cwd / "agent.py").is_file():
+            missing.append("agent.py")
+    elif not (cwd / "agent_server").is_dir():
         missing.append("agent_server/")
     if missing:
         msg = (
             "Pre-flight failed for --target apps. Missing in current "
             f"directory: {', '.join(missing)}."
         )
-        if native:
+        if native or durable:
             msg += " Restore the native project's agent.py and pyproject.toml."
         elif (cwd / "app.py").exists() or (cwd / "agent.py").exists():
             # ADK-style / model-serving lookalike misrouted to apps by the
@@ -10505,7 +10507,8 @@ def _deploy_apps_impl(
     )
     # Existing Bundle projects retain their explicit build/variable contract.
     _preflight_databricks_cli()
-    _preflight_apps(cwd, native=native_direct)
+    _preflight_apps(cwd, native=native_direct, durable=effective_config is not None
+                    and effective_config.target == "durable_agent_server")
     if native_direct:
         from ._agentbricks_deploy import compile_native_app
         assert effective_config is not None
@@ -10591,6 +10594,13 @@ def _deploy_apps_impl(
         effective_config.target == "durable_agent_server"
         or (effective_config.memory is not None and effective_config.memory.type == "managed")
     )
+    # The auto-attached managed session binds only to LlmAgent (#900). The agent
+    # is not imported until the other prerequisites pass, so check the session
+    # after it loads, and only for an agent that actually binds it (#905).
+    session_config = effective_config
+    if (effective_config is not None and effective_config.target == "durable_agent_server"
+            and effective_config.session is not None):
+        effective_config = effective_config.model_copy(update={"session": None})
     if needs_agentkit:
         local_checks = _doctor_mod.check_agent_prerequisites(effective_config, online=False)
         image_check = _doctor_mod.check_agent_image(cwd, effective_config)
@@ -10613,6 +10623,18 @@ def _deploy_apps_impl(
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
     agent = _load_finalized_agent(module)
+    from ._agents import LlmAgent
+
+    if session_config is not effective_config and isinstance(agent, LlmAgent):
+        effective_config = session_config
+        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli):
+            if check.name != "Managed sessions":
+                continue
+            log(f"# {check.name}: {check.detail}")
+            if check.status is _doctor_mod.Status.WARN and check.fix:
+                log(f"  {check.fix}")
+            if check.status is _doctor_mod.Status.FAIL:
+                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
     effective_model = (
         effective_config.model if effective_config is not None else _APPS_DEFAULT_MODEL
     )
