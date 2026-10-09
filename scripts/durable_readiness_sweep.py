@@ -1,7 +1,8 @@
 """Sweep python/examples with `apx-agent doctor --durable` and print a readiness table.
 
-Runs each example in its own environment (`uv run --project`), never re-locks
-(UV_FROZEN is respected), writes nothing, and always exits 0 — it is a report.
+Runs each example in its own environment (`uv run --frozen --project`, which may
+create or sync `<example>/.venv`), never modifies tracked files or locks, and
+always exits 0 — it is a report.
 """
 
 from __future__ import annotations
@@ -98,15 +99,20 @@ def _apx_examples(root: Path = EXAMPLES) -> Discovery:
     return Discovery(found, broken)
 
 
+def doctor_command(example: Path) -> list[str]:
+    # --frozen: never re-lock an example against whatever index the caller's uv
+    # config points at, even without UV_FROZEN in the environment.
+    return ["uv", "run", "--frozen", "--project", str(example), "--with", WITH_SDK,
+            "apx-agent", "doctor", "--durable", "--offline", "--json"]
+
+
 def main() -> None:
     discovery = _apx_examples()
     rows = discovery.broken
     for example in discovery.found:
         try:
             proc = subprocess.run(
-                ["uv", "run", "--project", str(example), "--with", WITH_SDK,
-                 "apx-agent", "doctor", "--durable", "--offline", "--json"],
-                cwd=example, capture_output=True, text=True, timeout=600,
+                doctor_command(example), cwd=example, capture_output=True, text=True, timeout=600,
             )
             rows.append(parse_payload(example.name, proc.stdout, proc.stderr))
         except subprocess.TimeoutExpired:

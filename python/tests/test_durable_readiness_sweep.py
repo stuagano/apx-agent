@@ -75,3 +75,13 @@ def test_parse_payload_tolerates_malformed_output() -> None:
     assert set(missing.statuses.values()) == {"env"}
     noisy = sweep.parse_payload("n", "INFO starting\nwarn\n" + _payload(*[(n, "ok", "") for n in sweep.STAGES]), "")
     assert set(noisy.statuses.values()) == {"✓"}
+
+
+def test_doctor_command_never_relocks(tmp_path: Path) -> None:
+    sweep = _load()
+    command = sweep.doctor_command(tmp_path)
+    assert command[:2] == ["uv", "run"]
+    assert "--frozen" in command
+    assert "--isolated" not in command
+    assert command[command.index("--project") + 1] == str(tmp_path)
+    assert command[-4:] == ["doctor", "--durable", "--offline", "--json"]
