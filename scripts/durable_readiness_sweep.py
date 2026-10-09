@@ -13,6 +13,7 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "python" / "examples"
@@ -28,42 +29,79 @@ class Row:
     blocker: str
 
 
+@dataclass
+class Discovery:
+    found: list[Path]
+    broken: list[Row]
+
+
 def _env_reason(stderr: str) -> str:
     """The error line (uv `error:` / Python `XError:`), not uv's progress chatter."""
     lines = [line.strip() for line in stderr.splitlines() if line.strip()]
     return next((line for line in lines if re.match(r"(error|\w*Error)\b", line)), lines[-1] if lines else "no output")
 
 
+def _env_row(example: str, reason: str) -> Row:
+    return Row(example, {stage: "env" for stage in STAGES}, reason)
+
+
+def _load_json(stdout: str) -> Any:
+    """Parse stdout as JSON, tolerating log noise before the first line starting with `{`."""
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        lines = stdout.splitlines()
+        start = next((i for i, line in enumerate(lines) if line.startswith("{")), None)
+        if start is None:
+            raise
+        return json.loads("\n".join(lines[start:]))
+
+
 def parse_payload(example: str, stdout: str, stderr: str) -> Row:
     try:
-        checks = json.loads(stdout)["Durable readiness"]
-    except (json.JSONDecodeError, KeyError, TypeError):
-        return Row(example, {stage: "env" for stage in STAGES}, _env_reason(stderr))
-    statuses = {c["name"]: SYMBOL[c["status"]] for c in checks if c["name"] in STAGES}
-    blocker = next((f"{c['name']}: {c['detail']}" for c in checks if c["status"] == "fail"), "")
+        payload = _load_json(stdout)
+    except json.JSONDecodeError:
+        return _env_row(example, _env_reason(stderr))
+    checks = payload.get("Durable readiness") if isinstance(payload, dict) else None
+    if not isinstance(checks, list):
+        return _env_row(example, "no Durable readiness group (apx-agent without --durable?)")
+    valid = [c for c in checks if isinstance(c, dict) and "name" in c and "status" in c]
+    statuses = {c["name"]: SYMBOL.get(c["status"], str(c["status"])) for c in valid if c["name"] in STAGES}
+    blocker = next((f"{c['name']}: {c.get('detail')}" for c in valid if c["status"] == "fail"), "")
     return Row(example, statuses, blocker)
+
+
+def _cell(text: str) -> str:
+    return " ".join(text.split()).replace("|", "\\|")
 
 
 def build_table(rows: list[Row]) -> str:
     header = "| example | " + " | ".join(STAGES) + " | first blocker |"
     rule = "|" + "---|" * (len(STAGES) + 2)
-    body = [f"| {r.example} | " + " | ".join(r.statuses[s] if s in r.statuses else "–" for s in STAGES)
-            + f" | {r.blocker} |" for r in rows]
+    body = [f"| {_cell(r.example)} | " + " | ".join(_cell(r.statuses.get(s, "–")) for s in STAGES)
+            + f" | {_cell(r.blocker)} |" for r in rows]
     return "\n".join([header, rule, *body])
 
 
-def _apx_examples() -> list[Path]:
-    found = []
-    for pyproject in sorted(EXAMPLES.glob("*/pyproject.toml")):
-        data = tomllib.loads(pyproject.read_text())
-        if "agent" in data.get("tool", {}).get("apx", {}):
+def _apx_examples(root: Path = EXAMPLES) -> Discovery:
+    """Apx examples under root, plus env rows for pyprojects that cannot be read."""
+    found, broken = [], []
+    for pyproject in sorted(root.glob("*/pyproject.toml")):
+        try:
+            data = tomllib.loads(pyproject.read_text())
+        except (tomllib.TOMLDecodeError, OSError) as exc:
+            broken.append(_env_row(pyproject.parent.name, f"invalid pyproject.toml: {exc}"))
+            continue
+        apx = data.get("tool", {}).get("apx")
+        if isinstance(apx, dict) and "agent" in apx:
             found.append(pyproject.parent)
-    return found
+    return Discovery(found, broken)
 
 
 def main() -> None:
-    rows = []
-    for example in _apx_examples():
+    discovery = _apx_examples()
+    rows = discovery.broken
+    for example in discovery.found:
         try:
             proc = subprocess.run(
                 ["uv", "run", "--project", str(example), "--with", WITH_SDK,
@@ -72,8 +110,8 @@ def main() -> None:
             )
             rows.append(parse_payload(example.name, proc.stdout, proc.stderr))
         except subprocess.TimeoutExpired:
-            rows.append(parse_payload(example.name, "", "timed out after 600s"))
-    print(build_table(rows))
+            rows.append(_env_row(example.name, "timed out after 600s"))
+    print(build_table(sorted(rows, key=lambda r: r.example)))
     sys.exit(0)
 
 

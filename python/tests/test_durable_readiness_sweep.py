@@ -38,3 +38,40 @@ def test_rows_ok_fail_and_env() -> None:
     assert "| good | ✓ | ✓ | ✓ | ✓ | ✓ |" in table
     assert "| bad | ✓ | ✗ | – | – | – | Compile: user_identity: nope |" in table
     assert "| noenv | env | env | env | env | env | error: Unable to find lockfile at `uv.lock` |" in table
+
+
+def test_apx_examples_survive_malformed_and_non_apx(tmp_path: Path) -> None:
+    sweep = _load()
+    for name, text in {
+        "good": '[tool.apx.agent]\nname = "x"\n',
+        "broken": "[tool.apx\n",
+        "plain": '[project]\nname = "p"\n',
+        "scalar": "[tool]\napx = 3\n",
+    }.items():
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "pyproject.toml").write_text(text)
+    discovery = sweep._apx_examples(tmp_path)
+    found, broken = discovery.found, discovery.broken
+    assert [p.name for p in found] == ["good"]
+    assert [r.example for r in broken] == ["broken"]
+    assert broken[0].blocker.startswith("invalid pyproject.toml: ")
+    assert set(broken[0].statuses.values()) == {"env"}
+
+
+def test_table_escapes_pipes_and_newlines() -> None:
+    sweep = _load()
+    row = sweep.parse_payload("p", _payload(("Config", "fail", "a | b\nc")), "")
+    line = sweep.build_table([row]).splitlines()[-1]
+    assert line.endswith("| Config: a \\| b c |")
+    assert len(line.replace("\\|", "").split("|")) == len(sweep.STAGES) + 4
+
+
+def test_parse_payload_tolerates_malformed_output() -> None:
+    sweep = _load()
+    odd = json.dumps({"Durable readiness": [{"name": "Config", "status": "weird", "detail": ""}, {"status": "ok"}, "junk"]})
+    assert sweep.parse_payload("u", odd, "").statuses == {"Config": "weird"}
+    missing = sweep.parse_payload("m", json.dumps({"Other": []}), "stderr guess")
+    assert missing.blocker == "no Durable readiness group (apx-agent without --durable?)"
+    assert set(missing.statuses.values()) == {"env"}
+    noisy = sweep.parse_payload("n", "INFO starting\nwarn\n" + _payload(*[(n, "ok", "") for n in sweep.STAGES]), "")
+    assert set(noisy.statuses.values()) == {"✓"}
