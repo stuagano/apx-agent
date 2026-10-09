@@ -93,17 +93,39 @@ def _isolated(project: Path) -> Iterator[_Harness]:
         harness.captured.append(dict(forwarded))
         return "apx doctor peer: ok"
 
+    # Import the modules that bind workspace clients by name BEFORE patching, so
+    # they are scanned (and restored) rather than first-imported holding a fake.
+    import importlib
+
+    import databricks.sdk
+
+    for name in ("_compile", "_defaults", "_dev", "_remote", "_wiring"):
+        importlib.import_module(f"{__package__}.{name}")
+    real_sdk_client = databricks.sdk.WorkspaceClient
+    real_make_client = sys.modules[f"{__package__}._defaults"]._make_workspace_client
+
+    def _fake_make_client(*args: Any, **kwargs: Any) -> _FakeWorkspaceClient:
+        return _FakeWorkspaceClient()
+
     env, cwd, path, modules = dict(os.environ), Path.cwd(), list(sys.path), set(sys.modules)
     with tempfile.TemporaryDirectory(prefix="apx-doctor-") as tmp, contextlib.ExitStack() as stack:
         for target, value in (
             ("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient),
-            ("apx_agent._defaults._make_workspace_client", lambda **kw: _FakeWorkspaceClient()),
+            ("apx_agent._defaults._make_workspace_client", _fake_make_client),
             ("apx_agent._compile._build_chat_databricks", _scripted_model),
             ("apx_agent._remote.RemoteDatabricksAgent._run_with_incoming_headers", _record),
             ("httpx.Client.send", _refuse),
             ("httpx.AsyncClient.send", _refuse_async),
         ):
             stack.enter_context(mock.patch(target, value))
+        # Modules that did `from X import Name` hold their own reference; rebind those too.
+        replacements = {id(real_sdk_client): _FakeWorkspaceClient, id(real_make_client): _fake_make_client}
+        for mod_name, module in list(sys.modules.items()):
+            if mod_name != "apx_agent" and not mod_name.startswith("apx_agent."):
+                continue
+            for attr, value in list(vars(module).items()):
+                if id(value) in replacements:
+                    stack.enter_context(mock.patch.object(module, attr, replacements[id(value)]))
         try:
             sys.path.insert(0, str(project))
             os.environ["APX_PYPROJECT"] = str(project / "pyproject.toml")
@@ -124,6 +146,8 @@ def _isolated(project: Path) -> Iterator[_Harness]:
 
 
 def _fail(name: str, exc: BaseException) -> Check:
+    if isinstance(exc, KeyboardInterrupt):
+        raise exc
     return Check(name, Status.FAIL, f"{type(exc).__name__}: {exc}")
 
 
@@ -132,7 +156,10 @@ def _stage_config(project: Path) -> _Loaded | Check:
 
     from ._models import AgentConfig
 
-    data = tomllib.loads((project / "pyproject.toml").read_text())
+    try:
+        data = tomllib.loads((project / "pyproject.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return _fail("Config", exc)
     declared = data.get("tool", {}).get("apx", {}).get("agent")
     if declared is None:
         return Check("Config", Status.SKIP, "not an apx agent project (no [tool.apx.agent])")
@@ -147,7 +174,7 @@ def _stage_config(project: Path) -> _Loaded | Check:
         current = _load_agent_config(pyproject_path=project / "pyproject.toml")
         config = AgentConfig.model_validate({**current.model_dump(), "target": "durable_agent_server"})
         agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
-    except Exception as exc:
+    except BaseException as exc:
         return _fail("Config", exc)
     return _Loaded(config=config, agent=agent, project=project)
 
@@ -157,7 +184,7 @@ def _stage_compile(loaded: _Loaded) -> list[Check]:
 
     try:
         report = inspect_target(loaded.agent, config=loaded.config, target="durable_agent_server")
-    except Exception as exc:
+    except BaseException as exc:
         return [_fail("Compile", exc)]
     if report.unsatisfied:
         detail = "; ".join(f"{k}: {report.capabilities[k].detail}" for k in report.unsatisfied)

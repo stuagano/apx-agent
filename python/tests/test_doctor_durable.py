@@ -108,6 +108,112 @@ def test_isolation_restores_state_after_failure(tmp_path: Path) -> None:
     assert mod is None or not str(mod.__file__).startswith(str(root))
 
 
+def _modules_inside(root: Path) -> list[str]:
+    inside = []
+    for name, mod in list(sys.modules.items()):
+        file = getattr(mod, "__file__", None)
+        if file is not None and Path(file).resolve().is_relative_to(root.resolve()):
+            inside.append(name)
+    return inside
+
+
+def test_successful_import_leaves_no_project_modules(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "clean", LLM_AGENT.format(name="clean"), extra_files={"helper.py": "X = 1\n"})
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Config"].status is Status.OK
+    assert _modules_inside(root) == []
+
+
+def test_outbound_http_is_refused(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    agent_py = "import httpx\nhttpx.get('https://example.com')\n" + LLM_AGENT.format(name="net")
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "net", agent_py)))
+    assert checks["Config"].status is Status.FAIL
+    assert "ConnectError" in checks["Config"].detail
+    assert "refused" in checks["Config"].detail
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        "from databricks.sdk import WorkspaceClient\nws = WorkspaceClient()\n",
+        "import databricks.sdk\nws = databricks.sdk.WorkspaceClient()\n",
+        "from apx_agent._wiring import _make_workspace_client\nws = _make_workspace_client()\n",
+        "from apx_agent._defaults import _make_workspace_client\nws = _make_workspace_client(host='x')\n",
+        "from apx_agent._dev import WorkspaceClient\nws = WorkspaceClient()\n",
+    ],
+)
+def test_workspace_clients_are_fakes(tmp_path: Path, build: str) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    agent_py = (
+        build
+        + "from apx_agent import LlmAgent\n"
+        + "assert ws.config.host == 'https://apx-doctor.invalid', ws.config.host\n"
+        + "agent = LlmAgent(name='wsfake', tools=[])\n"
+    )
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "wsfake", agent_py)))
+    assert checks["Config"].status is Status.OK, checks["Config"].detail
+
+
+def test_workspace_client_patches_are_restored(tmp_path: Path) -> None:
+    import databricks.sdk
+
+    import apx_agent._defaults as defaults
+    import apx_agent._dev as dev
+    import apx_agent._wiring as wiring
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    before = (databricks.sdk.WorkspaceClient, defaults.WorkspaceClient, defaults._make_workspace_client,
+              wiring._make_workspace_client, dev.WorkspaceClient)
+    check_durable_readiness(_project(tmp_path, "restore", LLM_AGENT.format(name="restore")))
+    after = (databricks.sdk.WorkspaceClient, defaults.WorkspaceClient, defaults._make_workspace_client,
+             wiring._make_workspace_client, dev.WorkspaceClient)
+    assert after == before
+
+
+def test_system_exit_at_import_is_a_config_fail(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "exits", "raise SystemExit(3)\n")))
+    assert checks["Config"].status is Status.FAIL
+    assert "SystemExit" in checks["Config"].detail
+    for stage in ("Compile", "Startup", "Request", "Deploy"):
+        assert checks[stage].status is Status.SKIP
+
+
+def test_keyboard_interrupt_still_propagates(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    with pytest.raises(KeyboardInterrupt):
+        check_durable_readiness(_project(tmp_path, "ctrlc", "raise KeyboardInterrupt()\n"))
+
+
+def test_malformed_pyproject_is_a_config_fail(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = tmp_path / "badtoml"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project\nname = \n")
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Config"].status is Status.FAIL
+    assert "TOMLDecodeError" in checks["Config"].detail
+    assert checks["Compile"].detail == "blocked by Config"
+
+
+def test_missing_pyproject_is_a_config_fail(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = tmp_path / "nopyproject"
+    root.mkdir()
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Config"].status is Status.FAIL
+    assert "FileNotFoundError" in checks["Config"].detail
+
+
 def test_doctor_json_has_durable_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import json
 
