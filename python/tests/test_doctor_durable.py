@@ -6,6 +6,7 @@ import hashlib
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -228,3 +229,61 @@ def test_doctor_json_has_durable_group(tmp_path: Path, monkeypatch: pytest.Monke
     names = [c["name"] for c in payload["Durable readiness"]]
     assert names[:5] == ["Config", "Compile", "Startup", "Request", "Deploy"]
     assert {c["status"] for c in payload["Durable readiness"]} <= {s.value for s in Status}
+
+
+DELEGATE_AGENT = (
+    "from apx_agent import LlmAgent\n"
+    "from apx_agent._agent_tool import remote_agent_tool\n"
+    "peer = remote_agent_tool('https://apx-doctor-peer.invalid', name='ask_peer', description='Ask the peer.')\n"
+    "agent = LlmAgent(name='{name}', tools=[peer])\n"
+)
+
+
+def test_good_project_passes_stages_0_to_3(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "good", DELEGATE_AGENT.format(name="good"))
+    checks = _by_name(check_durable_readiness(root))
+    for stage in ("Config", "Compile", "Startup", "Request"):
+        assert checks[stage].status is Status.OK, (stage, checks[stage].detail)
+    assert "forwards caller token" in checks["Request"].detail
+    assert "local forwards none" in checks["Request"].detail
+    assert "DATABRICKS_APP_NAME" not in os.environ
+
+
+def test_mcp_mount_goes_live_on_durable(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    entry = (
+        "from apx_agent import mount_mcp_endpoints\n"
+        "from apx_agent._serve import create_app\n"
+        "from agent import agent\n"
+        "app = create_app()\n"
+        "mount_mcp_endpoints(app, agent)\n"
+    )
+    root = _project(tmp_path, "mcpproj", LLM_AGENT.format(name="mcpproj"), extra_files={"app.py": entry})
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Startup"].status is Status.OK, checks["Startup"].detail
+    assert "/mcp live" in checks["Startup"].detail
+
+
+def test_startup_exception_is_a_startup_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("lifespan exploded")
+
+    monkeypatch.setattr("apx_agent._runtime_targets.compile_agent", explode)
+    root = _project(tmp_path, "boom", LLM_AGENT.format(name="boom"))
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Startup"].status is Status.FAIL
+    assert "lifespan exploded" in checks["Startup"].detail
+    assert checks["Request"].detail == "blocked by Startup"
+
+
+def test_declared_sub_agent_card_fetch_is_refused_offline(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    agent_py = "from apx_agent import LlmAgent\nagent = LlmAgent(name='orch', sub_agents=['https://elsewhere.example.com'])\n"
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "orch", agent_py)))
+    assert checks["Startup"].status is Status.OK, checks["Startup"].detail

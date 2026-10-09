@@ -17,6 +17,21 @@ if TYPE_CHECKING:
     from ._models import AgentConfig
 
 
+def durable_request_headers(auth: Any, *, principal: str, forward: bool) -> Any:
+    """Per-request headers for the compiled graph; never carries the token itself.
+
+    ``forward`` must already account for the SDK's local verdict and whether the
+    agent has delegates. The resolver asks the SDK's request-user client at call
+    time, so a closed context fails closed.
+    """
+    from ._defaults import DatabricksAppsHeaders
+
+    return DatabricksAppsHeaders(
+        host=None, user_name=None, user_id=principal, user_email=None, request_id=None, token=None,
+        auth_headers=(lambda: auth.client_for("user").config.authenticate()) if forward else None,
+    )
+
+
 def build_native_manifest(*, config: AgentConfig, authorization_plan: AuthorizationPlan) -> str:
     """Compile the existing authorization plan into AgentKit's native contract."""
     from databricks_agentkit.runtime.tool_manifest import parse_user_auth
@@ -91,8 +106,6 @@ def compile_durable_handlers(
         if recovery and (not isinstance(getattr(context, "invocation_id", None), str) or not context.invocation_id):
             raise ValueError("recovery requires a non-empty invocation_id")
         from databricks_agentkit.runtime.auth import RequestAuthContext
-        from ._defaults import DatabricksAppsHeaders
-
         auth = getattr(context, "request_auth", None)
         if recovery and auth is not None:
             raise ValueError("Request-user recovery is unsupported")
@@ -107,10 +120,7 @@ def compile_durable_handlers(
             # The SDK's per-request verdict is authoritative: a local context's
             # "user" client is the developer/app credential, never forward it.
             forward = has_delegates and not auth._local
-            headers = DatabricksAppsHeaders(
-                host=None, user_name=None, user_id=principal, user_email=None, request_id=None, token=None,
-                auth_headers=(lambda: auth.client_for("user").config.authenticate()) if forward else None,
-            )
+            headers = durable_request_headers(auth, principal=principal, forward=forward)
         if isinstance(value, list):
             value = {"messages": value}
         if not isinstance(value, dict) or set(value) - {"messages", "resume"}:

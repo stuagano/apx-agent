@@ -114,8 +114,8 @@ def _isolated(project: Path) -> Iterator[_Harness]:
             ("apx_agent._defaults._make_workspace_client", _fake_make_client),
             ("apx_agent._compile._build_chat_databricks", _scripted_model),
             ("apx_agent._remote.RemoteDatabricksAgent._run_with_incoming_headers", _record),
-            ("httpx.Client.send", _refuse),
-            ("httpx.AsyncClient.send", _refuse_async),
+            ("httpx.HTTPTransport.handle_request", _refuse),
+            ("httpx.AsyncHTTPTransport.handle_async_request", _refuse_async),
         ):
             stack.enter_context(mock.patch(target, value))
         # Modules that did `from X import Name` hold their own reference; rebind those too.
@@ -192,6 +192,143 @@ def _stage_compile(loaded: _Loaded) -> list[Check]:
     return [Check("Compile", Status.OK, "no unsatisfied capabilities")]
 
 
+_SURFACE_CALLS = {"include_router", "add_middleware", "mount", "mount_mcp_endpoints"}
+_ROUTE_VERBS = {"get", "post", "put", "patch", "delete", "websocket", "api_route"}
+
+
+def _entrypoint_file(project: Path) -> Path | None:
+    import yaml
+
+    bundle = project / "databricks.yml"
+    if bundle.exists():
+        doc = yaml.safe_load(bundle.read_text())
+        for app in doc.get("resources", {}).get("apps", {}).values():
+            command = app.get("config", {}).get("command", [])
+            for part in command:
+                module = str(part).split(":")[0]
+                candidate = project / (module.replace(".", "/") + ".py")
+                if module and candidate.exists():
+                    return candidate
+    for rel in ("app.py", "agent_server/start_server.py"):
+        if (project / rel).exists():
+            return project / rel
+    return None
+
+
+def _entrypoint_surface(project: Path) -> list[str]:
+    """Hand-added FastAPI surface in the current entrypoint (static scan)."""
+    import ast
+
+    path = _entrypoint_file(project)
+    if path is None:
+        return []
+    found: list[str] = []
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else fn.id if isinstance(fn, ast.Name) else None
+            if name in _SURFACE_CALLS:
+                arg = ast.unparse(node.args[0]) if node.args else ""
+                found.append(f"{name}({arg})")
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            for deco in node.decorator_list:
+                target = deco.func if isinstance(deco, ast.Call) else deco
+                if isinstance(target, ast.Attribute) and target.attr in _ROUTE_VERBS:
+                    found.append(f"@{ast.unparse(target)} {node.name}")
+    return found
+
+
+@dataclass
+class _Started:
+    app: Any
+    client: Any
+
+
+def _stage_startup(loaded: _Loaded, surface: list[str], stack: contextlib.ExitStack) -> _Started | Check:
+    from fastapi.testclient import TestClient
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from ._runtime_targets import compile_agent
+
+    try:
+        # The managed Session Store is provisioned at deploy; substitute memory.
+        config = loaded.config.model_copy(update={"session": None})
+        checkpointer = InMemorySaver() if type(loaded.agent).__name__ == "LlmAgent" else None
+        app = compile_agent(loaded.agent, config=config, target="durable_agent_server",
+                            model="apx-doctor-model", service_ws=_FakeWorkspaceClient(),
+                            **({"checkpointer": checkpointer} if checkpointer is not None else {}))
+        mcp = any(s.startswith("mount_mcp_endpoints") for s in surface)
+        if mcp:
+            from ._wiring import mount_mcp_endpoints
+
+            mount_mcp_endpoints(app, loaded.agent)
+        client = stack.enter_context(TestClient(app))
+        ready = client.get("/readyz")
+        if ready.status_code != 200 or ready.json().get("checks", {}).get("runtime_store") != "ok":
+            return Check("Startup", Status.FAIL, f"/readyz {ready.status_code}: {ready.text[:200]}")
+        if mcp and app.state._apx_mount_state is None:
+            return Check("Startup", Status.FAIL, "/mcp mounted but its lifecycle never started (stays 503)")
+    except BaseException as exc:
+        return _fail("Startup", exc)
+    return _Started(app=app, client=client)
+
+
+def _delegates(agent: Any) -> list[Any]:
+    from ._resources import _iter_tool_fns
+
+    return [fn for fn in _iter_tool_fns(agent) if hasattr(fn, "__apx_sub_agent_url__")]
+
+
+def _call_delegate(fn: Any, headers: Any) -> None:
+    import asyncio
+    import inspect
+
+    params = [p for p in inspect.signature(fn).parameters if p != "headers"]
+    kwargs = {p: "apx doctor probe" for p in params}
+    asyncio.run(fn(headers=headers, **kwargs))
+
+
+def _stage_request(loaded: _Loaded, started: _Started, harness: _Harness) -> Check:
+    import uuid
+
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+
+    from ._durable_agent import durable_request_headers
+
+    try:
+        os.environ.pop("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", None)
+        os.environ["DATABRICKS_APP_NAME"] = "apx-doctor"
+        os.environ["DATABRICKS_HOST"] = "https://apx-doctor.invalid"
+        body = {"id": str(uuid.uuid4()), "session_id": "apx-doctor",
+                "input": [{"role": "user", "content": "apx doctor readiness probe"}]}
+        headers = {"X-Forwarded-User": "apx-doctor", "X-Forwarded-Access-Token": SENTINEL}
+        response = started.client.post("/api/invocations", json=body, headers=headers)
+        if response.status_code != 200:
+            return Check("Request", Status.FAIL, f"/api/invocations {response.status_code}: {response.text[:200]}")
+        saved = started.client.get(f"/api/invocations/{body['id']}", headers=headers)
+        if SENTINEL in response.text or SENTINEL in saved.text:
+            return Check("Request", Status.FAIL, "request-user token persisted in the invocation")
+        delegates = _delegates(loaded.agent)
+        for fn in delegates:
+            deployed = RequestAuthContext(token=SENTINEL, principal="apx-doctor", local=False)
+            harness.captured.clear()
+            _call_delegate(fn, durable_request_headers(deployed, principal="apx-doctor", forward=True))
+            want = {"X-Forwarded-Access-Token": SENTINEL, "Authorization": f"Bearer {SENTINEL}"}
+            if harness.captured != [want]:
+                return Check("Request", Status.FAIL, f"delegate {fn.__name__} forwarded {sorted(harness.captured[0]) if harness.captured else 'nothing'}")
+            local = RequestAuthContext(token=None, principal="local-developer", local=True)
+            harness.captured.clear()
+            _call_delegate(fn, durable_request_headers(local, principal="local-developer", forward=not local._local))
+            if harness.captured != [{}]:
+                return Check("Request", Status.FAIL, f"delegate {fn.__name__} forwarded credentials from a local context")
+    except BaseException as exc:
+        return _fail("Request", exc)
+    finally:
+        os.environ.pop("DATABRICKS_APP_NAME", None)
+    return Check("Request", Status.OK,
+                 f"invocation ok; {len(delegates)} delegate(s) forwards caller token; local forwards none; not persisted")
+
+
 def _cascade(results: list[Check]) -> list[Check]:
     """Pad to every stage; after the first FAIL, later stages are SKIP."""
     out: list[Check] = []
@@ -214,7 +351,7 @@ def check_durable_readiness(project: Path) -> list[Check]:
     """Run the durable readiness stages for the apx project at ``project``."""
     project = project.resolve()
     results: list[Check] = []
-    with _isolated(project):
+    with _isolated(project) as harness:
         loaded = _stage_config(project)
         if isinstance(loaded, Check):
             if loaded.status is Status.SKIP:
@@ -224,4 +361,15 @@ def check_durable_readiness(project: Path) -> list[Check]:
                              f"durable target valid; agent imported ({type(loaded.agent).__name__} "
                              f"{getattr(loaded.agent, '_name', loaded.config.name)})"))
         results.extend(_stage_compile(loaded))
+        if results[-1].status is Status.OK:
+            with contextlib.ExitStack() as stack:
+                surface = _entrypoint_surface(project)
+                started = _stage_startup(loaded, surface, stack)
+                if isinstance(started, Check):
+                    results.append(started)
+                else:
+                    mcp = any(s.startswith("mount_mcp_endpoints") for s in surface)
+                    results.append(Check("Startup", Status.OK,
+                                         "lifespan ok; /readyz runtime_store=ok (in-memory store; Lakebase not exercised offline)" + ("; /mcp live" if mcp else "")))
+                    results.append(_stage_request(loaded, started, harness))
     return _cascade(results)
