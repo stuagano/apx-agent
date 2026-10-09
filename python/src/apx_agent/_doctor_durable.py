@@ -518,6 +518,18 @@ def _stage_deploy(loaded: _Loaded) -> Check:
 
     from ._agentbricks_deploy import validate_cli_deployment
 
+    declared = loaded.config.deploy
+    if declared is not None and declared.backend == "apps_api":
+        # Rows 3 and 4 are declaration-driven. A missing databricks.yml is expected
+        # and must not SKIP this stage.
+        try:
+            from ._apps_api_deploy import preflight_apps_api
+
+            return Check("Deploy", Status.OK, preflight_apps_api(loaded.project, loaded.config, loaded.agent))
+        except click.ClickException as exc:
+            return Check("Deploy", Status.FAIL, exc.message, "Fix the Apps API declaration and re-run (first rejection only).")
+        except BaseException as exc:
+            return _fail("Deploy", exc)
     bundle = loaded.project / "databricks.yml"
     if not bundle.exists():
         return Check("Deploy", Status.SKIP, "no databricks.yml (native deploy generates its own bundle)")
@@ -531,17 +543,17 @@ def _stage_deploy(loaded: _Loaded) -> Check:
         bundle_key = next(iter(apps))
         deploy = tomllib.loads((loaded.project / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("deploy", {})
         app_name = deploy["app_name"] if "app_name" in deploy else apps[bundle_key]["name"]
-        declared_space = loaded.config.deploy.space if loaded.config.deploy is not None else None
+        declared_space = declared.space if declared is not None else None
         if declared_space is not None:
-            # Mirrors deploy routing: a declared App Space goes through apx's own
-            # path (any app name, e.g. mcp-); its scopes/resources are checked online.
+            # Row 2. A declared App Space on the Agent Bricks path goes through
+            # apx's own bundle path (any app name, e.g. mcp-); scopes are online.
             from ._app_space import validate_space_bundle
 
             if validate_space_bundle(doc, bundle_key=bundle_key) != declared_space:
                 return Check("Deploy", Status.FAIL, "databricks.yml space disagrees with [tool.apx.agent.deploy] space")
             return Check("Deploy", Status.OK, f"App Space deploy preflight passes for {app_name} (space {declared_space}; "
                          "inherited scopes and resources are checked online at deploy)")
-        # The real deploy needs --profile and runs the app; the preflight checks the bundle, not those flags.
+        # Row 1. The real deploy needs --profile and runs the app; this checks the bundle.
         validate_cli_deployment(doc, bundle_key=bundle_key, app_name=app_name, profile="apx-doctor", no_run=False)
     except click.ClickException as exc:
         return Check("Deploy", Status.FAIL, exc.message, "Fix the bundle for a native durable deploy and re-run (first rejection only).")
