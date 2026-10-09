@@ -12,7 +12,7 @@ import contextlib
 import os
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,6 +85,22 @@ def _scripted_model(*args: Any, **kwargs: Any) -> Any:
     return _Scripted()
 
 
+def _disable_tracing(stack: contextlib.ExitStack) -> None:
+    """Turn MLflow tracing off for the run (no trace export), restoring it on exit.
+
+    Restore uses ``reset`` (lazy re-init on next use), not ``enable``: ``enable``
+    would eagerly build the default sqlite tracking store in the caller's cwd.
+    """
+    try:
+        from mlflow.tracing import disable, reset
+        from mlflow.tracing.provider import is_tracing_enabled
+    except ImportError:
+        return
+    if is_tracing_enabled():
+        disable()
+        stack.callback(reset)
+
+
 @contextlib.contextmanager
 def _isolated(project: Path) -> Iterator[_Harness]:
     harness = _Harness()
@@ -126,11 +142,13 @@ def _isolated(project: Path) -> Iterator[_Harness]:
             for attr, value in list(vars(module).items()):
                 if id(value) in replacements:
                     stack.enter_context(mock.patch.object(module, attr, replacements[id(value)]))
+        _disable_tracing(stack)
         try:
             sys.path.insert(0, str(project))
             os.environ["APX_PYPROJECT"] = str(project / "pyproject.toml")
             os.environ["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL"] = "true"
             os.environ.pop("AGENTBRICKS_PROJECT_ROOT", None)
+            os.environ["APX_AGENT_MLFLOW_AUTOLOG"] = "0"
             os.environ.pop("DATABRICKS_APP_NAME", None)
             os.chdir(tmp)
             yield harness
@@ -202,9 +220,11 @@ def _entrypoint_file(project: Path) -> Path | None:
     bundle = project / "databricks.yml"
     if bundle.exists():
         doc = yaml.safe_load(bundle.read_text())
-        for app in doc.get("resources", {}).get("apps", {}).values():
-            command = app.get("config", {}).get("command", [])
-            for part in command:
+        apps = doc.get("resources", {}).get("apps", {}) if isinstance(doc, dict) else {}
+        for app in apps.values() if isinstance(apps, dict) else []:
+            config = app.get("config", {}) if isinstance(app, dict) else {}
+            command = config.get("command", []) if isinstance(config, dict) else []
+            for part in [command] if isinstance(command, str) else command:
                 module = str(part).split(":")[0]
                 candidate = project / (module.replace(".", "/") + ".py")
                 if module and candidate.exists():
@@ -242,22 +262,24 @@ def _entrypoint_surface(project: Path) -> list[str]:
 class _Started:
     app: Any
     client: Any
+    mcp: bool
 
 
-def _stage_startup(loaded: _Loaded, surface: list[str], stack: contextlib.ExitStack) -> _Started | Check:
+def _stage_startup(loaded: _Loaded, surface: Callable[[], list[str]], stack: contextlib.ExitStack) -> _Started | Check:
     from fastapi.testclient import TestClient
     from langgraph.checkpoint.memory import InMemorySaver
 
     from ._runtime_targets import compile_agent
 
     try:
+        # A hand-written entrypoint that cannot be parsed is a Startup failure.
+        mcp = any(s.startswith("mount_mcp_endpoints") for s in surface())
         # The managed Session Store is provisioned at deploy; substitute memory.
         config = loaded.config.model_copy(update={"session": None})
         checkpointer = InMemorySaver() if type(loaded.agent).__name__ == "LlmAgent" else None
         app = compile_agent(loaded.agent, config=config, target="durable_agent_server",
                             model="apx-doctor-model", service_ws=_FakeWorkspaceClient(),
                             **({"checkpointer": checkpointer} if checkpointer is not None else {}))
-        mcp = any(s.startswith("mount_mcp_endpoints") for s in surface)
         if mcp:
             from ._wiring import mount_mcp_endpoints
 
@@ -270,7 +292,7 @@ def _stage_startup(loaded: _Loaded, surface: list[str], stack: contextlib.ExitSt
             return Check("Startup", Status.FAIL, "/mcp mounted but its lifecycle never started (stays 503)")
     except BaseException as exc:
         return _fail("Startup", exc)
-    return _Started(app=app, client=client)
+    return _Started(app=app, client=client, mcp=mcp)
 
 
 def _delegates(agent: Any) -> list[Any]:
@@ -302,13 +324,28 @@ def _stage_request(loaded: _Loaded, started: _Started, harness: _Harness) -> Che
         body = {"id": str(uuid.uuid4()), "session_id": "apx-doctor",
                 "input": [{"role": "user", "content": "apx doctor readiness probe"}]}
         headers = {"X-Forwarded-User": "apx-doctor", "X-Forwarded-Access-Token": SENTINEL}
-        response = started.client.post("/api/invocations", json=body, headers=headers)
+        from . import _durable_agent
+
+        seen: list[tuple[bool, bool]] = []
+
+        def _spy(auth: Any, *, principal: str, forward: bool) -> Any:
+            seen.append((auth._local, forward))
+            return durable_request_headers(auth, principal=principal, forward=forward)
+
+        with mock.patch.object(_durable_agent, "durable_request_headers", _spy):
+            response = started.client.post("/api/invocations", json=body, headers=headers)
         if response.status_code != 200:
             return Check("Request", Status.FAIL, f"/api/invocations {response.status_code}: {response.text[:200]}")
         saved = started.client.get(f"/api/invocations/{body['id']}", headers=headers)
+        if saved.status_code != 200:
+            return Check("Request", Status.FAIL, f"GET /api/invocations/<id> {saved.status_code}: {saved.text[:200]}")
         if SENTINEL in response.text or SENTINEL in saved.text:
             return Check("Request", Status.FAIL, "request-user token persisted in the invocation")
         delegates = _delegates(loaded.agent)
+        if not seen or seen[-1] != (False, bool(delegates)):
+            return Check("Request", Status.FAIL, "durable did not install the request-user resolver "
+                         f"(observed (local, forward) = {seen[-1] if seen else 'no call'}, "
+                         f"expected (False, {bool(delegates)}))")
         for fn in delegates:
             deployed = RequestAuthContext(token=SENTINEL, principal="apx-doctor", local=False)
             harness.captured.clear()
@@ -363,13 +400,11 @@ def check_durable_readiness(project: Path) -> list[Check]:
         results.extend(_stage_compile(loaded))
         if results[-1].status is Status.OK:
             with contextlib.ExitStack() as stack:
-                surface = _entrypoint_surface(project)
-                started = _stage_startup(loaded, surface, stack)
+                started = _stage_startup(loaded, lambda: _entrypoint_surface(project), stack)
                 if isinstance(started, Check):
                     results.append(started)
                 else:
-                    mcp = any(s.startswith("mount_mcp_endpoints") for s in surface)
                     results.append(Check("Startup", Status.OK,
-                                         "lifespan ok; /readyz runtime_store=ok (in-memory store; Lakebase not exercised offline)" + ("; /mcp live" if mcp else "")))
+                                         "lifespan ok; /readyz runtime_store=ok (in-memory store; Lakebase not exercised offline)" + ("; /mcp live" if started.mcp else "")))
                     results.append(_stage_request(loaded, started, harness))
     return _cascade(results)
