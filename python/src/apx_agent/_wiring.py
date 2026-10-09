@@ -1384,7 +1384,7 @@ def _chain_lifespan(
     inner = app.router.lifespan_context
 
     @asynccontextmanager
-    async def lifespan(scope_app: FastAPI):  # noqa: ANN202 — ASGI lifespan
+    async def lifespan(scope_app: FastAPI) -> AsyncGenerator[Any, None]:
         async with inner(scope_app) as state:
             await startup()
             try:
