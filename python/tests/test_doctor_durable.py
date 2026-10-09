@@ -41,7 +41,26 @@ def _by_name(checks: list[Check]) -> dict[str, Check]:
 
 def _snapshot(root: Path) -> dict[str, str]:
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(root.rglob("*")) if p.is_file() and "__pycache__" not in p.parts}
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def _mutate(monkeypatch: pytest.MonkeyPatch, module: Any, name: str, old: str, new: str) -> None:
+    """Recompile ``module.name`` with ``old`` replaced by ``new``, in the module's own namespace.
+
+    Reverts one line of a real fix (so the doctor sees the exact regression) while
+    every other name the function resolves stays the live module global.
+    """
+    import __future__
+    import inspect
+    import textwrap
+
+    real = vars(module)[name]
+    source = textwrap.dedent(inspect.getsource(real))
+    assert old in source, f"{name} no longer contains {old!r}; update the simulation"
+    monkeypatch.setattr(module, name, real)  # restores the real function at teardown
+    code = compile(source.replace(old, new), module.__file__, "exec",
+                   flags=__future__.annotations.compiler_flag, dont_inherit=True)
+    exec(code, vars(module))
 
 
 LLM_AGENT = "from apx_agent import LlmAgent\nagent = LlmAgent(name='{name}', tools=[])\n"
@@ -493,3 +512,233 @@ def test_delegate_less_agent_request_ok_without_resolver_call(tmp_path: Path) ->
     request = _by_name(check_durable_readiness(root))["Request"]
     assert request.status is Status.OK
     assert "0 delegate(s)" in request.detail
+
+
+# --- final review wave -------------------------------------------------------
+
+
+def test_preimported_agentkit_clients_are_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib
+
+    import databricks.sdk
+
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    # Both bind WorkspaceClient by name at import; pre-importing captures the REAL class.
+    for name in ("databricks_agentkit.runtime.workspace", "databricks_agentkit.runtime.mcp_auth"):
+        importlib.import_module(name)
+
+    def no_real_client(self: Any, *args: Any, **kwargs: Any) -> None:
+        raise AssertionError("a real databricks.sdk.WorkspaceClient was constructed")
+
+    monkeypatch.setattr(databricks.sdk.WorkspaceClient, "__init__", no_real_client)
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "agentkit", DELEGATE_AGENT.format(name="agentkit"))))
+    for stage in ("Config", "Compile", "Startup", "Request"):
+        assert checks[stage].status is Status.OK, (stage, checks[stage].detail)
+
+
+def test_no_module_keeps_a_fake_after_the_run(tmp_path: Path) -> None:
+    from apx_agent import _doctor_durable
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    # A module first imported during the run (not a project file, so it is not
+    # unloaded) binds both fakes by name, as `from X import Name` would.
+    agent_py = (
+        "import sys, types\n"
+        "from databricks.sdk import WorkspaceClient\n"
+        "from apx_agent._defaults import _make_workspace_client\n"
+        "probe = types.ModuleType('apx_doctor_leak_probe')\n"
+        "probe.WorkspaceClient = WorkspaceClient\n"
+        "probe.make = _make_workspace_client\n"
+        "sys.modules['apx_doctor_leak_probe'] = probe\n"
+        + LLM_AGENT.format(name="leak")
+    )
+    try:
+        check_durable_readiness(_project(tmp_path, "leak", agent_py))
+        leaked = [f"{name}.{attr}" for name, module in list(sys.modules.items()) if name != _doctor_durable.__name__
+                  for attr, value in list(vars(module).items())
+                  if value is _doctor_durable._FakeWorkspaceClient or value is _doctor_durable._fake_make_client]
+        assert leaked == []
+        import databricks.sdk
+
+        assert sys.modules["apx_doctor_leak_probe"].WorkspaceClient is databricks.sdk.WorkspaceClient
+    finally:
+        sys.modules.pop("apx_doctor_leak_probe", None)
+
+
+@pytest.mark.parametrize(("call", "needle"), [
+    ("import requests\nrequests.get('https://example.com', timeout=5)\n", "outbound network refused"),
+    ("import socket\nsocket.create_connection(('example.com', 443), timeout=5)\n", "outbound network refused"),
+    ("import socket\nsocket.socket().connect(('93.184.215.14', 443))\n", "outbound network refused"),
+    ("import urllib.request\nurllib.request.urlopen('http://example.com', timeout=5)\n", "outbound network refused"),
+])
+def test_outbound_network_is_refused_at_the_socket(tmp_path: Path, call: str, needle: str) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "sock", call + LLM_AGENT.format(name="sock"))))
+    assert checks["Config"].status is Status.FAIL
+    assert needle in checks["Config"].detail, checks["Config"].detail
+
+
+def test_socket_guard_is_restored(tmp_path: Path) -> None:
+    import socket
+
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    before = (socket.create_connection, socket.getaddrinfo, socket.socket.connect, socket.socket.connect_ex,
+              sys.dont_write_bytecode)
+    check_durable_readiness(_project(tmp_path, "sockrestore", LLM_AGENT.format(name="sockrestore")))
+    assert (socket.create_connection, socket.getaddrinfo, socket.socket.connect, socket.socket.connect_ex,
+            sys.dont_write_bytecode) == before
+
+
+def test_good_path_isolation(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "goodiso", DELEGATE_AGENT.format(name="goodiso"), extra_files={"helper.py": "X = 1\n"})
+    env, cwd, path, files = dict(os.environ), Path.cwd(), list(sys.path), _snapshot(root)
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Request"].status is Status.OK, checks["Request"].detail
+    assert dict(os.environ) == env
+    assert Path.cwd() == cwd
+    assert sys.path == path
+    assert _snapshot(root) == files
+    assert not (root / "__pycache__").exists()
+
+
+def test_local_forward_regression_fails_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import _durable_agent
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    # Revert durable's local verdict: forward whenever there are delegates.
+    _mutate(monkeypatch, _durable_agent, "compile_durable_handlers",
+            "forward = has_delegates and not auth._local", "forward = has_delegates")
+    request = _by_name(check_durable_readiness(_project(tmp_path, "localfwd", DELEGATE_AGENT.format(name="localfwd"))))["Request"]
+    assert request.status is Status.FAIL
+    assert "durable would forward credentials from a local context" in request.detail
+
+
+def test_persisted_sentinel_fails_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from apx_agent import _doctor_durable
+    from apx_agent._doctor_durable import SENTINEL, check_durable_readiness
+
+    real = _doctor_durable._stage_request
+
+    class _Echo:
+        def __init__(self, client: Any) -> None:
+            self._client = client
+
+        def post(self, *args: Any, **kwargs: Any) -> Any:
+            return self._client.post(*args, **kwargs)
+
+        def get(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(status_code=200, text=f'{{"output": "{SENTINEL}"}}')
+
+    def wrapped(loaded: Any, started: Any, harness: Any) -> Any:
+        started.client = _Echo(started.client)
+        return real(loaded, started, harness)
+
+    monkeypatch.setattr(_doctor_durable, "_stage_request", wrapped)
+    request = _by_name(check_durable_readiness(_project(tmp_path, "leaky", DELEGATE_AGENT.format(name="leaky"))))["Request"]
+    assert request.status is Status.FAIL
+    assert "persisted" in request.detail
+
+
+ROUTER_AGENT = (
+    "from apx_agent import KeywordRouter, LlmAgent\n"
+    "leaf = LlmAgent(name='leaf', tools=[])\n"
+    "agent = KeywordRouter(branches=[('go', leaf, ['go'])], default=leaf)\n"
+)
+
+
+def test_composite_agent_passes_compile(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "router", ROUTER_AGENT)))
+    assert checks["Compile"].status is Status.OK, checks["Compile"].detail
+
+
+def test_composite_managed_session_regression_fails_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import _runtime_targets
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    # Revert the composite-agent fix: the auto-attached managed session binds to any agent.
+    _mutate(monkeypatch, _runtime_targets, "inspect_target",
+            "effective_session = session if isinstance(agent, LlmAgent) else None", "effective_session = session")
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "router2", ROUTER_AGENT)))
+    assert checks["Compile"].status is Status.FAIL
+    assert "session_store currently requires LlmAgent" in checks["Compile"].detail
+
+
+def test_mcp_lifecycle_never_started_fails_startup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import _wiring
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    # Regression: the mount's startup is never chained into the host lifespan.
+    monkeypatch.setattr(_wiring, "_chain_lifespan", lambda app, startup, shutdown=None: None)
+    entry = (
+        "from apx_agent import mount_mcp_endpoints\n"
+        "from apx_agent._serve import create_app\n"
+        "from agent import agent\n"
+        "app = create_app()\n"
+        "mount_mcp_endpoints(app, agent)\n"
+    )
+    root = _project(tmp_path, "mcpdead", LLM_AGENT.format(name="mcpdead"), extra_files={"app.py": entry})
+    startup = _by_name(check_durable_readiness(root))["Startup"]
+    assert startup.status is Status.FAIL
+    assert startup.detail == "/mcp mounted but its lifecycle never started (stays 503)"
+
+
+def test_lifespan_shutdown_error_is_a_startup_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import _runtime_targets, _wiring
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    real_compile = _runtime_targets.compile_agent
+
+    async def started() -> None:
+        return None
+
+    async def explode() -> None:
+        raise RuntimeError("shutdown exploded")
+
+    def compile_with_bad_shutdown(*args: Any, **kwargs: Any) -> Any:
+        app = real_compile(*args, **kwargs)
+        _wiring._chain_lifespan(app, started, explode)
+        return app
+
+    monkeypatch.setattr(_runtime_targets, "compile_agent", compile_with_bad_shutdown)
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "badexit", LLM_AGENT.format(name="badexit"))))
+    assert checks["Startup"].status is Status.FAIL
+    assert checks["Startup"].detail == "lifespan shutdown failed: RuntimeError: shutdown exploded"
+    assert checks["Request"].detail == "blocked by Startup"
+    assert {"Re-mount", "History"} <= set(checks)
+
+
+def test_missing_agent_module_has_native_import_hint(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "nomodule", "")
+    (root / "agent.py").unlink()
+    (root / "my_agent.py").write_text(LLM_AGENT.format(name="nomodule"))
+    config = _by_name(check_durable_readiness(root))["Config"]
+    assert config.status is Status.FAIL
+    assert config.fix is not None
+    assert "agent:agent" in config.fix
+    assert "module =" in config.fix
+
+
+def test_stale_agent_module_from_elsewhere_is_shadowed_and_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    # Another project's `agent` already imported in this process (e.g. an earlier tool run).
+    stale = types.ModuleType("agent")
+    stale.agent = "stale"
+    monkeypatch.setitem(sys.modules, "agent", stale)
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "fresh", LLM_AGENT.format(name="fresh"))))
+    assert checks["Config"].status is Status.OK, checks["Config"].detail
+    assert "(LlmAgent fresh)" in checks["Config"].detail  # the project's agent, not the stale string
+    assert sys.modules["agent"] is stale

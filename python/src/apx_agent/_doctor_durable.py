@@ -2,8 +2,9 @@
 
 Exercises an apx project the way the native runtime would — compile, start the
 lifespan, serve a request, run the deploy preflight — fully offline: temp cwd,
-fake workspace clients, refused outbound HTTP, scripted model. Nothing under the
-project is written; everything patched is restored on exit.
+fake workspace clients, refused outbound network (httpx and sockets), scripted
+model. Nothing under the project is written (no bytecode either); everything
+patched is restored on exit.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import tempfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -54,6 +55,9 @@ class _Loaded:
     project: Path
 
 
+OFFLINE = "doctor --durable is offline: outbound network refused"
+
+
 def _refuse(*args: Any, **kwargs: Any) -> Any:
     import httpx
 
@@ -62,6 +66,74 @@ def _refuse(*args: Any, **kwargs: Any) -> Any:
 
 async def _refuse_async(*args: Any, **kwargs: Any) -> Any:
     _refuse()
+
+
+def _fake_make_client(*args: Any, **kwargs: Any) -> _FakeWorkspaceClient:
+    return _FakeWorkspaceClient()
+
+
+def _is_local(host: Any) -> bool:
+    import ipaddress
+
+    if host is None or host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _guard_sockets(stack: contextlib.ExitStack) -> None:
+    """Refuse every non-loopback connect and name lookup (requests, urllib, raw sockets).
+
+    In-process ASGI traffic (TestClient) opens no socket; AF_UNIX paths and
+    loopback stay allowed. Lookups are refused too, so a hostname never leaves
+    the process.
+    """
+    import socket
+
+    real_connect, real_connect_ex = socket.socket.connect, socket.socket.connect_ex
+    real_create, real_lookup = socket.create_connection, socket.getaddrinfo
+
+    def _check(address: Any) -> None:
+        if isinstance(address, tuple) and not _is_local(address[0]):
+            raise ConnectionRefusedError(OFFLINE)
+
+    def connect(self: socket.socket, address: Any) -> None:
+        _check(address)
+        real_connect(self, address)
+
+    def connect_ex(self: socket.socket, address: Any) -> int:
+        _check(address)
+        return real_connect_ex(self, address)
+
+    def create_connection(address: Any, *args: Any, **kwargs: Any) -> socket.socket:
+        _check(address)
+        return real_create(address, *args, **kwargs)
+
+    def getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        _check((host,))
+        return real_lookup(host, *args, **kwargs)
+
+    for target, attr, value in ((socket.socket, "connect", connect), (socket.socket, "connect_ex", connect_ex),
+                                (socket, "create_connection", create_connection), (socket, "getaddrinfo", getaddrinfo)):
+        stack.enter_context(mock.patch.object(target, attr, value))
+
+
+def _holders(wanted: dict[int, Any]) -> list[Any]:
+    """[(module, attr, replacement)] for every module global bound to a key of ``wanted``.
+
+    Scans all of sys.modules, not just apx_agent: SDK modules (e.g. the agent
+    runtime's workspace helper) bind WorkspaceClient by name at import.
+    """
+    hits = []
+    for name, module in list(sys.modules.items()):
+        if name == __name__ or not isinstance(module, ModuleType):
+            continue
+        for attr, value in list(vars(module).items()):
+            if id(value) in wanted and value is wanted[id(value)][0]:
+                hits.append((module, attr, wanted[id(value)][1]))
+    return hits
 
 
 def _scripted_model(*args: Any, **kwargs: Any) -> Any:
@@ -109,22 +181,31 @@ def _isolated(project: Path) -> Iterator[_Harness]:
         harness.captured.append(dict(forwarded))
         return "apx doctor peer: ok"
 
-    # Import the modules that bind workspace clients by name BEFORE patching, so
-    # they are scanned (and restored) rather than first-imported holding a fake.
-    import importlib
-
     import databricks.sdk
 
-    for name in ("_compile", "_defaults", "_dev", "_remote", "_wiring"):
-        importlib.import_module(f"{__package__}.{name}")
+    from . import _defaults
+
     real_sdk_client = databricks.sdk.WorkspaceClient
-    real_make_client = sys.modules[f"{__package__}._defaults"]._make_workspace_client
+    real_make_client = _defaults._make_workspace_client
+    fakes = {id(real_sdk_client): (real_sdk_client, _FakeWorkspaceClient),
+             id(real_make_client): (real_make_client, _fake_make_client)}
+    reals = {id(fake): (fake, real) for real, fake in fakes.values()}
 
-    def _fake_make_client(*args: Any, **kwargs: Any) -> _FakeWorkspaceClient:
-        return _FakeWorkspaceClient()
+    def _restore_leaks() -> None:
+        # Modules first imported during the run bound the fakes by name and are
+        # not covered by the entry patches; point them back at the real objects.
+        for module, attr, real in _holders(reals):
+            setattr(module, attr, real)
 
+    # Same-named modules already imported from elsewhere (another project's
+    # `agent`) would shadow the project's own; set them aside for the run.
+    tops = {p.stem for p in project.glob("*.py")} | {p.parent.name for p in project.glob("*/__init__.py")}
     env, cwd, path, modules = dict(os.environ), Path.cwd(), list(sys.path), set(sys.modules)
+    bytecode = sys.dont_write_bytecode
     with tempfile.TemporaryDirectory(prefix="apx-doctor-") as tmp, contextlib.ExitStack() as stack:
+        stack.callback(_restore_leaks)  # registered first, so it runs after every patch is undone
+        shadowed = {name: sys.modules.pop(name) for name in list(sys.modules) if name.partition(".")[0] in tops}
+        stack.callback(sys.modules.update, shadowed)  # after the project's own modules are unloaded
         for target, value in (
             ("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient),
             ("apx_agent._defaults._make_workspace_client", _fake_make_client),
@@ -135,15 +216,12 @@ def _isolated(project: Path) -> Iterator[_Harness]:
         ):
             stack.enter_context(mock.patch(target, value))
         # Modules that did `from X import Name` hold their own reference; rebind those too.
-        replacements = {id(real_sdk_client): _FakeWorkspaceClient, id(real_make_client): _fake_make_client}
-        for mod_name, module in list(sys.modules.items()):
-            if mod_name != "apx_agent" and not mod_name.startswith("apx_agent."):
-                continue
-            for attr, value in list(vars(module).items()):
-                if id(value) in replacements:
-                    stack.enter_context(mock.patch.object(module, attr, replacements[id(value)]))
+        for module, attr, fake in _holders(fakes):
+            stack.enter_context(mock.patch.object(module, attr, fake))
+        _guard_sockets(stack)
         _disable_tracing(stack)
         try:
+            sys.dont_write_bytecode = True  # importing agent.py must not write <project>/__pycache__
             sys.path.insert(0, str(project))
             os.environ["APX_PYPROJECT"] = str(project / "pyproject.toml")
             os.environ["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL"] = "true"
@@ -157,6 +235,7 @@ def _isolated(project: Path) -> Iterator[_Harness]:
             os.environ.clear()
             os.environ.update(env)
             sys.path[:] = path
+            sys.dont_write_bytecode = bytecode
             for name in set(sys.modules) - modules:
                 mod = sys.modules[name]
                 if str(getattr(mod, "__file__", None)).startswith(str(project)):
@@ -190,10 +269,21 @@ def _stage_config(project: Path) -> _Loaded | Check:
         from ._wiring import resolve_agent
 
         current = _load_agent_config(pyproject_path=project / "pyproject.toml")
+        if current is None:
+            return Check("Config", Status.FAIL, "could not load [tool.apx.agent]")
         config = AgentConfig.model_validate({**current.model_dump(), "target": "durable_agent_server"})
+        # The native host imports `agent:agent` (as _serve.create_app does); the
+        # pyproject `module =` key is not read by the durable runtime.
         agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
     except BaseException as exc:
-        return _fail("Config", exc)
+        check = _fail("Config", exc)
+        missing = exc.__cause__ if isinstance(exc.__cause__, ModuleNotFoundError) else exc
+        if isinstance(missing, ModuleNotFoundError) and missing.name == "agent":
+            return Check("Config", Status.FAIL, check.detail,
+                         "The native durable runtime imports `agent:agent` (as _serve.create_app does); "
+                         "the pyproject `module =` key is not used by the durable host. "
+                         "Expose the agent as `agent` in agent.py at the project root.")
+        return check
     return _Loaded(config=config, agent=agent, project=project)
 
 
@@ -265,10 +355,19 @@ class _Started:
     mcp: bool
 
 
+def _mount_lifecycle(app: Any) -> Any:
+    """The MCP mount's live lifecycle; unset when its startup never ran."""
+    try:
+        return app.state._apx_mount_state
+    except AttributeError:
+        return None
+
+
 def _stage_startup(loaded: _Loaded, surface: Callable[[], list[str]], stack: contextlib.ExitStack) -> _Started | Check:
     from fastapi.testclient import TestClient
     from langgraph.checkpoint.memory import InMemorySaver
 
+    from ._agents import LlmAgent
     from ._runtime_targets import compile_agent
 
     try:
@@ -276,10 +375,10 @@ def _stage_startup(loaded: _Loaded, surface: Callable[[], list[str]], stack: con
         mcp = any(s.startswith("mount_mcp_endpoints") for s in surface())
         # The managed Session Store is provisioned at deploy; substitute memory.
         config = loaded.config.model_copy(update={"session": None})
-        checkpointer = InMemorySaver() if type(loaded.agent).__name__ == "LlmAgent" else None
+        checkpointer = InMemorySaver() if isinstance(loaded.agent, LlmAgent) else None
         app = compile_agent(loaded.agent, config=config, target="durable_agent_server",
                             model="apx-doctor-model", service_ws=_FakeWorkspaceClient(),
-                            **({"checkpointer": checkpointer} if checkpointer is not None else {}))
+                            checkpointer=checkpointer)
         if mcp:
             from ._wiring import mount_mcp_endpoints
 
@@ -288,7 +387,7 @@ def _stage_startup(loaded: _Loaded, surface: Callable[[], list[str]], stack: con
         ready = client.get("/readyz")
         if ready.status_code != 200 or ready.json().get("checks", {}).get("runtime_store") != "ok":
             return Check("Startup", Status.FAIL, f"/readyz {ready.status_code}: {ready.text[:200]}")
-        if mcp and app.state._apx_mount_state is None:
+        if mcp and _mount_lifecycle(app) is None:
             return Check("Startup", Status.FAIL, "/mcp mounted but its lifecycle never started (stays 503)")
     except BaseException as exc:
         return _fail("Startup", exc)
@@ -310,59 +409,79 @@ def _call_delegate(fn: Any, headers: Any) -> None:
     asyncio.run(fn(headers=headers, **kwargs))
 
 
-def _stage_request(loaded: _Loaded, started: _Started, harness: _Harness) -> Check:
+def _invocation() -> dict[str, Any]:
     import uuid
 
+    return {"id": str(uuid.uuid4()), "session_id": "apx-doctor",
+            "input": [{"role": "user", "content": "apx doctor readiness probe"}]}
+
+
+def _stage_request(loaded: _Loaded, started: _Started, harness: _Harness) -> Check:
     from databricks_agentkit.runtime.auth import RequestAuthContext
 
+    from . import _durable_agent
     from ._durable_agent import durable_request_headers
 
+    seen: list[tuple[bool, bool]] = []
+
+    def _spy(auth: Any, *, principal: str, forward: bool) -> Any:
+        seen.append((auth._local, forward))
+        return durable_request_headers(auth, principal=principal, forward=forward)
+
+    headers = {"X-Forwarded-User": "apx-doctor", "X-Forwarded-Access-Token": SENTINEL}
     try:
-        os.environ.pop("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", None)
-        os.environ["DATABRICKS_APP_NAME"] = "apx-doctor"
-        os.environ["DATABRICKS_HOST"] = "https://apx-doctor.invalid"
-        body = {"id": str(uuid.uuid4()), "session_id": "apx-doctor",
-                "input": [{"role": "user", "content": "apx doctor readiness probe"}]}
-        headers = {"X-Forwarded-User": "apx-doctor", "X-Forwarded-Access-Token": SENTINEL}
-        from . import _durable_agent
-
-        seen: list[tuple[bool, bool]] = []
-
-        def _spy(auth: Any, *, principal: str, forward: bool) -> Any:
-            seen.append((auth._local, forward))
-            return durable_request_headers(auth, principal=principal, forward=forward)
-
         with mock.patch.object(_durable_agent, "durable_request_headers", _spy):
+            # Deployed context: Apps ingress headers are trusted.
+            os.environ.pop("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", None)
+            os.environ["DATABRICKS_APP_NAME"] = "apx-doctor"
+            os.environ["DATABRICKS_HOST"] = "https://apx-doctor.invalid"
+            body = _invocation()
             response = started.client.post("/api/invocations", json=body, headers=headers)
-        if response.status_code != 200:
-            return Check("Request", Status.FAIL, f"/api/invocations {response.status_code}: {response.text[:200]}")
-        saved = started.client.get(f"/api/invocations/{body['id']}", headers=headers)
-        if saved.status_code != 200:
-            return Check("Request", Status.FAIL, f"GET /api/invocations/<id> {saved.status_code}: {saved.text[:200]}")
-        if SENTINEL in response.text or SENTINEL in saved.text:
+            if response.status_code != 200:
+                return Check("Request", Status.FAIL, f"/api/invocations {response.status_code}: {response.text[:200]}")
+            saved = started.client.get(f"/api/invocations/{body['id']}", headers=headers)
+            if saved.status_code != 200:
+                return Check("Request", Status.FAIL, f"GET /api/invocations/<id> {saved.status_code}: {saved.text[:200]}")
+            deployed_seen = list(seen)
+            # Local context: the same headers arrive, but durable must forward nothing.
+            seen.clear()
+            os.environ["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL"] = "true"
+            os.environ.pop("DATABRICKS_APP_NAME", None)
+            local_response = started.client.post("/api/invocations", json=_invocation(), headers=headers)
+            if local_response.status_code != 200:
+                return Check("Request", Status.FAIL,
+                             f"local /api/invocations {local_response.status_code}: {local_response.text[:200]}")
+            local_seen = list(seen)
+        if any(SENTINEL in r.text for r in (response, saved, local_response)):
             return Check("Request", Status.FAIL, "request-user token persisted in the invocation")
         delegates = _delegates(loaded.agent)
         # Without delegates durable has no request-user auth to resolve, so no call is expected.
-        if (delegates or seen) and (not seen or seen[-1] != (False, bool(delegates))):
+        if (delegates or deployed_seen) and (not deployed_seen or deployed_seen[-1] != (False, bool(delegates))):
             return Check("Request", Status.FAIL, "durable did not install the request-user resolver "
-                         f"(observed (local, forward) = {seen[-1] if seen else 'no call'}, "
+                         f"(observed (local, forward) = {deployed_seen[-1] if deployed_seen else 'no call'}, "
                          f"expected (False, {bool(delegates)}))")
+        if any(forward for _, forward in local_seen):
+            return Check("Request", Status.FAIL, "durable would forward credentials from a local context "
+                         f"(observed (local, forward) = {local_seen[-1]})")
+        # The scripted model never calls tools, so drive each delegate with the
+        # forward decisions durable made above: True when deployed, never when local.
         for fn in delegates:
             deployed = RequestAuthContext(token=SENTINEL, principal="apx-doctor", local=False)
             harness.captured.clear()
-            _call_delegate(fn, durable_request_headers(deployed, principal="apx-doctor", forward=True))
+            _call_delegate(fn, durable_request_headers(deployed, principal="apx-doctor", forward=deployed_seen[-1][1]))
             want = {"X-Forwarded-Access-Token": SENTINEL, "Authorization": f"Bearer {SENTINEL}"}
             if harness.captured != [want]:
                 return Check("Request", Status.FAIL, f"delegate {fn.__name__} forwarded {sorted(harness.captured[0]) if harness.captured else 'nothing'}")
             local = RequestAuthContext(token=None, principal="local-developer", local=True)
             harness.captured.clear()
-            _call_delegate(fn, durable_request_headers(local, principal="local-developer", forward=not local._local))
+            _call_delegate(fn, durable_request_headers(local, principal="local-developer", forward=False))
             if harness.captured != [{}]:
                 return Check("Request", Status.FAIL, f"delegate {fn.__name__} forwarded credentials from a local context")
     except BaseException as exc:
         return _fail("Request", exc)
     finally:
         os.environ.pop("DATABRICKS_APP_NAME", None)
+        os.environ["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL"] = "true"
     return Check("Request", Status.OK,
                  f"invocation ok; {len(delegates)} delegate(s) forwards caller token; local forwards none; not persisted")
 
@@ -435,6 +554,21 @@ def _advisory(loaded: _Loaded | None, project: Path) -> list[Check]:
     return [remount, history]
 
 
+def _close_lifespan(stack: contextlib.ExitStack, results: list[Check]) -> list[Check]:
+    """Exit the TestClient (lifespan shutdown); a failing shutdown is a Startup FAIL, not a crash."""
+    try:
+        stack.close()
+    except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        detail = f"lifespan shutdown failed: {type(exc).__name__}: {exc}"
+        prior = next(c for c in results if c.name == "Startup")
+        if prior.status is Status.FAIL:
+            detail = f"{prior.detail}; {detail}"
+        return [c for c in results if c.name not in ("Startup", "Request")] + [Check("Startup", Status.FAIL, detail)]
+    return results
+
+
 def check_durable_readiness(project: Path) -> list[Check]:
     """Run the durable readiness stages for the apx project at ``project``."""
     project = project.resolve()
@@ -450,14 +584,15 @@ def check_durable_readiness(project: Path) -> list[Check]:
                              f"{getattr(loaded.agent, '_name', loaded.config.name)})"))
         results.extend(_stage_compile(loaded))
         if results[-1].status is Status.OK:
-            with contextlib.ExitStack() as stack:
-                started = _stage_startup(loaded, lambda: _entrypoint_surface(project), stack)
-                if isinstance(started, Check):
-                    results.append(started)
-                else:
-                    results.append(Check("Startup", Status.OK,
-                                         "lifespan ok; /readyz runtime_store=ok (in-memory store; Lakebase not exercised offline)" + ("; /mcp live" if started.mcp else "")))
-                    results.append(_stage_request(loaded, started, harness))
+            stack = contextlib.ExitStack()
+            started = _stage_startup(loaded, lambda: _entrypoint_surface(project), stack)
+            if isinstance(started, Check):
+                results.append(started)
+            else:
+                results.append(Check("Startup", Status.OK,
+                                     "lifespan ok; /readyz runtime_store=ok (in-memory store; Lakebase not exercised offline)" + ("; /mcp live" if started.mcp else "")))
+                results.append(_stage_request(loaded, started, harness))
+            results = _close_lifespan(stack, results)
         if len(results) == 4 and all(c.status is Status.OK for c in results):
             results.append(_stage_deploy(loaded))
     return _cascade(results) + _advisory(loaded, project)
