@@ -39,8 +39,9 @@ def test_installed_cli_rollout_preserves_native_contract(
     config = AgentConfig(name="proof", target="durable_agent_server",
                          memory={"type": "managed", "store_name": "memory"},
                          session={"type": "managed", "store_name": "sessions"})
-    plan = compile_authorization_plan(LlmAgent(name="proof"), model=config.model)
-    (tmp_path / "agent.toml").write_text(build_native_manifest(config=config, authorization_plan=plan))
+    agent = LlmAgent(name="proof")
+    plan = compile_authorization_plan(agent, model=config.model)
+    (tmp_path / "agent.toml").write_text(build_native_manifest(config=config, authorization_plan=plan, agent=agent))
     sdk = MagicMock()
     sdk.current_user = "owner@example.com"
     sdk.host = "https://workspace.example.com"

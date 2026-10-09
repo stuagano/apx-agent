@@ -10662,10 +10662,14 @@ def _deploy_apps_impl(
 
     space_client = None
     space_name = app.get("space")
+    # None until a durable target is inspected. Smoke uses this so a composite
+    # does not read back the auto-attached session it never bound.
+    bound_session: str | None = None
     if space_name is not None or (effective_config is not None and effective_config.target == "durable_agent_server"):
         from ._runtime_targets import inspect_target
 
         report = inspect_target(agent, target="durable_agent_server", config=effective_config)
+        bound_session = report.session_store
         # Deploy-time imports have no memory-store credentials. The generated
         # server binds declared memory and fails closed at startup if unreachable.
         declared_memory = effective_config is not None and effective_config.memory is not None
@@ -10811,7 +10815,7 @@ def _deploy_apps_impl(
             if manifest.exists() and not manifest.read_text().startswith(marker):
                 raise click.ClickException("Refusing to overwrite an authored agent.toml in the staged source directory.")
             manifest.write_text(build_native_manifest(
-                config=effective_config, authorization_plan=authorization_plan,
+                config=effective_config, authorization_plan=authorization_plan, agent=agent,
             ))
             log("  compiled native auth contract: " + str(manifest))
 
@@ -11070,14 +11074,12 @@ def _deploy_apps_impl(
                 # turn separately, and read the managed session back when this
                 # deploy knows the store name.
                 log(f"# execution smoke: POST {app_url}/api/invocations")
+                # bound_session is the store inspect_target actually bound.
+                # A composite drops the auto-attached session, so don't read it back.
                 smoke = _check_native_execution(
                     app_url,
                     profile=profile,
-                    session_store=(
-                        effective_config.session.store_name
-                        if effective_config is not None and effective_config.session is not None
-                        else None
-                    ),
+                    session_store=bound_session,
                     agent_name=getattr(agent, "_name", None),
                 )
                 if smoke.completed:
