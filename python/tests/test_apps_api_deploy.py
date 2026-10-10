@@ -227,6 +227,24 @@ def test_stopped_enum_starts_compute_once(harness: dict[str, Any]) -> None:
     assert harness["state"]["calls"].count("apps.get") == 3
 
 
+def test_compute_poll_retries_a_transient_get(harness: dict[str, Any]) -> None:
+    from apx_agent._apps_api_deploy import _wait_compute_active
+
+    answers = iter((TimeoutError("Timed out after 0:00:01"), _app(None)))
+
+    def get_app(name: str) -> SimpleNamespace:
+        harness["state"]["calls"].append("apps.get")
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    harness["ws"].apps.get.side_effect = get_app
+    _wait_compute_active(harness["ws"], "proof", lambda message: None, timeout_seconds=5)
+    assert harness["state"]["calls"].count("apps.get") == 2
+    harness["ws"].apps.start.assert_not_called()
+
+
 def test_composite_skips_session_even_when_declared(harness: dict[str, Any]) -> None:
     leaf = LlmAgent(name="leaf")
     router = KeywordRouter(branches=[("investigate", leaf, ["missing"])], default=leaf)

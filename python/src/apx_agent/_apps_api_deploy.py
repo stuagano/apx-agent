@@ -234,12 +234,26 @@ def _compute_state(status: Any) -> str:
     return value.upper() if isinstance(value, str) else ""
 
 
+def _poll_app(workspace: Any, app_name: str, deadline: float) -> Any:
+    """apps.get uses a ~3s SDK retry budget. A slow poll must not end the wait."""
+    while True:
+        try:
+            return workspace.apps.get(app_name)
+        except Exception as exc:
+            if time.time() >= deadline:
+                raise click.ClickException(
+                    f"Could not read app {app_name!r} while waiting for ACTIVE compute: {exc}. "
+                    "Nothing was deleted; check workspace access and retry."
+                ) from exc
+            time.sleep(min(2.0, max(0.0, deadline - time.time())))
+
+
 def _wait_compute_active(workspace: Any, app_name: str, log: Callable[[str], None], *, timeout_seconds: int = 300) -> None:
     deadline = time.time() + timeout_seconds
     delay = 1.0
     started = False
     while True:
-        app = workspace.apps.get(app_name)
+        app = _poll_app(workspace, app_name, deadline)
         state = _compute_state(app.compute_status)
         if state == "ACTIVE":
             return
