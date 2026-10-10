@@ -227,23 +227,41 @@ def _require_space(workspace: Any, space: str) -> None:
         raise click.ClickException(f"Could not read App Space {space!r}: {exc}.") from exc
 
 
+def _compute_state(status: Any) -> str:
+    """SDK states are ComputeState enums; tests and older payloads are strings."""
+    raw_state = getattr(status, "state", None) if status is not None else None
+    value = getattr(raw_state, "value", raw_state)
+    return value.upper() if isinstance(value, str) else ""
+
+
 def _wait_compute_active(workspace: Any, app_name: str, log: Callable[[str], None], *, timeout_seconds: int = 300) -> None:
     deadline = time.time() + timeout_seconds
     delay = 1.0
+    started = False
     while True:
         app = workspace.apps.get(app_name)
-        status = app.compute_status
-        raw_state = status.state if status is not None else None
-        state = raw_state.upper() if isinstance(raw_state, str) else ""
+        state = _compute_state(app.compute_status)
         if state == "ACTIVE":
             return
         if state == "ERROR":
             raise click.ClickException(f"App {app_name!r} compute entered ERROR. Nothing was deleted; inspect the app and retry.")
-        if time.time() >= deadline:
+        if state == "STOPPED" and not started:
+            # A scaled-to-zero space app stays STOPPED until start. One call;
+            # later polls wait for ACTIVE rather than starting again.
+            try:
+                workspace.apps.start(app_name)
+            except Exception as exc:
+                raise click.ClickException(
+                    f"Could not start app {app_name!r}: {exc}. Nothing was deleted; check Apps permissions and retry."
+                ) from exc
+            started = True
+            log(f"  compute=STOPPED; started {app_name}")
+        elif time.time() >= deadline:
             shown = state if state else "?"
             raise click.ClickException(f"Timed out waiting for app {app_name!r} compute to become ACTIVE (last state {shown}).")
-        shown = state if state else "?"
-        log(f"  compute={shown}; waiting")
+        else:
+            shown = state if state else "?"
+            log(f"  compute={shown}; waiting")
         time.sleep(min(delay, max(0.0, deadline - time.time())))
         delay = min(delay * 1.5, 15.0)
 

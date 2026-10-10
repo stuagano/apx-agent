@@ -204,6 +204,29 @@ def test_placement_mismatch_is_refused(harness: dict[str, Any], existing_space: 
     assert not any(isinstance(item, tuple) and item[0] in {"apps.create", "apps.update"} for item in harness["state"]["calls"])
 
 
+def test_stopped_enum_starts_compute_once(harness: dict[str, Any]) -> None:
+    from enum import Enum
+
+    from apx_agent._apps_api_deploy import _wait_compute_active
+
+    class ComputeState(Enum):
+        STOPPED = "STOPPED"
+        ACTIVE = "ACTIVE"
+
+    states = iter((ComputeState.STOPPED, ComputeState.STOPPED, ComputeState.ACTIVE))
+
+    def get_app(name: str) -> SimpleNamespace:
+        harness["state"]["calls"].append("apps.get")
+        return SimpleNamespace(compute_status=SimpleNamespace(state=next(states)))
+
+    harness["ws"].apps.get.side_effect = get_app
+    harness["ws"].apps.start.side_effect = lambda name: harness["state"]["calls"].append(("apps.start", name))
+    _wait_compute_active(harness["ws"], "proof", lambda message: None, timeout_seconds=5)
+    starts = [item for item in harness["state"]["calls"] if isinstance(item, tuple) and item[0] == "apps.start"]
+    assert starts == [("apps.start", "proof")]
+    assert harness["state"]["calls"].count("apps.get") == 3
+
+
 def test_composite_skips_session_even_when_declared(harness: dict[str, Any]) -> None:
     leaf = LlmAgent(name="leaf")
     router = KeywordRouter(branches=[("investigate", leaf, ["missing"])], default=leaf)
