@@ -67,8 +67,8 @@ space = "app-space"
 target = "apps"
 # App name MUST start with 'mcp-' for Databricks External MCP discovery to
 # pick up /mcp on the deployed Apps URL.
-bundle_name = "mcp-data-triage-agent"
-app_name = "mcp-data-triage-agent"
+bundle_name = "mcp-data-triage-durable"
+app_name = "mcp-data-triage-durable"
 
 [build-system]
 requires = ["hatchling"]
