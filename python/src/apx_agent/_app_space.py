@@ -111,8 +111,16 @@ def validate_space_deployment(
     return client
 
 
-def runtime_store_env(client: Any, *, app_name: str, space: str) -> dict[str, str]:
-    """Bind only a Runtime Store whose app and principal ownership the SDK verifies."""
+def runtime_store_env(
+    client: Any, *, app_name: str, space: str | None, service_principal_id: str | None = None,
+) -> dict[str, str]:
+    """Bind only a Runtime Store whose app and principal ownership the SDK verifies.
+
+    ``space`` is the declared App Space, or ``None`` for a dedicated app. A space
+    deploy reads the raw REST payload and confirms both membership and ``LIQUID``,
+    because the installed SDK deserializes ``LIQUID`` as ``None``. A dedicated
+    deploy does not enter that branch. Both still create or reuse the backend.
+    """
     from databricks_agentbricks.lakebase_runtime_store import get_or_create_backend
     from databricks_agentkit.runtime.store import (
         RUNTIME_STORE_LAKEBASE_BRANCH_ENV, RUNTIME_STORE_DATABASE_ENV,
@@ -121,11 +129,13 @@ def runtime_store_env(client: Any, *, app_name: str, space: str) -> dict[str, st
 
     from urllib.parse import quote
 
-    # The installed SDK enum predates LIQUID and deserializes it as None.
-    app = client.workspace_client.api_client.do("GET", f"/api/2.0/apps/{quote(app_name, safe='')}")
-    if app.get("space") != space or app.get("compute_size") != "LIQUID":
-        raise click.ClickException("App readback did not confirm the declared space and LIQUID compute.")
-    backend = get_or_create_backend(client, app_name, app.get("service_principal_client_id"))
+    principal = service_principal_id
+    if space is not None:
+        app = client.workspace_client.api_client.do("GET", f"/api/2.0/apps/{quote(app_name, safe='')}")
+        if app.get("space") != space or app.get("compute_size") != "LIQUID":
+            raise click.ClickException("App readback did not confirm the declared space and LIQUID compute.")
+        principal = app.get("service_principal_client_id")
+    backend = get_or_create_backend(client, app_name, principal)
     return {
         RUNTIME_STORE_LAKEBASE_BRANCH_ENV: backend.branch,
         RUNTIME_STORE_DATABASE_ENV: backend.database_id,

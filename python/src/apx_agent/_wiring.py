@@ -849,24 +849,25 @@ async def setup_agent(
 
     _mount_protocol_routes(app)
 
-    # End-user chat at /. Ships in every runtime (unlike the dev UI) — it's the
-    # public face of a deployed agent and talks to the live /invocations route.
-    from ._ui_root_chat import build_root_chat_router
+    if not getattr(app.state, "_apx_protocol_only", False):
+        # End-user chat at /. Ships in every runtime (unlike the dev UI) — it's the
+        # public face of a deployed agent and talks to the live /invocations route.
+        from ._ui_root_chat import build_root_chat_router
 
-    app.include_router(build_root_chat_router())
+        app.include_router(build_root_chat_router())
 
-    # Dev UI (optional). The app must still serve if this fails, so the failure
-    # is swallowed — but recorded on app.state for local diagnosis, not hidden.
-    app.state.dev_ui_mount_error = None
-    if os.environ.get("APX_DEV_UI") != "0":
-        try:
-            from ._dev import build_dev_ui_router
+        # Dev UI (optional). The app must still serve if this fails, so the failure
+        # is swallowed — but recorded on app.state for local diagnosis, not hidden.
+        app.state.dev_ui_mount_error = None
+        if os.environ.get("APX_DEV_UI") != "0":
+            try:
+                from ._dev import build_dev_ui_router
 
-            app.include_router(build_dev_ui_router(config.api_prefix))
-            logger.info("Dev UI mounted at /_apx/*")
-        except Exception as e:
-            app.state.dev_ui_mount_error = str(e)
-            logger.info("Dev UI not mounted (%s: %s)", type(e).__name__, e)
+                app.include_router(build_dev_ui_router(config.api_prefix))
+                logger.info("Dev UI mounted at /_apx/*")
+            except Exception as e:
+                app.state.dev_ui_mount_error = str(e)
+                logger.info("Dev UI not mounted (%s: %s)", type(e).__name__, e)
 
     # Auto-register with agent registry (if configured)
     if config.registry:
@@ -1521,3 +1522,59 @@ def mount_mcp_endpoints(
             logger.warning("mount_mcp_endpoints: clean shutdown failed: %s", exc)
 
     _chain_lifespan(app, _apx_mount_startup, _apx_mount_shutdown)
+
+
+def mount_durable_protocol(
+    app: FastAPI,
+    agent: BaseAgent,
+    config: AgentConfig | None = None,
+    pyproject_path: str | None = None,
+) -> None:
+    """Mount ``/mcp``, ``/.well-known/agent.json``, and ``/health`` only.
+
+    The Databricks Apps path uses :func:`mount_mcp_endpoints`, which also
+    mounts the root chat UI and ``/_apx/*``. A native ``DurableAgentServer``
+    already serves invocations, so it gets the discovery routes without those
+    extra surfaces. MCP setup still runs inside the host lifespan, the same
+    way :func:`mount_mcp_endpoints` does. :func:`setup_agent` mounts the
+    protocol routes itself, so this does not mount them a second time.
+    ``_apx_protocol_only`` tells that setup to skip the root chat and dev UI.
+    """
+    app.state._apx_protocol_only = True
+    _state_key = "_apx_durable_protocol_state"
+
+    async def _startup() -> None:
+        ctx = await setup_agent(app, agent, config, pyproject_path=pyproject_path)
+        if ctx is None:
+            logger.info("mount_durable_protocol: no agent config \u2014 /mcp will 503")
+            return
+        try:
+            mcp_lifecycle = await _setup_mcp(app, ctx)
+        except Exception as exc:  # pragma: no cover \u2014 defensive
+            app.state.mcp_mount_error = str(exc)
+            logger.warning(
+                "mount_durable_protocol: MCP setup failed (%s) \u2014 /mcp will 503",
+                exc,
+            )
+            return
+        cm = mcp_lifecycle.__aenter__()
+        try:
+            await cm
+        except Exception as exc:  # pragma: no cover
+            app.state.mcp_mount_error = str(exc)
+            logger.warning("mount_durable_protocol: failed to enter MCP lifecycle: %s", exc)
+            setattr(app.state, _state_key, None)
+            return
+        setattr(app.state, _state_key, mcp_lifecycle)
+        logger.info("mount_durable_protocol: /mcp ready (HTTP + SSE)")
+
+    async def _shutdown() -> None:
+        lifecycle = getattr(app.state, _state_key, None)
+        if lifecycle is None:
+            return
+        try:
+            await lifecycle.__aexit__(None, None, None)
+        except Exception as exc:  # pragma: no cover \u2014 defensive
+            logger.warning("mount_durable_protocol: clean shutdown failed: %s", exc)
+
+    _chain_lifespan(app, _startup, _shutdown)

@@ -81,8 +81,12 @@ def compile_native_app(config: AgentConfig) -> dict[str, Any]:
     return app
 
 
-def stage_native_source(cwd: Path) -> None:
-    """Stage generated project sources; rebuild only an APX-owned staging tree."""
+def stage_native_source(cwd: Path, *, include: tuple[str, ...] = ()) -> None:
+    """Stage generated project sources; rebuild only an APX-owned staging tree.
+
+    ``include`` is an explicit list of extra project-relative paths copied after
+    the standard files. It is empty unless the Apps API declaration sets it.
+    """
     source = cwd / ".build"
     ownership = source / ".apx-native-build"
     inputs = [cwd / name for name in (
@@ -90,7 +94,8 @@ def stage_native_source(cwd: Path) -> None:
         ".apx-agent", ".apx", "skills",
     )]
     inputs.extend(cwd.glob("apx_agent-*.whl"))
-    for path in [source, cwd / "pyproject.toml", cwd / "uv.lock", *inputs]:
+    extra = [_included_path(cwd, rel) for rel in include]
+    for path in [source, cwd / "pyproject.toml", cwd / "uv.lock", *inputs, *extra]:
         if path.is_symlink() or (path.is_dir() and any(child.is_symlink() for child in path.rglob("*"))):
             raise click.ClickException("Refusing symlinked native deployment source: " + str(path))
     if source.exists():
@@ -104,6 +109,29 @@ def stage_native_source(cwd: Path) -> None:
             shutil.copytree(path, source / path.name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".venv"))
         elif path.is_file():
             shutil.copy2(path, source / path.name)
+    for path in extra:
+        _copy_included(cwd, path, source)
+
+
+def _included_path(cwd: Path, rel: str) -> Path:
+    """Resolve one declared include path and refuse escapes or missing files."""
+    if not rel or rel.startswith(("/", "\\")) or ".." in Path(rel).parts:
+        raise click.ClickException(f"deploy.include path must stay inside the project: {rel!r}")
+    path = (cwd / rel).resolve()
+    if not path.is_relative_to(cwd.resolve()):
+        raise click.ClickException(f"deploy.include path must stay inside the project: {rel!r}")
+    if not path.exists():
+        raise click.ClickException(f"deploy.include path does not exist: {rel}")
+    return path
+
+
+def _copy_included(cwd: Path, path: Path, source: Path) -> None:
+    dest = source / path.relative_to(cwd.resolve())
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_dir():
+        shutil.copytree(path, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".venv"))
+    else:
+        shutil.copy2(path, dest)
 
 
 def validate_cli_deployment(

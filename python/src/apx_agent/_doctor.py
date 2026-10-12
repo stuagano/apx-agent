@@ -1052,8 +1052,13 @@ def check_databricks_yml(cwd: Path) -> Check:
         config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
     except (ValueError, OSError):
         config = None  # The agent prerequisite check reports invalid declarations.
-    if config is not None and config.target == "durable_agent_server" and (config.deploy is None or config.deploy.space is None):
-        return Check("databricks.yml", Status.SKIP, "native Agent Bricks deployment does not require a Bundle", None)
+    apps_api = config is not None and config.deploy is not None and config.deploy.backend == "apps_api"
+    if apps_api or (
+        config is not None and config.target == "durable_agent_server"
+        and (config.deploy is None or config.deploy.space is None)
+    ):
+        detail = "Apps API deployment does not require a Bundle" if apps_api else "native Agent Bricks deployment does not require a Bundle"
+        return Check("databricks.yml", Status.SKIP, detail, None)
     return Check(
         "databricks.yml",
         Status.WARN,

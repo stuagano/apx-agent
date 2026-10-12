@@ -63,7 +63,7 @@ def test_native_manifest_uses_existing_authorization_contract(
                          memory={"type": "managed", "store_name": "agent-memory"} if identity == "memory" else None)
     plan = compile_authorization_plan(agent, model=config.model)
     manifest = tmp_path / "agent.toml"
-    manifest.write_text(build_native_manifest(config=config, authorization_plan=plan))
+    manifest.write_text(build_native_manifest(config=config, authorization_plan=plan, agent=agent))
     verify(Artifact(str(manifest), must_contain="[auth.user]"))
     project = AgentProject.load(tmp_path)
     assert project.user_auth.required == (identity != "service")
@@ -293,6 +293,56 @@ def test_composite_agent_compiles_durable_without_managed_session(execution: Any
     assert app is not None
 
 
+def test_explicit_session_store_on_composite_still_requires_llm_agent(execution: Any) -> None:
+    """Dropping the auto-attached session must not hide a real caller mistake."""
+    from apx_agent import AgentConfig, KeywordRouter, compile_agent
+
+    router = KeywordRouter(branches=[("x", execution.agent, ["x"])], default=execution.agent)
+    config = AgentConfig(name="composite", model="test", target="durable_agent_server")
+    with pytest.raises(ValueError, match="session_store currently requires LlmAgent"):
+        compile_agent(
+            router, config=config, model="test", service_ws=execution.ws,
+            session_store="caller-sessions",
+        )
+
+
+@pytest.mark.parametrize("composite", [True, False])
+def test_staged_native_manifest_omits_session_store_for_composites(
+    execution: Any, tmp_path: Path, composite: bool,
+) -> None:
+    """#905: the staged agent.toml is the contract deploy ships. A composite
+    must not declare the auto-attached managed session; an LlmAgent must."""
+    import tomllib
+    from ctk import Artifact, verify
+    from apx_agent import AgentConfig, KeywordRouter
+    from apx_agent._apps_authorization import compile_authorization_plan
+    from apx_agent._durable_agent import build_native_manifest
+
+    config = AgentConfig(
+        name="staged", model="test", target="durable_agent_server",
+        memory={"type": "managed", "store_name": "agent-memory"},
+    )
+    assert config.session is not None and config.session.type == "managed"
+    leaf = execution.agent
+    agent = KeywordRouter(branches=[("x", leaf, ["x"])], default=leaf) if composite else leaf
+    # The router's two edges share one leaf; compile the plan from that leaf so
+    # this test stays about the staged session contract, not name uniqueness.
+    plan = compile_authorization_plan(leaf, model=config.model)
+    staged = tmp_path / ".build"
+    staged.mkdir()
+    manifest = staged / "agent.toml"
+    manifest.write_text(build_native_manifest(config=config, authorization_plan=plan, agent=agent))
+    verify(Artifact(str(manifest), min_bytes=1, must_contain="[auth.user]"))
+    loaded = tomllib.loads(manifest.read_text())
+    assert loaded["memory_store"]["name"] == "agent-memory"
+    if composite:
+        verify(Artifact(str(manifest), must_not_contain="[session_store]"))
+        assert "session_store" not in loaded
+    else:
+        verify(Artifact(str(manifest), must_contain="[session_store]"))
+        assert loaded["session_store"]["name"] == config.session.store_name
+
+
 def test_request_user_auth_never_falls_back_to_app(execution: Any) -> None:
     from apx_agent._durable_agent import compile_durable_handlers
 
@@ -367,6 +417,7 @@ def test_native_http_auth_isolates_same_invocation_and_session_ids(execution: An
         return user
 
     monkeypatch.setattr(RequestAuthContext, "client_for", user_client)
+    _write_native_pyproject(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
@@ -532,6 +583,7 @@ def test_real_durable_server_http_and_readback(execution: Any, monkeypatch: pyte
     from fastapi.testclient import TestClient
     from apx_agent import compile_agent
 
+    _write_native_pyproject(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
@@ -558,14 +610,21 @@ def test_real_durable_server_http_and_readback(execution: Any, monkeypatch: pyte
     assert execution.effects == ["proof"]
 
 
+def _write_native_pyproject(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.apx.agent]\nname = \"proof\"\ntarget = \"durable_agent_server\"\n"
+    )
+
+
 def test_native_server_exposes_invoke_readback_and_replay_only(
-    execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+    execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """The installed SDK has no cancel, disconnect, or reconnect contract."""
     from fastapi.routing import APIRoute
     from fastapi.testclient import TestClient
     from apx_agent import compile_agent
 
+    _write_native_pyproject(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
@@ -586,6 +645,25 @@ def test_native_server_exposes_invoke_readback_and_replay_only(
     with TestClient(app) as client:
         # "cancel" matches the invocation-id read-back route, and that route is GET-only.
         missing = client.post("/api/invocations/cancel")
+        # Protocol routes are mounted by setup_agent during lifespan startup.
+        started = {
+            (method, route.path)
+            for route in app.routes
+            if isinstance(route, APIRoute)
+            for method in route.methods
+        }
+        assert ("GET", "/mcp") in started
+        assert ("POST", "/mcp") in started
+        assert ("GET", "/.well-known/agent.json") in started
+        assert ("GET", "/health") in started
+        assert ("GET", "/") not in started
+        assert ("GET", "/_apx/chat") not in started
+        # This agent has no user-scoped tool, so discovery must not invent one.
+        assert app.auth_policy.requires_user is False
+        assert client.get("/health").status_code == 200
+        card = client.get("/.well-known/agent.json")
+        assert card.status_code == 200
+        assert card.json()["mcpEndpoint"].endswith("/mcp")
     assert missing.status_code == 405
 
 
@@ -608,6 +686,7 @@ def test_native_stream_persists_chunks_and_replays_without_tool_effects(executio
                 yield ChatGenerationChunk(message=AIMessageChunk(content="proof", usage_metadata=reply.usage_metadata))
 
     monkeypatch.setattr("apx_agent._compile._build_chat_databricks", lambda *a, **k: StreamingModel())
+    _write_native_pyproject(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
@@ -1029,6 +1108,7 @@ def test_example_native_app_serves_ui_without_intercepting_invocations(
     from apx_agent import compile_agent
 
     source = Path(__file__).parents[1] / "examples" / example / "app.py"
+    _write_native_pyproject(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
@@ -1255,6 +1335,7 @@ def test_durable_forwarded_token_not_persisted(execution: Any, peer: Any, monkey
 
     from apx_agent import compile_agent
 
+    _write_native_pyproject(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
@@ -1286,8 +1367,31 @@ def test_durable_startup_materializes_sub_agents(execution: Any, monkeypatch: py
 
     from apx_agent import compile_agent
 
+    _write_native_pyproject(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    agent = LlmAgent(name="orchestrator", sub_agents=[_PEER])
+    fetch = AsyncMock(return_value=[])
+    monkeypatch.setattr(agent, "fetch_remote_tools", fetch)
+    app = compile_agent(agent, target="durable_agent_server", model="test", service_ws=execution.ws)
+    with TestClient(app):
+        fetch.assert_awaited_once()
+
+
+def test_durable_startup_materializes_sub_agents_without_config(
+    execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """No pyproject means setup_agent returns before the fetch. Materialize once."""
+    from unittest.mock import AsyncMock
+
+    from fastapi.testclient import TestClient
+
+    from apx_agent import compile_agent
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "missing.toml"))
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
     agent = LlmAgent(name="orchestrator", sub_agents=[_PEER])
     fetch = AsyncMock(return_value=[])

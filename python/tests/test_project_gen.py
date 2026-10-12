@@ -134,8 +134,9 @@ def test_automatic_store_names_survive_project_and_native_manifest_roundtrip(tmp
     loaded = _load_agent_config(pyproject_path=tmp_path / "pyproject.toml")
     assert loaded.memory.store_name == "apx-orders-memory"
     assert loaded.session.store_name == "apx-orders-sessions"
-    plan = compile_authorization_plan(LlmAgent(name="orders"), model=config.model)
-    manifest = tomllib.loads(build_native_manifest(config=loaded, authorization_plan=plan))
+    agent = LlmAgent(name="orders")
+    plan = compile_authorization_plan(agent, model=config.model)
+    manifest = tomllib.loads(build_native_manifest(config=loaded, authorization_plan=plan, agent=agent))
     assert manifest["memory_store"]["name"] == loaded.memory.store_name
     assert manifest["session_store"]["name"] == loaded.session.store_name
 
