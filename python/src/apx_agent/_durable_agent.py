@@ -70,6 +70,28 @@ def build_native_manifest(
     return "\n".join(lines)
 
 
+def _durable_discovery_config() -> AgentConfig | None:
+    """The cwd agent config, validated as the target this compiler just built.
+
+    ``compile_to_durable_agent_server`` does not receive the caller's config, and
+    protocol setup rediscovers ``[tool.apx.agent]`` from the working directory.
+    Doctor and other callers override ``target`` to ``durable_agent_server``
+    without rewriting the file. Reloading that file at its declared target
+    rejects ``deploy.space`` / ``backend='apps_api'``, which are legal only on
+    this target. A missing file stays ``None`` so setup can return early.
+    """
+    from ._inspection import _agent_config_fields, _resolve_agent_pyproject
+    from ._models import AgentConfig
+
+    resolved = _resolve_agent_pyproject(("tool", "apx", "agent"), None)
+    if resolved is None or not resolved.exists():
+        return None
+    fields = _agent_config_fields(resolved, ("tool", "apx", "agent"))
+    if fields is None:
+        return None
+    return AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
+
+
 @dataclass(frozen=True)
 class DurableHandlers:
     invoke: Callable[[Any, Any], Awaitable[dict[str, Any]]]
@@ -247,13 +269,22 @@ def compile_to_durable_agent_server(
         app.recover(handlers.invoke)
 
     from ._resources import _iter_sub_agents
+    from ._wiring import mount_durable_protocol
 
-    if list(_iter_sub_agents(agent)):
+    # Discovery only. DurableAgentServer already owns /api/invocations and its
+    # auth policy; this does not mount the root chat UI or /_apx/*. setup_agent
+    # fetches remote tools when a config exists, so this does not fetch again.
+    # The compiler does not receive the caller's AgentConfig; cwd discovery must
+    # still validate as this target, or a space/apps_api declaration (legal only
+    # with durable_agent_server) fails during lifespan startup.
+    discovery = _durable_discovery_config()
+    mount_durable_protocol(app, agent, config=discovery)
+    # setup_agent fetches remotes when a config exists. With no config it returns
+    # before that fetch, so the card materialization (#436) still has to run.
+    if discovery is None and list(_iter_sub_agents(agent)):
         from ._wiring import _chain_lifespan
 
         async def _materialize_sub_agents() -> None:
-            # Card fetch registers each sub_agents URL as a callable delegate
-            # (#436); the per-invocation graph compile picks the delegates up.
             await agent.fetch_remote_tools()
 
         _chain_lifespan(app, _materialize_sub_agents)

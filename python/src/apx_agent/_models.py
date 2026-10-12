@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationInfo, field_validator, model_validator
@@ -128,6 +129,7 @@ class GatewayConfig(BaseModel):
 
 StoreType = Literal["inmemory", "lakebase", "managed"]
 RuntimeTarget = Literal["responses_agent", "durable_agent_server"]
+DeployBackend = Literal["agentbricks", "apps_api"]
 
 # Default embedding endpoint for the "persistent" knob's Lakebase memory —
 # a Databricks Foundation Model API pay-per-token endpoint present in every
@@ -361,12 +363,55 @@ class DeployConfig(_BackendConfig):
     ``instances`` (fixed count) XOR ``autoscale`` (min/max); each in 1-5. Drives
     the compile/runtime scaled-in-memory guard, the emitted ``APX_DECLARED_INSTANCES``
     env, and native Apps ``compute_min_instances`` / ``compute_max_instances``
-    bundle fields when apx renders ``databricks.yml``."""
+    bundle fields when apx renders ``databricks.yml``.
+
+    ``backend`` selects the durable deploy path. Absent or ``agentbricks`` keeps
+    today's Agent Bricks CLI. ``apps_api`` uses the Apps API path and requires
+    ``entrypoint``. ``include`` lists extra source paths that path copies into
+    the staged tree; it is empty unless declared."""
 
     instances: StrictInt | None = Field(default=None, ge=1, le=5)
     autoscale: AutoscaleConfig | None = None
     space: str | None = None
     """Existing App Space destination; its platform controls instance scaling."""
+    backend: DeployBackend = "agentbricks"
+    entrypoint: str | None = None
+    """Module run as ``python -m <entrypoint>``. Required for ``backend = apps_api``."""
+    include: list[str] = Field(default_factory=list)
+    """Extra project-relative paths staged by the Apps API deploy. Not a glob."""
+    env: dict[str, str] = Field(default_factory=dict)
+    """Literal env merged into the Apps API ``app.yaml``. Empty unless declared."""
+
+    @field_validator("entrypoint")
+    @classmethod
+    def _entrypoint_module(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip() or "${" in value or not re.fullmatch(r"[A-Za-z_][\w.]*", value):
+            raise ValueError("deploy.entrypoint must be a Python module name")
+        return value
+
+    @field_validator("include")
+    @classmethod
+    def _include_paths(cls, value: list[str]) -> list[str]:
+        for path in value:
+            if not path.strip() or path.startswith(("/", "\\")) or ".." in Path(path).parts:
+                raise ValueError(f"deploy.include path must stay inside the project: {path!r}")
+        return value
+
+    @field_validator("env")
+    @classmethod
+    def _env_names(cls, value: dict[str, str]) -> dict[str, str]:
+        owned = {
+            "APX_MODEL", "MLFLOW_TRACKING_URI", "MLFLOW_EXPERIMENT_ID",
+            "AGENT_MEMORY_STORE", "AGENT_SESSION_STORE",
+        }
+        for name in value:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or name in owned or name.startswith(
+                "DATABRICKS_AGENTBRICKS_RUNTIME_STORE_"
+            ):
+                raise ValueError(f"deploy.env cannot set owned or invalid name {name!r}")
+        return value
 
     @model_validator(mode="after")
     def _exclusive(self) -> "DeployConfig":
@@ -379,6 +424,11 @@ class DeployConfig(_BackendConfig):
             raise ValueError(
                 "[tool.apx.agent.deploy] set at most one of 'instances' or 'autoscale', not both"
             )
+        if self.backend == "apps_api":
+            if self.entrypoint is None:
+                raise ValueError("backend='apps_api' requires deploy.entrypoint")
+        elif self.entrypoint is not None or self.include or self.env:
+            raise ValueError("deploy.entrypoint, deploy.include, and deploy.env require backend='apps_api'")
         return self
 
 
@@ -714,8 +764,8 @@ class AgentConfig(BaseModel):
             if self.session is None:
                 self.session = SessionBackendConfig(type="managed")
         else:
-            if self.deploy is not None and self.deploy.space is not None:
-                raise ValueError("deploy.space currently requires target='durable_agent_server'")
+            if self.deploy is not None and (self.deploy.space is not None or self.deploy.backend == "apps_api"):
+                raise ValueError("deploy.space and backend='apps_api' require target='durable_agent_server'")
             if self.session is not None and self.session.type == "managed":
                 raise ValueError("Managed Session Store binding currently requires target='durable_agent_server'")
         # Copy nested models so reusing a backend declaration in another agent

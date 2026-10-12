@@ -7563,11 +7563,52 @@ def _emit_apps_deploy_plan(
         config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    apps_api = config is not None and config.deploy is not None and config.deploy.backend == "apps_api"
     native_direct = (
-        config is not None and config.target == "durable_agent_server"
+        not apps_api
+        and config is not None and config.target == "durable_agent_server"
         and (config.deploy is None or config.deploy.space is None)
         and not (cwd / "databricks.yml").exists()
     )
+    if apps_api:
+        assert config is not None and config.deploy is not None
+        if vars or secret_env_pairs or no_run:
+            raise click.ClickException("Apps API deployment does not support Bundle --var, --secret-env, or --no-run.")
+        app_name = config.name
+        bundle_key = config.name
+        doc: dict[str, Any] = {}
+        placement = f"App Space {config.deploy.space}" if config.deploy.space else "dedicated"
+        experiment = (
+            f"auto-resolve /Users/<current-user>/{app_name}-{bundle_target} at deploy time"
+            if auto_experiment else "none (--no-auto-experiment)"
+        )
+        steps = {
+            "stage": "copy source, agent.toml, app.yaml",
+            "stores": "get-or-create memory; get session only for an effective LlmAgent",
+            "app": f"get-or-create {placement} app (no no_compute)",
+            "grants": "skip app update; check inherited space policy" if config.deploy.space else "create-update user_api_scopes,resources",
+            "runtime": "get-or-create Runtime Store" + (" and confirm LIQUID" if config.deploy.space else ""),
+            "rollout": "databricks sync then apps deploy",
+            "verify": "poll RUNNING, /readyz durable, execution smoke",
+        }
+        if json_output:
+            click.echo(json.dumps({
+                "plan": True, "target": "apps", "target_reason": target_reason, "module": module,
+                "deployment_backend": "apps_api", "app_name": app_name, "entrypoint": config.deploy.entrypoint,
+                "space": config.deploy.space, "experiment": experiment, "steps": steps,
+            }))
+            return
+        click.echo("# DRY RUN — plan only; nothing validated, written, or deployed")
+        click.echo(f"target: apps ({target_reason})")
+        click.echo("deployment: Apps API")
+        click.echo(f"app_name: {app_name}")
+        click.echo(f"entrypoint: {config.deploy.entrypoint}")
+        click.echo(f"placement: {placement}")
+        click.echo(f"experiment: {experiment}")
+        click.echo("steps:")
+        for step, disposition in steps.items():
+            click.echo(f"  {step}: {disposition}")
+        return
     if native_direct:
         from ._agentbricks_deploy import compile_native_app
         assert config is not None
@@ -8497,12 +8538,16 @@ def _stage_build_manifest(
         shutil.copy2(wheel_path, target_wheel)
 
     # Regenerate uv.lock inside .build/ against the rewritten pyproject.
+    # UV_FROZEN is unset only for this call: a frozen environment would make
+    # the regeneration fail or no-op. The rest of the frozen gate stays on.
     lockfile = build_dir / "uv.lock"
     if lockfile.exists():
         lockfile.unlink()
+    lock_env = os.environ.copy()
+    lock_env.pop("UV_FROZEN", None)
     proc = subprocess.run(
         ["uv", "lock"], cwd=str(build_dir),
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, env=lock_env,
     )
     if proc.returncode != 0:
         raise click.ClickException(
@@ -10200,6 +10245,9 @@ def _resolve_project_app_name(
         from ._inspection import _load_agent_config
         from ._agentbricks_deploy import compile_native_app
         config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        # Apps API keeps the declared name. Only the Agent Bricks path adds its prefix.
+        if config is not None and config.deploy is not None and config.deploy.backend == "apps_api":
+            return config.name
         if config is not None and config.target == "durable_agent_server" and (config.deploy is None or config.deploy.space is None):
             return compile_native_app(config)["name"]
     if bundle_target is not None:
@@ -10499,6 +10547,58 @@ def _deploy_apps_impl(
         effective_config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    apps_api = (
+        effective_config is not None and effective_config.deploy is not None
+        and effective_config.deploy.backend == "apps_api"
+    )
+    if apps_api:
+        from ._apps_api_deploy import deploy_apps_api
+
+        assert effective_config is not None and effective_config.deploy is not None
+        _preflight_databricks_cli()
+        _preflight_apps(cwd, native=True, durable=True)
+        app_name = app_name_override or effective_config.name
+        from ._apps_authorization import compile_authorization_plan, read_app_family_permissions
+        from ._agents import LlmAgent
+
+        session_config = effective_config
+        probe_config = effective_config
+        if effective_config.session is not None:
+            probe_config = effective_config.model_copy(update={"session": None})
+        try:
+            workspace = _make_scaffold_workspace_client(profile)
+        except Exception as exc:
+            raise click.ClickException(
+                "Apps API deploy could not connect to the selected workspace. Verify the profile and retry."
+            ) from exc
+        for check in _doctor_mod.check_agent_prerequisites(probe_config, online=False):
+            if check.status is _doctor_mod.Status.FAIL:
+                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+        for check in _doctor_mod.check_agent_prerequisites(probe_config, online=True, ws=workspace, provision_stores=False):
+            log(f"# {check.name}: {check.detail}")
+            if check.status is _doctor_mod.Status.FAIL:
+                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+        agent = _load_finalized_agent(module)
+        if isinstance(agent, LlmAgent):
+            for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=False):
+                if check.name != "Managed sessions" or check.status is not _doctor_mod.Status.FAIL:
+                    continue
+                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+        try:
+            authorization_plan = compile_authorization_plan(agent, model=effective_config.model)
+            family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        return deploy_apps_api(
+            cwd=cwd, agent=agent, config=effective_config, plan=authorization_plan,
+            family_permissions=family_permissions, workspace=workspace, profile=profile,
+            bundle_target=bundle_target, app_name=app_name, auto_experiment=auto_experiment,
+            auto_build_wheel=auto_build_wheel, readyz_gate=readyz_gate, register_uc=register_uc,
+            uc_name=uc_name, module=module, no_run=no_run, vars=vars, env_pairs=env_pairs,
+            secret_env_pairs=secret_env_pairs, app_name_override=app_name_override,
+            json_output=json_output, extra_version_tags=extra_version_tags,
+            poll_timeout_seconds=poll_timeout_seconds, readyz_attempts=readyz_attempts, pin=pin, log=log,
+        )
     native_direct = (
         effective_config is not None and effective_config.target == "durable_agent_server"
         and (effective_config.deploy is None or effective_config.deploy.space is None)
