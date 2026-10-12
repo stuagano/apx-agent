@@ -10,7 +10,7 @@
 #   apx deploy --target apps          # or: databricks bundle deploy + bundle run
 
 bundle:
-  name: mcp-data-triage-durable
+  name: mcp-data-triage-agent
 
 # Root .gitignore excludes ``**/.build/`` — bundle deploy needs to upload
 # .build/ (the staged source tree referenced by source_code_path).
@@ -63,8 +63,8 @@ artifacts:
 
 resources:
   apps:
-    mcp-data-triage-durable:
-      name: mcp-data-triage-durable
+    mcp-data-triage-agent:
+      name: mcp-data-triage-agent
       description: |
         apx-agent data-triage-agent — 6-step SequentialAgent investigation
         pipeline (presence -> lineage -> pipeline -> genie -> code -> synthesis).
