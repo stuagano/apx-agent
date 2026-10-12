@@ -180,7 +180,7 @@ def _ensure_app(workspace: Any, *, app_name: str, space: str | None, description
         return workspace.apps.get(app_name)
     if space is not None:
         _require_space(workspace, space)
-    created = App(name=app_name, description=description, **({"space": space} if space is not None else {}))
+    created = App(name=app_name, description=description, space=space)
     try:
         app = workspace.apps.create(created).result()
     except Exception as exc:
