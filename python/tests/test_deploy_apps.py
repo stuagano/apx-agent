@@ -1520,13 +1520,8 @@ def test_apps_deploy_reconciles_resources_without_legacy_flag(
     assert result.exit_code == 0, result.output
     doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
     resources = doc["resources"]["apps"]["my-app"]["resources"]
-    # Each entry is {"<resource_type>": {"name": ..., ...}}, optionally with a
-    # resource-level ``name``/``description`` handle alongside the typed block.
-    rendered = [
-        next(v for k, v in r.items() if k not in {"name", "description"})
-        for r in resources
-    ]
-    names = [r["name"] for r in rendered]
+    # Each entry is a resource-level ``name`` handle plus one typed block.
+    names = [r["name"] for r in resources]
     assert any("claude-3-5" in n for n in names)
     assert any("abc123" in n for n in names)
     # Identifiers should match what we asked for.
