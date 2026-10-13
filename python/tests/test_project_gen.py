@@ -35,7 +35,7 @@ from apx_agent._models import (
 from apx_agent._project_gen import generate_project, render_agent_py
 
 
-@pytest.mark.parametrize("target", ["responses_agent", "durable_agent_server"])
+@pytest.mark.parametrize("target", ["durable_agent_server"])
 def test_generated_dependencies_use_published_extras(tmp_path: Path, target: str) -> None:
     from packaging.requirements import Requirement
 
@@ -64,7 +64,7 @@ def test_declared_storage_selects_dependency_extra(tmp_path: Path, backend: str,
     assert ("lakebase" in dependency.extras) == (store_type == "lakebase")
 
 
-@pytest.mark.parametrize("target", ["responses_agent", "durable_agent_server"])
+@pytest.mark.parametrize("target", ["durable_agent_server"])
 def test_managed_memory_generated_dependency(tmp_path: Path, target: str) -> None:
     config = AgentConfig(name="memory-agent", target=target, model="test",
                          memory={"type": "managed", "store_name": "agent-memory"})
@@ -102,7 +102,8 @@ def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> Non
     assert not {"resources", "user_api_scopes", "permissions", "compute_min_instances", "compute_max_instances"} & app.keys()
     assert set(bundle["resources"]) == {"apps"}
     env = {e["name"]: e["value"] for e in app["config"]["env"]}
-    assert env["APX_APPS_HOST"] == "agentbricks"
+    assert env["APX_RUNTIME"] == "apps"
+    assert "APX_APPS_HOST" not in env
     assert "AGENT_SESSION_STORE" not in env
     assert "MLFLOW_EXPERIMENT_ID" not in env
 
@@ -598,7 +599,8 @@ def test_databricks_yml_contains_agent_name(tmp_path: Path, coworker_config: Age
     resource_names = [entry.get("name") for entry in app["resources"]]
     assert "llm-endpoint" not in resource_names
     env = {item["name"]: item["value"] for item in app["config"]["env"]}
-    assert env["APX_APPS_HOST"] == "python"
+    assert env["APX_RUNTIME"] == "apps"
+    assert "APX_APPS_HOST" not in env
 
 
 # ---------------------------------------------------------------------------

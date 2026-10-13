@@ -885,7 +885,7 @@ def test_generated_entrypoint_selects_native_target(execution: Any, monkeypatch:
 
     config = AgentConfig(name="target-proof", model="test")
     generate_project(config, tmp_path)
-    entrypoint = tmp_path / "agent_server" / "start_managed.py"
+    entrypoint = tmp_path / "agent_server" / "start_server.py"
     verify(Artifact(str(entrypoint), min_bytes=100, must_contain="compile_agent"))
     source = entrypoint.read_text()
     monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(agent=execution.agent))
@@ -934,7 +934,7 @@ def test_local_run_uses_declared_native_target(execution: Any, monkeypatch: pyte
 
 @pytest.mark.parametrize("target,entrypoint", [
     ("responses_agent", "agent_server.start_server:app"),
-    ("durable_agent_server", "agent_server.start_managed:app"),
+    ("durable_agent_server", "agent_server.start_server:app"),
 ])
 def test_generated_host_uses_declaration_without_environment_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str, entrypoint: str) -> None:
     from apx_agent import AgentConfig
@@ -959,7 +959,7 @@ def test_generated_host_uses_declaration_without_environment_override(monkeypatc
     with pytest.raises(SystemExit) as result:
         namespace["main"]()
     assert result.value.code == 0
-    assert commands[0] == ["uvicorn", entrypoint, "--host", "0.0.0.0", "--port", "8123"]
+    assert commands[0] == ["uvicorn", "agent_server.start_server:app", "--host", "0.0.0.0", "--port", "8000"]
 
 
 def test_packaged_launcher_serves_native_invocations_without_generated_server(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

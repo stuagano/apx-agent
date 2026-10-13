@@ -66,9 +66,21 @@ def test_scaffold_apps_creates_expected_file_tree(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
-            "--template", "data", "--catalog", "samples", "--schema", "tpch",
-            "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--template",
+            "data",
+            "--catalog",
+            "samples",
+            "--schema",
+            "tpch",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -96,9 +108,21 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
-            "--template", "data", "--catalog", "samples", "--schema", "tpch",
-            "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--template",
+            "data",
+            "--catalog",
+            "samples",
+            "--schema",
+            "tpch",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -126,19 +150,15 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(
         "-m",
         "agent_server.start_host",
     ]
-    env = {
-        item["name"]: item["value"]
-        for item in apps["my_agent"]["config"]["env"]
-    }
-    assert env["APX_APPS_HOST"] == "python"
+    env = {item["name"]: item["value"] for item in apps["my_agent"]["config"]["env"]}
+    assert env["APX_RUNTIME"] == "apps"
+    assert "APX_APPS_HOST" not in env
 
     # The scaffold no longer emits an ``experiment`` app-resource (the Apps API
     # rejects it — commit 64e51657). The experiment is bound via the
     # ``MLFLOW_EXPERIMENT_ID`` env entry, asserted below.
     assert "experiments" not in parsed["resources"]
-    assert all(
-        "experiment" not in r for r in apps["my_agent"]["resources"]
-    )
+    assert all("experiment" not in r for r in apps["my_agent"]["resources"])
 
     # Targets are pre-wired for laptop ``dev`` + CI ``staging`` / ``prod``.
     assert "dev" in parsed["targets"]
@@ -165,7 +185,10 @@ def test_scaffold_apps_databricks_yml_is_valid_yaml(
     }
     assert env_entries["APX_AGENT_NAME"] == "my_agent"
     assert env_entries["MLFLOW_EXPERIMENT_ID"] == "${var.mlflow_experiment_id}"
-    assert env_entries["MLFLOW_TRACING_SQL_WAREHOUSE_ID"] == "${var.mlflow_tracing_sql_warehouse_id}"
+    assert (
+        env_entries["MLFLOW_TRACING_SQL_WAREHOUSE_ID"]
+        == "${var.mlflow_tracing_sql_warehouse_id}"
+    )
     assert env_entries["APX_GIT_SHA"] == "${var.apx_git_sha}"
     assert env_entries["APX_MODEL_VERSION"] == "${var.apx_model_version}"
 
@@ -175,7 +198,11 @@ def test_scaffold_apps_can_declare_trace_warehouse_default(tmp_path: Path) -> No
 
     target = tmp_path / "my_agent"
     cli._scaffold_apps(
-        target, "my_agent", False, "samples", "tpch",
+        target,
+        "my_agent",
+        False,
+        "samples",
+        "tpch",
         trace_warehouse_default="wh123",
     )
 
@@ -222,9 +249,21 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
-            "--template", "data", "--catalog", "samples", "--schema", "tpch",
-            "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--template",
+            "data",
+            "--catalog",
+            "samples",
+            "--schema",
+            "tpch",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -235,6 +274,7 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
     assert parsed["project"]["name"] == "my_agent"
     deps = parsed["project"]["dependencies"]
     from packaging.requirements import Requirement
+
     requirements = [Requirement(dep) for dep in deps]
     apx = next(dep for dep in requirements if dep.name == "apx-agent")
     assert apx.extras == {"eval", "lakebase"}
@@ -262,8 +302,17 @@ def test_scaffold_apps_base_omits_uc_registration_config(tmp_path: Path) -> None
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
-            "--template", "base", "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--template",
+            "base",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -286,9 +335,21 @@ def test_scaffold_apps_defaults_to_lakebase_session(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
-            "--template", "data", "--catalog", "samples", "--schema", "tpch",
-            "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--template",
+            "data",
+            "--catalog",
+            "samples",
+            "--schema",
+            "tpch",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -307,8 +368,18 @@ def test_scaffold_apps_no_lakebase_omits_session_block(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--dir", str(tmp_path),
-         "--no-lakebase"],
+        [
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--dir",
+            str(tmp_path),
+            "--no-lakebase",
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -324,9 +395,21 @@ def test_scaffold_apps_echoes_lakebase_guidance(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
-            "--template", "data", "--catalog", "samples", "--schema", "tpch",
-            "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--template",
+            "data",
+            "--catalog",
+            "samples",
+            "--schema",
+            "tpch",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -342,8 +425,18 @@ def test_scaffold_apps_no_lakebase_skips_guidance(
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--dir", str(tmp_path),
-         "--no-lakebase"],
+        [
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--dir",
+            str(tmp_path),
+            "--no-lakebase",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert "durable on Lakebase" not in result.output
@@ -369,9 +462,21 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
-            "--template", "data", "--catalog", "samples", "--schema", "tpch",
-            "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--template",
+            "data",
+            "--catalog",
+            "samples",
+            "--schema",
+            "tpch",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -388,12 +493,15 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     # Framework boilerplate consumes the top-level agent via ``from agent import agent``.
     assert "from agent import agent" in start_src
     # And wires the standard compile + register + MCP-mount stack.
-    assert "compile_to_responses_agent" in start_src
+    assert "DurableAgentServer" in start_src
+    assert "compile_to_responses_agent" not in start_src
     assert "mount_mcp_endpoints" in start_src
-    start_host_src = (tmp_path / "my_agent" / "agent_server" / "start_host.py").read_text()
+    start_host_src = (
+        tmp_path / "my_agent" / "agent_server" / "start_host.py"
+    ).read_text()
     ast.parse(start_host_src)
-    assert "APX_APPS_HOST" in start_host_src
-    assert 'os.environ.get("APX_APPS_HOST", default_host)' in start_host_src
+    assert "APX_APPS_HOST" not in start_host_src
+    assert "agent_server.start_server:app" in start_host_src
     assert "agent_server.start_server:app" in start_host_src
     assert "apx_appkit_host" not in start_host_src
 
@@ -410,18 +518,35 @@ def test_scaffold_apps_writes_apx_timeline_sql(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps",
-            "--template", "data", "--catalog", "samples", "--schema", "tpch",
-            "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--template",
+            "data",
+            "--catalog",
+            "samples",
+            "--schema",
+            "tpch",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
 
-    sql = (tmp_path / "my_agent" / ".apx" / "sql" / "apx_agent_timeline.sql").read_text()
+    sql = (
+        tmp_path / "my_agent" / ".apx" / "sql" / "apx_agent_timeline.sql"
+    ).read_text()
     assert "CREATE TABLE IF NOT EXISTS `samples`.`tpch`.`apx_agent_events`" in sql
     assert "CREATE OR REPLACE VIEW `samples`.`tpch`.`apx_agent_timeline`" in sql
     assert "`samples`.`tpch`.`apx_my_agent_trace_unified`" in sql
-    assert "COALESCE(CAST(u.tags['apx.session.id'] AS STRING), span.attributes:['apx.session.id']::STRING)" in sql
+    assert (
+        "COALESCE(CAST(u.tags['apx.session.id'] AS STRING), span.attributes:['apx.session.id']::STRING)"
+        in sql
+    )
     assert "span.attributes:['apx.tool.name']::STRING" in sql
     assert "UNION ALL" in sql
 
@@ -447,7 +572,12 @@ def test_scaffold_default_target_is_apps(tmp_path: Path) -> None:
 
     assert not (base / "databricks.yml").exists()
     assert not (base / "agent_server").exists()
-    assert tomllib.loads((base / "pyproject.toml").read_text())["tool"]["apx"]["agent"]["target"] == "durable_agent_server"
+    assert (
+        tomllib.loads((base / "pyproject.toml").read_text())["tool"]["apx"]["agent"][
+            "target"
+        ]
+        == "durable_agent_server"
+    )
 
     # The flat model-serving app.py must NOT appear by default anymore.
     assert not (base / "app.py").exists()
@@ -468,7 +598,18 @@ def test_scaffold_apps_force_overwrites_existing_dir(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--dir", str(tmp_path), "--force"],
+        [
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--dir",
+            str(tmp_path),
+            "--force",
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -488,7 +629,17 @@ def test_scaffold_apps_gitignore_includes_sidecar(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--dir", str(tmp_path)],
+        [
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--dir",
+            str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
     gitignore = (tmp_path / "my_agent" / ".gitignore").read_text()
@@ -513,7 +664,8 @@ def _make_fake_framework_checkout(root: Path) -> Path:
 
 
 def test_scaffold_at_framework_repo_root_redirects_into_python(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Running ``apx-agent scaffold X`` from the framework repo root auto-redirects
     into ``python/X/`` so the editable ``path = ".."`` install resolves."""
@@ -522,7 +674,9 @@ def test_scaffold_at_framework_repo_root_redirects_into_python(
 
     monkeypatch.chdir(framework_root)
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "scaffold", "--runtime", "responses_agent", "myagent"])
+    result = runner.invoke(
+        main, ["agents", "scaffold", "--runtime", "responses_agent", "myagent"]
+    )
 
     assert result.exit_code == 0, result.output
     assert (framework_python / "myagent" / "pyproject.toml").exists()
@@ -531,7 +685,8 @@ def test_scaffold_at_framework_repo_root_redirects_into_python(
 
 
 def test_scaffold_inside_python_does_not_redirect(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The redirect must NOT fire when the user is already in the framework's
     ``python/`` dir — the existing layout is correct and shouldn't move."""
@@ -540,7 +695,9 @@ def test_scaffold_inside_python_does_not_redirect(
 
     monkeypatch.chdir(framework_python)
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "scaffold", "--runtime", "responses_agent", "myagent"])
+    result = runner.invoke(
+        main, ["agents", "scaffold", "--runtime", "responses_agent", "myagent"]
+    )
 
     assert result.exit_code == 0, result.output
     assert (framework_python / "myagent" / "pyproject.toml").exists()
@@ -548,7 +705,8 @@ def test_scaffold_inside_python_does_not_redirect(
 
 
 def test_scaffold_here_overrides_auto_redirect(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``--here`` opts out of the redirect; the scaffold lands at cwd and
     its pyproject uses a git+https install instead of the editable path."""
@@ -557,7 +715,10 @@ def test_scaffold_here_overrides_auto_redirect(
 
     monkeypatch.chdir(framework_root)
     runner = CliRunner()
-    result = runner.invoke(main, ["agents", "scaffold", "--runtime", "responses_agent", "myagent", "--here"])
+    result = runner.invoke(
+        main,
+        ["agents", "scaffold", "--runtime", "responses_agent", "myagent", "--here"],
+    )
 
     assert result.exit_code == 0, result.output
     assert (framework_root / "myagent" / "pyproject.toml").exists()
@@ -580,10 +741,17 @@ def test_scaffold_coworker_with_persona_baked_into_agent(tmp_path: Path) -> None
         result = runner.invoke(
             main,
             [
-                "agents", "scaffold", "--runtime", "responses_agent", "my_coworker",
-                "--dir", str(tmp_path),
-                "--target", "apps",
-                "--template", "coworker",
+                "agents",
+                "scaffold",
+                "--runtime",
+                "responses_agent",
+                "my_coworker",
+                "--dir",
+                str(tmp_path),
+                "--target",
+                "apps",
+                "--template",
+                "coworker",
                 "--interactive",
             ],
             # catalog → "main", schema → "sales", persona → role text, join_key → blank, objective → blank, instructions → blank
@@ -604,10 +772,17 @@ def test_scaffold_coworker_with_persona_and_objective(tmp_path: Path) -> None:
         result = runner.invoke(
             main,
             [
-                "agents", "scaffold", "--runtime", "responses_agent", "fraud_agent",
-                "--dir", str(tmp_path),
-                "--target", "apps",
-                "--template", "coworker",
+                "agents",
+                "scaffold",
+                "--runtime",
+                "responses_agent",
+                "fraud_agent",
+                "--dir",
+                str(tmp_path),
+                "--target",
+                "apps",
+                "--template",
+                "coworker",
                 "--interactive",
             ],
             # catalog, schema, persona, join_key, objective, instructions
@@ -631,11 +806,21 @@ def test_scaffold_coworker_without_persona_omits_kwarg(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_coworker2",
-            "--dir", str(tmp_path),
-            "--target", "apps",
-            "--template", "coworker",
-            "--catalog", "main", "--schema", "sales",
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_coworker2",
+            "--dir",
+            str(tmp_path),
+            "--target",
+            "apps",
+            "--template",
+            "coworker",
+            "--catalog",
+            "main",
+            "--schema",
+            "sales",
             "--no-interactive",
         ],
         catch_exceptions=False,
@@ -647,7 +832,9 @@ def test_scaffold_coworker_without_persona_omits_kwarg(tmp_path: Path) -> None:
     assert "objective=" not in agent_src
 
 
-def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path) -> None:
+def test_scaffold_interactive_prompts_for_catalog_schema_persona(
+    tmp_path: Path,
+) -> None:
     """``--interactive`` prompts for catalog, schema, and persona for coworker.
 
     Without a real workspace (gated to None), catalog list is empty → falls to
@@ -659,10 +846,17 @@ def test_scaffold_interactive_prompts_for_catalog_schema_persona(tmp_path: Path)
         result = runner.invoke(
             main,
             [
-                "agents", "scaffold", "--runtime", "responses_agent", "interactive_agent",
-                "--dir", str(tmp_path),
-                "--target", "apps",
-                "--template", "coworker",
+                "agents",
+                "scaffold",
+                "--runtime",
+                "responses_agent",
+                "interactive_agent",
+                "--dir",
+                str(tmp_path),
+                "--target",
+                "apps",
+                "--template",
+                "coworker",
                 "--interactive",
             ],
             # catalog, schema, persona, join_key (blank), objective (blank), instructions (blank)
@@ -681,9 +875,15 @@ def test_scaffold_no_interactive_skips_prompts(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "silent_agent",
-            "--dir", str(tmp_path),
-            "--target", "apps",
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "silent_agent",
+            "--dir",
+            str(tmp_path),
+            "--target",
+            "apps",
             "--no-interactive",
         ],
         catch_exceptions=False,
@@ -699,15 +899,27 @@ def test_start_server_loads_agent_config_for_session(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "--runtime", "responses_agent", "sess_agent", "--target", "apps", "--dir", str(tmp_path)],
+        [
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "sess_agent",
+            "--target",
+            "apps",
+            "--dir",
+            str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
 
-    start_server = (tmp_path / "sess_agent" / "agent_server" / "start_server.py").read_text()
-    # The config must be loaded from pyproject.toml and passed to resolve_conversation_store.
-    assert "_load_agent_config" in start_server
-    assert "resolve_conversation_store(_agent_config" in start_server
-    assert 'os.environ.get("APX_AGENT_NAME")' in start_server
+    start_src = (
+        tmp_path / "sess_agent" / "agent_server" / "start_server.py"
+    ).read_text()
+    assert "_load_agent_config" in start_src
+    assert "DurableAgentServer" in start_src
+    assert 'target="durable_agent_server"' in start_src
+    assert "compile_to_responses_agent" not in start_src
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +944,17 @@ def test_scaffold_explicit_target_non_tty_writes_apps_bundle(
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["agents", "scaffold", "--runtime", "responses_agent", "np_agent", "--target", "apps", "--dir", str(tmp_path)],
+        [
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "np_agent",
+            "--target",
+            "apps",
+            "--dir",
+            str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -757,7 +979,17 @@ def test_scaffold_explicit_target_non_tty_writes_model_serving_layout(
 
     result = CliRunner().invoke(
         main,
-        ["agents", "scaffold", "--runtime", "responses_agent", "flat_agent", "--target", "model-serving", "--dir", str(tmp_path)],
+        [
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "flat_agent",
+            "--target",
+            "model-serving",
+            "--dir",
+            str(tmp_path),
+        ],
     )
     assert result.exit_code == 0, result.output
     base = tmp_path / "flat_agent"
@@ -785,7 +1017,9 @@ def test_resolve_data_source_explicit_probes_first_table(
 
     monkeypatch.setattr(cli, "_probe_first_table", lambda c, s, p: "trips")
     assert cli._resolve_scaffold_data_source("data", "main", "sales", None) == (
-        "main", "sales", "trips",
+        "main",
+        "sales",
+        "trips",
     )
 
 
@@ -805,7 +1039,11 @@ def test_probe_first_table_skips_observability_tables(
                 type("Table", (), {"name": "customers"})(),
             ]
 
-    monkeypatch.setattr(cli, "_make_scaffold_workspace_client", lambda profile: type("WS", (), {"tables": Tables})())
+    monkeypatch.setattr(
+        cli,
+        "_make_scaffold_workspace_client",
+        lambda profile: type("WS", (), {"tables": Tables})(),
+    )
 
     assert cli._probe_first_table("main", "sales") == "customers"
 
@@ -817,7 +1055,9 @@ def test_resolve_data_source_auto_detects_when_unspecified(
 
     monkeypatch.setattr(cli, "_discover_default_data", lambda p: ("cat", "sch", "tbl"))
     assert cli._resolve_scaffold_data_source("data", None, None, None) == (
-        "cat", "sch", "tbl",
+        "cat",
+        "sch",
+        "tbl",
     )
 
 
@@ -828,7 +1068,9 @@ def test_resolve_data_source_falls_back_to_samples_when_unreachable(
 
     monkeypatch.setattr(cli, "_discover_default_data", lambda p: None)
     assert cli._resolve_scaffold_data_source("data", None, None, None) == (
-        "samples", "nyctaxi", None,
+        "samples",
+        "nyctaxi",
+        None,
     )
 
 
@@ -837,8 +1079,17 @@ def test_scaffold_apps_ci_none_skips_workflows(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--ci", "none",
-            "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--ci",
+            "none",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -853,8 +1104,17 @@ def test_scaffold_apps_ci_gitlab(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "agents", "scaffold", "--runtime", "responses_agent", "my_agent", "--target", "apps", "--ci", "gitlab",
-            "--dir", str(tmp_path),
+            "agents",
+            "scaffold",
+            "--runtime",
+            "responses_agent",
+            "my_agent",
+            "--target",
+            "apps",
+            "--ci",
+            "gitlab",
+            "--dir",
+            str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
