@@ -11,6 +11,9 @@
 > This page tracks that contract (store semantics, `actor_id` scoping, BM25
 > retrieval, forking) and adds the APX `[tool.apx.agent]` declaration, the
 > `ConversationStore` / `MemoryStore` seams, and the local/Lakebase backends.
+> The operation-by-operation map — including what the managed Session Store
+> does **not** cover (transcript search, `session_state`, approval resume) —
+> is [design/managed-state-contract-map.md](../design/managed-state-contract-map.md).
 
 ---
 
@@ -275,6 +278,27 @@ The store name is a workspace display name, not a UC three-part name. Legacy
 names are rejected; historical entries require an explicit export/import with a
 reviewed scope-to-actor mapping. Direct Python construction takes
 `ManagedMemoryStore(ws=workspace_client, store_name="agent-memory", scope_resolver=...)`.
+
+### Migrating Lakebase memory
+
+`inventory_memory_table` and `import_memories` in `apx_agent._state_migration`
+cover one table at a time. Inventory is a `COUNT` plus the distinct
+`principal_id` and `namespace` values; it does not write. Import copies rows
+through `ManagedMemoryStore.add` and never deletes or updates the source table.
+
+Managed memory keeps content and an actor id. It drops tags, importance,
+embeddings, and metadata, so each copy appends `[source-id:<lakebase id>]` to
+the content. A second run lists the destination, recognizes that marker, and
+skips the row. A source `principal_id` with a blank mapped actor is counted as
+unmapped and not written; a principal absent from the map is unmapped only
+when the call scans every principal. There is no cutover and no
+rollback of source data: keep the Lakebase table until a separate decision
+authorizes deletion.
+
+Example stores, conversation history, and LangGraph checkpoints are not
+imported by this helper. A managed session can receive ordered items through
+the AgentKit session store, but a checkpoint thread is not a conversation
+transcript, and copying one into the other is a different migration.
 
 A managed memory entry is a free-form `content` string plus a short
 `description` used for retrieval, keyed by `actor_id` (whose memory it is),

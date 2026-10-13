@@ -44,6 +44,7 @@
 
 - [running/sessions-and-memory.md](running/sessions-and-memory.md) — session stores, memory stores, `MemoryStore`, `ExampleStore`
 - [running/lakebase-recipe.md](running/lakebase-recipe.md) — persistent pgvector memory on Lakebase
+- [design/managed-state-contract-map.md](design/managed-state-contract-map.md) — **managed state map** (#854): AgentKit vs ConversationStore vs checkpointer vs MemoryStore, actor isolation, and what is still unknown without a live profile
 
 ## Guardrails and safety
 

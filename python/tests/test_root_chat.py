@@ -1,13 +1,13 @@
 """End-user chat at ``/`` — the public face of a deployed agent.
 
 Guards two things:
-  1. The page is self-contained (markdown libs inlined, talks to /responses) —
+  1. The page is self-contained (markdown libs inlined, talks to /invocations) —
      it does not depend on /_apx/* assets.
   2. It ships in the Apps runtime alongside the Dev UI (``/_apx/*``), so a
      deployed agent always has a simple chat at ``/`` even if someone deep-links
      past the Dev shell.
 
-It targets /responses (ResponsesAgent {input}->{output}) deliberately: that
+It targets /invocations (ResponsesAgent {input}->{output}) deliberately: that
 contract is identical on both serve paths, whereas /invocations is ChatAgent
 {messages} under create_app but ResponsesAgent {input} under Apps.
 """
@@ -26,10 +26,10 @@ from .conftest import get_weather
 
 def test_page_is_self_contained():
     html = render_root_chat()
-    # Talks to /responses (ResponsesAgent, works on both serve paths), not the
-    # ambiguous /invocations, and never reaches for /_apx/* dev assets.
-    assert "/responses" in html
-    assert "/invocations" not in html
+    # Posts {input} to the one chat route. The page may mention the
+    # ChatAgent messages contract in a comment; the fetch is what matters.
+    assert "fetch('/invocations'" in html
+    assert "fetch('/responses'" not in html
     assert "/_apx/" not in html
     # Markdown libs inlined (not <script src=...>) so the page needs no assets.
     assert "marked" in html and "DOMPurify" in html
@@ -59,7 +59,7 @@ async def test_root_serves_chat_html():
         r = await ac.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "/responses" in r.text
+    assert "/invocations" in r.text
     # No agent_context on a bare app → falls back to the generic title.
     assert "<title>Agent</title>" in r.text
 

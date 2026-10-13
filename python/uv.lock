@@ -276,7 +276,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "databricks-agentbricks", marker = "extra == 'agentbricks'", specifier = ">=0.4.0,<0.5" },
+    { name = "databricks-agentbricks", marker = "extra == 'agentbricks'", specifier = ">=0.5.0,<0.6" },
     { name = "databricks-langchain", specifier = ">=0.3.0" },
     { name = "databricks-openai", specifier = ">=0.15.0" },
     { name = "databricks-sdk", specifier = ">=0.74.0" },
@@ -904,7 +904,7 @@ wheels = [
 
 [[package]]
 name = "databricks-agentbricks"
-version = "0.4.0"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple/" }
 dependencies = [
     { name = "click" },
@@ -921,9 +921,9 @@ dependencies = [
     { name = "tomlkit" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/76/bb590a1f66748bf58919eac8846bf080e86a42cdb35f2b73e12f2f398a96/databricks_agentbricks-0.4.0.tar.gz", hash = "sha256:3c3049f867f9ee731fcadea45608b989b0fa95f06b655b0e0cd0bdfc567f0bee", size = 366360, upload-time = "2026-10-02T23:30:29.618Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2a/e8/7fe217186f2459b6d7f57cfbcc3b0df0c8198f6972ea0eb86fdccb4549e8/databricks_agentbricks-0.5.0.tar.gz", hash = "sha256:04e51c07d3fd57a209c49c81c1776626fdbdb58329052abdeb3d95c7f7f3bd4e", size = 483761, upload-time = "2026-10-09T21:02:24.491Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/0b/b15355fb897ec00bcb5e5130ae7f55bf4a86df96e6321c89b8913607e127/databricks_agentbricks-0.4.0-py3-none-any.whl", hash = "sha256:b70e6eb6ebc730d13863aa7f00e9e252fff86a957e5241eb1e66f5369e34244b", size = 422412, upload-time = "2026-10-02T23:30:28.238Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/3d/a2c4d836ea9d37637a13f1d87e81b9f79d350f820ca5944b85438717660b/databricks_agentbricks-0.5.0-py3-none-any.whl", hash = "sha256:4d251c4a6c913e3666985a76945415ccc9717c9f45cf9a34f0c5e9f961bf8ed3", size = 551930, upload-time = "2026-10-09T21:02:23.029Z" },
 ]
 
 [[package]]

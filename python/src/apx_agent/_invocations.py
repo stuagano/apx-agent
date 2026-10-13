@@ -2,9 +2,8 @@
 
 This bridges apx-agent's declarative DSL to the **supported** Mosaic AI agent
 serving protocol. The ``/invocations`` endpoint is what AI Playground, the
-Review App, and Model Serving expect. Mounting it makes any apx-agent app a
-first-class Mosaic AI Agent at the wire level — no need to log to MLflow
-first, no detour through Model Serving.
+Review App, Model Serving, the dev UI, and remote peers use. There is no
+separate ``/responses`` route.
 
 Wire shape (the contract):
 
@@ -125,7 +124,8 @@ def _last_user_text(input_items: Any, max_len: int = 120) -> str:
                 break
             if isinstance(content, list):
                 parts = [
-                    p.get("text", "") for p in content
+                    p.get("text", "")
+                    for p in content
                     if isinstance(p, dict) and p.get("type") == "text"
                 ]
                 text = " ".join(parts).strip()
@@ -245,8 +245,11 @@ def mount_invocations_route(
     # agent_id binds created conversations to the name agent-filtered readers
     # (dev-UI History panel) look up.
     chat_agent = chat_agent_for(
-        agent, model=config.model, conversation_store=conversation_store,
-        agent_id=config.name, checkpointer=checkpointer,
+        agent,
+        model=config.model,
+        conversation_store=conversation_store,
+        agent_id=config.name,
+        checkpointer=checkpointer,
     )
 
     @app.post("/invocations", include_in_schema=False)
@@ -267,9 +270,9 @@ def mount_invocations_route(
                 status_code=422,
                 detail=(
                     "Request body must carry either 'messages' (MLflow "
-                    "ChatAgent shape: {\"messages\": [{\"role\": ..., "
+                    'ChatAgent shape: {"messages": [{"role": ..., '
                     "\"content\": ...}]}) or 'input' (MLflow ResponsesAgent "
-                    "shape: {\"input\": [...]}); got neither."
+                    'shape: {"input": [...]}); got neither.'
                 ),
             )
         if messages_present:
@@ -299,9 +302,7 @@ def mount_invocations_route(
         # Identity keys: Apps proxy wins when present (#615).
         from ._obo import apply_obo_to_custom_inputs, extract_obo_headers
 
-        obo = extract_obo_headers(
-            custom_inputs=custom_inputs, headers=request.headers
-        )
+        obo = extract_obo_headers(custom_inputs=custom_inputs, headers=request.headers)
         apply_obo_to_custom_inputs(custom_inputs, obo)
 
         try:
@@ -329,7 +330,12 @@ def mount_invocations_route(
                     name="POST /invocations",
                     attributes=span_attributes,
                     stream_factory=lambda: make_async_stream(
-                        lambda _req: _stream_chunks(chat_agent, messages, custom_inputs)
+                        lambda _req: _stream_chunks(
+                            chat_agent,
+                            messages,
+                            custom_inputs,
+                            responses_shape=not messages_present,
+                        )
                     )(None),
                 ),
                 media_type="text/event-stream",
@@ -357,22 +363,67 @@ def mount_invocations_route(
     return True
 
 
+def _responses_stream_event(chunk: Any) -> dict[str, Any]:
+    """One ChatAgentChunk as the Responses stream event the UIs already parse."""
+    delta = chunk.delta
+    role = delta.role or "assistant"
+    content = delta.content or ""
+    tool_calls = delta.tool_calls or []
+    if role == "tool":
+        return {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call_output",
+                "call_id": delta.tool_call_id or delta.id or "",
+                "name": delta.name,
+                "output": content,
+            },
+        }
+    if tool_calls:
+        call = tool_calls[0]
+        fn = call.get("function", call) if isinstance(call, dict) else {}
+        return {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": call.get("id", "") if isinstance(call, dict) else "",
+                "name": fn.get("name", ""),
+                "arguments": fn.get("arguments", ""),
+            },
+        }
+    if content:
+        return {"type": "response.output_text.delta", "delta": content}
+    return {
+        "type": "response.output_item.done",
+        "item": {"type": "message", "content": []},
+    }
+
+
 def _stream_chunks(
     chat_agent: Any,
     messages: list,
     custom_inputs: dict[str, Any],
+    *,
+    responses_shape: bool = False,
 ):
-    """SSE generator — yields one ``data: <ChatAgentChunk JSON>`` per chunk.
+    """SSE generator — one ``data:`` frame per chunk.
+
+    ChatAgent callers get ``ChatAgentChunk`` JSON. Callers that posted the
+    Responses ``input`` shape get the Responses stream events the dev UI and
+    root chat already parse (``response.output_text.delta``, tool items).
 
     A **sync** generator: it runs to completion on one worker thread (via
     :func:`~apx_agent._async_bridge.make_async_stream`) so ``predict_stream``
     never blocks the event loop and the OTel span context stays on one thread.
-    Each chunk is its own SSE event terminated by a blank line.
     """
     custom = custom_inputs or None
     try:
         for chunk in chat_agent.predict_stream(messages, custom_inputs=custom):
-            payload = chunk.model_dump_json()
+            payload = (
+                json.dumps(_responses_stream_event(chunk))
+                if responses_shape
+                else chunk.model_dump_json()
+            )
             yield f"data: {payload}\n\n"
     except Exception as exc:
         logger.exception("Error during /invocations stream")
@@ -380,143 +431,4 @@ def _stream_chunks(
         # the error as a ``data:`` frame rather than a named ``event: error``
         # frame, so consumers parsing only ``data:`` lines still observe it.
         err = json.dumps({"error": type(exc).__name__, "message": str(exc)})
-        yield f"data: {err}\n\n"
-
-
-def mount_responses_route(
-    app: FastAPI,
-    agent: BaseAgent,
-    config: "AgentConfig",
-    conversation_store: Any | None = None,
-    checkpointer: Any | None = None,
-) -> bool:
-    """Mount POST ``/responses`` (MLflow ResponsesAgent protocol) onto ``app``.
-
-    This is the ResponsesAgent wire shape — ``{"input": [...], "stream": bool}``
-    — used by AI Playground and the Apps runtime. Adding it to the model-serving
-    target (``create_app``) closes the gap that broke the dev-UI playground for
-    projects that deploy to model serving.
-
-    Args:
-        app: The FastAPI app to mount the route onto.
-        agent: The apx-agent ``BaseAgent`` to serve.
-        config: The ``AgentConfig`` — ``config.model`` is the serving endpoint.
-        conversation_store: Optional ``ConversationStore`` for multi-turn memory.
-        checkpointer: Optional durable LangGraph checkpointer (e.g. a Lakebase
-            ``PostgresSaver``) so a pending mid-turn approval survives a restart;
-            ``None`` falls back to an in-process ``InMemorySaver``.
-
-    Returns:
-        ``True`` if the route was mounted; ``False`` if the ``eval`` extra
-        (mlflow >= 3.x) is missing or compilation fails (warning is logged).
-    """
-    try:
-        from ._responses_agent import compile_to_responses_agent
-    except (ImportError, NotImplementedError) as exc:
-        logger.warning(
-            "Cannot mount /responses: %s. "
-            "Install apx-agent[eval] to enable the ResponsesAgent route.",
-            exc,
-        )
-        return False
-
-    try:
-        _invoke_fn, _stream_fn = compile_to_responses_agent(
-            agent,
-            model=config.model,
-            conversation_store=conversation_store,
-            executor=getattr(config, "executor", "langgraph"),
-            # Bind the SAME name the dev-UI History panel filters by, or
-            # conversations created here stay invisible to it.
-            agent_id=config.name,
-            checkpointer=checkpointer,
-        )
-    except Exception as exc:
-        logger.warning("Cannot compile ResponsesAgent for /responses: %s", exc)
-        return False
-
-    @app.post("/responses", include_in_schema=False)
-    async def responses_endpoint(request: Request) -> Any:
-        try:
-            body = await request.json()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
-
-        input_items = body.get("input", [])
-        stream = bool(body.get("stream", False))
-        custom_inputs: dict[str, Any] = dict(body.get("custom_inputs") or {})
-
-        user_text = _last_user_text(input_items)
-        if user_text:
-            logger.info("[user] %s", user_text)
-
-        from ._obo import apply_obo_to_custom_inputs, extract_obo_headers
-
-        obo = extract_obo_headers(custom_inputs=custom_inputs, headers=request.headers)
-        apply_obo_to_custom_inputs(custom_inputs, obo)
-
-        try:
-            from ._responses_agent import _import_responses_types
-
-            req = _import_responses_types().request_cls(
-                input=input_items, custom_inputs=custom_inputs or None
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid input: {exc}")
-
-        span_attributes = {
-            "http.route": "/responses",
-            AuditAttrs.AGENT_NAME: config.name,
-            "apx.streaming": stream,
-            "apx.user_scoped": bool(custom_inputs.get("user_token")),
-            "apx.input_items": len(input_items) if isinstance(input_items, list) else 1,
-        }
-        if stream:
-            request_headers = dict(request.headers)
-            return StreamingResponse(
-                _traced_stream(
-                    headers=request_headers,
-                    name="POST /responses",
-                    attributes=span_attributes,
-                    stream_factory=lambda: make_async_stream(
-                        lambda _req: _stream_response_events(_stream_fn, req)
-                    )(None),
-                ),
-                media_type="text/event-stream",
-            )
-
-        with _inbound_request_span(
-            request.headers,
-            name="POST /responses",
-            attributes=span_attributes,
-        ):
-            result = await asyncio.to_thread(_invoke_fn, req)
-            return result.model_dump() if hasattr(result, "model_dump") else result
-
-    logger.info(
-        "Mounted /responses (MLflow ResponsesAgent protocol) for agent %r",
-        config.name,
-    )
-    return True
-
-
-def _stream_response_events(stream_fn: Any, req: Any):
-    """SSE generator for the ``/responses`` endpoint.
-
-    A **sync** generator run on one worker thread (via
-    :func:`~apx_agent._async_bridge.make_async_stream`) so the ResponsesAgent
-    stream never blocks the event loop. Each ``ResponsesAgentStreamEvent`` is
-    serialised as a ``data:`` SSE frame.
-    """
-    try:
-        for event in stream_fn(req):
-            payload = (
-                event.model_dump_json()
-                if hasattr(event, "model_dump_json")
-                else json.dumps(event)
-            )
-            yield f"data: {payload}\n\n"
-    except Exception as exc:
-        logger.exception("Error during /responses stream")
-        err = json.dumps({"type": "error", "error": type(exc).__name__, "message": str(exc)})
         yield f"data: {err}\n\n"
