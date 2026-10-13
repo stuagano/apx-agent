@@ -135,7 +135,7 @@ def runtime_store_env(
     because the installed SDK deserializes ``LIQUID`` as ``None``. A dedicated
     deploy does not enter that branch. Both still create or reuse the backend.
     """
-    from databricks_agentbricks.lakebase_runtime_store import get_or_create_backend
+    from databricks_agentbricks.clients.managed_runtime_store import get_or_create_backend
     from databricks_agentkit.runtime.store import (
         RUNTIME_STORE_LAKEBASE_BRANCH_ENV, RUNTIME_STORE_DATABASE_ENV,
         RUNTIME_STORE_USERNAME_ENV, RUNTIME_STORE_SCHEMA_ENV, DEFAULT_RUNTIME_STORE_SCHEMA,
