@@ -356,6 +356,43 @@ def test_bound_leaf_converts_messages_and_headers(
     }
 
 
+def test_bound_leaf_forwards_durable_request_user_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Durable headers carry no token; the resolver supplies it at call time."""
+    from langchain_core.messages import HumanMessage
+
+    from apx_agent._defaults import DatabricksAppsHeaders
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(_self: Any, messages: list[Any], incoming_headers: Any) -> Any:
+        from apx_agent._remote import _RemoteReply
+
+        captured["headers"] = incoming_headers
+        return _RemoteReply(text="approved", control=None)
+
+    pricing = Agent(name="pricing")
+    pricing._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    monkeypatch.setattr(RemoteDatabricksAgent, "run_with_control", _capture)
+    headers = DatabricksAppsHeaders(
+        host="https://workspace.example.com",
+        user_name=None,
+        user_id="user-1",
+        user_email=None,
+        request_id=None,
+        token=None,
+        auth_headers=lambda: {"Authorization": "Bearer request-user-token"},
+    )
+    graph = compile_to_langgraph(pricing, ws=None, model="test-model", headers=headers)
+    assert graph.invoke({"messages": [HumanMessage(content="price")]})
+    assert captured["headers"] == {
+        "Authorization": "Bearer request-user-token",
+        "X-Forwarded-Access-Token": "request-user-token",
+        "X-Forwarded-Host": "https://workspace.example.com",
+    }
+
+
 # ---------------------------------------------------------------------------
 # ParallelAgent
 # ---------------------------------------------------------------------------
