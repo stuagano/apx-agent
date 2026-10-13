@@ -186,7 +186,10 @@ operations. For native model changes, edit the declaration and redeploy.
 Generated deployment names use `agent-bricks-<name>` (30 characters
 maximum). Existing unprefixed Apps are never silently renamed: regenerate the
 project or explicitly select a prefixed `--app-name`, which targets a different
-App. Existing managed stores must still pass APX's read-access checks. The CLI
+App. A name the prefix would break, such as an `mcp-` name that Databricks
+needs to discover the App as an MCP server, needs `[tool.apx.agent.deploy]
+backend = "apps_api"`. That path keeps the declared name and works with or
+without an App Space. Existing managed stores must still pass APX's read-access checks. The CLI
 binds tracing to `/Users/<deploying-user>/<app-name>-<bundle-target>` unless
 `--no-auto-experiment` is selected. CLI-reported store/tracing failures fail APX
 deployment even when the CLI exits zero.

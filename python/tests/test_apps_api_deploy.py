@@ -347,6 +347,8 @@ def test_uv_lock_unsets_frozen_only_for_that_call(tmp_path: Path, monkeypatch: p
     ("row2", '\n[tool.apx.agent.deploy]\nspace = "app-space"\n', BUNDLE.format(app="mcp-row2", extra=SPACE), None, "mcp-row2"),
     ("row3", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\nspace = "app-space"\n', None, "apps_api", "row3"),
     ("row4", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "row4"),
+    # #909: an mcp- name keeps MCP discovery without an App Space.
+    ("mcp-row4", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "mcp-row4"),
 ])
 def test_agents_deploy_routes_all_four_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, deploy: str, bundle: str | None,

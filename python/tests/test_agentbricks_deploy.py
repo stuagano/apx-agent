@@ -241,3 +241,11 @@ def test_native_source_staging_fails_closed(tmp_path: Path, hazard: str) -> None
     assert protected.read_text() == "preserve me"
     if hazard == "unowned":
         assert (tmp_path / ".build" / "authored.py").read_text() == "preserve me"
+
+
+def test_native_prefix_error_points_mcp_names_at_apps_api() -> None:
+    from apx_agent._agentbricks_deploy import validate_native_app
+
+    # An mcp- name cannot use the Agent Bricks CLI; the error names the path that keeps it.
+    with pytest.raises(click.ClickException, match='backend = "apps_api"'):
+        validate_native_app({}, app_name="mcp-data-triage", profile="chosen", no_run=False)

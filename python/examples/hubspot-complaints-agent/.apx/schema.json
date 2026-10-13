@@ -1,0 +1,13 @@
+{
+  "catalog": "placeholder_catalog",
+  "schema": "placeholder_schema",
+  "tables": {
+    "tickets": [
+      "hs_object_id(string)",
+      "subject(string)",
+      "content(string)",
+      "hs_createdate(timestamp)",
+      "hs_pipeline_stage(string)"
+    ]
+  }
+}
