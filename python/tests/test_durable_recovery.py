@@ -252,17 +252,20 @@ def test_recovery_trace_joins_the_original_invocation(
             "apx_agent._compile._build_chat_databricks", lambda *a, **k: ToolModel(),
         )
         result = asyncio.run(handlers(execution, checkpoints).invoke(PAYLOAD, context(recovery=True)))
+        # Search before restoring the caller's tracking URI. The graph thread
+        # follows MLFLOW_TRACKING_URI, and a restored URI would search the
+        # wrong store.
+        traces = mlflow.search_traces(
+            locations=[experiment.experiment_id],
+            return_type="list",
+            include_spans=False,
+            flush=True,
+        )
     finally:
         mlflow.set_tracking_uri(old_uri)
         mlflow.langchain.autolog(disable=False)
     assert result["status"] == "completed"
     assert execution.effects == ["proof"]
-    traces = mlflow.search_traces(
-        locations=[experiment.experiment_id],
-        return_type="list",
-        include_spans=True,
-        flush=True,
-    )
     tagged = {
         trace.info.tags.get("apx.recovery"): trace.info.tags.get("apx.invocation.id")
         for trace in traces
