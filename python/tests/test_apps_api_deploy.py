@@ -103,7 +103,7 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr("databricks_agentkit.AgentKitClient", lambda **k: kit)
     monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda *a, **k: bricks)
     monkeypatch.setattr(
-        "databricks_agentbricks.lakebase_runtime_store.get_or_create_backend",
+        "databricks_agentbricks.clients.managed_runtime_store.get_or_create_backend",
         lambda *a, **k: state["calls"].append("runtime") or SimpleNamespace(branch="b", database_id="db", username="sp-1"),
     )
     monkeypatch.setattr("apx_agent.cli._ensure_experiment_id", lambda *a, **k: "exp-1")

@@ -124,9 +124,9 @@ def test_offline_doctor_includes_unverified_agent_features(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("dependency,version,expected", [
-    ("apx-agent[langgraph]", "0.4.0", Status.FAIL),
-    ("apx-agent[langgraph,agentbricks]", "0.3.0", Status.FAIL),
-    ("apx-agent[langgraph,agentbricks]", "0.4.0", Status.OK),
+    ("apx-agent[langgraph]", "0.5.0", Status.FAIL),
+    ("apx-agent[langgraph,agentbricks]", "0.4.0", Status.FAIL),
+    ("apx-agent[langgraph,agentbricks]", "0.5.0", Status.OK),
     ("apx-agent[langgraph,agentbricks]", None, Status.WARN),
 ])
 def test_agent_image_checks_declaration_and_lock(tmp_path, dependency, version, expected):

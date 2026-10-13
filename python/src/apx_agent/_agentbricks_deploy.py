@@ -34,7 +34,7 @@ def cleanup_app_runtime(ws: Any, app_name: str, *, native: bool = False) -> bool
     if app is not None and not (native or app_name.startswith("agent-bricks-") or isinstance(space, str) and space):
         return True
     try:
-        from databricks_agentbricks.lakebase_runtime_store import delete
+        from databricks_agentbricks.clients.managed_runtime_store import delete
         from databricks_agentbricks.errors import AgentCliError
         from databricks_agentkit._api_client import _AgentBricksApiClient
     except ImportError as exc:
@@ -212,7 +212,7 @@ def deploy_native_project(
 ) -> dict[str, Any]:
     """Stage resolved runtime config, invoke the CLI, and verify its result."""
     import yaml
-    from databricks_agentbricks.agent_project import AgentProject
+    from databricks_agentbricks.projects.agent_project import AgentProject
 
     manifest = source / "agent.toml"
     app_yaml = source / "app.yaml"
