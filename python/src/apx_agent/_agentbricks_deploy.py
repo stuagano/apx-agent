@@ -173,7 +173,9 @@ def validate_native_app(app: dict[str, Any], *, app_name: str, profile: str | No
     if not app_name.startswith("agent-bricks-") or len(app_name) > 30:
         raise click.ClickException(
             "Agent Bricks requires an app name starting with agent-bricks- and at most 30 characters. "
-            "Regenerate the project or explicitly choose a prefixed --app-name; existing Apps are not renamed."
+            "Regenerate the project or explicitly choose a prefixed --app-name; existing Apps are not renamed. "
+            "To keep another name (for example mcp- for MCP discovery), set "
+            "[tool.apx.agent.deploy] backend = \"apps_api\"."
         )
     unsupported = set(app) - {
         "name", "source_code_path", "config", "user_api_scopes",

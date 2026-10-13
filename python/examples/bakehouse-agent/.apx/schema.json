@@ -1,0 +1,50 @@
+{
+  "catalog": "samples",
+  "schema": "bakehouse",
+  "tables": {
+    "sales_transactions": [
+      "transactionID(string)",
+      "customerID(string)",
+      "franchiseID(string)",
+      "dateTime(timestamp)",
+      "product(string)",
+      "quantity(bigint)",
+      "unitPrice(double)",
+      "totalPrice(double)",
+      "paymentMethod(string)"
+    ],
+    "sales_customers": [
+      "customerID(string)",
+      "first_name(string)",
+      "last_name(string)",
+      "city(string)",
+      "state(string)",
+      "country(string)",
+      "continent(string)",
+      "gender(string)"
+    ],
+    "sales_franchises": [
+      "franchiseID(string)",
+      "name(string)",
+      "city(string)",
+      "district(string)",
+      "country(string)",
+      "size(string)",
+      "supplierID(string)"
+    ],
+    "sales_suppliers": [
+      "supplierID(string)",
+      "name(string)",
+      "ingredient(string)",
+      "continent(string)",
+      "city(string)",
+      "approved(string)"
+    ],
+    "media_customer_reviews": [
+      "review(string)",
+      "franchiseID(string)",
+      "review_date(date)",
+      "new_id(string)"
+    ]
+  }
+}
