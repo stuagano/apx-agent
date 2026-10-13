@@ -8,6 +8,8 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Added
 
+- **Managed state contract map.** [docs/design/managed-state-contract-map.md](docs/design/managed-state-contract-map.md) records the AgentKit 0.4.0 / SDK 0.146.0 methods this checkout can call and maps MemoryStore, ConversationStore, session state, and checkpoints onto them. A `fevm` probe on 2026-10-13 found managed memory and session stores enabled (Beta, Lakebase-backed) and completed a disposable `add`/`get`/`recall`/`update`/`delete` plus actor isolation check. Retention and measured cost remain unknown (#854).
+
 - **Tool inspector at `/_apx/tools`.** `/_apx/tools` is a real inspector again — live source from `inspect.getsourcefile`, in-place save, run via `/_apx/replay/tool` — not a 302 to Edit. Also a nav tab, the Chat shell's Tools tab, and an Edit-page Schemas/Tools sub-tab. Shared table renderer used by Tools, Chat, and Trace. New routes: `GET /_apx/tools/list`, `GET /_apx/tools/file`, `POST /_apx/tools/save`.
 - **Native Databricks Apps horizontal-scaling fields in generated bundles.**
   `[tool.apx.agent.deploy]` now emits `compute_min_instances` /
