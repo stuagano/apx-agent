@@ -10580,7 +10580,7 @@ def _deploy_apps_impl(
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         agent = _load_finalized_agent(module)
         if isinstance(agent, LlmAgent):
-            for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=False):
+            for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=True):
                 if check.name != "Managed sessions" or check.status is not _doctor_mod.Status.FAIL:
                     continue
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
@@ -10727,7 +10727,7 @@ def _deploy_apps_impl(
 
     if session_config is not effective_config and isinstance(agent, LlmAgent):
         effective_config = session_config
-        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli):
+        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli or app.get("space") is not None):
             if check.name != "Managed sessions":
                 continue
             log(f"# {check.name}: {check.detail}")
@@ -11065,7 +11065,7 @@ def _deploy_apps_impl(
                 from ._app_space import runtime_store_env, RUNTIME_STORE_VARIABLES
 
                 assert isinstance(space_name, str)  # Validated before provisioning.
-                binding = runtime_store_env(space_client, app_name=app_name, space=space_name)
+                binding = runtime_store_env(space_client, app_name=app_name, space=space_name, session_store=bound_session)
                 bundle_path = cwd / "databricks.yml"
                 if bundle_path.is_symlink():
                     raise click.ClickException("Refusing to bind a Runtime Store through symlinked databricks.yml")
