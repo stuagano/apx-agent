@@ -77,6 +77,10 @@ def run_graph_turn(
             raise ValueError("Recovery requires an invocation ID")
         prior = enforce_before_turn(graph, config, budget_cap) if budget_cap is not None else 0
     with safe_span("graph.invoke", span_type="CHAIN"):
+        if invocation_id is not None:
+            from ._audit import stamp_invocation_correlation
+
+            stamp_invocation_correlation(invocation_id, recovery=recovery)
         if continuing:
             graph_input: Any = None
         elif resume is not None:

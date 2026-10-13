@@ -1509,6 +1509,68 @@ class TestCorrelationHeaders:
         inject_mock.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_user_token_skips_sdk_and_reaches_peer_on_http(self, monkeypatch):
+        """A request-user token must not take the Apps SDK path.
+
+        The SDK's BearerAuth hook overwrites Authorization with the app SP
+        token, so the peer would run as the caller. Going through
+        ``remote_agent_tool`` — which builds both credential headers from the
+        request-user token — the real httpx transport (not a patched
+        ``_run_with_incoming_headers``) must carry them to the peer (#903).
+        """
+        from pydantic import SecretStr
+
+        from apx_agent._agent_tool import remote_agent_tool
+        from apx_agent._defaults import DatabricksAppsHeaders
+
+        monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+        user_token = "user-obo-token"
+        tool = remote_agent_tool(
+            "https://data-inspector.workspace.databricksapps.com",
+            name="data_inspector",
+            description="Inspect",
+        )
+        incoming = DatabricksAppsHeaders(
+            host="workspace.example.com",
+            user_name=None,
+            user_id=None,
+            user_email=None,
+            request_id=None,
+            token=SecretStr(user_token),
+        )
+        seen: list[httpx.Request] = []
+
+        card = make_card_data(url="https://data-inspector.workspace.databricksapps.com")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            if request.url.path.endswith("/.well-known/agent.json"):
+                return httpx.Response(200, json=card)
+            return httpx.Response(200, json=make_responses_payload("peer ok"))
+
+        transport = httpx.MockTransport(handler)
+
+        class CapturingClient(httpx.AsyncClient):
+            def __init__(self, *args, **kwargs):
+                kwargs["transport"] = transport
+                super().__init__(*args, **kwargs)
+
+        with patch("databricks_openai.AsyncDatabricksOpenAI") as MockSDK, patch(
+            "httpx.AsyncClient", CapturingClient
+        ):
+            result = await tool("hi", incoming)
+
+        MockSDK.assert_not_called()
+        assert result == "peer ok"
+        peer = [request for request in seen if request.url.path == "/responses"]
+        assert len(peer) == 1
+        request = peer[0]
+        assert request.headers["X-Forwarded-Access-Token"] == user_token
+        assert request.headers["Authorization"] == f"Bearer {user_token}"
+        body = json.loads(request.content)
+        assert body["custom_inputs"] == {"user_token": user_token}
+
+    @pytest.mark.asyncio
     async def test_sdk_path_sends_traceparent_via_extra_headers(self, monkeypatch):
         monkeypatch.setenv("DATABRICKS_APP_NAME", "orchestrator")
         agent = make_plain_agent(app_name="data-inspector")
@@ -1527,12 +1589,12 @@ class TestCorrelationHeaders:
     async def test_sdk_and_http_fallback_share_injected_mlflow_context(
         self, monkeypatch, caplog
     ):
-        """One correlation-header build feeds SDK and HTTP, while only the
-        trusted direct HTTP fallback receives the caller's OBO credential."""
+        """One correlation-header build feeds the SDK call and its HTTP
+        fallback. Neither carries the request-user token: the SDK signs as
+        the app SP, and the fallback is only reached when no user token is
+        present (a token skips the SDK entirely)."""
         monkeypatch.setenv("DATABRICKS_APP_NAME", "orchestrator")
         agent = make_plain_agent(app_name="data-inspector")
-        opaque_obo = "opaque-obo-sentinel"
-        incoming = {"X-Forwarded-Access-Token": opaque_obo}
         emitted_traceparent = f"00-{'12' * 16}-{'34' * 8}-01"
         sdk_headers: dict[str, str] = {}
         http_headers: dict[str, str] = {}
@@ -1572,7 +1634,7 @@ class TestCorrelationHeaders:
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
             result = await agent.run(
-                [Message(role="user", content="hi")], make_request(incoming)
+                [Message(role="user", content="hi")], make_request()
             )
 
         assert result == "ok"
@@ -1580,9 +1642,7 @@ class TestCorrelationHeaders:
             assert received["traceparent"] == emitted_traceparent
             assert received["x-apx-caller"] == "orchestrator"
             assert received["x-mlflow-test-context"] == "mlflow-context"
-        assert "X-Forwarded-Access-Token" not in sdk_headers
-        assert http_headers["X-Forwarded-Access-Token"] == opaque_obo
-        assert opaque_obo not in caplog.text
+            assert "X-Forwarded-Access-Token" not in received
         inject_mock.assert_called_once()
         stamp_mock.assert_called_once_with(emitted_traceparent)
 
