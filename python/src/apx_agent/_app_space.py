@@ -70,6 +70,17 @@ def validate_space_bundle(doc: dict[str, Any], *, bundle_key: str) -> str:
     return space
 
 
+def _scope_owners(plan: Any, scope: str) -> list[str]:
+    """Name what in the plan needs ``scope``: user-identity tools and the chat model."""
+    from ._resources import user_api_scopes_for
+
+    owners = [f"tool {op.name!r}" for op in plan.operations if op.execution_identity == "user"
+              and scope in {*op.user_api_scopes, *user_api_scopes_for(op.resources)}]
+    if plan.model and scope in user_api_scopes_for((), model=plan.model):
+        owners.append(f"chat model {plan.model!r}")
+    return owners
+
+
 def validate_space_deployment(
     doc: dict[str, Any], *, bundle_key: str, app_name: str, profile: str | None,
     plan: Any, family_permissions: Any,
@@ -97,7 +108,10 @@ def validate_space_deployment(
         granted = inherited.user_api_scopes
     missing = set(plan.user_api_scopes) - set(granted if granted is not None else [])
     if missing:
-        raise click.ClickException("App Space is missing required scopes: " + ", ".join(sorted(missing)))
+        # The space admin owns the scope allowlist; apx only validates against it (#815).
+        lines = [f"  - {scope}: needed by {', '.join(_scope_owners(plan, scope))}" for scope in sorted(missing)]
+        raise click.ClickException(
+            f"App Space {space!r} is missing required scopes; ask the space admin to grant them:\n" + "\n".join(lines))
     resources = [resource.as_dict() for resource in inherited.resources or []]
     for required in resources_to_databricks_yml(plan.service_resources):
         if not any(all(entry.get(key) == value for key, value in required.items() if key != "name") for entry in resources):
