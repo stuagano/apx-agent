@@ -159,6 +159,28 @@ class _BackendConfig(BaseModel):
         return data
 
 
+class MemoryExtractionPolicy(BaseModel):
+    """Declared session-to-memory extraction. Off unless this table exists.
+
+    The service distills one finished managed session into the bound memory
+    store. It is not consolidation of memories that already exist, and it does
+    not run by itself at the end of a turn.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    """Must be true before any extraction call is made."""
+    instructions: str | None = None
+    """Approved distillation instructions sent with every extraction."""
+
+    @model_validator(mode="after")
+    def _instructions_are_text(self) -> "MemoryExtractionPolicy":
+        if self.instructions is not None and not self.instructions.strip():
+            raise ValueError("memory.extraction.instructions must be non-blank text")
+        return self
+
+
 class MemoryBackendConfig(_BackendConfig):
     """Declarative memory backend — maps to ``[tool.apx.agent.memory]``."""
 
@@ -177,9 +199,16 @@ class MemoryBackendConfig(_BackendConfig):
     tool_prefix: str = ""
     include: list[str] | None = None
     validate_at_boot: bool = True
+    extraction: MemoryExtractionPolicy | None = None
+    """Explicit session-to-memory extraction policy. Absent means off."""
 
     @model_validator(mode="after")
     def _validate_managed_store(self) -> "MemoryBackendConfig":
+        if self.extraction is not None and self.type != "managed":
+            raise ValueError(
+                "memory.extraction requires type='managed'; in-memory and "
+                "Lakebase stores keep their own write path."
+            )
         if self.type == "managed" and self.store_name is not None:
             from ._memory_managed import validate_memory_store_name  # noqa: PLC0415
 

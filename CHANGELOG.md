@@ -6,6 +6,13 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- Declared session-to-memory extraction. `[tool.apx.agent.memory.extraction]`
+  stays off until `enabled = true` on a managed memory store with a managed
+  session store. `apx memory extract --session-id` distills that one completed
+  session through AgentKit; `--dry-run` returns the entries without writing,
+  and a real write is read back before it is reported. The session is not
+  rewritten, and existing-memory consolidation is unchanged. (#858)
+
 ### Added
 
 - **Managed state contract map.** [docs/design/managed-state-contract-map.md](docs/design/managed-state-contract-map.md) records the AgentKit 0.4.0 / SDK 0.146.0 methods this checkout can call and maps MemoryStore, ConversationStore, session state, and checkpoints onto them. A `fevm` probe on 2026-10-13 found managed memory and session stores enabled (Beta, Lakebase-backed) and completed a disposable `add`/`get`/`recall`/`update`/`delete` plus actor isolation check. Retention and measured cost remain unknown (#854).
