@@ -160,6 +160,7 @@ def _build_one(
             identity=kwargs.pop("identity", None),
             scope=kwargs.pop("scope", None),
             secret_scopes=kwargs.pop("secret_scopes", None),
+            callers=kwargs.pop("callers", None),
         )
     except ToolConfigError as e:
         raise ToolConfigError(f"tool #{index} (type={type_}): {e}") from e

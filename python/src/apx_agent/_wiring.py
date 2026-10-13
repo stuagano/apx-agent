@@ -999,6 +999,7 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         set_mcp_auth(
             request.headers.get("Authorization", ""),
             request.headers.get("X-Forwarded-Access-Token", ""),
+            request.headers.get("X-Forwarded-Email", ""),
         )
         async with mcp_transport.connect_sse(
             request.scope, request.receive, request._send
@@ -1034,6 +1035,7 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         set_mcp_auth(
             request.headers.get("Authorization", ""),
             request.headers.get("X-Forwarded-Access-Token", ""),
+            request.headers.get("X-Forwarded-Email", ""),
         )
         scope = dict(request.scope)
         headers = list(scope.get("headers", []))

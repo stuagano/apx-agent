@@ -53,6 +53,8 @@ __all__ = [
     "in_scope",
     "identity_to_execution",
     "attach_scope_guard",
+    "caller_allowed",
+    "caller_dependency",
 ]
 
 
@@ -106,6 +108,9 @@ class ToolScope:
     tables: tuple[str, ...] = field(default_factory=tuple)
     functions: tuple[str, ...] = field(default_factory=tuple)
     secret_scopes: tuple[str, ...] = field(default_factory=tuple)
+    # Caller allowlist (#831): emails that may list/call this tool over MCP and
+    # the tool route. Empty = open to every caller (back-compat).
+    callers: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if self.identity is not None:
@@ -162,16 +167,19 @@ def parse_tool_scope(
     identity: Any = None,
     scope: Any = None,
     secret_scopes: Any = None,
+    callers: Any = None,
 ) -> ToolScope | None:
     """Build a :class:`ToolScope` from the declared keys, or ``None`` if none set.
 
     ``identity`` is a string; ``scope`` is a table with optional
     ``catalogs``/``schemas``/``tables``/``functions`` string lists;
-    ``secret_scopes`` is a string list. Malformed input raises ``ToolConfigError``.
+    ``secret_scopes`` and ``callers`` are string lists. Malformed input raises ``ToolConfigError``.
     Returns ``None`` when nothing is declared (back-compat — attaches no scope).
     """
-    if identity is None and scope is None and secret_scopes is None:
+    if identity is None and scope is None and secret_scopes is None and callers is None:
         return None
+    if callers is not None and not callers:
+        raise ToolConfigError("callers must list at least one email; omit it to leave the tool open.")
     if identity is not None and not isinstance(identity, str):
         raise ToolConfigError(f"identity must be a string; got {identity!r}.")
     if scope is not None and not isinstance(scope, dict):
@@ -190,6 +198,7 @@ def parse_tool_scope(
         tables=tuple(_as_str_list(scope.get("tables"), "tables")),
         functions=tuple(_as_str_list(scope.get("functions"), "functions")),
         secret_scopes=tuple(_as_str_list(secret_scopes, "secret_scopes")),
+        callers=tuple(_as_str_list(callers, "callers")),
     )
 
 
@@ -316,6 +325,49 @@ _UC_ARG_KEYS = frozenset({
 # non-secret arg (OAuth/search/config scope) — gating on it caused spurious
 # ScopeDenied on legitimate calls.
 _SECRET_ARG_KEYS = frozenset({"secret_scope"})
+
+
+def caller_allowed(scope: ToolScope | None, caller_email: str | None) -> bool:
+    """True when ``caller_email`` may use a tool with ``scope`` (#831).
+
+    No scope / no ``callers`` → open. A restricted tool with no caller identity
+    is denied (fail closed). Emails compare case-insensitively.
+    """
+    if scope is None or not scope.callers:
+        return True
+    if not caller_email:
+        return False
+    return caller_email.casefold() in {c.casefold() for c in scope.callers}
+
+
+def caller_dependency(fn: Any) -> Any:
+    """FastAPI dependency refusing callers outside ``fn``'s ``callers`` list (HTTP 403).
+
+    ``None`` when the tool declares no caller allowlist. Guards the
+    ``/tools/<name>`` route, which MCP ``call_tool`` dispatches through, so a
+    caller hidden from ``list_tools`` can't reach the tool over REST either.
+    """
+    scope = get_scope(fn)
+    if scope is None or not scope.callers:
+        return None
+    from fastapi import Header, HTTPException  # noqa: PLC0415
+
+    name = getattr(fn, "__name__", "<tool>")
+
+    def _check(caller_email: str | None = Header(default=None, alias="X-Forwarded-Email")) -> None:
+        if caller_allowed(scope, caller_email):
+            return
+        reason = f"caller {caller_email!r} not in callers allowlist"
+        set_audit_attrs(
+            current_active_span(),
+            scope_action="deny",
+            scope_object=name,
+            scope_reason=reason,
+        )
+        logger.warning("caller_denied: tool %r — %s", name, reason)
+        raise HTTPException(status_code=403, detail=f"caller_denied: tool {name!r} ({reason})")
+
+    return _check
 
 
 # ---------------------------------------------------------------------------
