@@ -844,16 +844,16 @@ class TestRun:
                 await agent.run([Message(role="user", content="hi")], request)
 
         msg = str(excinfo.value)
-        assert f"{agent._base_url}/responses" in msg
+        assert f"{agent._base_url}/invocations" in msg
         assert "'weird'" in msg  # the shape actually received
         assert "output" in msg and "messages" in msg  # both accepted shapes named
         assert "x" * 100 in msg  # a debugging excerpt of the body…
         assert "x" * 600 not in msg  # …but truncated, not the whole blob
 
     @pytest.mark.asyncio
-    async def test_http_path_falls_back_to_invocations_when_responses_404s(self):
-        """A peer without /responses (older or create_app) gets the
-        /invocations fallback POST, and its reply parses (#452)."""
+    async def test_http_path_posts_once_to_invocations(self):
+        """The HTTP path POSTs only /invocations (#898 retired /responses),
+        and a ChatAgent ``messages`` reply parses (#452)."""
         agent = self._make_agent_with_card()
         agent._app_name = None
         request = make_request()
@@ -862,14 +862,10 @@ class TestRun:
         async def mock_post(url, **kwargs):
             posted.append(url)
             resp = MagicMock(spec=httpx.Response)
-            if url.endswith("/responses"):
-                resp.status_code = 404
-                resp.json.return_value = {"detail": "Not Found"}
-            else:
-                resp.status_code = 200
-                resp.json.return_value = {
-                    "messages": [{"role": "assistant", "content": "pong"}]
-                }
+            resp.status_code = 200
+            resp.json.return_value = {
+                "messages": [{"role": "assistant", "content": "pong"}]
+            }
             resp.raise_for_status = MagicMock()
             return resp
 
@@ -882,10 +878,7 @@ class TestRun:
             result = await agent.run([Message(role="user", content="hi")], request)
 
         assert result == "pong"
-        assert posted == [
-            f"{agent._base_url}/responses",
-            f"{agent._base_url}/invocations",
-        ]
+        assert posted == [f"{agent._base_url}/invocations"]
 
     @pytest.mark.asyncio
     async def test_stream_parses_chat_agent_chunk_deltas(self):
@@ -1562,7 +1555,7 @@ class TestCorrelationHeaders:
 
         MockSDK.assert_not_called()
         assert result == "peer ok"
-        peer = [request for request in seen if request.url.path == "/responses"]
+        peer = [request for request in seen if request.url.path == "/invocations"]
         assert len(peer) == 1
         request = peer[0]
         assert request.headers["X-Forwarded-Access-Token"] == user_token

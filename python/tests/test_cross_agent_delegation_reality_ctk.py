@@ -680,7 +680,7 @@ def test_cross_agent_traces_join_on_one_tag(
                         and item["agent_name"] == "agent-a"
                         for item in observed
                     ) and any(
-                        item["name"] == "POST /responses"
+                        item["name"] == "POST /invocations"
                         and item["agent_name"] == "agent-b"
                         for item in observed
                     ):
@@ -707,7 +707,7 @@ def test_cross_agent_traces_join_on_one_tag(
     remote_request = next(
         s
         for s in spans
-        if s.name == "POST /responses"
+        if s.name == "POST /invocations"
         and (s.attributes or {}).get("apx.agent.name") == "agent-b"
     )
     by_id = {span.span_id: span for span in spans}
@@ -729,7 +729,7 @@ def test_cross_agent_traces_join_on_one_tag(
         if "apx.outbound.trace_id" in t and "apx.traceparent" not in t
     ]
     # Receiver side: A is stamped from the external sender, then B is stamped
-    # from A's internal /responses call. Select B's stamp by its caller tag.
+    # from A's internal /invocations call. Select B's stamp by its caller tag.
     receiver_stamps = [t for t in tag_calls if "apx.traceparent" in t]
     assert caller_stamps, "caller side never stamped apx.outbound.trace_id"
     assert receiver_stamps, "receiver side never stamped apx.traceparent"
