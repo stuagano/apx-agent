@@ -69,9 +69,16 @@ result to the outbound call, which forwards it as `X-Forwarded-Access-Token` +
 a closed request context fails closed, and request-user invocations are never
 recovered in the background.
 
-Known gap: for Databricks Apps peers the Apps SDK transport (`apps/<name>`) is
-tried first and does not yet carry the request-user token, so those calls
-currently run as the calling app's service principal.
+Databricks Apps peers (`apps/<name>`) use the Apps SDK transport only when no
+request-user token is present. The SDK's `BearerAuth` hook authenticates that
+call as the default WorkspaceClient — inside an App, the calling app's
+service principal — and overwrites `Authorization` after `extra_headers` are
+applied, so the user token cannot ride that path. When a request-user token
+is present, `RemoteDatabricksAgent` skips the SDK and uses the direct-HTTP
+transport, which forwards `X-Forwarded-Access-Token` + `Authorization:
+Bearer`. Supervisor long-task continuation is the exception: it exists only
+on the SDK stream, and the direct-HTTP path cannot resume a paused task, so
+a long-running peer of an authenticated caller still runs as the app.
 
 ## Operate-time signal
 

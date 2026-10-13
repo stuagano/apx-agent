@@ -403,7 +403,7 @@ type = "inmemory"
 | `include` | `list[str]` | all | Subset: `["recall"]`, `["recall","remember"]`, … |
 | `validate_at_boot` | `bool` | `true` | Reserved — boot-time connectivity validation is not yet implemented; field is accepted but has no effect |
 
-**Principal isolation:** Memory is scoped per OBO user (`X-Forwarded-User`). User A's memories are invisible to User B. No-principal requests (local dev without headers) return `NO_PRINCIPAL` without writing.
+**Principal isolation:** Memory tools scope reads and writes by the OBO user (`X-Forwarded-User`). The APX tool surface does not offer User B a way to read User A's memories, and no-principal requests (local dev without headers) return `NO_PRINCIPAL` without writing. On a `managed` store this is application-side partitioning, not a service ACL: any principal that can reach the store can still address every actor's entries, so strict tenant isolation needs a separate store. See [sessions and memory](../running/sessions-and-memory.md) and the [managed-state contract map](../design/managed-state-contract-map.md).
 
 **Deployment caveat — where `user_id` comes from:** Per-user memory only activates when the request carries a resolvable `user_id` (the principal). How that is supplied differs by serving surface:
 

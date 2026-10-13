@@ -45,7 +45,7 @@ def test_native_manifest_uses_existing_authorization_contract(
     identity: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ctk import Artifact, verify
-    from databricks_agentbricks.agent_project import AgentProject
+    from databricks_agentbricks.projects.agent_project import AgentProject
     from databricks_agentkit.runtime.auth import InvocationAuthPolicy
     from apx_agent import AgentConfig, ResourceSpec, require_user_api_scopes
     from apx_agent._apps_authorization import compile_authorization_plan

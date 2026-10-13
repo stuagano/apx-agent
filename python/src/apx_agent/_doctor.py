@@ -573,13 +573,16 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
 
 
 def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
-    """Abstain: Serving-endpoint guardrails do not govern the chat model.
+    """Abstain: name the services whose guardrail policies need a UI check.
 
-    Mosaic AI Gateway guardrails attach to a Model Serving endpoint. The chat
-    LLM no longer calls one — ``get_llm`` uses Unity Catalog AI Gateway — and
-    a ``ModelService`` has no ``ai_gateway.guardrails`` field. Reporting OK
-    from a serving-endpoint lookup would be a false pass, so this check WARNs
-    and does not call ``serving_endpoints.get``.
+    Guardrails on Unity AI Gateway services (External and other service
+    policies) are attached in the Unity Gateway UI only. No REST, SDK, or SQL
+    surface reads an attachment or its log/enforce mode back, and a
+    ``ModelService`` / ``McpService`` payload carries no policy field. Mosaic
+    serving-endpoint guardrails do not govern the chat call either. Reporting
+    OK would be a false pass, so this check WARNs, lists the bound model
+    service plus every declared ``service_policies`` attachment target, and
+    calls no API.
 
     Returns None (nothing to check) unless: an apx project, auth is available,
     a ``model`` is declared, and the target is ``apps``. Never FAILs.
@@ -600,9 +603,8 @@ def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
         data = tomllib.loads(pyproject.read_text())
     except Exception:
         return None
-    model: str | None = (
-        data.get("tool", {}).get("apx", {}).get("agent", {}).get("model")
-    )
+    agent = data.get("tool", {}).get("apx", {}).get("agent", {})
+    model: str | None = agent.get("model")
     if not model:
         return None
 
@@ -610,13 +612,23 @@ def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
     if _detect_target(cwd).target != "apps":
         return None
 
+    services = [_ai_gateway_model_service_name(model) or model]
+    for attachment in agent.get("service_policies", {}).get("attachments", []):
+        # Malformed entries are reported by the agent-config check.
+        if "target_type" not in attachment or "target" not in attachment:
+            continue
+        target = f"{attachment['target_type']}:{attachment['target']}"
+        if target not in services:
+            services.append(target)
+
     return Check(
         f"AI Gateway guardrails ({model})", Status.WARN,
-        "Serving-endpoint guardrails do not apply — the chat model is called "
-        "through Unity Catalog AI Gateway, which has no serving guardrail config",
-        "Do not look this model up with `serving-endpoints get`. Govern it as "
-        "a UC AI Gateway model service. This check abstains rather than "
-        "reporting a serving-endpoint guardrail as if it covered the chat call.",
+        "service policy attachment (External or otherwise) is not readable "
+        "through any API; serving-endpoint guardrails do not apply to the "
+        "Unity Catalog AI Gateway chat call. Unverified: " + ", ".join(services),
+        "Confirm each service's policy and log/enforce mode in the Unity "
+        "Gateway UI. This check abstains rather than reporting a guardrail "
+        "it cannot read back.",
     )
 
 

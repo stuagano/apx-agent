@@ -556,6 +556,17 @@ class RemoteDatabricksAgent(BaseAgent):
     # BaseAgent interface
     # ------------------------------------------------------------------
 
+    def _sdk_drops_user_token(self, obo_headers: Mapping[str, str]) -> bool:
+        """True when the Apps SDK path would run the peer as the calling app's SP.
+
+        ``apps/<name>`` authenticates the outbound call with the default
+        WorkspaceClient (inside an App, the app service principal). Its
+        ``BearerAuth`` hook overwrites ``Authorization`` after ``extra_headers``
+        are applied, so the request-user token cannot ride that path. A present
+        user token must take the direct-HTTP transport instead (#903).
+        """
+        return bool(obo_headers.get("X-Forwarded-Access-Token"))
+
     async def run(self, messages: list[Message], request: Request) -> str:
         return await self._run_with_incoming_headers(messages, request.headers)
 
@@ -571,14 +582,17 @@ class RemoteDatabricksAgent(BaseAgent):
         # Long-task mode requires the streaming Responses path (continuation
         # events only arrive on a stream) and deliberately does NOT fall back
         # to HTTP: /invocations cannot resume a paused task, so falling back
-        # would silently truncate it.
+        # would silently truncate it. That path also cannot carry a
+        # request-user token — the SDK signs as the app SP (#903) — so a
+        # long-running peer of an authenticated caller runs as the app.
         if self._app_name and self._long_task:
             return "".join(
                 [chunk async for chunk in self._stream_via_sdk(messages, corr_headers)]
             )
 
-        # Try DatabricksOpenAI first (automatic OBO via Supervisor)
-        if self._app_name:
+        # DatabricksOpenAI authenticates as the app SP and overwrites
+        # Authorization, so a request-user token takes direct HTTP instead.
+        if self._app_name and not self._sdk_drops_user_token(obo_headers):
             try:
                 response = await self._post_via_sdk(messages, corr_headers)
             except Exception as exc:
@@ -596,7 +610,7 @@ class RemoteDatabricksAgent(BaseAgent):
                         return _reply_text(data, url=self._last_http_url, agent_name=self.name)
                 return response.output_text
 
-        # Fallback: direct POST /invocations
+        # Direct POST /responses (also the user-token path for Apps peers).
         return await self._call_via_http(messages, {**obo_headers, **corr_headers})
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
@@ -604,7 +618,8 @@ class RemoteDatabricksAgent(BaseAgent):
         obo_headers = self._obo_headers(request.headers)
         corr_headers = self._correlation_headers()
 
-        # Long-task mode: no HTTP fallback (see run() for why).
+        # Long-task mode: no HTTP fallback (see run() for why). Continuation
+        # stays on the SDK even when a user token is present.
         if self._app_name and self._long_task:
             async for chunk in self._stream_via_sdk(messages, corr_headers):
                 yield chunk
@@ -613,7 +628,8 @@ class RemoteDatabricksAgent(BaseAgent):
         # Try DatabricksOpenAI first — true streaming, deltas relayed as
         # they arrive (#447). Fall back to HTTP only when nothing has been
         # yielded yet; a mid-stream failure must not replay from the start.
-        if self._app_name:
+        # Skip it when a user token is present: the SDK signs as the app SP.
+        if self._app_name and not self._sdk_drops_user_token(obo_headers):
             emitted = False
             try:
                 async for chunk in self._stream_via_sdk(messages, corr_headers):
@@ -882,10 +898,14 @@ class RemoteDatabricksAgent(BaseAgent):
 
         if self._app_name and self._long_task:
             # Long-task continuation remains a text API; no structured guarantee.
-            text = await self._run_with_incoming_headers(messages, incoming_headers)
+            # Stream directly rather than through _run_with_incoming_headers,
+            # which would rebuild headers and post the task a second time.
+            text = "".join([chunk async for chunk in self._stream_via_sdk(messages, corr_headers)])
             return _RemoteReply(text=text, control=None)
 
-        if self._app_name:
+        # The Apps SDK signs as the calling app's SP, so a request-user token
+        # goes straight to direct HTTP (same as a peer with no app name).
+        if self._app_name and not self._sdk_drops_user_token(obo_headers):
             try:
                 response = await self._post_via_sdk(messages, corr_headers)
             except Exception as exc:

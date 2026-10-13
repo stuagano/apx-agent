@@ -136,7 +136,7 @@ def test_fixture_sweep_runs_real_graph_and_cli_reads_back_report(monkeypatch, tm
     result = CliRunner().invoke(main, ["eval", "sweep", str(path), "--fixtures", "--model", "good", "--model", "bad", "--format", "json"])
     assert result.exit_code == 0, result.output
     saved = tmp_path / "comparison.json"
-    saved.write_text(result.output)
+    saved.write_text(result.stdout)  # stderr (logs, warnings) is not part of the JSON report
     verify(Artifact(str(saved), is_json=True, must_contain='"wrong": 1'))
     report = json.loads(saved.read_text())
     assert endpoints == ["good", "bad"]

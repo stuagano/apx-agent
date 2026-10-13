@@ -11,6 +11,9 @@
 > This page tracks that contract (store semantics, `actor_id` scoping, BM25
 > retrieval, forking) and adds the APX `[tool.apx.agent]` declaration, the
 > `ConversationStore` / `MemoryStore` seams, and the local/Lakebase backends.
+> The operation-by-operation map — including what the managed Session Store
+> does **not** cover (transcript search, `session_state`, approval resume) —
+> is [design/managed-state-contract-map.md](../design/managed-state-contract-map.md).
 
 ---
 

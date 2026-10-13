@@ -220,6 +220,60 @@ def test_recovery_cannot_bypass_an_exceeded_budget(execution: Any, checkpoints: 
     assert execution.effects == ["proof"]
 
 
+def test_recovery_trace_joins_the_original_invocation(
+    execution: Any, checkpoints: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+) -> None:
+    """A recovered worker starts a new trace; both tag the same invocation id."""
+    import mlflow
+
+    class InterruptedModel(ToolModel):
+        def _generate(self, messages: Any, **kwargs: Any) -> Any:
+            if isinstance(messages[-1], ToolMessage):
+                raise ConnectionError("worker lost after tool checkpoint")
+            return super()._generate(messages, **kwargs)
+
+    monkeypatch.setenv("APX_AGENT_MLFLOW_AUTOLOG", "0")
+    # The graph runs in a worker thread. set_tracking_uri is thread-local in
+    # MLflow 3.14, so the URI has to be in the environment before that thread
+    # starts or the turn writes a different store than this test reads.
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"sqlite:///{tmp_path / 'mlflow.db'}")
+    mlflow.langchain.autolog(disable=True)
+    old_uri = mlflow.get_tracking_uri()
+    mlflow.set_tracking_uri(f"sqlite:///{tmp_path / 'mlflow.db'}")
+    experiment = mlflow.set_experiment("durable-recovery-correlation")
+    mlflow.tracing.enable()
+    try:
+        monkeypatch.setattr(
+            "apx_agent._compile._build_chat_databricks", lambda *a, **k: InterruptedModel(),
+        )
+        with pytest.raises(ConnectionError, match="worker lost"):
+            asyncio.run(handlers(execution, checkpoints).invoke(PAYLOAD, context()))
+        monkeypatch.setattr(
+            "apx_agent._compile._build_chat_databricks", lambda *a, **k: ToolModel(),
+        )
+        result = asyncio.run(handlers(execution, checkpoints).invoke(PAYLOAD, context(recovery=True)))
+        # Search before restoring the caller's tracking URI. The graph thread
+        # follows MLFLOW_TRACKING_URI, and a restored URI would search the
+        # wrong store.
+        traces = mlflow.search_traces(
+            locations=[experiment.experiment_id],
+            return_type="list",
+            include_spans=False,
+            flush=True,
+        )
+    finally:
+        mlflow.set_tracking_uri(old_uri)
+        mlflow.langchain.autolog(disable=False)
+    assert result["status"] == "completed"
+    assert execution.effects == ["proof"]
+    tagged = {
+        trace.info.tags.get("apx.recovery"): trace.info.tags.get("apx.invocation.id")
+        for trace in traces
+        if trace.info.tags.get("apx.invocation.id")
+    }
+    assert tagged == {"false": "invocation-one", "true": "invocation-one"}
+
+
 def test_native_sdk_recovery_dispatch_restores_completed_output(
     execution: Any, checkpoints: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
 ) -> None:
