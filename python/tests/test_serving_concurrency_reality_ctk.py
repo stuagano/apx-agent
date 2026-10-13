@@ -1,6 +1,6 @@
 """Claim-vs-reality: served routes must not block the event loop (#353).
 
-``/invocations``, ``/responses`` and the A2A ``message/send`` handler are
+``/invocations``, ``/invocations`` and the A2A ``message/send`` handler are
 ``async def`` but run a synchronous agent turn (``chat_agent.predict`` /
 ``predict_stream`` / ``_invoke_fn``). Calling that sync work *directly* on the
 event loop freezes the whole replica for the turn's duration — a concurrent

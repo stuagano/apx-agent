@@ -156,7 +156,7 @@ class TestMarkdownWiring:
         assert "renderAssistantInto" in html  # helper present
 
     def test_dev_ui_sends_thread_id_in_custom_inputs(self):
-        """Dev UI must pass custom_inputs.thread_id with every /responses call
+        """Dev UI must pass custom_inputs.thread_id with every /invocations call
         so the server-side session store is used (multi-turn memory, reload
         resume). The thread_id is generated once per sessionStorage lifetime."""
         from apx_agent._ui_chat import _render_agent_ui
