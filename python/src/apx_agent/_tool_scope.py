@@ -386,6 +386,26 @@ class ScopeGuard:
             tools = tools()
         return tools or ()
 
+    def _stamp_principal(self, tool_name: str, scope: ToolScope | None) -> None:
+        """Name the executing principal and hashed triggering user on the span."""
+        if scope is None or scope.identity is None:
+            return
+        from ._agent_identity import principal_label  # noqa: PLC0415
+        from ._audit import set_audit_attrs, user_hash  # noqa: PLC0415
+        from . import _defaults
+
+        # The forwarded user header is the user whose request triggered the
+        # call. It is absent outside an Apps request, and only its hash is
+        # recorded. Imported through the module so a test can stand in for it.
+        headers = _defaults.get_databricks_headers()
+        set_audit_attrs(
+            current_active_span(),
+            principal=principal_label(
+                identity_to_execution(scope.identity), named_sp_name(scope.identity)
+            ),
+            user_hash=user_hash(headers.user_id if headers else None),
+        )
+
     def _scope_for(self, tool_name: str) -> ToolScope | None:
         for fn in self._iter_tools():
             if getattr(fn, "__name__", None) == tool_name:
@@ -420,6 +440,10 @@ class ScopeGuard:
 
         def _check(tool_name: str, args: dict[str, Any]) -> None:
             scope = self._scope_for(tool_name)
+            # #816: attribute the call to the principal it executes as and the
+            # user whose request triggered it. An inherited agent identity is a
+            # scope with an identity and no ceiling, so this fires for it too.
+            self._stamp_principal(str(tool_name), scope)
             if scope is None:
                 return  # unscoped tool — no-op (back-compat)
             if not isinstance(args, dict):
