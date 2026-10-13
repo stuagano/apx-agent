@@ -29,6 +29,15 @@ All notable changes to apx-agent. Format loosely follows
   apply/verify remain explicit plan-only operations until a verified Databricks
   attachment API is available.
 
+### Fixed
+
+- **A2A Apps peers keep the request-user token (#903).** A Databricks Apps
+  peer (`apps/<name>`) with a request-user token no longer takes the Apps SDK
+  transport, whose auth hook signs the call as the calling app's service
+  principal. The call goes over direct HTTP with `X-Forwarded-Access-Token`
+  and `Authorization: Bearer`. Supervisor long-task continuation still uses
+  the SDK, because the HTTP path cannot resume a paused task.
+
 ### Changed
 
 - **Breaking: the watchdog governance surface is now `governance`.** Runtime
