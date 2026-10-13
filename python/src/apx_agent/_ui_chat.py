@@ -533,7 +533,7 @@ async function runCase(i) {{
   render();
   let text = '';
   try {{
-    const resp = await fetch('/responses', {{
+    const resp = await fetch('/invocations', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{input: [{{role: 'user', content: r.question}}], stream: true}}),
     }});
@@ -1802,7 +1802,7 @@ async function runEvalCase(i) {{
   let text = '';
   let traceId = null;
   try {{
-    const resp = await fetch('/responses', {{
+    const resp = await fetch('/invocations', {{
       method: 'POST', headers: {{'Content-Type':'application/json'}},
       body: JSON.stringify({{input: [{{role:'user', content:r.question}}], stream: true}}),
     }});
@@ -2834,7 +2834,7 @@ form.addEventListener('submit', async e => {{
   let toolEventsFromStream = false;
 
   try {{
-    const res = await fetch('/responses', {{
+    const res = await fetch('/invocations', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json', 'x-return-trace-id': 'true' }},
       body: JSON.stringify({{ input: history, stream: true, custom_inputs: {{ thread_id: devThreadId }} }}),

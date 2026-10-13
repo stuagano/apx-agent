@@ -370,7 +370,7 @@ class RemoteDatabricksAgent(BaseAgent):
         self._long_task = long_task
         self._max_continuations = max_continuations
         self._card: AgentCard | None = None
-        self._last_http_url = f"{self._base_url}/responses"
+        self._last_http_url = f"{self._base_url}/invocations"
 
     # ------------------------------------------------------------------
     # Factory methods
@@ -849,7 +849,7 @@ class RemoteDatabricksAgent(BaseAgent):
         messages: Sequence[Message | dict[str, Any]],
         headers: dict[str, str],
     ) -> dict[str, Any]:
-        """Direct POST /responses (→ /invocations fallback); return the raw reply.
+        """Direct POST /invocations; return the raw reply.
 
         The structured body — needed to recover a control ``function_call`` item
         (``_extract_remote_control``) as well as the answer text. ``_call_via_http``
@@ -863,7 +863,7 @@ class RemoteDatabricksAgent(BaseAgent):
         custom_inputs = {**_responses_data_inputs(messages), **_obo_custom_inputs(headers)}
         if custom_inputs:
             payload["custom_inputs"] = custom_inputs
-        url = f"{self._base_url}/responses"
+        url = f"{self._base_url}/invocations"
 
         async with AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
@@ -871,14 +871,6 @@ class RemoteDatabricksAgent(BaseAgent):
                 json=payload,
                 headers={"Content-Type": "application/json", **headers},
             )
-            if resp.status_code in (404, 405):
-                url = f"{self._base_url}/invocations"
-                resp = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json", **headers},
-                )
-
         if resp.status_code >= 400:
             raise RuntimeError(
                 f"Remote agent {self.name} returned {resp.status_code}: {resp.text}"
@@ -935,15 +927,11 @@ class RemoteDatabricksAgent(BaseAgent):
         messages: Sequence[Message | dict[str, Any]],
         headers: dict[str, str],
     ) -> str:
-        """Direct POST /responses fallback (with /invocations fallback).
+        """Direct POST /invocations.
 
-        The payload here is Responses-protocol shaped (``input`` list in), so
-        ``/responses`` is the natural target — a deployed AgentServer's
-        ``/invocations`` speaks the ChatAgent protocol (``messages`` key) and
-        would see zero messages and 400 (live-proven app-to-app). Peers that
-        don't serve ``/responses`` (older or apx ``create_app`` servers, which
-        accept the input shape on ``/invocations`` since #438) get the
-        fallback POST. Reply parsing accepts both shapes either way.
+        The payload is the Responses ``input`` list. ``/invocations`` accepts
+        that shape and answers with ``output`` (and with Responses stream
+        events when ``stream`` is set). Reply parsing accepts both shapes.
         """
         data = await self._post_via_http(messages, headers)
         return _reply_text(data, url=self._last_http_url, agent_name=self.name)

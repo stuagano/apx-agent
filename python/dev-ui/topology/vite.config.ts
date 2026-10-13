@@ -33,7 +33,7 @@ export default defineConfig({
       "/_apx/discover": "http://localhost:8000",
       "/_apx/workspace-context": "http://localhost:8000",
       "/_apx/setup": "http://localhost:8000",
-      "/responses": "http://localhost:8000",
+      "/invocations": "http://localhost:8000",
     },
   },
 });

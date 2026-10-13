@@ -129,6 +129,7 @@ class GatewayConfig(BaseModel):
 
 StoreType = Literal["inmemory", "lakebase", "managed"]
 RuntimeTarget = Literal["responses_agent", "durable_agent_server"]
+"""``responses_agent`` is the legacy model-serving contract. Apps use ``durable_agent_server``."""
 DeployBackend = Literal["agentbricks", "apps_api"]
 
 # Default embedding endpoint for the "persistent" knob's Lakebase memory —
@@ -619,7 +620,8 @@ class AgentConfig(BaseModel):
 
     name: str
     target: RuntimeTarget = "responses_agent"
-    """Compilation contract, independent of where the agent executes."""
+    """Compilation contract. ``responses_agent`` is legacy (model serving);
+    Databricks Apps use ``durable_agent_server``."""
     recovery: bool = False
     """Opt into checkpoint recovery; tools must tolerate replay of uncommitted work."""
     description: str = ""
