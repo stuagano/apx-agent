@@ -1014,7 +1014,7 @@ def test_native_deploy_hands_rollout_to_agentbricks(
     from apx_agent import AgentConfig, LlmAgent
     from apx_agent import cli as cli_mod
     from apx_agent._project_gen import generate_project, _build_databricks_yml
-    from databricks_agentbricks.agent_project import AgentProject
+    from databricks_agentbricks.projects.agent_project import AgentProject
 
     reconcile = MagicMock(side_effect=AssertionError("Chat must not provision serving endpoints"))
     monkeypatch.setattr("apx_agent._external_model.reconcile_external_model_endpoint", reconcile)
@@ -1338,7 +1338,7 @@ def test_app_space_deploy_binds_sdk_owned_store(
     result = CliRunner().invoke(main, args)
     if generated:
         from ctk import Artifact, verify
-        from databricks_agentbricks.agent_project import AgentProject
+        from databricks_agentbricks.projects.agent_project import AgentProject
 
         verify(Artifact(str(scaffold / ".build" / "agent.toml"), must_contain="[auth.user]"))
         native = AgentProject.load(scaffold / ".build")
