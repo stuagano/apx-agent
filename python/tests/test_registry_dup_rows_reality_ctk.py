@@ -48,7 +48,10 @@ def _run(delete_fails: bool, caplog) -> _PublishRun:
             raise RuntimeError("warehouse transient error")
         return []
 
-    with patch("apx_agent._sql.run_sql", side_effect=_fake_run_sql), caplog.at_level(
+    # _data_governance binds run_sql at import; unpatched, it polls the mock
+    # warehouse for the full 60s cold-start timeout.
+    with patch("apx_agent._sql.run_sql", side_effect=_fake_run_sql), \
+         patch("apx_agent._data_governance.run_sql", return_value=[]), caplog.at_level(
         logging.ERROR
     ):
         count = publish_standalone_tools_to_registry(
