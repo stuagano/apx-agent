@@ -261,6 +261,25 @@ def build_instructions(user_id: str, query: str) -> str:
 
 ### Memory stores
 
+### Session extraction
+
+A finished managed session becomes managed memory only when
+`[tool.apx.agent.memory.extraction]` sets `enabled = true` and the session
+store is managed too. After the turn, distill that one session:
+
+```bash
+apx memory extract --session-id <completed-session-id> --actor-id <trusted-caller>
+apx memory extract --session-id <completed-session-id> --dry-run
+```
+
+The service reads the transcript and writes the returned entries into the
+declared memory store under the session's recorded actor. `--dry-run` returns
+the same entries without writing. The session is left as it was. A service
+failure exits non-zero and is not reported as a write. This is not
+`consolidate_memories`, which summarizes memories that already exist, and it
+does not start a cross-session memory pipeline.
+
+
 | Store | Best for |
 |-------|----------|
 | `InMemoryMemoryStore` | Tests, dev |

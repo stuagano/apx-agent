@@ -205,6 +205,12 @@ from ._example import (
 from ._memory_lakebase import LakebaseMemoryStore
 from ._example_lakebase import LakebaseExampleStore
 from ._memory_managed import ApiCaller, ManagedMemoryStore, provision_managed_memory
+from ._memory_extract import (
+    ExtractedSessionMemory,
+    SessionExtractionResult,
+    extract_declared_session,
+    extraction_enabled,
+)
 
 # Agent-facing memory / example tools (LLM-callable wrappers around the stores)
 from ._memory_tools import make_memory_tools
@@ -616,6 +622,10 @@ __all__ = [
     "ManagedMemoryStore",
     "ApiCaller",
     "provision_managed_memory",
+    "ExtractedSessionMemory",
+    "SessionExtractionResult",
+    "extract_declared_session",
+    "extraction_enabled",
     # Agent-facing memory / example tools
     "make_memory_tools",
     "make_example_tools",

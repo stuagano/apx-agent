@@ -6,6 +6,13 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- Declared session-to-memory extraction. `[tool.apx.agent.memory.extraction]`
+  stays off until `enabled = true` on a managed memory store with a managed
+  session store. `apx memory extract --session-id` distills that one completed
+  session through AgentKit; `--dry-run` returns the entries without writing,
+  and a real write is read back before it is reported. The session is not
+  rewritten, and existing-memory consolidation is unchanged. (#858)
+
 ### Added
 
 - **Agent identity (#816).** `[tool.apx.agent] identity` declares the agent's own
