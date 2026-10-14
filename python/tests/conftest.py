@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import tempfile
+from pathlib import Path
 from typing import Annotated, Any
 from unittest.mock import MagicMock
 
@@ -14,6 +16,11 @@ from apx_agent import LlmAgent, AgentConfig, AgentContext
 
 
 os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
+# Unset, MLflow defaults to sqlite:///<cwd>/mlflow.db, re-resolved on every
+# call. Tests that chdir into tmp_path then race any concurrent MLflow call on
+# that fresh DB's alembic migration (`_alembic_tmp_experiments already
+# exists`). A per-process file store has no migration and follows no cwd.
+os.environ.setdefault("MLFLOW_TRACKING_URI", Path(tempfile.mkdtemp(prefix="apx-mlflow-")).as_uri())
 # create_app autolog leaves leftover threads that kill 3.11 xdist workers.
 os.environ.setdefault("APX_AGENT_MLFLOW_AUTOLOG", "0")
 
