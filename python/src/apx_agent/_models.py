@@ -801,6 +801,9 @@ class AgentTool(BaseModel):
     input_schema: dict[str, Any] | None = None
     output_schema: dict[str, Any] | None = None
     sub_agent_url: str | None = None  # set for sub-agent tools, None for local tools
+    # Caller allowlist (#831) — MCP list_tools filters on it. Never serialized:
+    # the card must not publish who may call a tool.
+    callers: tuple[str, ...] = Field(default=(), exclude=True)
 
 
 # ---------------------------------------------------------------------------

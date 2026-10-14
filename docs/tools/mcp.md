@@ -75,4 +75,25 @@ Use it when a client needs to inspect the live agent topology before deciding
 which tool, handoff, or route evidence to use. It returns the compact
 `/_apx/topology/digest` payload, not the full visual graph.
 
+### Restricting a tool to specific callers
+
+Every tool on `/mcp` is visible to every caller by default. To limit one, declare
+`callers` — the emails allowed to use it:
+
+```toml
+[[tool.apx.tools]]
+type = "uc_function"
+function_name = "main.billing.refund_create"
+callers = ["alice@example.com", "billing-bot@example.com"]
+```
+
+In Python: `attach_scope(fn, ToolScope(callers=("alice@example.com",)))`, or
+`build_tool(..., scope=ToolScope(callers=(...)))`.
+
+The caller is the Databricks Apps `X-Forwarded-Email`. MCP `list_tools` hides the
+tool from anyone else, and its `/api/tools/<name>` route (which MCP `call_tool`
+dispatches through) returns 403 `caller_denied` with a `scope_action=deny` audit
+event. A request with no caller email is denied. Tools without `callers` stay
+open. Matching is by email only; group membership is not resolved.
+
 Model Serving agents don't expose `/mcp` — Model Serving uses the `/invocations` endpoint with the `ChatAgent` contract.
