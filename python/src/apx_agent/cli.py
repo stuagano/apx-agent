@@ -10630,11 +10630,11 @@ def _deploy_apps_impl(
         doc = _read_databricks_yml(cwd)
         bundle_key, resolved_app_name = _resolve_app_name(doc)
         app = doc["resources"]["apps"][bundle_key]
-    launcher = cwd / "agent_server" / "start_server.py"
-    if not launcher.is_file() or "DurableAgentServer" not in launcher.read_text():
-        raise click.ClickException(
-            "Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py."
-        )
+        launcher = cwd / "agent_server" / "start_server.py"
+        if not launcher.is_file() or "DurableAgentServer" not in launcher.read_text():
+            raise click.ClickException(
+                "Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py."
+            )
     app_name = app_name_override or resolved_app_name
     if app_name_override and app_name_override != resolved_app_name:
         log(f"# app-name override: polling {app_name} (target {bundle_target})")

@@ -178,27 +178,43 @@ def _responses_shaped_reply(response: Any) -> dict[str, Any]:
 
     Callers that POSTed the Responses shape (``{"input": [...]}``) — e.g.
     ``RemoteDatabricksAgent._call_via_http`` — parse
-    ``data["output"][0]["content"][0]["text"]``. Hand them the final assistant
-    text in exactly that shape (#438).
+    the last ``message`` item in ``data["output"]`` for the final assistant text
+    (#438), and ``function_call`` items for control sentinels such as
+    ``finish_loop`` (``_extract_remote_control``). ``custom_outputs`` carries
+    data parts.
     """
     text = ""
     msg_id = "msg-0"
+    calls: list[dict[str, Any]] = []
     for m in response.messages:
-        if m.role == "assistant" and isinstance(m.content, str) and m.content:
+        if m.role != "assistant":
+            continue
+        for tc in m.tool_calls or []:
+            calls.append({
+                "type": "function_call",
+                "call_id": tc.id,
+                "name": tc.function.name,
+                "arguments": tc.function.arguments,
+            })
+        if isinstance(m.content, str) and m.content:
             text = m.content
             if m.id:
                 msg_id = m.id
-    return {
+    reply: dict[str, Any] = {
         "output": [
+            *calls,
             {
                 "type": "message",
                 "role": "assistant",
                 "id": msg_id,
                 "status": "completed",
                 "content": [{"type": "output_text", "text": text, "annotations": []}],
-            }
+            },
         ]
     }
+    if response.custom_outputs:
+        reply["custom_outputs"] = response.custom_outputs
+    return reply
 
 
 def mount_invocations_route(

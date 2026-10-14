@@ -60,9 +60,6 @@ def validate_space_bundle(doc: dict[str, Any], *, bundle_key: str) -> str:
         if any(name.endswith("_keepalive") for name in target.get("resources", {}).get("jobs", {})):
             raise click.ClickException("Configure the paused keepalive job in the root declaration, not target overrides.")
     env = app.get("config", {}).get("env", [])
-    hosts = [entry.get("value") for entry in env if entry.get("name") == "APX_APPS_HOST"]
-    if hosts != ["agentbricks"]:
-        raise click.ClickException("This App Space deployment path requires APX_APPS_HOST=agentbricks.")
     validate_space_env(env)
     for name, job in doc.get("resources", {}).get("jobs", {}).items():
         if name.endswith("_keepalive") and job.get("schedule", {}).get("pause_status") != "PAUSED":

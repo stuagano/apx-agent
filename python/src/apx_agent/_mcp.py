@@ -19,12 +19,14 @@ class _McpComponents:
 # Request-scoped auth context — avoids race conditions with concurrent MCP clients
 _mcp_auth_header: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_auth_header", default="")
 _mcp_obo_token: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_obo_token", default="")
+_mcp_caller_email: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_caller_email", default="")
 
 
-def set_mcp_auth(auth_header: str, obo_token: str) -> None:
+def set_mcp_auth(auth_header: str, obo_token: str, caller_email: str) -> None:
     """Set MCP auth context for the current request (called from protocol routes)."""
     _mcp_auth_header.set(auth_header)
     _mcp_obo_token.set(obo_token)
+    _mcp_caller_email.set(caller_email)
 
 
 def _build_mcp_components(ctx: AgentContext, app: FastAPI, api_prefix: str = "/api") -> _McpComponents:
@@ -43,6 +45,9 @@ def _build_mcp_components(ctx: AgentContext, app: FastAPI, api_prefix: str = "/a
 
     @server.list_tools()
     async def _list_tools() -> list[Any]:
+        from ._tool_scope import ToolScope, caller_allowed
+
+        caller = _mcp_caller_email.get()
         return [
             mcp_types.Tool(
                 name=t.name,
@@ -50,6 +55,7 @@ def _build_mcp_components(ctx: AgentContext, app: FastAPI, api_prefix: str = "/a
                 inputSchema=t.input_schema or {"type": "object", "properties": {}},
             )
             for t in ctx.tools
+            if caller_allowed(ToolScope(callers=t.callers), caller)
         ]
 
     @server.call_tool()
@@ -59,11 +65,15 @@ def _build_mcp_components(ctx: AgentContext, app: FastAPI, api_prefix: str = "/a
         # Read auth from request-scoped contextvars (set by protocol routes)
         mcp_auth = _mcp_auth_header.get()
         mcp_obo = _mcp_obo_token.get()
+        mcp_caller = _mcp_caller_email.get()
         extra_headers: dict[str, str] = {}
         if mcp_auth:
             extra_headers["Authorization"] = mcp_auth
         if mcp_obo:
             extra_headers["X-Forwarded-Access-Token"] = mcp_obo
+        if mcp_caller:
+            # The tool route enforces the callers allowlist (#831) on this header.
+            extra_headers["X-Forwarded-Email"] = mcp_caller
 
         async with AsyncClient(
             transport=ASGITransport(app=app),

@@ -41,7 +41,7 @@ def mcp_ctx_and_app():
     ctx = AgentContext(config=config, tools=tools, card=card, agent=BaseAgent())
 
     from apx_agent._mcp import set_mcp_auth
-    set_mcp_auth("", "")
+    set_mcp_auth("", "", "")
 
     return ctx, app
 
@@ -197,7 +197,7 @@ class TestMcpAuthContextVars:
         from apx_agent._mcp import _mcp_auth_header, _mcp_obo_token, set_mcp_auth
 
         # Set auth in one context
-        set_mcp_auth("Bearer token-A", "obo-A")
+        set_mcp_auth("Bearer token-A", "obo-A", "")
         assert _mcp_auth_header.get() == "Bearer token-A"
         assert _mcp_obo_token.get() == "obo-A"
 
@@ -206,7 +206,7 @@ class TestMcpAuthContextVars:
         def check_isolated():
             # In a copied context, the values ARE copied (that's how contextvars work)
             # But setting new values doesn't affect the parent
-            set_mcp_auth("Bearer token-B", "obo-B")
+            set_mcp_auth("Bearer token-B", "obo-B", "")
             assert _mcp_auth_header.get() == "Bearer token-B"
         ctx.run(check_isolated)
 
