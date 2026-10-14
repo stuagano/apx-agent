@@ -74,7 +74,7 @@ def deploy_apps_api(
     log(f"# Apps API deploy {app_name}" + (f" (space {space})" if space else " (dedicated)"))
 
     build_dir = _stage(cwd, config, agent, plan, log)
-    _ensure_stores(workspace, config, report.session_store, log)
+    _ensure_memory_store(workspace, config, log)
     app = _ensure_app(workspace, app_name=app_name, space=space, description=config.description or None, log=log)
     _apply_grants(workspace, app_name=app_name, space=space, profile=profile, plan=plan, family_permissions=family_permissions, log=log)
     env = _runtime_and_env(workspace, profile=profile, app_name=app_name, space=space, config=config,
@@ -138,7 +138,7 @@ def _stage(cwd: Path, config: Any, agent: Any, plan: AuthorizationPlan, log: Cal
     return source
 
 
-def _ensure_stores(workspace: Any, config: Any, session_store: str | None, log: Callable[[str], None]) -> None:
+def _ensure_memory_store(workspace: Any, config: Any, log: Callable[[str], None]) -> None:
     if config.memory is not None and config.memory.type == "managed":
         from ._memory_managed import provision_managed_memory
 
@@ -149,18 +149,6 @@ def _ensure_stores(workspace: Any, config: Any, session_store: str | None, log: 
                 f"Could not ensure memory store {config.memory.store_name!r}: {exc}. "
                 "A permission error is not retried as a create; grant access and rerun."
             ) from exc
-    if session_store is None:
-        return
-    from databricks_agentkit import AgentKitClient
-
-    try:
-        AgentKitClient(workspace_client=workspace).session_stores.get(session_store)
-    except Exception as exc:
-        raise click.ClickException(
-            f"Could not read session store {session_store!r}: {exc}. "
-            "Apps API deploy does not create session stores; create it and grant read access, then rerun."
-        ) from exc
-    log(f"  session store {session_store} exists")
 
 
 def _ensure_app(workspace: Any, *, app_name: str, space: str | None, description: str | None, log: Callable[[str], None]) -> Any:
@@ -331,7 +319,7 @@ def _runtime_and_env(
     principal = app.service_principal_client_id
     runtime = runtime_store_env(
         client, app_name=app_name, space=space,
-        service_principal_id=principal if isinstance(principal, str) else None,
+        service_principal_id=principal if isinstance(principal, str) else None, session_store=session_store,
     )
     env = {
         APX_MODEL_ENV: config.model,
@@ -350,6 +338,7 @@ def _runtime_and_env(
         env[MEMORY_ENV] = config.memory.store_name
     if session_store is not None:
         env[SESSION_ENV] = session_store
+        log(f"  session store {session_store} ensured and granted to the app principal")
     experiment_id = _resolve_experiment(profile, app_name, bundle_target, auto_experiment, log)
     if experiment_id:
         env[EXPERIMENT_ENV] = experiment_id

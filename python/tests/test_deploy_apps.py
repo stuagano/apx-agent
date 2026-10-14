@@ -1324,13 +1324,20 @@ def test_app_space_deploy_binds_sdk_owned_store(
         }
 
     sdk.create_runtime_store.side_effect = create_store
+    from databricks.sdk.errors import NotFound
     from databricks_agentkit._api_client import _AgentBricksApiClient
 
+    # #910: a fresh space has no session store yet; deploy creates and grants it.
+    sdk.get_session_store.side_effect = NotFound("no session store")
     probe_ws = MagicMock()
     probe_ws.apps.get_space.return_value = Space(name="app-space")
-    probe_ws.api_client.do.side_effect = lambda method, path, **kw: {
-        "name": path.removeprefix("/api/2.0/agents/"), "display_name": path.rsplit("/", 1)[-1],
-    }
+
+    def probe(method: str, path: str, **kw: Any) -> dict[str, Any]:
+        if "session-stores" in path:
+            raise NotFound("no session store")
+        return {"name": path.removeprefix("/api/2.0/agents/"), "display_name": path.rsplit("/", 1)[-1]}
+
+    probe_ws.api_client.do.side_effect = probe
     monkeypatch.setattr("apx_agent.cli._make_scaffold_workspace_client", lambda profile: probe_ws)
     constructor = MagicMock(side_effect=lambda profile=None, **kw: _AgentBricksApiClient(**kw) if kw else sdk)
     monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", constructor)
@@ -1371,6 +1378,10 @@ def test_app_space_deploy_binds_sdk_owned_store(
             assert env["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LAKEBASE_BRANCH"] == "projects/p/branches/b"
         assert "resources" not in saved and "user_api_scopes" not in saved
         sdk.create_runtime_store.assert_called_once_with("my-app", "app-sp", app_name="my-app", retry_transient=True)
+        if generated:
+            sdk.create_session_store.assert_called_once_with(
+                "remote-sessions", description="apx-agent managed sessions", retry_transient=True)
+            sdk.grant_session_store_permission.assert_called_once_with("remote-sessions", "app-sp")
 
 
 def test_app_space_source_rejects_local_store_override(tmp_path: Path) -> None:
