@@ -39,6 +39,9 @@ def test_partial_insert_failure_raises_not_short_count(monkeypatch) -> None:
     import apx_agent._sql as _sql
 
     monkeypatch.setattr(_sql, "run_sql", lambda *_a, **_k: [])
+    # _data_governance binds run_sql at import; unpatched, it polls the mock
+    # warehouse for the full 60s cold-start timeout.
+    monkeypatch.setattr("apx_agent._data_governance.run_sql", lambda *_a, **_k: [])
 
     results = iter([1, 0])  # tool 1 inserts, tool 2 fails
     monkeypatch.setattr(pub, "_insert_tool_row", lambda **_k: next(results))
@@ -58,6 +61,7 @@ def test_all_inserts_succeed_returns_count(monkeypatch) -> None:
     import apx_agent._sql as _sql
 
     monkeypatch.setattr(_sql, "run_sql", lambda *_a, **_k: [])
+    monkeypatch.setattr("apx_agent._data_governance.run_sql", lambda *_a, **_k: [])
     monkeypatch.setattr(pub, "_insert_tool_row", lambda **_k: 1)
 
     n = publish_tools_to_registry(
