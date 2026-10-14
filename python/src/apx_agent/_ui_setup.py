@@ -1086,7 +1086,7 @@ async function runCase(idx) {{
   r.status = 'running'; r.response = '';
   renderTable();
   try {{
-    const resp = await fetch('/responses', {{
+    const resp = await fetch('/invocations', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{input: [{{role: 'user', content: r.question}}]}}),

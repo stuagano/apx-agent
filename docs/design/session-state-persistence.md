@@ -2,6 +2,11 @@
 
 **Status:** approved · **Date:** 2026-06-21 · **Builds on:** [keyed-shared-state.md](keyed-shared-state.md) (phase 2), [keyed-state-tool-access.md](keyed-state-tool-access.md) (increment 2)
 
+> **Managed-state note (#854):** `set_session_state` is a ConversationStore
+> write. The native managed Session Store is a LangGraph checkpointer, not a
+> ConversationStore, so it does not implement this surface. See
+> [managed-state-contract-map.md](managed-state-contract-map.md).
+>
 > **Historical note (#332):** this design documents three backends — in-memory,
 > Delta (`_conversation_delta.py`), and Lakebase. The Delta backend was
 > deleted and `_conversation_delta.py` removed; Lakebase is now the sole

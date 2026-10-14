@@ -1,4 +1,9 @@
-"""Compile an apx-agent ``BaseAgent`` to the Databricks Apps ``ResponsesAgent`` contract.
+"""Legacy compiler: an apx-agent ``BaseAgent`` to MLflow ``ResponsesAgent``.
+
+**Legacy.** Databricks Apps no longer serve this target — Apps use
+``DurableAgentServer``. ``compile_to_responses_agent`` remains for model
+serving (``mlflow.pyfunc.log_model``) and for callers that pass
+``target="responses_agent"`` explicitly. New Apps projects must not use it.
 
 This is the **Apps-native peer** of :func:`apx_agent._chat_agent.compile_to_chat_agent`.
 Same agent definition, different runtime contract:
@@ -1025,7 +1030,7 @@ def compile_to_responses_agent(
     agent_id: str | None = None,
     checkpointer: Any | None = None,
 ) -> CompiledResponsesAgent:
-    """Compile an apx-agent ``BaseAgent`` to the Databricks Apps ResponsesAgent contract.
+    """Legacy model-serving compiler. Apps use DurableAgentServer.\n\nCompile an apx-agent ``BaseAgent`` to the Databricks Apps ResponsesAgent contract.
 
     Returns two plain (undecorated) functions; the caller is responsible for
     applying ``@invoke()`` / ``@stream()`` at module level in the scaffold's

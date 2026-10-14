@@ -1888,8 +1888,8 @@ resources:
             value: "1"
           - name: APX_AGENT_NAME
             value: <APP_NAME>
-          - name: APX_APPS_HOST
-            value: python
+          - name: APX_RUNTIME
+            value: apps
           - name: APX_GIT_SHA
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
@@ -4162,7 +4162,7 @@ def _scaffold_apps(
     memory_block = _SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else ""
     pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT + session_block + memory_block)
 
-    from ._project_gen import _START_HOST_CONTENT, _START_MANAGED_CONTENT
+    from ._project_gen import _START_HOST_CONTENT, _START_SERVER_CONTENT
 
     files: dict[str, str] = {
         "pyproject.toml": pyproject,
@@ -4178,8 +4178,7 @@ def _scaffold_apps(
         ),
         "agent_server/__init__.py": "",
         "agent_server/start_host.py": _START_HOST_CONTENT,
-        "agent_server/start_managed.py": _START_MANAGED_CONTENT,
-        "agent_server/start_server.py": _SCAFFOLD_APPS_START_SERVER,
+        "agent_server/start_server.py": _START_SERVER_CONTENT,
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
         "tests/test_agent_imports.py": _sub(_SCAFFOLD_APPS_TEST_IMPORT),
@@ -10627,15 +10626,11 @@ def _deploy_apps_impl(
         doc = _read_databricks_yml(cwd)
         bundle_key, resolved_app_name = _resolve_app_name(doc)
         app = doc["resources"]["apps"][bundle_key]
-    hosts = [_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST")]
-    hosts.extend(value.split("=", 1)[1] for value in env_pairs if value.startswith("APX_APPS_HOST="))
-    for host in hosts:
-        if host is None:
-            continue
-        if host.strip().lower() == "appkit":
-            raise click.ClickException("AppKit host is retired; declare target = 'durable_agent_server' and use the native Python entrypoint.")
-        if host.strip().lower() not in {"python", "agentbricks"}:
-            raise click.ClickException("APX_APPS_HOST must be python or agentbricks.")
+        launcher = cwd / "agent_server" / "start_server.py"
+        if not launcher.is_file() or "DurableAgentServer" not in launcher.read_text():
+            raise click.ClickException(
+                "Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py."
+            )
     app_name = app_name_override or resolved_app_name
     if app_name_override and app_name_override != resolved_app_name:
         log(f"# app-name override: polling {app_name} (target {bundle_target})")
@@ -10776,8 +10771,9 @@ def _deploy_apps_impl(
         if not declared_memory or any(name != "long_term_memory" for name in report.unsatisfied):
             report.require_compatible()
     if effective_config is not None and effective_config.target == "durable_agent_server":
-        if not native_direct and _apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") != "agentbricks":
-            raise click.ClickException("Bundle host disagrees with the declared durable target; regenerate the project.")
+        launcher = cwd / "agent_server" / "start_server.py"
+        if not native_direct and (not launcher.is_file() or "DurableAgentServer" not in launcher.read_text()):
+            raise click.ClickException("Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py.")
         declared_space = effective_config.deploy.space if effective_config.deploy is not None else None
         if declared_space != space_name:
             raise click.ClickException("Bundle space disagrees with deploy.space; regenerate the project.")

@@ -25,7 +25,7 @@ from ._doctor import Check, Status
 STAGES = ("Config", "Compile", "Startup", "Request", "Deploy")
 SENTINEL = "apx-doctor-sentinel-token"
 PEER_URL = "https://apx-doctor-peer.invalid"
-SDK_FIX = 'uv run --with "databricks-agentbricks>=0.4.0,<0.5" apx-agent doctor --durable --offline'
+SDK_FIX = 'uv run --with "databricks-agentbricks>=0.5.0,<0.6" apx-agent doctor --durable --offline'
 AGENT_MODULE_FIX = ("The native durable runtime imports `agent:agent` (as _serve.create_app does); "
                     "the pyproject `module =` key is not used by the durable host. "
                     "Expose the agent as `agent` in agent.py at the project root.")

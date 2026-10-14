@@ -20,6 +20,7 @@ Skips if optional extras are missing.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
@@ -95,7 +96,9 @@ def app_and_chat_agent():
 
     original_factory = _ca_module.chat_agent_for
 
-    def _spy_factory(agent_arg, *, model, conversation_store=None, agent_id=None, checkpointer=None):
+    def _spy_factory(
+        agent_arg, *, model, conversation_store=None, agent_id=None, checkpointer=None
+    ):
         ca = original_factory(agent_arg, model=model)
         # create_app builds a chat_agent per protocol route (now /invocations AND
         # the A2A surface). The /invocations mount is first, so capture that one —
@@ -107,9 +110,10 @@ def app_and_chat_agent():
 
     # _wiring imports _make_workspace_client at module load — patch the
     # rebinding there, not the source. (Same lazy-import gotcha as above.)
-    with patch.object(_ca_module, "chat_agent_for", side_effect=_spy_factory), patch(
-        "apx_agent._wiring._make_workspace_client"
-    ) as mock_ws_factory:
+    with (
+        patch.object(_ca_module, "chat_agent_for", side_effect=_spy_factory),
+        patch("apx_agent._wiring._make_workspace_client") as mock_ws_factory,
+    ):
         mock_ws_factory.return_value = MagicMock(name="sp_ws")
         app = create_app(agent, config=config)
         # TestClient triggers lifespan, which is when the route mounts.
@@ -176,14 +180,16 @@ class TestStreamingProtocol:
         client, captured = app_and_chat_agent
         from mlflow.types.agent import ChatAgentChunk, ChatAgentMessage
 
-        captured["chat_agent"].predict_stream.return_value = iter([
-            ChatAgentChunk(
-                delta=ChatAgentMessage(role="assistant", content="hel", id="m1")
-            ),
-            ChatAgentChunk(
-                delta=ChatAgentMessage(role="assistant", content="lo", id="m1")
-            ),
-        ])
+        captured["chat_agent"].predict_stream.return_value = iter(
+            [
+                ChatAgentChunk(
+                    delta=ChatAgentMessage(role="assistant", content="hel", id="m1")
+                ),
+                ChatAgentChunk(
+                    delta=ChatAgentMessage(role="assistant", content="lo", id="m1")
+                ),
+            ]
+        )
 
         resp = client.post(
             "/invocations",
@@ -265,8 +271,8 @@ class TestObOHeaderBridge:
 
 
 class TestInputShapeOnInvocations:
-    """#438: the Responses shape a RemoteDatabricksAgent posts must actually
-    execute the agent — not be silently accepted as an empty conversation."""
+    """The Responses shape a remote peer posts executes the agent on
+    ``/invocations`` and streams Responses events. There is no ``/responses`` route."""
 
     def test_input_shape_executes_agent_and_returns_responses_reply(
         self, app_and_chat_agent
@@ -275,9 +281,7 @@ class TestInputShapeOnInvocations:
         from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
 
         captured["chat_agent"].predict.return_value = ChatAgentResponse(
-            messages=[
-                ChatAgentMessage(role="assistant", content="the answer", id="m1")
-            ]
+            messages=[ChatAgentMessage(role="assistant", content="the answer", id="m1")]
         )
 
         resp = client.post(
@@ -293,6 +297,30 @@ class TestInputShapeOnInvocations:
         # And the reply is the shape the Responses-speaking poster parses.
         body = resp.json()
         assert body["output"][0]["content"][0]["text"] == "the answer"
+
+    def test_input_stream_emits_responses_events(self, app_and_chat_agent) -> None:
+        client, captured = app_and_chat_agent
+        from mlflow.types.agent import ChatAgentChunk, ChatAgentMessage
+
+        def chunks():
+            yield ChatAgentChunk(
+                delta=ChatAgentMessage(role="assistant", content="the answer", id="m1")
+            )
+
+        captured["chat_agent"].predict_stream.side_effect = lambda *a, **k: chunks()
+        resp = client.post(
+            "/invocations",
+            json={"input": [{"role": "user", "content": "hi"}], "stream": True},
+        )
+        assert resp.status_code == 200
+        assert "response.output_text.delta" in resp.text
+        assert "the answer" in resp.text
+        assert "chat.completion.chunk" not in resp.text
+
+    def test_responses_route_is_not_mounted(self, app_and_chat_agent) -> None:
+        client, _ = app_and_chat_agent
+        paths = {r.path for r in client.app.routes}
+        assert "/responses" not in paths
 
     def test_input_content_parts_are_flattened_to_text(
         self, app_and_chat_agent
@@ -363,111 +391,6 @@ class TestErrorHandling:
         assert resp.status_code in (400, 422)
 
 
-# ---------------------------------------------------------------------------
-# /responses route (ResponsesAgent protocol)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def app_with_responses():
-    """create_app() fixture with compile_to_responses_agent mocked out.
-
-    We mock the compile step so the test doesn't need a live LangGraph compile
-    and real MLflow ResponsesAgent types — just the route plumbing.
-    """
-    from unittest.mock import MagicMock, patch
-
-    agent = LlmAgent(tools=[_trivial_tool])
-    config = AgentConfig(name="test-agent", model="databricks-claude-sonnet-4-6")
-
-    # A fake ResponsesAgentResponse-like object with model_dump().
-    fake_response = MagicMock()
-    fake_response.model_dump.return_value = {
-        "output": [{"role": "assistant", "content": "pong"}],
-    }
-    fake_invoke = MagicMock(return_value=fake_response)
-
-    # A fake streaming generator yielding two events.
-    fake_event = MagicMock()
-    fake_event.model_dump_json.return_value = '{"type":"response.output_item.done"}'
-    fake_stream = MagicMock(return_value=iter([fake_event, fake_event]))
-
-    captured: dict[str, Any] = {}
-
-    def _fake_compile(agent_arg, *, model, conversation_store=None, executor="langgraph", agent_id=None, checkpointer=None):
-        captured["invoke"] = fake_invoke
-        captured["stream"] = fake_stream
-        return fake_invoke, fake_stream
-
-    with patch(
-        "apx_agent._responses_agent.compile_to_responses_agent",
-        side_effect=_fake_compile,
-    ), patch("apx_agent._wiring._make_workspace_client") as mock_ws_factory:
-        mock_ws_factory.return_value = MagicMock(name="sp_ws")
-        # Also patch chat_agent_for to prevent it from compiling real LangGraph
-        from apx_agent import _chat_agent as _ca_module
-
-        with patch.object(_ca_module, "chat_agent_for", side_effect=lambda a, **kw: MagicMock()):
-            app = create_app(agent, config=config)
-            with TestClient(app) as client:
-                yield client, captured
-
-
-class TestResponsesRoute:
-    def test_responses_route_mounted(self, app_with_responses) -> None:
-        client, _ = app_with_responses
-        route_paths = {r.path for r in client.app.routes}
-        assert "/responses" in route_paths
-
-    def test_both_routes_mounted(self, app_with_responses) -> None:
-        client, _ = app_with_responses
-        route_paths = {r.path for r in client.app.routes}
-        assert "/invocations" in route_paths
-        assert "/responses" in route_paths
-
-    def test_non_streaming_returns_response_json(self, app_with_responses) -> None:
-        client, captured = app_with_responses
-        resp = client.post(
-            "/responses",
-            json={"input": [{"role": "user", "content": "ping"}], "stream": False},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "output" in body
-        assert body["output"][0]["role"] == "assistant"
-
-    def test_streaming_returns_sse(self, app_with_responses) -> None:
-        client, captured = app_with_responses
-        resp = client.post(
-            "/responses",
-            json={"input": [{"role": "user", "content": "ping"}], "stream": True},
-        )
-        assert resp.status_code == 200
-        assert resp.headers["content-type"].startswith("text/event-stream")
-        assert resp.text.count("data: ") == 2
-
-    def test_obo_header_forwarded_to_custom_inputs(self, app_with_responses) -> None:
-        client, captured = app_with_responses
-        resp = client.post(
-            "/responses",
-            json={"input": [{"role": "user", "content": "hi"}]},
-            headers={"X-Forwarded-Access-Token": "obo-tok"},
-        )
-        assert resp.status_code == 200
-        assert captured["invoke"].called
-        # The OBO token must land in custom_inputs on the ResponsesAgentRequest
-        # passed to invoke — this is the enterprise-critical contract.
-        req_arg = captured["invoke"].call_args[0][0]
-        assert req_arg.custom_inputs["user_token"] == "obo-tok"
-
-# ---------------------------------------------------------------------------
-# Cross-agent trace correlation (#443) — inbound traceparent / x-apx-caller
-# ---------------------------------------------------------------------------
-
-
-TP = f"00-{'ab' * 16}-{'cd' * 8}-01"
-
-
 class TestCrossAgentCorrelation:
     """Inbound traceparent / x-apx-caller headers are stamped on the served
     trace (span attrs + trace tags), so B's trace joins A's on
@@ -480,29 +403,7 @@ class TestCrossAgentCorrelation:
             messages=[ChatAgentMessage(role="assistant", content="ok", id="m1")]
         )
 
-    def test_invocations_stamps_caller_correlation_tags(
-        self, app_and_chat_agent
-    ) -> None:
-        client, captured = app_and_chat_agent
-        self._stub_predict(captured)
-        with patch("apx_agent._audit.set_trace_tags") as tags_mock:
-            resp = client.post(
-                "/invocations",
-                json={"messages": [{"role": "user", "content": "hi"}]},
-                headers={"traceparent": TP, "x-apx-caller": "orchestrator"},
-            )
-        assert resp.status_code == 200
-        tags_mock.assert_called_once_with(
-            {
-                "apx.traceparent": TP,
-                "apx.outbound.trace_id": "ab" * 16,
-                "apx.caller": "orchestrator",
-            }
-        )
-
-    def test_invocations_continues_real_sender_trace(
-        self, app_and_chat_agent
-    ) -> None:
+    def test_invocations_continues_real_sender_trace(self, app_and_chat_agent) -> None:
         client, captured = app_and_chat_agent
         self._stub_predict(captured)
         sender, headers = _sender_trace_headers()
@@ -521,46 +422,6 @@ class TestCrossAgentCorrelation:
         assert resp.status_code == 200
         assert request_spans[0].trace_id == sender.trace_id
         assert request_spans[0].parent_id == sender.span_id
-
-    def test_invocations_stream_keeps_request_context_for_later_chunks(
-        self, app_and_chat_agent
-    ) -> None:
-        import mlflow
-        from mlflow.types.agent import ChatAgentChunk, ChatAgentMessage
-
-        client, captured = app_and_chat_agent
-        probes: list[Any] = []
-
-        def chunks():
-            yield ChatAgentChunk(
-                delta=ChatAgentMessage(role="assistant", content="one", id="m1")
-            )
-            with mlflow.start_span("stream-body") as probe:
-                probes.append(probe)
-                yield ChatAgentChunk(
-                    delta=ChatAgentMessage(role="assistant", content="two", id="m1")
-                )
-
-        captured["chat_agent"].predict_stream.return_value = chunks()
-        sender, headers = _sender_trace_headers()
-        request_spans: list[Any] = []
-
-        with patch(
-            "apx_agent._invocations.safe_span",
-            side_effect=_record_span("POST /invocations", request_spans),
-        ):
-            resp = client.post(
-                "/invocations",
-                json={
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "stream": True,
-                },
-                headers=headers,
-            )
-            assert resp.text.count("data: ") == 2
-
-        assert probes[0].trace_id == request_spans[0].trace_id == sender.trace_id
-        assert probes[0].parent_id == request_spans[0].span_id
 
     def test_invocations_without_headers_stamps_nothing(
         self, app_and_chat_agent
@@ -575,36 +436,19 @@ class TestCrossAgentCorrelation:
         assert resp.status_code == 200
         tags_mock.assert_not_called()
 
-    def test_responses_stamps_caller_correlation_tags(
-        self, app_with_responses
+    def test_invocations_input_continues_real_sender_trace(
+        self, app_and_chat_agent
     ) -> None:
-        client, _ = app_with_responses
-        with patch("apx_agent._audit.set_trace_tags") as tags_mock:
-            resp = client.post(
-                "/responses",
-                json={"input": [{"role": "user", "content": "hi"}]},
-                headers={"traceparent": TP, "x-apx-caller": "orchestrator"},
-            )
-        assert resp.status_code == 200
-        tags_mock.assert_called_once_with(
-            {
-                "apx.traceparent": TP,
-                "apx.outbound.trace_id": "ab" * 16,
-                "apx.caller": "orchestrator",
-            }
-        )
-
-    def test_responses_continues_real_sender_trace(self, app_with_responses) -> None:
-        client, _ = app_with_responses
+        client, _ = app_and_chat_agent
         sender, headers = _sender_trace_headers()
         request_spans: list[Any] = []
 
         with patch(
             "apx_agent._invocations.safe_span",
-            side_effect=_record_span("POST /responses", request_spans),
+            side_effect=_record_span("POST /invocations", request_spans),
         ):
             resp = client.post(
-                "/responses",
+                "/invocations",
                 json={"input": [{"role": "user", "content": "hi"}]},
                 headers=headers,
             )
@@ -613,52 +457,13 @@ class TestCrossAgentCorrelation:
         assert request_spans[0].trace_id == sender.trace_id
         assert request_spans[0].parent_id == sender.span_id
 
-    def test_responses_stream_keeps_request_context_for_later_events(
-        self, app_with_responses
+    def test_invocations_input_without_headers_stamps_nothing(
+        self, app_and_chat_agent
     ) -> None:
-        import mlflow
-
-        client, captured = app_with_responses
-        probes: list[Any] = []
-        first = MagicMock()
-        first.model_dump_json.return_value = '{"type":"first"}'
-        second = MagicMock()
-        second.model_dump_json.return_value = '{"type":"second"}'
-
-        def events(_request: Any):
-            yield first
-            with mlflow.start_span("stream-body") as probe:
-                probes.append(probe)
-                yield second
-
-        captured["stream"].side_effect = events
-        sender, headers = _sender_trace_headers()
-        request_spans: list[Any] = []
-
-        with patch(
-            "apx_agent._invocations.safe_span",
-            side_effect=_record_span("POST /responses", request_spans),
-        ):
-            resp = client.post(
-                "/responses",
-                json={
-                    "input": [{"role": "user", "content": "hi"}],
-                    "stream": True,
-                },
-                headers=headers,
-            )
-            assert resp.text.count("data: ") == 2
-
-        assert probes[0].trace_id == request_spans[0].trace_id == sender.trace_id
-        assert probes[0].parent_id == request_spans[0].span_id
-
-    def test_responses_without_headers_stamps_nothing(
-        self, app_with_responses
-    ) -> None:
-        client, _ = app_with_responses
+        client, _ = app_and_chat_agent
         with patch("apx_agent._audit.set_trace_tags") as tags_mock:
             resp = client.post(
-                "/responses",
+                "/invocations",
                 json={"input": [{"role": "user", "content": "hi"}]},
             )
         assert resp.status_code == 200

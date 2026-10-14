@@ -124,9 +124,9 @@ def test_offline_doctor_includes_unverified_agent_features(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("dependency,version,expected", [
-    ("apx-agent[langgraph]", "0.4.0", Status.FAIL),
-    ("apx-agent[langgraph,agentbricks]", "0.3.0", Status.FAIL),
-    ("apx-agent[langgraph,agentbricks]", "0.4.0", Status.OK),
+    ("apx-agent[langgraph]", "0.5.0", Status.FAIL),
+    ("apx-agent[langgraph,agentbricks]", "0.4.0", Status.FAIL),
+    ("apx-agent[langgraph,agentbricks]", "0.5.0", Status.OK),
     ("apx-agent[langgraph,agentbricks]", None, Status.WARN),
 ])
 def test_agent_image_checks_declaration_and_lock(tmp_path, dependency, version, expected):
@@ -735,6 +735,7 @@ class TestCheckGatewayGuardrails:
         assert c is not None
         assert c.status is Status.WARN
         assert "do not apply" in c.detail
+        assert c.detail.endswith("Unverified: databricks-claude-sonnet-4-6")
         assert c.fix is not None
         ws_cls.assert_not_called()
 
@@ -745,7 +746,29 @@ class TestCheckGatewayGuardrails:
         assert c is not None
         assert c.status is Status.WARN
         assert "Unity Catalog AI Gateway" in c.detail
+        assert "model-services/system.ai.claude-sonnet-4-6" in c.detail
+        assert "Unity Gateway UI" in c.fix
         ws_cls.assert_not_called()
+
+    def test_lists_declared_attachment_targets(self, tmp_path: Path):
+        """Every declared attachment target is named for the UI check, once."""
+        self._make_apps_project(tmp_path, "system.ai.claude-sonnet-4-6")
+        with (tmp_path / "pyproject.toml").open("a") as f:
+            f.write(
+                "[[tool.apx.agent.service_policies.attachments]]\n"
+                'name = "tools"\ntarget_type = "mcp_service"\n'
+                'target = "mcp-services/main.tools.search"\n'
+                "[[tool.apx.agent.service_policies.attachments]]\n"
+                'name = "tools-again"\ntarget_type = "mcp_service"\n'
+                'target = "mcp-services/main.tools.search"\n'
+            )
+        c = doctor.check_gateway_guardrails(tmp_path, auth_ok=True)
+        assert c is not None
+        assert c.status is Status.WARN
+        assert c.detail.endswith(
+            "Unverified: model-services/system.ai.claude-sonnet-4-6, "
+            "mcp_service:mcp-services/main.tools.search"
+        )
 
 
 class TestCheckUcDataSource:

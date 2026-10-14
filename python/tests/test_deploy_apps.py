@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import importlib
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -43,6 +44,7 @@ from apx_agent._apps_authorization import (
     OperationAuthorization,
     ResolvedAppDependency,
 )
+from apx_agent._project_gen import _START_SERVER_CONTENT
 from apx_agent.cli import main
 
 
@@ -86,8 +88,8 @@ def _write_scaffold(tmp_path: Path, *, with_yml: bool = True) -> Path:
     """Write a minimal Apps-shaped project under ``tmp_path``.
 
     Mirrors the ADK-style scaffold: stub agent at top-level ``agent.py``,
-    framework boilerplate dir ``agent_server/`` exists for the pre-flight
-    check but is otherwise empty.
+    framework boilerplate dir ``agent_server/`` carries the DurableAgentServer
+    launcher the Apps pre-flight requires.
 
     Returns ``tmp_path`` for convenience.
     """
@@ -98,6 +100,7 @@ def _write_scaffold(tmp_path: Path, *, with_yml: bool = True) -> Path:
     server = tmp_path / "agent_server"
     server.mkdir()
     (server / "__init__.py").write_text("")
+    (server / "start_server.py").write_text(_START_SERVER_CONTENT)
     return tmp_path
 
 
@@ -1014,7 +1017,7 @@ def test_native_deploy_hands_rollout_to_agentbricks(
     from apx_agent import AgentConfig, LlmAgent
     from apx_agent import cli as cli_mod
     from apx_agent._project_gen import generate_project, _build_databricks_yml
-    from databricks_agentbricks.agent_project import AgentProject
+    from databricks_agentbricks.projects.agent_project import AgentProject
 
     reconcile = MagicMock(side_effect=AssertionError("Chat must not provision serving endpoints"))
     monkeypatch.setattr("apx_agent._external_model.reconcile_external_model_endpoint", reconcile)
@@ -1024,8 +1027,7 @@ def test_native_deploy_hands_rollout_to_agentbricks(
     if legacy_bundle:
         generate_project(config.model_copy(update={"target": "responses_agent"}), scaffold)
     else:
-        (scaffold / "agent_server" / "__init__.py").unlink()
-        (scaffold / "agent_server").rmdir()
+        shutil.rmtree(scaffold / "agent_server")
     generate_project(config, scaffold)
     if legacy_bundle:
         (scaffold / "databricks.yml").write_text(_build_databricks_yml(config))
@@ -1338,7 +1340,7 @@ def test_app_space_deploy_binds_sdk_owned_store(
     result = CliRunner().invoke(main, args)
     if generated:
         from ctk import Artifact, verify
-        from databricks_agentbricks.agent_project import AgentProject
+        from databricks_agentbricks.projects.agent_project import AgentProject
 
         verify(Artifact(str(scaffold / ".build" / "agent.toml"), must_contain="[auth.user]"))
         native = AgentProject.load(scaffold / ".build")
@@ -1520,13 +1522,8 @@ def test_apps_deploy_reconciles_resources_without_legacy_flag(
     assert result.exit_code == 0, result.output
     doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
     resources = doc["resources"]["apps"]["my-app"]["resources"]
-    # Each entry is {"<resource_type>": {"name": ..., ...}}, optionally with a
-    # resource-level ``name``/``description`` handle alongside the typed block.
-    rendered = [
-        next(v for k, v in r.items() if k not in {"name", "description"})
-        for r in resources
-    ]
-    names = [r["name"] for r in rendered]
+    # Each entry is a resource-level ``name`` handle plus one typed block.
+    names = [r["name"] for r in resources]
     assert any("claude-3-5" in n for n in names)
     assert any("abc123" in n for n in names)
     # Identifiers should match what we asked for.
@@ -4459,15 +4456,20 @@ def test_maybe_write_deploy_state_returns_false_and_is_loud_on_failure(
     assert "my-app" in joined
 
 
-@pytest.mark.parametrize("host", ["appkit", " AppKit "])
-def test_retired_appkit_host_fails_before_build(scaffold: Path, monkeypatch: pytest.MonkeyPatch, host: str) -> None:
-    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
-    doc["resources"]["apps"]["my-app"]["config"] = {"env": [{"name": "APX_APPS_HOST", "value": host}]}
-    (scaffold / "databricks.yml").write_text(yaml.safe_dump(doc))
+@pytest.mark.parametrize("launcher", [None, "from mlflow.genai.agent_server import AgentServer\n"])
+def test_retired_host_launcher_fails_before_build(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, launcher: str | None,
+) -> None:
+    """#898: a missing or pre-DurableAgentServer launcher is refused before any Bundle work."""
+    path = scaffold / "agent_server" / "start_server.py"
+    if launcher is None:
+        path.unlink()
+    else:
+        path.write_text(launcher)
     calls = _install_subprocess_mock(monkeypatch)
     result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code != 0
-    assert "AppKit host is retired" in result.output
+    assert "Regenerate agent_server/start_server.py" in result.output
     assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
 
 
@@ -4494,10 +4496,53 @@ def test_space_scope_check_uses_declared_scopes_when_effective_unset(
     monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda profile: client)
     doc = {"resources": {"apps": {"a": {"space": "app-space", "config": {
         "env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]}}}}}
-    plan = SimpleNamespace(user_api_scopes=["ai-gateway"], service_resources=[])
+    from apx_agent._apps_authorization import OperationAuthorization
+
+    lookup = OperationAuthorization(name="lookup", execution_identity="user", requires_request_context=True,
+                                    resources=(), user_api_scopes=("catalog.catalogs:read",))
+    plan = SimpleNamespace(user_api_scopes=["ai-gateway", "catalog.catalogs:read"], service_resources=[],
+                           operations=(lookup,), model="m")
     perms = SimpleNamespace(can_use_groups=[], can_manage_groups=[])
     if ok:
+        client.workspace_client.apps.get_space.return_value = Space(
+            name="app-space", effective_user_api_scopes=effective and [*effective, "catalog.catalogs:read"],
+            user_api_scopes=[*declared, "catalog.catalogs:read"])
         validate_space_deployment(doc, bundle_key="a", app_name="mcp-x", profile="p", plan=plan, family_permissions=perms)
     else:
-        with pytest.raises(click.ClickException, match="missing required scopes"):
+        with pytest.raises(click.ClickException, match="missing required scopes") as raised:
             validate_space_deployment(doc, bundle_key="a", app_name="mcp-x", profile="p", plan=plan, family_permissions=perms)
+        assert "ask the space admin" in raised.value.message
+        assert "ai-gateway: needed by chat model 'm'" in raised.value.message
+
+
+def test_space_scope_check_names_the_tool_missing_a_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#815: a scope the admin did not allowlist fails at deploy naming the tool, not as a runtime 500."""
+    import click
+    from types import SimpleNamespace
+
+    from databricks.sdk.errors import NotFound
+    from databricks.sdk.service.apps import Space
+
+    from apx_agent._app_space import validate_space_deployment
+    from apx_agent._apps_authorization import OperationAuthorization
+    from apx_agent._resources import ResourceSpec
+
+    client = MagicMock()
+    client.workspace_client.apps.get_space.return_value = Space(
+        name="app-space", effective_user_api_scopes=["ai-gateway"])
+    client.workspace_client.apps.get.side_effect = NotFound("no app yet")
+    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda profile: client)
+    doc = {"resources": {"apps": {"a": {"space": "app-space", "config": {
+        "env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]}}}}}
+    ask = OperationAuthorization(name="ask_genie", execution_identity="user", requires_request_context=True,
+                                 resources=(ResourceSpec(kind="genie_space", identifier="s1"),), user_api_scopes=())
+    background = OperationAuthorization(name="background", execution_identity="service", requires_request_context=False,
+                                        resources=(), user_api_scopes=())
+    plan = SimpleNamespace(user_api_scopes=["ai-gateway", "genie"], service_resources=[],
+                           operations=(ask, background), model="m")
+    perms = SimpleNamespace(can_use_groups=[], can_manage_groups=[])
+    with pytest.raises(click.ClickException) as raised:
+        validate_space_deployment(doc, bundle_key="a", app_name="mcp-x", profile="p", plan=plan, family_permissions=perms)
+    assert raised.value.message == (
+        "App Space 'app-space' is missing required scopes; ask the space admin to grant them:\n"
+        "  - genie: needed by tool 'ask_genie'")

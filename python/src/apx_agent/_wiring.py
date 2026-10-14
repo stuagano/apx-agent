@@ -1232,14 +1232,15 @@ def create_app(
             except Exception as exc:
                 logger.warning("Skipping /readyz mount: %s", exc)
 
-        # Mount the supported /invocations + /responses routes.
+        # Mount /invocations (ChatAgent). Callers that post the Responses
+        # `input` shape are answered in that shape on the same route.
         # Both use the same resolved conversation_store. Best-effort — missing
         # optional deps log a warning and skip the affected route only.
         if ctx is not None:
             _store: Any = None
             _checkpointer: Any = None
             try:
-                from ._invocations import mount_invocations_route, mount_responses_route
+                from ._invocations import mount_invocations_route
                 from ._memory_wiring import (  # noqa: PLC0415
                     _lakebase_checkpointer_target,
                     resolve_checkpointer,
@@ -1296,16 +1297,6 @@ def create_app(
                 )
             except Exception as exc:
                 logger.warning("Skipping A2A mount: %s", exc)
-
-            try:
-                from ._invocations import mount_responses_route
-
-                mount_responses_route(
-                    app, ctx.agent, ctx.config,
-                    conversation_store=_store, checkpointer=_checkpointer,
-                )
-            except Exception as exc:
-                logger.warning("Skipping /responses mount: %s", exc)
 
         if ctx is not None:
             mcp_lifecycle = await _setup_mcp(app, ctx)
@@ -1409,8 +1400,8 @@ def mount_mcp_endpoints(
     on an existing FastAPI app.
 
     Designed for the Databricks Apps target: pair the
-    ``mlflow.genai.agent_server.AgentServer`` (which provides ``/invocations``
-    + ``/responses``) with apx-agent's MCP surface so Genie / Genie Code can
+    ``mlflow.genai.agent_server.AgentServer`` (which provides ``/invocations``)
+    with apx-agent's MCP surface so Genie / Genie Code can
     consume the same agent as an MCP source.
 
     Mounted routes are inert until the FastAPI lifespan completes startup

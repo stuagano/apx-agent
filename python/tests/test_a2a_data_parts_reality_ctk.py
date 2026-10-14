@@ -183,7 +183,7 @@ async def test_compiled_pipeline_round_trips_through_responses_http(monkeypatch,
     invoke, _ = compile_to_responses_agent(Agent(output_schema=Finding), model="fake")
     peer = FastAPI()
 
-    @peer.post("/responses")
+    @peer.post("/invocations")  # Responses-shaped body on /invocations (#898)
     async def responses(body: dict):
         received.append(body)
         return (await asyncio.to_thread(invoke, ResponsesAgentRequest.model_validate(body))).model_dump()
