@@ -124,8 +124,12 @@ def validate_space_deployment(
 
 def runtime_store_env(
     client: Any, *, app_name: str, space: str | None, service_principal_id: str | None = None,
+    session_store: str | None = None,
 ) -> dict[str, str]:
     """Bind only a Runtime Store whose app and principal ownership the SDK verifies.
+
+    A declared ``session_store`` is created on 404 and granted to the app
+    principal, as ``agentbricks deploy`` does for the native CLI path (#910).
 
     ``space`` is the declared App Space, or ``None`` for a dedicated app. A space
     deploy reads the raw REST payload and confirms both membership and ``LIQUID``,
@@ -147,9 +151,32 @@ def runtime_store_env(
             raise click.ClickException("App readback did not confirm the declared space and LIQUID compute.")
         principal = app.get("service_principal_client_id")
     backend = get_or_create_backend(client, app_name, principal)
+    if session_store is not None:
+        _ensure_session_store(client, session_store, principal)
     return {
         RUNTIME_STORE_LAKEBASE_BRANCH_ENV: backend.branch,
         RUNTIME_STORE_DATABASE_ENV: backend.database_id,
         RUNTIME_STORE_USERNAME_ENV: backend.username,
         RUNTIME_STORE_SCHEMA_ENV: DEFAULT_RUNTIME_STORE_SCHEMA,
     }
+
+
+def _ensure_session_store(client: Any, name: str, principal: str | None) -> None:
+    """Create only on 404, never on permission errors; then grant the app principal WRITE."""
+    from ._memory_managed import _is_not_found
+
+    if not principal:
+        raise click.ClickException(f"Cannot grant session store {name!r}: the app has no service principal.")
+    try:
+        try:
+            client.get_session_store(name)
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
+            client.create_session_store(name, description="apx-agent managed sessions", retry_transient=True)
+        client.grant_session_store_permission(name, principal)
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not ensure session store {name!r}: {exc}. "
+            "A permission error is not retried as a create; grant access and rerun."
+        ) from exc
