@@ -10584,7 +10584,11 @@ def _deploy_apps_impl(
                     continue
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         try:
-            authorization_plan = compile_authorization_plan(agent, model=effective_config.model)
+            authorization_plan = compile_authorization_plan(
+                agent,
+                model=effective_config.model,
+                agent_identity=effective_config.identity,
+            )
             family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -10737,6 +10741,9 @@ def _deploy_apps_impl(
         authorization_plan = compile_authorization_plan(
             agent,
             model=effective_model,
+            agent_identity=(
+                effective_config.identity if effective_config is not None else None
+            ),
         )
         family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
     except ValueError as exc:

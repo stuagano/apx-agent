@@ -651,6 +651,35 @@ class AgentConfig(BaseModel):
     target: RuntimeTarget = "responses_agent"
     """Compilation contract. ``responses_agent`` is legacy (model serving);
     Databricks Apps use ``durable_agent_server``."""
+    host: Literal["apps", "model_serving"] | None = None
+    """Where the compiled agent executes. ``apps`` requires the Apps
+    compilation contract; ``model_serving`` keeps the legacy contract.
+    """
+    identity: str | None = None
+    """The agent's own principal — its default execution identity (#816).
+
+    ``"sp"`` is the App's service principal, ``"obo"`` runs every undeclared
+    tool as the calling user, and ``"named-sp:<name>"`` names the service
+    principal those tools run as. A tool that declares its own ``identity``
+    overrides this. A named principal is only honest when it *is* the App's
+    own service principal: Databricks Apps injects one set of credentials,
+    and deploy rejects a name the App record does not carry.
+    """
+
+    @field_validator("identity")
+    @classmethod
+    def _validate_agent_identity(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from ._tool_scope import _validate_identity
+
+        try:
+            _validate_identity(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"[tool.apx.agent] identity: {exc}"
+            ) from exc
+        return value
     recovery: bool = False
     """Opt into checkpoint recovery; tools must tolerate replay of uncommitted work."""
     description: str = ""

@@ -55,6 +55,10 @@ class OperationAuthorization:
     requires_request_context: bool
     resources: tuple[ResourceSpec, ...]
     user_api_scopes: tuple[str, ...]
+    # The named service principal a "service" operation runs as. None means
+    # the App's own service principal — the only credential an App container
+    # actually holds unless the name matches it.
+    principal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +99,9 @@ class AuthorizationPlan:
     service_resources: tuple[ResourceSpec, ...]
     user_api_scopes: tuple[str, ...]
     app_dependencies: tuple[AppDependency, ...]
+    # The agent's declared identity ("sp" | "obo" | "named-sp:<name>"), when it
+    # declares one. None means tools keep today's per-tool inference.
+    agent_identity: str | None = None
     # Chat model this plan was compiled for. None when there is no chat model.
     # ``user_api_scopes`` includes ``ai-gateway`` when this is set; the model is
     # not a ``serving_endpoint`` resource.
@@ -153,6 +160,29 @@ def read_app_family_permissions(pyproject_path: Path) -> AppFamilyPermissions:
     )
 
 
+def _agent_principal_lines(identity: str | None) -> list[str]:
+    """One line naming the principal the agent's own work runs as.
+
+    The platform injects one service principal per App, so a declared name is
+    reported as that App service principal rather than as a second credential
+    apx does not have.
+    """
+    if identity is None:
+        return ["app service principal (no [tool.apx.agent] identity declared)"]
+    if identity == "obo":
+        return ["the calling user, on-behalf-of (every undeclared tool)"]
+    if identity == "sp":
+        return ["app service principal"]
+    from ._tool_scope import named_sp_name
+
+    name = named_sp_name(identity)
+    return [
+        f"app service principal, declared as {name!r} "
+        "(a Databricks App has one service principal; deploy rejects a name "
+        "the App record does not carry)"
+    ]
+
+
 def authorization_summary_lines(
     plan: AuthorizationPlan,
     resolved_dependencies: list[ResolvedAppDependency],
@@ -162,6 +192,7 @@ def authorization_summary_lines(
 ) -> list[str]:
     """Render the deterministic, credential-free Apps authorization summary."""
     sections = (
+        ("Agent principal:", _agent_principal_lines(plan.agent_identity)),
         (
             "Operation authorization:",
             _operation_authorization_lines(plan.operations),
@@ -234,6 +265,13 @@ def authorization_summary_lines(
     return lines
 
 
+def _principal_clause(operation: OperationAuthorization) -> str:
+    """``user`` / ``service`` plus the service-principal name when one is pinned."""
+    if operation.execution_identity == "service" and operation.principal:
+        return f"service as {operation.principal}"
+    return operation.execution_identity
+
+
 def _operation_authorization_lines(
     operations: tuple[OperationAuthorization, ...],
 ) -> list[str]:
@@ -246,7 +284,7 @@ def _operation_authorization_lines(
                 else "App credentials"
             )
             lines.append(
-                f"{operation.name} | {operation.execution_identity} | "
+                f"{operation.name} | {_principal_clause(operation)} | "
                 f"(no declared resource) | {authorization}"
             )
             continue
@@ -262,7 +300,7 @@ def _operation_authorization_lines(
                     *operation.user_api_scopes,
                 }))
             lines.append(
-                f"{operation.name} | {operation.execution_identity} | "
+                f"{operation.name} | {_principal_clause(operation)} | "
                 f"{resource.kind} {resource.identifier} | {authorization}"
             )
     return lines
@@ -333,6 +371,9 @@ def infer_operation_authorization(fn: Callable[..., Any]) -> OperationAuthorizat
         ),
         resources=resources,
         user_api_scopes=user_api_scopes,
+        principal=(
+            metadata.service_principal_name if metadata is not None else None
+        ),
     )
 
 
@@ -340,6 +381,7 @@ def compile_authorization_plan(
     agent: "BaseAgent",
     *,
     model: str,
+    agent_identity: str | None = None,
 ) -> AuthorizationPlan:
     """Compile operation declarations into user and service authorization."""
     operations = tuple(sorted(
@@ -353,6 +395,7 @@ def compile_authorization_plan(
                 for resource in operation.resources
             )),
             tuple(sorted(operation.user_api_scopes)),
+            operation.principal or "",
         ),
     ))
     names: set[str] = set()
@@ -424,6 +467,7 @@ def compile_authorization_plan(
             app_dependencies,
             key=lambda dependency: dependency.url,
         )),
+        agent_identity=agent_identity,
         model=model,
     )
 

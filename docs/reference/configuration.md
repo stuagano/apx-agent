@@ -16,6 +16,24 @@ sub_agents = ["endpoints/sql-explainer"]   # Model Serving target
 # sub_agents = ["$SQL_EXPLAINER_URL"]      # Apps target
 ```
 
+`identity` (optional) is the agent's own principal, inherited by every tool
+that declares no identity of its own. A tool's own `identity` always wins.
+`"sp"` is the App's service principal, `"obo"` runs those tools as the calling
+user, and `"named-sp:<name>"` names the service principal they run as:
+
+```toml
+[tool.apx.agent]
+identity = "named-sp:reader"
+```
+
+A Databricks App holds one service-principal credential — the one the platform
+injects as `DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET`. A declared name
+is only honest when it is that service principal, and `apx-agent deploy` reports
+it as the App's service principal rather than as a second credential. apx has no
+credential source for any other principal, so declaring a name does not create
+one. The per-tool `identity` and scope ceiling that override this default are
+described under [tool-scoped auth](../tools/overview.md).
+
 The APX TypeScript agent runtime and `createAgentPlugin` have been retired.
 Do not add a standalone chat client to recover them. Python chat uses Unity
 Catalog AI Gateway only; see [AI Gateway model services](bedrock-via-ai-gateway.md).
