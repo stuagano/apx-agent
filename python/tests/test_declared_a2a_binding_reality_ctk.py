@@ -218,11 +218,16 @@ def _request_with_sender(
     # Leave the export barrier open so the caller can snapshot the live
     # in-memory trace. Do not flush here: flush_trace_async_logging joins
     # MLflow's process-wide async export queue and hangs xdist workers.
-    path = "/" if protocol == "a2a" else f"/{protocol}"
+    path = _route(protocol)
     response = client.post(path, json=payload, headers=headers)
     return _RequestResult(
         response=response, sender=sender, export_barrier=export_barrier
     )
+
+
+def _route(protocol: str) -> str:
+    """Both chat shapes ride /invocations; #898 retired the /responses route."""
+    return "/" if protocol == "a2a" else "/invocations"
 
 
 def _protocol_payload(protocol: str, query: str, *, message_id: str) -> dict[str, Any]:
@@ -261,7 +266,7 @@ def _eventually_complete_trace(
     """
     from mlflow.tracing.trace_manager import InMemoryTraceManager
 
-    route_name = "POST / (A2A)" if protocol == "a2a" else f"POST /{protocol}"
+    route_name = "POST / (A2A)" if protocol == "a2a" else f"POST {_route(protocol)}"
     deadline = time.monotonic() + timeout_seconds
     observed: list[dict[str, Any]] = []
     while True:
@@ -286,7 +291,7 @@ def _eventually_complete_trace(
                     for span in spans
                 )
                 has_remote = any(
-                    span.name == "POST /responses"
+                    span.name == "POST /invocations"
                     and (span.attributes or {}).get("apx.agent.name")
                     == "pricing-service"
                     for span in spans
@@ -309,7 +314,7 @@ def _eventually_complete_trace(
 def _assert_real_parentage(trace: Any, sender: Any, protocol: str) -> list[Any]:
     spans = trace.data.spans
     assert any(span.span_id == sender.span_id for span in spans)
-    route_name = "POST / (A2A)" if protocol == "a2a" else f"POST /{protocol}"
+    route_name = "POST / (A2A)" if protocol == "a2a" else f"POST {_route(protocol)}"
     request_span = next(
         span
         for span in spans
@@ -320,7 +325,7 @@ def _assert_real_parentage(trace: Any, sender: Any, protocol: str) -> list[Any]:
     remote_span = next(
         span
         for span in spans
-        if span.name == "POST /responses"
+        if span.name == "POST /invocations"
         and (span.attributes or {}).get("apx.agent.name") == "pricing-service"
     )
 
@@ -567,7 +572,7 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
                     lambda count: count == 3, "one remote POST per remote route"
                 ).verify()
                 expect({request.url.path for request in posts}).satisfies(
-                    lambda paths: paths == {"/responses"},
+                    lambda paths: paths == {"/invocations"},
                     "declared leaf used the real Responses transport",
                 ).verify()
                 for request in posts:
@@ -686,7 +691,7 @@ def test_required_bound_leaf_failure_is_opaque_at_ingress(
         if stream:
             payload["stream"] = True
         response = client.post(
-            "/" if protocol == "a2a" else f"/{protocol}",
+            _route(protocol),
             json=payload,
         )
     if protocol == "a2a":

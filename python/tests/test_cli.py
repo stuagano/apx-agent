@@ -28,6 +28,7 @@ import click
 from click.testing import CliRunner, Result
 
 from apx_agent._doctor import SubAgentProbe
+from apx_agent._project_gen import _START_SERVER_CONTENT
 from apx_agent.cli import (
     _load_agent,
     _parse_module_spec,
@@ -4794,6 +4795,8 @@ def _drive_deploy_to_gate(tmp_path, monkeypatch, *, readyz_gate, check_result):
             my-app:
               name: my-app
     """))
+    (tmp_path / "agent_server").mkdir()
+    (tmp_path / "agent_server" / "start_server.py").write_text(_START_SERVER_CONTENT)
     monkeypatch.chdir(tmp_path)
 
     check_calls: list = []
@@ -5342,6 +5345,8 @@ def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
             my-app:
               name: my-app
     """))
+    (tmp_path / "agent_server").mkdir()
+    (tmp_path / "agent_server" / "start_server.py").write_text(_START_SERVER_CONTENT)
     monkeypatch.chdir(tmp_path)
 
     # Sentinel exception to abort after the seam we're testing.
