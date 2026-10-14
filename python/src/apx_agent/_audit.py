@@ -83,6 +83,13 @@ class AuditAttrs:
     USER_TOKEN_PROVIDED = "apx.user.token_provided"
     USER_HASH = "apx.user.hash"  # SHA-256(user_id) when known — for correlation without leaking ids
 
+    # The principal a tool call actually executes as (#816). This is a
+    # service principal, not a user, so it is recorded in full rather than
+    # hashed: "app-service-principal", "service-principal:<name>", or "user"
+    # when the call runs on behalf of the caller. The triggering user stays
+    # USER_HASH, so the two compose — who ran it, and whose request it was.
+    PRINCIPAL = "apx.principal"
+
     # Mid-turn approval decisions (#469): marks a predict/invoke span as a
     # resume carrying an approve/deny decision, so USER_HASH on that same
     # span reads as "decided by", not just "called by".
@@ -175,6 +182,7 @@ _KWARG_TO_KEY: dict[str, str] = {
     "operation": AuditAttrs.OPERATION,
     "user_token_provided": AuditAttrs.USER_TOKEN_PROVIDED,
     "user_hash": AuditAttrs.USER_HASH,
+    "principal": AuditAttrs.PRINCIPAL,
     "approval_decision": AuditAttrs.APPROVAL_DECISION,
     "tool_name": AuditAttrs.TOOL_NAME,
     "tool_uc_function": AuditAttrs.TOOL_UC_FUNCTION,

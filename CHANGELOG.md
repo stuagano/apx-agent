@@ -8,6 +8,14 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Added
 
+- **Agent identity (#816).** `[tool.apx.agent] identity` declares the agent's own
+  principal — `"sp"`, `"obo"`, or `"named-sp:<name>"` — and tools that declare no
+  identity inherit it, with a per-tool `identity` still winning. `apx-agent deploy`
+  reports the agent principal and names each operation's principal in the
+  authorization summary. A tool call's span carries `apx.principal` (the principal
+  it ran as) and `apx.user.hash` (the user whose request triggered it). A declared
+  name is the App's own service principal: a Databricks App holds one such
+  credential, and the declaration does not create a second one.
 - **Managed state contract map.** [docs/design/managed-state-contract-map.md](docs/design/managed-state-contract-map.md) records the AgentKit 0.4.0 / SDK 0.146.0 methods this checkout can call and maps MemoryStore, ConversationStore, session state, and checkpoints onto them. A `fevm` probe on 2026-10-13 found managed memory and session stores enabled (Beta, Lakebase-backed) and completed a disposable `add`/`get`/`recall`/`update`/`delete` plus actor isolation check. Retention and measured cost remain unknown (#854).
 
 - **Tool inspector at `/_apx/tools`.** `/_apx/tools` is a real inspector again — live source from `inspect.getsourcefile`, in-place save, run via `/_apx/replay/tool` — not a 302 to Edit. Also a nav tab, the Chat shell's Tools tab, and an Edit-page Schemas/Tools sub-tab. Shared table renderer used by Tools, Chat, and Trace. New routes: `GET /_apx/tools/list`, `GET /_apx/tools/file`, `POST /_apx/tools/save`.
