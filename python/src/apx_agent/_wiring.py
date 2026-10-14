@@ -583,6 +583,16 @@ def finalize_agent(
         # Self-guards when no index is declared (like attach_declared_memory).
         attach_declared_vector_search(agent, config)
 
+        # #816: stamp the agent's declared identity onto tools that have none
+        # of their own, so per-tool overrides still win and undeclared tools
+        # inherit the agent principal. Must run after the tool merge so
+        # config-declared [[tool.apx.tools]] see the inheritance, and before
+        # apply_config_guardrails so ScopeGuard / authorization compile see it.
+        if config.identity is not None:
+            from ._agent_identity import apply_agent_identity  # noqa: PLC0415
+
+            apply_agent_identity(agent, config.identity)
+
         # E3c: attach declarative guards AFTER the tool merge + memory/VS attach
         # so a ScopeGuard sees config-declared [[tool.apx.tools]] scoped tools
         # (and code-wired ones), not just those on the agent at construction.
@@ -999,6 +1009,7 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         set_mcp_auth(
             request.headers.get("Authorization", ""),
             request.headers.get("X-Forwarded-Access-Token", ""),
+            request.headers.get("X-Forwarded-Email", ""),
         )
         async with mcp_transport.connect_sse(
             request.scope, request.receive, request._send
@@ -1034,6 +1045,7 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         set_mcp_auth(
             request.headers.get("Authorization", ""),
             request.headers.get("X-Forwarded-Access-Token", ""),
+            request.headers.get("X-Forwarded-Email", ""),
         )
         scope = dict(request.scope)
         headers = list(scope.get("headers", []))

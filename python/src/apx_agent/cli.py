@@ -10584,7 +10584,11 @@ def _deploy_apps_impl(
                     continue
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         try:
-            authorization_plan = compile_authorization_plan(agent, model=effective_config.model)
+            authorization_plan = compile_authorization_plan(
+                agent,
+                model=effective_config.model,
+                agent_identity=effective_config.identity,
+            )
             family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -10626,11 +10630,11 @@ def _deploy_apps_impl(
         doc = _read_databricks_yml(cwd)
         bundle_key, resolved_app_name = _resolve_app_name(doc)
         app = doc["resources"]["apps"][bundle_key]
-    launcher = cwd / "agent_server" / "start_server.py"
-    if not launcher.is_file() or "DurableAgentServer" not in launcher.read_text():
-        raise click.ClickException(
-            "Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py."
-        )
+        launcher = cwd / "agent_server" / "start_server.py"
+        if not launcher.is_file() or "DurableAgentServer" not in launcher.read_text():
+            raise click.ClickException(
+                "Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py."
+            )
     app_name = app_name_override or resolved_app_name
     if app_name_override and app_name_override != resolved_app_name:
         log(f"# app-name override: polling {app_name} (target {bundle_target})")
@@ -10737,6 +10741,9 @@ def _deploy_apps_impl(
         authorization_plan = compile_authorization_plan(
             agent,
             model=effective_model,
+            agent_identity=(
+                effective_config.identity if effective_config is not None else None
+            ),
         )
         family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
     except ValueError as exc:
@@ -17470,6 +17477,63 @@ def _load_store_spec(
             f"Module {module_path!r} has no attribute {variable!r}."
         )
     return getattr(module, variable)
+
+
+@memory.command("extract")
+@click.option("--session-id", required=True, help="Completed managed session to distill.")
+@click.option("--actor-id", default=None,
+              help="Trusted caller. Must match the actor recorded on the session.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Return the extracted entries without writing them.")
+@click.option("--instructions", default=None,
+              help="Override the declared distillation instructions for this call.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def memory_extract_cmd(
+    session_id: str,
+    actor_id: str | None,
+    profile: str | None,
+    dry_run: bool,
+    instructions: str | None,
+    fmt: str,
+) -> None:
+    """Distill one completed managed session into declared managed memory.
+
+    Requires ``[tool.apx.agent.memory] type='managed'`` with
+    ``[tool.apx.agent.memory.extraction] enabled=true``, and a managed session
+    store. The session is not deleted or rewritten. A service failure exits
+    non-zero and does not report the extraction as written.
+    """
+    from databricks.sdk import WorkspaceClient  # noqa: PLC0415
+
+    from ._inspection import _load_agent_config  # noqa: PLC0415
+    from ._memory_extract import extraction_payload, extract_declared_session  # noqa: PLC0415
+
+    config = _load_agent_config()
+    if config is None or config.memory is None or config.memory.extraction is None:
+        raise click.ClickException(
+            "Session extraction is off. Add [tool.apx.agent.memory.extraction] "
+            "enabled=true under a type='managed' memory store."
+        )
+    if instructions is not None:
+        if not instructions.strip():
+            raise click.ClickException("--instructions must be non-blank text")
+        config.memory.extraction.instructions = instructions
+    ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    result = extract_declared_session(
+        ws, config, session_id=session_id, actor_id=actor_id, dry_run=dry_run,
+    )
+    payload = extraction_payload(result)
+    if fmt == "text":
+        verb = "previewed" if dry_run else "wrote"
+        click.echo(
+            f"{verb} {len(result.entries)} memories from session {session_id} "
+            f"into {result.memory_store}"
+        )
+        return
+    click.echo(json.dumps(payload, indent=2))
 
 
 @memory.command("consolidate")

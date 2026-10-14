@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import importlib
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -43,6 +44,7 @@ from apx_agent._apps_authorization import (
     OperationAuthorization,
     ResolvedAppDependency,
 )
+from apx_agent._project_gen import _START_SERVER_CONTENT
 from apx_agent.cli import main
 
 
@@ -86,8 +88,8 @@ def _write_scaffold(tmp_path: Path, *, with_yml: bool = True) -> Path:
     """Write a minimal Apps-shaped project under ``tmp_path``.
 
     Mirrors the ADK-style scaffold: stub agent at top-level ``agent.py``,
-    framework boilerplate dir ``agent_server/`` exists for the pre-flight
-    check but is otherwise empty.
+    framework boilerplate dir ``agent_server/`` carries the DurableAgentServer
+    launcher the Apps pre-flight requires.
 
     Returns ``tmp_path`` for convenience.
     """
@@ -98,6 +100,7 @@ def _write_scaffold(tmp_path: Path, *, with_yml: bool = True) -> Path:
     server = tmp_path / "agent_server"
     server.mkdir()
     (server / "__init__.py").write_text("")
+    (server / "start_server.py").write_text(_START_SERVER_CONTENT)
     return tmp_path
 
 
@@ -1024,8 +1027,7 @@ def test_native_deploy_hands_rollout_to_agentbricks(
     if legacy_bundle:
         generate_project(config.model_copy(update={"target": "responses_agent"}), scaffold)
     else:
-        (scaffold / "agent_server" / "__init__.py").unlink()
-        (scaffold / "agent_server").rmdir()
+        shutil.rmtree(scaffold / "agent_server")
     generate_project(config, scaffold)
     if legacy_bundle:
         (scaffold / "databricks.yml").write_text(_build_databricks_yml(config))
@@ -4465,15 +4467,20 @@ def test_maybe_write_deploy_state_returns_false_and_is_loud_on_failure(
     assert "my-app" in joined
 
 
-@pytest.mark.parametrize("host", ["appkit", " AppKit "])
-def test_retired_appkit_host_fails_before_build(scaffold: Path, monkeypatch: pytest.MonkeyPatch, host: str) -> None:
-    doc = yaml.safe_load((scaffold / "databricks.yml").read_text())
-    doc["resources"]["apps"]["my-app"]["config"] = {"env": [{"name": "APX_APPS_HOST", "value": host}]}
-    (scaffold / "databricks.yml").write_text(yaml.safe_dump(doc))
+@pytest.mark.parametrize("launcher", [None, "from mlflow.genai.agent_server import AgentServer\n"])
+def test_retired_host_launcher_fails_before_build(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch, launcher: str | None,
+) -> None:
+    """#898: a missing or pre-DurableAgentServer launcher is refused before any Bundle work."""
+    path = scaffold / "agent_server" / "start_server.py"
+    if launcher is None:
+        path.unlink()
+    else:
+        path.write_text(launcher)
     calls = _install_subprocess_mock(monkeypatch)
     result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
     assert result.exit_code != 0
-    assert "AppKit host is retired" in result.output
+    assert "Regenerate agent_server/start_server.py" in result.output
     assert not any(call[:2] == ["bundle", "deploy"] for call in calls)
 
 

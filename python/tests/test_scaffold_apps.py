@@ -495,7 +495,8 @@ def test_scaffold_apps_agent_module_is_valid_python(tmp_path: Path) -> None:
     # And wires the standard compile + register + MCP-mount stack.
     assert "DurableAgentServer" in start_src
     assert "compile_to_responses_agent" not in start_src
-    assert "mount_mcp_endpoints" in start_src
+    # The durable compiler mounts /mcp itself (test_runtime_targets covers it).
+    assert 'target="durable_agent_server"' in start_src
     start_host_src = (
         tmp_path / "my_agent" / "agent_server" / "start_host.py"
     ).read_text()

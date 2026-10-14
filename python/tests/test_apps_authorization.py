@@ -502,6 +502,8 @@ def test_authorization_summary_is_deterministic_and_complete() -> None:
         policy,
         explicit_resources=("secret llm-key: READ",),
     ) == [
+        "Agent principal:",
+        "  - app service principal (no [tool.apx.agent] identity declared)",
         "Operation authorization:",
         "  - a_background_job | service | job job-123 | CAN_MANAGE_RUN",
         "  - z_user_lookup | user | uc_table main.sales.orders | sql",

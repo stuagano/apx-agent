@@ -87,6 +87,12 @@ IDs partition data; store permissions are the access-control boundary. Requests 
 without writing.
 
 **A managed memory store is a shared, independently-owned resource — by design.**
+One completed session is distilled only when `[tool.apx.agent.memory.extraction]`
+sets `enabled = true`. `apx memory extract --session-id <id> --actor-id <caller>`
+sends that session to the bound memory store. `--dry-run` returns the entries
+without writing them. The session is not deleted, and this does not consolidate
+memories that already exist.
+
 Unlike a session store (which belongs to one agent's conversations and is
 provisioned when that agent deploys), a memory store is meant to outlive and be
 **shared across multiple agents**: provision it once, then have each agent bind
@@ -108,6 +114,9 @@ provisioned at deploy).
 | `host` | lakebase | Lakebase endpoint DNS; supports `$ENV_VAR` |
 | `table_name` | lakebase | UC table path (`catalog.schema.table`) |
 | `store_name` | managed | Workspace memory store display name |
+| `extraction` | — | Opt-in distillation of one completed managed session into this store. Absent means off. Requires `type = "managed"` and `[tool.apx.agent.session] type = "managed"`. |
+| `extraction.enabled` | — | Must be true before `apx memory extract` calls the service. Defaults to false. |
+| `extraction.instructions` | — | Approved distillation instructions sent with every extraction. |
 | `auto_create` | no | Create table on first use (default `true`) |
 | `namespace_default` | no | Default namespace (default `"default"`) |
 | `tool_prefix` | no | Prefix for tool names (e.g. `"mem_"`) |
