@@ -89,7 +89,14 @@ A one-word tier controlling both facts memory and session continuity:
 | `"managed"` | Survives restarts via AgentKit managed memory (long-term memory only) | Workspace memory store |
 | `"lakebase"` (typed literally) | Raises — see below | — |
 
-`"off"` is the default. Uncomment `memory="persistent"` to opt in — it
+`"off"` is the default on purpose: durable sessions come from the runtime, not
+this knob. New Apps projects run on `DurableAgentServer`, whose managed Runtime Store
+replays work across restarts and whose declared session store keeps
+conversations — see [Runtime targets](../running/runtime-targets.md). Reach
+for `memory` for long-term facts on top of that, or for session continuity on
+the compatibility `responses_agent` runtime.
+
+Uncomment `memory="persistent"` to opt in — it
 survives restarts on Lakebase. The knob defaults `host` to the `LAKEBASE_HOST`
 env var and `embedding_model` to the always-available
 `databricks-bge-large-en` FMAPI endpoint; if `LAKEBASE_HOST` is unset at boot,

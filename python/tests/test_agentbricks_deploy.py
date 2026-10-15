@@ -25,13 +25,18 @@ def test_installed_cli_rollout_preserves_native_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None,
 ) -> None:
     from ctk import Artifact, verify
-    from databricks_agentbricks.agent_project import AgentProject
+    from databricks_agentbricks.projects.agent_project import AgentProject
 
     # Production runs the CLI in a child process. Contain its global Click
     # customization while exercising the real command in this test process.
     monkeypatch.setattr(click.UsageError, "show", click.UsageError.show)
-    from databricks_agentbricks.cli.app import CliContext, agentbricks
+    from databricks_agentbricks.cli.app import agentbricks
     from databricks_agentbricks import errors
+    from databricks_agentbricks.clients import apps_user_auth_client as user_auth, tracing_client as tracing
+    from databricks_agentbricks.clients.api_client_provider import ApiClientProvider
+    from databricks_agentbricks.clients.apps_client import AppsClient
+    from databricks_agentbricks.services.deployment import tool_access_provisioner as tool_access
+    from databricks_agentbricks.services.deployment.provisioners import AppProvisioner
 
     monkeypatch.setattr(errors, "_OUTPUT_MODE", errors._OUTPUT_MODE)
 
@@ -52,19 +57,21 @@ def test_installed_cli_rollout_preserves_native_contract(
         "owner": {"app": {"name": "agent-bricks-proof", "service_principal_id": "app-sp"}},
         "storage_backend": {"lakebase": {"branch": "projects/p/branches/b", "database_id": "runtime"}},
     }
-    monkeypatch.setattr(CliContext, "client", lambda self: sdk)
-    monkeypatch.setattr(native, "plan_app_user_scope_update", lambda *a, **k: SimpleNamespace(existing_scopes=[]))
+    if failure == "grant":
+        sdk.grant_session_store_permission.side_effect = errors.AgentCliError("synthetic-secret")
+    monkeypatch.setattr(ApiClientProvider, "get", lambda self: sdk)
+    monkeypatch.setattr(user_auth, "plan_app_user_scope_update", lambda name, *a, **k: SimpleNamespace(
+        name=name, existing_scopes=[]))
     auth = MagicMock()
-    monkeypatch.setattr(native, "apply_app_user_scope_update", auth)
-    monkeypatch.setattr(native, "_app_service_principal", lambda *a: "app-sp")
-    monkeypatch.setattr(native, "_app_compute_state", lambda *a: "ACTIVE")
-    monkeypatch.setattr(native, "_app_url", lambda *a: "https://proof.databricksapps.com")
-    monkeypatch.setattr(native, "create_experiment_idempotent", lambda *a: SimpleNamespace(
-        experiment_id="experiment", tables=native.MLflowTraceTables()))
-    monkeypatch.setattr(native, "reconcile_tool_access", lambda *a: None)
-    monkeypatch.setattr(native, "finalize_tool_access", lambda *a: None)
-    monkeypatch.setattr(native, "apply_trace_resources", lambda *a: None)
-    monkeypatch.setattr(native, "_grant_store_access", lambda *a: "synthetic-secret" if failure == "grant" else None)
+    monkeypatch.setattr(AppProvisioner, "_reconcile_scoped_app", auth)
+    monkeypatch.setattr(AppsClient, "wait_for_active", lambda *a: None)
+    monkeypatch.setattr(AppsClient, "get_service_principal", lambda *a: "app-sp")
+    monkeypatch.setattr(AppsClient, "get_app_url", lambda *a: "https://proof.databricksapps.com")
+    monkeypatch.setattr(tracing, "create_experiment_idempotent", lambda *a: SimpleNamespace(
+        experiment_id="experiment", tables=tracing.MLflowTraceTables()))
+    monkeypatch.setattr(tracing.TracingClient, "reconcile_app_resources", lambda *a, **k: None)
+    monkeypatch.setattr(tool_access, "reconcile_tool_access", lambda *a, **k: None)
+    monkeypatch.setattr(tool_access, "finalize_tool_access", lambda *a, **k: None)
     cloud_calls = []
 
     def cloud(args, profile, **kwargs):
@@ -241,3 +248,11 @@ def test_native_source_staging_fails_closed(tmp_path: Path, hazard: str) -> None
     assert protected.read_text() == "preserve me"
     if hazard == "unowned":
         assert (tmp_path / ".build" / "authored.py").read_text() == "preserve me"
+
+
+def test_native_prefix_error_points_mcp_names_at_apps_api() -> None:
+    from apx_agent._agentbricks_deploy import validate_native_app
+
+    # An mcp- name cannot use the Agent Bricks CLI; the error names the path that keeps it.
+    with pytest.raises(click.ClickException, match='backend = "apps_api"'):
+        validate_native_app({}, app_name="mcp-data-triage", profile="chosen", no_run=False)

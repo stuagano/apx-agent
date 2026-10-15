@@ -344,9 +344,14 @@ class LlmAgent(BaseAgent):
 
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""
+        from fastapi import Depends  # noqa: PLC0415
+
+        from ._tool_scope import caller_dependency  # noqa: PLC0415
+
         router = APIRouter()
         for fn, plain_params, dep_names, input_model in self._analyzed:
             handler = _make_route_handler(fn, input_model, dep_names)
+            check = caller_dependency(fn)
             router.add_api_route(
                 f"/tools/{fn.__name__}",
                 handler,
@@ -354,6 +359,7 @@ class LlmAgent(BaseAgent):
                 operation_id=fn.__name__,
                 summary=fn.__doc__ or fn.__name__,
                 response_model=None,
+                dependencies=[Depends(check)] if check else None,
             )
         return router
 
@@ -411,12 +417,15 @@ class LlmAgent(BaseAgent):
         return removed
 
     def collect_tools(self) -> list[AgentTool]:
+        from ._tool_scope import get_scope  # noqa: PLC0415
+
         return [
             AgentTool(
                 name=fn.__name__,
                 description=(fn.__doc__ or "").strip(),
                 input_schema=_schema_for_model(input_model),
                 output_schema=_schema_for_return(fn),
+                callers=scope.callers if (scope := get_scope(fn)) else (),
             )
             for fn, _, _, input_model in self._analyzed
         ]

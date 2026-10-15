@@ -69,7 +69,7 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     from databricks.sdk.errors import NotFound
 
     project = _project(tmp_path)
-    state: dict[str, Any] = {"app": None, "memory": False, "calls": []}
+    state: dict[str, Any] = {"app": None, "memory": False, "session": False, "calls": []}
     ws = MagicMock()
 
     def get_app(name: str) -> Any:
@@ -95,15 +95,20 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     ws.api_client.do.return_value = {
         "space": "app-space", "compute_size": "LIQUID", "service_principal_client_id": "sp-1",
     }
-    kit = MagicMock()
-    kit.session_stores.get.side_effect = lambda name: state["calls"].append(("session.get", name))
-    kit.session_stores.create.side_effect = AssertionError("session create is not part of this path")
     bricks = MagicMock()
     bricks.workspace_client = ws
-    monkeypatch.setattr("databricks_agentkit.AgentKitClient", lambda **k: kit)
+
+    def get_session(name: str) -> None:
+        state["calls"].append(("session.get", name))
+        if not state["session"]:
+            raise NotFound(name)
+
+    bricks.get_session_store.side_effect = get_session
+    bricks.create_session_store.side_effect = lambda name, **k: state["calls"].append(("session.create", name)) or state.update(session=True)
+    bricks.grant_session_store_permission.side_effect = lambda name, sp: state["calls"].append(("session.grant", name, sp))
     monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda *a, **k: bricks)
     monkeypatch.setattr(
-        "databricks_agentbricks.lakebase_runtime_store.get_or_create_backend",
+        "databricks_agentbricks.clients.managed_runtime_store.get_or_create_backend",
         lambda *a, **k: state["calls"].append("runtime") or SimpleNamespace(branch="b", database_id="db", username="sp-1"),
     )
     monkeypatch.setattr("apx_agent.cli._ensure_experiment_id", lambda *a, **k: "exp-1")
@@ -123,7 +128,7 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         or state.update(memory=True) or f"memory {name}",
     )
     monkeypatch.setattr("apx_agent._app_space.validate_space_deployment", lambda *a, **k: state["calls"].append("space-check"))
-    return {"project": project, "ws": ws, "state": state, "kit": kit}
+    return {"project": project, "ws": ws, "state": state}
 
 
 def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any) -> None:
@@ -143,8 +148,11 @@ def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any])
     config = _config(space="app-space", include=["prompts.py"], env={"DATA_INSPECTOR_URL": "https://inspector.example"})
     _deploy(harness, config, LlmAgent(name="proof"))
     names = [item if isinstance(item, str) else item[0] for item in harness["state"]["calls"]]
-    assert names.index("memory.create") < names.index("session.get") < names.index("apps.create")
+    assert names.index("memory.create") < names.index("apps.create")
     assert names.index("apps.create") < names.index("space-check") < names.index("runtime")
+    # #910: a missing session store is created after the app exists, then granted to its principal.
+    assert names.index("runtime") < names.index("session.create") < names.index("session.grant") < names.index("sync")
+    assert ("session.grant", "proof-sessions", "sp-1") in harness["state"]["calls"]
     assert names.index("runtime") < names.index("sync") < names.index("apps") < names.index("poll")
     assert names.index("poll") < names.index("readyz") < names.index("smoke")
     assert "apps.update" not in names
@@ -159,7 +167,8 @@ def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any])
     harness["state"]["calls"].clear()
     _deploy(harness, config, LlmAgent(name="proof"))
     again = [item if isinstance(item, str) else item[0] for item in harness["state"]["calls"]]
-    assert "apps.create" not in again and "memory.create" not in again
+    assert "apps.create" not in again and "memory.create" not in again and "session.create" not in again
+    assert "session.grant" in again
 
 
 def test_dedicated_update_mask_and_no_liquid_read(harness: dict[str, Any]) -> None:
@@ -347,6 +356,8 @@ def test_uv_lock_unsets_frozen_only_for_that_call(tmp_path: Path, monkeypatch: p
     ("row2", '\n[tool.apx.agent.deploy]\nspace = "app-space"\n', BUNDLE.format(app="mcp-row2", extra=SPACE), None, "mcp-row2"),
     ("row3", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\nspace = "app-space"\n', None, "apps_api", "row3"),
     ("row4", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "row4"),
+    # #909: an mcp- name keeps MCP discovery without an App Space.
+    ("mcp-row4", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "mcp-row4"),
 ])
 def test_agents_deploy_routes_all_four_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, deploy: str, bundle: str | None,

@@ -139,7 +139,7 @@ from ._executor_factory import create_executor
 from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
 
 # Databricks Apps ResponsesAgent compile target (optional — same extras)
-from ._responses_agent import compile_to_responses_agent
+from ._responses_agent import compile_to_responses_agent  # legacy model-serving target
 from ._runtime_targets import RuntimeRequirements, TargetCapability, TargetReport, compile_agent, inspect_target
 from ._durable_agent import compile_to_durable_agent_server
 
@@ -205,6 +205,12 @@ from ._example import (
 from ._memory_lakebase import LakebaseMemoryStore
 from ._example_lakebase import LakebaseExampleStore
 from ._memory_managed import ApiCaller, ManagedMemoryStore, provision_managed_memory
+from ._memory_extract import (
+    ExtractedSessionMemory,
+    SessionExtractionResult,
+    extract_declared_session,
+    extraction_enabled,
+)
 
 # Agent-facing memory / example tools (LLM-callable wrappers around the stores)
 from ._memory_tools import make_memory_tools
@@ -409,8 +415,8 @@ from ._governance import (
     set_uc_tags_for_agent,
 )
 
-# MLflow ChatAgent /invocations + ResponsesAgent /responses route mounters
-from ._invocations import mount_invocations_route, mount_responses_route
+# MLflow ChatAgent /invocations route mounter
+from ._invocations import mount_invocations_route
 
 # MLflow tracing helpers (optional — graceful no-op without mlflow)
 from ._mlflow_tracing import (
@@ -616,6 +622,10 @@ __all__ = [
     "ManagedMemoryStore",
     "ApiCaller",
     "provision_managed_memory",
+    "ExtractedSessionMemory",
+    "SessionExtractionResult",
+    "extract_declared_session",
+    "extraction_enabled",
     # Agent-facing memory / example tools
     "make_memory_tools",
     "make_example_tools",
@@ -784,7 +794,6 @@ __all__ = [
     "make_governance_transport",
     # MLflow route mounters
     "mount_invocations_route",
-    "mount_responses_route",
     # MLflow tracing
     "continue_trace_from_headers",
     "current_active_span",

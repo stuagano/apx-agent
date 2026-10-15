@@ -1386,6 +1386,9 @@ dev = [
 <APX_AGENT_SOURCE>
 [tool.apx.agent]
 name = "<APP_NAME>"
+# Omitted target means durable_agent_server. This compatibility layout still
+# runs MLflow AgentServer, so the contract is written explicitly.
+target = "responses_agent"
 description = "An apx-agent on Databricks Apps."
 model = "databricks-claude-sonnet-4-6"
 <CATALOG_SCHEMA_CONFIG_BLOCK><REGISTERED_MODEL_CONFIG_BLOCK>instructions = "You are a helpful assistant."
@@ -1888,8 +1891,8 @@ resources:
             value: "1"
           - name: APX_AGENT_NAME
             value: <APP_NAME>
-          - name: APX_APPS_HOST
-            value: python
+          - name: APX_RUNTIME
+            value: apps
           - name: APX_GIT_SHA
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
@@ -4162,7 +4165,7 @@ def _scaffold_apps(
     memory_block = _SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else ""
     pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT + session_block + memory_block)
 
-    from ._project_gen import _START_HOST_CONTENT, _START_MANAGED_CONTENT
+    from ._project_gen import _START_HOST_CONTENT, _START_SERVER_CONTENT
 
     files: dict[str, str] = {
         "pyproject.toml": pyproject,
@@ -4178,8 +4181,7 @@ def _scaffold_apps(
         ),
         "agent_server/__init__.py": "",
         "agent_server/start_host.py": _START_HOST_CONTENT,
-        "agent_server/start_managed.py": _START_MANAGED_CONTENT,
-        "agent_server/start_server.py": _SCAFFOLD_APPS_START_SERVER,
+        "agent_server/start_server.py": _START_SERVER_CONTENT,
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
         "tests/test_agent_imports.py": _sub(_SCAFFOLD_APPS_TEST_IMPORT),
@@ -6905,6 +6907,10 @@ _APPS_ONLY_DEPLOY_FLAGS = (
     "--yes", "-y", "assume_yes", is_flag=True,
     help="Skip the secret-scan confirmation prompt. Use in CI / scripts.",
 )
+@click.option(
+    "--hot-swap", "hot_swap", is_flag=True, default=False,
+    help="Swap the model on the already-deployed serving endpoint instead of redeploying.",
+)
 def deploy(
     spec: str | None,
     module: str | None,
@@ -6939,6 +6945,7 @@ def deploy(
     readyz_retries: int,
     version: int | None,
     assume_yes: bool,
+    hot_swap: bool,
 ) -> None:
     """Deploy a declared agent to Databricks Apps or Model Serving.
 
@@ -10580,12 +10587,16 @@ def _deploy_apps_impl(
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         agent = _load_finalized_agent(module)
         if isinstance(agent, LlmAgent):
-            for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=False):
+            for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=True):
                 if check.name != "Managed sessions" or check.status is not _doctor_mod.Status.FAIL:
                     continue
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         try:
-            authorization_plan = compile_authorization_plan(agent, model=effective_config.model)
+            authorization_plan = compile_authorization_plan(
+                agent,
+                model=effective_config.model,
+                agent_identity=effective_config.identity,
+            )
             family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -10627,15 +10638,11 @@ def _deploy_apps_impl(
         doc = _read_databricks_yml(cwd)
         bundle_key, resolved_app_name = _resolve_app_name(doc)
         app = doc["resources"]["apps"][bundle_key]
-    hosts = [_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST")]
-    hosts.extend(value.split("=", 1)[1] for value in env_pairs if value.startswith("APX_APPS_HOST="))
-    for host in hosts:
-        if host is None:
-            continue
-        if host.strip().lower() == "appkit":
-            raise click.ClickException("AppKit host is retired; declare target = 'durable_agent_server' and use the native Python entrypoint.")
-        if host.strip().lower() not in {"python", "agentbricks"}:
-            raise click.ClickException("APX_APPS_HOST must be python or agentbricks.")
+        launcher = cwd / "agent_server" / "start_server.py"
+        if not launcher.is_file() or "DurableAgentServer" not in launcher.read_text():
+            raise click.ClickException(
+                "Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py."
+            )
     app_name = app_name_override or resolved_app_name
     if app_name_override and app_name_override != resolved_app_name:
         log(f"# app-name override: polling {app_name} (target {bundle_target})")
@@ -10727,7 +10734,7 @@ def _deploy_apps_impl(
 
     if session_config is not effective_config and isinstance(agent, LlmAgent):
         effective_config = session_config
-        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli):
+        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli or app.get("space") is not None):
             if check.name != "Managed sessions":
                 continue
             log(f"# {check.name}: {check.detail}")
@@ -10742,6 +10749,9 @@ def _deploy_apps_impl(
         authorization_plan = compile_authorization_plan(
             agent,
             model=effective_model,
+            agent_identity=(
+                effective_config.identity if effective_config is not None else None
+            ),
         )
         family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
     except ValueError as exc:
@@ -10776,8 +10786,9 @@ def _deploy_apps_impl(
         if not declared_memory or any(name != "long_term_memory" for name in report.unsatisfied):
             report.require_compatible()
     if effective_config is not None and effective_config.target == "durable_agent_server":
-        if not native_direct and _apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") != "agentbricks":
-            raise click.ClickException("Bundle host disagrees with the declared durable target; regenerate the project.")
+        launcher = cwd / "agent_server" / "start_server.py"
+        if not native_direct and (not launcher.is_file() or "DurableAgentServer" not in launcher.read_text()):
+            raise click.ClickException("Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py.")
         declared_space = effective_config.deploy.space if effective_config.deploy is not None else None
         if declared_space != space_name:
             raise click.ClickException("Bundle space disagrees with deploy.space; regenerate the project.")
@@ -11065,7 +11076,7 @@ def _deploy_apps_impl(
                 from ._app_space import runtime_store_env, RUNTIME_STORE_VARIABLES
 
                 assert isinstance(space_name, str)  # Validated before provisioning.
-                binding = runtime_store_env(space_client, app_name=app_name, space=space_name)
+                binding = runtime_store_env(space_client, app_name=app_name, space=space_name, session_store=bound_session)
                 bundle_path = cwd / "databricks.yml"
                 if bundle_path.is_symlink():
                     raise click.ClickException("Refusing to bind a Runtime Store through symlinked databricks.yml")
@@ -17476,6 +17487,63 @@ def _load_store_spec(
     return getattr(module, variable)
 
 
+@memory.command("extract")
+@click.option("--session-id", required=True, help="Completed managed session to distill.")
+@click.option("--actor-id", default=None,
+              help="Trusted caller. Must match the actor recorded on the session.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Return the extracted entries without writing them.")
+@click.option("--instructions", default=None,
+              help="Override the declared distillation instructions for this call.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def memory_extract_cmd(
+    session_id: str,
+    actor_id: str | None,
+    profile: str | None,
+    dry_run: bool,
+    instructions: str | None,
+    fmt: str,
+) -> None:
+    """Distill one completed managed session into declared managed memory.
+
+    Requires ``[tool.apx.agent.memory] type='managed'`` with
+    ``[tool.apx.agent.memory.extraction] enabled=true``, and a managed session
+    store. The session is not deleted or rewritten. A service failure exits
+    non-zero and does not report the extraction as written.
+    """
+    from databricks.sdk import WorkspaceClient  # noqa: PLC0415
+
+    from ._inspection import _load_agent_config  # noqa: PLC0415
+    from ._memory_extract import extraction_payload, extract_declared_session  # noqa: PLC0415
+
+    config = _load_agent_config()
+    if config is None or config.memory is None or config.memory.extraction is None:
+        raise click.ClickException(
+            "Session extraction is off. Add [tool.apx.agent.memory.extraction] "
+            "enabled=true under a type='managed' memory store."
+        )
+    if instructions is not None:
+        if not instructions.strip():
+            raise click.ClickException("--instructions must be non-blank text")
+        config.memory.extraction.instructions = instructions
+    ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    result = extract_declared_session(
+        ws, config, session_id=session_id, actor_id=actor_id, dry_run=dry_run,
+    )
+    payload = extraction_payload(result)
+    if fmt == "text":
+        verb = "previewed" if dry_run else "wrote"
+        click.echo(
+            f"{verb} {len(result.entries)} memories from session {session_id} "
+            f"into {result.memory_store}"
+        )
+        return
+    click.echo(json.dumps(payload, indent=2))
+
+
 @memory.command("consolidate")
 @click.option("--store", "store_spec", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
@@ -17583,6 +17651,447 @@ def memory_consolidate_cmd(
         "dry_run": dry_run,
     }
     click.echo(json.dumps(payload, indent=2, default=str))
+
+
+# ---------------------------------------------------------------------------
+# Navigation UX — local scaffolding, inspection, and one-line papercut notes.
+# These commands stay local (no network) unless they explicitly resolve a
+# workspace through ``_require_sdk`` / ``_connect_workspace``.
+# ---------------------------------------------------------------------------
+
+# Canonical shortlist. The picker of record lives next to the model registry
+# (registry._KNOWN_AGENT_MODELS); this list is the CLI-facing copy so
+# ``agents models`` does not import the registry.
+_AGENT_MODEL_SHORTLIST: tuple[str, ...] = (
+    "databricks-claude-sonnet-4-5",
+    "databricks-claude-opus-4-5",
+    "databricks-gpt-5-4",
+    "databricks-gemini-3-1-pro",
+)
+_AGENT_MODEL_DEFAULT = "databricks-claude-sonnet-4-5"
+
+_AGENT_WHY_NOTES: dict[str, str] = {
+    "create-supervisor": "needs --name (supervisor display name)",
+    "create-team": "needs --name (team name)",
+    "create-workstream": "needs --team-id and --title",
+    "add": "needs --app or --endpoint",
+    "team-goal": "needs --team and --goal",
+    "bootstrap-domain-expert": "needs --catalog and --schema",
+    "spawn": "needs a YAML file/dir argument and --team",
+}
+
+
+def _agent_yaml_search_roots(cwd: Path | None = None) -> list[Path]:
+    """Roots ``agents deploy`` searches when no file is given: cwd, then ``agents/``."""
+    root = cwd or Path.cwd()
+    return [root, root / "agents"]
+
+
+def _collect_agent_yaml_files(file: str | None, *, cwd: Path | None = None) -> list[Path]:
+    """Resolve agent YAML files the way ``agents deploy`` does, without exiting.
+
+    A file path is checked as itself. A directory (or the default roots) is
+    walked for ``*.yaml`` / ``*.yml``. Missing defaults yield an empty list so
+    callers can print their own message and stay exit 0.
+    """
+    patterns = ("*.yaml", "*.yml")
+    if file is not None:
+        path = Path(file)
+        if path.is_file():
+            return [path]
+        if path.is_dir():
+            found: list[Path] = []
+            for pattern in patterns:
+                found.extend(sorted(path.rglob(pattern)))
+            return found
+        raise click.ClickException(f"agent YAML path not found: {file}")
+    found = []
+    for root in _agent_yaml_search_roots(cwd):
+        if not root.is_dir():
+            continue
+        for pattern in patterns:
+            found.extend(sorted(p for p in root.glob(pattern) if p.is_file()))
+    # Stable, de-duplicated.
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in found:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(path)
+    return unique
+
+
+def _load_agent_yaml_nodes(path: Path) -> list[dict[str, Any]]:
+    """Parse one agent YAML file into node dicts.
+
+    Uses the package's AST walker when the file is Python, and otherwise
+    treats a top-level mapping (or a list of mappings) as agent nodes. The
+    result is the same shape ``_parse_agent_nodes`` callers expect: a list of
+    dicts that may carry ``name``, ``instructions``, ``model``, and ``tools``.
+    """
+    text = path.read_text()
+    if path.suffix == ".py":
+        from ._ui_edit import _parse_agent_nodes
+
+        return list(_parse_agent_nodes(text))
+    import yaml
+
+    loaded = yaml.safe_load(text)
+    if loaded is None:
+        return []
+    if isinstance(loaded, list):
+        return [node for node in loaded if isinstance(node, dict)]
+    if isinstance(loaded, dict):
+        return [loaded]
+    raise click.ClickException(
+        f"{path}: expected a YAML mapping or list of mappings, got {type(loaded).__name__}"
+    )
+
+
+def _is_agent_node(node: dict[str, Any]) -> bool:
+    """An agent node names itself and declares instructions, a model, or tools."""
+    return "name" in node and (
+        "instructions" in node or "model" in node or "tools" in node
+    )
+
+
+def _agent_node_warnings(node: dict[str, Any]) -> list[str]:
+    """Read-only doctor warnings for one agent node. Never raises."""
+    warnings: list[str] = []
+    if not node.get("model"):
+        warnings.append("missing model")
+    tools = node.get("tools")
+    if tools is not None and not isinstance(tools, list):
+        warnings.append("tools is not a list")
+    elif isinstance(tools, list):
+        for entry in tools:
+            if isinstance(entry, dict) and "uc_function" not in entry and "name" not in entry:
+                warnings.append("tool entry has no uc_function or name")
+    instructions = node.get("instructions")
+    if instructions is None or not str(instructions).strip():
+        warnings.append("empty instructions")
+    return warnings
+
+
+def _init_agent_yaml(name: str | None) -> str:
+    agent_name = name or "my_agent"
+    return (
+        f"name: {agent_name}\n"
+        'description: "TODO: describe what this agent does"\n'
+        "model: databricks-claude-sonnet-4-5\n"
+        "instructions: |\n"
+        "  You are a helpful assistant. TODO: replace these instructions.\n"
+        "tools: []\n"
+    )
+
+
+@agents.command("init")
+@click.option("--dir", "output_dir", default=".", show_default=True)
+@click.option("--name", default=None, help="Default agent name in the scaffolded file.")
+def agents_init(output_dir: str, name: str | None) -> None:
+    """Write a minimal agent.yaml skeleton. Refuses to overwrite an existing one."""
+    dest = Path(output_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    path = dest / "agent.yaml"
+    if path.exists():
+        raise click.ClickException(
+            f"agent.yaml already exists at {path} — refusing to overwrite"
+        )
+    path.write_text(_init_agent_yaml(name))
+    click.echo(str(path))
+
+
+@agents.command("doctor")
+@click.option("--file", "file", default=None,
+              help="Agent YAML file or directory (default: search . and agents/).")
+def agents_doctor(file: str | None) -> None:
+    """Read-only local checks on agent YAML. Warnings never fail the command."""
+    files = _collect_agent_yaml_files(file)
+    if not files:
+        roots = ", ".join(str(p) for p in _agent_yaml_search_roots()) if file is None else file
+        click.echo(f"no agent YAML files found in {roots}")
+        click.echo("agents doctor: 0 file(s), 0 warning(s)")
+        return
+    warning_count = 0
+    for path in files:
+        try:
+            nodes = [n for n in _load_agent_yaml_nodes(path) if _is_agent_node(n)]
+        except click.ClickException as exc:
+            click.echo(f"warn {path}: {exc}")
+            warning_count += 1
+            continue
+        if not nodes:
+            click.echo(f"warn {path}: no agent node found")
+            warning_count += 1
+            continue
+        for node in nodes:
+            found = _agent_node_warnings(node)
+            warning_count += len(found)
+            label = node.get("name") or path.name
+            if not found:
+                click.echo(f"ok {label}")
+                continue
+            for warning in found:
+                click.echo(f"warn {label}: {warning}")
+    click.echo(f"agents doctor: {len(files)} file(s), {warning_count} warning(s)")
+
+
+@agents.command("show")
+@click.argument("name")
+def agents_show(name: str) -> None:
+    """Show one deployed agent or serving endpoint by name."""
+    ws = _require_sdk(None)
+    endpoint = None
+    try:
+        endpoint = ws.serving_endpoints.get(name)
+    except Exception:
+        listed = list(ws.serving_endpoints.list())
+        endpoint = next((ep for ep in listed if getattr(ep, "name", None) == name), None)
+    config = getattr(endpoint, "config", None) if endpoint is not None else None
+    description = getattr(endpoint, "description", None) or getattr(config, "description", None)
+    if endpoint is None:
+        # Registered-model fallback: ``agents list`` discovers agents here.
+        try:
+            models = list(ws.registered_models.list())
+        except Exception as exc:
+            raise click.ClickException(f"no agent or endpoint named {name!r}") from exc
+        match = next((m for m in models if getattr(m, "name", None) == name), None)
+        if match is None:
+            raise click.ClickException(f"no agent or endpoint named {name!r}")
+        click.echo(f"name: {getattr(match, 'name', name)}")
+        click.echo("kind: registered-model")
+        if getattr(match, "comment", None):
+            click.echo(f"description: {match.comment}")
+        return
+    click.echo(f"name: {getattr(endpoint, 'name', name)}")
+    click.echo("kind: endpoint")
+    click.echo(f"endpoint: {getattr(endpoint, 'name', name)}")
+    if description:
+        click.echo(f"description: {description}")
+
+
+@agents.command("models")
+def agents_models() -> None:
+    """Print the built-in chat-model shortlist and which one is the default."""
+    for model in _AGENT_MODEL_SHORTLIST:
+        marker = " (default)" if model == _AGENT_MODEL_DEFAULT else ""
+        click.echo(f"{model}{marker}")
+    click.echo("override per agent with `model:` or per deploy with --model")
+
+
+@agents.command("playground")
+@click.argument("file", required=False, default=None)
+def agents_playground(file: str | None) -> None:
+    """Print an agent's instructions locally. Never calls the network.
+
+    Interactive terminals get a stub prompt loop (``exit`` / ``quit`` to leave).
+    Non-interactive runs print the instructions only.
+    """
+    files = [Path(file)] if file else _collect_agent_yaml_files(None)
+    if file and not Path(file).is_file():
+        raise click.ClickException(f"agent YAML file not found: {file}")
+    if not files:
+        roots = ", ".join(str(p) for p in _agent_yaml_search_roots())
+        click.echo(f"no agent YAML files found in {roots}")
+        return
+    node = None
+    for path in files:
+        for candidate in _load_agent_yaml_nodes(path):
+            if "name" in candidate and "instructions" in candidate:
+                node = candidate
+                break
+        if node is not None:
+            break
+    if node is None:
+        raise click.ClickException("no agent node with name and instructions found")
+    click.echo(f"playground: {node['name']} (local, no deploy)")
+    click.echo(str(node.get("instructions") or ""))
+    if not _stdio_is_interactive():
+        click.echo("non-interactive: printing instructions only")
+        return
+    while True:
+        try:
+            line = input("you> ")
+        except EOFError:
+            break
+        if line.strip().lower() in {"exit", "quit"}:
+            break
+        click.echo(f"(local stub) you said: {line}")
+
+
+@agents.command("test")
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--prompt", default="ping", show_default=True)
+def agents_test(file: str, prompt: str) -> None:
+    """Static local validation of an agent YAML file. No network and no deploy.
+
+    ``--prompt`` is accepted so callers can name the check they care about;
+    the command never sends it anywhere.
+    """
+    del prompt  # local validation only — the prompt is not executed
+    nodes = [n for n in _load_agent_yaml_nodes(Path(file)) if _is_agent_node(n)]
+    if not nodes:
+        raise click.ClickException(f"no agent node found in {file}")
+    failed = False
+    for node in nodes:
+        reasons: list[str] = []
+        if not node.get("name"):
+            reasons.append("name missing")
+        instructions = node.get("instructions")
+        if instructions is None or not str(instructions).strip():
+            reasons.append("instructions missing")
+        if not node.get("model"):
+            reasons.append("model missing")
+        if not isinstance(node.get("tools"), list):
+            reasons.append("tools is not a list")
+        label = node.get("name") or "(unnamed)"
+        if reasons:
+            failed = True
+            click.echo(f"fail {label}: {', '.join(reasons)}")
+        else:
+            click.echo(f"ok {label}")
+    if failed:
+        raise click.ClickException("agents test: one or more checks failed")
+    click.echo("agents test: all checks passed")
+
+
+@agents.command("why", hidden=True)
+@click.argument("action", required=False, default=None)
+def agents_why(action: str | None) -> None:
+    """One-line explanation of a required-flag papercut. Hidden from --help."""
+    if action is None:
+        for key in sorted(_AGENT_WHY_NOTES):
+            click.echo(f"{key}: {_AGENT_WHY_NOTES[key]}")
+        return
+    note = _AGENT_WHY_NOTES.get(action)
+    if note is None:
+        known = ", ".join(sorted(_AGENT_WHY_NOTES))
+        raise click.ClickException(f"no note for {action!r}; try one of: {known}")
+    click.echo(note)
+
+
+@main.group(name="mcp", cls=_ApxGroup)
+def mcp() -> None:
+    """Local MCP client checks. No workspace calls."""
+
+
+@mcp.command("doctor")
+def mcp_doctor() -> None:
+    """Check local MCP prerequisites. No network."""
+    warnings = 0
+    uvx = shutil.which("uvx")
+    if uvx is None:
+        warnings += 1
+        click.echo("warn uvx not on PATH (needed for `mcp setup`)")
+    else:
+        click.echo(f"ok uvx on PATH: {uvx}")
+    if os.environ.get("DATABRICKS_HOST"):
+        click.echo("ok DATABRICKS_HOST is set")
+    else:
+        warnings += 1
+        click.echo("warn DATABRICKS_HOST is not set")
+    click.echo(f"mcp doctor: {warnings} warning(s)")
+
+
+@main.group(name="endpoints", cls=_ApxGroup)
+def endpoints() -> None:
+    """Inspect Model Serving endpoints."""
+
+
+@endpoints.command("list")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks config profile.")
+def endpoints_list(profile: str | None) -> None:
+    """List serving endpoint names in the configured workspace."""
+    ws = _require_sdk(profile)
+    for ep in ws.serving_endpoints.list():
+        click.echo(getattr(ep, "name", ""))
+
+
+@endpoints.command("url")
+@click.argument("name")
+def endpoints_url(name: str) -> None:
+    """Print the invocations URL for a serving endpoint. No network call."""
+    ws, cfg = _connect_workspace(None)
+    host = getattr(cfg, "host", None) or getattr(ws, "config", None) and ws.config.host
+    if not host:
+        raise click.ClickException("workspace host is not configured")
+    click.echo(f"{host}/serving-endpoints/{name}/invocations")
+
+
+@main.group(name="resources", cls=_ApxGroup)
+def resources() -> None:
+    """Inspect declared resources (Genie spaces, dashboards, tables, jobs)."""
+
+
+@resources.command("list")
+@click.option("--file", "file", required=True, type=click.Path(exists=True))
+def resources_list(file: str) -> None:
+    """Print resources declared in an agent YAML file. Local only."""
+    rows: list[tuple[str, str]] = []
+    for node in _load_agent_yaml_nodes(Path(file)):
+        tools = node.get("tools")
+        if isinstance(tools, list):
+            for entry in tools:
+                if isinstance(entry, dict) and entry.get("uc_function"):
+                    rows.append(("uc_function", str(entry["uc_function"])))
+        for key in ("genie_spaces", "dashboards"):
+            values = node.get(key)
+            if isinstance(values, list):
+                for value in values:
+                    rows.append((key, str(value)))
+    if not rows:
+        click.echo("no resources declared")
+        return
+    for kind, value in rows:
+        click.echo(f"{kind}\t{value}")
+
+
+def _genie_resolve(space: str, *, profile: str | None = None) -> dict[str, str]:
+    """Resolve a Genie space by name or id via the SDK. Returns ``{id, title}``."""
+    ws = _require_sdk(profile)
+    listing = getattr(ws, "genie", None)
+    if listing is None or not hasattr(listing, "list_spaces"):
+        raise click.ClickException("this workspace client cannot list Genie spaces")
+    for item in listing.list_spaces():
+        space_id = str(getattr(item, "space_id", None) or getattr(item, "id", "") or "")
+        title = str(getattr(item, "title", None) or getattr(item, "display_name", None) or space_id)
+        if space in {space_id, title}:
+            return {"id": space_id, "title": title}
+    raise click.ClickException(f"no Genie space named {space!r}")
+
+
+@resources.command("genie")
+@click.argument("space")
+def resources_genie(space: str) -> None:
+    """Resolve a Genie space by name or id and print its id."""
+    try:
+        resolved = _genie_resolve(space)
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"genie space {resolved['title']!r} id={resolved['id']}")
+
+
+@main.command("dashboard-open")
+@click.argument("dashboard_id")
+def dashboard_open(dashboard_id: str) -> None:
+    """Print the workspace URL for a dashboard id. No network call."""
+    _ws, cfg = _connect_workspace(None)
+    host = getattr(cfg, "host", None)
+    if not host:
+        raise click.ClickException("workspace host is not configured")
+    click.echo(f"{host}/dashboardsv3/{dashboard_id}")
+
+
+# Names the navigation tests import. ``main`` is the real Click root.
+cli = main
+_w = _require_sdk
+_resolve_workspace = _connect_workspace
+_is_interactive = _stdio_is_interactive
 
 
 if __name__ == "__main__":

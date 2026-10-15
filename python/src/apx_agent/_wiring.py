@@ -583,6 +583,16 @@ def finalize_agent(
         # Self-guards when no index is declared (like attach_declared_memory).
         attach_declared_vector_search(agent, config)
 
+        # #816: stamp the agent's declared identity onto tools that have none
+        # of their own, so per-tool overrides still win and undeclared tools
+        # inherit the agent principal. Must run after the tool merge so
+        # config-declared [[tool.apx.tools]] see the inheritance, and before
+        # apply_config_guardrails so ScopeGuard / authorization compile see it.
+        if config.identity is not None:
+            from ._agent_identity import apply_agent_identity  # noqa: PLC0415
+
+            apply_agent_identity(agent, config.identity)
+
         # E3c: attach declarative guards AFTER the tool merge + memory/VS attach
         # so a ScopeGuard sees config-declared [[tool.apx.tools]] scoped tools
         # (and code-wired ones), not just those on the agent at construction.
@@ -999,6 +1009,7 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         set_mcp_auth(
             request.headers.get("Authorization", ""),
             request.headers.get("X-Forwarded-Access-Token", ""),
+            request.headers.get("X-Forwarded-Email", ""),
         )
         async with mcp_transport.connect_sse(
             request.scope, request.receive, request._send
@@ -1034,6 +1045,7 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         set_mcp_auth(
             request.headers.get("Authorization", ""),
             request.headers.get("X-Forwarded-Access-Token", ""),
+            request.headers.get("X-Forwarded-Email", ""),
         )
         scope = dict(request.scope)
         headers = list(scope.get("headers", []))
@@ -1230,14 +1242,15 @@ def create_app(
             except Exception as exc:
                 logger.warning("Skipping /readyz mount: %s", exc)
 
-        # Mount the supported /invocations + /responses routes.
+        # Mount /invocations (ChatAgent). Callers that post the Responses
+        # `input` shape are answered in that shape on the same route.
         # Both use the same resolved conversation_store. Best-effort — missing
         # optional deps log a warning and skip the affected route only.
         if ctx is not None:
             _store: Any = None
             _checkpointer: Any = None
             try:
-                from ._invocations import mount_invocations_route, mount_responses_route
+                from ._invocations import mount_invocations_route
                 from ._memory_wiring import (  # noqa: PLC0415
                     _lakebase_checkpointer_target,
                     resolve_checkpointer,
@@ -1294,16 +1307,6 @@ def create_app(
                 )
             except Exception as exc:
                 logger.warning("Skipping A2A mount: %s", exc)
-
-            try:
-                from ._invocations import mount_responses_route
-
-                mount_responses_route(
-                    app, ctx.agent, ctx.config,
-                    conversation_store=_store, checkpointer=_checkpointer,
-                )
-            except Exception as exc:
-                logger.warning("Skipping /responses mount: %s", exc)
 
         if ctx is not None:
             mcp_lifecycle = await _setup_mcp(app, ctx)
@@ -1407,8 +1410,8 @@ def mount_mcp_endpoints(
     on an existing FastAPI app.
 
     Designed for the Databricks Apps target: pair the
-    ``mlflow.genai.agent_server.AgentServer`` (which provides ``/invocations``
-    + ``/responses``) with apx-agent's MCP surface so Genie / Genie Code can
+    ``mlflow.genai.agent_server.AgentServer`` (which provides ``/invocations``)
+    with apx-agent's MCP surface so Genie / Genie Code can
     consume the same agent as an MCP source.
 
     Mounted routes are inert until the FastAPI lifespan completes startup

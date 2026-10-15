@@ -5,12 +5,8 @@ Apps deployments). This surface ships in *every* runtime and carries no dev
 write-guard. Markdown libs are inlined from ``_static/vendor`` so the page is
 self-contained (no ``/vendor`` asset route, no CDN — private-link-safe).
 
-It talks to ``POST /responses`` (the MLflow ResponsesAgent contract:
-``{input:[...]}`` → ``{output:[...]}``). That endpoint is served identically by
-both serve paths — ``create_app`` (local ``apx-agent run``) and the AgentServer
-used on Apps deploys — so one page works everywhere. ``/invocations`` is NOT
-used here: it means ChatAgent ``{messages}`` under ``create_app`` but
-ResponsesAgent ``{input}`` under Apps, so it can't be a single contract.
+It talks to ``POST /invocations``. A body of ``{input:[...]}`` is
+answered as ``{output:[...]}``; ChatAgent callers still send ``{messages}``.
 """
 
 from __future__ import annotations
@@ -102,7 +98,7 @@ __VENDOR__
   const input = document.getElementById('in');
   const sendBtn = document.getElementById('send');
   const form = document.getElementById('f');
-  const history = [];  // [{role, content}] sent as the /responses `input`
+  const history = [];  // [{role, content}] sent as the /invocations `input`
 
   const hasMd = typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined';
   function renderMarkdown(el, text) {
@@ -135,7 +131,7 @@ __VENDOR__
     const pending = bubble('assistant', '');
     pending.classList.add('dots');
     try {
-      const resp = await fetch('/responses', {
+      const resp = await fetch('/invocations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input: history }),

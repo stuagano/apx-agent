@@ -70,6 +70,14 @@ def test_wide_blast_and_unmapped_src_are_full_suite() -> None:
     assert _select("python/src/apx_agent/_no_such_module.py") == ["tests/"]
 
 
+def test_src_without_named_test_maps_to_tests_that_import_it() -> None:
+    # No test_app_space.py; its tests live in test_deploy_apps.py.
+    paths = _select("python/src/apx_agent/_app_space.py")
+    assert "tests/" not in paths
+    assert "tests/test_deploy_apps.py" in paths
+    assert "tests/test_cli.py" not in paths
+
+
 def test_workflow_only_pr_is_core_not_full() -> None:
     paths = _select(
         ".github/workflows/ci.yml",

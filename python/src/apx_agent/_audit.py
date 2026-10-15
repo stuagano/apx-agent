@@ -83,6 +83,13 @@ class AuditAttrs:
     USER_TOKEN_PROVIDED = "apx.user.token_provided"
     USER_HASH = "apx.user.hash"  # SHA-256(user_id) when known — for correlation without leaking ids
 
+    # The principal a tool call actually executes as (#816). This is a
+    # service principal, not a user, so it is recorded in full rather than
+    # hashed: "app-service-principal", "service-principal:<name>", or "user"
+    # when the call runs on behalf of the caller. The triggering user stays
+    # USER_HASH, so the two compose — who ran it, and whose request it was.
+    PRINCIPAL = "apx.principal"
+
     # Mid-turn approval decisions (#469): marks a predict/invoke span as a
     # resume carrying an approve/deny decision, so USER_HASH on that same
     # span reads as "decided by", not just "called by".
@@ -153,6 +160,13 @@ class AuditAttrs:
     CALLER = "apx.caller"  # calling agent's name (x-apx-caller)
     OUTBOUND_TRACE_ID = "apx.outbound.trace_id"  # trace-id crossing the boundary
 
+    # Durable recovery (issue #864). A recovered worker starts a new trace.
+    # Both the original turn and the recovery stamp the SDK invocation id as
+    # a trace tag so search_traces can join them. The id is the runtime's
+    # correlation key, never a credential.
+    INVOCATION_ID = "apx.invocation.id"
+    RECOVERY = "apx.recovery"  # "true" on a resumed attempt, "false" on the first
+
 
 # ---------------------------------------------------------------------------
 # Short kwarg → standard key mapping
@@ -168,6 +182,7 @@ _KWARG_TO_KEY: dict[str, str] = {
     "operation": AuditAttrs.OPERATION,
     "user_token_provided": AuditAttrs.USER_TOKEN_PROVIDED,
     "user_hash": AuditAttrs.USER_HASH,
+    "principal": AuditAttrs.PRINCIPAL,
     "approval_decision": AuditAttrs.APPROVAL_DECISION,
     "tool_name": AuditAttrs.TOOL_NAME,
     "tool_uc_function": AuditAttrs.TOOL_UC_FUNCTION,
@@ -320,6 +335,26 @@ def traceparent_trace_id(traceparent: str) -> str | None:
     """Extract the 32-hex trace-id from a W3C ``traceparent``; None if malformed."""
     match = _TRACEPARENT_RE.match(traceparent.strip().lower())
     return match.group(1) if match else None
+
+
+def stamp_invocation_correlation(invocation_id: str, *, recovery: bool) -> None:
+    """Join a durable turn and its recovery on the SDK invocation id (issue #864).
+
+    Recovery runs in a new process and therefore a new trace. The invocation
+    id is already the runtime's correlation key, so both attempts stamp it as
+    a span attribute and a trace tag. ``apx.recovery`` distinguishes the first
+    attempt from a resume. Never stores credentials and never raises.
+    """
+    if not invocation_id:
+        return
+    attrs = {
+        AuditAttrs.INVOCATION_ID: invocation_id,
+        AuditAttrs.RECOVERY: "true" if recovery else "false",
+    }
+    span = current_active_span()
+    for key, value in attrs.items():
+        set_span_attribute(span, key, value)
+    set_trace_tags(attrs)
 
 
 def stamp_outbound_trace_id(traceparent: str) -> None:

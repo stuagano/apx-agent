@@ -501,112 +501,56 @@ def _bounded_name(identifier: str, kind: str) -> str:
 def _spec_to_yml_entry(spec: "ResourceSpec") -> dict[str, Any] | None:
     """Project a single ``ResourceSpec`` onto its databricks.yml resource shape.
 
-    Each entry is a one-key dict whose value carries the typed body — name,
-    identifier field, and the OBO permission the App needs at runtime. The
-    shapes mirror the resource block schema used in the
-    ``databricks/app-templates`` bundles.
+    Every entry is a resource-level ``name`` handle (the Apps API requires it
+    on all kinds; omitting it fails bundle deploy with a 2-30 char name error)
+    plus one typed block carrying the identifier field and the OBO permission
+    the App needs at runtime. Typed blocks carry only fields the Apps API
+    defines — ``uc_securable``/``sql_warehouse``/``job``/``database`` have no
+    inner ``name``; ``serving_endpoint``/``app``/``genie_space`` do.
     """
-    name = _slugify(spec.identifier, spec.kind)
-
-    if spec.kind == "serving_endpoint":
-        # The Apps API shape is a resource-level ``name`` handle plus an inner
-        # ``name`` carrying the endpoint identifier. There is no ``endpoint_name``
-        # field on the wire; emitting one (or omitting the resource-level name)
-        # fails bundle deploy with a 2-30 char name error + unknown-field warning.
-        return {
-            "name": _bounded_name(spec.identifier, spec.kind),
-            "serving_endpoint": {
-                "name": spec.identifier,
-                "permission": "CAN_QUERY",
-            },
-        }
-
-    if spec.kind == "uc_function":
-        return {
-            "uc_securable": {
-                "name": name,
-                "securable_full_name": spec.identifier,
-                "securable_type": "FUNCTION",
-                "permission": "EXECUTE",
-            }
-        }
-
-    if spec.kind == "genie_space":
-        return {
-            "genie_space": {
-                "name": name,
-                "space_id": spec.identifier,
-                "permission": "CAN_RUN",
-            }
-        }
-
-    if spec.kind == "vector_search_index":
-        return {
-            "uc_securable": {
-                "name": name,
-                "securable_full_name": spec.identifier,
-                "securable_type": "TABLE",
-                "permission": "SELECT",
-            }
-        }
-
-    if spec.kind == "sql_warehouse":
-        return {
-            "sql_warehouse": {
-                "name": name,
-                "id": spec.identifier,
-                "permission": "CAN_USE",
-            }
-        }
-
-    if spec.kind == "job":
-        return {
-            "job": {
-                "name": name,
-                "id": spec.identifier,
-                "permission": "CAN_MANAGE_RUN",
-            }
-        }
-
-    if spec.kind == "app":
-        return {
-            "app": {
-                "name": spec.identifier,
-                "permission": "CAN_USE",
-            }
-        }
-
-    if spec.kind == "uc_connection":
-        return {
-            "uc_securable": {
-                "name": name,
-                "securable_full_name": spec.identifier,
+    ident = spec.identifier
+    blocks: dict[str, tuple[str, dict[str, str]]] = {
+        "serving_endpoint": ("serving_endpoint", {"name": ident, "permission": "CAN_QUERY"}),
+        "uc_function": (
+            "uc_securable",
+            {"securable_full_name": ident, "securable_type": "FUNCTION", "permission": "EXECUTE"},
+        ),
+        "genie_space": (
+            "genie_space",
+            {"name": _slugify(ident, spec.kind), "space_id": ident, "permission": "CAN_RUN"},
+        ),
+        "vector_search_index": (
+            "uc_securable",
+            {"securable_full_name": ident, "securable_type": "TABLE", "permission": "SELECT"},
+        ),
+        "sql_warehouse": ("sql_warehouse", {"id": ident, "permission": "CAN_USE"}),
+        "job": ("job", {"id": ident, "permission": "CAN_MANAGE_RUN"}),
+        "app": ("app", {"name": ident, "permission": "CAN_USE"}),
+        "uc_connection": (
+            "uc_securable",
+            {
+                "securable_full_name": ident,
                 "securable_type": "CONNECTION",
                 "permission": "USE_CONNECTION",
-            }
-        }
-
-    if spec.kind == "lakebase_instance":
-        return {
-            "database": {
-                "name": name,
+            },
+        ),
+        "lakebase_instance": (
+            "database",
+            {
                 "database_name": "databricks_postgres",
-                "instance_name": spec.identifier,
+                "instance_name": ident,
                 "permission": "CAN_CONNECT_AND_CREATE",
-            }
-        }
-
-    if spec.kind == "uc_table":
-        return {
-            "uc_securable": {
-                "name": name,
-                "securable_full_name": spec.identifier,
-                "securable_type": "TABLE",
-                "permission": "SELECT",
-            }
-        }
-
-    return None  # pragma: no cover — guarded by _VALID_KINDS above
+            },
+        ),
+        "uc_table": (
+            "uc_securable",
+            {"securable_full_name": ident, "securable_type": "TABLE", "permission": "SELECT"},
+        ),
+    }
+    if spec.kind not in blocks:
+        return None  # pragma: no cover — guarded by _VALID_KINDS above
+    key, body = blocks[spec.kind]
+    return {"name": _bounded_name(ident, spec.kind), key: body}
 
 
 def resources_to_databricks_yml(
