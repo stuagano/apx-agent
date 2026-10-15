@@ -101,6 +101,14 @@ map_src() {
     fi
   done
   shopt -u nullglob
+  # No test_<mod>*.py (e.g. _app_space → test_deploy_apps.py): fall back to
+  # the tests that import or patch the module, instead of the full suite.
+  if [ "$found" -eq 0 ]; then
+    for f in $(grep -lE "apx_agent\.${stem}([^A-Za-z0-9_]|\$)" "$TESTS_DIR"/test_*.py); do
+      printf 'tests/%s\n' "$(basename "$f")"
+      found=1
+    done
+  fi
   [ "$found" -eq 1 ]
 }
 

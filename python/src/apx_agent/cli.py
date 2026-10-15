@@ -1888,8 +1888,8 @@ resources:
             value: "1"
           - name: APX_AGENT_NAME
             value: <APP_NAME>
-          - name: APX_APPS_HOST
-            value: python
+          - name: APX_RUNTIME
+            value: apps
           - name: APX_GIT_SHA
             value: ${var.apx_git_sha}
           - name: APX_MODEL_VERSION
@@ -4162,7 +4162,7 @@ def _scaffold_apps(
     memory_block = _SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else ""
     pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT + session_block + memory_block)
 
-    from ._project_gen import _START_HOST_CONTENT, _START_MANAGED_CONTENT
+    from ._project_gen import _START_HOST_CONTENT, _START_SERVER_CONTENT
 
     files: dict[str, str] = {
         "pyproject.toml": pyproject,
@@ -4178,8 +4178,7 @@ def _scaffold_apps(
         ),
         "agent_server/__init__.py": "",
         "agent_server/start_host.py": _START_HOST_CONTENT,
-        "agent_server/start_managed.py": _START_MANAGED_CONTENT,
-        "agent_server/start_server.py": _SCAFFOLD_APPS_START_SERVER,
+        "agent_server/start_server.py": _START_SERVER_CONTENT,
         "scripts/__init__.py": "",
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
         "tests/test_agent_imports.py": _sub(_SCAFFOLD_APPS_TEST_IMPORT),
@@ -10580,12 +10579,16 @@ def _deploy_apps_impl(
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         agent = _load_finalized_agent(module)
         if isinstance(agent, LlmAgent):
-            for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=False):
+            for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=True):
                 if check.name != "Managed sessions" or check.status is not _doctor_mod.Status.FAIL:
                     continue
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         try:
-            authorization_plan = compile_authorization_plan(agent, model=effective_config.model)
+            authorization_plan = compile_authorization_plan(
+                agent,
+                model=effective_config.model,
+                agent_identity=effective_config.identity,
+            )
             family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -10627,15 +10630,11 @@ def _deploy_apps_impl(
         doc = _read_databricks_yml(cwd)
         bundle_key, resolved_app_name = _resolve_app_name(doc)
         app = doc["resources"]["apps"][bundle_key]
-    hosts = [_apps_config_env_value(doc, bundle_key, "APX_APPS_HOST")]
-    hosts.extend(value.split("=", 1)[1] for value in env_pairs if value.startswith("APX_APPS_HOST="))
-    for host in hosts:
-        if host is None:
-            continue
-        if host.strip().lower() == "appkit":
-            raise click.ClickException("AppKit host is retired; declare target = 'durable_agent_server' and use the native Python entrypoint.")
-        if host.strip().lower() not in {"python", "agentbricks"}:
-            raise click.ClickException("APX_APPS_HOST must be python or agentbricks.")
+        launcher = cwd / "agent_server" / "start_server.py"
+        if not launcher.is_file() or "DurableAgentServer" not in launcher.read_text():
+            raise click.ClickException(
+                "Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py."
+            )
     app_name = app_name_override or resolved_app_name
     if app_name_override and app_name_override != resolved_app_name:
         log(f"# app-name override: polling {app_name} (target {bundle_target})")
@@ -10727,7 +10726,7 @@ def _deploy_apps_impl(
 
     if session_config is not effective_config and isinstance(agent, LlmAgent):
         effective_config = session_config
-        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli):
+        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli or app.get("space") is not None):
             if check.name != "Managed sessions":
                 continue
             log(f"# {check.name}: {check.detail}")
@@ -10742,6 +10741,9 @@ def _deploy_apps_impl(
         authorization_plan = compile_authorization_plan(
             agent,
             model=effective_model,
+            agent_identity=(
+                effective_config.identity if effective_config is not None else None
+            ),
         )
         family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
     except ValueError as exc:
@@ -10776,8 +10778,9 @@ def _deploy_apps_impl(
         if not declared_memory or any(name != "long_term_memory" for name in report.unsatisfied):
             report.require_compatible()
     if effective_config is not None and effective_config.target == "durable_agent_server":
-        if not native_direct and _apps_config_env_value(doc, bundle_key, "APX_APPS_HOST") != "agentbricks":
-            raise click.ClickException("Bundle host disagrees with the declared durable target; regenerate the project.")
+        launcher = cwd / "agent_server" / "start_server.py"
+        if not native_direct and (not launcher.is_file() or "DurableAgentServer" not in launcher.read_text()):
+            raise click.ClickException("Apps deploy serves DurableAgentServer. Regenerate agent_server/start_server.py.")
         declared_space = effective_config.deploy.space if effective_config.deploy is not None else None
         if declared_space != space_name:
             raise click.ClickException("Bundle space disagrees with deploy.space; regenerate the project.")
@@ -11065,7 +11068,7 @@ def _deploy_apps_impl(
                 from ._app_space import runtime_store_env, RUNTIME_STORE_VARIABLES
 
                 assert isinstance(space_name, str)  # Validated before provisioning.
-                binding = runtime_store_env(space_client, app_name=app_name, space=space_name)
+                binding = runtime_store_env(space_client, app_name=app_name, space=space_name, session_store=bound_session)
                 bundle_path = cwd / "databricks.yml"
                 if bundle_path.is_symlink():
                     raise click.ClickException("Refusing to bind a Runtime Store through symlinked databricks.yml")
@@ -17474,6 +17477,63 @@ def _load_store_spec(
             f"Module {module_path!r} has no attribute {variable!r}."
         )
     return getattr(module, variable)
+
+
+@memory.command("extract")
+@click.option("--session-id", required=True, help="Completed managed session to distill.")
+@click.option("--actor-id", default=None,
+              help="Trusted caller. Must match the actor recorded on the session.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Return the extracted entries without writing them.")
+@click.option("--instructions", default=None,
+              help="Override the declared distillation instructions for this call.")
+@click.option("--format", "fmt", type=click.Choice(["json", "text"]),
+              default="json", help="Output format. Default: json.")
+def memory_extract_cmd(
+    session_id: str,
+    actor_id: str | None,
+    profile: str | None,
+    dry_run: bool,
+    instructions: str | None,
+    fmt: str,
+) -> None:
+    """Distill one completed managed session into declared managed memory.
+
+    Requires ``[tool.apx.agent.memory] type='managed'`` with
+    ``[tool.apx.agent.memory.extraction] enabled=true``, and a managed session
+    store. The session is not deleted or rewritten. A service failure exits
+    non-zero and does not report the extraction as written.
+    """
+    from databricks.sdk import WorkspaceClient  # noqa: PLC0415
+
+    from ._inspection import _load_agent_config  # noqa: PLC0415
+    from ._memory_extract import extraction_payload, extract_declared_session  # noqa: PLC0415
+
+    config = _load_agent_config()
+    if config is None or config.memory is None or config.memory.extraction is None:
+        raise click.ClickException(
+            "Session extraction is off. Add [tool.apx.agent.memory.extraction] "
+            "enabled=true under a type='managed' memory store."
+        )
+    if instructions is not None:
+        if not instructions.strip():
+            raise click.ClickException("--instructions must be non-blank text")
+        config.memory.extraction.instructions = instructions
+    ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    result = extract_declared_session(
+        ws, config, session_id=session_id, actor_id=actor_id, dry_run=dry_run,
+    )
+    payload = extraction_payload(result)
+    if fmt == "text":
+        verb = "previewed" if dry_run else "wrote"
+        click.echo(
+            f"{verb} {len(result.entries)} memories from session {session_id} "
+            f"into {result.memory_store}"
+        )
+        return
+    click.echo(json.dumps(payload, indent=2))
 
 
 @memory.command("consolidate")

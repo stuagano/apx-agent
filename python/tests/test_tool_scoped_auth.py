@@ -465,3 +465,10 @@ def test_parse_returns_none_when_nothing_declared() -> None:
 def test_parse_rejects_unknown_scope_key() -> None:
     with pytest.raises(ToolConfigError, match="unknown key"):
         parse_tool_scope(scope={"catalog": ["typo-not-catalogs"]})
+
+
+def test_callers_declaration_parses_into_scope(config_factory) -> None:
+    """#831 — ``callers`` is popped before the factory splat and lands on the scope."""
+    [fn] = load_config_tools([{"type": "demo", "name": "refund", "callers": ["a@x.com"]}])
+    scope = get_scope(fn)
+    assert scope is not None and scope.callers == ("a@x.com",)

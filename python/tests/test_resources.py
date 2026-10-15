@@ -455,9 +455,12 @@ def test_yml_job_shape() -> None:
 
 
 def test_yml_app_shape_matches_cli_schema() -> None:
-    assert resources_to_databricks_yml([ResourceSpec("app", "resolved-app-name")]) == [
-        {"app": {"name": "resolved-app-name", "permission": "CAN_USE"}}
-    ]
+    [entry] = resources_to_databricks_yml([ResourceSpec("app", "resolved-app-name")])
+    assert entry == {
+        "name": entry["name"],
+        "app": {"name": "resolved-app-name", "permission": "CAN_USE"},
+    }
+    assert entry["name"].startswith("resolved-app-name-")
 
 
 def test_yml_uc_connection_shape() -> None:
@@ -480,17 +483,27 @@ def test_yml_lakebase_instance_shape() -> None:
     assert body["permission"] == "CAN_CONNECT_AND_CREATE"
 
 
-def test_yml_each_entry_has_name() -> None:
+def test_yml_every_kind_has_bounded_resource_name() -> None:
+    """Every kind carries the Apps API's required resource-level ``name`` (2-30
+    chars), and no typed block carries a ``name`` field the API doesn't define."""
     specs = [
         ResourceSpec("serving_endpoint", "claude-3-5"),
         ResourceSpec("uc_function", "main.tools.foo"),
         ResourceSpec("genie_space", "space-xyz"),
+        ResourceSpec("vector_search_index", "main.docs.idx"),
+        ResourceSpec("sql_warehouse", "wh-prod"),
+        ResourceSpec("job", "123"),
+        ResourceSpec("app", "other-app"),
+        ResourceSpec("uc_connection", "conn"),
+        ResourceSpec("lakebase_instance", "prod-lakebase"),
+        ResourceSpec("uc_table", "main.sales.orders_with_a_very_long_table_name"),
     ]
     yml = resources_to_databricks_yml(specs)
+    assert len(yml) == len(specs)
     for entry in yml:
-        body = _block(entry)
-        assert isinstance(body.get("name"), str)
-        assert body["name"]  # non-empty
+        assert 2 <= len(entry["name"]) <= 30
+        if _block_key(entry) in {"uc_securable", "sql_warehouse", "job", "database"}:
+            assert "name" not in _block(entry)
 
 
 def test_yml_handles_include_stable_full_identity_hash() -> None:
@@ -502,9 +515,9 @@ def test_yml_handles_include_stable_full_identity_hash() -> None:
         ResourceSpec("uc_table", "main.sales.orders"),
     ])
 
-    first_names = [_block(entry)["name"] for entry in first]
+    first_names = [entry["name"] for entry in first]
     assert first_names[0] != first_names[1]
-    assert first_names[0] == _block(repeated[0])["name"]
+    assert first_names[0] == repeated[0]["name"]
 
 
 def test_yml_full_agent_round_trip() -> None:

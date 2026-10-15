@@ -123,8 +123,10 @@ def _build_pyproject(config: "AgentConfig") -> str:
         config.memory is not None and config.memory.type == "managed"
     )
     extra = "eval,agentbricks" if needs_agentkit else "eval"
-    if any(backend is not None and backend.type == "lakebase"
-           for backend in (config.session, config.memory, config.example)):
+    if any(
+        backend is not None and backend.type == "lakebase"
+        for backend in (config.session, config.memory, config.example)
+    ):
         extra += ",lakebase"
     lines.append(f'    "apx-agent[{extra}]",')
     lines.append("]")
@@ -177,14 +179,21 @@ def _build_pyproject(config: "AgentConfig") -> str:
     # [tool.apx.agent.service_policies] — omit the default empty declaration
     # so existing generated projects remain byte-for-byte compatible.
     service_policies = config.service_policies
-    if service_policies.attachments or service_policies.abac is not None or service_policies.native_mode.value != "off" or service_policies.local_mode.value != "mirror":
+    if (
+        service_policies.attachments
+        or service_policies.abac is not None
+        or service_policies.native_mode.value != "off"
+        or service_policies.local_mode.value != "mirror"
+    ):
         lines.append("[tool.apx.agent.service_policies]")
         lines.append(f"local_mode = {_toml_value(service_policies.local_mode.value)}")
         lines.append(f"native_mode = {_toml_value(service_policies.native_mode.value)}")
         lines.append("")
         if service_policies.abac is not None:
             lines.append("[tool.apx.agent.service_policies.abac]")
-            lines.append(f"tags = {_toml_value_nested(dict(service_policies.abac.tags))}")
+            lines.append(
+                f"tags = {_toml_value_nested(dict(service_policies.abac.tags))}"
+            )
             lines.append("")
         for attachment in service_policies.attachments:
             lines.append("[[tool.apx.agent.service_policies.attachments]]")
@@ -211,16 +220,30 @@ def _build_pyproject(config: "AgentConfig") -> str:
 
     # [tool.apx.agent.memory]
     if config.memory is not None:
-        _write_toml_section(lines, "tool.apx.agent.memory", config.memory.model_dump(exclude_none=True))
+        _write_toml_section(
+            lines, "tool.apx.agent.memory", config.memory.model_dump(exclude_none=True)
+        )
 
     # [tool.apx.agent.session]
     if config.session is not None:
-        _write_toml_section(lines, "tool.apx.agent.session", config.session.model_dump(exclude_none=True))
+        _write_toml_section(
+            lines,
+            "tool.apx.agent.session",
+            config.session.model_dump(exclude_none=True),
+        )
 
     if config.deploy is not None:
-        _write_toml_section(lines, "tool.apx.agent.deploy", config.deploy.model_dump(exclude_none=True, exclude={"autoscale"}))
+        _write_toml_section(
+            lines,
+            "tool.apx.agent.deploy",
+            config.deploy.model_dump(exclude_none=True, exclude={"autoscale"}),
+        )
         if config.deploy.autoscale is not None:
-            _write_toml_section(lines, "tool.apx.agent.deploy.autoscale", config.deploy.autoscale.model_dump())
+            _write_toml_section(
+                lines,
+                "tool.apx.agent.deploy.autoscale",
+                config.deploy.autoscale.model_dump(),
+            )
 
     # [[tool.apx.tools]] — one array entry per tool declared in the YAML
     for tool_dict in config.tools:
@@ -242,19 +265,10 @@ def _build_pyproject(config: "AgentConfig") -> str:
 
 
 _START_SERVER_CONTENT = '''\
-"""Databricks Apps entry point — framework boilerplate, do not edit."""
-from apx_agent import create_app
-from apx_agent._inspection import _load_agent_config
-
-from agent import agent
-
-config = _load_agent_config()
-app = create_app(agent=agent, config=config)
-'''
-
-_START_MANAGED_CONTENT = '''\
 """Native APX DurableAgentServer target. Install databricks-agentbricks to use it."""
 import os
+
+os.environ.setdefault("APX_RUNTIME", "apps")
 
 from agent import agent
 from apx_agent import compile_agent
@@ -272,45 +286,26 @@ app = compile_agent(
 )
 '''
 
+
 _START_HOST_CONTENT = '''\
-"""Databricks Apps host selector — framework boilerplate, do not edit."""
+"""Databricks Apps host selector — framework boilerplate, do not edit.
+
+The only Apps host is DurableAgentServer.
+"""
 from __future__ import annotations
 
 import os
 
 
 def main() -> None:
-    from apx_agent._inspection import _load_agent_config
-
-    config = _load_agent_config()
-    default_host = "agentbricks" if config is not None and config.target == "durable_agent_server" else "python"
-    host = os.environ.get("APX_APPS_HOST", default_host).strip().lower()
-    if host == "python":
-        os.execvp(
-            "uvicorn",
-            [
-                "uvicorn",
-                "agent_server.start_server:app",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                os.environ["DATABRICKS_APP_PORT"],
-            ],
-        )
-    if host == "agentbricks":
-        os.execvp(
-            "uvicorn",
-            ["uvicorn", "agent_server.start_managed:app", "--host", "0.0.0.0",
-             "--port", os.environ["DATABRICKS_APP_PORT"]],
-        )
-    raise SystemExit("APX_APPS_HOST must be python or agentbricks; the AppKit host is retired.")
-
-if __name__ == "__main__":
-    main()
+    os.environ.setdefault("APX_RUNTIME", "apps")
+    os.execvp(
+        "uvicorn",
+        ["uvicorn", "agent_server.start_server:app", "--host", "0.0.0.0", "--port", "8000"],
+    )
 '''
 
-# name -> (import module, class). Built-in templates whose ``build()`` is a pure
-# spec->constructor forward, so the generated agent.py reproduces the same agent.
+
 _TEMPLATE_TARGETS = {
     "coworker": ("apx_agent.coworker", "CoworkerAgent"),
     "data": ("apx_agent.data_agent", "DataAgent"),
@@ -440,16 +435,29 @@ def _leaf_ctor_params(class_name: str) -> frozenset[str]:
 # positional ``card_url``. Hardcoded (not introspected) because ``url`` is a
 # render-path alias with no matching constructor param.
 _REMOTE_LEAF_KEYS = frozenset(
-    {"type", "url", "card_url", "app_name", "headers", "timeout", "long_task", "max_continuations"}
+    {
+        "type",
+        "url",
+        "card_url",
+        "app_name",
+        "headers",
+        "timeout",
+        "long_task",
+        "max_continuations",
+    }
 )
 
 
-def _render_remote_leaf(name: str, var: str, spec: dict[str, Any], imports: set[str]) -> str:
+def _render_remote_leaf(
+    name: str, var: str, spec: dict[str, Any], imports: set[str]
+) -> str:
     """Render a ``RemoteDatabricksAgent`` leaf (the A2A / sub_agents story)."""
     imports.add("RemoteDatabricksAgent")
     unknown = set(spec) - _REMOTE_LEAF_KEYS
     if unknown:
-        raise ValueError(f"Remote graph agent {name!r} has unknown key(s): {sorted(unknown)}")
+        raise ValueError(
+            f"Remote graph agent {name!r} has unknown key(s): {sorted(unknown)}"
+        )
     url = spec.get("url")
     if url is None:
         url = spec.get("card_url")
@@ -478,7 +486,9 @@ def _render_leaf(name: str, spec: dict[str, Any], imports: set[str]) -> str:
     allowed = _leaf_ctor_params(class_name) | {"type", "tools"}
     unknown = set(spec) - allowed
     if unknown:
-        raise ValueError(f"Graph agent {name!r} ({kind}) has unknown key(s): {sorted(unknown)}")
+        raise ValueError(
+            f"Graph agent {name!r} ({kind}) has unknown key(s): {sorted(unknown)}"
+        )
 
     kwargs = {k: v for k, v in spec.items() if k != "type"}
     kwargs.setdefault("name", name)
@@ -498,7 +508,9 @@ def _render_leaf(name: str, spec: dict[str, Any], imports: set[str]) -> str:
         schema = kwargs.pop("schema", None)
         if catalog is None or schema is None:
             raise ValueError(f"Data graph agent {name!r} requires catalog and schema")
-        args = ", ".join([repr(catalog), repr(schema), _ctor_kwargs(kwargs)]).rstrip(", ")
+        args = ", ".join([repr(catalog), repr(schema), _ctor_kwargs(kwargs)]).rstrip(
+            ", "
+        )
         return f"{var} = DataAgent({args})"
 
     if kind in {"coworker", "coworker_agent"}:
@@ -506,15 +518,24 @@ def _render_leaf(name: str, spec: dict[str, Any], imports: set[str]) -> str:
         catalog = kwargs.pop("catalog", None)
         schema = kwargs.pop("schema", None)
         if catalog is None or schema is None:
-            raise ValueError(f"Coworker graph agent {name!r} requires catalog and schema")
-        args = ", ".join([repr(catalog), repr(schema), _ctor_kwargs(kwargs)]).rstrip(", ")
+            raise ValueError(
+                f"Coworker graph agent {name!r} requires catalog and schema"
+            )
+        args = ", ".join([repr(catalog), repr(schema), _ctor_kwargs(kwargs)]).rstrip(
+            ", "
+        )
         return f"{var} = CoworkerAgent({args})"
 
-    raise ValueError(f"Unsupported graph agent type {kind!r} for {name!r}")  # pragma: no cover
+    raise ValueError(
+        f"Unsupported graph agent type {kind!r} for {name!r}"
+    )  # pragma: no cover
 
 
 def _render_root(
-    root: dict[str, Any], agent_names: set[str], imports: set[str], remote_names: set[str]
+    root: dict[str, Any],
+    agent_names: set[str],
+    imports: set[str],
+    remote_names: set[str],
 ) -> str:
     """Render the YAML graph root assignment."""
     kind = str(root.get("type", "router")).replace("-", "_").lower()
@@ -568,7 +589,11 @@ def _render_root(
                 f"until its card is fetched. Use a sequential/parallel/loop root."
             )
 
-    list_roots = {"router": "RouterAgent", "sequential": "SequentialAgent", "parallel": "ParallelAgent"}
+    list_roots = {
+        "router": "RouterAgent",
+        "sequential": "SequentialAgent",
+        "parallel": "ParallelAgent",
+    }
     if kind in list_roots:
         cls = list_roots[kind]
         imports.add(cls)
@@ -593,7 +618,11 @@ def _render_root(
         imports.add("LoopAgent")
         max_iterations = root.get("max_iterations", 5)
         # bool is an int subclass — reject it too (FR-5).
-        if not isinstance(max_iterations, int) or isinstance(max_iterations, bool) or max_iterations <= 0:
+        if (
+            not isinstance(max_iterations, int)
+            or isinstance(max_iterations, bool)
+            or max_iterations <= 0
+        ):
             raise ValueError(
                 f"loop root max_iterations must be a positive int, got {max_iterations!r}"
             )
@@ -626,7 +655,8 @@ def _render_graph_agent_py(config: "AgentConfig") -> str:
     remote_names = {
         name
         for name, spec in config.agents.items()
-        if str(spec.get("type", "agent")).replace("-", "_").lower() in {"remote", "remote_databricks"}
+        if str(spec.get("type", "agent")).replace("-", "_").lower()
+        in {"remote", "remote_databricks"}
     }
     root = _render_root(config.root, set(config.agents), imports, remote_names)
     import_lines = ["from apx_agent import " + ", ".join(sorted(imports))]
@@ -686,6 +716,7 @@ def render_agent_py(config: "AgentConfig") -> str:
     args = ", ".join(pos + kw)
     return f"from {module} import {cls}\n\nagent = {cls}({args})\n"
 
+
 _KEEPALIVE_CONTENT = '''\
 """Scheduled keepalive — pings /readyz to prevent cold starts. Do not edit."""
 import sys
@@ -723,7 +754,9 @@ def _build_databricks_yml(config: "AgentConfig") -> str:
         raise ValueError(scaled_in_memory_error(declared_max_replicas(config)))
 
     name = config.name
-    skills_copy = "      cp -r skills .build/ 2>/dev/null || true\n\n" if config.skills else "\n"
+    skills_copy = (
+        "      cp -r skills .build/ 2>/dev/null || true\n\n" if config.skills else "\n"
+    )
     # Carry the declared replica count forward for the runtime boot guard (FR-4).
     # The bundle now also carries native Apps horizontal-scaling bounds, but the
     # runtime still needs an explicit read-back because the process cannot discover
@@ -811,8 +844,8 @@ resources:
             value: ${{var.mlflow_experiment_id}}
           - name: APX_AGENT_MLFLOW_AUTOLOG
             value: "1"
-          - name: APX_APPS_HOST
-            value: python{declared_instances_env}
+          - name: APX_RUNTIME
+            value: apps{declared_instances_env}
 
   jobs:
     {name}_keepalive:
@@ -856,7 +889,6 @@ targets:
     bundle = yaml.safe_load(document)
     app = bundle["resources"]["apps"][name]
     env = app["config"]["env"]
-    next(entry for entry in env if entry["name"] == "APX_APPS_HOST")["value"] = "agentbricks"
     # Native deployment delegates tracing and rollout to Agent Bricks.
     for key in ("experiments", "jobs"):
         bundle["resources"].pop(key, None)
@@ -864,19 +896,30 @@ targets:
     app.pop("user_api_scopes", None)
     for key in ("workspace_user", "mlflow_experiment_id"):
         bundle["variables"].pop(key, None)
-    app["config"]["env"] = [entry for entry in env if entry["name"] != "MLFLOW_EXPERIMENT_ID"]
+    app["config"]["env"] = [
+        entry for entry in env if entry["name"] != "MLFLOW_EXPERIMENT_ID"
+    ]
     env = app["config"]["env"]
     if config.deploy is None or config.deploy.space is None:
         app.pop("description", None)
-        deployment_name = name if name.startswith("agent-bricks-") else f"agent-bricks-{name}"
+        deployment_name = (
+            name if name.startswith("agent-bricks-") else f"agent-bricks-{name}"
+        )
         app["name"] = deployment_name
         bundle["targets"]["prod"]["resources"]["apps"][name]["name"] = deployment_name
     if config.deploy is not None and config.deploy.space is not None:
         app["space"] = config.deploy.space
-        app["config"]["env"] = [entry for entry in env if entry["name"] != "APX_DECLARED_INSTANCES"]
+        app["config"]["env"] = [
+            entry for entry in env if entry["name"] != "APX_DECLARED_INSTANCES"
+        ]
         for key, variable in RUNTIME_STORE_VARIABLES.items():
-            bundle["variables"][variable] = {"description": "SDK-owned Runtime Store coordinate, bound by apx-agent deploy", "default": ""}
-            app["config"]["env"].append({"name": key, "value": "${var." + variable + "}"})
+            bundle["variables"][variable] = {
+                "description": "SDK-owned Runtime Store coordinate, bound by apx-agent deploy",
+                "default": "",
+            }
+            app["config"]["env"].append(
+                {"name": key, "value": "${var." + variable + "}"}
+            )
     return yaml.safe_dump(bundle, sort_keys=False)
 
 
@@ -945,6 +988,7 @@ def generate_project(
     if native:
         # Validate scaling without generating a Bundle just to discard it.
         from ._agentbricks_deploy import compile_native_app
+
         compile_native_app(config)
     else:
         # Existing Bundle/App Space hosts retain their generated entrypoints.
@@ -953,7 +997,6 @@ def generate_project(
         (agent_server_dir / "__init__.py").write_text("")
         (agent_server_dir / "start_server.py").write_text(_START_SERVER_CONTENT)
         (agent_server_dir / "start_host.py").write_text(_START_HOST_CONTENT)
-        (agent_server_dir / "start_managed.py").write_text(_START_MANAGED_CONTENT)
         (agent_server_dir / "keepalive.py").write_text(_KEEPALIVE_CONTENT)
         (target_dir / "databricks.yml").write_text(_build_databricks_yml(config))
         (target_dir / "app.yml").write_text(_build_app_yml(config))

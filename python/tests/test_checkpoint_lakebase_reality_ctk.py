@@ -212,26 +212,6 @@ def test_mount_invocations_threads_checkpointer(monkeypatch: pytest.MonkeyPatch)
     assert ok and captured["checkpointer"] is sentinel
 
 
-def test_mount_responses_threads_checkpointer(monkeypatch: pytest.MonkeyPatch) -> None:
-    from apx_agent import _responses_agent
-    from apx_agent._invocations import mount_responses_route
-    from fastapi import FastAPI
-
-    captured: dict[str, Any] = {}
-
-    def fake(agent: Any, *, model: str, **kw: Any) -> Any:
-        captured["checkpointer"] = kw.get("checkpointer")
-        return (lambda r: None, lambda r: iter(()))  # (non_streaming, streaming)
-
-    monkeypatch.setattr(_responses_agent, "compile_to_responses_agent", fake)
-    sentinel = object()
-    ok = mount_responses_route(
-        FastAPI(), LlmAgent(name="t", tools=[]), AgentConfig(name="t", model="m"),
-        checkpointer=sentinel,
-    )
-    assert ok and captured["checkpointer"] is sentinel
-
-
 # ── close_checkpointer: the durable pool is released on shutdown (#346) ────────
 
 

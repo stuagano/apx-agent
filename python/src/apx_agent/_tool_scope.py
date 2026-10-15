@@ -53,6 +53,8 @@ __all__ = [
     "in_scope",
     "identity_to_execution",
     "attach_scope_guard",
+    "caller_allowed",
+    "caller_dependency",
 ]
 
 
@@ -106,6 +108,9 @@ class ToolScope:
     tables: tuple[str, ...] = field(default_factory=tuple)
     functions: tuple[str, ...] = field(default_factory=tuple)
     secret_scopes: tuple[str, ...] = field(default_factory=tuple)
+    # Caller allowlist (#831): emails that may list/call this tool over MCP and
+    # the tool route. Empty = open to every caller (back-compat).
+    callers: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if self.identity is not None:
@@ -162,16 +167,19 @@ def parse_tool_scope(
     identity: Any = None,
     scope: Any = None,
     secret_scopes: Any = None,
+    callers: Any = None,
 ) -> ToolScope | None:
     """Build a :class:`ToolScope` from the declared keys, or ``None`` if none set.
 
     ``identity`` is a string; ``scope`` is a table with optional
     ``catalogs``/``schemas``/``tables``/``functions`` string lists;
-    ``secret_scopes`` is a string list. Malformed input raises ``ToolConfigError``.
+    ``secret_scopes`` and ``callers`` are string lists. Malformed input raises ``ToolConfigError``.
     Returns ``None`` when nothing is declared (back-compat — attaches no scope).
     """
-    if identity is None and scope is None and secret_scopes is None:
+    if identity is None and scope is None and secret_scopes is None and callers is None:
         return None
+    if callers is not None and not callers:
+        raise ToolConfigError("callers must list at least one email; omit it to leave the tool open.")
     if identity is not None and not isinstance(identity, str):
         raise ToolConfigError(f"identity must be a string; got {identity!r}.")
     if scope is not None and not isinstance(scope, dict):
@@ -190,6 +198,7 @@ def parse_tool_scope(
         tables=tuple(_as_str_list(scope.get("tables"), "tables")),
         functions=tuple(_as_str_list(scope.get("functions"), "functions")),
         secret_scopes=tuple(_as_str_list(secret_scopes, "secret_scopes")),
+        callers=tuple(_as_str_list(callers, "callers")),
     )
 
 
@@ -318,6 +327,49 @@ _UC_ARG_KEYS = frozenset({
 _SECRET_ARG_KEYS = frozenset({"secret_scope"})
 
 
+def caller_allowed(scope: ToolScope | None, caller_email: str | None) -> bool:
+    """True when ``caller_email`` may use a tool with ``scope`` (#831).
+
+    No scope / no ``callers`` → open. A restricted tool with no caller identity
+    is denied (fail closed). Emails compare case-insensitively.
+    """
+    if scope is None or not scope.callers:
+        return True
+    if not caller_email:
+        return False
+    return caller_email.casefold() in {c.casefold() for c in scope.callers}
+
+
+def caller_dependency(fn: Any) -> Any:
+    """FastAPI dependency refusing callers outside ``fn``'s ``callers`` list (HTTP 403).
+
+    ``None`` when the tool declares no caller allowlist. Guards the
+    ``/tools/<name>`` route, which MCP ``call_tool`` dispatches through, so a
+    caller hidden from ``list_tools`` can't reach the tool over REST either.
+    """
+    scope = get_scope(fn)
+    if scope is None or not scope.callers:
+        return None
+    from fastapi import Header, HTTPException  # noqa: PLC0415
+
+    name = getattr(fn, "__name__", "<tool>")
+
+    def _check(caller_email: str | None = Header(default=None, alias="X-Forwarded-Email")) -> None:
+        if caller_allowed(scope, caller_email):
+            return
+        reason = f"caller {caller_email!r} not in callers allowlist"
+        set_audit_attrs(
+            current_active_span(),
+            scope_action="deny",
+            scope_object=name,
+            scope_reason=reason,
+        )
+        logger.warning("caller_denied: tool %r — %s", name, reason)
+        raise HTTPException(status_code=403, detail=f"caller_denied: tool {name!r} ({reason})")
+
+    return _check
+
+
 # ---------------------------------------------------------------------------
 # Compile-time enforcement
 # ---------------------------------------------------------------------------
@@ -386,6 +438,26 @@ class ScopeGuard:
             tools = tools()
         return tools or ()
 
+    def _stamp_principal(self, tool_name: str, scope: ToolScope | None) -> None:
+        """Name the executing principal and hashed triggering user on the span."""
+        if scope is None or scope.identity is None:
+            return
+        from ._agent_identity import principal_label  # noqa: PLC0415
+        from ._audit import set_audit_attrs, user_hash  # noqa: PLC0415
+        from . import _defaults
+
+        # The forwarded user header is the user whose request triggered the
+        # call. It is absent outside an Apps request, and only its hash is
+        # recorded. Imported through the module so a test can stand in for it.
+        headers = _defaults.get_databricks_headers()
+        set_audit_attrs(
+            current_active_span(),
+            principal=principal_label(
+                identity_to_execution(scope.identity), named_sp_name(scope.identity)
+            ),
+            user_hash=user_hash(headers.user_id if headers else None),
+        )
+
     def _scope_for(self, tool_name: str) -> ToolScope | None:
         for fn in self._iter_tools():
             if getattr(fn, "__name__", None) == tool_name:
@@ -420,6 +492,10 @@ class ScopeGuard:
 
         def _check(tool_name: str, args: dict[str, Any]) -> None:
             scope = self._scope_for(tool_name)
+            # #816: attribute the call to the principal it executes as and the
+            # user whose request triggered it. An inherited agent identity is a
+            # scope with an identity and no ceiling, so this fires for it too.
+            self._stamp_principal(str(tool_name), scope)
             if scope is None:
                 return  # unscoped tool — no-op (back-compat)
             if not isinstance(args, dict):

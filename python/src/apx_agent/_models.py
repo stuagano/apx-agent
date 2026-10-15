@@ -129,6 +129,7 @@ class GatewayConfig(BaseModel):
 
 StoreType = Literal["inmemory", "lakebase", "managed"]
 RuntimeTarget = Literal["responses_agent", "durable_agent_server"]
+"""``responses_agent`` is the legacy model-serving contract. Apps use ``durable_agent_server``."""
 DeployBackend = Literal["agentbricks", "apps_api"]
 
 # Default embedding endpoint for the "persistent" knob's Lakebase memory —
@@ -158,6 +159,28 @@ class _BackendConfig(BaseModel):
         return data
 
 
+class MemoryExtractionPolicy(BaseModel):
+    """Declared session-to-memory extraction. Off unless this table exists.
+
+    The service distills one finished managed session into the bound memory
+    store. It is not consolidation of memories that already exist, and it does
+    not run by itself at the end of a turn.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    """Must be true before any extraction call is made."""
+    instructions: str | None = None
+    """Approved distillation instructions sent with every extraction."""
+
+    @model_validator(mode="after")
+    def _instructions_are_text(self) -> "MemoryExtractionPolicy":
+        if self.instructions is not None and not self.instructions.strip():
+            raise ValueError("memory.extraction.instructions must be non-blank text")
+        return self
+
+
 class MemoryBackendConfig(_BackendConfig):
     """Declarative memory backend — maps to ``[tool.apx.agent.memory]``."""
 
@@ -176,9 +199,16 @@ class MemoryBackendConfig(_BackendConfig):
     tool_prefix: str = ""
     include: list[str] | None = None
     validate_at_boot: bool = True
+    extraction: MemoryExtractionPolicy | None = None
+    """Explicit session-to-memory extraction policy. Absent means off."""
 
     @model_validator(mode="after")
     def _validate_managed_store(self) -> "MemoryBackendConfig":
+        if self.extraction is not None and self.type != "managed":
+            raise ValueError(
+                "memory.extraction requires type='managed'; in-memory and "
+                "Lakebase stores keep their own write path."
+            )
         if self.type == "managed" and self.store_name is not None:
             from ._memory_managed import validate_memory_store_name  # noqa: PLC0415
 
@@ -619,7 +649,37 @@ class AgentConfig(BaseModel):
 
     name: str
     target: RuntimeTarget = "responses_agent"
-    """Compilation contract, independent of where the agent executes."""
+    """Compilation contract. ``responses_agent`` is legacy (model serving);
+    Databricks Apps use ``durable_agent_server``."""
+    host: Literal["apps", "model_serving"] | None = None
+    """Where the compiled agent executes. ``apps`` requires the Apps
+    compilation contract; ``model_serving`` keeps the legacy contract.
+    """
+    identity: str | None = None
+    """The agent's own principal — its default execution identity (#816).
+
+    ``"sp"`` is the App's service principal, ``"obo"`` runs every undeclared
+    tool as the calling user, and ``"named-sp:<name>"`` names the service
+    principal those tools run as. A tool that declares its own ``identity``
+    overrides this. A named principal is only honest when it *is* the App's
+    own service principal: Databricks Apps injects one set of credentials,
+    and deploy rejects a name the App record does not carry.
+    """
+
+    @field_validator("identity")
+    @classmethod
+    def _validate_agent_identity(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from ._tool_scope import _validate_identity
+
+        try:
+            _validate_identity(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"[tool.apx.agent] identity: {exc}"
+            ) from exc
+        return value
     recovery: bool = False
     """Opt into checkpoint recovery; tools must tolerate replay of uncommitted work."""
     description: str = ""
@@ -799,6 +859,9 @@ class AgentTool(BaseModel):
     input_schema: dict[str, Any] | None = None
     output_schema: dict[str, Any] | None = None
     sub_agent_url: str | None = None  # set for sub-agent tools, None for local tools
+    # Caller allowlist (#831) — MCP list_tools filters on it. Never serialized:
+    # the card must not publish who may call a tool.
+    callers: tuple[str, ...] = Field(default=(), exclude=True)
 
 
 # ---------------------------------------------------------------------------

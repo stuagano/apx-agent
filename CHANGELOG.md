@@ -6,28 +6,183 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+Headline: apx declarations compile to the native Databricks durable agent
+runtime, which is now the only Apps host. Composite and A2A agents run on it,
+and managed sessions and memory replace app-owned state on that path.
+
 ### Added
 
-- **Tool inspector at `/_apx/tools`.** `/_apx/tools` is a real inspector again — live source from `inspect.getsourcefile`, in-place save, run via `/_apx/replay/tool` — not a 302 to Edit. Also a nav tab, the Chat shell's Tools tab, and an Edit-page Schemas/Tools sub-tab. Shared table renderer used by Tools, Chat, and Trace. New routes: `GET /_apx/tools/list`, `GET /_apx/tools/file`, `POST /_apx/tools/save`.
-- **Native Databricks Apps horizontal-scaling fields in generated bundles.**
-  `[tool.apx.agent.deploy]` now emits `compute_min_instances` /
-  `compute_max_instances` into `databricks.yml` when rendering Apps bundles,
-  while retaining `APX_DECLARED_INSTANCES` for the runtime scaled-in-memory
-  guard's read-back. Fixed-count `instances = N` emits `min = max = N`;
-  autoscale emits the declared bounds. Requires a Databricks CLI/bundle schema
-  new enough to accept those private-preview fields.
+- **Native durable runtime.** Agent declarations compile to a native MLflow
+  `ResponsesAgent` or `DurableAgentServer`. One declaration selects the runtime,
+  App Space and managed session binding. Deploys hand store reconciliation to
+  the Agent Bricks CLI. New Apps scaffolds default to `durable_agent_server`;
+  `--runtime responses_agent` keeps the compatibility layout (#865–#867, #877).
+- **Composite and A2A agents on the durable runtime.** `KeywordRouter`,
+  `SequentialAgent` and A2A peers compile to `durable_agent_server` (#900).
+  Durable recovery traces join on the invocation id (#920).
+- **`apx-agent doctor --durable`.** A readiness check that runs the native
+  runtime rather than reading config. It follows the same deploy routing as
+  App Space projects (#907, #908).
+- **Apps API deploy path.** `[tool.apx.agent.deploy] backend = "apps_api"`,
+  with `entrypoint`, `include` and `env`, deploys with get-or-create steps and
+  keeps the declared app name. Use it for `mcp-` names that the Agent Bricks CLI
+  would rename (#913, #915).
+- **Agent identity (#816).** `[tool.apx.agent] identity` declares the agent's own
+  principal: `"sp"`, `"obo"` or `"named-sp:<name>"`. Tools that declare no
+  identity inherit it; a per-tool `identity` still wins. `apx-agent deploy`
+  reports the agent principal and names each operation's principal in the
+  authorization summary. A tool call's span carries `apx.principal` (the
+  principal it ran as) and `apx.user.hash` (the user whose request triggered
+  it). A declared name is the App's own service principal. A Databricks App
+  holds one such credential, and the declaration does not create a second
+  one (#925).
+- **Per-caller MCP tool allowlist.** `callers = [emails]` on a tool hides it
+  from other MCP callers, and `/api/tools/<name>` returns 403 `caller_denied`.
+  A request without a caller email is denied (#929).
+- **Declared session-to-memory extraction.** `[tool.apx.agent.memory.extraction]`
+  stays off until `enabled = true` on a managed memory store with a managed
+  session store. `apx memory extract --session-id` distills that one completed
+  session through AgentKit. `--dry-run` returns the entries without writing,
+  and a real write is read back before it is reported. The session is not
+  rewritten, and existing-memory consolidation is unchanged (#928).
+- **Lakebase → managed memory import.** `inventory_memory_table` and
+  `import_memories` copy a Lakebase memory table into a managed memory store.
+  Source rows are left in place, and an interrupted import can be re-run
+  (#927).
+- **Managed state contract map.** [docs/design/managed-state-contract-map.md](docs/design/managed-state-contract-map.md) records the AgentKit 0.4.0 / SDK 0.146.0 methods this checkout can call and maps MemoryStore, ConversationStore, session state and checkpoints onto them. A `fevm` probe on 2026-10-13 found managed memory and session stores enabled (Beta, Lakebase-backed) and completed a disposable `add`/`get`/`recall`/`update`/`delete` plus an actor isolation check. Retention and measured cost remain unknown (#854, #924).
+- **Doctor names services that need a guardrail-policy check.** It lists the
+  bound model service and every `service_policies` target to confirm in the
+  Unity Gateway UI. No API can read these attachments back yet (#917).
+- **Instruction optimization for named child agents** (#852).
+
+### Changed
+
+- **Breaking: the Apps host is `DurableAgentServer` only** (#898, #926, #930).
+- **Breaking: the TypeScript agent runtime is retired.** The internal AppKit
+  host and Python tool bridge are removed. Examples run on the native server.
+  The browser TypeScript clients and the Python `ResponsesAgent` target
+  remain (#873, #879).
+- **The chat LLM goes through AI Gateway only.** `get_llm` always uses the
+  gateway, and Apps no longer grant `CAN_QUERY` on the chat model. Legacy
+  external-model chat endpoint provisioning is removed (#861, #872, #874).
+- `databricks-agentbricks` bumped to 0.5.0 (#922).
+
+### Fixed
+
+- **A2A Apps peers keep the request-user token (#903).** A Databricks Apps
+  peer (`apps/<name>`) with a request-user token no longer takes the Apps SDK
+  transport, whose auth hook signs the call as the calling app's service
+  principal. The call goes over direct HTTP with `X-Forwarded-Access-Token`
+  and `Authorization: Bearer`. Supervisor long-task continuation still uses
+  the SDK, because the HTTP path cannot resume a paused task.
+- App Space deploys create a missing declared managed session store and grant
+  the app WRITE. Composite agents no longer require a session in preflight or
+  the manifest (#905, #910, #912, #916).
+- Every Apps resource kind emits the required resource-level `name` (#813, #923).
+- The App Space scope check names the tool and the admin (#815, #918).
+- Native runtime stores are cleaned up before App teardown (#871). Deploy dry
+  runs report model validation errors (#875). Gateway status is named when
+  `/readyz` is not JSON (#878).
+
+### Docs
+
+- How a durable agent operates, App Space vs serverless runtime vs horizontal
+  scaling, where managed stores live, and the native execution boundary
+  (#880–#897).
+
+## [0.7.1] — 2026-10-01
+
+Headline: per-hop user OBO as the A2A trust boundary, typed sequential
+chains, model comparison in evaluation, and declared UC ABAC governance.
+
+### Added
+
+- **Typed sequential chains.** Agent output is validated before a sequential
+  handoff. Structured payloads survive remote steps, and failure escalation
+  is opt-in (#843, #844, #846).
+- **Evaluation.** Evaluate typed chains with recorded tool results, compare
+  quality, latency and cost across models, and a simpler customer evaluation
+  path (#848, #849, #851).
+- **Declared UC ABAC via `[tool.apx.agent.data]`.** Default `apx.agent.*` tags
+  go on auto-created agent tables, with UC-legal tag keys.
+- **Dev UI.** The hub folds into the `/_apx` dev UI under one caller-OBO auth
+  model (#825). The dev UI and Agent Hub are reskinned to Du Bois.
+- **Tracing.** Root spans carry `mlflow.trace.session` for per-session grouping.
+  Harness and version stamps are folded into `safe_span`.
+- **Ontos governance adapter** under `adapters/ontos` (#811, #812).
+
+### Changed
+
+- Per-hop user OBO is the documented and asserted A2A trust boundary (#814,
+  #829).
+- CI runs the suite on Python 3.13 and drops the 3.11 leg (#828).
+
+### Fixed
+
+- Apps deploy-state write failures are reported instead of swallowed (#823,
+  #824). Canary reports unmatched app-name traces as unknown (#822).
+- Remote HTTP fallback is kept for SDK setup errors (#845). Step deadlines
+  work on Python 3.10 (#847).
+- Scaffold no longer emits the unsupported `experiment` app resource, and
+  emits a valid `serving_endpoint` bundle shape.
+
+### Docs
+
+- Day-2 upgrades, versioning and rollback (#820). Agent governance for Unity
+  Catalog data architectures (#819). Agent mesh design.
+
+## [0.7.0] — 2026-09-23
+
+Headline: compiled Apps authorization and per-tool identity, declarative A2A
+agent graphs, session budgets, horizontal-scaling readiness, and a much
+richer evaluation loop in the dev UI.
+
+### Added
+
+- **Apps authorization compiler.** Infers each tool's execution identity (user
+  OBO vs App service principal) and compiles an identity-partitioned
+  `AuthorizationPlan` checked at deploy (#712).
+- **Tool-scoped auth.** Per-tool identity and a UC/secret permission ceiling,
+  enforced at compile time and runtime (#758).
+- **Declarative A2A agent graphs + control-result protocol.** Declared leaves
+  bind to remote Apps over A2A. Remote `LoopAgent` bodies and `HandoffAgent`
+  peers route control the same way the in-process path does (#777).
+- **`session_budget`.** A cumulative per-session token cap on served paths
+  (#780).
+- **Horizontal-scaling readiness.** A guardrail refuses scaled deploys that
+  use in-memory sessions. `[tool.apx.agent.deploy]` declares scaling, and
+  `compute_min_instances` / `compute_max_instances` are emitted into
+  `databricks.yml`. `APX_DECLARED_INSTANCES` is kept for the runtime guard's
+  read-back. These fields need a Databricks CLI/bundle schema new enough to
+  accept them (#779, #804).
 - **Distributed tracing across A2A hops.** `inject_tracing_headers` (client)
-  and `continue_trace_from_headers` (server) propagate MLflow's tracing context
-  over inter-agent HTTP calls so a supervisor and its remote specialist agents
-  share one trace — the specialists' tool spans nest into the caller's trace
-  instead of starting new root traces. Raw OpenTelemetry `traceparent` alone
-  does not achieve this with MLflow 3.x; both helpers no-op without MLflow.
-- **Service Policies.** Declarative built-in, LLM-as-a-judge, and SQL policy
-  attachments with local enforce/dry-run evaluation, deterministic rank
-  ordering, MCP-only ASK handling, audit metadata, YAML/project generation,
-  CLI plan/apply/verify boundaries, and TypeScript declaration parity. Native
-  apply/verify remain explicit plan-only operations until a verified Databricks
-  attachment API is available.
+  and `continue_trace_from_headers` (server) carry MLflow tracing context
+  across inter-agent HTTP calls. A supervisor and its remote specialists then
+  share one trace, with the specialists' spans nested in the caller's trace.
+  OpenTelemetry `traceparent` alone does not do this with MLflow 3.x. Both
+  helpers do nothing when MLflow is absent (#754).
+- **Declared external-model endpoints** (`model = "bedrock:…"`) (#773, #774).
+- **Runtime.** A deferred `tool_search` router on the compiled path (#789),
+  and context isolation for `ParallelAgent` (#782).
+- **`document_extract` tool factory.** Compiles parse → extract (#796).
+- **Governance.** `dqx_quality_score` on decision spans (#807), and an opt-in
+  live proof for the runtime quality gate (#809). The ABAC contract covers
+  remote hops (#755).
+- **Observability.** A harness-version trace attribute and `apx-agent status`
+  (#766).
+- **Tool inspector at `/_apx/tools`.** `/_apx/tools` is a working inspector
+  again, not a 302 to Edit. It shows live source from `inspect.getsourcefile`,
+  saves in place, and runs tools via `/_apx/replay/tool`. It is also a nav tab,
+  the Chat shell's Tools tab, and an Edit-page Schemas/Tools sub-tab. Tools,
+  Chat and Trace share one table renderer. New routes: `GET /_apx/tools/list`,
+  `GET /_apx/tools/file`, `POST /_apx/tools/save` (#806).
+- **Dev UI evaluation loop.** Thumbs feedback with rationale on traces, judge
+  alignment on the Eval page and in the Chat shell, and MemAlign run history.
+  Also a side-by-side trace diff, per-trace token cost, per-tool fail rate, a
+  p50/p95 latency sparkline, auto-eval of chat responses, and an "Improve
+  instructions" (GEPA) button (#713–#753, #765, #790–#794).
+- **Examples.** PE55 Brickfood support agent, and a SequentialAgent 10-K demo
+  (#797–#799).
 
 ### Changed
 
@@ -38,10 +193,86 @@ All notable changes to apx-agent. Format loosely follows
   `apx-agent watchdog` → `apx-agent governance`, env vars `APX_WATCHDOG_*` →
   `APX_GOVERNANCE_*`. Trace/audit attributes `apx.watchdog.*` became
   `apx.governance.*`, and the trace-export columns `watchdog_action` /
-  `watchdog_policy_id` became `governance_action` / `governance_policy_id` —
-  migrate existing dashboards and `WHERE watchdog_action IN (...)` queries.
+  `watchdog_policy_id` became `governance_action` / `governance_policy_id`.
+  Migrate existing dashboards and `WHERE watchdog_action IN (...)` queries.
   The external companion repo is now
-  [stuagano/databricks-agent-governance-monitoring](https://github.com/stuagano/databricks-agent-governance-monitoring).
+  [stuagano/databricks-agent-governance-monitoring](https://github.com/stuagano/databricks-agent-governance-monitoring)
+  (#803, #805).
+- New scaffolded agents default to the AppKit host (#710).
+- PR CI runs only the runtime core plus tests mapped to changed paths (#783).
+
+### Fixed
+
+- Eval scores the final assistant message (#801). Labeling reports traces that
+  `get_trace` dropped instead of skipping them silently (#764).
+- `ScopeGuard` refreshes after late wiring (#784). GEPA candidates no longer
+  have `$` mangled (#785).
+- Agent queries in the CLI are secured and rendered (#775). Trace feedback
+  diagnostics are safe to expose (#776). Genie gives a clear error on an empty
+  `space_id` (#739).
+
+## [0.6.0] — 2026-08-31
+
+Headline: Apps deploy through the AppKit host by default, trace-linked
+feedback, and UC-backed trace observability as the Apps default.
+
+### Added
+
+- **AppKit host for Apps deployments** (internal). It is the default, with
+  governance adapter, tool bridge, dev toolbar and APX limits projected into
+  agent options. `APX_APPS_HOST=python` remains as a fallback (#688, #689,
+  #691, #692).
+- **Trace-linked feedback.** An MLflow feedback helper, CLI commands and a
+  per-app API, with idempotency metadata, plus a feedback adapter example
+  (#697–#702).
+- **Runtime tool mutation** (#686).
+- **UC-backed trace observability as the Apps default.** Experiments bind to
+  UC traces, and the declared trace warehouse drives grants (#684).
+- AppKit PLG discovery example app (#693).
+
+### Fixed
+
+- Unity Catalog function signatures are baked at build time (#695). Empty
+  Claude tool arguments are normalized (#694). The per-app runtime agent name is
+  honored (#703).
+- PyPI proxy support is safe for the public repo (#708).
+
+### Docs
+
+- Judge calibration, sampled production scoring, trace-linked feedback, and a
+  human issue triage loop (#700, #704–#706).
+
+## [0.5.0] — 2026-08-26
+
+Headline: service policies, YAML-compiled agent projects, Agent Bricks OBO
+interop, and a discovery workflow.
+
+### Added
+
+- **Service Policies.** Declarative built-in, LLM-as-a-judge and SQL policy
+  attachments. Includes local enforce/dry-run evaluation, deterministic rank
+  ordering, MCP-only ASK handling, audit metadata and YAML/project generation.
+  The CLI has plan/apply/verify boundaries. Native apply/verify stay explicit
+  plan-only operations until a verified Databricks attachment API exists
+  (#680).
+- **Agent projects from YAML specs.** Graph specs for agents and the root
+  compile to `agent.py`, and the generated projects are retained (#663, #664,
+  #666).
+- **Agent Bricks OBO interop.** Knowledge Assistant and Genie subagents, with
+  Responses-API Knowledge Assistants declared as config tools (#667, #669).
+- **Discovery.** A generic tech-to-business PoV discovery workflow (#675).
+- **Dev UI.** An OKF Knowledge tab, a reusable semantic overlay for topology,
+  runnable example workflows, and agent flow graph tooling (#679, #681, #683).
+  The compact trace shows sub-agents (#671).
+- OKF bundles for the bakehouse and HubSpot DataAgent examples.
+
+### Fixed
+
+- OBO identity is kept across the A2A fallback (#682).
+- Served responses take visible text from thinking-model content, not raw JSON.
+  Contextvars propagate into the stream worker thread.
+- Trace views show only real sub-agents and hide per-token events (#672, #673).
+- Deploy strips every Databricks PyPI-proxy variant from `uv.lock` (#668).
 
 ## [0.4.8] — 2026-08-10
 
@@ -74,6 +305,7 @@ scaffolding and chat responses, and clearer state-sharing and grounding docs.
   `output_key` state sharing, and the identity boundaries for remote agents.
 - Hardened the example agents and added ADK-pattern skills and audit notes
   (#597–#608).
+
 ## [0.4.7] — 2026-08-04
 
 Headline: workspace discovery + topology wire/chat in the Apps Dev UI, remote
