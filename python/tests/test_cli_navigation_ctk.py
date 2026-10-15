@@ -130,7 +130,7 @@ def test_agents_show_missing(monkeypatch) -> None:
     ws.serving_endpoints.list.return_value = []
     ws.serving_endpoints.get.side_effect = Exception("not found")
     ws.registered_models.list.return_value = []
-    monkeypatch.setattr("apx_agent.cli._w", lambda *_a, **_k: ws)
+    monkeypatch.setattr("apx_agent.cli._require_sdk", lambda *_a, **_k: ws)
     result = CliRunner().invoke(cli, ["agents", "show", "ghost"])
     assert result.exit_code != 0
     assert "ghost" in result.output
