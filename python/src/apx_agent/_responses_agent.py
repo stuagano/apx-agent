@@ -1043,8 +1043,8 @@ def compile_to_responses_agent(
             and persisted. When the key is absent the session machinery no-ops.
         executor: Inference backend selector.  ``"langgraph"`` (default) uses
             the existing :func:`~apx_agent._compile.compile_to_langgraph` path.
-            ``"claude-sdk"`` uses
-            :class:`~apx_agent._claude_sdk_executor.ClaudeSDKExecutor` — a
+            ``"openai-compat"`` uses
+            :class:`~apx_agent._claude_sdk_executor.OpenAICompatExecutor` — a
             direct OpenAI-compatible loop without LangGraph overhead.  Only
             effective when *agent* is a :class:`~apx_agent._agents.LlmAgent`;
             composite agents silently fall back to ``"langgraph"``.
@@ -1075,18 +1075,20 @@ def compile_to_responses_agent(
     _agent = agent
     _model = model
     _conversation_store = conversation_store
-    _executor_name = executor
+    from ._executor_factory import resolve_executor_name  # noqa: PLC0415
+
+    _executor_name = resolve_executor_name(executor)
     _agent_id = agent_id if agent_id is not None else getattr(agent, "_name", None)
     # Short-term memory (mirrors chat_agent_for): default a served LlmAgent to a
     # process-scoped InMemorySaver when neither a checkpointer nor a durable
     # conversation store was wired — so it remembers across turns within a
-    # thread_id, in-process. Not for the claude-sdk path (no LangGraph) and not
+    # thread_id, in-process. Not for the openai-compat path (no LangGraph) and not
     # for composite agents (compile_to_langgraph would raise). See #329.
     _checkpointer = checkpointer
     if (
         _checkpointer is None
         and _conversation_store is None
-        and _executor_name != "claude-sdk"
+        and _executor_name != "openai-compat"
     ):
         from ._agents import LlmAgent as _LlmAgentCp  # noqa: PLC0415
 
@@ -1173,12 +1175,12 @@ def compile_to_responses_agent(
             graph_input = lc_input if cp else lc_history + lc_input
 
             structured_output: dict[str, Any] = {}
-            _use_sdk = _executor_name == "claude-sdk"
+            _use_sdk = _executor_name == "openai-compat"
             if _use_sdk:
                 from ._agents import LlmAgent as _LlmAgent
                 if not isinstance(_agent, _LlmAgent):
                     logger.warning(
-                        "executor='claude-sdk' is only supported for LlmAgent; "
+                        "executor='openai-compat' is only supported for LlmAgent; "
                         "falling back to langgraph for %s",
                         type(_agent).__name__,
                     )
@@ -1187,7 +1189,7 @@ def compile_to_responses_agent(
                 from ._executor_factory import governance_guards_present
                 if _gov := governance_guards_present(_agent):
                     logger.warning(
-                        "executor='claude-sdk' cannot enforce configured "
+                        "executor='openai-compat' cannot enforce configured "
                         "governance (%s); using the governed langgraph path so "
                         "before_tool/before_model guards and input/output "
                         "guardrails are not silently bypassed.",
@@ -1197,7 +1199,7 @@ def compile_to_responses_agent(
 
             if _use_sdk:
                 from ._agents import LlmAgent as _LlmAgent
-                from ._claude_sdk_executor import ClaudeSDKExecutor as _CSE
+                from ._claude_sdk_executor import OpenAICompatExecutor as _CSE
                 # Guaranteed by the guard above (_use_sdk is set False unless
                 # _agent is an LlmAgent); narrows _agent for the type checker.
                 assert isinstance(_agent, _LlmAgent)
@@ -1364,12 +1366,12 @@ def compile_to_responses_agent(
             )
             graph_input = lc_input if cp else lc_history + lc_input
 
-            _use_sdk = _executor_name == "claude-sdk"
+            _use_sdk = _executor_name == "openai-compat"
             if _use_sdk:
                 from ._agents import LlmAgent as _LlmAgent
                 if not isinstance(_agent, _LlmAgent):
                     logger.warning(
-                        "executor='claude-sdk' is only supported for LlmAgent; "
+                        "executor='openai-compat' is only supported for LlmAgent; "
                         "falling back to langgraph for %s",
                         type(_agent).__name__,
                     )
@@ -1378,7 +1380,7 @@ def compile_to_responses_agent(
                 from ._executor_factory import governance_guards_present
                 if _gov := governance_guards_present(_agent):
                     logger.warning(
-                        "executor='claude-sdk' cannot enforce configured "
+                        "executor='openai-compat' cannot enforce configured "
                         "governance (%s); using the governed langgraph path so "
                         "before_tool/before_model guards and input/output "
                         "guardrails are not silently bypassed.",
@@ -1392,7 +1394,7 @@ def compile_to_responses_agent(
 
             if _use_sdk:
                 from ._agents import LlmAgent as _LlmAgent
-                from ._claude_sdk_executor import ClaudeSDKExecutor as _CSE
+                from ._claude_sdk_executor import OpenAICompatExecutor as _CSE
                 # Guaranteed by the guard above (_use_sdk is set False unless
                 # _agent is an LlmAgent); narrows _agent for the type checker.
                 assert isinstance(_agent, _LlmAgent)
