@@ -137,8 +137,9 @@ def _build_pyproject(config: "AgentConfig") -> str:
     # [tool.apx.agent]
     lines.append("[tool.apx.agent]")
     lines.append(f'name = "{config.name}"')
-    if config.target != "responses_agent":
-        lines.append(f"target = {_toml_value(config.target)}")
+    # Always written. An omitted key now loads as durable_agent_server, so a
+    # compatibility project that hid responses_agent would change contract.
+    lines.append(f"target = {_toml_value(config.target)}")
     if config.recovery:
         lines.append("recovery = true")
     if config.description:

@@ -127,8 +127,10 @@ project with MLflow AgentServer, the dev UI and Bundle deployment, run
 `--target model-serving` retains its existing layout and Responses-compatible
 contract; it rejects `--runtime durable_agent_server`.
 
-Existing declarations that omit `target` still mean `responses_agent`; this
-change applies to new scaffolds, not configuration loading or running agents.
+Declarations that omit `target` mean `durable_agent_server`. A written
+`target = "responses_agent"` stays on the compatibility contract. Re-scaffolding
+with `--force` preserves the runtime already in the project and refuses a
+runtime change.
 Re-scaffolding with `--force` preserves the existing runtime and refuses a
 runtime change. Gallery declarations with an explicit target also retain it
 unless `--runtime` is supplied. Unsupported state/runtime combinations fail

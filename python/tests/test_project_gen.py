@@ -57,7 +57,9 @@ def test_generated_dependencies_use_published_extras(tmp_path: Path, target: str
 def test_declared_storage_selects_dependency_extra(tmp_path: Path, backend: str, store_type: str) -> None:
     from packaging.requirements import Requirement
 
-    config = AgentConfig.model_validate({"name": "storage", backend: {"type": store_type}})
+    config = AgentConfig.model_validate({
+        "name": "storage", "target": "responses_agent", backend: {"type": store_type},
+    })
     generate_project(config, tmp_path)
     project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
     dependency = Requirement(project["project"]["dependencies"][0])
@@ -109,11 +111,11 @@ def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("fields", [
-    {"deploy": {"space": "shared"}},
-    {"target": "durable_agent_server", "deploy": {"space": "shared", "instances": 2}},
-    {"target": "durable_agent_server", "session": {"type": "managed", "store_name": " "}},
-    {"target": "durable_agent_server", "session": {"type": "inmemory"}},
-    {"session": {"type": "managed", "store_name": "sessions"}},
+    {"target": "responses_agent", "deploy": {"space": "shared"}},
+    {"deploy": {"space": "shared", "instances": 2}},
+    {"session": {"type": "managed", "store_name": " "}},
+    {"session": {"type": "inmemory"}},
+    {"target": "responses_agent", "session": {"type": "managed", "store_name": "sessions"}},
 ])
 def test_unsupported_target_configuration_fails_before_generation(fields: dict[str, Any], tmp_path: Path) -> None:
     with pytest.raises(ValueError):
@@ -147,6 +149,7 @@ def coworker_config() -> AgentConfig:
     """An AgentConfig that exercises the template + memory + session path."""
     return AgentConfig(
         name="payroll-coworker",
+        target="responses_agent",
         description="Reconciles hours worked against paychecks issued.",
         model="databricks-claude-sonnet-4-6",
         instructions="You are a payroll analyst.",
@@ -182,7 +185,7 @@ def coworker_config() -> AgentConfig:
 @pytest.fixture()
 def minimal_config() -> AgentConfig:
     """A minimal AgentConfig with no template, memory, or session."""
-    return AgentConfig(name="my-agent")
+    return AgentConfig(name="my-agent", target="responses_agent")
 
 
 def _tool_names(agent: BaseAgent) -> list[str]:
@@ -715,6 +718,7 @@ def test_skills_copy_step_in_databricks_yml(tmp_path: Path) -> None:
 
     config = AgentConfig(
         name="demo",
+        target="responses_agent",
         skills=[SkillConfig(name="guide", description="A guide", path="guide.md")],
     )
     project_dir = tmp_path / "project"

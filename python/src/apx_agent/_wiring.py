@@ -1152,6 +1152,19 @@ def create_app(
         app = create_app(agent)
         # uvicorn my_app:app --reload
     """
+    if config is not None and config.target == "durable_agent_server":
+        from ._runtime_targets import compile_agent
+
+        if agent is None:
+            raise ValueError(
+                "durable_agent_server requires an agent; it does not build a template agent"
+            )
+        return compile_agent(
+            agent,
+            config=config,
+            target="durable_agent_server",
+            model=config.model or "test",
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:

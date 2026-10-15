@@ -40,8 +40,13 @@ def test_native_agents_get_managed_sessions_without_a_declaration() -> None:
     assert config.session.store_name == "apx-orders-sessions"
     assert config.session.auto_create is False
     assert config.memory is None
-    responses = AgentConfig(name="orders")
+    responses = AgentConfig(name="orders", target="responses_agent")
     assert responses.session is None and responses.memory is None
+    default = AgentConfig(name="orders")
+    assert default.target == "durable_agent_server"
+    assert default.session is not None and default.session.type == "managed"
+    assert default.session.store_name == "apx-orders-sessions"
+    assert default.memory is None
 
 
 def test_explicit_managed_store_names_survive_agent_rename() -> None:

@@ -648,9 +648,10 @@ class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 
     name: str
-    target: RuntimeTarget = "responses_agent"
-    """Compilation contract. ``responses_agent`` is legacy (model serving);
-    Databricks Apps use ``durable_agent_server``."""
+    target: RuntimeTarget = "durable_agent_server"
+    """Compilation contract. Omitted ``target`` means the native durable
+    server; set ``responses_agent`` explicitly for the legacy (model serving)
+    compatibility contract."""
     host: Literal["apps", "model_serving"] | None = None
     """Where the compiled agent executes. ``apps`` requires the Apps
     compilation contract; ``model_serving`` keeps the legacy contract.

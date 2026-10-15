@@ -4352,7 +4352,9 @@ def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
 
 def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
     # A scaffolded-looking apps project whose agent module raises on import.
-    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.apx.agent]\nname='x'\ntarget='responses_agent'\n"
+    )
     agent_server = tmp_path / "agent_server"
     agent_server.mkdir()
     (agent_server / "__init__.py").write_text("")
