@@ -805,12 +805,21 @@ class AgentConfig(BaseModel):
     ``CompiledStateGraph`` via :func:`~apx_agent._compile.compile_to_langgraph`.
     This supports all agent topologies (SequentialAgent, LoopAgent, etc.).
 
-    ``'claude-sdk'`` uses :class:`~apx_agent._claude_sdk_executor.ClaudeSDKExecutor`
+    ``'openai-compat'`` uses :class:`~apx_agent._claude_sdk_executor.OpenAICompatExecutor`
     — a native OpenAI-compatible agentic loop with no LangGraph dependency.
     Suitable for :class:`~apx_agent._agents.LlmAgent` instances with a flat
     tool list.  Agents with composite topologies fall back to ``'langgraph'``
-    automatically with a warning.
+    automatically with a warning.  This is **not** Anthropic's Agent SDK; the
+    legacy name ``'claude-sdk'`` is accepted as an alias with a
+    ``FutureWarning``.
     """
+
+    @field_validator("executor")
+    @classmethod
+    def _resolve_executor_alias(cls, v: str) -> str:
+        from ._executor_factory import resolve_executor_name  # noqa: PLC0415
+
+        return resolve_executor_name(v)
 
     @model_validator(mode="after")
     def _runtime_contract(self) -> "AgentConfig":

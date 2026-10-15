@@ -186,6 +186,11 @@ richer evaluation loop in the dev UI.
 
 ### Changed
 
+- **`executor="claude-sdk"` renamed to `executor="openai-compat"`** (#833).
+  It never was Anthropic's Agent SDK — it is an OpenAI-compatible tool loop on
+  Databricks Model Serving. `ClaudeSDKExecutor` is now `OpenAICompatExecutor`.
+  The old value and class name still work; the value emits a `FutureWarning`.
+
 - **Breaking: the watchdog governance surface is now `governance`.** Runtime
   names dropped the companion repo: `_watchdog.py` → `_governance.py`,
   `WatchdogClient` / `WatchdogGuard` / `WatchdogDecision` → `Governance*`,

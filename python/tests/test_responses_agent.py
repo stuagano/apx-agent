@@ -705,7 +705,7 @@ class TestStreamingSession:
 
 
 # ---------------------------------------------------------------------------
-# Phase C — executor="claude-sdk" helpers and serving path
+# Phase C — executor="openai-compat" helpers and serving path
 # ---------------------------------------------------------------------------
 
 
@@ -869,13 +869,13 @@ class TestExecutorEventsToItems:
             _executor_events_to_items(events)
 
 
-class TestClaudeSDKPath:
-    """Integration tests for compile_to_responses_agent with executor='claude-sdk'."""
+class TestOpenAICompatPath:
+    """Integration tests for compile_to_responses_agent with executor='openai-compat'."""
 
     def test_non_streaming_returns_response_with_correct_text(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
         non_streaming, _ = compile_to_responses_agent(
-            agent, model="databricks-claude-sonnet-4-6", executor="claude-sdk"
+            agent, model="databricks-claude-sonnet-4-6", executor="openai-compat"
         )
         fake_client = _make_sdk_fake_client([
             [_ns_text_chunk("hello from sdk"), _ns_finish_chunk()]
@@ -901,7 +901,7 @@ class TestClaudeSDKPath:
     def test_streaming_yields_item_done_then_completed(self) -> None:
         agent = LlmAgent(tools=[_trivial_tool])
         _, streaming = compile_to_responses_agent(
-            agent, model="databricks-claude-sonnet-4-6", executor="claude-sdk"
+            agent, model="databricks-claude-sonnet-4-6", executor="openai-compat"
         )
         fake_client = _make_sdk_fake_client([
             [_ns_text_chunk("streamed via sdk"), _ns_finish_chunk()]
@@ -931,12 +931,12 @@ class TestClaudeSDKPath:
     def test_fallback_to_langgraph_when_executor_claude_sdk_but_not_llm_agent(
         self,
     ) -> None:
-        """Non-LlmAgent with executor='claude-sdk' silently falls back to langgraph."""
+        """Non-LlmAgent with executor='openai-compat' silently falls back to langgraph."""
         from apx_agent._agents import SequentialAgent
 
         agent = SequentialAgent(agents=[LlmAgent(tools=[])])
         non_streaming, _ = compile_to_responses_agent(
-            agent, model="any", executor="claude-sdk"
+            agent, model="any", executor="openai-compat"
         )
 
         with patch(
