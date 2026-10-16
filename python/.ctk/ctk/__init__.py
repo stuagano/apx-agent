@@ -35,6 +35,7 @@ Quick start
 from .runners import run, RunResult
 from .contracts import expect, Expect, ContractError
 from .assertions import must, assert_nonempty, assert_file, assert_eq
+from .gate import Check, CheckFailure
 from .verify import (
     Artifact,
     verify,
@@ -57,6 +58,8 @@ __all__ = [
     "Artifact",
     "verify",
     "claim_vs_reality",
+    "Check",
+    "CheckFailure",
     "Checklist",
     "VerificationError",
     "find_swallowed_exceptions",
