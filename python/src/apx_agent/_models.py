@@ -1030,6 +1030,10 @@ class AgentCard(BaseModel):
     provider: A2AProvider = A2AProvider()
     authSchemes: list[A2AAuthScheme] = [A2AAuthScheme()]
     skills: list[A2ASkill] = []
+    # A card we did not author can carry the prompt and tools the mesh should
+    # use. Empty on cards we serve; read by RemoteDatabricksAgent (#834).
+    instructions: str = ""
+    tools: list[dict[str, Any]] = []
     mcpEndpoint: str | None = None  # SSE URL for MCP clients; populated at request time
     flowGraph: A2AFlowGraph | None = None
 

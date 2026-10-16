@@ -2174,7 +2174,14 @@ async def _crawl_agent(url: str) -> dict | None:
                 follow_redirects=False  # Prevent redirects to link-local / private space
             )
             r.raise_for_status()
-            return r.json()
+            card = r.json()
+            if isinstance(card, dict):
+                # The running agent declares its trace header on the response.
+                # Keep it so registration does not invent one.
+                header = r.headers.get("traceparent")
+                if header:
+                    card["trace_header"] = header
+            return card
     except Exception:
         return None
 
@@ -3660,12 +3667,24 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 detail=f"Could not fetch /.well-known/agent.json from {reg.url}",
             )
 
-        # Build the agent card
+        # Build the agent card from the crawl. The card's own tools win;
+        # skills are the fallback for cards that only advertise those.
         name = a2a.get("name", "unknown")
-        tools = [
-            AgentTool(name=s["name"], description=s.get("description", "")[:200])
-            for s in a2a.get("skills", [])
-        ]
+        declared = a2a.get("tools") or []
+        if declared:
+            tools = [
+                AgentTool(
+                    name=t.get("name", ""),
+                    description=str(t.get("description", ""))[:200],
+                )
+                for t in declared
+                if isinstance(t, dict) and t.get("name")
+            ]
+        else:
+            tools = [
+                AgentTool(name=s["name"], description=s.get("description", "")[:200])
+                for s in a2a.get("skills", [])
+            ]
         card = AgentCard(
             id=name.replace("_", "-"),
             name=name,
@@ -3674,6 +3693,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             status="live",
             url=reg.url.rstrip("/"),
             tools=tools,
+            instructions=str(a2a.get("instructions", ""))[:2000],
+            trace_header=str(a2a.get("trace_header", ""))[:200],
             tags=reg.tags,
             mcp_endpoint=a2a.get("mcpEndpoint"),
         )
@@ -3752,6 +3773,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         """
         from datetime import datetime
 
+        from ._hub_models import AgentTool
         from ._hub_store import HUB_STORE
         from ._obo import extract_obo_headers
 
@@ -3777,6 +3799,24 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             card.status = "unreachable"
             card.last_seen = None
         else:
+            # Keep the live card's prompt, tools, and trace header.
+            card.instructions = str(a2a.get("instructions", ""))[:2000]
+            card.trace_header = str(a2a.get("trace_header", ""))[:200]
+            declared = a2a.get("tools") or []
+            if declared:
+                card.tools = [
+                    AgentTool(
+                        name=t.get("name", ""),
+                        description=str(t.get("description", ""))[:200],
+                    )
+                    for t in declared
+                    if isinstance(t, dict) and t.get("name")
+                ]
+            elif a2a.get("skills"):
+                card.tools = [
+                    AgentTool(name=s["name"], description=s.get("description", "")[:200])
+                    for s in a2a.get("skills", [])
+                ]
             # Update card with fresh data
             from ._hub_models import AgentTool
 

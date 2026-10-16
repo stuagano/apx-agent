@@ -12,6 +12,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Added
 
+- **Existing-agent registration from its card (#834).** Hub registration keeps the crawled card's `instructions` and `tools` (skills stay the fallback), and copies the response `traceparent` onto the card as `trace_header`. `RemoteDatabricksAgent` uses those card fields the same way.
 - **Native durable runtime.** Agent declarations compile to a native MLflow
   `ResponsesAgent` or `DurableAgentServer`. One declaration selects the runtime,
   App Space and managed session binding. Deploys hand store reconciliation to
