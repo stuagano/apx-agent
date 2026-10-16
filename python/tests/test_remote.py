@@ -1906,3 +1906,60 @@ class TestLongTaskContinuation:
         )
         assert opted._long_task is True
         assert opted._max_continuations == 3
+
+
+class TestExistingAgentCard:
+    """A card we did not author supplies instructions and tools (#834)."""
+
+    def _agent(self, **card_fields: object) -> RemoteDatabricksAgent:
+        from apx_agent._models import AgentCard
+
+        agent = make_plain_agent(base_url="https://billing.example.com")
+        agent._card = AgentCard(
+            name="billing",
+            description="short",
+            url="https://billing.example.com",
+            **card_fields,
+        )
+        return agent
+
+    def test_description_prefers_card_instructions(self):
+        agent = self._agent(instructions="Route invoices. Do not invent totals.")
+        assert agent.description == "Route invoices. Do not invent totals."
+
+    def test_description_falls_back_when_instructions_empty(self):
+        agent = self._agent(instructions="")
+        assert agent.description == "short"
+
+    @pytest.mark.asyncio
+    async def test_fetch_remote_tools_uses_card_tools(self):
+        agent = self._agent(
+            tools=[
+                {
+                    "name": "post_invoice",
+                    "description": "Post an invoice",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"invoice_id": {"type": "string"}},
+                        "required": ["invoice_id"],
+                    },
+                }
+            ],
+            skills=[
+                {"id": "ignored", "name": "ignored", "description": "not used"}
+            ],
+        )
+        (tool,) = await agent.fetch_remote_tools()
+        assert tool.name == "post_invoice"
+        assert tool.description == "Post an invoice"
+        assert tool.input_schema["properties"]["invoice_id"]["type"] == "string"
+        assert tool.sub_agent_url == "https://billing.example.com"
+
+    @pytest.mark.asyncio
+    async def test_fetch_remote_tools_falls_back_to_skills(self):
+        agent = self._agent(
+            tools=[],
+            skills=[{"id": "search", "name": "search", "description": "Search"}],
+        )
+        (tool,) = await agent.fetch_remote_tools()
+        assert tool.name == "search"

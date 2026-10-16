@@ -58,6 +58,9 @@ class AgentCard(BaseModel):
     status: Literal["live", "unreachable", "stub", "planned"] = "stub"
     url: str
     tools: list[AgentTool]
+    # From the crawled card, not declared here. Empty when the card omits them.
+    instructions: str = ""
+    trace_header: str = ""
     tags: list[str] = []
     mcp_endpoint: str | None = None
     last_seen: datetime | None = None

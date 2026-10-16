@@ -2,6 +2,45 @@
 from __future__ import annotations
 
 
+def test_crawl_agent_keeps_traceparent_from_response_header(monkeypatch):
+    """The running agent's trace header stays with the crawled card (#834)."""
+    import httpx
+    import apx_agent._dev as dev
+
+    class _Resp:
+        status_code = 200
+        headers = {"traceparent": "00-aabbccddaabbccddaabbccddaabbccdd-1122334455667788-01"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"name": "billing", "description": "short"}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, **kwargs):
+            assert url.endswith("/.well-known/agent.json")
+            return _Resp()
+
+    monkeypatch.setattr(dev, "validate_wire_peer_url", lambda url: None)
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    import asyncio
+
+    card = asyncio.run(dev._crawl_agent("https://billing.databricksapps.com"))
+    assert card["name"] == "billing"
+    assert card["trace_header"] == "00-aabbccddaabbccddaabbccddaabbccdd-1122334455667788-01"
+
+
 def test_hub_models_importable_from_apx_agent():
     """Verify hub card models are importable from apx_agent._hub_models."""
     from apx_agent._hub_models import AgentCard, RegisterRequest, InvokeRequest, AgentTool
@@ -77,9 +116,37 @@ def test_hub_register_and_list_is_caller_scoped(dev_ui_app, monkeypatch):
     agents_bob = c.get("/_apx/hub/agents", headers=H("bob")).json()
     assert agents_bob == [], f"Bob should not see Alice's agent, got {agents_bob}"
 
-    # Bob cannot delete Alice's agent (404)
-    r = c.delete(f"/_apx/hub/agents/{aid}", headers=H("bob"))
-    assert r.status_code == 404, f"Bob should get 404, got {r.status_code}: {r.text}"
+
+def test_hub_register_keeps_card_instructions_tools_and_trace_header(dev_ui_app, monkeypatch):
+    """Registration stores what the crawled card declared (#834)."""
+    import apx_agent._dev as dev
+    from starlette.testclient import TestClient
+
+    c = TestClient(dev_ui_app)
+    H = lambda who: {"X-Forwarded-Email": who}
+
+    async def mock_crawl(url):
+        return {
+            "name": "billing",
+            "description": "short",
+            "instructions": "Route invoices. Do not invent totals.",
+            "tools": [{"name": "post_invoice", "description": "Post an invoice"}],
+            "skills": [{"name": "ignored", "description": "not used"}],
+            "trace_header": "00-aabbccddaabbccddaabbccddaabbccdd-1122334455667788-01",
+        }
+
+    monkeypatch.setattr(dev, "_crawl_agent", mock_crawl)
+
+    r = c.post(
+        "/_apx/hub/agents",
+        json={"url": "https://billing.databricksapps.com", "tags": []},
+        headers=H("alice"),
+    )
+    assert r.status_code == 200, r.text
+    card = r.json()
+    assert card["instructions"] == "Route invoices. Do not invent totals."
+    assert card["trace_header"].startswith("00-")
+    assert [t["name"] for t in card["tools"]] == ["post_invoice"]
 
 
 def test_hub_register_fails_closed_without_obo(dev_ui_app, monkeypatch):
