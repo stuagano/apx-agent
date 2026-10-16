@@ -16,7 +16,7 @@ Four failure modes this kit is built to catch
 
 Quick start
 -----------
-    from ctk import run, expect, Artifact, verify
+    from ctk import verify, Artifact, claim_vs_reality, Checklist
 
     # 1. Run a script strictly: exit code + output are both checked.
     r = run(["python", "my_tool.py", "--out", "result.json"])
