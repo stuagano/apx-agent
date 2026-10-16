@@ -7,6 +7,8 @@
 # Typical tables: kronos_timesheets, workday_payroll_runs, workday_employees
 
 name: payroll-coworker
+# Lakebase session = compatibility contract; omitted target is durable.
+target: responses_agent
 description: >
   Reconciles hours worked (Kronos) against paychecks issued (Workday).
   Flags discrepancies, overtime anomalies, and pay rule violations.

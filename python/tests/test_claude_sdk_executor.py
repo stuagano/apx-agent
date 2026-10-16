@@ -1,4 +1,4 @@
-"""Tests for ``apx_agent._claude_sdk_executor.ClaudeSDKExecutor``.
+"""Tests for ``apx_agent._claude_sdk_executor.OpenAICompatExecutor``.
 
 All tests run without real Databricks credentials.  The
 ``_make_client`` factory at the module level is monkeypatched to return
@@ -33,7 +33,7 @@ import pytest
 
 from apx_agent._claude_sdk_executor import (
     MAX_TOOL_ROUNDS,
-    ClaudeSDKExecutor,
+    OpenAICompatExecutor,
     _build_tool_schema,
 )
 from apx_agent._executor import (
@@ -185,7 +185,7 @@ def _make_fake_client(call_chunks: list[list[Any]]) -> FakeClient:
     return FakeClient(FakeChatClient(completions))
 
 
-async def _drain(executor: ClaudeSDKExecutor, **kwargs: Any) -> list[Any]:
+async def _drain(executor: OpenAICompatExecutor, **kwargs: Any) -> list[Any]:
     """Exhaust ``executor.run_turn(**kwargs)`` and return all events.
 
     :param executor: The executor whose ``run_turn`` to drain.
@@ -203,12 +203,12 @@ async def _drain(executor: ClaudeSDKExecutor, **kwargs: Any) -> list[Any]:
 
 class TestHandlesToolsInternally:
     def test_handles_tools_internally_true(self) -> None:
-        """ClaudeSDKExecutor.handles_tools_internally() always returns True.
+        """OpenAICompatExecutor.handles_tools_internally() always returns True.
 
         The executor dispatches tool calls itself inside the agentic loop;
         callers must not try to intercept ToolCallRequest events.
         """
-        executor = ClaudeSDKExecutor()
+        executor = OpenAICompatExecutor()
         assert executor.handles_tools_internally() is True
 
 
@@ -219,12 +219,12 @@ class TestHandlesToolsInternally:
 
 class TestSupportsStreaming:
     def test_supports_streaming_true(self) -> None:
-        """ClaudeSDKExecutor.supports_streaming() always returns True.
+        """OpenAICompatExecutor.supports_streaming() always returns True.
 
         Text deltas are streamed via SSE so the caller can render them
         incrementally.
         """
-        executor = ClaudeSDKExecutor()
+        executor = OpenAICompatExecutor()
         assert executor.supports_streaming() is True
 
 
@@ -257,7 +257,7 @@ class TestNoToolTurn:
             lambda ws=None: fake_client,
         )
 
-        executor = ClaudeSDKExecutor(model="test-model")
+        executor = OpenAICompatExecutor(model="test-model")
         events = await _drain(
             executor,
             messages=[{"role": "user", "content": "hi"}],
@@ -348,7 +348,7 @@ class TestToolCallTurn:
             lambda ws=None: fake_client,
         )
 
-        executor = ClaudeSDKExecutor(model="test-model", tools=[add])
+        executor = OpenAICompatExecutor(model="test-model", tools=[add])
         events = await _drain(
             executor,
             messages=[{"role": "user", "content": "What is 1+2?"}],
@@ -389,7 +389,7 @@ class TestToolCallTurn:
             lambda ws=None: fake_client,
         )
 
-        executor = ClaudeSDKExecutor(model="test-model", tools=[ping])
+        executor = OpenAICompatExecutor(model="test-model", tools=[ping])
         events = await _drain(
             executor,
             messages=[{"role": "user", "content": "Ping."}],
@@ -443,7 +443,7 @@ class TestUnknownTool:
             lambda ws=None: fake_client,
         )
 
-        executor = ClaudeSDKExecutor(model="test-model", tools=[])
+        executor = OpenAICompatExecutor(model="test-model", tools=[])
         events = await _drain(
             executor,
             messages=[{"role": "user", "content": "Do something."}],
@@ -497,7 +497,7 @@ class TestToolLoopCap:
             lambda ws=None: fake_client,
         )
 
-        executor = ClaudeSDKExecutor(model="test-model", tools=[add])
+        executor = OpenAICompatExecutor(model="test-model", tools=[add])
         events = await _drain(
             executor,
             messages=[{"role": "user", "content": "loop"}],
@@ -635,7 +635,7 @@ class TestFragmentedToolCallAccumulation:
             lambda ws=None: fake_client,
         )
 
-        executor = ClaudeSDKExecutor(model="test-model", tools=[add])
+        executor = OpenAICompatExecutor(model="test-model", tools=[add])
         events = await _drain(
             executor,
             messages=[{"role": "user", "content": "What is 1+2?"}],
@@ -670,7 +670,7 @@ class TestFragmentedToolCallAccumulation:
 
 class TestCreateExecutor:
     def test_create_executor_returns_claude_sdk_for_llm_agent(self) -> None:
-        """create_executor returns ClaudeSDKExecutor when executor='claude-sdk' for LlmAgent.
+        """create_executor returns OpenAICompatExecutor when executor='openai-compat' for LlmAgent.
 
         This locks the factory dispatch so that a rename of ``agent._tool_fns``
         or ``agent._instructions`` is caught immediately.
@@ -685,16 +685,16 @@ class TestCreateExecutor:
         config = AgentConfig(
             name="test-agent",
             model="databricks-claude-sonnet-4-6",
-            executor="claude-sdk",
+            executor="openai-compat",
         )
         executor = create_executor(agent, config, ws=None)
-        assert isinstance(executor, ClaudeSDKExecutor)
+        assert isinstance(executor, OpenAICompatExecutor)
 
     def test_create_executor_falls_back_for_non_llm_agent(self) -> None:
         """create_executor falls back to LangGraphExecutor for non-LlmAgent types.
 
         SequentialAgent (and other composite topologies) are not supported by
-        ClaudeSDKExecutor.  The factory must fall back to LangGraphExecutor and
+        OpenAICompatExecutor.  The factory must fall back to LangGraphExecutor and
         log a warning rather than raise.
 
         :returns: None
@@ -709,7 +709,7 @@ class TestCreateExecutor:
         config = AgentConfig(
             name="test-seq",
             model="databricks-claude-sonnet-4-6",
-            executor="claude-sdk",
+            executor="openai-compat",
         )
         executor = create_executor(agent, config, ws=None)
         assert isinstance(executor, LangGraphExecutor)
@@ -719,7 +719,7 @@ class TestCreateExecutor:
 
         AgentConfig.executor defaults to 'langgraph'.  This test ensures the
         default path (no explicit executor field) does not accidentally route
-        to ClaudeSDKExecutor.
+        to OpenAICompatExecutor.
 
         :returns: None
         """
@@ -741,11 +741,11 @@ class TestCreateExecutor:
 
 class TestDIToolWarning:
     def test_di_tool_emits_warning(self) -> None:
-        """ClaudeSDKExecutor logs a WARNING for tools with DI parameters.
+        """OpenAICompatExecutor logs a WARNING for tools with DI parameters.
 
         A tool function whose signature uses ``Annotated[..., Depends(...)]``
         — the same pattern as ``Dependencies.UserClient`` — will not work
-        correctly under ClaudeSDKExecutor because the FastAPI DI framework is
+        correctly under OpenAICompatExecutor because the FastAPI DI framework is
         not present.  The executor must warn at construction time so the
         developer sees the problem immediately rather than at runtime.
 
@@ -768,7 +768,7 @@ class TestDIToolWarning:
         tc = TestCase()
         tc.maxDiff = None
         with tc.assertLogs("apx_agent._claude_sdk_executor", level=logging.WARNING) as cm:
-            ClaudeSDKExecutor(tools=[_di_tool_for_warning_test])
+            OpenAICompatExecutor(tools=[_di_tool_for_warning_test])
 
         assert any("_di_tool_for_warning_test" in msg for msg in cm.output), (
             f"Expected warning about '_di_tool_for_warning_test'; got: {cm.output}"

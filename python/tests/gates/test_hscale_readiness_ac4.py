@@ -12,7 +12,7 @@ from .conftest import boot_app
 
 def _lakebase_scaled() -> AgentConfig:
     return AgentConfig(
-        name="t",
+        name="t", target="responses_agent",
         deploy=DeployConfig(instances=3),
         session=SessionBackendConfig(
             type="lakebase", host="${LAKEBASE_HOST}", database="apx"

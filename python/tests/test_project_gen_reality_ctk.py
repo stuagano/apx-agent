@@ -29,7 +29,7 @@ from ctk import Artifact, verify
 @pytest.mark.unit
 def test_generated_project_files_are_real_not_just_present(tmp_path: Path) -> None:
     config = AgentConfig(
-        name="payroll-coworker",
+        name="payroll-coworker", target="responses_agent",
         description="Reconciles hours worked against paychecks issued.",
         model="databricks-claude-sonnet-4-6",
         instructions="You are a payroll analyst.",

@@ -648,9 +648,10 @@ class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 
     name: str
-    target: RuntimeTarget = "responses_agent"
-    """Compilation contract. ``responses_agent`` is legacy (model serving);
-    Databricks Apps use ``durable_agent_server``."""
+    target: RuntimeTarget = "durable_agent_server"
+    """Compilation contract. Omitted ``target`` means the native durable
+    server; set ``responses_agent`` explicitly for the legacy (model serving)
+    compatibility contract."""
     host: Literal["apps", "model_serving"] | None = None
     """Where the compiled agent executes. ``apps`` requires the Apps
     compilation contract; ``model_serving`` keeps the legacy contract.
@@ -805,12 +806,21 @@ class AgentConfig(BaseModel):
     ``CompiledStateGraph`` via :func:`~apx_agent._compile.compile_to_langgraph`.
     This supports all agent topologies (SequentialAgent, LoopAgent, etc.).
 
-    ``'claude-sdk'`` uses :class:`~apx_agent._claude_sdk_executor.ClaudeSDKExecutor`
+    ``'openai-compat'`` uses :class:`~apx_agent._claude_sdk_executor.OpenAICompatExecutor`
     — a native OpenAI-compatible agentic loop with no LangGraph dependency.
     Suitable for :class:`~apx_agent._agents.LlmAgent` instances with a flat
     tool list.  Agents with composite topologies fall back to ``'langgraph'``
-    automatically with a warning.
+    automatically with a warning.  This is **not** Anthropic's Agent SDK; the
+    legacy name ``'claude-sdk'`` is accepted as an alias with a
+    ``FutureWarning``.
     """
+
+    @field_validator("executor")
+    @classmethod
+    def _resolve_executor_alias(cls, v: str) -> str:
+        from ._executor_factory import resolve_executor_name  # noqa: PLC0415
+
+        return resolve_executor_name(v)
 
     @model_validator(mode="after")
     def _runtime_contract(self) -> "AgentConfig":
@@ -818,7 +828,14 @@ class AgentConfig(BaseModel):
             raise ValueError("recovery requires target='durable_agent_server'")
         if self.target == "durable_agent_server":
             if self.session is not None and self.session.type != "managed":
-                raise ValueError("Declared durable sessions require type='managed'; explicit checkpointers remain available through compile_agent")
+                # Omitted target means durable since #938, so a pre-#938 config
+                # with a non-managed session lands here; name the one-line fix.
+                raise ValueError(
+                    f"Declared durable sessions require type='managed' (got {self.session.type!r}); "
+                    "add target = \"responses_agent\" to keep this session backend, or switch "
+                    "to session.type = \"managed\". Explicit checkpointers remain available "
+                    "through compile_agent"
+                )
             # Agent Bricks provisions this store. Customers override the name;
             # they do not opt into the managed session itself.
             if self.session is None:
@@ -1013,6 +1030,10 @@ class AgentCard(BaseModel):
     provider: A2AProvider = A2AProvider()
     authSchemes: list[A2AAuthScheme] = [A2AAuthScheme()]
     skills: list[A2ASkill] = []
+    # A card we did not author can carry the prompt and tools the mesh should
+    # use. Empty on cards we serve; read by RemoteDatabricksAgent (#834).
+    instructions: str = ""
+    tools: list[dict[str, Any]] = []
     mcpEndpoint: str | None = None  # SSE URL for MCP clients; populated at request time
     flowGraph: A2AFlowGraph | None = None
 

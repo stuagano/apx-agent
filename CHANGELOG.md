@@ -12,6 +12,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Added
 
+- **Existing-agent registration from its card (#834).** Hub registration keeps the crawled card's `instructions` and `tools` (skills stay the fallback), and copies the response `traceparent` onto the card as `trace_header`. `RemoteDatabricksAgent` uses those card fields the same way.
 - **Native durable runtime.** Agent declarations compile to a native MLflow
   `ResponsesAgent` or `DurableAgentServer`. One declaration selects the runtime,
   App Space and managed session binding. Deploys hand store reconciliation to
@@ -185,6 +186,11 @@ richer evaluation loop in the dev UI.
   (#797–#799).
 
 ### Changed
+
+- **`executor="claude-sdk"` renamed to `executor="openai-compat"`** (#833).
+  It never was Anthropic's Agent SDK — it is an OpenAI-compatible tool loop on
+  Databricks Model Serving. `ClaudeSDKExecutor` is now `OpenAICompatExecutor`.
+  The old value and class name still work; the value emits a `FutureWarning`.
 
 - **Breaking: the watchdog governance surface is now `governance`.** Runtime
   names dropped the companion repo: `_watchdog.py` → `_governance.py`,

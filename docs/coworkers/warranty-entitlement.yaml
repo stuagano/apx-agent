@@ -9,6 +9,8 @@
 # Typical tables: snow_cases, snow_assets, sap_contracts, sap_warranty, sap_inventory
 
 name: warranty-entitlement-coworker
+# Lakebase session = compatibility contract; omitted target is durable.
+target: responses_agent
 description: >
   Reconciles service requests (ServiceNow) against warranty contracts and parts
   inventory (SAP). Determines coverage, part availability, and customer cost

@@ -4352,7 +4352,9 @@ def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
 
 def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
     # A scaffolded-looking apps project whose agent module raises on import.
-    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.apx.agent]\nname='x'\ntarget='responses_agent'\n"
+    )
     agent_server = tmp_path / "agent_server"
     agent_server.mkdir()
     (agent_server / "__init__.py").write_text("")
@@ -5331,6 +5333,7 @@ def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
         [tool.apx.agent]
         name = "t"
+        target = "responses_agent"
         [[tool.apx.tools]]
         type = "genie"
         space_id = "cfg-space-xyz"
@@ -9323,6 +9326,7 @@ def test_materialize_agent_writes_full_project(tmp_path: Path) -> None:
 
     config = AgentConfig(
         name="mat-agent",
+        target="responses_agent",
         model="databricks-claude-sonnet-4-6",
         instructions="Answer questions.",
         template={"name": "base"},

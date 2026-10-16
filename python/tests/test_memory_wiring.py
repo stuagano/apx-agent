@@ -628,7 +628,7 @@ class TestAgentCarriedConfig:
         from apx_agent._models import AgentConfig, MemoryBackendConfig
         agent = self._agent()
         agent.memory_config = MemoryBackendConfig(type="lakebase")  # carried (would need ws)
-        cfg = AgentConfig(name="c", description="d",
+        cfg = AgentConfig(name="c", target="responses_agent", description="d",
                           memory=MemoryBackendConfig(type="inmemory"))  # explicit wins
         attach_declared_memory(agent, cfg, ws=None)
         names = {getattr(fn, "__name__", "") for fn in agent._tool_fns}
@@ -674,7 +674,7 @@ class TestLocalDevPrincipal:
         monkeypatch.setattr(mt, "make_memory_tools",
                             lambda **kw: captured.update(kw) or [])
         agent = Agent(instructions="x", tools=[])
-        cfg = AgentConfig(name="c", description="d",
+        cfg = AgentConfig(name="c", target="responses_agent", description="d",
                           memory=MemoryBackendConfig(type="inmemory"))
         ws = SimpleNamespace(current_user=SimpleNamespace(
             me=lambda: SimpleNamespace(user_name="me@corp.com")))

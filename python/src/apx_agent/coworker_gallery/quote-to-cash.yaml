@@ -8,6 +8,8 @@
 # Typical tables: sf_opportunities, sf_accounts, ns_invoices, ns_payments
 
 name: quote-to-cash-coworker
+# Lakebase session = compatibility contract; omitted target is durable.
+target: responses_agent
 description: >
   Reconciles closed deals (Salesforce) against invoices and collections (NetSuite).
   Identifies revenue leakage, billing discrepancies, and past-due accounts.

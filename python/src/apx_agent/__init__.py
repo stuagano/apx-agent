@@ -130,7 +130,7 @@ from ._executor import (
 from ._langgraph_executor import LangGraphExecutor
 
 # Native OpenAI-compatible executor (no LangGraph dependency)
-from ._claude_sdk_executor import ClaudeSDKExecutor
+from ._claude_sdk_executor import ClaudeSDKExecutor, OpenAICompatExecutor
 
 # Executor factory — selects executor based on AgentConfig.executor field
 from ._executor_factory import create_executor

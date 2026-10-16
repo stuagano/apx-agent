@@ -546,7 +546,14 @@ class RemoteDatabricksAgent(BaseAgent):
 
     @property
     def description(self) -> str:
-        return self._card.description if self._card else ""
+        """Card description, preferring the card's own ``instructions``.
+
+        A foreign agent's card carries the prompt the mesh should use. The
+        short ``description`` stays the fallback for cards that omit it.
+        """
+        if not self._card:
+            return ""
+        return self._card.instructions or self._card.description
 
     @property
     def app_name(self) -> str | None:
@@ -653,10 +660,41 @@ class RemoteDatabricksAgent(BaseAgent):
         """Remote agents don't expose local tools."""
         return []
 
-    async def fetch_remote_tools(self) -> list[AgentTool]:
-        """Return the remote agent's skills as AgentTool descriptors.
+    def _tools_from_card(self) -> list[AgentTool]:
+        """Tools declared on the card itself, ahead of the skill fallback.
 
-        Each skill's ``inputSchema``/``outputSchema`` is carried through
+        A card we did not author lists its tools under ``tools``. Skills stay
+        the fallback when that list is empty — existing cards keep working.
+        """
+        if not self._card or not self._card.tools:
+            return []
+        tools: list[AgentTool] = []
+        for spec in self._card.tools:
+            schema = spec.get("input_schema")
+            if not isinstance(schema, dict):
+                schema = spec.get("inputSchema")
+            input_schema = (
+                sanitize_tool_schema(schema) if isinstance(schema, dict) else None
+            )
+            name = spec.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            description = spec.get("description")
+            tools.append(
+                AgentTool(
+                    name=name,
+                    description=description if isinstance(description, str) else "",
+                    input_schema=input_schema,
+                    sub_agent_url=self._base_url,
+                )
+            )
+        return tools
+
+    async def fetch_remote_tools(self) -> list[AgentTool]:
+        """Return the remote agent's tools as AgentTool descriptors.
+
+        The card's own ``tools`` win. Otherwise each skill's
+        ``inputSchema``/``outputSchema`` is carried through
         (sanitized — an untrusted card must not 500 the orchestrator's LLM
         calls via ``additionalProperties: true``, #439). The ``{message}``
         wrapper is the *fallback* for skills that advertise no usable
@@ -665,6 +703,10 @@ class RemoteDatabricksAgent(BaseAgent):
         await self.init()
         if not self._card:
             return []
+
+        declared = self._tools_from_card()
+        if declared:
+            return declared
 
         tools: list[AgentTool] = []
         for skill in self._card.skills:

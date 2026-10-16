@@ -1,6 +1,6 @@
 """Tests for _executor_factory — governance-safe executor selection (#463).
 
-The ``claude-sdk`` executor calls tool functions directly and runs none of the
+The ``openai-compat`` executor calls tool functions directly and runs none of the
 ``before_tool`` / ``before_model`` / guardrail wiring that PolicyGate (approval),
 GovernanceGuard, tool allow/deny lists, rate limits, and the injection heuristic
 compose into. Selecting it must therefore NOT silently disable configured
@@ -82,28 +82,39 @@ def test_langgraph_executor_receives_distinct_clients() -> None:
 
 
 def test_claude_sdk_with_governance_falls_back_to_langgraph() -> None:
-    """A guarded agent asking for claude-sdk must run the GOVERNED path."""
+    """A guarded agent asking for openai-compat must run the GOVERNED path."""
     agent = LlmAgent(tools=[], before_tool=_noop)
-    config = AgentConfig(name="a", model="m", executor="claude-sdk")
+    config = AgentConfig(name="a", model="m", executor="openai-compat")
     assert isinstance(create_executor(agent, config), LangGraphExecutor)
 
 
 def test_claude_sdk_with_config_guardrails_falls_back_to_langgraph() -> None:
     agent = LlmAgent(tools=[])
     config = AgentConfig(
-        name="a", model="m", executor="claude-sdk",
+        name="a", model="m", executor="openai-compat",
         guardrails=GuardrailsConfig(blocked_tools=["delete"]),
     )
     assert isinstance(create_executor(agent, config), LangGraphExecutor)
 
 
-def test_clean_claude_sdk_agent_gets_sdk_executor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No governance → the SDK executor is honoured (patched to avoid the SDK dep)."""
+def test_clean_openai_compat_agent_gets_its_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No governance → the openai-compat executor is honoured (patched out)."""
     sentinel = object()
     monkeypatch.setattr(
-        "apx_agent._claude_sdk_executor.ClaudeSDKExecutor",
+        "apx_agent._claude_sdk_executor.OpenAICompatExecutor",
         lambda **_kw: sentinel,
     )
     agent = LlmAgent(tools=[])
-    config = AgentConfig(name="a", model="m", executor="claude-sdk")
+    config = AgentConfig(name="a", model="m", executor="openai-compat")
     assert create_executor(agent, config) is sentinel
+
+
+def test_legacy_claude_sdk_name_aliases_with_warning() -> None:
+    """``claude-sdk`` was never Anthropic's Agent SDK (#833): it resolves to
+    ``openai-compat`` and says so, rather than silently keeping the old name."""
+    from apx_agent import ClaudeSDKExecutor, OpenAICompatExecutor
+
+    with pytest.warns(FutureWarning, match="openai-compat"):
+        config = AgentConfig(name="a", model="m", executor="claude-sdk")
+    assert config.executor == "openai-compat"
+    assert ClaudeSDKExecutor is OpenAICompatExecutor

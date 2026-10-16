@@ -10,7 +10,7 @@ from apx_agent._project_gen import _build_databricks_yml
 
 def test_bundle_emits_declared_instances_env_and_native_scaling_fields(tmp_path) -> None:
     cfg = AgentConfig(
-        name="t",
+        name="t", target="responses_agent",
         deploy=DeployConfig(instances=3),
         session=SessionBackendConfig(type="lakebase", host="${LAKEBASE_HOST}", database="apx"),
     )
@@ -35,7 +35,7 @@ def test_bundle_emits_declared_instances_env_and_native_scaling_fields(tmp_path)
 
 def test_bundle_emits_autoscale_bounds(tmp_path) -> None:
     cfg = AgentConfig(
-        name="t",
+        name="t", target="responses_agent",
         deploy=DeployConfig(autoscale={"min": 2, "max": 5}),
         session=SessionBackendConfig(type="lakebase", host="${LAKEBASE_HOST}", database="apx"),
     )
