@@ -227,7 +227,7 @@ def test_sdk_executor_cannot_silently_drop_timeout():
     from apx_agent._executor_factory import create_executor
     from apx_agent._langgraph_executor import LangGraphExecutor
 
-    executor = create_executor(Agent(timeout_s=1), AgentConfig(name="timed", executor="claude-sdk"))
+    executor = create_executor(Agent(timeout_s=1), AgentConfig(name="timed", executor="openai-compat"))
     assert isinstance(executor, LangGraphExecutor)
 
 

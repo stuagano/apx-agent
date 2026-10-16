@@ -8,6 +8,7 @@ receive the right one.
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -17,16 +18,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def resolve_executor_name(name: str) -> str:
+    """Map the legacy ``'claude-sdk'`` executor name to ``'openai-compat'``.
+
+    ``'claude-sdk'`` never meant Anthropic's Agent SDK — it is an
+    OpenAI-compatible tool loop on Databricks Model Serving (#833).
+    """
+    if name == "claude-sdk":
+        warnings.warn(
+            "executor='claude-sdk' is renamed to 'openai-compat' (it is an "
+            "OpenAI-compatible loop on Databricks serving, not Anthropic's "
+            "Agent SDK); the old name will be removed in a future release.",
+            FutureWarning,
+            stacklevel=3,
+        )
+        return "openai-compat"
+    return name
+
+
 def governance_guards_present(
     agent: "BaseAgent", config: "AgentConfig | None" = None
 ) -> str | None:
-    """Return a human-readable reason if *agent* carries governance the Claude
-    SDK executor cannot enforce, else ``None``.
+    """Return a human-readable reason if *agent* carries governance the
+    ``openai-compat`` executor cannot enforce, else ``None``.
 
     The ``before_tool`` / ``before_model`` / ``after_*`` hooks and the input /
     output guardrail lists are exactly what ``PolicyGate`` (human approval),
     ``GovernanceGuard``, tool allow/deny lists, rate limits, and the injection
-    heuristic all compose into. The :class:`ClaudeSDKExecutor` runs none of them
+    heuristic all compose into. The :class:`OpenAICompatExecutor` runs none of them
     — it calls the tool function directly — so selecting it silently disables
     every configured guard. ``config.guardrails`` is checked too, in case the
     declarative guards have not yet been folded onto the agent instance.
@@ -66,8 +85,8 @@ def create_executor(
         Returns a :class:`~apx_agent._langgraph_executor.LangGraphExecutor`
         wrapping *agent*.  Works for all agent topologies.
 
-    ``'claude-sdk'``
-        Returns a :class:`~apx_agent._claude_sdk_executor.ClaudeSDKExecutor`
+    ``'openai-compat'``
+        Returns a :class:`~apx_agent._claude_sdk_executor.OpenAICompatExecutor`
         populated with the tools and instructions from *agent*, but only when
         *agent* is a :class:`~apx_agent._agents.LlmAgent`.  For all other
         agent types a warning is logged and a
@@ -92,20 +111,20 @@ def create_executor(
         from apx_agent._executor_factory import create_executor
 
         agent = LlmAgent(tools=[])
-        config = AgentConfig(model="databricks-claude-sonnet-4-6", executor="claude-sdk")
+        config = AgentConfig(model="databricks-claude-sonnet-4-6", executor="openai-compat")
         executor = create_executor(agent, config)
-        # executor is a ClaudeSDKExecutor
+        # executor is an OpenAICompatExecutor
     """
     from ._agents import LlmAgent
-    from ._claude_sdk_executor import ClaudeSDKExecutor
+    from ._claude_sdk_executor import OpenAICompatExecutor
     from ._langgraph_executor import LangGraphExecutor
 
-    executor_name = getattr(config, "executor", "langgraph") or "langgraph"
+    executor_name = resolve_executor_name(getattr(config, "executor", "langgraph") or "langgraph")
 
-    if executor_name == "claude-sdk":
+    if executor_name == "openai-compat":
         if not isinstance(agent, LlmAgent):
             logger.warning(
-                "executor='claude-sdk' is only supported for LlmAgent; "
+                "executor='openai-compat' is only supported for LlmAgent; "
                 "falling back to LangGraphExecutor for %s",
                 type(agent).__name__,
             )
@@ -115,7 +134,7 @@ def create_executor(
 
         if reason := governance_guards_present(agent, config):
             logger.warning(
-                "executor='claude-sdk' cannot enforce configured governance "
+                "executor='openai-compat' cannot enforce configured governance "
                 "(%s); using the governed LangGraph path instead so guards are "
                 "not silently bypassed.",
                 reason,
@@ -124,7 +143,7 @@ def create_executor(
                 agent, user_ws=ws, service_ws=service_ws, model=config.model
             )
 
-        return ClaudeSDKExecutor(
+        return OpenAICompatExecutor(
             model=config.model,
             tools=list(agent._tool_fns),
             instructions=agent._instructions,

@@ -1,4 +1,7 @@
-"""ClaudeSDKExecutor — OpenAI-compatible agentic loop without LangGraph.
+"""OpenAICompatExecutor — OpenAI-compatible agentic loop without LangGraph.
+
+Not Anthropic's Agent SDK — selected by ``executor="openai-compat"`` (legacy
+alias ``"claude-sdk"``, #833). The module keeps its old name; it is private.
 
 Uses ``openai.AsyncOpenAI`` (or the Databricks-authenticated wrapper
 ``AsyncDatabricksOpenAI``) to run a full tool loop directly against any
@@ -171,7 +174,7 @@ def _call_tool(fn: Callable[..., Any], args: dict[str, Any]) -> Any:
 # ---------------------------------------------------------------------------
 
 
-class ClaudeSDKExecutor:
+class OpenAICompatExecutor:
     """Executor that runs a native OpenAI-compatible agentic loop without LangGraph.
 
     Uses :func:`_make_client` to obtain an authenticated async client pointed
@@ -219,7 +222,7 @@ class ClaudeSDKExecutor:
             "Add two integers."
             return a + b
 
-        executor = ClaudeSDKExecutor(
+        executor = OpenAICompatExecutor(
             model="databricks-claude-sonnet-4-6",
             tools=[add],
         )
@@ -256,13 +259,13 @@ class ClaudeSDKExecutor:
         self._thinking = thinking
 
         # Warn immediately if any tools have dependency-injected parameters —
-        # ClaudeSDKExecutor calls tools without DI framework support, so those
+        # OpenAICompatExecutor calls tools without DI framework support, so those
         # parameters will be absent at call time (causing TypeError).
         for fn in self._tools:
             sig = _inspect_tool_fn(fn)
             if sig.dep_param_names:
                 logger.warning(
-                    "ClaudeSDKExecutor: tool %r has dependency-injected parameters "
+                    "OpenAICompatExecutor: tool %r has dependency-injected parameters "
                     "%r that will NOT be resolved (no FastAPI DI context). "
                     "The tool will receive only plain LLM-supplied arguments and will "
                     "raise TypeError if any dep param is required. "
@@ -470,7 +473,7 @@ class ClaudeSDKExecutor:
                     fn = tool_map.get(fn_name)
                     if fn is None:
                         err = f"Unknown tool: {fn_name!r}"
-                        logger.warning("ClaudeSDKExecutor: %s", err)
+                        logger.warning("OpenAICompatExecutor: %s", err)
                         yield ToolCallComplete(name=fn_name, call_id=call_id, error=err)
                         lm_messages.append(
                             {
@@ -500,7 +503,7 @@ class ClaudeSDKExecutor:
                         except Exception as exc:
                             err_msg = str(exc)
                             logger.warning(
-                                "ClaudeSDKExecutor: tool %r raised: %s", fn_name, err_msg
+                                "OpenAICompatExecutor: tool %r raised: %s", fn_name, err_msg
                             )
                             yield ToolCallComplete(
                                 name=fn_name, call_id=call_id, error=err_msg
@@ -520,5 +523,9 @@ class ClaudeSDKExecutor:
             )
 
         except Exception as exc:
-            logger.exception("ClaudeSDKExecutor.run_turn failed: %s", exc)
+            logger.exception("OpenAICompatExecutor.run_turn failed: %s", exc)
             yield ExecutorError(message=str(exc), retryable=False)
+
+
+# Legacy name kept for importers of the pre-#833 class (#833).
+ClaudeSDKExecutor = OpenAICompatExecutor
