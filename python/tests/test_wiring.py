@@ -1153,6 +1153,7 @@ class TestMemoryBackendConfig:
         pp.write_text(textwrap.dedent("""
             [tool.apx.agent]
             name = "sess-agent"
+            target = "responses_agent"
 
             [tool.apx.agent.session]
             type = "inmemory"
@@ -1188,7 +1189,8 @@ class TestMemoryBackendConfig:
         config = _load_agent_config(pyproject_path=str(pp))
         assert config is not None
         assert config.memory is None
-        assert config.session is None
+        # Omitted target is durable_agent_server, which attaches a managed session.
+        assert config.session is not None and config.session.type == "managed"
         assert config.example is None
 
     def test_validate_at_boot_default_true(self):

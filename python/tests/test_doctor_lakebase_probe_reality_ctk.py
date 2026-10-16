@@ -28,7 +28,7 @@ from apx_agent._doctor import Status, check_memory_backend
 
 def _cfg(**mem_kwargs: Any) -> AgentConfig:
     return AgentConfig(
-        name="t",
+        name="t", target="responses_agent",
         model="databricks-claude-sonnet-4-6",
         memory=MemoryBackendConfig(type="lakebase", **mem_kwargs),
     )

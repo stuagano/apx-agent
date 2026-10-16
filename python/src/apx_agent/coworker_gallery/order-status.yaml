@@ -8,6 +8,8 @@
 # Typical tables: erp_purchase_orders, erp_invoices, tms_shipments, tms_carrier_invoices
 
 name: order-status-coworker
+# Lakebase session = compatibility contract; omitted target is durable.
+target: responses_agent
 description: >
   Joins order and billing records (Oracle ERP) against live shipment tracking (TMS).
   Surfaces dock-date risk, carrier invoice mismatches, and three-way match exceptions.

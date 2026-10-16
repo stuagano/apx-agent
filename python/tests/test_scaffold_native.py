@@ -74,9 +74,9 @@ def test_gallery_runtime_defaults_preserve_explicit_contracts():
     explicit = AgentConfig(name="orders", target="responses_agent")
     assert cli._scaffold_runtime_config(explicit, None).target == "responses_agent"
     assert cli._scaffold_runtime_config(explicit, "durable_agent_server").target == "durable_agent_server"
-    incompatible = AgentConfig(name="orders", session={"type": "lakebase"})
+    incompatible = AgentConfig(name="orders", target="responses_agent", session={"type": "lakebase"})
     with pytest.raises(click.ClickException, match="incompatible with durable_agent_server"):
-        cli._scaffold_runtime_config(incompatible, None)
+        cli._scaffold_runtime_config(incompatible, "durable_agent_server")
 
 
 def test_force_preserves_legacy_project_without_runtime_config(tmp_path):

@@ -648,9 +648,10 @@ class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 
     name: str
-    target: RuntimeTarget = "responses_agent"
-    """Compilation contract. ``responses_agent`` is legacy (model serving);
-    Databricks Apps use ``durable_agent_server``."""
+    target: RuntimeTarget = "durable_agent_server"
+    """Compilation contract. Omitted ``target`` means the native durable
+    server; set ``responses_agent`` explicitly for the legacy (model serving)
+    compatibility contract."""
     host: Literal["apps", "model_serving"] | None = None
     """Where the compiled agent executes. ``apps`` requires the Apps
     compilation contract; ``model_serving`` keeps the legacy contract.
@@ -827,7 +828,14 @@ class AgentConfig(BaseModel):
             raise ValueError("recovery requires target='durable_agent_server'")
         if self.target == "durable_agent_server":
             if self.session is not None and self.session.type != "managed":
-                raise ValueError("Declared durable sessions require type='managed'; explicit checkpointers remain available through compile_agent")
+                # Omitted target means durable since #938, so a pre-#938 config
+                # with a non-managed session lands here; name the one-line fix.
+                raise ValueError(
+                    f"Declared durable sessions require type='managed' (got {self.session.type!r}); "
+                    "add target = \"responses_agent\" to keep this session backend, or switch "
+                    "to session.type = \"managed\". Explicit checkpointers remain available "
+                    "through compile_agent"
+                )
             # Agent Bricks provisions this store. Customers override the name;
             # they do not opt into the managed session itself.
             if self.session is None:

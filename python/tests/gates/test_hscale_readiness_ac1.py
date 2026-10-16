@@ -16,7 +16,7 @@ def test_compile_refuses_scaled_in_memory() -> None:
 
     # Explicit type='inmemory' => same refusal.
     cfg2 = AgentConfig(
-        name="t",
+        name="t", target="responses_agent",
         deploy=DeployConfig(instances=2),
         session=SessionBackendConfig(type="inmemory"),
     )

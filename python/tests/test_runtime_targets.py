@@ -107,7 +107,7 @@ def test_responses_target_resolves_declared_session(execution: Any, tmp_path: Pa
     from apx_agent import AgentConfig, compile_agent
 
     monkeypatch.chdir(tmp_path)
-    model = compile_agent(execution.agent, config=AgentConfig(name="proof", model="test", session={"type": "inmemory"}))
+    model = compile_agent(execution.agent, config=AgentConfig(name="proof", model="test", target="responses_agent", session={"type": "inmemory"}))
     model.predict({"input": [{"role": "user", "content": "record"}], "custom_inputs": {"thread_id": "declared"}})
     store = model.conversation_store
     assert store.get_conversation("declared") is not None
@@ -883,7 +883,8 @@ def test_generated_entrypoint_selects_native_target(execution: Any, monkeypatch:
     from apx_agent import AgentConfig
     from apx_agent._project_gen import generate_project
 
-    config = AgentConfig(name="target-proof", model="test")
+    # The Bundle entrypoint exists only off the native scaffold path.
+    config = AgentConfig(name="target-proof", model="test", target="responses_agent")
     generate_project(config, tmp_path)
     entrypoint = tmp_path / "agent_server" / "start_server.py"
     verify(Artifact(str(entrypoint), min_bytes=100, must_contain="compile_agent"))
@@ -1048,7 +1049,7 @@ def test_packaged_launcher_rejects_missing_or_other_runtime_before_auth(monkeypa
     from apx_agent._serve import create_app
 
     if declared:
-        generate_project(AgentConfig(name="other"), tmp_path)
+        generate_project(AgentConfig(name="other", target="responses_agent"), tmp_path)
     monkeypatch.chdir(tmp_path)
     auth = MagicMock(side_effect=AssertionError("No auth for an incompatible runtime"))
     monkeypatch.setattr("apx_agent._defaults._make_workspace_client", auth)

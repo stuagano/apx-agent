@@ -33,7 +33,7 @@ from apx_agent._models import AgentConfig, SessionBackendConfig  # noqa: E402
 
 def _lakebase_config() -> AgentConfig:
     return AgentConfig(
-        name="t",
+        name="t", target="responses_agent",
         model="m",
         session=SessionBackendConfig(
             type="lakebase", database="db", host="h.example"
@@ -67,7 +67,7 @@ def test_resolve_checkpointer_none_for_non_lakebase() -> None:
     from apx_agent._memory_wiring import resolve_checkpointer
 
     inmemory = AgentConfig(
-        name="t", model="m",
+        name="t", target="responses_agent", model="m",
         session=SessionBackendConfig(type="inmemory", table_name="c.s.p"),
     )
     assert resolve_checkpointer(inmemory, ws=MagicMock()) is None

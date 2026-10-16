@@ -59,7 +59,7 @@ def inspect_target(
 ) -> TargetReport:
     """Report this APX implementation's support, without contacting services."""
     if target is None:
-        target = config.target if config is not None else "responses_agent"
+        target = config.target if config is not None else "durable_agent_server"
     session = config.session if config is not None and config.session is not None else getattr(agent, "session_config", None)
     # The durable target auto-attaches a managed session (AgentConfig default),
     # but a managed store currently binds only to LlmAgent. Composite agents
@@ -174,7 +174,7 @@ def compile_agent(
     runtime bindings; they are never accepted in a durable invocation payload.
     """
     if target is None:
-        target = config.target if config is not None else "responses_agent"
+        target = config.target if config is not None else "durable_agent_server"
     model = model if model is not None else (config.model if config is not None else None)
     if not model:
         raise ValueError("compile_agent requires model or AgentConfig.model")

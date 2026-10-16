@@ -402,7 +402,8 @@ def test_databricks_yml_present(tmp_path: Path):
 
 
 def test_databricks_yml_missing_in_project(tmp_path: Path):
-    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    # A Bundle project; an omitted target is native and skips this check.
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\ntarget='responses_agent'\n")
     (tmp_path / "agent.py").write_text("# agent\n")
     c = doctor.check_databricks_yml(tmp_path)
     assert c.status is doctor.Status.WARN
@@ -1220,6 +1221,7 @@ class TestCheckAbacComputeFloor:
     def test_session_warehouse_takes_precedence(self, tmp_path: Path, monkeypatch):
         self._project(
             tmp_path,
+            'target = "responses_agent"\n'  # Lakebase session = compatibility contract
             '\n[tool.apx.agent.session]\ntype = "lakebase"\nwarehouse_id = "sess-wh"\n'
             + self._data_block(),
         )
