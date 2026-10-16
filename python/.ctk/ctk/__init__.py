@@ -16,7 +16,7 @@ Four failure modes this kit is built to catch
 
 Quick start
 -----------
-    from ctk import verify, Artifact, claim_vs_reality, Checklist
+    from ctk import run, expect, Artifact, verify
 
     # 1. Run a script strictly: exit code + output are both checked.
     r = run(["python", "my_tool.py", "--out", "result.json"])
@@ -32,24 +32,18 @@ Quick start
     )
 """
 
-from .assertions import assert_eq, assert_file, assert_nonempty, must
-from .contracts import ContractError, Expect, expect
-from .docs import DocsConfig, Finding, find_stale_docs, format_findings
-from .docs_direction import (
-    ClaudeUnavailable,
-    DirectionVerdict,
-    format_verdicts,
-    review_doc_direction,
-)
-from .lint import SwallowedExcept, find_swallowed_exceptions
-from .runners import RunResult, run
+from .runners import run, RunResult
+from .contracts import expect, Expect, ContractError
+from .assertions import must, assert_nonempty, assert_file, assert_eq
+from .gate import Check, CheckFailure
 from .verify import (
     Artifact,
+    verify,
+    claim_vs_reality,
     Checklist,
     VerificationError,
-    claim_vs_reality,
-    verify,
 )
+from .lint import find_swallowed_exceptions, SwallowedExcept
 
 __all__ = [
     "run",
@@ -64,18 +58,12 @@ __all__ = [
     "Artifact",
     "verify",
     "claim_vs_reality",
+    "Check",
+    "CheckFailure",
     "Checklist",
     "VerificationError",
     "find_swallowed_exceptions",
     "SwallowedExcept",
-    "find_stale_docs",
-    "Finding",
-    "DocsConfig",
-    "format_findings",
-    "review_doc_direction",
-    "DirectionVerdict",
-    "ClaudeUnavailable",
-    "format_verdicts",
 ]
 
 __version__ = "0.1.0"
