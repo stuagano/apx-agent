@@ -131,6 +131,11 @@ Declarations that omit `target` mean `durable_agent_server`. A written
 `target = "responses_agent"` stays on the compatibility contract. Re-scaffolding
 with `--force` preserves the runtime already in the project and refuses a
 runtime change.
+
+This is a breaking change for existing projects that omit `target` and declare a
+`lakebase` or `inmemory` session. They fail to load with an error that
+names the fix: add `target = "responses_agent"` to keep that session backend, or
+switch to `session.type = "managed"`.
 Re-scaffolding with `--force` preserves the existing runtime and refuses a
 runtime change. Gallery declarations with an explicit target also retain it
 unless `--runtime` is supplied. Unsupported state/runtime combinations fail

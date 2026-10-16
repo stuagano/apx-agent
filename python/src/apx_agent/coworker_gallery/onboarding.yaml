@@ -8,6 +8,8 @@
 # Typical tables: workday_employees, okta_users, okta_group_memberships
 
 name: onboarding-coworker
+# Lakebase session = compatibility contract; omitted target is durable.
+target: responses_agent
 description: >
   Reconciles HR employment status (Workday) against identity and access (Okta/AD).
   Flags new hires with missing accounts and terminated employees with active access.

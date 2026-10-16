@@ -83,6 +83,7 @@ def test_load_spec_memory_and_session(tmp_path: Path) -> None:
         tmp_path,
         """\
         name: payroll-coworker
+        target: responses_agent
         memory:
           type: lakebase
           table_name: main.default.apx_payroll_memory

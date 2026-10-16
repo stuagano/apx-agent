@@ -819,7 +819,14 @@ class AgentConfig(BaseModel):
             raise ValueError("recovery requires target='durable_agent_server'")
         if self.target == "durable_agent_server":
             if self.session is not None and self.session.type != "managed":
-                raise ValueError("Declared durable sessions require type='managed'; explicit checkpointers remain available through compile_agent")
+                # Omitted target means durable since #938, so a pre-#938 config
+                # with a non-managed session lands here; name the one-line fix.
+                raise ValueError(
+                    f"Declared durable sessions require type='managed' (got {self.session.type!r}); "
+                    "add target = \"responses_agent\" to keep this session backend, or switch "
+                    "to session.type = \"managed\". Explicit checkpointers remain available "
+                    "through compile_agent"
+                )
             # Agent Bricks provisions this store. Customers override the name;
             # they do not opt into the managed session itself.
             if self.session is None:

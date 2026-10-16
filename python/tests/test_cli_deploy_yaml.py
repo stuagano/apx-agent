@@ -122,6 +122,8 @@ def test_deploy_invalid_yaml_raises_click_exception(tmp_path):
 def test_yaml_spec_materializes_reusable_project(tmp_path):
     """YAML execution keeps generated grounding beside the source spec."""
     spec = _minimal_yaml(tmp_path)
+    # A Bundle project is the compatibility contract; omitted target is native.
+    spec.write_text(spec.read_text() + "target: responses_agent\n")
     config = load_spec(spec)
 
     with patch("apx_agent.cli._bake_schema_into_project", return_value=False):

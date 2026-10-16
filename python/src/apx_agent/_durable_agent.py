@@ -227,63 +227,6 @@ def compile_durable_handlers(
     return DurableHandlers(invoke=invoke)
 
 
-class _LocalRuntimeStore:
-    """Process-local Runtime Store for a bare durable app.
-
-    The SDK publishes the RuntimeStore protocol and no local implementation.
-    This keeps one invocation per id in memory so DurableAgentServer can retain
-    session state without a deployed Lakebase store.
-    """
-
-    def __init__(self) -> None:
-        self._states: dict[str, Any] = {}
-
-    async def initialize(self) -> None:
-        return None
-
-    async def close(self) -> None:
-        self._states.clear()
-
-    async def accept(self, request: Any, *, session_id: str | None = None, response: Any = None) -> Any:
-        from databricks_agentkit.runtime.types import Invocation, InvocationStatus
-        import uuid
-        invocation_id = str(uuid.uuid4())
-        state = Invocation(
-            invocation_id=invocation_id, status=InvocationStatus.ACTIVE, attempt=1,
-            request=request, response=response, session_id=session_id,
-        )
-        self._states[invocation_id] = state
-        return state
-
-    async def get(self, invocation_id: str | None = None, session_id: str | None = None) -> Any | None:
-        if invocation_id is not None:
-            return self._states.get(invocation_id)
-        matches = [s for s in self._states.values() if session_id is None or getattr(s, "session_id", None) == session_id]
-        return matches[-1] if matches else None
-
-    async def claim(self, invocation_id: str) -> Any | None:
-        return self._states.get(invocation_id)
-
-    async def complete(self, invocation_id: str, *, attempt: int, response: Any) -> bool:
-        state = self._states.get(invocation_id)
-        if state is None:
-            return False
-        self._states[invocation_id] = type(state)(**{**state.__dict__, "response": response, "status": state.status})
-        return True
-
-    async def fail(self, invocation_id: str, *, attempt: int, error: str) -> bool:
-        return invocation_id in self._states
-
-    async def append_event(self, invocation_id: str, *, attempt: int, event: str, data: Any = None) -> int | None:
-        return 1 if invocation_id in self._states else None
-
-    async def events(self, invocation_id: str | None = None, after_sequence: int | None = None, session_id: str | None = None) -> list[Any]:
-        return []
-
-    async def resume(self, session_id: str, *, response: Any) -> Any | None:
-        return None
-
-
 def compile_to_durable_agent_server(
     agent: BaseAgent,
     *,
@@ -293,7 +236,6 @@ def compile_to_durable_agent_server(
     session_store: str | None = None,
     require_user: bool = False,
     recovery: bool = False,
-    runtime_store: Any | None = None,
 ) -> Any:
     """Create the optional SDK server without importing ResponsesAgent."""
     from ._runtime_targets import RuntimeRequirements, inspect_target
@@ -305,8 +247,6 @@ def compile_to_durable_agent_server(
         from databricks_agentkit.runtime.app import DurableAgentServer
     except ImportError as exc:
         raise ImportError("durable_agent_server requires the optional SDK; install apx-agent[agentbricks] in the host project") from exc
-    if runtime_store is None and session_store is None:
-        runtime_store = _LocalRuntimeStore()
     if session_store is not None:
         if service_ws is None:
             raise ValueError("session_store requires an explicit service_ws runtime binding")
@@ -323,7 +263,7 @@ def compile_to_durable_agent_server(
         raise ValueError("recovery is incompatible with the manifest's request-user authentication")
     handlers = compile_durable_handlers(agent, model=model, service_ws=service_ws,
                                         checkpointer=checkpointer, require_user=policy.requires_user, recovery=recovery)
-    app = DurableAgentServer(auth_policy=policy, runtime_store=runtime_store)
+    app = DurableAgentServer(auth_policy=policy)
     app.invoke(handlers.invoke)
     if recovery:
         app.recover(handlers.invoke)

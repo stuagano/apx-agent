@@ -38,6 +38,8 @@
 # Typical tables: billing_invoices, gl_journal_entries, gl_accounts
 
 name: financial-reporting-coworker
+# Lakebase session = compatibility contract; omitted target is durable.
+target: responses_agent
 description: >
   Reconciles billed amounts (billing system) against posted revenue (general
   ledger). Answers finance's reporting questions by running SQL against governed

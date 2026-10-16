@@ -5333,6 +5333,7 @@ def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
         [tool.apx.agent]
         name = "t"
+        target = "responses_agent"
         [[tool.apx.tools]]
         type = "genie"
         space_id = "cfg-space-xyz"
@@ -9325,6 +9326,7 @@ def test_materialize_agent_writes_full_project(tmp_path: Path) -> None:
 
     config = AgentConfig(
         name="mat-agent",
+        target="responses_agent",
         model="databricks-claude-sonnet-4-6",
         instructions="Answer questions.",
         template={"name": "base"},

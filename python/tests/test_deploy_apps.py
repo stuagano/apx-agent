@@ -1700,6 +1700,7 @@ def test_apps_deploy_reconciles_named_binding_as_can_use_app_resource(
 
             [tool.apx.agent]
             name = "root"
+            target = "responses_agent"
             model = "model"
             module = "agent:agent"
 
@@ -2479,6 +2480,7 @@ def test_deploy_blocks_when_cli_missing(tmp_path, monkeypatch):
 _PYPROJECT_WITH_AGENT = (
     '[project]\nname = "test-app"\n\n'
     '[tool.apx.agent]\n'
+    'target = "responses_agent"\n'
     'model = "databricks-claude-sonnet-4-6"\n'
     'name = "My App"\n'
 )
@@ -2634,6 +2636,7 @@ def test_register_uc_failure_is_fatal_when_inferred_from_catalog_schema(
         '[project]\nname = "test-app"\n\n'
         '[tool.apx.agent]\n'
         'name = "my-app"\n'
+        'target = "responses_agent"\n'
         'model = "databricks-claude-sonnet-4-6"\n'
         'catalog = "main"\n'
         'schema = "agents"\n'
@@ -3129,6 +3132,7 @@ def test_canary_deploy_apps_uses_full_path(
 _PYPROJECT_WITH_UC = (
     '[project]\nname = "test-app"\n\n'
     '[tool.apx.agent]\n'
+    'target = "responses_agent"\n'
     'model = "databricks-claude-sonnet-4-6"\n'
     'name = "My App"\n'
     'registered_model = "main.agents.my_app"\n'

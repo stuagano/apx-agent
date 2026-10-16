@@ -8,6 +8,8 @@
 # Typical tables: epic_encounters, epic_notes, claims_submissions, claims_denials
 
 name: claims-integrity-coworker
+# Lakebase session = compatibility contract; omitted target is durable.
+target: responses_agent
 description: >
   Reconciles clinical documentation (Epic) against claims submissions and denials.
   Surfaces denial root causes and identifies where chart documentation supports
