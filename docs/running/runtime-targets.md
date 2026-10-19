@@ -147,8 +147,9 @@ declare managed stores as shown below when persistence is needed.
 
 The native durable integration supports request-user clients, declared APX
 memory and persisted message streaming. Service-identity LlmAgents can opt into
-managed-checkpoint recovery. Request-user recovery, raw request/header
-dependencies and remote OBO forwarding remain unsupported. Check the
+managed-checkpoint recovery. Remote-agent calls (sub-agents and bound remote
+leaves) forward the request user's token per hop. Request-user recovery and raw
+request/header dependencies remain unsupported. Check the
 [compatibility table](#compatibility-checks) before choosing it.
 
 In an agent specification, `target` selects the compiler output.
@@ -390,7 +391,7 @@ behavior. Custom preprocessing and postprocessing need explicit treatment too.
 
 Check the [compatibility table](#compatibility-checks) against the behavior your
 customers actually use. Keep the existing Responses deployment if it needs
-raw request/header dependencies, remote OBO forwarding or request-user crash
+raw request/header dependencies or request-user crash
 recovery; the current APX durable target does not implement those capabilities.
 UserClient, SQL and Principal dependencies use the SDK's request-user client.
 Declared managed memory uses the AgentKit API and the authenticated principal;
@@ -582,7 +583,7 @@ does not erase those declarations.
 
 | Requirement | ResponsesAgent handlers | Native durable target in this release |
 |---|---|---|
-| `user_identity` | Existing OBO handling | SDK request-user client for UserClient, SQL and Principal; raw Request/Headers and remote OBO forwarding rejected |
+| `user_identity` | Existing OBO handling | SDK request-user client for UserClient, SQL, Principal and per-hop remote-agent OBO; raw Request/Headers rejected |
 | `sessions` | Declared session backend, explicit conversation store or LlmAgent checkpointer | Automatic managed session, or an explicit LlmAgent checkpointer / `session_store` |
 | `approvals` | LlmAgent checkpointer | Automatic managed session, or an explicit LlmAgent checkpointer / `session_store`; user-scoped when request-user auth is required |
 | `long_term_memory` | Supported with a reachable declared store; managed memory uses AgentKit | Supported with AgentKit managed memory or another declared backend; actor comes from trusted caller identity |
@@ -639,9 +640,10 @@ UserClient, SQL and Principal dependencies automatically require SDK request-use
 authentication. An explicit `RuntimeRequirements(user_identity=True)` or an SDK
 manifest requiring user auth also enables it. The SDK owns transient credentials;
 APX resolves the principal from the authenticated client's current-user API and
-never substitutes the service client. Raw Request/Headers dependencies and
-per-hop remote-agent forwarding remain rejected because their full trusted
-request context is not wired.
+never substitutes the service client. Remote-agent calls resolve the same
+request-user token at call time and forward it per hop. Raw Request/Headers
+dependencies remain rejected because their full trusted request context is not
+wired.
 
 Declare `memory` when long-term recall is required. The native session binding is automatic and separate. APX uses
 [workspace-scoped managed memory](https://docs.databricks.com/aws/en/agents/agent-memory/managed-memory)
