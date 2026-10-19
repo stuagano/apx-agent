@@ -83,60 +83,55 @@ permissions. A conflict with an explicit bundle declaration fails before any
 write. `--auto-update-yml` remains accepted for compatibility, but no longer
 controls whether reconciliation occurs.
 
-## Declarative tools — `[[tool.apx.tools]]`
+## Python-authored tools
 
-Declarative tools are Python declarations. The retired TypeScript plugin is
-not a second tool surface.
+Tool definitions live in Python, not `pyproject.toml`. Put factory calls or custom
+`@tool` functions in a `tools/` package and import them explicitly in `agent.py`.
+See the [complete layout and migration example](../tools/overview.md#python-native-tool-layout)
+for Genie, Vector Search, SQL, and `build_tool(scope=ToolScope(...))` governance.
 
-Resource-reference tools can be declared as data instead of code. Each `[[tool.apx.tools]]` entry is a table-array sibling of `[tool.apx.agent]`; `type` selects a [platform tool factory](../tools/overview.md#platform-tool-factories) and the remaining keys are its arguments:
+Legacy `[[tool.apx.tools]]` entries are rejected, not merged with Python tools.
+Remove them after migrating their arguments and governance to Python. There is
+no per-tool TOML schema or directory loader. Non-tool `[tool.apx.agent]` and
+deployment settings remain supported; `.build/agent.toml` is still generated as
+the native runtime contract and is not hand-authored.
 
-```toml
-[tool.apx.agent]
-name = "data_triage"
-model = "databricks-claude-sonnet-4-6"
+Python factories attach resource metadata just as before. A toolkit returns a
+list of callables; expand that list when composing the agent. Explicit imports
+execute trusted Python code, including any factory-time metadata discovery;
+missing configuration and factory failures must be resolved rather than relying
+on a loader to skip tools. `APX_TOOLS_STRICT` is no longer a runtime tool-loading
+control.
 
-[[tool.apx.tools]]
-type = "genie"
-space_id = "$ACCOUNT_GENIE_SPACE_ID"   # $VAR / ${VAR} resolved at load time
-name = "ask_account_data"
-description = "Ask a question about a customer's account."
+**Trust controls (environment variables):**
 
-[[tool.apx.tools]]
-type = "vector_search"
-index_name = "main.search.docs_index"
-columns = ["doc_id", "title", "content"]
-num_results = 5
-
-[[tool.apx.tools]]
-type = "sql"
-warehouse_id = "$SQL_WAREHOUSE_ID"
-```
-
-`type` accepts any platform factory: `genie`, `genie_query`, `vector_search`, `uc_function`, `uc_function_toolkit`, `catalog`, `schema`, `lineage`, `sql`, `document_extract`, `http`, `openapi`, `mcp_tool`, `mcp_toolkit`, `foundation_model`, `jobs`, `jobs_for_table`, `jobs_history`, `jobs_logs`, `jobs_source_paths`, `uc_comment_writer`. (`uc_function_toolkit`, `jobs`, and `mcp_toolkit` each return several tools.)
-
-Config tools are **additive** and are merged onto the agent on every runtime — serve, deploy/log, model-serving predict, and `apx-agent agents describe` / `eval lint` / `eval`. Their resource grants (Genie space, warehouse, …) are auto-declared at log time, exactly like code-wired tools. A code-wired tool with the same `name` wins (the config entry is ignored, with a warning), so config is purely additive over code.
-
-**Trust & failure controls (environment variables):**
-
-- `APX_TOOLS_ALLOWED_HOSTS` — comma-separated host allow-list. When set, `openapi` / `mcp_tool` / `mcp_toolkit` tools may only point at those hosts; an out-of-list host is a hard error. Unset (the default) means no restriction.
-- `APX_TOOLS_STRICT=1` — promote a tool whose factory fails at load time (e.g. an unreachable MCP server) to a hard error. The default is to skip that tool with a warning so one bad endpoint doesn't take the whole agent down.
+- `APX_TOOLS_ALLOWED_HOSTS` — comma-separated host allow-list for supported HTTP/OpenAPI/MCP factory destinations. An out-of-list host is a hard error before network discovery. Unset means no host restriction.
 - `APX_DEV_UI_TOKEN` — optional shared secret for **non-browser** Dev UI writes (CI / curl). On deployed Apps, browser writes are authorized by Apps SSO (`X-Forwarded-Access-Token`). When this token is set, `X-APX-Dev-Token` (or `?token=`) is also accepted. Locally (not a deployed App), writes are allowed without either.
 
-### `type = "document_extract"` — parse a volume file, extract a schema
+### `document_extract_tool` — parse a volume file, extract a schema
 
 Compiles `ai_parse_document` then `ai_extract` against a required SQL warehouse.
 The LLM supplies a path *inside* the declared Unity Catalog volume; APX binds
 that full `/Volumes/...` path and the committed extract schema. There is no
 App-side PDF parse and no PyMuPDF / vision fallback.
 
-```toml
-[[tool.apx.tools]]
-type = "document_extract"
-warehouse_id = "$SQL_WAREHOUSE_ID"
-volume = "main.contracts.raw_contracts"
-schema = "schemas/contract.json"
-name = "extract_contract"
+```python
+# tools/contracts.py
+import os
+from pathlib import Path
+
+from apx_agent import document_extract_tool
+
+extract_contract = document_extract_tool(
+    warehouse_id=os.environ["SQL_WAREHOUSE_ID"],
+    volume="main.contracts.raw_contracts",
+    schema=str(Path(__file__).resolve().parents[1] / "schemas" / "contract.json"),
+    name="extract_contract",
+)
 ```
+
+Commit `schemas/contract.json` with the project, import `extract_contract` in
+`agent.py`, and include it in the agent's tool list.
 
 | Key | Required | Description |
 |---|---|---|
@@ -148,21 +143,28 @@ name = "extract_contract"
 
 See [`document_extract_tool`](../tools/overview.md#built-in-tools--databricks-platform-factories) and the [design note](../design/declared-document-handling.md).
 
-### `type = "uc_comment_writer"` — governed UC COMMENT writes
+### `uc_comment_tool` — governed UC COMMENT writes
 
 Writes a Unity Catalog `COMMENT` on a table or column via the SQL warehouse, running as the **calling user** (OBO token). The calling user must hold the `MODIFY` privilege on the target table; the write is audited through Unity Catalog. Permission errors are returned to the agent as a structured error message — they are never silently swallowed.
 
-**Opt-in only.** This tool is present only when declared via `[[tool.apx.tools]]`. It is never wired by default. Any config that omits a `uc_comment_writer` entry will not include it.
+**Opt-in only.** This tool is present only when its Python callable is explicitly
+included in the agent's tools. It is never wired by default. The former TOML
+type `uc_comment_writer` maps to the public factory `uc_comment_tool`.
 
 **Scoped.** The `catalog` and `schema` are fixed at declaration time. The agent supplies only `table` (within that schema), an optional `column`, and the `comment` text. Identifiers are validated against a safe-identifier pattern and the comment text is SQL-literal-escaped before execution.
 
-```toml
-[[tool.apx.tools]]
-type = "uc_comment_writer"
-catalog = "main"
-schema = "sales"
-warehouse_id = "abc123"
+```python
+# tools/catalog.py
+from apx_agent import uc_comment_tool
+
+update_comments = uc_comment_tool(
+    catalog="main",
+    schema="sales",
+    warehouse_id="abc123",
+)
 ```
+
+Import `update_comments` in `agent.py` and include it in the tool list.
 
 | Key | Required | Description |
 |---|---|---|
@@ -231,9 +233,13 @@ The `template` inline-table selects a registered template by `name` and passes t
 | `data` | `DataTemplate` | `catalog`, `schema`, `warehouse_id?`, `genie_space?`, `vector_index?`, `include_functions?` |
 | `coworker` | `CoworkerTemplate` | `catalog`, `schema`, `persona?`, `join_key?`, `objective?`, `memory?`, `warehouse_id?`, `genie_space?`, `vector_index?`, `include_functions?` |
 
-**Interaction with `[[tool.apx.tools]]`:** Config-declared tools are additive — they attach after the template builds the leaf agent. A template-built `DataAgent` gets its wired SQL/Genie/UC tools from the template build; `[[tool.apx.tools]]` entries add on top. Code-wired tools win on name collision.
+**Additional tools:** Compose custom tools explicitly in Python with `tools=[...]`
+or a template-built data agent's `extra_tools=[...]`. Legacy `[[tool.apx.tools]]`
+entries are rejected before finalization rather than added to the agent.
 
-**Interaction with `[tool.apx.agent.guardrails]`** (E3c): the full finalize order is resolve (build-from-template) → apply_config_knobs (persona compose) → merge_config_tools → apply_config_guardrails.
+**Interaction with `[tool.apx.agent.guardrails]`:** Finalization applies persona
+and model settings, attaches declared memory/Vector Search tools, applies the
+agent identity, and installs guards over the resulting Python tools.
 
 **No `agent.py` required (for introspection and deploy):** With a `template` configured, the introspection and deploy runtimes — `apx-agent agents describe`, `apx-agent eval lint`, `apx-agent eval`, and `apx-agent agents deploy` — build the agent from TOML alone; the `module` key is optional for them. **`apx-agent agents run` is the exception:** it serves an ASGI app module (`app:app`), so a template-only project still needs a minimal `app.py` that calls `create_app()` without importing a code agent — e.g. `create_app(agent=None)`, which resolves the template at startup. Generating that `app.py` automatically for template-only projects is a planned scaffold follow-up.
 
@@ -340,8 +346,9 @@ root:
   max_iterations: 5
 ```
 
-Leaf `tools` supports the same declarative factories as `[[tool.apx.tools]]`,
-plus plain Python imports:
+Leaf `tools` selects existing tool factories by `type`, plus plain Python
+imports. `generate_project` compiles them into explicit factory calls in the
+generated `tools/` package:
 
 ```yaml
 tools:

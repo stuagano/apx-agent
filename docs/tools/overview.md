@@ -273,28 +273,102 @@ log_agent(
 
 ---
 
-## Declarative tools in `pyproject.toml`
+## Python-native tool layout
 
-Every built-in factory can be declared as data in `pyproject.toml` instead of code. The `type` key names the factory; the rest are its arguments:
+Declare tools with the existing Python factories in an ordinary `tools/` package,
+then import them explicitly in `agent.py`. Group related tools by domain; module
+names are organizational, not tool identities. There is no directory-scanning
+loader, per-tool TOML schema, or required directory for every tool kind.
 
-```toml
-[[tool.apx.tools]]
-type = "genie"
-space_id = "space-abc"
-
-[[tool.apx.tools]]
-type = "sql"
-warehouse_id = "wh-prod"
-
-[[tool.apx.tools]]
-type = "document_extract"
-warehouse_id = "$SQL_WAREHOUSE_ID"
-volume = "main.contracts.raw_contracts"
-schema = "schemas/contract.json"
-name = "extract_contract"
+```text
+my-agent/
+├── agent.py                 # Explicit imports and agent composition
+├── tools/
+│   ├── __init__.py           # May be empty
+│   └── sales.py              # Factory calls or custom @tool functions
+├── pyproject.toml           # Packaging, [tool.apx.agent], deployment settings
+└── .build/agent.toml         # Generated native runtime contract; do not edit
 ```
 
-Use code when the tool needs custom logic; use config for plain resource references you'd rather keep out of the agent module. See [`[[tool.apx.tools]]`](../reference/configuration.md#declarative-tools--toolapxtools) for the full schema.
+```python
+# tools/sales.py
+import os
+
+from apx_agent import genie_tool, sql_tool, vector_search_tool
+
+ask_account_data = genie_tool(
+    os.environ["ACCOUNT_GENIE_SPACE_ID"],
+    name="ask_account_data",
+    description="Ask a question about a customer's account.",
+)
+search_docs = vector_search_tool(
+    "main.search.docs_index",
+    columns=["doc_id", "title", "content"],
+    num_results=5,
+)
+query_sales = sql_tool(warehouse_id=os.environ["SQL_WAREHOUSE_ID"])
+```
+
+```python
+# agent.py
+from apx_agent import Agent
+from tools.sales import ask_account_data, query_sales, search_docs
+
+agent = Agent(
+    instructions="Answer questions using account data and documentation.",
+    tools=[ask_account_data, search_docs, query_sales],
+)
+```
+
+Factories still attach governed resource metadata; moving their calls into a
+module does not change resource collection. For toolkit factories that return a
+list, expand it in composition: `tools=[ask_account_data, *function_tools]`.
+Python imports execute trusted project code; some factories discover remote
+metadata at construction time. This layout is not static/no-execution loading.
+
+### Migrating legacy tool TOML
+
+`[[tool.apx.tools]]` runtime authoring has been removed. Its presence now fails
+with migration guidance, including in mixed Python/TOML projects; entries are
+not silently ignored or merged.
+
+1. Replace each tool table with the corresponding factory call in `tools/`.
+   Preserve its tool name, description, resource references, and governance.
+2. Resolve environment values explicitly, for example `os.environ["SQL_WAREHOUSE_ID"]`;
+   Python string literals containing `$VAR` are not automatically expanded.
+3. Import the callables in `agent.py` and pass them to `Agent(tools=[...])`, or
+   `DataAgent` / `CoworkerAgent(extra_tools=[...])`.
+4. Remove the legacy tool tables. Keep non-tool `[tool.apx.agent]` and deployment
+   configuration in `pyproject.toml`. `.build/agent.toml` remains generated output,
+   not a replacement tool-authoring file.
+
+For per-tool identity, UC ceilings, secret scopes, or caller restrictions, use
+`build_tool(scope=ToolScope(...))` on the factory's returned callable. Do not
+invent `identity=`, `callers=`, or `scope=` kwargs on individual factories:
+
+```python
+# tools/billing.py
+from apx_agent import ToolScope, build_tool, uc_function_tool
+
+create_refund = uc_function_tool("main.billing.refund_create")
+create_refund = build_tool(
+    create_refund,
+    name="create_refund",
+    description="Create a billing refund for an authorized caller.",
+    scope=ToolScope(
+        identity="obo",
+        functions=("main.billing.refund_create",),
+        callers=("alice@example.com", "billing-bot@example.com"),
+    ),
+)
+```
+
+`build_tool` annotates the same callable, preserving the factory's attached
+resources when `resources` is omitted. `ToolScope(secret_scopes=("billing",))`
+can also declare required secret scopes. Scope ceilings do not grant access:
+the selected principal still needs the corresponding Databricks permissions.
+See [configuration](../reference/configuration.md#python-authored-tools) for more
+factory examples and [MCP caller restrictions](mcp.md#restricting-a-tool-to-specific-callers).
 
 ---
 

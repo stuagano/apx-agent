@@ -233,6 +233,9 @@ def mcp_tool(
     Returns:
         An apx-agent tool callable.
     """
+    from ._tool_config import _check_allowlist
+
+    _check_allowlist(None, "mcp_tool", {"server_url": server_url})
     _desc = description
     if _desc is None:
         try:
@@ -275,6 +278,9 @@ def mcp_toolkit(
     Returns:
         A list of apx-agent tool callables — splat into ``Agent(tools=[...])``.
     """
+    from ._tool_config import _check_allowlist
+
+    _check_allowlist(None, "mcp_toolkit", {"server_url": server_url})
     tools = _run_sync(_list_remote_tools(server_url, headers, transport))
     out: list[Any] = []
     for t in tools:

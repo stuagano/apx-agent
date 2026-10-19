@@ -22,6 +22,7 @@ that against the App record rather than accepting the declaration on faith.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any
 
 from ._tool import ExecutionIdentity
@@ -61,14 +62,7 @@ def apply_agent_identity(agent: Any, identity: str) -> None:
         scope = get_scope(fn)
         if scope is not None and scope.identity is not None:
             continue
-        inherited = ToolScope(
-            identity=identity,
-            catalogs=scope.catalogs if scope else (),
-            schemas=scope.schemas if scope else (),
-            tables=scope.tables if scope else (),
-            functions=scope.functions if scope else (),
-            secret_scopes=scope.secret_scopes if scope else (),
-        )
+        inherited = replace(scope, identity=identity) if scope else ToolScope(identity=identity)
         attach_scope(fn, inherited)
         logger.debug(
             "tool %s inherited agent identity %r",

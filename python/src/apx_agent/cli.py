@@ -1284,14 +1284,9 @@ description = "An apx-agent."
 model = "databricks-claude-sonnet-4-6"
 instructions = "You are a helpful assistant."
 {knowledge_line}
-# Optional: declare resource tools as data (no code needed). `type` selects a
-# platform factory; remaining keys are its arguments. See docs/configuration.md
-# for the full type list and the APX_TOOLS_* trust controls.
-# [[tool.apx.tools]]
-# type = "genie"
-# space_id = "$GENIE_SPACE_ID"
-# name = "ask_data"
-# description = "Answer questions from a Genie space."
+# Declare tools with Python factories in tools/ and import them in agent.py.
+# Pass them to tools=[...] (or extra_tools=[...] for DataAgent).
+# See docs/tools/overview.md. AgentKit's agent.toml is generated at build time.
 '''
 
 
@@ -1404,14 +1399,9 @@ examples = [
     "What questions can you answer?",
 ]
 
-# Optional: declare resource tools as data (no code needed). `type` selects a
-# platform factory; remaining keys are its arguments. See docs/configuration.md
-# for the full type list and the APX_TOOLS_* trust controls.
-# [[tool.apx.tools]]
-# type = "genie"
-# space_id = "$GENIE_SPACE_ID"
-# name = "ask_data"
-# description = "Answer questions from a Genie space."
+# Declare tools with Python factories in tools/ and import them in agent.py.
+# Pass them to tools=[...] (or extra_tools=[...] for DataAgent).
+# See docs/tools/overview.md. AgentKit's agent.toml is generated at build time.
 '''
 
 _SCAFFOLD_APPS_TEST_IMPORT = '''\
@@ -12561,7 +12551,7 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
             return
 
     # Finalize so `apx-agent agents describe` reports the same tools/resources the serve and
-    # deploy paths will — config-declared [[tool.apx.tools]] included.
+    # deploy paths will, including Python-declared tools and their governance.
     agent = _load_finalized_agent(module, template_ws=False)
 
     # Walk the whole tree — HandoffAgent / SequentialAgent / etc. have no

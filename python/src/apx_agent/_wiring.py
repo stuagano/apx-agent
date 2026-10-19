@@ -383,7 +383,7 @@ def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None
     runs as the calling user — so no ``ws`` is needed at attach time and no boot
     probe/degraded path applies (unlike Lakebase memory).
 
-    Guards, matching the declared-memory / ``merge_config_tools`` precedent:
+    Guards, matching the declared-memory attachment precedent:
     - no ``vector_search_index`` declared → no-op;
     - a composition root with no ``_register_tool`` warns and is skipped
       (attach on a leaf ``LlmAgent``);
@@ -537,16 +537,13 @@ def finalize_agent(
 ) -> None:
     """Apply all config→instance steps before the agent is served or logged.
 
-    The single seam every runtime must run: it applies generation knobs + the
-    persona instruction overlay (apply_config_knobs) AND merges
-    [[tool.apx.tools]] (merge_config_tools). Idempotent — safe to call from
-    setup_agent (serve), log_agent (log/deploy), and apx info; a second call is
-    a no-op. Future declarative features (memory, guards — E3) extend here.
+    The single seam every runtime must run: apply generation knobs, persona
+    instructions, and governance to Python-authored tools. Idempotent — safe
+    to call from setup_agent (serve), log_agent (log/deploy), and apx info.
 
-    When *config* is supplied, knobs are applied from it and *pyproject_path*
-    is used only by merge_config_tools (to locate [[tool.apx.tools]]). When
-    *config* is omitted, it is loaded from *pyproject_path*; if no config is
-    found, knobs are skipped but the tool merge still runs.
+    Removed TOML tool declarations are rejected before factory I/O. When
+    *config* is supplied, knobs are applied from it; otherwise it is loaded
+    from *pyproject_path*. With no config, Python tool scope guards still run.
 
     Note: a project with no [tool.apx.agent] section is not servable (the serve
     path requires an agent section), so finalize_agent is not invoked via the
@@ -554,6 +551,9 @@ def finalize_agent(
     tool declares a scope, so log/deploy/Python-API paths do not silently
     drop runtime enforcement.
     """
+    from ._tool_config import reject_legacy_tool_config
+
+    reject_legacy_tool_config(pyproject_path)
     if config is None:
         config = _load_agent_config(pyproject_path=pyproject_path)
     if config is not None:
@@ -561,14 +561,8 @@ def finalize_agent(
         apply_config_service_policies(agent, config)
         _apply_remote_leaf_bindings(agent, config.bindings)
 
-    # Local import: _tool_config lazily imports _resolve_env_var from this module;
-    # a top-level import here would make that cycle unconditional at load time.
-    from ._tool_config import merge_config_tools  # noqa: PLC0415
-
-    merge_config_tools(agent, pyproject_path=pyproject_path)
-
-    # E3b: attach config-declared memory/example tools AFTER the tool merge so
-    # code-wired tools' names are already in the existing set (collision guard).
+    # Attach config-declared memory/example tools after Python tools have been
+    # registered, so their names are already in the collision guard.
     # Must run BEFORE agent.collect_tools() (the A2A card snapshot in setup_agent)
     # so memory tools appear in the card. attach_declared_memory is idempotent.
     if config is not None:
@@ -576,8 +570,8 @@ def finalize_agent(
 
         attach_declared_memory(agent, config, ws=ws)
 
-        # E3d: wire a config-declared Vector Search index as a tool, after the
-        # tool merge + memory attach so code-wired names are already in the
+        # Wire a config-declared Vector Search index after Python tools and
+        # memory tools have been registered, so existing names are in the
         # collision set. Must run BEFORE agent.collect_tools() (the A2A card
         # snapshot) so the tool appears in the card and compiled graph.
         # Self-guards when no index is declared (like attach_declared_memory).
@@ -585,17 +579,15 @@ def finalize_agent(
 
         # #816: stamp the agent's declared identity onto tools that have none
         # of their own, so per-tool overrides still win and undeclared tools
-        # inherit the agent principal. Must run after the tool merge so
-        # config-declared [[tool.apx.tools]] see the inheritance, and before
-        # apply_config_guardrails so ScopeGuard / authorization compile see it.
+        # inherit the agent principal. Run after all tools are attached and
+        # before guardrails so ScopeGuard / authorization compile see it.
         if config.identity is not None:
             from ._agent_identity import apply_agent_identity  # noqa: PLC0415
 
             apply_agent_identity(agent, config.identity)
 
-        # E3c: attach declarative guards AFTER the tool merge + memory/VS attach
-        # so a ScopeGuard sees config-declared [[tool.apx.tools]] scoped tools
-        # (and code-wired ones), not just those on the agent at construction.
+        # Attach guards after memory/VS tools so ScopeGuard sees all scoped
+        # tools, not just those on the agent at construction.
         # Idempotent via the _apx_config_guards_applied sentinel.
         apply_config_guardrails(agent, config)
 

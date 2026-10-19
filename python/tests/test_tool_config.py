@@ -9,7 +9,7 @@ from apx_agent._resources import ResourceSpec, get_resources
 from apx_agent._tool_config import (
     ToolConfigError,
     load_config_tools,
-    merge_config_tools,
+    reject_legacy_tool_config,
 )
 
 
@@ -155,154 +155,50 @@ def _write_pyproject(tmp_path, body: str):
     return str(p)
 
 
-def test_merge_appends_config_tools_to_agent(tmp_path):
-    pp = _write_pyproject(tmp_path, """
-        [tool.apx.agent]
-        name = "t"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "01ef"
-        name = "ask_sales"
-    """)
-    agent = Agent(tools=[])
-    merge_config_tools(agent, pyproject_path=pp)
-    assert "ask_sales" in [t.name for t in agent.collect_tools()]
-
-
-def test_merge_is_idempotent(tmp_path):
-    pp = _write_pyproject(tmp_path, """
-        [tool.apx.agent]
-        name = "t"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "01ef"
-        name = "ask_sales"
-    """)
-    agent = Agent(tools=[])
-    merge_config_tools(agent, pyproject_path=pp)
-    merge_config_tools(agent, pyproject_path=pp)  # second call
-    assert [t.name for t in agent.collect_tools()].count("ask_sales") == 1
-
-
-def test_code_wired_tool_wins_on_name_collision(tmp_path, caplog):
-    pp = _write_pyproject(tmp_path, """
-        [tool.apx.agent]
-        name = "t"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "01ef"
-        name = "ask_sales"
-    """)
-    def ask_sales(q: str) -> str:
-        """Code-wired."""
-        return q
-    agent = Agent(tools=[ask_sales])
-    import logging
-    with caplog.at_level(logging.WARNING, logger="apx_agent._tool_config"):
-        merge_config_tools(agent, pyproject_path=pp)
-    assert "already wires a tool with that name" in caplog.text
-    # only one ask_sales, and it's the code-wired callable
-    assert agent._tool_fns.count(ask_sales) == 1
-    assert [t.name for t in agent.collect_tools()].count("ask_sales") == 1
+@pytest.mark.parametrize("tool_body", [
+    '[[tool.apx.tools]]\ntype = "genie"\nspace_id = "01ef"',
+    '[tool.apx]\ntools = []',
+    '[tool.apx]\ntools = "not-a-list"',
+])
+def test_toml_tools_require_python_migration(tmp_path, tool_body):
+    pp = _write_pyproject(tmp_path, tool_body)
+    with pytest.raises(ToolConfigError, match=r"no longer supported.*tools/.*agent.py"):
+        reject_legacy_tool_config(pp)
 
 
 def test_no_tools_section_is_noop(tmp_path):
     pp = _write_pyproject(tmp_path, '[tool.apx.agent]\nname = "t"\n')
-    agent = Agent(tools=[])
-    merge_config_tools(agent, pyproject_path=pp)  # no [[tool.apx.tools]]
-    assert agent.collect_tools() == []
+    reject_legacy_tool_config(pp)
 
 
-def test_composition_root_warns_and_skips(tmp_path, caplog):
-    import logging
-    pp = _write_pyproject(tmp_path, """
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "01ef"
-        name = "ask_sales"
-    """)
-    class FakeRoot:
-        pass  # no _register_tool, no _tool_fns
-    agent = FakeRoot()
-    with caplog.at_level(logging.WARNING, logger="apx_agent._tool_config"):
-        merge_config_tools(agent, pyproject_path=pp)
-    assert "composition root" in caplog.text
-    assert not hasattr(agent, "_tool_fns")
+def test_malformed_project_is_not_silently_ignored(tmp_path):
+    pp = _write_pyproject(tmp_path, '[tool.apx\n')
+    with pytest.raises(ToolConfigError, match="Cannot parse"):
+        reject_legacy_tool_config(pp)
 
 
 def test_public_exports():
     import apx_agent
     assert hasattr(apx_agent, "ToolConfigError")
     assert hasattr(apx_agent, "finalize_agent")
-    assert hasattr(apx_agent, "merge_config_tools")
+    assert not hasattr(apx_agent, "merge_config_tools")
     assert hasattr(apx_agent, "load_config_tools")
 
 
-# ---------------------------------------------------------------------------
-# Change 1: cwd walk-up discovery
-# ---------------------------------------------------------------------------
-
-
-def test_walk_up_finds_pyproject_from_subdir(tmp_path, monkeypatch):
-    """merge_config_tools(pyproject_path=None) must walk up from cwd so a
-    subdir of the project root can still find [[tool.apx.tools]]."""
-    _write_pyproject(tmp_path, """
-        [tool.apx.agent]
-        name = "t"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "01ef"
-        name = "ask_sales"
-    """)
+def test_walk_up_rejects_legacy_tools_from_subdir(tmp_path, monkeypatch):
+    _write_pyproject(tmp_path, '[[tool.apx.tools]]\ntype = "genie"\nspace_id = "01ef"')
     subdir = tmp_path / "src" / "mypackage"
     subdir.mkdir(parents=True)
     monkeypatch.chdir(subdir)
-
-    agent = Agent(tools=[])
-    merge_config_tools(agent, pyproject_path=None)
-    assert "ask_sales" in [t.name for t in agent.collect_tools()]
+    with pytest.raises(ToolConfigError, match="no longer supported"):
+        reject_legacy_tool_config()
 
 
-# ---------------------------------------------------------------------------
-# Change 2: idempotency sentinel skips I/O factories on repeat calls
-# ---------------------------------------------------------------------------
-
-
-def test_factory_called_only_once_on_repeat_merge(tmp_path, monkeypatch):
-    """merge_config_tools must set a sentinel after the first merge so a
-    second call returns immediately — never invoking load_config_tools again."""
-    import apx_agent._tool_config as mod
-
-    call_count = [0]
-
-    def counting_factory(**kw):
-        call_count[0] += 1
-
-        def ask_sales_sentinel(q: str) -> str:
-            """Counted factory tool."""
-            return q
-
-        return ask_sales_sentinel
-
-    monkeypatch.setattr(mod, "_registry", lambda: {"genie": counting_factory})
-
-    pp = _write_pyproject(tmp_path, """
-        [tool.apx.agent]
-        name = "t"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "01ef"
-        name = "ask_sales_sentinel"
-    """)
-
-    agent = Agent(tools=[])
-    merge_config_tools(agent, pyproject_path=pp)
-    merge_config_tools(agent, pyproject_path=pp)  # second call — must be a no-op
-
-    assert call_count[0] == 1, (
-        f"Factory was called {call_count[0]} times; expected 1 — "
-        "second merge_config_tools call did not skip via sentinel."
-    )
+def test_explicit_project_override_is_respected(tmp_path, monkeypatch):
+    pp = _write_pyproject(tmp_path, '[[tool.apx.tools]]\ntype = "genie"\nspace_id = "01ef"')
+    monkeypatch.setenv("APX_PYPROJECT", pp)
+    with pytest.raises(ToolConfigError, match="no longer supported"):
+        reject_legacy_tool_config()
 
 
 # ---------------------------------------------------------------------------

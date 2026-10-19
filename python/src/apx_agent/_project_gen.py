@@ -106,9 +106,8 @@ def _toml_value_nested(v: Any) -> str:
 def _build_pyproject(config: "AgentConfig") -> str:
     """Build pyproject.toml content for *config*.
 
-    Serializes all ``AgentConfig`` fields that have TOML equivalents.
-    ``[[tool.apx.tools]]`` array-of-tables entries are appended for each entry
-    in ``config.tools`` and for each ``SkillConfig`` in ``config.skills``.
+    Serializes the runtime envelope. Tool declarations belong in the generated
+    Python package, never in ``[[tool.apx.tools]]``.
 
     :param config: Validated ``AgentConfig`` to serialize.
     :returns: Complete pyproject.toml content as a string.
@@ -248,22 +247,6 @@ def _build_pyproject(config: "AgentConfig") -> str:
                 config.deploy.autoscale.model_dump(),
             )
 
-    # [[tool.apx.tools]] — one array entry per tool declared in the YAML
-    for tool_dict in config.tools:
-        lines.append("")
-        lines.append("[[tool.apx.tools]]")
-        for k, v in tool_dict.items():
-            lines.append(f"{k} = {_toml_value_nested(v)}")
-
-    # [[tool.apx.tools]] — one skill entry per SkillConfig; path is project-relative
-    for skill in config.skills:
-        lines.append("")
-        lines.append("[[tool.apx.tools]]")
-        lines.append('type = "skill"')
-        lines.append(f"name = {_toml_value(skill.name)}")
-        lines.append(f"description = {_toml_value(skill.description)}")
-        lines.append(f'path = "skills/{skill.name}.md"')
-
     return "\n".join(lines)
 
 
@@ -322,13 +305,6 @@ class _PyExpr(str):
     """String that should be emitted as Python source, not repr() quoted."""
 
 
-_LOAD_PYTHON_TOOL_HELPER = (
-    "def _load_python_tool(ref):\n"
-    "    module, attr = ref.split(':', 1)\n"
-    "    return getattr(import_module(module), attr)"
-)
-
-
 def _agent_var(name: str) -> str:
     """Return a Python variable name for a graph node name."""
     candidate = name.replace("-", "_")
@@ -346,52 +322,26 @@ def _ctor_kwargs(spec: dict[str, Any]) -> str:
     )
 
 
-def _normalize_leaf_tool(tool: dict[str, Any]) -> dict[str, Any]:
-    """Normalize YAML-friendly tool aliases to ``load_config_tools`` kwargs."""
-    out = dict(tool)
-    kind = out.get("type")
-    if kind == "uc_function" and "function" in out and "function_name" not in out:
-        out["function_name"] = out.pop("function")
-    if kind == "vector_search" and "index" in out and "index_name" not in out:
-        out["index_name"] = out.pop("index")
-    return out
-
-
 def _render_leaf_tools(
     name: str,
     spec: dict[str, Any],
-    imports: set[str],
+    blocks: list[str],
+    modules: dict[str, str] | None,
 ) -> str | None:
-    """Render a leaf ``tools=[...]`` expression, if the YAML leaf declares tools."""
+    """Render leaf tools with explicit factories and flattened toolkit results."""
+    from ._tool_codegen import render_tool_group
+
     raw_tools = spec.pop("tools", None)
-    if raw_tools is None:
+    extra_tools = spec.pop("extra_tools", None)
+    if raw_tools is None and extra_tools is None:
         return None
-    if not isinstance(raw_tools, list):
-        raise ValueError(f"Graph agent {name!r} tools must be a list")
-
-    python_refs: list[str] = []
-    config_tools: list[dict[str, Any]] = []
-    for i, tool in enumerate(raw_tools):
-        if not isinstance(tool, dict):
-            raise ValueError(f"Graph agent {name!r} tool #{i} must be a mapping")
-        normalized = _normalize_leaf_tool(tool)
-        if normalized.get("type") == "python":
-            ref = normalized.get("module")
-            if not isinstance(ref, str) or ":" not in ref:
-                raise ValueError(
-                    f"Graph agent {name!r} python tool #{i} requires module: 'pkg.mod:fn'"
-                )
-            python_refs.append(ref)
-        else:
-            config_tools.append(normalized)
-
-    pieces: list[str] = []
-    if python_refs:
-        pieces.extend(f"_load_python_tool({ref!r})" for ref in python_refs)
-    if config_tools:
-        imports.add("load_config_tools")
-        pieces.append(f"*load_config_tools({config_tools!r})")
-    return _PyExpr("[" + ", ".join(pieces) + "]")
+    for tools in (raw_tools, extra_tools):
+        if tools is not None and not isinstance(tools, list):
+            raise ValueError(f"Graph agent {name!r} tools must be a list")
+    return _PyExpr(render_tool_group(
+        (raw_tools or []) + (extra_tools or []),
+        f"{_agent_var(name)}_tools", blocks, modules,
+    ))
 
 
 # Resolved leaf kind -> the apx_agent class the render path forwards kwargs to.
@@ -472,7 +422,10 @@ def _render_remote_leaf(
     return f"{var} = RemoteDatabricksAgent({args})"
 
 
-def _render_leaf(name: str, spec: dict[str, Any], imports: set[str]) -> str:
+def _render_leaf(
+    name: str, spec: dict[str, Any], imports: set[str],
+    blocks: list[str], modules: dict[str, str] | None,
+) -> str:
     """Render one YAML graph leaf as a Python assignment."""
     kind = str(spec.get("type", "agent")).replace("-", "_").lower()
     var = _agent_var(name)
@@ -495,7 +448,7 @@ def _render_leaf(name: str, spec: dict[str, Any], imports: set[str]) -> str:
 
     kwargs = {k: v for k, v in spec.items() if k != "type"}
     kwargs.setdefault("name", name)
-    tools_expr = _render_leaf_tools(name, kwargs, imports)
+    tools_expr = _render_leaf_tools(name, kwargs, blocks, modules)
     if tools_expr is not None:
         kwargs["tools"] = tools_expr if kind in {"agent", "llm", "llm_agent"} else None
         if kind not in {"agent", "llm", "llm_agent"}:
@@ -634,12 +587,16 @@ def _render_root(
     raise ValueError(f"Unsupported graph root type {kind!r}")  # pragma: no cover
 
 
-def _render_graph_agent_py(config: "AgentConfig") -> str:
+def _render_graph_agent_py(
+    config: "AgentConfig", modules: dict[str, str] | None = None,
+) -> str:
     """Codegen a top-level ``agent.py`` from YAML graph declarations."""
     if not config.agents or config.root is None:
         raise ValueError("YAML graph generation requires both agents and root")
     if config.template is not None:
         raise ValueError("YAML graph generation cannot also set template")
+    if config.tools or config.skills:
+        raise ValueError("Graph tools and skills must be declared on a leaf, not at the top level")
 
     # Distinct leaf names must not collapse to the same Python variable (e.g.
     # "my-agent" and "my_agent" both sanitize to `my_agent`), or one leaf would
@@ -654,7 +611,11 @@ def _render_graph_agent_py(config: "AgentConfig") -> str:
         by_var[var] = name
 
     imports: set[str] = set()
-    leaves = [_render_leaf(name, spec, imports) for name, spec in config.agents.items()]
+    tool_blocks: list[str] = []
+    leaves = [
+        _render_leaf(name, spec, imports, tool_blocks, modules)
+        for name, spec in config.agents.items()
+    ]
     remote_names = {
         name
         for name, spec in config.agents.items()
@@ -662,19 +623,15 @@ def _render_graph_agent_py(config: "AgentConfig") -> str:
         in {"remote", "remote_databricks"}
     }
     root = _render_root(config.root, set(config.agents), imports, remote_names)
-    import_lines = ["from apx_agent import " + ", ".join(sorted(imports))]
-    uses_python_tool = any("_load_python_tool" in leaf for leaf in leaves)
-    if uses_python_tool:
-        import_lines.insert(0, "from importlib import import_module")
-    blocks = ["\n".join(import_lines)]
-    if uses_python_tool:
-        blocks.append(_LOAD_PYTHON_TOOL_HELPER)
+    blocks = ["from apx_agent import " + ", ".join(sorted(imports)), *tool_blocks]
     blocks.extend(leaves)
     blocks.append(root)
     return "\n\n".join(blocks) + "\n"
 
 
-def render_agent_py(config: "AgentConfig") -> str:
+def render_agent_py(
+    config: "AgentConfig", *, tool_modules: dict[str, str] | None = None,
+) -> str:
     """Codegen a top-level ``agent.py`` that builds the template agent in code.
 
     The YAML/config deploy path used to ship a config-only project (the runtime
@@ -691,33 +648,53 @@ def render_agent_py(config: "AgentConfig") -> str:
     :param config: Validated ``AgentConfig`` whose ``template`` selects the agent.
     :returns: Complete ``agent.py`` source.
     """
-    if config.agents or config.root is not None:
-        return _render_graph_agent_py(config)
+    from ._tool_codegen import render_tool_group
 
+    if config.agents or config.root is not None:
+        return _render_graph_agent_py(config, tool_modules)
+
+    spec = {k: v for k, v in (config.template or {}).items() if k != "name"}
+    raw_tools = list(config.tools)
+    for key in ("tools", "extra_tools"):
+        extra = spec.pop(key, [])
+        if not isinstance(extra, list):
+            raise ValueError(f"Template {key} must be a list")
+        raw_tools.extend(extra)
+    raw_tools.extend({
+        "type": "skill", "name": skill.name, "description": skill.description,
+        "path": f"skills/{skill.name}.md",
+    } for skill in config.skills)
+    blocks: list[str] = []
+    tools = render_tool_group(raw_tools, "declared", blocks, tool_modules)
     if config.template is None:
-        raise ValueError("render_agent_py requires config.template to be set")
+        blocks.insert(0, "from apx_agent import LlmAgent")
+        blocks.append(f"agent = LlmAgent(name={config.name!r}, tools={tools})")
+        return "\n\n".join(blocks) + "\n"
+
     name = config.template.get("name")
-    spec = {k: v for k, v in config.template.items() if k != "name"}
+    if raw_tools:
+        spec["extra_tools"] = _PyExpr(tools)
     if config.knowledge is not None and "knowledge" not in spec:
         spec["knowledge"] = config.knowledge
-
     target = _TEMPLATE_TARGETS.get(name or "")
     if target is None:
-        # Unknown/third-party template: fall back to a faithful registry build
-        # call rather than guessing a constructor we don't know.
-        return (
-            "from apx_agent._template import template_registry\n\n"
-            f"agent = template_registry.build({name!r}, {spec!r})\n"
+        # Preserve third-party template construction; tools are already callables.
+        blocks.insert(0, "from apx_agent._template import template_registry")
+        values = ", ".join(
+            f"{key!r}: {value if isinstance(value, _PyExpr) else repr(value)}"
+            for key, value in spec.items()
         )
-
-    module, cls = target
-    catalog = spec.pop("catalog", None)
-    schema = spec.pop("schema", None)
-    spec.setdefault("name", config.name)
-    pos = [repr(v) for v in (catalog, schema) if v is not None]
-    kw = [f"{k}={v!r}" for k, v in spec.items() if v is not None]
-    args = ", ".join(pos + kw)
-    return f"from {module} import {cls}\n\nagent = {cls}({args})\n"
+        blocks.append(f"agent = template_registry.build({name!r}, {{{values}}})")
+    else:
+        module, cls = target
+        catalog = spec.pop("catalog", None)
+        schema = spec.pop("schema", None)
+        spec.setdefault("name", config.name)
+        pos = [repr(v) for v in (catalog, schema) if v is not None]
+        args = ", ".join([*pos, _ctor_kwargs(spec)]).rstrip(", ")
+        blocks.insert(0, f"from {module} import {cls}")
+        blocks.append(f"agent = {cls}({args})")
+    return "\n\n".join(blocks) + "\n"
 
 
 _KEEPALIVE_CONTENT = '''\
@@ -759,24 +736,23 @@ def generate_project(
     :param source_dir: Base directory for resolving relative skill paths.
         Defaults to ``target_dir.parent`` when ``None``.
     """
+    # Validate declarations and collisions before writing any project files.
+    tool_modules: dict[str, str] = {}
+    agent_source = render_agent_py(config, tool_modules=tool_modules)
+    if tool_modules:
+        for name in ("tools.py", "tools"):
+            path = target_dir / name
+            if path.exists() or path.is_symlink():
+                raise ValueError(f"Cannot generate tools package: {path} already exists")
     target_dir.mkdir(parents=True, exist_ok=True)
-
-    # pyproject.toml
     (target_dir / "pyproject.toml").write_text(_build_pyproject(config))
-
-    # agent.py — single Python definition of the agent (Python-canonical). The
-    # template selects the constructor; the runtime imports this module.
-    if config.template is not None or config.agents or config.root is not None:
-        (target_dir / "agent.py").write_text(render_agent_py(config))
-    else:
-        # Template-less spec (persona/orchestrator agents): a bare LlmAgent.
-        # The envelope — instructions, model, sub_agents, config tools — is
-        # layered on from [tool.apx.agent] / [[tool.apx.tools]] at startup, so
-        # the leaf needs no constructor args. Without this file the container
-        # dies on `from agent import agent` (start_server imports it).
-        (target_dir / "agent.py").write_text(
-            f"from apx_agent import LlmAgent\n\nagent = LlmAgent(name={config.name!r}, tools=[])\n"
-        )
+    (target_dir / "agent.py").write_text(agent_source)
+    if tool_modules:
+        tools_dir = target_dir / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text('"""Project-authored tool declarations."""\n')
+        for name, source in tool_modules.items():
+            (tools_dir / f"{name}.py").write_text(source)
 
     native = config.target == "durable_agent_server" and (
         config.deploy is None or config.deploy.space is None

@@ -90,7 +90,7 @@ def stage_native_source(cwd: Path, *, include: tuple[str, ...] = ()) -> None:
     source = cwd / ".build"
     ownership = source / ".apx-native-build"
     inputs = [cwd / name for name in (
-        "agent.py", "tools.py", "sub_agents", "agent_server", "scripts", "README.md",
+        "agent.py", "tools.py", "tools", "sub_agents", "agent_server", "scripts", "README.md",
         ".apx-agent", ".apx", "skills",
     )]
     inputs.extend(cwd.glob("apx_agent-*.whl"))
@@ -98,6 +98,8 @@ def stage_native_source(cwd: Path, *, include: tuple[str, ...] = ()) -> None:
     for path in [source, cwd / "pyproject.toml", cwd / "uv.lock", *inputs, *extra]:
         if path.is_symlink() or (path.is_dir() and any(child.is_symlink() for child in path.rglob("*"))):
             raise click.ClickException("Refusing symlinked native deployment source: " + str(path))
+    if (cwd / "tools.py").is_file() and (cwd / "tools").is_dir():
+        raise click.ClickException("Conflicting tools.py and tools/ sources; keep only one before staging the native project.")
     if source.exists():
         if not ownership.is_file() or ownership.read_text() != MARKER:
             raise click.ClickException("Refusing to replace an unowned .build directory; preserve it before rebuilding the native project.")

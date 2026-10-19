@@ -4913,38 +4913,71 @@ def test_fetch_app_log_tail_returns_last_n_lines() -> None:
 
 
 # ---------------------------------------------------------------------------
-# `apx info` — config-declared tools (E2 declarative tools, Task 7)
+# `apx info` — Python-authored tools imported by the agent
 # ---------------------------------------------------------------------------
 
 
-def test_apx_info_lists_config_tools(
+def test_apx_info_lists_python_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """apx info should list [[tool.apx.tools]] declared in pyproject.toml."""
-    # Write a minimal agent with NO inline tools so we can verify that the
-    # genie tool comes exclusively from the config.
-    (tmp_path / "info_config_tools_agent.py").write_text(textwrap.dedent("""
+    """apx info should list real Python tools imported by the agent module."""
+    (tmp_path / "info_python_tools.py").write_text(textwrap.dedent("""
+        from apx_agent import genie_tool
+        ask_sales = genie_tool("01ef", name="ask_sales")
+    """))
+    (tmp_path / "info_python_tools_agent.py").write_text(textwrap.dedent("""
         from apx_agent import Agent
-        agent = Agent(tools=[])
+        from info_python_tools import ask_sales
+        agent = Agent(tools=[ask_sales])
     """))
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
         [tool.apx.agent]
         name = "t"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "01ef"
-        name = "ask_sales"
     """))
     monkeypatch.chdir(tmp_path)
 
     runner = CliRunner()
     result = runner.invoke(
-        main, ["agents", "describe", "--module", "info_config_tools_agent:agent"]
+        main, ["agents", "describe", "--module", "info_python_tools_agent:agent"]
     )
-    sys.modules.pop("info_config_tools_agent", None)
+    sys.modules.pop("info_python_tools_agent", None)
+    sys.modules.pop("info_python_tools", None)
 
     assert result.exit_code == 0, result.output
     assert "ask_sales" in result.output
+
+
+@pytest.mark.parametrize("command", [["agents", "describe"], ["eval", "lint"]])
+def test_cli_rejects_legacy_tool_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    """Inspection and lint must reject TOML tools, not silently omit them."""
+    from apx_agent._tool_config import ToolConfigError
+
+    (tmp_path / "legacy_tools_agent.py").write_text(
+        'from apx_agent import Agent\nagent = Agent(tools=[])\n'
+    )
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text(textwrap.dedent("""
+        [tool.apx.agent]
+        name = "t"
+        [[tool.apx.tools]]
+        type = "genie"
+        space_id = "legacy-space"
+    """))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APX_PYPROJECT", str(pp))
+    result = CliRunner().invoke(
+        main, [*command, "--module", "legacy_tools_agent:agent"]
+    )
+    sys.modules.pop("legacy_tools_agent", None)
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ToolConfigError)
+    message = str(result.exception)
+    assert "[[tool.apx.tools]]" in message
+    assert "tools/" in message
+    assert "agent.py" in message
 
 
 # ---------------------------------------------------------------------------
@@ -5314,30 +5347,25 @@ class TestDatabricksYmlMergePreservesComments:
         assert "serving.serving-endpoints" in app["user_api_scopes"]
 
 
-def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
+def test_apps_deploy_python_genie_tool_reaches_resource_derivation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A config Genie tool reaches the one deploy authorization plan.
+    """A Python Genie tool reaches the one deploy authorization plan.
 
     A spy on reconciliation captures the compiled plan and stops before wheel,
-    bundle, or Apps I/O. The config-declared tool defaults to user execution, so
+    bundle, or Apps I/O. The Python-authored tool defaults to user execution, so
     its Genie resource must be user-only and its OBO scope must be present.
     """
     from apx_agent.cli import _deploy_apps_impl
 
-    # Write a minimal agent module with NO inline tools — genie comes from config.
-    (tmp_path / "deploy_apps_config_tools_agent.py").write_text(textwrap.dedent("""
-        from apx_agent import Agent
-        agent = Agent(tools=[])
+    (tmp_path / "deploy_apps_python_tools_agent.py").write_text(textwrap.dedent("""
+        from apx_agent import Agent, genie_tool
+        agent = Agent(tools=[genie_tool("python-space-xyz", name="ask_data")])
     """))
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
         [tool.apx.agent]
         name = "t"
         target = "responses_agent"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "cfg-space-xyz"
-        name = "ask_data"
     """))
     # Minimal databricks.yml so _read_databricks_yml and _resolve_app_name work.
     (tmp_path / "databricks.yml").write_text(textwrap.dedent("""
@@ -5377,7 +5405,7 @@ def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
         try:
             _deploy_apps_impl(
                 cwd=tmp_path,
-                module="deploy_apps_config_tools_agent:agent",
+                module="deploy_apps_python_tools_agent:agent",
                 profile=None,
                 bundle_target="dev",
                 no_run=True,
@@ -5391,82 +5419,52 @@ def test_apps_deploy_config_genie_tool_reaches_resource_derivation(
         except _StopAfterSeam:
             pass
 
-    sys.modules.pop("deploy_apps_config_tools_agent", None)
+    sys.modules.pop("deploy_apps_python_tools_agent", None)
 
     assert captured_plans, "spy was never called — test setup error"
     plan = captured_plans[0]
     assert {(resource.kind, resource.identifier) for resource in plan.user_resources} >= {
-        ("genie_space", "cfg-space-xyz"),
+        ("genie_space", "python-space-xyz"),
     }
     assert "genie" in plan.user_api_scopes
 
 
 # ---------------------------------------------------------------------------
-# Change 3 (T11): apx lint now covers [[tool.apx.tools]] config-declared tools
+# apx lint covers Python tools imported from a separate module
 # ---------------------------------------------------------------------------
 
 
-def test_lint_sees_config_declared_tools(
+def test_lint_sees_imported_python_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Characterization: apx lint (via _load_finalized_agent) must run
-    ``_iter_tool_fns`` over config-declared tools so L002 fires for a
-    docstring-less config tool.
-
-    Strategy: monkeypatch ``apx_agent._tool_config._registry`` to inject a
-    factory that returns a callable with NO docstring.  The factory name must
-    stay "genie" (matches the [[tool.apx.tools]] table).  The tool callable is
-    named "undocumented_config_tool" so the L002 finding has a stable location.
-    We use ``--format json`` for a machine-readable assertion.
-    """
-    import apx_agent._tool_config as _tc
-
-    module_name = "lint_config_tools_test_agent"
-
+    """L002 must detect a missing docstring on a real imported Python tool."""
+    module_name = "lint_python_tools_test_agent"
+    (tmp_path / "lint_python_tools.py").write_text(textwrap.dedent("""
+        def python_tool_no_doc(question: str) -> str:
+            return question
+    """))
     # Agent has instructions so L001 doesn't fire, giving us a clean L002-only signal.
     (tmp_path / f"{module_name}.py").write_text(textwrap.dedent("""
         from apx_agent import Agent
-        agent = Agent(instructions="I help with data.", tools=[])
+        from lint_python_tools import python_tool_no_doc
+        agent = Agent(instructions="I help with data.", tools=[python_tool_no_doc])
     """))
-
-    # [[tool.apx.tools]] declares one "genie" table; the monkeypatched registry
-    # maps "genie" → factory that returns a docstring-less callable.
-    # The factory ignores the 'name' kwarg and the tool's __name__ comes from
-    # the closure definition (config_tool_no_doc).
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
         [tool.apx.agent]
         name = "lint-test"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "lint-space-01"
     """))
-
     monkeypatch.chdir(tmp_path)
 
-    def config_tool_no_doc(question: str) -> str:
-        # Deliberately no docstring — triggers L002.
-        return question
-
-    def _fake_registry() -> dict:
-        return {"genie": lambda **kw: config_tool_no_doc}
-
-    monkeypatch.setattr(_tc, "_registry", _fake_registry)
-
-    runner = CliRunner()
-    result = runner.invoke(
+    result = CliRunner().invoke(
         main, ["eval", "lint", "--module", f"{module_name}:agent", "--format", "json"]
     )
     sys.modules.pop(module_name, None)
+    sys.modules.pop("lint_python_tools", None)
 
     assert result.exit_code == 0, result.output  # L002 is WARNING, not ERROR
     findings = json.loads(result.output)
-    # L002 fires for the config-declared tool — proves lint sees [[tool.apx.tools]] tools.
     l002_locations = [f["location"] for f in findings if f["code"] == "L002"]
-    assert "tool:config_tool_no_doc" in l002_locations, (
-        f"Expected L002 for 'config_tool_no_doc' in config tools, "
-        f"but lint findings were: {findings}. "
-        "apx lint may not be running _iter_tool_fns over [[tool.apx.tools]] tools."
-    )
+    assert "tool:python_tool_no_doc" in l002_locations, findings
 
 
 # ---------------------------------------------------------------------------

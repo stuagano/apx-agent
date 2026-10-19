@@ -86,7 +86,7 @@ def load_spec(path: Path, *, strict: bool = True) -> "AgentConfig":
 
     Resolves ``$VAR`` / ``${VAR}`` env var references in string values before
     validation.  ``tools:`` entries are parsed into ``AgentConfig.tools`` and
-    forwarded to ``[[tool.apx.tools]]`` by ``generate_project``.  Skill paths
+    compiled into Python factory calls by ``generate_project``. Skill paths
     in ``skills:`` are validated to exist relative to the spec file.
 
     :param path: Path to the ``.yaml`` spec file.

@@ -223,7 +223,7 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
     )
     if provenance_check is not None:
         project.append(provenance_check)
-    project.extend(check_declared_tools(cwd, auth_ok=auth.status is Status.OK))
+    project.extend(check_declared_tools(cwd, auth_ok=auth.status is Status.OK, online=online))
     sub_agents_check = check_sub_agents(cwd)
     if sub_agents_check is not None:
         project.append(sub_agents_check)
@@ -1351,79 +1351,80 @@ def check_abac_compute_floor(cwd: Path, *, auth_ok: bool) -> Check | None:
     )
 
 
-def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
-    """Validate that each declared [[tool.apx.tools]] resource exists in the workspace.
+def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> list[Check]:
+    """Probe resources on the resolved Python agent, using the checking identity.
 
-    Covers: Genie spaces, Vector Search indexes, UC functions/toolkits, and SQL
-    warehouses (including warehouse_id in [tool.apx.agent.session]).
+    Import/finalization failures are diagnostics, never an empty resource list.
+    Without auth, skip imports because Python tool factories can perform I/O.
     """
-    if not _is_apx_project(cwd):
+    if not (cwd / "pyproject.toml").exists():
         return []
 
-    from apx_agent._tool_config import _read_tools_section  # noqa: PLC0415
+    from contextlib import chdir  # noqa: PLC0415
 
-    tables = _read_tools_section(str(cwd / "pyproject.toml"))
+    from ._apps_authorization import compile_authorization_plan  # noqa: PLC0415
+    from ._defaults import _make_workspace_client  # noqa: PLC0415
+    from ._inspection import _load_agent_config  # noqa: PLC0415
+    from ._tool_config import ToolConfigError, reject_legacy_tool_config  # noqa: PLC0415
+    from ._wiring import finalize_agent, resolve_agent  # noqa: PLC0415
+    from .cli import _detect_module_spec  # noqa: PLC0415
 
-    # Collect session warehouse_id if configured.
-    session_warehouse: str | None = None
+    pyproject = str(cwd.resolve() / "pyproject.toml")
     try:
-        from ._inspection import _load_agent_config  # noqa: PLC0415
+        reject_legacy_tool_config(pyproject)
+        if not _is_apx_project(cwd):
+            return []
+        cfg = _load_agent_config(pyproject_path=pyproject)
+    except ToolConfigError as exc:
+        return [Check(
+            "Declared tools", Status.FAIL, str(exc),
+            "Move tool declarations into Python tools/ modules and explicitly import them in agent.py; remove [[tool.apx.tools]].",
+        )]
+    except Exception as exc:
+        return [Check(
+            "Declared tools", Status.FAIL, f"Could not load agent config: {exc}",
+            "Fix the agent configuration in pyproject.toml.",
+        )]
 
-        cfg = _load_agent_config()
-        sess = getattr(cfg, "session", None) if cfg else None
-        if sess and getattr(sess, "warehouse_id", None):
-            session_warehouse = sess.warehouse_id
-    except Exception:
-        pass
-
-    if not tables and not session_warehouse:
-        return []
-
+    session_warehouse = cfg.session.warehouse_id if cfg and cfg.session else None
     checks: list[Check] = []
-
-    _RESOURCE_TYPES = {"genie", "genie_query", "vector_search", "uc_function", "uc_function_toolkit", "sql", "document_extract"}
-    resource_tables = [t for t in tables if t.get("type") in _RESOURCE_TYPES]
-    if not resource_tables and not session_warehouse:
-        return []
-
-    if not auth_ok:
-        for table in resource_tables:
-            typ = table.get("type", "")
-            checks.append(Check(
-                f"Tool ({typ})",
-                Status.SKIP,
-                "skipped — fix Databricks auth first",
-                None,
-            ))
+    if not auth_ok or not online:
+        reason = "fix Databricks auth first" if not auth_ok else "run doctor --online to verify resources"
+        checks.append(Check("Declared tools", Status.SKIP, f"Python resource inspection skipped — {reason}"))
         if session_warehouse:
-            checks.append(Check(
-                "Session warehouse",
-                Status.SKIP,
-                "skipped — fix Databricks auth first",
-                None,
-            ))
+            checks.append(Check("Session warehouse", Status.SKIP, f"skipped — {reason}"))
         return checks
 
-    from ._defaults import _make_workspace_client  # noqa: PLC0415
+    try:
+        ws = _make_workspace_client()
+    except Exception as exc:
+        return [Check("Declared tools", Status.FAIL, f"Workspace client unavailable: {exc}", "Fix Databricks auth first.")]
 
-    ws = _make_workspace_client()
+    try:
+        # Use the same module detection, finalization and authorization walker as
+        # the CLI, not a second parser or a tool registry scan.
+        with chdir(cwd):
+            agent = resolve_agent(_detect_module_spec(), cfg, ws=ws)
+            finalize_agent(agent, cfg, pyproject_path=pyproject, ws=ws)
+            plan = compile_authorization_plan(
+                agent, model=cfg.model if cfg else "",
+                agent_identity=cfg.identity if cfg else None,
+            )
+        resources = sorted(set(plan.user_resources + plan.service_resources), key=lambda spec: (spec.kind, spec.identifier))
+    except Exception as exc:
+        return [Check(
+            "Declared tools", Status.FAIL, f"Could not inspect Python agent resources: {exc}",
+            "Fix the agent module imports, tool declarations, or authorization configuration.",
+        )]
 
-    for table in resource_tables:
-        typ = table.get("type", "")
+    for spec in resources:
+        typ = spec.kind
 
-        if typ in ("genie", "genie_query"):
-            space_id = table.get("space_id", "")
-            if not space_id:
-                checks.append(Check(
-                    "Genie space",
-                    Status.WARN,
-                    "space_id missing in [[tool.apx.tools]]",
-                    "Add space_id to the genie tool config.",
-                ))
-                continue
+        if typ == "genie_space":
+            space_id = spec.identifier
             try:
                 ws.genie.get_space(space_id=space_id)
-                checks.append(Check(f"Genie space ({space_id[:20]})", Status.OK, "found", None))
+                checks.append(Check(f"Genie space ({space_id[:20]})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
             except Exception as exc:
                 short = str(exc)[:120]
                 checks.append(Check(
@@ -1433,19 +1434,11 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
                     f"Confirm space_id {space_id!r} exists and your principal has access.",
                 ))
 
-        elif typ == "vector_search":
-            index_name = table.get("index_name", "")
-            if not index_name:
-                checks.append(Check(
-                    "VS index",
-                    Status.WARN,
-                    "index_name missing in [[tool.apx.tools]]",
-                    "Add index_name to the vector_search tool config.",
-                ))
-                continue
+        elif typ == "vector_search_index":
+            index_name = spec.identifier
             try:
                 ws.vector_search_indexes.get_index(index_name=index_name)
-                checks.append(Check(f"VS index ({index_name})", Status.OK, "found", None))
+                checks.append(Check(f"VS index ({index_name})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
             except Exception as exc:
                 short = str(exc)[:120]
                 checks.append(Check(
@@ -1456,18 +1449,10 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
                 ))
 
         elif typ == "uc_function":
-            function_name = table.get("function_name", "")
-            if not function_name:
-                checks.append(Check(
-                    "UC function",
-                    Status.WARN,
-                    "function_name missing in [[tool.apx.tools]]",
-                    "Add function_name to the uc_function tool config.",
-                ))
-                continue
+            function_name = spec.identifier
             try:
                 ws.functions.get(name=function_name)
-                checks.append(Check(f"UC function ({function_name})", Status.OK, "found", None))
+                checks.append(Check(f"UC function ({function_name})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
             except Exception as exc:
                 short = str(exc)[:120]
                 checks.append(Check(
@@ -1477,42 +1462,11 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
                     f"Confirm {function_name!r} exists in Unity Catalog.",
                 ))
 
-        elif typ == "uc_function_toolkit":
-            catalog_schema = table.get("catalog_schema", "")
-            if not catalog_schema:
-                checks.append(Check(
-                    "UC function toolkit",
-                    Status.WARN,
-                    "catalog_schema missing in [[tool.apx.tools]]",
-                    "Add catalog_schema to the uc_function_toolkit config.",
-                ))
-                continue
-            try:
-                ws.schemas.get(full_name=catalog_schema)
-                checks.append(Check(f"UC schema ({catalog_schema})", Status.OK, "found", None))
-            except Exception as exc:
-                short = str(exc)[:120]
-                checks.append(Check(
-                    f"UC schema ({catalog_schema})",
-                    Status.WARN,
-                    f"not found or not accessible ({short})",
-                    f"Confirm {catalog_schema!r} exists and your principal has USE SCHEMA.",
-                ))
-
-        elif typ in ("sql", "document_extract"):
-            warehouse_id = table.get("warehouse_id", "")
-            if not warehouse_id:
-                if typ == "document_extract":
-                    checks.append(Check(
-                        "Document extract warehouse",
-                        Status.WARN,
-                        "warehouse_id missing in [[tool.apx.tools]]",
-                        "Add warehouse_id to the document_extract tool config.",
-                    ))
-                continue  # warehouse_id is optional for sql_tool — skip silently
+        elif typ == "sql_warehouse":
+            warehouse_id = spec.identifier
             try:
                 ws.warehouses.get(id=warehouse_id)
-                checks.append(Check(f"SQL warehouse ({warehouse_id})", Status.OK, "found", None))
+                checks.append(Check(f"SQL warehouse ({warehouse_id})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
             except Exception as exc:
                 short = str(exc)[:120]
                 checks.append(Check(
@@ -1521,11 +1475,16 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool) -> list[Check]:
                     f"not found or not accessible ({short})",
                     f"Confirm warehouse {warehouse_id!r} exists and is running.",
                 ))
+        else:
+            checks.append(Check(
+                f"Resource ({typ}: {spec.identifier})", Status.SKIP,
+                "Declared by Python agent; doctor has no presence probe for this resource kind.",
+            ))
 
     if session_warehouse:
         try:
             ws.warehouses.get(id=session_warehouse)
-            checks.append(Check(f"Session warehouse ({session_warehouse})", Status.OK, "found", None))
+            checks.append(Check(f"Session warehouse ({session_warehouse})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
         except Exception as exc:
             short = str(exc)[:120]
             checks.append(Check(

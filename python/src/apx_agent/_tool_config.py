@@ -1,4 +1,4 @@
-"""Declarative resource tools — load [[tool.apx.tools]] into callables.
+"""Programmatic spec tool construction and legacy TOML migration diagnostics.
 
 Each table is ``{type, <factory kwargs>}``. ``type`` selects a factory from the
 registry; the remaining keys are splatted as keyword args (every factory takes
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class ToolConfigError(ValueError):
-    """A [[tool.apx.tools]] table could not be turned into a tool."""
+    """Invalid tool declaration or unsupported legacy tool configuration."""
 
 
 # Factory types whose construction touches the network (host-gated + skippable).
@@ -46,7 +46,7 @@ def _resolve_env_deep(value: Any) -> Any:
     return value
 
 
-def _check_allowlist(index: int, type_: str, kwargs: dict[str, Any]) -> None:
+def _check_allowlist(index: int | None, type_: str, kwargs: dict[str, Any]) -> None:
     """Raise ToolConfigError if the tool's host is not in APX_TOOLS_ALLOWED_HOSTS."""
     allowed_raw = (os.environ.get("APX_TOOLS_ALLOWED_HOSTS") or "").strip()
     if not allowed_raw or type_ not in _IO_TYPES:
@@ -57,8 +57,9 @@ def _check_allowlist(index: int, type_: str, kwargs: dict[str, Any]) -> None:
         return  # no URL to check; factory will raise TypeError for the missing kwarg
     host = urlparse(url).hostname or ""
     if host not in hosts:
+        label = f"tool #{index}" if index is not None else "tool"
         raise ToolConfigError(
-            f"tool #{index} (type={type_}): host {host!r} is not in "
+            f"{label} (type={type_}): host {host!r} is not in "
             f"APX_TOOLS_ALLOWED_HOSTS ({sorted(hosts)})."
         )
 
@@ -212,83 +213,26 @@ def _find_pyproject_upward(start: Path) -> Path | None:
     return None
 
 
-def _read_tools_section(pyproject_path: str | None) -> list[dict[str, Any]]:
-    if pyproject_path:
-        path: Path | None = Path(pyproject_path)
-    else:
-        path = _find_pyproject_upward(Path.cwd())
-    if path is None:
-        return []
-    if not path.exists():
-        return []
-    try:
-        import tomllib
-    except ImportError:  # pragma: no cover - py<3.11
-        import tomli as tomllib  # type: ignore[no-redef]
+def reject_legacy_tool_config(pyproject_path: str | None = None) -> None:
+    """Reject removed TOML tool declarations before any factory can run."""
+    import tomllib
+
+    explicit = pyproject_path or os.environ.get("APX_PYPROJECT")
+    path = Path(explicit) if explicit else _find_pyproject_upward(Path.cwd())
+    if path is None or not path.exists():
+        return
     try:
         data = tomllib.loads(path.read_text())
-    except Exception as e:
-        logger.warning(
-            "Failed to parse %s — [[tool.apx.tools]] will be empty: %s",
-            path,
-            e,
+    except tomllib.TOMLDecodeError as exc:
+        raise ToolConfigError(f"Cannot parse {path}: {exc}") from exc
+    apx = data.get("tool", {}).get("apx", {})
+    if "tools" in apx:
+        raise ToolConfigError(
+            f"{path}: [[tool.apx.tools]] is no longer supported. "
+            "Declare tools with Python factories in tools/ and import them in agent.py; "
+            "pass them to the agent's tools (or extra_tools) argument, then remove "
+            "the TOML tool declarations."
         )
-        return []
-    tables = (((data.get("tool") or {}).get("apx") or {}).get("tools")) or []
-    return tables if isinstance(tables, list) else []
-
-
-def merge_config_tools(agent: Any, pyproject_path: str | None = None) -> None:
-    """Load [[tool.apx.tools]] and append the callables to the agent.
-
-    Dedup by __name__ (code-wired tools win — config is additive).
-    An idempotency sentinel (``_apx_config_tools_merged``) ensures the I/O
-    factories inside ``load_config_tools`` are only invoked once per agent
-    instance, even when ``finalize_agent`` is called repeatedly.
-    Composition roots without ``_register_tool`` are warned + skipped.
-
-    Single-project assumption: once the sentinel is set, a later call with a
-    *different* ``pyproject_path`` on the same agent is silently skipped. This
-    is fine today (an Agent instance is bound to one project context); revisit
-    if agents are ever pooled/reconfigured across projects.
-    """
-    # 1. Sentinel check — skip everything (including I/O factories) on repeat calls.
-    if getattr(agent, "_apx_config_tools_merged", False):
-        return
-
-    # 2. Short-circuit when there are no tables to process (don't set sentinel —
-    #    a later call with a valid pyproject should still be allowed to merge).
-    tables = _read_tools_section(pyproject_path)
-    if not tables:
-        return
-
-    # 3. Composition-root guard.
-    register = getattr(agent, "_register_tool", None)
-    existing = {getattr(fn, "__name__", None) for fn in getattr(agent, "_tool_fns", [])}
-    if register is None:
-        logger.warning(
-            "[[tool.apx.tools]] declared but %s is a composition root with no "
-            "_tool_fns to attach them to — skipping. Put tools on a leaf LlmAgent.",
-            type(agent).__name__,
-        )
-        return
-
-    # 4. Build tools and register (skipping name-collisions).
-    for fn in load_config_tools(tables):
-        nm = getattr(fn, "__name__", None)
-        if nm in existing:
-            logger.warning(
-                "[[tool.apx.tools]] declares %r but the agent already wires a "
-                "tool with that name — keeping the existing one, ignoring config.",
-                nm,
-            )
-            continue
-        register(fn)
-        if nm:
-            existing.add(nm)
-
-    # 5. Mark as merged so repeat calls skip the I/O factories entirely.
-    setattr(agent, "_apx_config_tools_merged", True)
 
 
 def load_config_tools(raw_tables: list[dict[str, Any]]) -> list[Callable[..., Any]]:

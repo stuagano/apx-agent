@@ -207,7 +207,7 @@ def attach_declared_memory(
     minted tools appear in both the A2A card and the compiled LangGraph.
 
     Idempotent via ``_apx_memory_attached`` sentinel.  Code-wired tools win
-    on name collision (same rule as ``merge_config_tools``).
+    on name collision so explicit Python tools retain precedence.
     """
     if getattr(agent, "_apx_memory_attached", False):
         return

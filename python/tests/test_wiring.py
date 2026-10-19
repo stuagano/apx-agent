@@ -19,6 +19,7 @@ from apx_agent import (
     LlmAgent,
     SequentialAgent,
     create_app,
+    genie_tool,
     setup_agent,
 )
 from apx_agent._models import GuardrailsConfig
@@ -201,24 +202,39 @@ class TestSetupAgent:
         assert agent._max_iterations == 5
 
     @pytest.mark.asyncio
-    async def test_setup_agent_serves_config_tools_in_card(self, tmp_path):
+    async def test_setup_agent_serves_python_tools_in_card(self, tmp_path):
         pp = tmp_path / "pyproject.toml"
         pp.write_text(textwrap.dedent("""
             [tool.apx.agent]
             name = "t"
             model = "databricks-claude-sonnet-4-6"
+        """))
+        app = FastAPI()
+        agent = Agent(tools=[genie_tool("01ef", name="ask_sales")])
+        ctx = await setup_agent(app, agent, pyproject_path=str(pp))
+        # Python-authored tools must survive finalization into the A2A card.
+        skill_names = [s.name for s in ctx.card.skills]
+        assert skill_names.count("ask_sales") == 1
+
+    @pytest.mark.asyncio
+    async def test_setup_agent_rejects_legacy_tool_config(self, tmp_path):
+        from apx_agent._tool_config import ToolConfigError
+
+        pp = tmp_path / "pyproject.toml"
+        pp.write_text(textwrap.dedent("""
+            [tool.apx.agent]
+            name = "t"
             [[tool.apx.tools]]
             type = "genie"
             space_id = "01ef"
             name = "ask_sales"
         """))
         app = FastAPI()
-        agent = Agent(tools=[])
-        ctx = await setup_agent(app, agent, pyproject_path=str(pp))
-        # The A2A card snapshot must include the config tool (proves the merge ran
-        # before the card was frozen).
-        skill_names = [s.name for s in ctx.card.skills]
-        assert "ask_sales" in skill_names
+        agent = Agent(tools=[get_weather])
+        with pytest.raises(ToolConfigError, match=r"tools/.*agent\.py"):
+            await setup_agent(app, agent, pyproject_path=str(pp))
+        assert not hasattr(app.state, "agent_context")
+        assert [tool.name for tool in agent.collect_tools()] == ["get_weather"]
 
 
 # ---------------------------------------------------------------------------
@@ -494,35 +510,32 @@ def test_whitespace_only_config_instructions_does_not_block_later_overlay():
 
 
 # ---------------------------------------------------------------------------
-# finalize_agent — knobs + persona overlay + config-tool merge in one seam
+# finalize_agent — knobs + persona overlay preserve Python-authored tools
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_applies_knobs_and_merges_tools(tmp_path):
+def test_finalize_applies_knobs_and_preserves_python_tools(tmp_path):
     pp = tmp_path / "pyproject.toml"
-    pp.write_text(textwrap.dedent("""
-        [tool.apx.agent]
-        name = "t"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "01ef"
-        name = "ask_sales"
-    """))
-    agent = Agent(tools=[], instructions="GROUNDING")
+    pp.write_text('[tool.apx.agent]\nname="t"\n')
+    agent = Agent(
+        tools=[genie_tool("01ef", name="ask_sales")], instructions="GROUNDING"
+    )
     cfg = AgentConfig(name="t", temperature=0.3, instructions="PERSONA")
     finalize_agent(agent, config=cfg, pyproject_path=str(pp))
     # knob applied
     assert agent._temperature == 0.3
     # persona overlay applied
     assert "PERSONA" in agent._instructions and "GROUNDING" in agent._instructions
-    # config tool merged
-    assert "ask_sales" in [t.name for t in agent.collect_tools()]
+    # Python tool preserved without duplicating or dropping it.
+    assert [t.name for t in agent.collect_tools()] == ["ask_sales"]
 
 
 def test_finalize_is_idempotent(tmp_path):
     pp = tmp_path / "pyproject.toml"
-    pp.write_text('[tool.apx.agent]\nname="t"\n[[tool.apx.tools]]\ntype="genie"\nspace_id="01ef"\nname="ask_sales"\n')
-    agent = Agent(tools=[], instructions="GROUNDING")
+    pp.write_text('[tool.apx.agent]\nname="t"\n')
+    agent = Agent(
+        tools=[genie_tool("01ef", name="ask_sales")], instructions="GROUNDING"
+    )
     cfg = AgentConfig(name="t", instructions="PERSONA")
     finalize_agent(agent, config=cfg, pyproject_path=str(pp))
     finalize_agent(agent, config=cfg, pyproject_path=str(pp))
