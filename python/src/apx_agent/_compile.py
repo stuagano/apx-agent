@@ -1397,6 +1397,11 @@ def _compile_bound_remote_leaf(
         else:
             secret = getattr(headers, "token", None)
             token = secret.get_secret_value() if secret is not None else None
+            resolve = getattr(headers, "auth_headers", None)
+            if token is None and resolve is not None:
+                # Durable host (#904): ask the SDK's request-user client now. A
+                # closed request context raises here — fail closed, nothing sent.
+                token = resolve()["Authorization"].removeprefix("Bearer ")
             authorization = f"Bearer {token}" if token else None
             host = getattr(headers, "host", None)
         forwarded = {

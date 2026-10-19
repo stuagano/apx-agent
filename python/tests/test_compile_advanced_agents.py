@@ -212,6 +212,42 @@ def test_bound_leaf_transport_errors_propagate(
     assert str(error.value.__cause__) == detail
 
 
+def test_bound_leaf_forwards_durable_request_user_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Durable headers carry no token, only the call-time resolver (#904)."""
+    from langchain_core.messages import HumanMessage
+
+    from apx_agent._defaults import DatabricksAppsHeaders
+    from apx_agent._remote import _RemoteReply
+
+    forwarded: list[dict[str, str]] = []
+
+    async def _capture(_self: Any, _messages: Any, incoming: dict[str, str]) -> Any:
+        forwarded.append(incoming)
+        return _RemoteReply(text="approved", control=None)
+
+    headers = DatabricksAppsHeaders(
+        host="ws.example.com", user_name=None, user_id=None, user_email=None,
+        request_id=None, token=None,
+        auth_headers=lambda: {"Authorization": "Bearer user-tok"},
+    )
+    root = SequentialAgent([Agent(name="pricing")], name="sequence")
+    root._apx_remote_leaf_bindings = {"pricing": _binding("pricing")}
+    _local_compiler_stub(monkeypatch)
+    monkeypatch.setattr(RemoteDatabricksAgent, "run_with_control", _capture)
+
+    graph = compile_to_langgraph(root, ws=None, model="test-model", headers=headers)
+    result = graph.invoke({"messages": [HumanMessage(content="price")]})
+
+    assert _last_text(result) == "approved"
+    assert forwarded == [{
+        "Authorization": "Bearer user-tok",
+        "X-Forwarded-Access-Token": "user-tok",
+        "X-Forwarded-Host": "ws.example.com",
+    }]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("guard", ["input", "output", "allowed"])
 async def test_bound_leaf_preserves_governance_and_keyed_state(
