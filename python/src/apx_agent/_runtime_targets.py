@@ -196,6 +196,13 @@ def compile_agent(
             if checkpointer is None:
                 checkpointer = resolve_checkpointer(config, service_ws, agent, store_override=conversation_store)
             conversation_store = resolve_conversation_store(config, service_ws, override=conversation_store, agent=agent)
+    else:
+        # A Python-only agent skips finalize_agent (which would fall back to the
+        # cwd pyproject), but its build_tool(scope=...) tools still need the
+        # runtime guard, or tool isolation silently fails open.
+        from ._wiring import ensure_scope_guard
+
+        ensure_scope_guard(agent)
     report = inspect_target(
         agent, target=target, config=config, requirements=requirements, checkpointer=checkpointer,
         conversation_store=conversation_store, session_store=session_store,
