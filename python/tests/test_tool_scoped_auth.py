@@ -472,3 +472,30 @@ def test_callers_declaration_parses_into_scope(config_factory) -> None:
     [fn] = load_config_tools([{"type": "demo", "name": "refund", "callers": ["a@x.com"]}])
     scope = get_scope(fn)
     assert scope is not None and scope.callers == ("a@x.com",)
+
+
+@pytest.mark.parametrize("target", ["durable_agent_server", "responses_agent"])
+def test_compile_without_config_still_enforces_scope(target, tmp_path, monkeypatch) -> None:
+    """A Python-only agent (no AgentConfig, no pyproject) keeps its runtime scope guard."""
+    from unittest.mock import MagicMock
+
+    from apx_agent import Agent, compile_agent
+
+    monkeypatch.chdir(tmp_path)  # no pyproject.toml to fall back on
+
+    def read(table_name: str) -> str:
+        """Read a UC table."""
+        return table_name
+
+    tool = build_tool(read, name="ledger_reader", description="reads a UC table",
+                      scope=ToolScope(identity="obo", catalogs=("sales",)))
+    agent = Agent(name="probe", tools=[tool])
+    compile_agent(agent, model="m", target=target, service_ws=MagicMock())
+
+    # Per-tool identity is stamped at build time, so it needs no config either.
+    assert get_tool_metadata(tool).execution == identity_to_execution("obo")
+
+    assert agent._before_tool is not None
+    with pytest.raises(ScopeDenied):
+        agent._before_tool("ledger_reader", {"table_name": "main.finance.ledger"})
+    assert agent._before_tool("ledger_reader", {"table_name": "sales.crm.accounts"}) is None
