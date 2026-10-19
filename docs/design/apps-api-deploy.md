@@ -1,6 +1,6 @@
 # Spec: Apps API deploy path
 
-**Status:** draft for review · **Date:** 2026-10-09
+**Status:** implemented in #913 (`backend = "apps_api"`) · **Date:** 2026-10-09
 
 This is the implementation spec for a new durable deploy path,
 `python/src/apx_agent/_apps_api_deploy.py`. It records the reviewed seven-step

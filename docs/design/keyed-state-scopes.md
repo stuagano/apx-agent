@@ -1,6 +1,6 @@
 # Design: `user:` / `app:` keyed-state scopes (G3 phase 3)
 
-**Status:** proposed · **Date:** 2026-06-25 · **Source:** ADK gap audit (G3, #232) ·
+**Status:** proposed, not implemented (#947) · **Date:** 2026-06-25 · **Source:** ADK gap audit (G3, #232) ·
 **Builds on:** [keyed-shared-state.md](keyed-shared-state.md) (phases 1–3 plan),
 [keyed-state-tool-access.md](keyed-state-tool-access.md) (tool read/write),
 [session-state-persistence.md](session-state-persistence.md) (phase 2 seam)
