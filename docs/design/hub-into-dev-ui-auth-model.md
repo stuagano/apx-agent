@@ -1,6 +1,6 @@
 # Design: fold the hub into the `_apx` dev-UI, with one auth model
 
-**Status:** brainstorming / design draft · **Date:** 2026-09-28
+**Status:** implemented in #825 (hub folded into the `_apx` dev UI) · **Date:** 2026-09-28
 
 The deployable hub (`hub/`) and the served dev-UI (`_apx/*` in `_dev.py`) both
 answer "what agents are in this workspace, and let me work with them." They grew

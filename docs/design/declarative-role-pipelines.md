@@ -1,6 +1,6 @@
 # Design: Declarative role pipelines are the one APX execution model
 
-**Status:** proposed for review
+**Status:** implemented in #777 (declarative A2A agent graphs + control-result protocol)
 **Date:** 2026-09-10
 **Decision:** an APX application declares one logical route-and-pipeline graph. Every
 supported conversation ingress compiles that graph. Deployment transport—including

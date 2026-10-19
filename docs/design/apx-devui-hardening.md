@@ -1,6 +1,6 @@
 # Dev-UI Hardening — Design (Pilot: memory + conversations)
 
-> Status: DRAFT for plan-gate sign-off. One open fork (see §"Open fork").
+> Status: implemented. Pilot #213, then the waves in [the fan-out](apx-devui-hardening-fanout.md).
 > Scope grounded in read-only recon (codex, file:line evidence inline).
 
 ## Goal & scope

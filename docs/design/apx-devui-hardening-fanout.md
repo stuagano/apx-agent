@@ -1,6 +1,6 @@
 # Dev-UI Hardening — Fan-Out Plan
 
-> Status: DRAFT for plan-gate sign-off. Follows the pilot (PR #213).
+> Status: implemented. Pilot #213, then #214, #274, #275, #276, #278, #286 and #299. `replay/*` stays hidden on purpose (#281).
 > Grounded in read-only recon of all 57 `_apx` route decorators in
 > `python/src/apx_agent/_dev.py` (codex write-surfaces + claude_code read/action).
 
