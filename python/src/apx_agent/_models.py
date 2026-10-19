@@ -559,7 +559,7 @@ class SkillConfig(BaseModel):
     """A loadable skill — a markdown procedure file surfaced as an on-demand tool.
 
     Skills are declared in the ``skills:`` block of a YAML spec and compiled
-    into ``[[tool.apx.tools]]`` entries by ``generate_project``.  At runtime
+    into Python tool declarations by ``generate_project``. At runtime
     the agent can call the skill by name to retrieve its markdown content.
 
     :param name: Tool name the LLM will call, e.g. ``"sql_analysis"``.
@@ -783,12 +783,11 @@ class AgentConfig(BaseModel):
     tools: list[dict[str, Any]] = []
     """Tool declarations from a YAML spec ``tools:`` block.
 
-    Each entry mirrors a ``[[tool.apx.tools]]`` TOML table:
+    Each entry selects an existing factory:
     ``{"type": "genie", "space_id": "abc", "name": "ask_sales"}``.
-    ``generate_project`` serializes these into the generated pyproject.toml;
-    they are not written under ``[tool.apx.agent]`` and are not read from
-    pyproject at runtime (``merge_config_tools`` reads ``[[tool.apx.tools]]``
-    directly).
+    ``generate_project`` compiles these into explicit Python factory calls
+    in ``tools/``, imported by ``agent.py``. Tool declarations are not loaded
+    from pyproject.toml at runtime.
     """
 
     skills: list[SkillConfig] = []
@@ -796,7 +795,7 @@ class AgentConfig(BaseModel):
 
     Each entry names a markdown file that the agent can load on demand.
     ``generate_project`` copies the file into the project and emits a
-    ``[[tool.apx.tools]]`` entry with ``type = "skill"``.
+    Python ``skill_tool`` declaration in the tools package.
     """
 
     executor: str = "langgraph"

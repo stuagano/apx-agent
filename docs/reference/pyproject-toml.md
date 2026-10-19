@@ -153,25 +153,33 @@ injection_detection  = true                 # scan input for common injection pa
 Guard order within `before_tool` (first raise wins): denylist → allowlist →
 rate limit.
 
-### `[[tool.apx.tools]]` — declarative tools (no code needed)
+### Tools belong in Python
 
-Attach platform resources as tools without writing a `@tool` function.
+Use existing factories in an ordinary `tools/` package:
 
-```toml
-[[tool.apx.tools]]
-type        = "genie"
-space_id    = "$GENIE_SPACE_ID"
-name        = "ask_data"
-description = "Answer questions from a Genie space."
+```python
+# tools/data.py
+import os
 
-[[tool.apx.tools]]
-type       = "vector_search"
-index_name = "main.docs.embeddings"
-name       = "search_docs"
+from apx_agent import genie_tool, vector_search_tool
+
+ask_data = genie_tool(
+    os.environ["GENIE_SPACE_ID"],
+    name="ask_data",
+    description="Answer questions from a Genie space.",
+)
+search_docs = vector_search_tool("main.docs.embeddings", name="search_docs")
 ```
 
-These are additive — they attach on top of whatever tools the code agent
-already wires.
+Import `ask_data` and `search_docs` explicitly in `agent.py` and include them in
+`Agent(tools=[ask_data, search_docs])` or a data agent's `extra_tools`. Legacy
+`[[tool.apx.tools]]` tables are rejected; remove them after migration. Non-tool
+APX settings stay in `pyproject.toml`. `.build/agent.toml` remains generated
+runtime output, not an authoring surface.
+
+See [Python-native tool layout](../tools/overview.md#python-native-tool-layout)
+for the directory structure and preservation of tool resources, identity, and
+scope via `build_tool(scope=ToolScope(...))`.
 
 ---
 

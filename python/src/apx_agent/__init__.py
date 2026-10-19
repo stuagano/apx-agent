@@ -69,7 +69,7 @@ from ._llm import ChatDatabricksGptReasoning, get_llm
 # App factory and setup
 from ._wiring import create_app, finalize_agent, mount_mcp_endpoints, setup_agent
 from ._readyz import mount_readyz
-from ._tool_config import ToolConfigError, load_config_tools, merge_config_tools
+from ._tool_config import ToolConfigError, load_config_tools, skill_tool
 
 # Eval bridge
 from ._eval import (
@@ -517,7 +517,7 @@ __all__ = [
     # Declarative tool config
     "ToolConfigError",
     "load_config_tools",
-    "merge_config_tools",
+    "skill_tool",
     # Eval
     "app_predict_fn",
     "clears_scorers",

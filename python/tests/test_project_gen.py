@@ -7,8 +7,8 @@ Covers:
   4. agent_server/start_server.py is created.
   5. databricks.yml contains the agent name.
   6. ``module = "agent:agent"`` does NOT appear when template is set.
-  7. [[tool.apx.tools]] entries are emitted for each tools: dict.
-  8. Skills are copied to skills/ and emitted as [[tool.apx.tools]] type=skill entries.
+  7. tools: dicts become explicit Python factory calls in the tools/ package.
+  8. Skills are copied to skills/ and exposed as Python skill_tool declarations.
   9. knowledge= is NOT auto-emitted by generate_project (no bundle produced here);
      explicit config.knowledge IS emitted when set.
 """
@@ -330,8 +330,8 @@ def test_render_agent_py_graph_handoff_unknown_start_raises() -> None:
         render_agent_py(cfg)
 
 
-def test_render_agent_py_graph_two_python_tool_leaves_emit_helper_once() -> None:
-    """The _load_python_tool helper is defined once, not per python-tool leaf."""
+def test_render_agent_py_graph_two_python_tool_leaves_use_static_imports() -> None:
+    """Each leaf imports its callable explicitly without runtime import dispatch."""
     module = ModuleType("apx_test_two_leaf_tools")
 
     def tool_a() -> str:
@@ -364,8 +364,12 @@ def test_render_agent_py_graph_two_python_tool_leaves_emit_helper_once() -> None
         )
 
         src = render_agent_py(cfg)
-        assert src.count("def _load_python_tool(") == 1
-        _exec_agent_py(src)  # still importable
+        assert "_load_python_tool" not in src
+        assert "from apx_test_two_leaf_tools import tool_a" in src
+        assert "from apx_test_two_leaf_tools import tool_b" in src
+        ns = _exec_agent_py(src)
+        assert _tool_names(ns["x"]) == ["tool_a"]
+        assert _tool_names(ns["y"]) == ["tool_b"]
     finally:
         sys.modules.pop(module.__name__, None)
 
@@ -635,8 +639,8 @@ def test_module_line_present_when_no_template(tmp_path: Path, minimal_config: Ag
 # ---------------------------------------------------------------------------
 
 
-def test_tools_emitted_as_toml_array_of_tables(tmp_path: Path) -> None:
-    """Each entry in config.tools becomes a [[tool.apx.tools]] table."""
+def test_tools_emitted_as_python_factory_calls(tmp_path: Path) -> None:
+    """Tools are Python declarations, not runtime TOML dispatch."""
     config = AgentConfig(
         name="demo",
         tools=[
@@ -649,13 +653,13 @@ def test_tools_emitted_as_toml_array_of_tables(tmp_path: Path) -> None:
     with open(tmp_path / "pyproject.toml", "rb") as f:
         data = tomllib.load(f)
 
-    tables = (data.get("tool") or {}).get("apx", {}).get("tools") or []
-    assert len(tables) == 2, f"Expected 2 [[tool.apx.tools]] entries, got {len(tables)}"
-    assert tables[0]["type"] == "genie"
-    assert tables[0]["space_id"] == "01ef"
-    assert tables[0]["name"] == "ask_sales"
-    assert tables[1]["type"] == "sql"
-    assert tables[1]["warehouse_id"] == "wh123"
+    assert "tools" not in data["tool"]["apx"]
+    assert (tmp_path / "tools" / "__init__.py").is_file()
+    source = "\n".join(p.read_text() for p in (tmp_path / "tools").glob("*.py"))
+    assert "genie_tool(" in source and "sql_tool(" in source
+    assert "space_id='01ef'" in source and "warehouse_id='wh123'" in source
+    assert "from tools." in (tmp_path / "agent.py").read_text()
+    assert "load_config_tools" not in source
 
 
 def test_no_tools_section_when_tools_empty(tmp_path: Path, minimal_config: AgentConfig) -> None:
@@ -670,12 +674,14 @@ def test_no_tools_section_when_tools_empty(tmp_path: Path, minimal_config: Agent
 
 
 # ---------------------------------------------------------------------------
-# Test 8: skills copied and emitted as type=skill [[tool.apx.tools]] entries
+# Test 8: skills copied and exposed as Python skill_tool declarations
 # ---------------------------------------------------------------------------
 
 
-def test_skill_file_copied_and_toml_entry_emitted(tmp_path: Path) -> None:
-    """Skill markdown is copied to skills/<name>.md; TOML entry uses type=skill."""
+def test_skill_file_copied_and_python_tool_executes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Copied skill markdown is exposed by a real Python-authored callable."""
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     (source_dir / "sql_guide.md").write_text("# SQL Guide\nUse explicit column names.")
@@ -698,16 +704,15 @@ def test_skill_file_copied_and_toml_entry_emitted(tmp_path: Path) -> None:
     assert skill_file.exists(), "skills/sql_guide.md was not created"
     assert "SQL Guide" in skill_file.read_text()
 
-    # TOML entry present
     with open(project_dir / "pyproject.toml", "rb") as f:
         data = tomllib.load(f)
-
-    tables = (data.get("tool") or {}).get("apx", {}).get("tools") or []
-    assert len(tables) == 1
-    assert tables[0]["type"] == "skill"
-    assert tables[0]["name"] == "sql_guide"
-    assert tables[0]["description"] == "SQL best practices"
-    assert tables[0]["path"] == "skills/sql_guide.md"
+    assert "tools" not in data["tool"]["apx"]
+    agent = _exec_generated_project(project_dir, monkeypatch)["agent"]
+    assert _tool_names(agent) == ["sql_guide"]
+    skill = agent._tool_fns[0]
+    assert skill.__doc__ == "SQL best practices"
+    monkeypatch.chdir(project_dir)
+    assert skill() == "# SQL Guide\nUse explicit column names."
 
 
 def test_skills_copy_step_in_databricks_yml(tmp_path: Path) -> None:
@@ -963,3 +968,259 @@ def test_example_graph_spec_compiles(tmp_path: Path) -> None:
     generate_project(config, tmp_path)
     ns = _exec_agent_py((tmp_path / "agent.py").read_text())
     assert isinstance(ns["agent"], RouterAgent)
+
+
+def _exec_generated_project(path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Import the generated package, not a cached tools module from another project."""
+    with monkeypatch.context() as patch:
+        patch.syspath_prepend(str(path))
+        patch.chdir(path)
+        for name in list(sys.modules):
+            if name == "tools" or name.startswith("tools."):
+                patch.delitem(sys.modules, name)
+        try:
+            return _exec_agent_py((path / "agent.py").read_text())
+        finally:
+            for name in list(sys.modules):
+                if name == "tools" or name.startswith("tools."):
+                    sys.modules.pop(name)
+
+
+@pytest.mark.parametrize("mode", ["plain", "template", "graph"])
+def test_native_tools_compose_once_with_resources_and_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    from apx_agent._resources import get_resources
+    from apx_agent._tool import get_tool_metadata
+    from apx_agent._tool_scope import get_scope
+
+    declaration = {
+        "type": "uc_function", "function_name": "main.sales.lookup",
+        "name": "lookup", "description": "Look up sales.",
+        "identity": "obo", "scope": {"schemas": ["main.sales"]},
+        "secret_scopes": ["sales"], "callers": ["analyst@example.com"],
+    }
+    fields: dict[str, Any] = {"tools": [declaration]}
+    if mode == "template":
+        fields["template"] = {"name": "data", "catalog": "main", "schema": "sales"}
+    if mode == "graph":
+        fields = {
+            "agents": {"sales": {"type": "agent", "tools": [declaration]}},
+            "root": {"type": "sequential", "agents": ["sales"]},
+        }
+    generate_project(AgentConfig(name="native-tools", **fields), tmp_path)
+    source = (tmp_path / "agent.py").read_text()
+    assert "from tools." in source
+    assert "load_config_tools" not in source
+    ns = _exec_generated_project(tmp_path, monkeypatch)
+    leaf = ns["sales"] if mode == "graph" else ns["agent"]
+    tools = [fn for fn in leaf._tool_fns if fn.__name__ == "lookup"]
+    assert len(tools) == 1
+    assert tools[0].__doc__ == "Look up sales."
+    assert [resource.identifier for resource in get_resources(tools[0])] == ["main.sales.lookup"]
+    assert get_scope(tools[0]).schemas == ("main.sales",)
+    assert get_scope(tools[0]).callers == ("analyst@example.com",)
+    assert get_scope(tools[0]).secret_scopes == ("sales",)
+    assert get_tool_metadata(tools[0]).execution == "user"
+
+
+def test_native_tools_env_is_resolved_at_import_not_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent._resources import get_resources
+
+    monkeypatch.setenv("TOOL_WAREHOUSE", "generation-value-must-not-leak")
+    generate_project(AgentConfig(name="env-tools", tools=[
+        {"type": "sql", "warehouse_id": "${TOOL_WAREHOUSE}"},
+    ]), tmp_path)
+    sources = "\n".join(p.read_text() for p in tmp_path.rglob("*.py"))
+    assert "generation-value-must-not-leak" not in sources
+    monkeypatch.setenv("TOOL_WAREHOUSE", "runtime-warehouse")
+    agent = _exec_generated_project(tmp_path, monkeypatch)["agent"]
+    assert get_resources(agent._tool_fns[0])[0].identifier == "runtime-warehouse"
+    monkeypatch.delenv("TOOL_WAREHOUSE")
+    with pytest.raises((KeyError, ValueError), match="TOOL_WAREHOUSE"):
+        _exec_generated_project(tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("tool, message", [
+    ({"type": "genie"}, "space_id"),
+    ({"type": "unknown"}, "unknown"),
+    ({"type": "sql", "typo": 1}, "typo"),
+    ({"type": "sql", "scope": {"schema": ["main.sales"]}}, "schema"),
+    ({"type": "sql", "callers": []}, "callers"),
+    ({"type": "python", "module": "not-an-import:fn"}, "module"),
+])
+def test_native_tools_invalid_configuration_fails_before_writes(
+    tmp_path: Path, tool: dict[str, Any], message: str,
+) -> None:
+    output = tmp_path / "output"
+    with pytest.raises(ValueError, match=message):
+        generate_project(AgentConfig(name="invalid-tools", tools=[tool]), output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("collision", ["tools.py", "tools"])
+def test_native_tools_collision_preserves_authored_files(tmp_path: Path, collision: str) -> None:
+    path = tmp_path / collision
+    if collision == "tools":
+        path.mkdir()
+        path = path / "__init__.py"
+    path.write_text("# user authored\n")
+    with pytest.raises(ValueError, match="tools"):
+        generate_project(AgentConfig(name="collision", tools=[{"type": "sql"}]), tmp_path)
+    assert path.read_text() == "# user authored\n"
+    assert not (tmp_path / "agent.py").exists()
+
+
+def test_native_tools_over_scope_fails_during_import(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    generate_project(AgentConfig(name="scope", tools=[{
+        "type": "uc_function", "function_name": "other.sales.lookup",
+        "scope": {"catalogs": ["main"]},
+    }]), tmp_path)
+    with pytest.raises(ValueError, match="over-scoped"):
+        _exec_generated_project(tmp_path, monkeypatch)
+
+
+def test_native_tools_toolkit_and_static_python_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = ModuleType("apx_test_custom_tool")
+    def custom(value: str) -> str:
+        """Return the custom value."""
+        return value
+    module.custom = custom
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    generate_project(AgentConfig(name="toolkit", tools=[
+        {"type": "python", "module": "apx_test_custom_tool:custom"},
+        {"type": "jobs", "warehouse_id": "warehouse", "identity": "obo"},
+    ]), tmp_path)
+    sources = "\n".join(p.read_text() for p in (tmp_path / "tools").glob("*.py"))
+    assert "from apx_test_custom_tool import custom" in sources
+    assert "import_module" not in sources
+    agent = _exec_generated_project(tmp_path, monkeypatch)["agent"]
+    assert len(agent._tool_fns) == 5
+    assert len({fn.__name__ for fn in agent._tool_fns}) == 5
+    assert agent._tool_fns[0]("real result") == "real result"
+    from apx_agent._tool_scope import get_scope
+    assert all(get_scope(fn).identity == "obo" for fn in agent._tool_fns[1:])
+
+
+def test_native_tools_duplicate_names_fail_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    generate_project(AgentConfig(name="duplicates", tools=[
+        {"type": "sql", "name": "same"}, {"type": "sql", "name": "same"},
+    ]), tmp_path)
+    with pytest.raises(ValueError, match="duplicate tool name"):
+        _exec_generated_project(tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("field", ["tools", "skills"])
+def test_native_tools_graph_top_level_is_rejected_not_dropped(tmp_path: Path, field: str) -> None:
+    config = AgentConfig.model_validate({
+        "name": "graph", "agents": {"leaf": {"type": "agent"}},
+        "root": {"type": "sequential", "agents": ["leaf"]},
+        field: ([{"type": "sql"}] if field == "tools" else
+                [{"name": "guide", "description": "Read guide", "path": "guide.md"}]),
+    })
+    with pytest.raises(ValueError, match="leaf"):
+        generate_project(config, tmp_path / "output")
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize("mode", ["template", "graph"])
+def test_native_tools_extra_tools_and_tools_are_both_composed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    spec = {"catalog": "main", "schema": "sales", "extra_tools": [
+        {"type": "skill", "name": "extra", "description": "Extra guide", "path": "extra.md"},
+    ]}
+    tools = [{"type": "uc_function", "function": "main.sales.lookup"}]
+    fields = ({"template": {"name": "data", **spec}, "tools": tools} if mode == "template" else {
+        "agents": {"sales": {"type": "data", **spec, "tools": tools}},
+        "root": {"type": "sequential", "agents": ["sales"]},
+    })
+    generate_project(AgentConfig(name="extras", **fields), tmp_path)
+    ns = _exec_generated_project(tmp_path, monkeypatch)
+    leaf = ns["agent"] if mode == "template" else ns["sales"]
+    names = _tool_names(leaf)
+    assert names.count("extra") == 1
+    assert names.count("lookup") == 1
+
+
+def test_native_tools_template_builtin_name_collision_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generate_project(AgentConfig(name="duplicates", tools=[{"type": "sql"}],
+        template={"name": "data", "catalog": "main", "schema": "sales"}), tmp_path)
+    with pytest.raises(ValueError, match="duplicate tool name"):
+        _exec_generated_project(tmp_path, monkeypatch)
+
+
+def test_native_tools_broken_symlink_collision_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "tools").symlink_to(tmp_path / "missing")
+    with pytest.raises(ValueError, match="tools"):
+        generate_project(AgentConfig(name="collision", tools=[{"type": "sql"}]), tmp_path)
+    assert (tmp_path / "tools").is_symlink()
+    assert not (tmp_path / "agent.py").exists()
+
+
+_PARITY_TOOLS = [
+    {"type": "uc_function", "function_name": "main.sales.lookup", "identity": "obo",
+     "scope": {"schemas": ["main.sales"]}, "callers": ["analyst@example.com"]},
+    {"type": "sql", "warehouse_id": "wh123"},
+]
+
+
+def test_python_and_legacy_tools_compile_equivalent_authorization_and_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Migration parity: generated Python tools govern exactly like the legacy loader."""
+    from apx_agent import LlmAgent, load_config_tools
+    from apx_agent._apps_authorization import compile_authorization_plan
+    from apx_agent._durable_agent import build_native_manifest
+
+    config = AgentConfig(name="parity", target="durable_agent_server", tools=_PARITY_TOOLS)
+    generate_project(config, tmp_path)
+    python_agent = _exec_generated_project(tmp_path, monkeypatch)["agent"]
+    legacy_agent = LlmAgent(name="parity", tools=load_config_tools(_PARITY_TOOLS))
+
+    plans = [compile_authorization_plan(a, model=config.model) for a in (python_agent, legacy_agent)]
+    assert plans[0] == plans[1]
+    assert len(plans[0].user_resources) == 2
+    manifests = [
+        build_native_manifest(config=config, authorization_plan=plan, agent=agent)
+        for plan, agent in zip(plans, (python_agent, legacy_agent))
+    ]
+    assert manifests[0] == manifests[1]
+    assert tomllib.loads(manifests[0])["auth"]["user"]["required"] is True
+
+
+def test_python_and_legacy_tools_both_deny_over_scoped_declaration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apx_agent import load_config_tools
+
+    denied = [{"type": "uc_function", "function_name": "other.sales.lookup",
+               "scope": {"catalogs": ["main"]}}]
+    generate_project(AgentConfig(name="denied", tools=denied), tmp_path)
+    with pytest.raises(ValueError, match="over-scoped"):
+        _exec_generated_project(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="over-scoped"):
+        load_config_tools(denied)
+
+
+def test_generated_tools_import_only_public_apx_agent_names(tmp_path: Path) -> None:
+    """Generated tools/ is user-owned source; it must not reach into private modules."""
+    import apx_agent
+    from apx_agent._tool_config import _registry
+
+    assert {f.__name__ for f in _registry().values()} <= set(apx_agent.__all__)
+    (tmp_path / "guide.md").write_text("# Guide\n")
+    out = tmp_path / "out"
+    generate_project(AgentConfig(name="public", tools=[{"type": "genie", "space_id": "s"}],
+        skills=[SkillConfig(name="guide", description="Guide", path="guide.md")]), out,
+        source_dir=tmp_path)
+    source = (out / "tools" / "declared.py").read_text()
+    assert "from apx_agent import genie_tool" in source
+    assert "from apx_agent import skill_tool" in source
+    assert "apx_agent._" not in source

@@ -234,6 +234,9 @@ def openapi_tool(
         )
         agent = Agent(tools=tools)
     """
+    from ._tool_config import _check_allowlist
+
+    _check_allowlist(None, "openapi", {"spec": spec})
     doc = _load_openapi_spec(spec)
     if not isinstance(doc, dict):
         # A non-JSON/HTML response YAML-parses to a str; guard before `.get`.

@@ -250,6 +250,13 @@ def _build_data_tools_and_instructions(
         tools.append(vector_search_tool(vector_index))
     if extra_tools:
         tools += extra_tools
+        names = [fn.__name__ for fn in tools]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(
+                f"duplicate tool name(s) {duplicates} in extra_tools; "
+                "built-in DataAgent tools already use these names — rename the extra tool."
+            )
 
     if knowledge_was_source:
         grounding = explicit_grounding

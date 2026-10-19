@@ -2,9 +2,9 @@
 
 A tool may declare *its own* execution identity and a permission ceiling —
 which UC catalogs/schemas/tables/functions it may touch and which secret
-scopes it may read — in its ``[[tool.apx.tools]]`` table or in a
-``build_tool(...)`` call. This module holds that declaration (:class:`ToolScope`),
-its two enforcement points, and the runtime error:
+scopes it may read — in a Python ``build_tool(scope=ToolScope(...))`` call.
+This module holds that declaration (:class:`ToolScope`), its two enforcement
+points, and the runtime error:
 
   * **Compile time** — :func:`validate_tool_scope` refuses a build/deploy when a
     tool's declared :class:`~apx_agent._resources.ResourceSpec` (a UC table /

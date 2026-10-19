@@ -78,17 +78,25 @@ which tool, handoff, or route evidence to use. It returns the compact
 ### Restricting a tool to specific callers
 
 Every tool on `/mcp` is visible to every caller by default. To limit one, declare
-`callers` — the emails allowed to use it:
+`ToolScope.callers` — the emails allowed to use it — on the Python callable:
 
-```toml
-[[tool.apx.tools]]
-type = "uc_function"
-function_name = "main.billing.refund_create"
-callers = ["alice@example.com", "billing-bot@example.com"]
+```python
+# tools/billing.py
+from apx_agent import ToolScope, build_tool, uc_function_tool
+
+create_refund = uc_function_tool("main.billing.refund_create")
+create_refund = build_tool(
+    create_refund,
+    name="create_refund",
+    description="Create a billing refund for an authorized caller.",
+    scope=ToolScope(callers=("alice@example.com", "billing-bot@example.com")),
+)
 ```
 
-In Python: `attach_scope(fn, ToolScope(callers=("alice@example.com",)))`, or
-`build_tool(..., scope=ToolScope(callers=(...)))`.
+Import `create_refund` in `agent.py` and include it in the tool list. `build_tool`
+annotates the same callable and retains the factory's resource declarations;
+`callers` is not a kwarg on `uc_function_tool`. See the
+[Python-native layout and migration](overview.md#python-native-tool-layout).
 
 The caller is the Databricks Apps `X-Forwarded-Email`. MCP `list_tools` hides the
 tool from anyone else, and its `/api/tools/<name>` route (which MCP `call_tool`

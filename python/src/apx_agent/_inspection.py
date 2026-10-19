@@ -294,6 +294,9 @@ def _load_agent_config(
     if resolved is None or not resolved.exists():
         return None
 
+    from ._tool_config import reject_legacy_tool_config
+
+    reject_legacy_tool_config(str(resolved))
     fields = _agent_config_fields(resolved, section_path)
     if fields is None:
         return None

@@ -2,8 +2,8 @@
 
 Writes table/column comments via the SQL warehouse under the CALLING USER's
 identity (OBO), so the write requires their UC ``MODIFY`` grant and is audited.
-Scoped to a declared ``catalog.schema``. Opt-in only — declare it via
-``[[tool.apx.tools]] type = "uc_comment_writer"``; never wired by default.
+Scoped to a declared ``catalog.schema``. Opt-in only — include
+``uc_comment_tool(catalog=..., schema=...)`` in the agent's Python tools.
 
 Annotations are intentionally NOT deferred so ``UserClientDependency`` resolves
 eagerly (see sql_tools.py for the rationale).
