@@ -165,13 +165,17 @@ def compile_durable_handlers(
         hasattr(fn, "__apx_sub_agent_url__") for fn in _iter_tool_fns(agent))
     static = dict(platform_tools) if platform_tools else {}
     refs = [ref for _, ref in platform_tool_leaves(agent)]
+    if refs and project_root is None:
+        raise ValueError("platform_tools() needs an agent.toml in the project root (project_root=None)")
     request_ids = frozenset() if any(not r.ids for r in refs) else frozenset().union(*(r.ids for r in refs))
     client_for = platform_client_for(service_ws)
 
-    def execute(value: Any, context: Any, emit_message: Callable[[Any], None] | None,
-                platform: dict[str, list[Any]]) -> dict[str, Any]:
-        recovering = bool(getattr(context, "is_recovery", False))
-        if recovering and not recovery:
+    def request_auth(context: Any) -> Any:
+        """The one validation site for a context's recovery and auth contract.
+
+        Runs before anything credentialed (request MCP fetch, graph turn).
+        """
+        if bool(getattr(context, "is_recovery", False)) and not recovery:
             raise ValueError("recovery is not wired for durable_agent_server")
         if recovery and (not isinstance(getattr(context, "invocation_id", None), str) or not context.invocation_id):
             raise ValueError("recovery requires a non-empty invocation_id")
@@ -181,6 +185,11 @@ def compile_durable_handlers(
             raise ValueError("Request-user recovery is unsupported")
         if (require_user and auth is None) or (auth is not None and not isinstance(auth, RequestAuthContext)):
             raise ValueError("user_identity requires the SDK's active RequestAuthContext")
+        return auth
+
+    def execute(value: Any, context: Any, auth: Any, emit_message: Callable[[Any], None] | None,
+                platform: dict[str, list[Any]]) -> dict[str, Any]:
+        recovering = bool(getattr(context, "is_recovery", False))
         user_ws = auth.client_for("user") if auth is not None else None
         headers = None
         if auth is not None and user_ws is not None:
@@ -247,8 +256,9 @@ def compile_durable_handlers(
 
         # Sync graph/checkpoint tools run outside the server's event loop.
         can_emit = callable(getattr(context, "emit", None))
+        auth = request_auth(context)
         # to_thread copies this context, so tools in the turn see the request.
-        token = _REQUEST_AUTH.set(getattr(context, "request_auth", None))
+        token = _REQUEST_AUTH.set(auth)
         try:
             platform = dict(static)
             if project_root is not None and refs:
@@ -256,7 +266,7 @@ def compile_durable_handlers(
 
                 platform.update(await request_platform_tools(project_root, client_for, request_ids))
             result = await asyncio.to_thread(
-                execute, value, context,
+                execute, value, context, auth,
                 emit_message if can_emit and not report.streaming_buffered else None,
                 platform,
             )

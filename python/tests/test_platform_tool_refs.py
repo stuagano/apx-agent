@@ -245,7 +245,7 @@ def test_platform_client_for_user_requires_request_and_app_is_service() -> None:
         client_for("user")
 
 
-def test_durable_turn_resolves_platform_user_to_the_request(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_durable_turn_resolves_platform_user_to_the_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A startup-built tool, called mid-turn, gets this request's user — not the service client."""
     from apx_agent._durable_agent import compile_durable_handlers, platform_client_for
 
@@ -259,7 +259,8 @@ def test_durable_turn_resolves_platform_user_to_the_request(monkeypatch: pytest.
 
     _tool_calling_model(monkeypatch, "pricing_ask")
     agent = Agent(name="a", tools=[*platform_tools("pricing")])
-    handlers = compile_durable_handlers(agent, model="m", service_ws=service,
+    (tmp_path / "agent.toml").write_text(_BASE + _genie("pricing"))
+    handlers = compile_durable_handlers(agent, model="m", service_ws=service, project_root=tmp_path,
                                         platform_tools={"pricing": [_fake_tool("pricing_ask", effect)]})
     from databricks_agentkit.runtime.auth import RequestAuthContext
 
@@ -343,3 +344,41 @@ def test_async_only_platform_tool_runs_in_sync_graph(monkeypatch: pytest.MonkeyP
     result = graph.invoke({"messages": [HumanMessage(content="go")]})
     [tool_msg] = [m for m in result["messages"] if isinstance(m, ToolMessage)]
     assert (ran, seen, tool_msg.content) == (["x"], ["crm"], "crm:x")
+
+
+def test_durable_handlers_need_project_root_for_platform_tools() -> None:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    with pytest.raises(ValueError, match=r"agent\.toml"):
+        compile_durable_handlers(Agent(name="a", tools=[*platform_tools("crm")]), model="m",
+                                 service_ws=MagicMock())
+
+
+@pytest.mark.parametrize(("recovery", "context", "error"), [
+    (False, SimpleNamespace(request_auth=SimpleNamespace(), session_id="s", is_recovery=False),
+     "RequestAuthContext"),
+    (True, SimpleNamespace(request_auth=SimpleNamespace(), session_id="s", is_recovery=True,
+                           invocation_id="inv-1"),
+     "Request-user recovery is unsupported"),
+])
+def test_rejected_context_never_fetches_request_platform_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovery: bool, context: Any, error: str,
+) -> None:
+    """The auth contract is checked before any credentialed MCP fetch."""
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    async def must_not_fetch(*a: Any, **k: Any) -> Any:
+        raise AssertionError("request_platform_tools called for a rejected context")
+
+    monkeypatch.setattr("apx_agent._platform_tools.request_platform_tools", must_not_fetch)
+    (tmp_path / "agent.toml").write_text(_BASE + _mcp("crm", "user"))
+    from databricks_agentkit.langgraph.session_store import DatabricksSessionStoreSaver
+
+    ws = MagicMock()
+    # Recovery needs a managed Session Store; constructing the saver does no I/O.
+    saver = DatabricksSessionStoreSaver("s", workspace_client=ws) if recovery else None
+    handlers = compile_durable_handlers(Agent(name="a", tools=[*platform_tools("crm")]), model="m",
+                                        service_ws=ws, project_root=tmp_path, recovery=recovery,
+                                        checkpointer=saver)
+    with pytest.raises(ValueError, match=error):
+        asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, context))
