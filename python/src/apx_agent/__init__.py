@@ -19,6 +19,9 @@ Agent = LlmAgent
 # Agent-as-tool composition primitive
 from ._agent_tool import agent_tool
 
+# Platform tools — agent.toml tool placeholders
+from ._platform_tools import platform_tools
+
 # DataAgent — LlmAgent specialized for governed UC data access
 from .data_agent import DataAgent, DataAgentHealth, DataAgentProbe, DataTemplate
 from .coworker import CoworkerAgent, CoworkerTemplate
@@ -465,6 +468,7 @@ __all__ = [
     "SequentialAgent",
     "RemoteDatabricksAgent",
     "agent_tool",
+    "platform_tools",
     # Template protocol + registry
     "Template",
     "TemplateInfo",
