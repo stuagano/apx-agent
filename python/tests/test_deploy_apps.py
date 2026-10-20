@@ -1088,7 +1088,10 @@ def test_native_deploy_hands_rollout_to_agentbricks(
         assert project.session_store == "apx-my-app-sessions"
         assert project.trace_experiment_name == "/Users/owner@example.com/agent-bricks-my-app-dev"
         runtime = yaml.safe_load((source / "app.yaml").read_text())
-        assert runtime["command"] == ["python", "-m", "agent_server.start_host" if legacy_bundle else "apx_agent._serve"]
+        # AgentBricks' upload omits uv.lock and Apps installs nothing from a bare
+        # pyproject.toml, so the native command must install deps itself (uv run).
+        assert runtime["command"] == (["python", "-m", "agent_server.start_host"] if legacy_bundle
+                                      else ["uv", "run", "python", "-m", "apx_agent._serve"])
         values = {entry["name"]: entry["value"] for entry in runtime["env"]}
         assert values["APX_MODEL"] == ("resolved-model" if legacy_bundle else "declared-model")
         if not legacy_bundle:

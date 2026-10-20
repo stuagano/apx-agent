@@ -72,7 +72,10 @@ def compile_native_app(config: AgentConfig) -> dict[str, Any]:
     app: dict[str, Any] = {
         "name": config.name if config.name.startswith("agent-bricks-") else f"agent-bricks-{config.name}",
         "source_code_path": ".build",
-        "config": {"command": ["python", "-m", "apx_agent._serve"], "env": env},
+        # AgentBricks' upload omits uv.lock and Apps installs nothing from a bare
+        # pyproject.toml, so `uv run` installs the deps at start, as AgentBricks'
+        # own templates do (`uv run start-server`).
+        "config": {"command": ["uv", "run", "python", "-m", "apx_agent._serve"], "env": env},
     }
     bounds = declared_replica_bounds(config)
     if bounds is not None:
