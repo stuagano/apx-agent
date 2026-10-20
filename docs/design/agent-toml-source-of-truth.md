@@ -85,6 +85,7 @@ pricing = Agent(name="pricing", tools=[quote, *platform_tools("genie-pricing")])
 - Placeholders resolve through AgentKit's loaders. `genie_tools()` covers
   `genie_agent`; `mcp_tools()` covers `mcp`, `uc_function`, `genie_one` and
   `sandbox`. apx adds no MCP or Genie wiring of its own.
+- Agent tools that use `platform_tools()` with no `agent.toml` (or no project root) are a compile error, not a `/readyz` degradation.
 - **Identity:**
   - `genie_agent` tools are built once at startup. `GenieAgent._client()` calls its
     `workspace_client_for` resolver on every call, so apx passes a resolver
@@ -105,7 +106,6 @@ pricing = Agent(name="pricing", tools=[quote, *platform_tools("genie-pricing")])
   run on them as on Python tools. The data ceiling is the platform's
   `downscope`; a `ToolScope` on a platform tool is a compile error, so one
   tool's data limits are never declared in two places.
-- Agent tools that use `platform_tools()` with no `agent.toml` (or no project root) are a compile error, not a `/readyz` degradation.
 - A Genie binding yields three tools: `<id>_ask`, `<id>_poll` and
   `<id>_query_result`. The collision check uses these names.
 
@@ -125,8 +125,7 @@ The checks:
 1. **Loads.** `AgentProject.load` succeeds, `framework = "langgraph"`, and
    `server` matches the compile target.
 2. **User auth.** Every scope the authorization plan derives from Python tools
-   is in `[auth.user].additional_api_scopes` or is inferred by the platform from
-   its own tools. `required = true` when the plan needs a request user.
+   is listed in `[auth.user].additional_api_scopes`. `required = true` when the plan needs a request user.
 3. **Stores.** Managed memory or managed sessions in Python need a bound
    `memory_store` / `session_store`. While `[tool.apx.agent]` exists, a store
    name it declares must equal the `agent.toml` binding.
@@ -150,11 +149,11 @@ the transition.
 ## Migration command
 
 `apx-agent agents migrate-agent-toml` writes the authored `agent.toml` from the
-current `[tool.apx.agent]` and authorization plan. It writes only through the
-SDK: `AgentProject.create`, then `bind_memory_store`, `bind_session_store`,
-`bind_tracing` and `set_deployment_name`. `[auth.user]` is not set by any
-`AgentProject` method, so the command sets it on the parsed document before the
-SDK's `write()`. This command is the only time apx causes `agent.toml` to be
+current `[tool.apx.agent]` and authorization plan. It makes one SDK call,
+`AgentProject.create(project_root, framework="langgraph", server="agentbricks",
+memory_store=..., session_store=...).write()`, then appends `[auth.user]` to the
+written file as text (no `AgentProject` method sets it), then reloads the file
+with `AgentProject.load` as a read-after-write check. This command is the only time apx causes `agent.toml` to be
 written. It refuses to overwrite an existing `agent.toml`. The migrated and checked session store follows `inspect_target(...).session_store` (composite agents bind none), matching the generated manifest.
 
 ## Testing
