@@ -838,3 +838,31 @@ def test_undeclared_platform_tool_still_fails_startup(tmp_path: Path) -> None:
     checks = _by_name(check_durable_readiness(root))
     assert checks["Startup"].status is Status.FAIL
     assert "nope" in checks["Startup"].detail
+
+
+def test_app_mcp_platform_tools_are_not_probed_offline(tmp_path: Path) -> None:
+    """App-auth MCP tools load over the network at startup; doctor refuses outbound
+    HTTP, which is not-probed, not a Startup failure."""
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    app_mcp = '\n[[tools]]\nid = "crm"\nauth = "app"\nsource = {kind = "mcp", service = "system.ai.crm"}\n'
+    root = _project(tmp_path, "crm", _PLATFORM_AGENT.format(name="crm", ids="'crm'"),
+                    extra_files={"agent.toml": _TOML_BASE + app_mcp})
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Startup"].status is Status.OK, checks["Startup"].detail
+    assert "platform MCP tools not probed offline" in checks["Startup"].detail
+
+
+def test_genie_materialization_failure_still_fails_startup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The offline allowance covers only app-auth MCP ids; anything else stays a FAIL."""
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    def broken(**kwargs: Any) -> Any:
+        raise RuntimeError("genie build broke")
+
+    monkeypatch.setattr("databricks_agentkit.langgraph.genie.genie_tools", broken)
+    root = _project(tmp_path, "gb", _PLATFORM_AGENT.format(name="gb", ids="'sales'"),
+                    extra_files={"agent.toml": _TOML_BASE + _GENIE})
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Startup"].status is Status.FAIL
+    assert "genie build broke" in checks["Startup"].detail

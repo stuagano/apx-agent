@@ -361,6 +361,17 @@ class _Started:
     app: Any
     client: Any
     mcp: bool
+    not_probed: tuple[str, ...] = ()
+
+
+def _offline_mcp_ids(project: Path) -> set[str]:
+    """agent.toml MCP-family tools that load over the network at startup (app auth)."""
+    from ._agent_toml import load_agent_toml
+    from ._platform_tools import _MCP_KINDS
+
+    toml = load_agent_toml(project)
+    return set() if toml is None else {
+        t.id for t in toml.tools if t.source.kind in _MCP_KINDS and t.auth != "user"}
 
 
 def _mount_lifecycle(app: Any) -> Any:
@@ -393,13 +404,19 @@ def _stage_startup(loaded: _Loaded, surface: Callable[[], list[str]], stack: con
             mount_mcp_endpoints(app, loaded.agent)
         client = stack.enter_context(TestClient(app))
         ready = client.get("/readyz")
-        if ready.status_code != 200 or ready.json().get("checks", {}).get("runtime_store") != "ok":
+        # Offline, app-auth MCP tools can't load (no network, no real client). Only
+        # those ids may degrade /readyz; readyz checks the Runtime Store first.
+        failures = getattr(app.state, "apx_platform_tool_failures", {})
+        not_probed = (ready.status_code == 503 and set(ready.json().get("checks", {})) == {"platform_tools"}
+                      and failures and set(failures) <= _offline_mcp_ids(loaded.project))
+        if not not_probed and (ready.status_code != 200
+                               or ready.json().get("checks", {}).get("runtime_store") != "ok"):
             return Check("Startup", Status.FAIL, f"/readyz {ready.status_code}: {ready.text[:200]}")
         if mcp and _mount_lifecycle(app) is None:
             return Check("Startup", Status.FAIL, "/mcp mounted but its lifecycle never started (stays 503)")
     except BaseException as exc:
         return _fail("Startup", exc)
-    return _Started(app=app, client=client, mcp=mcp)
+    return _Started(app=app, client=client, mcp=mcp, not_probed=tuple(sorted(failures)) if not_probed else ())
 
 
 def _delegates(agent: Any) -> list[Any]:
@@ -628,7 +645,8 @@ def check_durable_readiness(project: Path) -> list[Check]:
                 results.append(started)
             else:
                 results.append(Check("Startup", Status.OK,
-                                     "lifespan ok; /readyz runtime_store=ok (in-memory store; Lakebase not exercised offline)" + ("; /mcp live" if started.mcp else "")))
+                                     "lifespan ok; /readyz runtime_store=ok (in-memory store; Lakebase not exercised offline)" + ("; /mcp live" if started.mcp else "")
+                                     + (f"; platform MCP tools not probed offline: {', '.join(started.not_probed)}" if started.not_probed else "")))
                 results.append(_stage_request(loaded, started, harness))
             results = _close_lifespan(stack, results)
         if len(results) == 4 and all(c.status is Status.OK for c in results):
