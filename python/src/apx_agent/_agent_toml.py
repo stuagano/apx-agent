@@ -6,6 +6,8 @@ exception)."""
 
 from __future__ import annotations
 
+import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -123,3 +125,19 @@ def _store_findings(project: AgentProject, config: AgentConfig | None) -> list[C
                              f"{label} store mismatch: pyproject {declared.store_name!r} vs agent.toml {bound!r}",
                              "Make [tool.apx.agent] and agent.toml name the same store."))
     return out
+
+
+def stage_agent_toml(project_root: Path, staged_source: Path,
+                     generate: Callable[[], str], log: Callable[[str], None]) -> Path:
+    """Stage the authored agent.toml unchanged; generate (deprecated) only when absent."""
+    authored = project_root / _NAME
+    target = staged_source / _NAME
+    if authored.is_symlink() or target.is_symlink():
+        raise ValueError("Refusing a symlinked agent.toml.")
+    if authored.is_file():
+        shutil.copyfile(authored, target)
+        log(f"  staged authored agent.toml: {target}")
+        return target
+    target.write_text(generate())
+    log("  no agent.toml: generated one (deprecated) — run `apx-agent agents migrate-agent-toml`")
+    return target
