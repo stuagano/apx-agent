@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from apx_agent import Agent, platform_tools
+from apx_agent import Agent, SequentialAgent, platform_tools
 from apx_agent._agent_toml import check_agent_toml, load_agent_toml, stage_agent_toml
 from apx_agent._apps_authorization import compile_authorization_plan
 from apx_agent._doctor import Check, Status
@@ -187,3 +187,9 @@ def test_doctor_durable_reports_agent_toml_without_hiding_stages(tmp_path: Path)
     assert toml_rows and toml_rows[0].status is Status.FAIL and "nope" in toml_rows[0].detail
     startup = next(c for c in checks if c.name == "Startup")
     assert startup.status is not Status.SKIP, startup.detail
+
+
+def test_composite_durable_project_without_session_store_has_no_session_finding(tmp_path: Path) -> None:
+    config = AgentConfig.model_validate({"name": "a", "target": "durable_agent_server"})
+    agent = SequentialAgent([Agent(name="a", tools=[_noop])], name="seq")
+    assert _findings(_project(tmp_path, BASE), agent, config) == []

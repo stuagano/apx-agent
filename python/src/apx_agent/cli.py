@@ -4914,7 +4914,7 @@ def migrate_agent_toml() -> None:
         raise click.ClickException("No [tool.apx.agent] to migrate.")
     agent = resolve_agent("agent:agent", config)
     try:
-        path = write_agent_toml(cwd, config, compile_authorization_plan(agent, model=config.model))
+        path = write_agent_toml(cwd, config, compile_authorization_plan(agent, model=config.model), agent)
     except FileExistsError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"wrote {path}")

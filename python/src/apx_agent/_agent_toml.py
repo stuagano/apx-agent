@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     from ._agents import BaseAgent
     from ._apps_authorization import AuthorizationPlan
-    from ._models import AgentConfig, MemoryBackendConfig, SessionBackendConfig
+    from ._models import AgentConfig
 
 _NAME = "agent.toml"
 
@@ -104,25 +104,33 @@ def check_agent_toml(
     if needs_user and not project.user_auth.required:
         findings.append(Check(_NAME, Status.FAIL, "tools need a request user but [auth.user] required is false",
                               "Set [auth.user] required = true in agent.toml."))
-    findings.extend(_store_findings(project, config))
+    findings.extend(_store_findings(project, agent, config))
     return findings or [Check(_NAME, Status.OK, "agent.toml matches the Python agent")]
 
 
-def _store_findings(project: AgentProject, config: AgentConfig | None) -> list[Check]:
+def _bound_session_store(agent: BaseAgent, config: AgentConfig) -> str | None:
+    """The session store the agent binds: the one rule build_native_manifest and migration share."""
+    from ._runtime_targets import inspect_target
+
+    return inspect_target(agent, config=config, target=config.target).session_store
+
+
+def _store_findings(project: AgentProject, agent: BaseAgent, config: AgentConfig | None) -> list[Check]:
     if config is None:
         return []
+    memory = config.memory.store_name if config.memory is not None and config.memory.type == "managed" else None
+    pairs = (("memory", memory, project.memory_store, "agentbricks memory bind"),
+             ("session", _bound_session_store(agent, config), project.session_store, "agentbricks sessions bind"))
     out: list[Check] = []
-    pairs = (("memory", config.memory, project.memory_store, "agentbricks memory bind"),
-             ("session", config.session, project.session_store, "agentbricks sessions bind"))
     for label, declared, bound, command in pairs:
-        if declared is None or declared.type != "managed":
+        if declared is None:
             continue
         if bound is None:
             out.append(Check(_NAME, Status.FAIL, f"managed {label} declared but no {label}_store bound",
                              f"Run `{command} <name>`."))
-        elif declared.store_name is not None and declared.store_name != bound:
+        elif declared is not None and declared != bound:
             out.append(Check(_NAME, Status.FAIL,
-                             f"{label} store mismatch: pyproject {declared.store_name!r} vs agent.toml {bound!r}",
+                             f"{label} store mismatch: pyproject {declared!r} vs agent.toml {bound!r}",
                              "Make [tool.apx.agent] and agent.toml name the same store."))
     return out
 
@@ -143,7 +151,8 @@ def stage_agent_toml(project_root: Path, staged_source: Path,
     return target
 
 
-def write_agent_toml(project_root: Path, config: AgentConfig, plan: AuthorizationPlan) -> Path:
+def write_agent_toml(project_root: Path, config: AgentConfig, plan: AuthorizationPlan,
+                     agent: BaseAgent) -> Path:
     """One-shot migration: the SDK writes the file; apx adds [auth.user]."""
     from databricks_agentbricks.projects.agent_project import AgentProject
 
@@ -153,12 +162,10 @@ def write_agent_toml(project_root: Path, config: AgentConfig, plan: Authorizatio
     if path.exists() or path.is_symlink():
         raise FileExistsError(f"{path} already exists; agent.toml is not overwritten")
 
-    def managed(store: MemoryBackendConfig | SessionBackendConfig | None) -> str | None:
-        return store.store_name if store is not None and store.type == "managed" else None
-
+    memory = config.memory.store_name if config.memory is not None and config.memory.type == "managed" else None
     AgentProject.create(project_root, framework="langgraph", server="agentbricks",
-                        memory_store=managed(config.memory),
-                        session_store=managed(config.session)).write()
+                        memory_store=memory,
+                        session_store=_bound_session_store(agent, config)).write()
     # AgentProject has no [auth.user] setter. Same rule as build_native_manifest.
     required = any(op.requires_request_context for op in plan.operations)
     required = required or bool(plan.app_dependencies) or config.memory is not None
