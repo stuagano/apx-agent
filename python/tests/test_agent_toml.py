@@ -158,3 +158,32 @@ def test_symlinked_manifest_refused(tmp_path: Path) -> None:
     (tmp_path / ".build").mkdir()
     with pytest.raises(ValueError, match="symlink"):
         stage_agent_toml(tmp_path, tmp_path / ".build", lambda: GENERATED, print)
+
+
+def test_doctor_project_group_reports_agent_toml(tmp_path: Path, monkeypatch) -> None:
+    from apx_agent._doctor import run_checks
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0"\n[tool.apx.agent]\nname = "p"\nmodel = "m"\ntarget = "durable_agent_server"\n')
+    (tmp_path / "agent.py").write_text(
+        "from apx_agent import Agent, platform_tools\nagent = Agent(name='p', tools=[*platform_tools('nope')])\n")
+    (tmp_path / "agent.toml").write_text(BASE)
+    monkeypatch.chdir(tmp_path)
+    groups = dict(run_checks(tmp_path, online=False))
+    rows = [c for c in groups["Project"] if c.name == "agent.toml"]
+    assert rows and rows[0].status is Status.FAIL and "nope" in rows[0].detail
+
+
+def test_doctor_durable_reports_agent_toml_without_hiding_stages(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0"\n[tool.apx.agent]\nname = "p"\nmodel = "m"\nmodule = "agent:agent"\n')
+    (tmp_path / "agent.py").write_text(
+        "from apx_agent import Agent, platform_tools\nagent = Agent(name='p', tools=[*platform_tools('nope')])\n")
+    (tmp_path / "agent.toml").write_text(BASE)
+    checks = check_durable_readiness(tmp_path)
+    toml_rows = [c for c in checks if c.name == "agent.toml"]
+    assert toml_rows and toml_rows[0].status is Status.FAIL and "nope" in toml_rows[0].detail
+    startup = next(c for c in checks if c.name == "Startup")
+    assert startup.status is not Status.SKIP, startup.detail

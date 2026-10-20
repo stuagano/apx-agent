@@ -209,6 +209,8 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
         image_check = check_agent_image(cwd, agent_config)
         if image_check is not None:
             project.append(image_check)
+        if agent_config is not None and agent_config.target == "durable_agent_server":
+            project.extend(_agent_toml_rows(cwd, agent_config))
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
         project.append(memory_check)
@@ -240,6 +242,18 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
 
         groups.append(("Durable readiness", check_durable_readiness(cwd)))
     return groups
+
+
+def _agent_toml_rows(cwd: Path, config: AgentConfig) -> list[Check]:
+    from ._agent_toml import check_agent_toml
+    from ._apps_authorization import compile_authorization_plan
+    from ._wiring import resolve_agent
+
+    try:
+        agent = resolve_agent("agent:agent", config)
+    except Exception as exc:  # reported, not raised: doctor keeps going
+        return [Check("agent.toml", Status.SKIP, f"agent not importable: {type(exc).__name__}")]
+    return check_agent_toml(cwd, agent, compile_authorization_plan(agent, model=config.model), config)
 
 
 def check_python_version() -> Check:
