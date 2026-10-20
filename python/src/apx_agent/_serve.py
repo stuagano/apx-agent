@@ -24,7 +24,7 @@ def create_app() -> Any:
     agent = resolve_agent("agent:agent", config, ws=ws)
     app = compile_agent(
         agent, config=config, model=os.environ.get("APX_MODEL", config.model),
-        service_ws=ws, session_store=os.environ.get("AGENT_SESSION_STORE"),
+        service_ws=ws, session_store=os.environ.get("AGENT_SESSION_STORE"), project_root=Path.cwd(),
     )
     app.state.workspace_client = ws
     return app

@@ -215,6 +215,10 @@ def attach_scope(fn: Any, scope: ToolScope | None) -> Any:
     stamped onto the tool's ``ToolMetadata`` so the existing Apps-authorization
     path resolves the credential — reusing ``build_tool``'s ``execution`` seam.
     """
+    from ._platform_tools import PlatformToolRef  # noqa: PLC0415
+
+    if isinstance(fn, PlatformToolRef):
+        raise ValueError("platform tools take their data ceiling from agent.toml downscope; ToolScope is not allowed")
     if scope is None:
         return fn
     fn._apx_scope = scope  # type: ignore[attr-defined]

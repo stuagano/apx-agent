@@ -253,6 +253,7 @@ def _build_pyproject(config: "AgentConfig") -> str:
 _START_SERVER_CONTENT = '''\
 """Native APX DurableAgentServer target. Install databricks-agentbricks to use it."""
 import os
+from pathlib import Path
 
 os.environ.setdefault("APX_RUNTIME", "apps")
 
@@ -268,7 +269,7 @@ ws = _make_workspace_client()
 app = compile_agent(
     agent, config=config, target="durable_agent_server",
     model=os.environ.get("APX_MODEL", config.model), service_ws=ws,
-    session_store=os.environ.get("AGENT_SESSION_STORE"),
+    session_store=os.environ.get("AGENT_SESSION_STORE"), project_root=Path.cwd(),
 )
 '''
 

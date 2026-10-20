@@ -1170,7 +1170,7 @@ def compile_to_responses_agent(
             # history prepend) and key state by thread_id. See #329.
             thread_id = custom_inputs.get("thread_id") or custom_inputs.get("session_id")
             set_trace_session(span, thread_id or conv_id)
-            cp = _checkpointer if thread_id else None
+            cp: Any = _checkpointer if thread_id else None
             lg_config = {"configurable": {"thread_id": thread_id}} if cp else None
 
             lc_history = _conv_items_to_lc_messages(conv_items)
@@ -1362,7 +1362,7 @@ def compile_to_responses_agent(
             # "updates" mode yields only new messages, so no slice fix is needed.
             thread_id = custom_inputs.get("thread_id") or custom_inputs.get("session_id")
             set_trace_session(span, thread_id or conv_id)
-            cp = _checkpointer if thread_id else None
+            cp: Any = _checkpointer if thread_id else None
             lg_config = {"configurable": {"thread_id": thread_id}} if cp else None
 
             lc_history = _conv_items_to_lc_messages(conv_items)

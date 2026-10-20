@@ -1039,7 +1039,8 @@ def test_packaged_launcher_preserves_remote_session_binding(execution: Any, monk
     assert create_app() is native_app
     assert native_app.state.workspace_client is execution.ws
     compiler.assert_called_once_with(execution.agent, config=config, model="bound-model",
-                                    service_ws=execution.ws, session_store="remote-sessions")
+                                    service_ws=execution.ws, session_store="remote-sessions",
+                                    project_root=Path.cwd())
 
 
 @pytest.mark.parametrize("declared", [False, True])

@@ -120,6 +120,8 @@ class CompileContext:
     escalate_failures: bool = False
     step_path: tuple[str, ...] = ()
     fixture_replay: _FixtureReplay | None = None
+    platform_tools: dict[str, list[Any]] = field(default_factory=dict)
+    """agent.toml tools by id, already materialized (see _platform_tools)."""
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +404,14 @@ def _compile_llm_agent(
         else _make_langchain_tool(fn, ctx)
         for fn in author_fns
     ]
-    extra = list(extra_tools) if extra_tools else []
+    # agent.toml tools stay always visible (like extra_tools) under deferred loading.
+    platform = [
+        t
+        for ref in agent._platform_tool_refs
+        for i in sorted(ref.ids or ctx.platform_tools)
+        for t in ctx.platform_tools.get(i, [])
+    ]
+    extra = [*platform, *(extra_tools or [])]
     if extra:
         tools = tools + extra
     middleware = [_governance_exception_middleware()]
@@ -1528,6 +1537,7 @@ def compile_to_langgraph(
     model: str,
     headers: Any | None = None,
     checkpointer: Any | None = None,
+    platform_tools: dict[str, list[Any]] | None = None,
 ) -> Any:
     """Compile an apx-agent declarative agent tree to a LangGraph runtime.
 
@@ -1547,6 +1557,8 @@ def compile_to_langgraph(
             ``"databricks-claude-sonnet-4-6"``).
         headers: Optional ``DatabricksAppsHeaders``, surfaced to tools that
             declare ``Dependencies.Headers``.
+        platform_tools: Materialized agent.toml tools by id, bound to every
+            leaf that references them with ``platform_tools(...)``.
 
     Returns:
         A LangGraph ``CompiledStateGraph``. Invoke with
@@ -1591,5 +1603,6 @@ def compile_to_langgraph(
         headers=headers,
         checkpointer=checkpointer,
         remote_leaf_bindings=getattr(agent, "_apx_remote_leaf_bindings", {}),
+        platform_tools=dict(platform_tools) if platform_tools else {},
     )
     return _compile_any(agent, ctx)

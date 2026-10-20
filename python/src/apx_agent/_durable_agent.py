@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 from ._agents import BaseAgent, LlmAgent
 from ._compile import compile_to_langgraph
 from ._graph_turn import run_graph_turn
+from ._platform_tools import ClientFor, platform_tool_leaves
 
 if TYPE_CHECKING:
     from ._apps_authorization import AuthorizationPlan
@@ -92,6 +95,26 @@ def _durable_discovery_config() -> AgentConfig | None:
     return AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
 
 
+# The current turn's RequestAuthContext. Genie tools are built once at startup,
+# so their identity resolver reads the request from here at call time.
+_REQUEST_AUTH: contextvars.ContextVar[Any] = contextvars.ContextVar("apx_platform_request_auth")
+
+
+def platform_client_for(service_ws: Any) -> ClientFor:
+    """agent.toml identity resolver: ``app`` is the service client; ``user`` is
+    the current request's user and never falls back to the service client."""
+
+    def client_for(mode: str) -> Any:
+        if mode == "app":
+            return service_ws
+        auth = _REQUEST_AUTH.get(None)
+        if auth is None:
+            raise RuntimeError("platform tool needs a request user")
+        return auth.client_for("user")
+
+    return client_for
+
+
 @dataclass(frozen=True)
 class DurableHandlers:
     invoke: Callable[[Any, Any], Awaitable[dict[str, Any]]]
@@ -112,12 +135,16 @@ def compile_durable_handlers(
     checkpointer: Any | None = None,
     require_user: bool = False,
     recovery: bool = False,
+    project_root: Path | None = None,
+    platform_tools: dict[str, list[Any]] | None = None,
 ) -> DurableHandlers:
     """Build native message handlers; no MLflow request/response dependency.
 
     The SDK owns transient request-user credentials and session namespacing.
     The service client never fills a user slot.
     Recovery is opt-in and resumes invocation-tagged managed checkpoints.
+    ``platform_tools`` are the startup-built agent.toml tools; user-auth MCP
+    tools are fetched from ``project_root``'s agent.toml inside each request.
     """
     if service_ws is None:
         raise ValueError("durable_agent_server requires an explicit service_ws runtime binding")
@@ -136,8 +163,13 @@ def compile_durable_handlers(
     # only then does any outbound call need request-user auth resolved.
     has_delegates = bool(list(_iter_sub_agents(agent))) or any(
         hasattr(fn, "__apx_sub_agent_url__") for fn in _iter_tool_fns(agent))
+    static = dict(platform_tools) if platform_tools else {}
+    refs = [ref for _, ref in platform_tool_leaves(agent)]
+    request_ids = frozenset() if any(not r.ids for r in refs) else frozenset().union(*(r.ids for r in refs))
+    client_for = platform_client_for(service_ws)
 
-    def execute(value: Any, context: Any, emit_message: Callable[[Any], None] | None) -> dict[str, Any]:
+    def execute(value: Any, context: Any, emit_message: Callable[[Any], None] | None,
+                platform: dict[str, list[Any]]) -> dict[str, Any]:
         recovering = bool(getattr(context, "is_recovery", False))
         if recovering and not recovery:
             raise ValueError("recovery is not wired for durable_agent_server")
@@ -191,6 +223,7 @@ def compile_durable_handlers(
         graph = compile_to_langgraph(
             agent, ws=user_ws, service_ws=service_ws, model=model, headers=headers,
             **({"checkpointer": checkpointer} if checkpointer is not None else {}),
+            platform_tools=platform,
         )
         turn = run_graph_turn(
             graph, agent, [HumanMessage(content=m["content"]) for m in messages],
@@ -214,10 +247,21 @@ def compile_durable_handlers(
 
         # Sync graph/checkpoint tools run outside the server's event loop.
         can_emit = callable(getattr(context, "emit", None))
-        result = await asyncio.to_thread(
-            execute, value, context,
-            emit_message if can_emit and not report.streaming_buffered else None,
-        )
+        # to_thread copies this context, so tools in the turn see the request.
+        token = _REQUEST_AUTH.set(getattr(context, "request_auth", None))
+        try:
+            platform = dict(static)
+            if project_root is not None and refs:
+                from ._platform_tools import request_platform_tools
+
+                platform.update(await request_platform_tools(project_root, client_for, request_ids))
+            result = await asyncio.to_thread(
+                execute, value, context,
+                emit_message if can_emit and not report.streaming_buffered else None,
+                platform,
+            )
+        finally:
+            _REQUEST_AUTH.reset(token)
         if can_emit and report.streaming_buffered and result["status"] == "completed" and result["messages"]:
             # Only publish the final validated answer, never buffered intermediate
             # model/tool messages that the output checks did not approve.
@@ -236,8 +280,13 @@ def compile_to_durable_agent_server(
     session_store: str | None = None,
     require_user: bool = False,
     recovery: bool = False,
+    project_root: Path | None = None,
 ) -> Any:
-    """Create the optional SDK server without importing ResponsesAgent."""
+    """Create the optional SDK server without importing ResponsesAgent.
+
+    ``project_root`` holds the agent.toml that ``platform_tools()`` references
+    resolve against; an agent with references and no agent.toml does not compile.
+    """
     from ._runtime_targets import RuntimeRequirements, inspect_target
 
     inspect_target(agent, target="durable_agent_server", checkpointer=checkpointer,
@@ -261,8 +310,10 @@ def compile_to_durable_agent_server(
         policy = replace(policy, user_required=True)
     if recovery and policy.requires_user:
         raise ValueError("recovery is incompatible with the manifest's request-user authentication")
+    startup = _startup_platform_tools(agent, project_root, model=model, service_ws=service_ws)
     handlers = compile_durable_handlers(agent, model=model, service_ws=service_ws,
-                                        checkpointer=checkpointer, require_user=policy.requires_user, recovery=recovery)
+                                        checkpointer=checkpointer, require_user=policy.requires_user, recovery=recovery,
+                                        project_root=project_root, platform_tools=startup.tools)
     app = DurableAgentServer(auth_policy=policy)
     app.invoke(handlers.invoke)
     if recovery:
@@ -300,9 +351,44 @@ def compile_to_durable_agent_server(
             return JSONResponse(status_code=503, content={
                 "status": "degraded", "checks": {"runtime_store": "unreachable"},
             })
+        if startup.error is not None:
+            return JSONResponse(status_code=503, content={
+                "status": "degraded", "checks": {"platform_tools": startup.error},
+            })
         return {"status": "ready", "checks": {
             "runtime_store": "ok", "durable": app._runtime.is_durable,
             "agent_execution": "not_probed",
         }}
 
     return app
+
+
+@dataclass(frozen=True)
+class _StartupPlatformTools:
+    tools: dict[str, list[Any]]
+    error: str | None
+
+
+def _startup_platform_tools(agent: BaseAgent, project_root: Path | None, *, model: str,
+                            service_ws: Any) -> _StartupPlatformTools:
+    """Build the startup agent.toml tools. Declaration errors fail the compile;
+    materialization errors (network, auth) degrade ``/readyz`` instead."""
+    if not platform_tool_leaves(agent):
+        return _StartupPlatformTools({}, None)
+    from ._agent_toml import check_agent_toml, load_agent_toml
+    from ._apps_authorization import compile_authorization_plan
+    from ._doctor import Status
+    from ._platform_tools import static_platform_tools
+
+    if project_root is None or load_agent_toml(project_root) is None:
+        raise ValueError(f"platform_tools() needs an agent.toml in the project root ({project_root})")
+    plan = compile_authorization_plan(agent, model=model)
+    fails = [c for c in check_agent_toml(project_root, agent, plan, None, runtime_only=True)
+             if c.status == Status.FAIL]
+    if fails:
+        raise ValueError("; ".join(f"{c.detail} — {c.fix}" for c in fails))
+    try:
+        tools = static_platform_tools(project_root, platform_client_for(service_ws))
+    except Exception as exc:  # surfaced on /readyz, never swallowed
+        return _StartupPlatformTools({}, f"{type(exc).__name__}: {exc}")
+    return _StartupPlatformTools(tools, None)
