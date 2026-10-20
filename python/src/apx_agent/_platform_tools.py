@@ -157,7 +157,8 @@ def static_platform_tools(project_root: Path, client_for: ClientFor) -> StaticPl
     if genie_ids:
         try:
             with _pinned_root(project_root):
-                for tool in genie_tools(workspace_client_for=client_for):
+                # Coroutine-only like MCP tools; the durable graph calls tools sync.
+                for tool in _sync_bridged(genie_tools(workspace_client_for=client_for)):
                     out.setdefault(owner[tool.name], []).append(tool)
         except Exception as exc:  # recorded for /readyz, never swallowed
             failures[", ".join(genie_ids)] = _failure(exc)
