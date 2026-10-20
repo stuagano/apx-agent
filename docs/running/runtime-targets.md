@@ -512,9 +512,12 @@ Identity rules:
 - A user tool never falls back to the app identity.
 
 Every mismatch between `agent.toml` and the Python agent fails deploy and
-`apx-agent doctor`. In particular `[auth.user].additional_api_scopes` must list
-every user API scope the Python tools need, including `ai-gateway`, which every
-agent with a model needs.
+`apx-agent doctor`. The agent needs a request user when a tool needs request
+context (for example `Dependencies.UserClient`), the plan has app dependencies,
+memory is declared, or a referenced `agent.toml` tool has `auth = "user"`. Then
+`[auth.user]` must set `required = true` and list every user API scope the
+authorization plan derives in `additional_api_scopes`. Otherwise scopes are not
+checked: the SDK accepts scopes only when `required = true`.
 
 ## Generated projects
 

@@ -193,3 +193,59 @@ def test_composite_durable_project_without_session_store_has_no_session_finding(
     config = AgentConfig.model_validate({"name": "a", "target": "durable_agent_server"})
     agent = SequentialAgent([Agent(name="a", tools=[_noop])], name="seq")
     assert _findings(_project(tmp_path, BASE), agent, config) == []
+
+
+# --- C1: migrate → check is clean; scopes are checked only when user auth is required ----
+from apx_agent import Dependencies  # noqa: E402
+from apx_agent._agent_toml import write_agent_toml  # noqa: E402
+
+
+def _whoami(ws: Dependencies.UserClient) -> str:
+    """Needs the request user."""
+    return ws.current_user.me().user_name
+
+
+def _durable(**extra: bool) -> AgentConfig:
+    return AgentConfig.model_validate({"name": "a", "model": "m", "target": "durable_agent_server", **extra})
+
+
+def _all_checks(root: Path, agent: Agent, config: AgentConfig | None) -> list[Check]:
+    return check_agent_toml(root, agent, compile_authorization_plan(agent, model="m"), config)
+
+
+@pytest.mark.parametrize("tools, extra", [
+    ([_noop], {}),
+    ([_whoami], {}),
+    ([_noop], {"recovery": True}),
+], ids=["plain", "user-client", "recovery"])
+def test_migrated_agent_toml_checks_clean(tmp_path: Path, tools: list, extra: dict) -> None:
+    agent = Agent(name="a", tools=tools)
+    config = _durable(**extra)
+    write_agent_toml(tmp_path, config, compile_authorization_plan(agent, model="m"), agent)
+    assert _all_checks(tmp_path, agent, config) == [
+        Check("agent.toml", Status.OK, "agent.toml matches the Python agent")]
+
+
+def test_user_auth_platform_tool_needs_required_and_scopes(tmp_path: Path) -> None:
+    """A referenced auth="user" agent.toml tool makes the request user required (I2)."""
+    agent = Agent(name="a", tools=[*platform_tools("pricing")])
+    assert [c.fix for c in _findings(_project(tmp_path, BARE + GENIE), agent)] == [
+        "Set [auth.user] required = true in agent.toml.",
+        "Add ['ai-gateway'] to [auth.user] additional_api_scopes in agent.toml."]
+    assert _findings(_project(tmp_path, BASE + GENIE), agent) == []
+
+
+def test_required_false_with_user_client_tool_fails(tmp_path: Path) -> None:
+    root = _project(tmp_path, BARE + '\n[auth.user]\nrequired = false\n')
+    fixes = [c.fix for c in _findings(root, Agent(name="a", tools=[_whoami]))]
+    assert "Set [auth.user] required = true in agent.toml." in fixes
+
+
+def test_plain_agent_needs_no_declared_scopes(tmp_path: Path) -> None:
+    assert _findings(_project(tmp_path, BARE), Agent(name="a", tools=[_noop])) == []
+
+
+def test_missing_agent_toml_is_the_one_warning(tmp_path: Path) -> None:
+    assert _all_checks(tmp_path, Agent(name="a", tools=[_noop]), None) == [
+        Check("agent.toml", Status.WARN, "no agent.toml; deploy generates one (deprecated)",
+              "Run `apx-agent agents migrate-agent-toml` to write an authored agent.toml.")]

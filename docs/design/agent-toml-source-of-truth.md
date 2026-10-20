@@ -124,8 +124,13 @@ The checks:
 
 1. **Loads.** `AgentProject.load` succeeds, `framework = "langgraph"`, and
    `server` matches the compile target.
-2. **User auth.** Every scope the authorization plan derives from Python tools
-   is listed in `[auth.user].additional_api_scopes`. `required = true` when the plan needs a request user.
+2. **User auth.** The plan needs a request user when an operation requires
+   request context, the plan has app dependencies, memory is declared, or a
+   referenced `agent.toml` tool has `auth = "user"` (the same rule the
+   generated manifest and migration use). Then `[auth.user]` must set
+   `required = true` and list every plan scope in `additional_api_scopes`.
+   Otherwise scopes are not checked; the SDK rejects scopes unless
+   `required = true`.
 3. **Stores.** Managed memory or managed sessions in Python need a bound
    `memory_store` / `session_store`. While `[tool.apx.agent]` exists, a store
    name it declares must equal the `agent.toml` binding.

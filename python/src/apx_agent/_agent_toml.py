@@ -43,6 +43,22 @@ def platform_tool_names(project: AgentProject) -> dict[str, list[str]]:
     return names
 
 
+def needs_request_user(plan: AuthorizationPlan, config: AgentConfig | None, *,
+                       agent: BaseAgent | None = None, project: AgentProject | None = None) -> bool:
+    """Whether ``[auth.user] required`` must be true. build_native_manifest,
+    migration and check_agent_toml share this one rule; scopes matter only then."""
+    from ._platform_tools import platform_tool_leaves
+
+    if any(op.requires_request_context for op in plan.operations) or plan.app_dependencies:
+        return True
+    if config is not None and config.memory is not None:
+        return True
+    if agent is None or project is None:
+        return False
+    user_ids = {spec.id for spec in project.tools if spec.auth == "user"}
+    return any(user_ids & (ref.ids or user_ids) for _, ref in platform_tool_leaves(agent))
+
+
 def check_agent_toml(
     project_root: Path,
     agent: BaseAgent,
@@ -96,14 +112,14 @@ def check_agent_toml(
     if str(project.server) != "agentbricks":
         findings.append(Check(_NAME, Status.FAIL, f"server = {project.server!s}",
                               'Set [agent] server = "agentbricks" for the durable target.'))
-    missing = sorted(set(plan.user_api_scopes) - set(project.user_auth.additional_api_scopes))
-    if missing:
-        findings.append(Check(_NAME, Status.FAIL, f"user API scopes not declared: {', '.join(missing)}",
-                              f"Add {missing} to [auth.user] additional_api_scopes in agent.toml."))
-    needs_user = any(op.requires_request_context for op in plan.operations) or bool(plan.app_dependencies)
-    if needs_user and not project.user_auth.required:
-        findings.append(Check(_NAME, Status.FAIL, "tools need a request user but [auth.user] required is false",
-                              "Set [auth.user] required = true in agent.toml."))
+    if needs_request_user(plan, config, agent=agent, project=project):
+        if not project.user_auth.required:
+            findings.append(Check(_NAME, Status.FAIL, "tools need a request user but [auth.user] required is false",
+                                  "Set [auth.user] required = true in agent.toml."))
+        missing = sorted(set(plan.user_api_scopes) - set(project.user_auth.additional_api_scopes))
+        if missing:
+            findings.append(Check(_NAME, Status.FAIL, f"user API scopes not declared: {', '.join(missing)}",
+                                  f"Add {missing} to [auth.user] additional_api_scopes in agent.toml."))
     findings.extend(_store_findings(project, agent, config))
     return findings or [Check(_NAME, Status.OK, "agent.toml matches the Python agent")]
 
@@ -166,9 +182,8 @@ def write_agent_toml(project_root: Path, config: AgentConfig, plan: Authorizatio
     AgentProject.create(project_root, framework="langgraph", server="agentbricks",
                         memory_store=memory,
                         session_store=_bound_session_store(agent, config)).write()
-    # AgentProject has no [auth.user] setter. Same rule as build_native_manifest.
-    required = any(op.requires_request_context for op in plan.operations)
-    required = required or bool(plan.app_dependencies) or config.memory is not None
+    # AgentProject has no [auth.user] setter. No [[tools]] exist yet, so no project.
+    required = needs_request_user(plan, config)
     lines = [path.read_text().rstrip("\n"), ""]
     _write_toml_section(lines, "auth.user", {
         "required": required,

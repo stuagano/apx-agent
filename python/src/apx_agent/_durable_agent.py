@@ -50,11 +50,11 @@ def build_native_manifest(
     ``session_store=`` on a composite is still rejected by ``inspect_target``.
     """
     from databricks_agentkit.runtime.tool_manifest import parse_user_auth
+    from ._agent_toml import needs_request_user
     from ._project_gen import _write_toml_section
     from ._runtime_targets import inspect_target
 
-    required = any(op.requires_request_context for op in authorization_plan.operations)
-    required = required or bool(authorization_plan.app_dependencies) or config.memory is not None
+    required = needs_request_user(authorization_plan, config)
     scopes = list(authorization_plan.user_api_scopes) if required else []
     auth = {"required": required, "additional_api_scopes": scopes}
     parse_user_auth({"auth": {"user": auth}})
