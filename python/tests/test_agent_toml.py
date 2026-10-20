@@ -33,7 +33,11 @@ def _findings(root: Path, agent: Agent, config: AgentConfig | None = None) -> li
 
 def _config(field: str, store_name: str) -> AgentConfig:
     # AgentConfig derives a managed session store by default; pin it off so only `field` is under test.
-    raw = {"name": "a", "target": "responses_agent", "session": {"type": "inmemory"}, field: {"type": "managed", "store_name": store_name}}
+    raw: dict = {"name": "a", field: {"type": "managed", "store_name": store_name}}
+    if field == "memory":
+        raw |= {"target": "responses_agent", "session": {"type": "inmemory"}}
+    else:
+        raw["target"] = "durable_agent_server"
     return AgentConfig.model_validate(raw)
 
 
