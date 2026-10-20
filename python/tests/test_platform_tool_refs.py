@@ -74,10 +74,21 @@ def test_project_root_is_pinned(tmp_path: Path, monkeypatch) -> None:
 
     from apx_agent._platform_tools import static_platform_tools
 
+    from databricks_agentkit.runtime import tool_manifest
+
     (tmp_path / "agent.toml").write_text(_BASE + _genie("pricing"))
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    during: list[str] = []
+    real = tool_manifest.load_tools
+
+    def recording(**kwargs: Any) -> Any:
+        during.append(os.environ["AGENTBRICKS_PROJECT_ROOT"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(tool_manifest, "load_tools", recording)
     static_platform_tools(tmp_path, lambda mode: SimpleNamespace())
-    assert "AGENTBRICKS_PROJECT_ROOT" not in os.environ  # pinned only for the load, then restored
+    assert during and set(during) == {str(tmp_path.resolve())}  # pinned during every load
+    assert "AGENTBRICKS_PROJECT_ROOT" not in os.environ  # then restored
 
 
 def test_private_mcp_seam_still_exists() -> None:
