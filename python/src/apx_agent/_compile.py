@@ -120,8 +120,9 @@ class CompileContext:
     escalate_failures: bool = False
     step_path: tuple[str, ...] = ()
     fixture_replay: _FixtureReplay | None = None
-    platform_tools: dict[str, list[Any]] = field(default_factory=dict)
-    """agent.toml tools by id, already materialized (see _platform_tools)."""
+    platform_tools: dict[str, list[Any]] | None = None
+    """agent.toml tools by id, already materialized (see _platform_tools).
+    None = not provided (only the durable host materializes them)."""
 
 
 # ---------------------------------------------------------------------------
@@ -405,15 +406,27 @@ def _compile_llm_agent(
         for fn in author_fns
     ]
     # agent.toml tools stay always visible (like extra_tools) under deferred loading.
+    if agent._platform_tool_refs and ctx.platform_tools is None:
+        raise ValueError(
+            f"{agent._name}: platform_tools() requires the durable_agent_server runtime, "
+            "which materializes agent.toml tools; this host does not."
+        )
+    available = ctx.platform_tools or {}
     platform = [
         t
         for ref in agent._platform_tool_refs
-        for i in sorted(ref.ids or ctx.platform_tools)
-        for t in ctx.platform_tools.get(i, [])
+        for i in sorted(ref.ids or available)
+        for t in available.get(i, [])
     ]
     extra = [*platform, *(extra_tools or [])]
     if extra:
         tools = tools + extra
+    # MCP servers name their own tools, so a clash only shows once materialized.
+    names = [t.name for t in tools]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ValueError(f"{agent._name}: duplicate tool name(s) {', '.join(map(repr, duplicates))}; "
+                         "rename the Python tool or the platform tool.")
     middleware = [_governance_exception_middleware()]
     if ctx.escalate_failures:
         from ._step_contract import unavailable_middleware
@@ -1603,6 +1616,6 @@ def compile_to_langgraph(
         headers=headers,
         checkpointer=checkpointer,
         remote_leaf_bindings=getattr(agent, "_apx_remote_leaf_bindings", {}),
-        platform_tools=dict(platform_tools) if platform_tools else {},
+        platform_tools=None if platform_tools is None else dict(platform_tools),
     )
     return _compile_any(agent, ctx)

@@ -463,3 +463,26 @@ def test_one_failing_app_mcp_server_keeps_genie_and_other_servers(
         readiness = client.get("/readyz")
     assert readiness.status_code == 503
     assert readiness.json()["checks"] == {"platform_tools": "bad: ConnectionError: bad offline"}
+
+
+# --- I6 / I7: platform tools never silently vanish or shadow --------------------------
+def test_compile_without_platform_tools_refuses_platform_refs() -> None:
+    from apx_agent import compile_to_langgraph
+
+    agent = Agent(name="a", tools=[*platform_tools("crm")])
+    with pytest.raises(ValueError, match="durable_agent_server"):
+        compile_to_langgraph(agent, ws=None, model="m")
+    compile_to_langgraph(agent, ws=None, model="m", platform_tools={})  # startup failure: compiles empty
+
+
+def test_mcp_tool_named_like_a_python_tool_fails_compile() -> None:
+    from apx_agent import compile_to_langgraph
+
+    def lookup(q: str) -> str:
+        """Python tool."""
+        return q
+
+    agent = Agent(name="a", tools=[lookup, *platform_tools("crm")])
+    # get_tools(server_name="crm") returns server-side names, not the agent.toml id.
+    with pytest.raises(ValueError, match="'lookup'"):
+        compile_to_langgraph(agent, ws=None, model="m", platform_tools={"crm": [_fake_tool("lookup")]})
