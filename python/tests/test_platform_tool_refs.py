@@ -200,8 +200,11 @@ def test_mcp_records_split_by_auth_between_startup_and_request(
         return SimpleNamespace(name=record.id)
 
     class _Client:
-        async def get_tools(self, *, server_name: str) -> list[str]:
-            return [server_name]
+        async def get_tools(self, *, server_name: str) -> list[Any]:
+            return [_fake_tool(server_name)]
+
+    def names(tools: dict[str, list[Any]]) -> dict[str, list[str]]:
+        return {i: [t.name for t in ts] for i, ts in tools.items()}
 
     def fake_client(servers: list[Any], **kwargs: Any) -> _Client:
         served.append([s.name for s in servers])
@@ -210,17 +213,17 @@ def test_mcp_records_split_by_auth_between_startup_and_request(
     monkeypatch.setattr(pt, "_mcp_server_for", fake_server)
     monkeypatch.setattr("databricks_agentkit.langgraph.mcp.mcp_client", fake_client)
 
-    assert pt.static_platform_tools(tmp_path, lambda mode: SimpleNamespace()) == {"shared": ["shared"]}
+    assert names(pt.static_platform_tools(tmp_path, lambda mode: SimpleNamespace())) == {"shared": ["shared"]}
     assert (built, served) == (["shared"], [["shared"]])
 
     built.clear(), served.clear()
     got = asyncio.run(pt.request_platform_tools(tmp_path, lambda mode: SimpleNamespace(), frozenset({"crm"})))
-    assert got == {"crm": ["crm"]}
+    assert names(got) == {"crm": ["crm"]}
     assert (built, served) == (["crm"], [["crm"]])
 
     built.clear(), served.clear()
     got = asyncio.run(pt.request_platform_tools(tmp_path, lambda mode: SimpleNamespace(), frozenset()))
-    assert got == {"crm": ["crm"], "hr": ["hr"]}
+    assert names(got) == {"crm": ["crm"], "hr": ["hr"]}
     assert (built, served) == (["crm", "hr"], [["crm", "hr"]])
 
 
@@ -312,3 +315,31 @@ def test_platform_materialization_failure_degrades_readyz(tmp_path: Path, monkey
         readiness = client.get("/readyz")
     assert readiness.status_code == 503
     assert readiness.json()["checks"] == {"platform_tools": "ConnectionError: mcp offline"}
+
+
+def test_async_only_platform_tool_runs_in_sync_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MCP adapters return coroutine-only tools; the durable graph invokes tools synchronously."""
+    from langchain_core.messages import HumanMessage, ToolMessage
+    from langchain_core.tools import StructuredTool
+
+    from apx_agent import compile_to_langgraph
+    from apx_agent._platform_tools import _sync_bridged
+
+    ran: list[str] = []
+    seen: list[str] = []
+
+    async def crm_lookup(q: str) -> str:
+        ran.append(q)
+        return f"crm:{q}"
+
+    async_only = StructuredTool.from_function(coroutine=crm_lookup, name="crm", description="CRM lookup.")
+    assert async_only.func is None
+    [bridged] = _sync_bridged([async_only])
+    assert bridged.coroutine is crm_lookup  # async callers keep the original coroutine
+
+    _tool_calling_model(monkeypatch, "crm")
+    agent = Agent(name="a", tools=[*platform_tools("crm")], before_tool=lambda name, args: seen.append(name))
+    graph = compile_to_langgraph(agent, ws=None, model="m", platform_tools={"crm": [bridged]})
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})
+    [tool_msg] = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert (ran, seen, tool_msg.content) == (["x"], ["crm"], "crm:x")

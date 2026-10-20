@@ -73,6 +73,26 @@ def _mcp_server_for(record: Any, client_for: ClientFor) -> Any:
     return _server_from_tool(record, workspace_client_for=client_for)
 
 
+def _sync_bridged(tools: list[Any]) -> list[Any]:
+    """Give coroutine-only tools (what MCP adapters return) a sync ``func``.
+
+    The durable graph invokes tools synchronously; the bridge runs the original
+    coroutine via ``_run_sync`` (the same pattern as ``_compile``'s async tools)
+    and leaves ``coroutine`` intact for async callers.
+    """
+    from .mcp_consume import _run_sync
+
+    def bridge(tool: Any) -> Any:
+        coroutine = tool.coroutine
+
+        def func(*args: Any, **kwargs: Any) -> Any:
+            return _run_sync(coroutine(*args, **kwargs))
+
+        return tool.model_copy(update={"func": func})
+
+    return [bridge(t) if t.func is None and t.coroutine is not None else t for t in tools]
+
+
 async def _fetch_mcp(records: list[Any], client_for: ClientFor) -> dict[str, list[Any]]:
     from databricks_agentkit.langgraph.mcp import mcp_client
 
@@ -80,7 +100,7 @@ async def _fetch_mcp(records: list[Any], client_for: ClientFor) -> dict[str, lis
     if not servers:
         return {}
     client = mcp_client(servers, workspace_client_for=client_for, tools=tuple(records))
-    return {s.name: await client.get_tools(server_name=s.name) for s in servers}
+    return {s.name: _sync_bridged(await client.get_tools(server_name=s.name)) for s in servers}
 
 
 def static_platform_tools(project_root: Path, client_for: ClientFor) -> dict[str, list[Any]]:
