@@ -386,7 +386,7 @@ def _stage_startup(loaded: _Loaded, surface: Callable[[], list[str]], stack: con
         checkpointer = InMemorySaver() if isinstance(loaded.agent, LlmAgent) else None
         app = compile_agent(loaded.agent, config=config, target="durable_agent_server",
                             model="apx-doctor-model", service_ws=_FakeWorkspaceClient(),
-                            checkpointer=checkpointer)
+                            checkpointer=checkpointer, project_root=loaded.project)
         if mcp:
             from ._wiring import mount_mcp_endpoints
 
