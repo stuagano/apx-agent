@@ -157,7 +157,8 @@ def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any])
     assert names.index("poll") < names.index("readyz") < names.index("smoke")
     assert "apps.update" not in names
     app_yaml = yaml.safe_load((harness["project"] / ".build" / "app.yaml").read_text().split("\n", 1)[1])
-    assert app_yaml["command"] == ["python", "-m", "app"]
+    # The upload omits uv.lock and Apps installs nothing from a bare pyproject.toml (#956).
+    assert app_yaml["command"] == ["uv", "run", "python", "-m", "app"]
     env = {item["name"]: item["value"] for item in app_yaml["env"]}
     assert env["DATA_INSPECTOR_URL"] == "https://inspector.example"
     assert env["AGENT_SESSION_STORE"] == "proof-sessions"
