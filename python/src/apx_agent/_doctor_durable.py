@@ -584,6 +584,14 @@ def _advisory(loaded: _Loaded | None, project: Path) -> list[Check]:
     return [remount, history]
 
 
+def _agent_toml_stage(loaded: _Loaded) -> list[Check]:
+    from ._agent_toml import check_agent_toml
+    from ._apps_authorization import compile_authorization_plan
+
+    plan = compile_authorization_plan(loaded.agent, model=loaded.config.model, agent_identity=loaded.config.identity)
+    return [c for c in check_agent_toml(loaded.project, loaded.agent, plan, loaded.config) if c.status is not Status.OK]
+
+
 def _close_lifespan(stack: contextlib.ExitStack, results: list[Check]) -> list[Check]:
     """Exit the TestClient (lifespan shutdown); a failing shutdown is a Startup FAIL, not a crash."""
     try:
@@ -625,4 +633,6 @@ def check_durable_readiness(project: Path) -> list[Check]:
             results = _close_lifespan(stack, results)
         if len(results) == 4 and all(c.status is Status.OK for c in results):
             results.append(_stage_deploy(loaded))
-    return _cascade(results) + _advisory(loaded, project)
+    # Appended after _cascade: it only keeps STAGES rows, so an agent.toml row inside
+    # `results` would be dropped (and would break the all-OK `len(results) == 4` gate).
+    return _cascade(results) + _agent_toml_stage(loaded) + _advisory(loaded, project)

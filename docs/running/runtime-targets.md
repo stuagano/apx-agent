@@ -479,6 +479,46 @@ deployment available for rollback; switching back does not transfer conversation
 created on the durable deployment. Retire the old endpoint only after its remaining
 sessions and consumers have been accounted for.
 
+## agent.toml and platform tools
+
+Agent Bricks settings (framework, server, memory and session store bindings,
+`[auth.user]`, tools) live in the project's `agent.toml`. apx reads it with the
+SDK's `AgentProject.load`, checks it against the Python agent, and stages it
+into `.build/` unchanged. It generates an `agent.toml` only when the project
+has none, which is deprecated; migrate with
+`apx-agent agents migrate-agent-toml`, which writes the file through the SDK and
+refuses to overwrite an existing one.
+
+Reference the tools `agent.toml` declares with `platform_tools(*ids)`. No ids
+means every declared tool; ids select specific ones:
+
+```python
+from apx_agent import Agent, platform_tools
+
+triage = Agent(name="triage", tools=[run_sql, *platform_tools()])
+pricing = Agent(name="pricing", tools=[quote, *platform_tools("genie-pricing")])
+```
+
+`platform_tools()` requires the durable target and an `agent.toml` in the
+project root; without either, compile fails with an error (it is not a
+`/readyz` degradation). Materialized tools run under apx's per-call guards
+(approvals, budget, watchdog, audit) like Python tools.
+
+Identity rules:
+
+- Genie tools are built once and resolve the request user on every call.
+- User-auth MCP tools are fetched per request, inside the request.
+- App-auth MCP tools are fetched once at startup with the service client.
+- A user tool never falls back to the app identity.
+
+Every mismatch between `agent.toml` and the Python agent fails deploy and
+`apx-agent doctor`. The agent needs a request user when a tool needs request
+context (for example `Dependencies.UserClient`), the plan has app dependencies,
+memory is declared, or a referenced `agent.toml` tool has `auth = "user"`. Then
+`[auth.user]` must set `required = true` and list every user API scope the
+authorization plan derives in `additional_api_scopes`. Otherwise scopes are not
+checked: the SDK accepts scopes only when `required = true`.
+
 ## Generated projects
 
 Declare `target: durable_agent_server` in your agent specification. New native

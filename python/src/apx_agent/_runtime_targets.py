@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from pathlib import Path
 from typing import Any
 
 from ._agents import BaseAgent, LlmAgent
@@ -166,18 +167,25 @@ def compile_agent(
     conversation_store: Any | None = None,
     service_ws: Any | None = None,
     session_store: str | None = None,
+    project_root: Path | None = None,
 ) -> Any:
     """Compile one declaration into a peer host target, rejecting unmet needs.
 
     ResponsesAgent returns a native MLflow ResponsesAgent model. The durable
     target returns the optional SDK's FastAPI application. Credentials are
     runtime bindings; they are never accepted in a durable invocation payload.
+    ``project_root`` is the directory holding agent.toml; ``platform_tools()``
+    references resolve against it.
     """
     if target is None:
         target = config.target if config is not None else "durable_agent_server"
     model = model if model is not None else (config.model if config is not None else None)
     if not model:
         raise ValueError("compile_agent requires model or AgentConfig.model")
+    from ._platform_tools import platform_tool_leaves
+
+    if platform_tool_leaves(agent) and target != "durable_agent_server":
+        raise ValueError("platform_tools() requires target='durable_agent_server' (agent.toml tools are Agent Bricks tools)")
     if config is not None:
         if target == "durable_agent_server":
             preflight = inspect_target(agent, config=config, target=target, requirements=requirements,
@@ -218,4 +226,4 @@ def compile_agent(
 
     return compile_to_durable_agent_server(agent, model=model, service_ws=service_ws, checkpointer=checkpointer,
                                            session_store=report.session_store, require_user=report.user_identity_required,
-                                           recovery=report.recovery_enabled)
+                                           recovery=report.recovery_enabled, project_root=project_root)

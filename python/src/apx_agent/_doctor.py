@@ -209,6 +209,8 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
         image_check = check_agent_image(cwd, agent_config)
         if image_check is not None:
             project.append(image_check)
+        if agent_config is not None and agent_config.target == "durable_agent_server":
+            project.extend(_agent_toml_rows(cwd, agent_config))
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
         project.append(memory_check)
@@ -240,6 +242,31 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
 
         groups.append(("Durable readiness", check_durable_readiness(cwd)))
     return groups
+
+
+def _agent_toml_rows(cwd: Path, config: AgentConfig) -> list[Check]:
+    """agent.toml findings, loading the agent and plan the way deploy does."""
+    from contextlib import chdir  # noqa: PLC0415
+
+    from . import _apps_authorization  # noqa: PLC0415
+    from .cli import _detect_module_spec, _load_finalized_agent  # noqa: PLC0415
+
+    try:
+        with chdir(cwd):
+            agent = _load_finalized_agent(_detect_module_spec(cwd) or "agent:agent", template_ws=False)
+    except Exception as exc:  # reported, not raised: doctor keeps going
+        return [Check("agent.toml", Status.SKIP, f"agent not importable: {type(exc).__name__}: {exc}")]
+    try:
+        from ._agent_toml import check_agent_toml  # noqa: PLC0415
+
+        plan = _apps_authorization.compile_authorization_plan(
+            agent, model=config.model, agent_identity=config.identity)
+        return check_agent_toml(cwd, agent, plan, config)
+    except ImportError as exc:
+        return [Check("agent.toml", Status.SKIP, f"needs the apx-agent[agentbricks] extra: {exc}",
+                      "Install apx-agent[agentbricks] to check agent.toml.")]
+    except ValueError as exc:
+        return [Check("agent.toml", Status.FAIL, str(exc))]
 
 
 def check_python_version() -> Check:

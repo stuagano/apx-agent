@@ -183,8 +183,11 @@ class LlmAgent(BaseAgent):
         # tools is optional (#449): an orchestrator whose only capabilities are
         # config-declared sub_agents has no local tools. None → a fresh list
         # per instance (never a shared mutable default).
+        from ._platform_tools import PlatformToolRef  # noqa: PLC0415
+
         tools = [] if tools is None else tools
-        self._tool_fns = tools
+        self._platform_tool_refs = [t for t in tools if isinstance(t, PlatformToolRef)]
+        self._tool_fns = [t for t in tools if not isinstance(t, PlatformToolRef)]
         self._sub_agent_urls = sub_agents or []
         # Sub-agent URLs already materialized as callable tools (idempotency
         # guard for repeated fetch_remote_tools calls). See #436.
@@ -257,7 +260,7 @@ class LlmAgent(BaseAgent):
 
         # Pre-analyze all functions at construction time
         self._analyzed: list[tuple[_ToolFn, dict[str, Any], list[str], type[BaseModel] | None]] = []
-        for fn in tools:
+        for fn in self._tool_fns:
             signature = _inspect_tool_fn(fn)
             plain_params = signature.plain_params
             dep_names = signature.dep_param_names
