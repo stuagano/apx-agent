@@ -10610,6 +10610,9 @@ def _deploy_apps_impl(
             family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
+        from ._agent_toml import require_agent_toml_ok
+
+        require_agent_toml_ok(cwd, agent, authorization_plan, effective_config)
         return deploy_apps_api(
             cwd=cwd, agent=agent, config=effective_config, plan=authorization_plan,
             family_permissions=family_permissions, workspace=workspace, profile=profile,
@@ -10767,12 +10770,9 @@ def _deploy_apps_impl(
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     if effective_config is not None and effective_config.target == "durable_agent_server":
-        from ._agent_toml import check_agent_toml
+        from ._agent_toml import require_agent_toml_ok
 
-        fails = [c for c in check_agent_toml(cwd, agent, authorization_plan, effective_config)
-                 if c.status is _doctor_mod.Status.FAIL]
-        if fails:
-            raise click.ClickException("agent.toml: " + "; ".join(f"{c.detail} — {c.fix}" for c in fails))
+        require_agent_toml_ok(cwd, agent, authorization_plan, effective_config)
     _validate_apps_authorization_plan(
         authorization_plan,
         family_permissions,

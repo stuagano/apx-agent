@@ -124,6 +124,16 @@ def check_agent_toml(
     return findings or [Check(_NAME, Status.OK, "agent.toml matches the Python agent")]
 
 
+def require_agent_toml_ok(project_root: Path, agent: BaseAgent, plan: AuthorizationPlan,
+                          config: AgentConfig | None) -> None:
+    """Deploy preflight for every backend: any agent.toml FAIL stops the deploy."""
+    import click
+
+    fails = [c for c in check_agent_toml(project_root, agent, plan, config) if c.status is Status.FAIL]
+    if fails:
+        raise click.ClickException("agent.toml: " + "; ".join(f"{c.detail} — {c.fix}" for c in fails))
+
+
 def _bound_session_store(agent: BaseAgent, config: AgentConfig) -> str | None:
     """The session store the agent binds: the one rule build_native_manifest and migration share."""
     from ._runtime_targets import inspect_target

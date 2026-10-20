@@ -249,3 +249,40 @@ def test_missing_agent_toml_is_the_one_warning(tmp_path: Path) -> None:
     assert _all_checks(tmp_path, Agent(name="a", tools=[_noop]), None) == [
         Check("agent.toml", Status.WARN, "no agent.toml; deploy generates one (deprecated)",
               "Run `apx-agent agents migrate-agent-toml` to write an authored agent.toml.")]
+
+
+# --- C2: both deploy backends check agent.toml before staging -------------------------
+from typing import Any  # noqa: E402
+
+import click  # noqa: E402
+
+
+@pytest.mark.parametrize("deploy", ["", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n'],
+                         ids=["agentbricks-cli", "apps-api"])
+def test_mismatched_agent_toml_stops_deploy_before_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deploy: str,
+) -> None:
+    from apx_agent import cli
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0"\n[tool.apx.agent]\nname = "p"\nmodel = "m"\n'
+        f'module = "agent:agent"\ntarget = "durable_agent_server"\n{deploy}')
+    (tmp_path / "agent.toml").write_text(BARE.replace("langgraph", "openai"))
+
+    def reached(*a: Any, **k: Any) -> Any:
+        raise AssertionError("staging/deploy reached with a mismatched agent.toml")
+
+    monkeypatch.setattr("apx_agent._agent_toml.stage_agent_toml", reached)
+    monkeypatch.setattr("apx_agent._agentbricks_deploy.stage_native_source", reached)
+    monkeypatch.setattr("apx_agent._apps_api_deploy.deploy_apps_api", reached)
+    monkeypatch.setattr(cli, "_preflight_databricks_cli", lambda: None)
+    monkeypatch.setattr(cli, "_preflight_apps", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_make_scaffold_workspace_client", lambda profile: None)
+    monkeypatch.setattr(cli._doctor_mod, "check_agent_prerequisites", lambda *a, **k: [])
+    monkeypatch.setattr(cli._doctor_mod, "check_agent_image", lambda *a, **k: None)
+    monkeypatch.setattr("apx_agent._agentbricks_deploy.validate_native_app", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_load_finalized_agent", lambda module: Agent(name="p", tools=[_noop]))
+    with pytest.raises(click.ClickException, match=r"agent\.toml: framework = openai"):
+        cli._deploy_apps_impl(cwd=tmp_path, module="agent:agent", profile=None, bundle_target="dev",
+                              no_run=True, auto_update_yml=False, auto_build_wheel=False,
+                              json_output=False, log=lambda message: None)
