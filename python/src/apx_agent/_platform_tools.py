@@ -117,8 +117,23 @@ async def _fetch_mcp(records: list[Any], client_for: ClientFor) -> dict[str, lis
     return {s.name: await fetch(s.name) for s in servers}
 
 
-def static_platform_tools(project_root: Path, client_for: ClientFor) -> dict[str, list[Any]]:
-    """Tools safe to build once: Genie (identity per call) and app-auth MCP."""
+@dataclass(frozen=True)
+class StaticPlatformTools:
+    """Startup-built tools by id, and each server that failed to build (id → error)."""
+
+    tools: dict[str, list[Any]]
+    failures: dict[str, str]
+
+
+def _failure(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def static_platform_tools(project_root: Path, client_for: ClientFor) -> StaticPlatformTools:
+    """Tools safe to build once: Genie (identity per call) and app-auth MCP.
+
+    Genie and each app-auth MCP server build in isolation: one failure is
+    recorded by id and never drops the others."""
     from databricks_agentkit.langgraph.genie import genie_tools
 
     from ._agent_toml import load_agent_toml, platform_tool_names
@@ -137,12 +152,23 @@ def static_platform_tools(project_root: Path, client_for: ClientFor) -> dict[str
         for name in names
     }
     out: dict[str, list[Any]] = {}
-    with _pinned_root(project_root):
-        for tool in genie_tools(workspace_client_for=client_for):
-            out.setdefault(owner[tool.name], []).append(tool)
-    app_mcp = [r for r in records if r.kind in _MCP_KINDS and r.auth != "user"]
-    out.update(_run_sync(_fetch_mcp(app_mcp, client_for)))
-    return out
+    failures: dict[str, str] = {}
+    genie_ids = [r.id for r in records if r.kind == "genie_agent"]
+    if genie_ids:
+        try:
+            with _pinned_root(project_root):
+                for tool in genie_tools(workspace_client_for=client_for):
+                    out.setdefault(owner[tool.name], []).append(tool)
+        except Exception as exc:  # recorded for /readyz, never swallowed
+            failures[", ".join(genie_ids)] = _failure(exc)
+    for record in records:
+        if record.kind not in _MCP_KINDS or record.auth == "user":
+            continue
+        try:
+            out.update(_run_sync(_fetch_mcp([record], client_for)))
+        except Exception as exc:  # recorded for /readyz, never swallowed
+            failures[record.id] = _failure(exc)
+    return StaticPlatformTools(out, failures)
 
 
 async def request_platform_tools(

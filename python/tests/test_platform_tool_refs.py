@@ -55,7 +55,7 @@ def test_genie_tools_resolve_identity_per_call(tmp_path: Path) -> None:
         calls.append(mode)
         return SimpleNamespace()
 
-    tools = static_platform_tools(tmp_path, client_for)
+    tools = static_platform_tools(tmp_path, client_for).tools
     assert [t.name for t in tools["pricing"]] == ["pricing_ask", "pricing_poll", "pricing_query_result"]
     assert calls == []  # construction does no auth; GenieAgent calls client_for at call time
 
@@ -64,7 +64,7 @@ def test_genie_id_containing_query_groups_under_its_id(tmp_path: Path) -> None:
     from apx_agent._platform_tools import static_platform_tools
 
     (tmp_path / "agent.toml").write_text(_BASE + _genie("my_query"))
-    tools = static_platform_tools(tmp_path, lambda mode: SimpleNamespace())
+    tools = static_platform_tools(tmp_path, lambda mode: SimpleNamespace()).tools
     assert list(tools) == ["my_query"]
     assert len(tools["my_query"]) == 3
 
@@ -213,7 +213,7 @@ def test_mcp_records_split_by_auth_between_startup_and_request(
     monkeypatch.setattr(pt, "_mcp_server_for", fake_server)
     monkeypatch.setattr("databricks_agentkit.langgraph.mcp.mcp_client", fake_client)
 
-    assert names(pt.static_platform_tools(tmp_path, lambda mode: SimpleNamespace())) == {"shared": ["shared"]}
+    assert names(pt.static_platform_tools(tmp_path, lambda mode: SimpleNamespace()).tools) == {"shared": ["shared"]}
     assert (built, served) == (["shared"], [["shared"]])
 
     built.clear(), served.clear()
@@ -423,3 +423,43 @@ def test_user_mcp_fetch_failure_maps_to_auth_error(tmp_path: Path, monkeypatch: 
         _go(_crm_handlers(tmp_path), RequestAuthContext(token=None, principal="u", local=True))
     assert (raised.value.code, raised.value.integration_id) == ("MCP_PERMISSION_DENIED", "crm")
     assert "secret" not in str(raised.value)
+
+
+# --- I4: one failing startup server never drops the others -----------------------------
+def test_one_failing_app_mcp_server_keeps_genie_and_other_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from apx_agent import compile_agent
+
+    class _Client:
+        def __init__(self, servers: list[Any]) -> None:
+            self.names = [s.name for s in servers]
+
+        async def get_tools(self, *, server_name: str) -> list[Any]:
+            if server_name == "bad":
+                raise ConnectionError("bad offline")
+            return [_fake_tool(server_name)]
+
+    (tmp_path / "agent.toml").write_text(_BASE + _genie("pricing") + _mcp("bad", "app") + _mcp("good", "app"))
+    monkeypatch.setattr("apx_agent._platform_tools._mcp_server_for",
+                        lambda record, client_for: SimpleNamespace(name=record.id))
+    monkeypatch.setattr("databricks_agentkit.langgraph.mcp.mcp_client", lambda servers, **k: _Client(servers))
+
+    from apx_agent._platform_tools import static_platform_tools
+
+    built = static_platform_tools(tmp_path, lambda mode: SimpleNamespace())
+    assert {i: [t.name for t in ts] for i, ts in built.tools.items()} == {
+        "pricing": ["pricing_ask", "pricing_poll", "pricing_query_result"], "good": ["good"]}
+    assert built.failures == {"bad": "ConnectionError: bad offline"}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    app = compile_agent(Agent(name="a", tools=[*platform_tools()]), target="durable_agent_server",
+                        model="m", service_ws=MagicMock(), project_root=tmp_path)
+    with TestClient(app) as client:
+        readiness = client.get("/readyz")
+    assert readiness.status_code == 503
+    assert readiness.json()["checks"] == {"platform_tools": "bad: ConnectionError: bad offline"}

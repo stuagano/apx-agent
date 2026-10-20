@@ -402,7 +402,8 @@ def _startup_platform_tools(agent: BaseAgent, project_root: Path | None, *, mode
     if fails:
         raise ValueError("; ".join(f"{c.detail} — {c.fix}" for c in fails))
     try:
-        tools = static_platform_tools(project_root, platform_client_for(service_ws))
+        built = static_platform_tools(project_root, platform_client_for(service_ws))
     except Exception as exc:  # surfaced on /readyz, never swallowed
         return _StartupPlatformTools({}, f"{type(exc).__name__}: {exc}")
-    return _StartupPlatformTools(tools, None)
+    failed = "; ".join(f"{i}: {error}" for i, error in built.failures.items())
+    return _StartupPlatformTools(built.tools, failed or None)
