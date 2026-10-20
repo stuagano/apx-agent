@@ -379,3 +379,19 @@ def test_migrate_load_failure_is_a_click_error(tmp_path: Path, monkeypatch: pyte
     result = CliRunner().invoke(main, ["agents", "migrate-agent-toml"])
     assert result.exit_code == 1 and isinstance(result.exception, SystemExit), result.exception
     assert "not_a_real_module_xyz" in result.output and not (tmp_path / "agent.toml").exists()
+
+
+def test_generate_refuses_an_authored_file_in_the_staged_source(tmp_path: Path) -> None:
+    build = tmp_path / ".build"
+    build.mkdir()
+    (build / "agent.toml").write_text(BASE)  # authored, not APX-generated
+    with pytest.raises(ValueError, match="Refusing to overwrite an authored agent.toml"):
+        stage_agent_toml(tmp_path, build, lambda: GENERATED, print)
+    assert (build / "agent.toml").read_text() == BASE
+
+
+def test_generate_replaces_a_stale_generated_file(tmp_path: Path) -> None:
+    build = tmp_path / ".build"
+    build.mkdir()
+    (build / "agent.toml").write_text(GENERATED + "# stale\n")
+    assert stage_agent_toml(tmp_path, build, lambda: GENERATED, print).read_text() == GENERATED
