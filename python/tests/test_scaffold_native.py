@@ -97,3 +97,51 @@ def test_native_scaffold_rejects_incompatible_options(tmp_path, options):
     assert result.exit_code != 0
     assert "responses_agent" in result.output
     assert not (tmp_path / "orders" / "agent.py").exists()
+
+
+# --- default model (#955) ---------------------------------------------------
+
+
+def test_pick_default_model_takes_the_first_served_candidate(monkeypatch):
+    first, second = cli._DEFAULT_MODEL_CANDIDATES[:2]
+    monkeypatch.setattr(cli, "_make_scaffold_workspace_client", lambda profile: object())
+    probed: list[str] = []
+
+    def probe(ws, name):
+        probed.append(name)
+        return "served" if name == second else "403 PERMISSION_DENIED"
+
+    monkeypatch.setattr(cli, "_probe_model", probe)
+    assert cli._pick_default_model("p") == second
+    assert probed == [first, second]  # stops at the first served candidate
+    monkeypatch.setattr(cli, "_probe_model", lambda ws, name: "404 NOT_FOUND")
+    assert cli._pick_default_model("p") == first  # nothing served: first candidate
+
+
+def test_pick_default_model_without_a_workspace_is_the_first_candidate(monkeypatch):
+    def unreachable(profile):
+        raise RuntimeError("host does not resolve")
+
+    monkeypatch.setattr(cli, "_make_scaffold_workspace_client", unreachable)
+    assert cli._pick_default_model("p") == cli._DEFAULT_MODEL_CANDIDATES[0]
+
+
+@pytest.mark.parametrize("profile", [None, "p"])
+def test_native_scaffold_writes_the_picked_model(tmp_path, monkeypatch, profile):
+    """Only an explicit --profile probes; without one no network call is made."""
+    picked: list[str | None] = []
+
+    def pick(p):
+        picked.append(p)
+        return "system.ai.claude-opus-4-7"
+
+    monkeypatch.setattr(cli, "_pick_default_model", pick)
+    args = ["agents", "scaffold", "orders", "--here", "--dir", str(tmp_path), "--template", "base",
+            "--no-interactive"] + (["--profile", profile] if profile else [])
+    result = CliRunner().invoke(cli.main, args)
+    assert result.exit_code == 0, result.output
+    model = tomllib.loads((tmp_path / "orders" / "pyproject.toml").read_text())["tool"]["apx"]["agent"]["model"]
+    if profile:
+        assert (picked, model) == (["p"], "system.ai.claude-opus-4-7")
+    else:
+        assert (picked, model) == ([], cli._DEFAULT_MODEL_CANDIDATES[0])
