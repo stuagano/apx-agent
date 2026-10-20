@@ -230,10 +230,12 @@ def test_mcp_records_split_by_auth_between_startup_and_request(
 def test_platform_client_for_user_requires_request_and_app_is_service() -> None:
     from apx_agent._durable_agent import _REQUEST_AUTH, platform_client_for
 
+    from databricks_agentkit.runtime.auth import AuthError
+
     service, user = MagicMock(name="service"), MagicMock(name="user")
     client_for = platform_client_for(service)
     assert client_for("app") is service
-    with pytest.raises(RuntimeError, match="needs a request user"):
+    with pytest.raises(AuthError, match="requires request-user authorization"):
         client_for("user")
     auth = SimpleNamespace(client_for=lambda mode: user if mode == "user" else None)
     token = _REQUEST_AUTH.set(auth)
@@ -241,7 +243,7 @@ def test_platform_client_for_user_requires_request_and_app_is_service() -> None:
         assert client_for("user") is user
     finally:
         _REQUEST_AUTH.reset(token)
-    with pytest.raises(RuntimeError, match="needs a request user"):
+    with pytest.raises(AuthError, match="requires request-user authorization"):
         client_for("user")
 
 
@@ -382,3 +384,42 @@ def test_rejected_context_never_fetches_request_platform_tools(
                                         checkpointer=saver)
     with pytest.raises(ValueError, match=error):
         asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, context))
+
+
+# --- I3: request-user MCP failures surface as AgentKit AuthError ----------------------
+def _crm_handlers(tmp_path: Path) -> Any:
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    (tmp_path / "agent.toml").write_text(_BASE + _mcp("crm", "user"))
+    return compile_durable_handlers(Agent(name="a", tools=[*platform_tools("crm")]), model="m",
+                                    service_ws=MagicMock(), project_root=tmp_path)
+
+
+def _go(handlers: Any, auth: Any) -> Any:
+    context = SimpleNamespace(request_auth=auth, session_id="s", is_recovery=False)
+    return asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, context))
+
+
+def test_user_mcp_without_request_user_raises_authorization_missing(tmp_path: Path) -> None:
+    from databricks_agentkit.runtime.auth import AuthError
+
+    with pytest.raises(AuthError) as raised:
+        _go(_crm_handlers(tmp_path), None)
+    assert (raised.value.code, raised.value.integration_id) == ("MCP_USER_AUTHORIZATION_MISSING", "crm")
+
+
+def test_user_mcp_fetch_failure_maps_to_auth_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from databricks_agentkit.runtime.auth import AuthError, RequestAuthContext
+
+    class _Denied:
+        async def get_tools(self, *, server_name: str) -> list[Any]:
+            raise PermissionError("upstream secret detail")
+
+    monkeypatch.setattr(RequestAuthContext, "client_for", lambda self, mode: MagicMock(name="user"))
+    monkeypatch.setattr("apx_agent._platform_tools._mcp_server_for",
+                        lambda record, client_for: SimpleNamespace(name=record.id))
+    monkeypatch.setattr("databricks_agentkit.langgraph.mcp.mcp_client", lambda *a, **k: _Denied())
+    with pytest.raises(AuthError) as raised:
+        _go(_crm_handlers(tmp_path), RequestAuthContext(token=None, principal="u", local=True))
+    assert (raised.value.code, raised.value.integration_id) == ("MCP_PERMISSION_DENIED", "crm")
+    assert "secret" not in str(raised.value)

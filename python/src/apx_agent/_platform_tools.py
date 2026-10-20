@@ -95,12 +95,26 @@ def _sync_bridged(tools: list[Any]) -> list[Any]:
 
 async def _fetch_mcp(records: list[Any], client_for: ClientFor) -> dict[str, list[Any]]:
     from databricks_agentkit.langgraph.mcp import mcp_client
+    from databricks_agentkit.runtime.auth import AuthError
+    from databricks_agentkit.runtime.mcp_auth import mcp_auth_error
 
     servers = [s for r in records if (s := _mcp_server_for(r, client_for)) is not None]
     if not servers:
         return {}
     client = mcp_client(servers, workspace_client_for=client_for, tools=tuple(records))
-    return {s.name: _sync_bridged(await client.get_tools(server_name=s.name)) for s in servers}
+    request_user = {r.id for r in records if r.auth == "user"}
+
+    async def fetch(name: str) -> list[Any]:
+        try:
+            return _sync_bridged(await client.get_tools(server_name=name))
+        except Exception as error:
+            if name not in request_user:
+                raise
+            # Same mapping as AgentKit's mcp_tools: credential-free, per integration.
+            raise mcp_auth_error(error, name) or AuthError(
+                "MCP_TOOL_FAILED", "Could not discover configured MCP tools.", 502, name) from None
+
+    return {s.name: await fetch(s.name) for s in servers}
 
 
 def static_platform_tools(project_root: Path, client_for: ClientFor) -> dict[str, list[Any]]:

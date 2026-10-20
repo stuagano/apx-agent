@@ -109,7 +109,11 @@ def platform_client_for(service_ws: Any) -> ClientFor:
             return service_ws
         auth = _REQUEST_AUTH.get(None)
         if auth is None:
-            raise RuntimeError("platform tool needs a request user")
+            from databricks_agentkit.runtime.auth import AuthError
+
+            # AgentKit's MCP resolver attaches the integration id (mcp_auth_error).
+            raise AuthError("MCP_USER_AUTHORIZATION_MISSING",
+                            "This deployed MCP integration requires request-user authorization.")
         return auth.client_for("user")
 
     return client_for
