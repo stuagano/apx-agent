@@ -521,3 +521,12 @@ def test_mcp_tool_named_like_a_python_tool_fails_compile() -> None:
     # get_tools(server_name="crm") returns server-side names, not the agent.toml id.
     with pytest.raises(ValueError, match="'lookup'"):
         compile_to_langgraph(agent, ws=None, model="m", platform_tools={"crm": [_fake_tool("lookup")]})
+
+
+def test_agentkit_mcp_client_builds_with_the_locked_adapter() -> None:
+    """apx must install AgentKit's [langgraph] extra: its mcp_client passes
+    handle_tool_errors, which langchain-mcp-adapters < 0.3 rejects, so every
+    agent.toml MCP platform tool failed to load (TypeError)."""
+    from databricks_agentkit.langgraph.mcp import mcp_client
+
+    mcp_client([], tools=())

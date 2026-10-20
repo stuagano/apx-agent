@@ -329,6 +329,8 @@ def compile_to_durable_agent_server(
                                         checkpointer=checkpointer, require_user=policy.requires_user, recovery=recovery,
                                         project_root=project_root, platform_tools=startup.tools)
     app = DurableAgentServer(auth_policy=policy)
+    # Per-id startup materialization failures, for offline doctor (by id, not message).
+    app.state.apx_platform_tool_failures = startup.failures
     app.invoke(handlers.invoke)
     if recovery:
         app.recover(handlers.invoke)
@@ -381,6 +383,7 @@ def compile_to_durable_agent_server(
 class _StartupPlatformTools:
     tools: dict[str, list[Any]]
     error: str | None
+    failures: dict[str, str]
 
 
 def _startup_platform_tools(agent: BaseAgent, project_root: Path | None, *, model: str,
@@ -388,7 +391,7 @@ def _startup_platform_tools(agent: BaseAgent, project_root: Path | None, *, mode
     """Build the startup agent.toml tools. Declaration errors fail the compile;
     materialization errors (network, auth) degrade ``/readyz`` instead."""
     if not platform_tool_leaves(agent):
-        return _StartupPlatformTools({}, None)
+        return _StartupPlatformTools({}, None, {})
     from ._agent_toml import check_agent_toml, load_agent_toml
     from ._apps_authorization import compile_authorization_plan
     from ._doctor import Status
@@ -404,6 +407,6 @@ def _startup_platform_tools(agent: BaseAgent, project_root: Path | None, *, mode
     try:
         built = static_platform_tools(project_root, platform_client_for(service_ws))
     except Exception as exc:  # surfaced on /readyz, never swallowed
-        return _StartupPlatformTools({}, f"{type(exc).__name__}: {exc}")
+        return _StartupPlatformTools({}, f"{type(exc).__name__}: {exc}", {})
     failed = "; ".join(f"{i}: {error}" for i, error in built.failures.items())
-    return _StartupPlatformTools(built.tools, failed or None)
+    return _StartupPlatformTools(built.tools, failed or None, dict(built.failures))
