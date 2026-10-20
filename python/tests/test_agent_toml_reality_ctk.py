@@ -57,3 +57,19 @@ def test_migrated_stores_and_auth_match_the_generated_manifest(tmp_path: Path, c
     migrated = write_agent_toml(tmp_path, config, plan, agent)
     assert _tables(migrated.read_text()) == _tables(generated)
     assert (_tables(generated)["session_store"] is None) is composite
+
+
+def test_staging_a_real_example_ships_the_authored_file(tmp_path: Path) -> None:
+    import shutil
+
+    from apx_agent._agent_toml import stage_agent_toml
+
+    src = Path(__file__).parents[1] / "examples" / "data-triage-agent"
+    project = tmp_path / "p"
+    shutil.copytree(src, project, ignore=shutil.ignore_patterns(".venv", ".build", "__pycache__"))
+    authored = 'schema_version = 1\n\n[agent]\nframework = "langgraph"\nserver = "agentbricks"\n\n[session_store]\nname = "s"\n'
+    (project / "agent.toml").write_text(authored)
+    (project / ".build").mkdir()
+    staged = stage_agent_toml(project, project / ".build", lambda: "generated", print)
+    verify(Artifact(str(staged), min_bytes=40, must_contain="[session_store]"))
+    assert staged.read_text() == authored

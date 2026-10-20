@@ -1,6 +1,6 @@
 # Design: `agent.toml` is the platform's source of truth
 
-**Status:** approved design, not implemented · **Date:** 2026-10-19 · **Sub-project:** 1 of 4
+**Status:** implemented (sub-project 1) · **Date:** 2026-10-19 · **Sub-project:** 1 of 4
 
 ## Intent
 
@@ -105,6 +105,7 @@ pricing = Agent(name="pricing", tools=[quote, *platform_tools("genie-pricing")])
   run on them as on Python tools. The data ceiling is the platform's
   `downscope`; a `ToolScope` on a platform tool is a compile error, so one
   tool's data limits are never declared in two places.
+- Agent tools that use `platform_tools()` with no `agent.toml` (or no project root) are a compile error, not a `/readyz` degradation.
 - A Genie binding yields three tools: `<id>_ask`, `<id>_poll` and
   `<id>_query_result`. The collision check uses these names.
 
@@ -116,7 +117,7 @@ findings in doctor's `Check` shape (status, detail, fix). Every caller uses it.
 | Caller | Findings | Effect |
 |---|---|---|
 | `compile_agent` and launcher startup | runtime-breaking only: unknown `platform_tools()` id, `ToolScope` on a platform tool, name collision | compile error |
-| `agents deploy` preflight (Agent Bricks CLI and `apps_api` backends) | all | fails before any workspace changes |
+| `agents deploy` preflight (Agent Bricks CLI and `apps_api` backends) | all | fails before staging or deploy |
 | `apx-agent doctor`, `doctor --durable` | all | offline report with fixes |
 
 The checks:
@@ -131,7 +132,9 @@ The checks:
    name it declares must equal the `agent.toml` binding.
 4. **Tools.** Every `platform_tools()` id is declared, every declared tool is
    referenced by some agent, and no names collide.
-5. **Tracing.** When both sides name an experiment, the names match.
+5. **Tracing.** Not checked: `AgentConfig` has no tracing field, so there is nothing to compare.
+
+Managed-store provisioning (an idempotent get-or-create of the declared stores) may already have run when the preflight fails.
 
 Every mismatch is an error. The only warning is a missing `agent.toml` during
 the transition.
@@ -142,17 +145,17 @@ the transition.
   `.build/` unchanged. The `apps_api` path's refusal of a root `agent.toml`
   (`_apps_api_deploy._stage`) is reversed. Symlinked manifests stay refused.
 - Without one, deploy generates `.build/agent.toml` exactly as today and logs a
-  deprecation warning that names `apx-agent migrate agent-toml`.
+  deprecation warning that names `apx-agent agents migrate-agent-toml`.
 
 ## Migration command
 
-`apx-agent migrate agent-toml` writes the authored `agent.toml` from the
+`apx-agent agents migrate-agent-toml` writes the authored `agent.toml` from the
 current `[tool.apx.agent]` and authorization plan. It writes only through the
 SDK: `AgentProject.create`, then `bind_memory_store`, `bind_session_store`,
 `bind_tracing` and `set_deployment_name`. `[auth.user]` is not set by any
 `AgentProject` method, so the command sets it on the parsed document before the
 SDK's `write()`. This command is the only time apx causes `agent.toml` to be
-written. It refuses to overwrite an existing `agent.toml`.
+written. It refuses to overwrite an existing `agent.toml`. The migrated and checked session store follows `inspect_target(...).session_store` (composite agents bind none), matching the generated manifest.
 
 ## Testing
 
@@ -171,7 +174,7 @@ written. It refuses to overwrite an existing `agent.toml`.
 
 **Reality (`*_reality_ctk.py`):**
 
-- `migrate agent-toml` on a copy of a real example: read the result back with
+- `agents migrate-agent-toml` on a copy of a real example: read the result back with
   `AgentProject.load` and assert stores, scopes and tools round-trip.
 - Deploy staging on a real example: `ctk.verify(Artifact(".build/agent.toml",
   must_contain=...))` matches the authored file.
