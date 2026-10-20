@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     from ._agents import BaseAgent
     from ._apps_authorization import AuthorizationPlan
-    from ._models import AgentConfig
+    from ._models import AgentConfig, MemoryBackendConfig, SessionBackendConfig
 
 _NAME = "agent.toml"
 
@@ -141,3 +141,32 @@ def stage_agent_toml(project_root: Path, staged_source: Path,
     target.write_text(generate())
     log("  no agent.toml: generated one (deprecated) — run `apx-agent agents migrate-agent-toml`")
     return target
+
+
+def write_agent_toml(project_root: Path, config: AgentConfig, plan: AuthorizationPlan) -> Path:
+    """One-shot migration: the SDK writes the file; apx adds [auth.user]."""
+    from databricks_agentbricks.projects.agent_project import AgentProject
+
+    from ._project_gen import _write_toml_section
+
+    path = project_root / _NAME
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(f"{path} already exists; agent.toml is not overwritten")
+
+    def managed(store: MemoryBackendConfig | SessionBackendConfig | None) -> str | None:
+        return store.store_name if store is not None and store.type == "managed" else None
+
+    AgentProject.create(project_root, framework="langgraph", server="agentbricks",
+                        memory_store=managed(config.memory),
+                        session_store=managed(config.session)).write()
+    # AgentProject has no [auth.user] setter. Same rule as build_native_manifest.
+    required = any(op.requires_request_context for op in plan.operations)
+    required = required or bool(plan.app_dependencies) or config.memory is not None
+    lines = [path.read_text().rstrip("\n"), ""]
+    _write_toml_section(lines, "auth.user", {
+        "required": required,
+        "additional_api_scopes": list(plan.user_api_scopes) if required else [],
+    })
+    path.write_text("\n".join(lines) + "\n")
+    load_agent_toml(project_root)  # read-after-write: the SDK must accept what we wrote
+    return path

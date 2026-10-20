@@ -4900,6 +4900,26 @@ def migrate_to_okf(force: bool) -> None:
     click.echo(f"Wrote OKF bundle to {okf_root} (schema.json regenerated as derived cache).")
 
 
+@agents.command("migrate-agent-toml")
+def migrate_agent_toml() -> None:
+    """Write an authored agent.toml from [tool.apx.agent] (one time; never overwrites)."""
+    from ._agent_toml import write_agent_toml
+    from ._apps_authorization import compile_authorization_plan
+    from ._inspection import _load_agent_config
+    from ._wiring import resolve_agent
+
+    cwd = Path.cwd()
+    config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    if config is None:
+        raise click.ClickException("No [tool.apx.agent] to migrate.")
+    agent = resolve_agent("agent:agent", config)
+    try:
+        path = write_agent_toml(cwd, config, compile_authorization_plan(agent, model=config.model))
+    except FileExistsError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"wrote {path}")
+
+
 @agents.command("ontology-jumpstart")
 @click.argument("model_json", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--catalog", required=True, help="APX catalog envelope for generated grounding.")
