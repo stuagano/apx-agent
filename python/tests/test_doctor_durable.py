@@ -810,3 +810,31 @@ def test_stale_agent_module_from_elsewhere_is_shadowed_and_restored(tmp_path: Pa
     assert checks["Config"].status is Status.OK, checks["Config"].detail
     assert "(LlmAgent fresh)" in checks["Config"].detail  # the project's agent, not the stale string
     assert sys.modules["agent"] is stale
+
+
+_TOML_BASE = ('schema_version = 1\n\n[agent]\nframework = "langgraph"\nserver = "agentbricks"\n\n'
+              '[auth.user]\nrequired = true\nadditional_api_scopes = ["ai-gateway"]\n')
+_GENIE = ('\n[[tools]]\nid = "sales"\nauth = "user"\n'
+          'source = {kind = "genie_agent", space_id = "01ef0123456789abcdef0123456789ab"}\n')
+_PLATFORM_AGENT = ("from apx_agent import LlmAgent, platform_tools\n"
+                   "agent = LlmAgent(name='{name}', tools=[*platform_tools({ids})])\n")
+
+
+def test_platform_tools_agent_starts(tmp_path: Path) -> None:
+    """Startup compiles against the project's agent.toml (live: it passed None)."""
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "genie", _PLATFORM_AGENT.format(name="genie", ids="'sales'"),
+                    extra_files={"agent.toml": _TOML_BASE + _GENIE})
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Startup"].status is Status.OK, checks["Startup"].detail
+
+
+def test_undeclared_platform_tool_still_fails_startup(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "typo", _PLATFORM_AGENT.format(name="typo", ids="'nope'"),
+                    extra_files={"agent.toml": _TOML_BASE + _GENIE})
+    checks = _by_name(check_durable_readiness(root))
+    assert checks["Startup"].status is Status.FAIL
+    assert "nope" in checks["Startup"].detail
