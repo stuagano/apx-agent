@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -294,12 +295,18 @@ _DURABLE_PYPROJECT = ('[project]\nname = "p"\nversion = "0"\n[tool.apx.agent]\nn
 
 
 @pytest.fixture(autouse=True)
-def _fresh_agent_modules(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each test project imports its own agent module, not one cached by an earlier test."""
+def _fresh_agent_modules(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Each test project imports its own agent module, not one cached by an earlier test,
+    and leaves neither its module nor its project dir on sys.path for later tests
+    (a leaked tmp dir made doctor import another test's broken agent.py)."""
     import sys
 
+    monkeypatch.setattr(sys, "path", list(sys.path))  # restored at teardown
     for name in ("agent", "app", "bot"):
         monkeypatch.delitem(sys.modules, name, raising=False)
+    yield
+    for name in ("agent", "app", "bot"):
+        sys.modules.pop(name, None)
 
 
 def _agent_toml_doctor_rows(root: Path) -> list[Check]:
@@ -395,3 +402,21 @@ def test_generate_replaces_a_stale_generated_file(tmp_path: Path) -> None:
     build.mkdir()
     (build / "agent.toml").write_text(GENERATED + "# stale\n")
     assert stage_agent_toml(tmp_path, build, lambda: GENERATED, print).read_text() == GENERATED
+
+
+def test_python_only_managed_memory_needs_a_bound_store(tmp_path: Path) -> None:
+    """#954: with no AgentConfig, memory declared on the agent is still checked."""
+    agent = Agent(name="a", tools=[_noop], memory="managed")
+    [finding] = _findings(_project(tmp_path, BASE), agent)
+    assert "managed memory declared but no memory_store bound" in finding.detail
+    store = agent.memory_config.store_name
+    assert _findings(_project(tmp_path, BASE + f'\n[memory_store]\nname = "{store}"\n'), agent) == []
+
+
+def test_python_only_memory_needs_a_request_user(tmp_path: Path) -> None:
+    """#954: Python-only memory forces [auth.user] required, like config memory."""
+    agent = Agent(name="a", tools=[_noop], memory="managed")
+    body = BARE + '\n[auth.user]\nrequired = false\nadditional_api_scopes = []\n'
+    body += f'\n[memory_store]\nname = "{agent.memory_config.store_name}"\n'
+    details = [f.detail for f in _findings(_project(tmp_path, body), agent)]
+    assert any("need a request user" in d for d in details), details

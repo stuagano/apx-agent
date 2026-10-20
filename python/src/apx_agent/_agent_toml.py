@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     from ._agents import BaseAgent
     from ._apps_authorization import AuthorizationPlan
-    from ._models import AgentConfig
+    from ._models import AgentConfig, MemoryBackendConfig
 
 _NAME = "agent.toml"
 
@@ -43,6 +43,13 @@ def platform_tool_names(project: AgentProject) -> dict[str, list[str]]:
     return names
 
 
+def _declared_memory(agent: BaseAgent | None, config: AgentConfig | None) -> MemoryBackendConfig | None:
+    """Memory from [tool.apx.agent], else from the Python agent (``memory=``), #954."""
+    if config is not None:
+        return config.memory
+    return getattr(agent, "memory_config", None)
+
+
 def needs_request_user(plan: AuthorizationPlan, config: AgentConfig | None, *,
                        agent: BaseAgent | None = None, project: AgentProject | None = None) -> bool:
     """Whether ``[auth.user] required`` must be true. build_native_manifest,
@@ -51,7 +58,7 @@ def needs_request_user(plan: AuthorizationPlan, config: AgentConfig | None, *,
 
     if any(op.requires_request_context for op in plan.operations) or plan.app_dependencies:
         return True
-    if config is not None and config.memory is not None:
+    if _declared_memory(agent, config) is not None:
         return True
     if agent is None or project is None:
         return False
@@ -142,11 +149,12 @@ def _bound_session_store(agent: BaseAgent, config: AgentConfig) -> str | None:
 
 
 def _store_findings(project: AgentProject, agent: BaseAgent, config: AgentConfig | None) -> list[Check]:
-    if config is None:
-        return []
-    memory = config.memory.store_name if config.memory is not None and config.memory.type == "managed" else None
+    declared_memory = _declared_memory(agent, config)
+    memory = declared_memory.store_name if declared_memory is not None and declared_memory.type == "managed" else None
+    # A Python-only agent derives no session store (inspect_target binds none without config).
+    session = _bound_session_store(agent, config) if config is not None else None
     pairs = (("memory", memory, project.memory_store, "agentbricks memory bind"),
-             ("session", _bound_session_store(agent, config), project.session_store, "agentbricks sessions bind"))
+             ("session", session, project.session_store, "agentbricks sessions bind"))
     out: list[Check] = []
     for label, declared, bound, command in pairs:
         if declared is None:
@@ -156,8 +164,9 @@ def _store_findings(project: AgentProject, agent: BaseAgent, config: AgentConfig
                              f"Run `{command} <name>`."))
         elif declared is not None and declared != bound:
             out.append(Check(_NAME, Status.FAIL,
-                             f"{label} store mismatch: pyproject {declared!r} vs agent.toml {bound!r}",
-                             "Make [tool.apx.agent] and agent.toml name the same store."))
+                             f"{label} store mismatch: apx {declared!r} vs agent.toml {bound!r}",
+                             "Make the apx declaration ([tool.apx.agent] or the agent's memory=) and "
+                             "agent.toml name the same store."))
     return out
 
 
