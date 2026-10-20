@@ -4181,7 +4181,9 @@ def _scaffold_apps(
         from ._project_gen import _build_pyproject
 
         config = AgentConfig(
-            name=name, target=runtime, model="databricks-claude-sonnet-4-6",
+            name=name, target=runtime,
+            # Only an explicit --profile probes the gateway (#955); no implicit network.
+            model=_pick_default_model(profile) if profile else _DEFAULT_MODEL_CANDIDATES[0],
             knowledge="./.apx/okf" if manifest is not None else None,
         )
         native_dep = apx_dep.replace("apx-agent[eval]", "apx-agent[eval,agentbricks]", 1)
@@ -17691,16 +17693,50 @@ def memory_consolidate_cmd(
 # workspace through ``_require_sdk`` / ``_connect_workspace``.
 # ---------------------------------------------------------------------------
 
-# Canonical shortlist. The picker of record lives next to the model registry
-# (registry._KNOWN_AGENT_MODELS); this list is the CLI-facing copy so
-# ``agents models`` does not import the registry.
+# Default chat model, in preference order (#955): UC model services first, the
+# legacy name as fallback. Workspaces differ, so `agents scaffold --profile`
+# writes the first one the workspace serves; without a profile, the first one.
+_DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
+    "system.ai.claude-sonnet-4-6",
+    "databricks-claude-sonnet-4-6",
+)
 _AGENT_MODEL_SHORTLIST: tuple[str, ...] = (
-    "databricks-claude-sonnet-4-5",
-    "databricks-claude-opus-4-5",
+    *_DEFAULT_MODEL_CANDIDATES,
+    "system.ai.claude-opus-4-7",
     "databricks-gpt-5-4",
     "databricks-gemini-3-1-pro",
 )
-_AGENT_MODEL_DEFAULT = "databricks-claude-sonnet-4-5"
+
+
+def _probe_model(ws: Any, name: str) -> str:
+    """One-token request on the agent's AI Gateway route: ``served`` or the refusal."""
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{ws.config.host.rstrip('/')}/ai-gateway/mlflow/v1/chat/completions",
+            headers=ws.config.authenticate(), timeout=20,
+            json={"model": name, "messages": [{"role": "user", "content": "ok"}], "max_tokens": 1},
+        )
+    except httpx.HTTPError as exc:
+        return f"unreachable ({type(exc).__name__})"
+    if resp.status_code == 200:
+        return "served"
+    try:
+        code = resp.json().get("error_code")
+    except ValueError:
+        code = None
+    return f"{resp.status_code} {code}" if code else str(resp.status_code)
+
+
+def _pick_default_model(profile: str | None) -> str:
+    """The first default candidate the workspace serves; the first candidate otherwise."""
+    try:
+        ws = _make_scaffold_workspace_client(profile)
+    except Exception:
+        return _DEFAULT_MODEL_CANDIDATES[0]
+    return next((name for name in _DEFAULT_MODEL_CANDIDATES if _probe_model(ws, name) == "served"),
+                _DEFAULT_MODEL_CANDIDATES[0])
 
 _AGENT_WHY_NOTES: dict[str, str] = {
     "create-supervisor": "needs --name (supervisor display name)",
@@ -17905,11 +17941,15 @@ def agents_show(name: str) -> None:
 
 
 @agents.command("models")
-def agents_models() -> None:
-    """Print the built-in chat-model shortlist and which one is the default."""
+@click.option("--profile", default=None,
+              help="Probe each model on this workspace's AI Gateway (one-token request each).")
+def agents_models(profile: str | None) -> None:
+    """Print the chat-model shortlist and the default; --profile shows what is served."""
+    ws = _make_scaffold_workspace_client(profile) if profile else None
     for model in _AGENT_MODEL_SHORTLIST:
-        marker = " (default)" if model == _AGENT_MODEL_DEFAULT else ""
-        click.echo(f"{model}{marker}")
+        marker = " (default)" if model == _DEFAULT_MODEL_CANDIDATES[0] else ""
+        status = f"  {_probe_model(ws, model)}" if ws is not None else ""
+        click.echo(f"{model}{status}{marker}")
     click.echo("override per agent with `model:` or per deploy with --model")
 
 

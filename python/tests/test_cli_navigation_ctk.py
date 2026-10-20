@@ -43,10 +43,24 @@ def test_agents_doctor_empty_is_ok(tmp_path) -> None:
 
 
 def test_agents_models_lists_default() -> None:
+    from apx_agent import cli as cli_mod
+
     result = CliRunner().invoke(cli, ["agents", "models"])
     assert result.exit_code == 0, result.output
-    assert "databricks-claude-sonnet-4-5" in result.output
-    assert "default" in result.output
+    assert f"{cli_mod._DEFAULT_MODEL_CANDIDATES[0]} (default)" in result.output
+
+
+def test_agents_models_profile_reports_what_the_workspace_serves(monkeypatch) -> None:
+    """#955: with --profile, each shortlisted name shows the gateway's real answer."""
+    from apx_agent import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_make_scaffold_workspace_client", lambda profile: object())
+    monkeypatch.setattr(cli_mod, "_probe_model",
+                        lambda ws, name: "served" if name.startswith("system.ai.") else "403 PERMISSION_DENIED")
+    result = CliRunner().invoke(cli, ["agents", "models", "--profile", "p"])
+    assert result.exit_code == 0, result.output
+    assert "system.ai.claude-sonnet-4-6  served" in result.output
+    assert "databricks-claude-sonnet-4-6  403 PERMISSION_DENIED" in result.output
 
 
 def test_agents_playground_noninteractive(tmp_path, monkeypatch) -> None:
