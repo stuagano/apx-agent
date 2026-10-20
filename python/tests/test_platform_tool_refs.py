@@ -60,6 +60,30 @@ def test_genie_tools_resolve_identity_per_call(tmp_path: Path) -> None:
     assert calls == []  # construction does no auth; GenieAgent calls client_for at call time
 
 
+def test_genie_tools_run_on_the_sync_graph_path(tmp_path: Path) -> None:
+    """AgentKit's Genie tools are coroutine-only; the durable graph calls tools
+    synchronously, so they must be bridged (live: "StructuredTool does not
+    support sync invocation"). The sync call still resolves identity per call."""
+    import pytest
+
+    from apx_agent._platform_tools import static_platform_tools
+
+    (tmp_path / "agent.toml").write_text(_BASE + _genie("pricing"))
+    calls: list[str] = []
+
+    class Resolved(Exception):
+        pass
+
+    def client_for(mode: str) -> SimpleNamespace:
+        calls.append(mode)
+        raise Resolved
+
+    [ask, *_] = static_platform_tools(tmp_path, client_for).tools["pricing"]
+    with pytest.raises(Resolved):
+        ask.invoke({"question": "how many customers?"})
+    assert calls == ["user"]
+
+
 def test_genie_id_containing_query_groups_under_its_id(tmp_path: Path) -> None:
     from apx_agent._platform_tools import static_platform_tools
 
