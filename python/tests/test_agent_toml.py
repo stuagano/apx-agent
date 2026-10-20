@@ -286,3 +286,96 @@ def test_mismatched_agent_toml_stops_deploy_before_staging(
         cli._deploy_apps_impl(cwd=tmp_path, module="agent:agent", profile=None, bundle_target="dev",
                               no_run=True, auto_update_yml=False, auto_build_wheel=False,
                               json_output=False, log=lambda message: None)
+
+
+# --- I1 / I5: doctor and migrate load the agent like deploy; never crash ---------------
+_DURABLE_PYPROJECT = ('[project]\nname = "p"\nversion = "0"\n[tool.apx.agent]\nname = "p"\nmodel = "m"\n'
+                      'target = "durable_agent_server"\n')
+
+
+@pytest.fixture(autouse=True)
+def _fresh_agent_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test project imports its own agent module, not one cached by an earlier test."""
+    import sys
+
+    for name in ("agent", "app", "bot"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+
+def _agent_toml_doctor_rows(root: Path) -> list[Check]:
+    from apx_agent._doctor import run_checks
+
+    groups = dict(run_checks(root, online=False))
+    assert {"Project"} <= groups.keys()
+    return [c for c in groups["Project"] if c.name == "agent.toml"]
+
+
+def test_doctor_without_agentbricks_extra_skips_agent_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
+    (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', tools=[])\n")
+    (tmp_path / "agent.toml").write_text(BARE)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, "databricks_agentbricks", None)
+    monkeypatch.setitem(sys.modules, "databricks_agentbricks.errors", None)
+    [row] = _agent_toml_doctor_rows(tmp_path)
+    assert row.status is Status.SKIP and "agentbricks" in row.detail and "databricks_agentbricks" in row.detail
+
+
+def test_doctor_agent_toml_value_error_is_one_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
+    (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', tools=[])\n")
+    monkeypatch.chdir(tmp_path)
+
+    def bad_plan(*a: Any, **k: Any) -> Any:
+        raise ValueError("bad plan")
+
+    monkeypatch.setattr("apx_agent._apps_authorization.compile_authorization_plan", bad_plan)
+    assert _agent_toml_doctor_rows(tmp_path) == [Check("agent.toml", Status.FAIL, "bad plan")]
+
+
+def test_doctor_loads_a_non_default_agent_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
+    (tmp_path / "app.py").write_text(
+        "from apx_agent import Agent, platform_tools\nagent = Agent(name='p', tools=[*platform_tools('nope')])\n")
+    (tmp_path / "agent.toml").write_text(BASE)
+    monkeypatch.chdir(tmp_path)
+    rows = _agent_toml_doctor_rows(tmp_path)
+    assert any(r.status is Status.FAIL and "nope" in r.detail for r in rows), rows
+
+
+def test_migrate_uses_the_deploy_loader_and_plan_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from click.testing import CliRunner
+
+    from apx_agent import _apps_authorization
+    from apx_agent.cli import main
+
+    (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
+    (tmp_path / "bot.py").write_text("from apx_agent import Agent\nassistant = Agent(name='p', tools=[])\n")
+    monkeypatch.chdir(tmp_path)
+    seen: list[dict[str, Any]] = []
+    real = _apps_authorization.compile_authorization_plan
+
+    def spy(agent: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        return real(agent, **kwargs)
+
+    monkeypatch.setattr(_apps_authorization, "compile_authorization_plan", spy)
+    result = CliRunner().invoke(main, ["agents", "migrate-agent-toml", "--module", "bot:assistant"])
+    assert result.exit_code == 0, result.output
+    assert load_agent_toml(tmp_path) is not None
+    assert seen and set(seen[0]) == {"model", "agent_identity"}
+
+
+def test_migrate_load_failure_is_a_click_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from click.testing import CliRunner
+
+    from apx_agent.cli import main
+
+    (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
+    (tmp_path / "agent.py").write_text("import not_a_real_module_xyz\n")
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["agents", "migrate-agent-toml"])
+    assert result.exit_code == 1 and isinstance(result.exception, SystemExit), result.exception
+    assert "not_a_real_module_xyz" in result.output and not (tmp_path / "agent.toml").exists()

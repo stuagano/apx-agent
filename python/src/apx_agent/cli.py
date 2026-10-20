@@ -4901,21 +4901,27 @@ def migrate_to_okf(force: bool) -> None:
 
 
 @agents.command("migrate-agent-toml")
-def migrate_agent_toml() -> None:
+@click.option("--module", default="agent:agent", show_default=True, help="Agent module spec.")
+def migrate_agent_toml(module: str) -> None:
     """Write an authored agent.toml from [tool.apx.agent] (one time; never overwrites)."""
+    from . import _apps_authorization
     from ._agent_toml import write_agent_toml
-    from ._apps_authorization import compile_authorization_plan
     from ._inspection import _load_agent_config
-    from ._wiring import resolve_agent
 
     cwd = Path.cwd()
-    config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    try:
+        config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     if config is None:
         raise click.ClickException("No [tool.apx.agent] to migrate.")
-    agent = resolve_agent("agent:agent", config)
+    # The same loader and plan inputs as `agents deploy`.
+    agent = _load_finalized_agent(module)
     try:
-        path = write_agent_toml(cwd, config, compile_authorization_plan(agent, model=config.model), agent)
-    except FileExistsError as exc:
+        plan = _apps_authorization.compile_authorization_plan(
+            agent, model=config.model, agent_identity=config.identity)
+        path = write_agent_toml(cwd, config, plan, agent)
+    except (FileExistsError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"wrote {path}")
 

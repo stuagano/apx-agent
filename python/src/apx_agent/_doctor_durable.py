@@ -588,7 +588,7 @@ def _agent_toml_stage(loaded: _Loaded) -> list[Check]:
     from ._agent_toml import check_agent_toml
     from ._apps_authorization import compile_authorization_plan
 
-    plan = compile_authorization_plan(loaded.agent, model=loaded.config.model)
+    plan = compile_authorization_plan(loaded.agent, model=loaded.config.model, agent_identity=loaded.config.identity)
     return [c for c in check_agent_toml(loaded.project, loaded.agent, plan, loaded.config) if c.status is not Status.OK]
 
 

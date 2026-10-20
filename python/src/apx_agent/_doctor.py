@@ -245,15 +245,28 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
 
 
 def _agent_toml_rows(cwd: Path, config: AgentConfig) -> list[Check]:
-    from ._agent_toml import check_agent_toml
-    from ._apps_authorization import compile_authorization_plan
-    from ._wiring import resolve_agent
+    """agent.toml findings, loading the agent and plan the way deploy does."""
+    from contextlib import chdir  # noqa: PLC0415
+
+    from . import _apps_authorization  # noqa: PLC0415
+    from .cli import _detect_module_spec, _load_finalized_agent  # noqa: PLC0415
 
     try:
-        agent = resolve_agent("agent:agent", config)
+        with chdir(cwd):
+            agent = _load_finalized_agent(_detect_module_spec(cwd) or "agent:agent", template_ws=False)
     except Exception as exc:  # reported, not raised: doctor keeps going
-        return [Check("agent.toml", Status.SKIP, f"agent not importable: {type(exc).__name__}")]
-    return check_agent_toml(cwd, agent, compile_authorization_plan(agent, model=config.model), config)
+        return [Check("agent.toml", Status.SKIP, f"agent not importable: {type(exc).__name__}: {exc}")]
+    try:
+        from ._agent_toml import check_agent_toml  # noqa: PLC0415
+
+        plan = _apps_authorization.compile_authorization_plan(
+            agent, model=config.model, agent_identity=config.identity)
+        return check_agent_toml(cwd, agent, plan, config)
+    except ImportError as exc:
+        return [Check("agent.toml", Status.SKIP, f"needs the apx-agent[agentbricks] extra: {exc}",
+                      "Install apx-agent[agentbricks] to check agent.toml.")]
+    except ValueError as exc:
+        return [Check("agent.toml", Status.FAIL, str(exc))]
 
 
 def check_python_version() -> Check:
