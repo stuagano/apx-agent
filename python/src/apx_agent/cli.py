@@ -9021,19 +9021,20 @@ def _native_execution_completed(body: Any) -> str | None:
     return content
 
 
-def _native_session_thread(agent_name: str | None, session_id: str) -> Any:
+def _native_session_thread(agent_name: str | None, session_id: str, principal: str | None = None) -> Any:
     """The checkpoint key native execution derives from the agent and session.
 
-    App-auth smoke has no request principal, matching the handler's unscoped
-    ``[agent._name, session_id]`` hash. A principal-scoped session would not be
-    readable under that key. The result is a LangGraph ``RunnableConfig`` so it
-    can be passed to ``DatabricksSessionStoreSaver.get_tuple``.
+    Mirrors the durable handler's scope: ``[agent._name, session_id]`` for
+    app-auth, ``[agent._name, principal, session_id]`` when a request user is
+    resolved. The result is a LangGraph ``RunnableConfig`` so it can be passed
+    to ``DatabricksSessionStoreSaver.get_tuple``.
     """
     import hashlib
 
     from langchain_core.runnables import RunnableConfig
 
-    key = hashlib.sha256(json.dumps([agent_name, session_id]).encode()).hexdigest()
+    scope = [agent_name, session_id] if principal is None else [agent_name, principal, session_id]
+    key = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
     config: RunnableConfig = {"configurable": {"thread_id": key, "actor_id": key}}
     return config
 
@@ -9062,6 +9063,7 @@ def _check_native_execution(
     profile: str | None,
     session_store: str | None,
     agent_name: str | None = None,
+    user_scoped: bool = False,
 ) -> _NativeExecutionSmoke:
     """POST one ChatAgent invocation after native ``/readyz`` is durable.
 
@@ -9138,7 +9140,9 @@ def _check_native_execution(
 
         ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
         saver = DatabricksSessionStoreSaver(session_store, workspace_client=ws)
-        saved = saver.get_tuple(_native_session_thread(agent_name, session_id))
+        # A request-user agent scopes the thread by the caller, who is the deployer here.
+        principal = ws.current_user.me().id if user_scoped else None
+        saved = saver.get_tuple(_native_session_thread(agent_name, session_id, principal))
     except Exception as exc:
         return _NativeExecutionSmoke(
             completed=False,
@@ -10798,6 +10802,8 @@ def _deploy_apps_impl(
     # None until a durable target is inspected. Smoke uses this so a composite
     # does not read back the auto-attached session it never bound.
     bound_session: str | None = None
+    # Set from the staged agent.toml: a request-user agent scopes its sessions by caller.
+    native_user_scoped = False
     if space_name is not None or (effective_config is not None and effective_config.target == "durable_agent_server"):
         from ._runtime_targets import inspect_target
 
@@ -10946,10 +10952,14 @@ def _deploy_apps_impl(
             if not source.is_dir() or not source.resolve().is_relative_to(cwd.resolve()) or source.resolve() == cwd.resolve():
                 raise click.ClickException("The durable target requires a staged source directory inside the project.")
             try:
-                stage_agent_toml(cwd, source, lambda: build_native_manifest(
+                staged = stage_agent_toml(cwd, source, lambda: build_native_manifest(
                     config=effective_config, authorization_plan=authorization_plan, agent=agent), log)
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
+            from ._agent_toml import load_agent_toml
+
+            staged_project = load_agent_toml(staged.parent)
+            native_user_scoped = staged_project is not None and staged_project.user_auth.required
 
         if space_client is not None:
             from ._app_space import validate_space_source
@@ -11213,6 +11223,7 @@ def _deploy_apps_impl(
                     profile=profile,
                     session_store=bound_session,
                     agent_name=getattr(agent, "_name", None),
+                    user_scoped=native_user_scoped,
                 )
                 if smoke.completed:
                     log(f"  execution: {smoke.detail}")
