@@ -1130,6 +1130,9 @@ def test_native_deploy_hands_rollout_to_agentbricks(
         assert smoke.call_args.args[0] == payload["url"]
         assert smoke.call_args.kwargs["session_store"] == "apx-my-app-sessions"
         assert smoke.call_args.kwargs["agent_name"] == "native"
+        # The smoke reads the session under the key the staged manifest's auth implies.
+        staged_auth = AgentProject.load(scaffold / ".build").user_auth
+        assert smoke.call_args.kwargs["user_scoped"] is staged_auth.required
     if failure:
         assert result.exit_code != 0, result.output
         if failure == "execution":

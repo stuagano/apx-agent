@@ -10003,3 +10003,47 @@ def test_interactive_resolve_allows_manual_catalog_and_schema(monkeypatch):
     )
 
     assert resolved[:2] == ("catalog_24", "schema_24")
+
+
+def test_native_execution_reads_back_a_user_scoped_session(monkeypatch) -> None:
+    """A request-user agent keys its checkpoint by [agent, user id, session] (the
+    durable handler's scope). The smoke runs as the deployer, so it must read that
+    key, not the unscoped one (live: every user-auth deploy failed the gate)."""
+    import hashlib
+    import io
+    import urllib.request
+    from types import SimpleNamespace as Message
+
+    from apx_agent import cli
+
+    _stub_execution_token(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["session_id"] = json.loads(req.data.decode())["session_id"]
+        return io.BytesIO(json.dumps({
+            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}]},
+        }).encode())
+
+    class _Saver:
+        def __init__(self, store: str, *, workspace_client: Any) -> None:
+            pass
+
+        def get_tuple(self, config: dict[str, Any]) -> Any:
+            scoped = hashlib.sha256(json.dumps(["demo", "u-123", seen["session_id"]]).encode()).hexdigest()
+            assert config["configurable"]["thread_id"] == scoped
+            return SimpleNamespace(checkpoint={
+                "channel_values": {"messages": [Message(type="ai", content="pong")]},
+            })
+
+    me = SimpleNamespace(me=lambda: SimpleNamespace(id="u-123"))
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient",
+                        lambda *, profile=None: SimpleNamespace(profile=profile, current_user=me))
+    monkeypatch.setattr("databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver)
+    result = cli._check_native_execution(
+        "https://app.example.com/", profile="fevm", session_store="apx-demo-sessions",
+        agent_name="demo", user_scoped=True,
+    )
+    assert result.completed is True, result.detail
+    assert result.readback is True
