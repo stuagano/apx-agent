@@ -69,6 +69,14 @@ def test_render_template_substitutes_known_leaves_unknown() -> None:
     assert _render_template("A={a} B={b}", {"a": "1"}) == "A=1 B={b}"
 
 
+def test_render_template_substitutes_scoped_keys() -> None:
+    """#947: {user:} / {app:} / {temp:} share the state dict, prefixed."""
+    keyed = {"user:pref": "en", "app:flag": "on", "temp:scratch": "x", "facts": "y"}
+    assert _render_template("lang={user:pref} flag={app:flag}", keyed) == "lang=en flag=on"
+    assert _render_template("{temp:scratch} {facts} {user:missing}", keyed) == "x y {user:missing}"
+    assert _has_template(_agent(instructions="Reply in {user:pref}.")) is True
+
+
 # -- G1: guardrails + callbacks ------------------------------------------------
 
 

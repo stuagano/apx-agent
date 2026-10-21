@@ -1,9 +1,11 @@
 # Design: `user:` / `app:` keyed-state scopes (G3 phase 3)
 
-**Status:** proposed, not implemented (#947) · **Date:** 2026-06-25 · **Source:** ADK gap audit (G3, #232) ·
+**Status:** decided 2026-10-21 — do not extend ConversationStore; persist backend still open (#947) ·
+**Date:** 2026-06-25 (decision 2026-10-21) · **Source:** ADK gap audit (G3, #232) ·
 **Builds on:** [keyed-shared-state.md](keyed-shared-state.md) (phases 1–3 plan),
 [keyed-state-tool-access.md](keyed-state-tool-access.md) (tool read/write),
-[session-state-persistence.md](session-state-persistence.md) (phase 2 seam)
+[session-state-persistence.md](session-state-persistence.md) (phase 2 seam) ·
+**Parent:** [#862](https://github.com/stuagano/apx-agent/issues/862)
 
 The last undesigned slice of G3. Phases 1 + the tool-access increment shipped the
 in-graph `state` channel (`output_key`, `{key}` templating, `Dependencies.State`
@@ -11,6 +13,41 @@ tool read/write). Phase 2 designed session-scoped persistence. This phase adds t
 remaining two ADK scopes — **`user:`** (this principal, across their sessions) and
 **`app:`** (every user of this agent) — so a value can outlive a single
 conversation and, for `app:`, be shared across users.
+
+---
+
+## Decision — 2026-10-21 (#947)
+
+#947 asked whether `user:` / `app:` should land on managed session/memory stores
+instead of new `ConversationStore.get_scoped_state` / `set_scoped_state` methods.
+
+**Managed stores do not cover this KV.**
+
+| Store | What it actually is | Why it is not `user:` / `app:` |
+|---|---|---|
+| Managed Session Store (`DatabricksSessionStoreSaver`) | LangGraph checkpointer keyed by `thread_id` + `actor_id` | One conversation (or invocation thread). Not "this principal across sessions" and not "every user of this agent". |
+| Managed Memory Store | Semantic recall (`add` / `search` / `list`) partitioned by `actor_id` | Not a flat keyed dict. Putting ADK state at a memory `path` would pollute `recall()` unless every recall filtered it out. |
+| ConversationStore `session_state` | JSON dict on one conversation | Session-scoped only. Storing `user:` there would pin the value to that conversation. |
+
+**Do not implement the ConversationStore ABC methods in §2.** That would add
+another Lakebase table on the path #862 is retiring, and it would not run on
+the native Apps host (`DurableAgentServer`). ChatAgent seed/persist (#947 3a
+against `_chat_agent.py`) is the wrong host.
+
+**Shipped in this checkout (in-graph only):**
+
+- `{user:…}` / `{app:…}` / `{temp:…}` instruction templating (`_TEMPLATE_KEY`)
+- `partition_state` / `persistable_state` drop `temp:` **and** `user:` / `app:`
+  from ConversationStore `set_session_state`
+
+**Still open:** a durable backend for the `user` / `app` buckets. Native
+checkpointers already keep the `state` channel for **one session** (including
+prefixed keys) and do not strip `temp:`. Cross-session `user:` / `app:` wait
+for a managed KV that is not memory-recall, or an explicit product decision to
+keep a custom table.
+
+Open questions from the original draft stay: `app:` write opt-in, `user_id` vs
+email, no scoped delete. Lean remains write+audit, `user_id`, no deletion.
 
 ---
 
@@ -91,7 +128,9 @@ so they are available at the seed point:
 These are the only two new owner dimensions; the reducer, the graph, and the tool
 surface are untouched.
 
-### 2. The backing store — extend `ConversationStore`, don't introduce a new one
+### 2. The backing store — ~~extend `ConversationStore`~~ (rejected 2026-10-21)
+
+Kept as the original proposal. **Do not implement.** See the decision above.
 
 **Ponytail:** the agent already holds a configured `ConversationStore` (constructed
 + threaded through both adapters, with in-memory / Delta / Lakebase backends). Add

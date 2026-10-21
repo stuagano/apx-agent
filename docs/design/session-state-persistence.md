@@ -7,6 +7,9 @@
 > ConversationStore, so it does not implement this surface. See
 > [managed-state-contract-map.md](managed-state-contract-map.md).
 >
+> **#947:** `persistable_state` writes only unprefixed keys. `user:` / `app:`
+> are not session-scoped and are not stored here.
+>
 > **Historical note (#332):** this design documents three backends — in-memory,
 > Delta (`_conversation_delta.py`), and Lakebase. The Delta backend was
 > deleted and `_conversation_delta.py` removed; Lakebase is now the sole
@@ -18,7 +21,8 @@ phase makes session-scoped state **survive across turns** of a conversation, so 
 value a tool or `output_key` wrote in turn 1 is readable in turn 2.
 
 In-graph state ↔ `Conversation.session_state`, through a **governed** store
-method. `user:`/`app:` scopes remain phase 3.
+method. `user:`/`app:` scopes remain [phase 3](keyed-state-scopes.md); they
+are not written through this mutator.
 
 ---
 

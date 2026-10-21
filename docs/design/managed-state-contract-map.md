@@ -274,7 +274,8 @@ methods **stripped** from the omniagents copy. That is intentional.
   Chat/Responses adapters.
 - Persist `persistable_state(final)` through
   `ConversationStore.set_session_state`.
-- Keys starting `temp:` are scratch and never written.
+- Keys starting `temp:` are scratch and never written. `user:` / `app:`
+  are also excluded from `set_session_state` (#947).
 - Persist is never fatal.
 
 On the native durable path the graph checkpointer already stores channel

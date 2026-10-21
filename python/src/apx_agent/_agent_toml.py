@@ -45,7 +45,7 @@ def platform_tool_names(project: AgentProject) -> dict[str, list[str]]:
 
 def _declared_memory(agent: BaseAgent | None, config: AgentConfig | None) -> MemoryBackendConfig | None:
     """Memory from [tool.apx.agent], else from the Python agent (``memory=``), #954."""
-    if config is not None:
+    if config is not None and config.memory is not None:
         return config.memory
     return getattr(agent, "memory_config", None)
 
@@ -199,12 +199,13 @@ def write_agent_toml(project_root: Path, config: AgentConfig, plan: Authorizatio
     if path.exists() or path.is_symlink():
         raise FileExistsError(f"{path} already exists; agent.toml is not overwritten")
 
-    memory = config.memory.store_name if config.memory is not None and config.memory.type == "managed" else None
+    memory = _declared_memory(agent, config)
+    memory_name = memory.store_name if memory is not None and memory.type == "managed" else None
     AgentProject.create(project_root, framework="langgraph", server="agentbricks",
-                        memory_store=memory,
+                        memory_store=memory_name,
                         session_store=_bound_session_store(agent, config)).write()
     # AgentProject has no [auth.user] setter. No [[tools]] exist yet, so no project.
-    required = needs_request_user(plan, config)
+    required = needs_request_user(plan, config, agent=agent)
     lines = [path.read_text().rstrip("\n"), ""]
     _write_toml_section(lines, "auth.user", {
         "required": required,

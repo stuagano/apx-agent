@@ -1,7 +1,7 @@
 import pytest
 
 from apx_agent._conversation import InMemoryConversationStore
-from apx_agent._session_state import persistable_state, persist_session_state
+from apx_agent._session_state import partition_state, persistable_state, persist_session_state
 
 
 def _store_with_conv(cid: str = "c1") -> InMemoryConversationStore:
@@ -33,6 +33,29 @@ def test_set_session_state_missing_conv_is_noop():
 def test_persistable_state_strips_temp_keys():
     out = persistable_state({"keep": 1, "temp:scratch": 2, "also": 3})
     assert out == {"keep": 1, "also": 3}
+
+
+def test_persistable_state_excludes_user_and_app_keys():
+    """#947: user:/app: are not ConversationStore session_state."""
+    out = persistable_state({
+        "keep": 1,
+        "user:pref": "en",
+        "app:flag": "on",
+        "temp:scratch": 2,
+    })
+    assert out == {"keep": 1}
+
+
+def test_partition_state_strips_prefixes_and_drops_temp():
+    parts = partition_state({
+        "account": "ACME",
+        "user:pref": "en",
+        "app:flag": "on",
+        "temp:x": 1,
+    })
+    assert parts.session == {"account": "ACME"}
+    assert parts.user == {"pref": "en"}
+    assert parts.app == {"flag": "on"}
 
 
 def test_persistable_state_handles_none():

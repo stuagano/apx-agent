@@ -12,6 +12,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Added
 
+- **`{user:}` / `{app:}` instruction templating (#947).** `{user:pref}` and `{app:flag}` substitute from the keyed `state` dict. ConversationStore persistence stores only unprefixed session keys; managed session/memory stores are not a user/app KV, so cross-session scoped writes stay open. [keyed-state-scopes](docs/design/keyed-state-scopes.md).
 - **Existing-agent registration from its card (#834).** Hub registration keeps the crawled card's `instructions` and `tools` (skills stay the fallback), and copies the response `traceparent` onto the card as `trace_header`. `RemoteDatabricksAgent` uses those card fields the same way.
 - **Native durable runtime.** Agent declarations compile to a native MLflow
   `ResponsesAgent` or `DurableAgentServer`. One declaration selects the runtime,
@@ -60,6 +61,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 - **Native CLI vocabulary (#862).** `--target` is the hosting destination; `[tool.apx.agent].target` is the runtime. Native deploy/destroy accept `--environment` as an alias of `--bundle-target`. Doctor reports destination and declared runtime separately. Generated native dependencies stay `apx-agent[eval,agentbricks]`; `apx-agent[apps]` was never an extra, so run/doctor now tell you to install `uvicorn[standard]`. Example projects that still asked for the nonexistent `apx-agent[langgraph]` extra now use published extras (`eval`, plus `agentbricks` where the durable runtime is declared).
 - **Managed store live acceptance (#855/#856).** A disposable provision/CRUD/isolation probe on profile `DEFAULT` (`fevm-serverless-stable-7def3z`) succeeded and deleted its stores. Opt-in re-run: `APX_MANAGED_STATE_LIVE=1`. Retention, grants, and App-process startup remain open.
+- **Durable host consumer inventory (#864).** [docs/design/durable-host-consumers.md](docs/design/durable-host-consumers.md) records which ChatAgent / `/invocations` / A2A callers still exist. `test_durable_host_consumers.py` freezes that set so `_chat_agent.py` is not retired while Model Serving, eval, `run_once`, the Responses compatibility host, or A2A still import it. Disposable app `agent-bricks-864probe` `apps stop`/`start` rolled a new SNAPSHOT; PAT cannot invoke the Apps URL (SSO). Cursor Arca hijacked `localhost:8020` U2M OAuth, so session read-back stayed open. The probe app and `apx-864probe-sessions` were destroyed on 2026-10-21.
 - **Breaking: the Apps host is `DurableAgentServer` only** (#898, #926, #930).
 - **Breaking: the TypeScript agent runtime is retired.** The internal AppKit
   host and Python tool bridge are removed. Examples run on the native server.
@@ -72,6 +74,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Fixed
 
+- **Native generated agent.toml uses Python-only memory (#954).** `build_native_manifest` and `migrate-agent-toml` apply the same `memory=` / `needs_request_user(..., agent=)` rule as the agent.toml checks, so a managed memory store declared only on the Python agent still requires `[auth.user]` and a matching `[memory_store]`.
 - **A2A Apps peers keep the request-user token (#903).** A Databricks Apps
   peer (`apps/<name>`) with a request-user token no longer takes the Apps SDK
   transport, whose auth hook signs the call as the calling app's service

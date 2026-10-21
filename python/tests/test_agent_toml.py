@@ -420,3 +420,18 @@ def test_python_only_memory_needs_a_request_user(tmp_path: Path) -> None:
     body += f'\n[memory_store]\nname = "{agent.memory_config.store_name}"\n'
     details = [f.detail for f in _findings(_project(tmp_path, body), agent)]
     assert any("need a request user" in d for d in details), details
+
+
+def test_native_manifest_binds_python_only_memory() -> None:
+    """#954: generated agent.toml sees Agent(memory=) even when AgentConfig has none."""
+    import tomllib
+
+    from apx_agent._durable_agent import build_native_manifest
+
+    agent = Agent(name="a", tools=[_noop], memory="managed")
+    config = AgentConfig(name="a", target="durable_agent_server")
+    assert config.memory is None
+    plan = compile_authorization_plan(agent, model=config.model)
+    manifest = tomllib.loads(build_native_manifest(config=config, authorization_plan=plan, agent=agent))
+    assert manifest["auth"]["user"]["required"] is True
+    assert manifest["memory_store"]["name"] == agent.memory_config.store_name

@@ -1137,7 +1137,7 @@ def _ai_message_text(message: Any) -> str:
 
 # ── G3: keyed shared state (docs/design/keyed-shared-state.md) ────────────────
 
-_TEMPLATE_KEY = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+_TEMPLATE_KEY = re.compile(r"\{((?:user:|app:|temp:)?[a-zA-Z_][a-zA-Z0-9_]*)\}")
 _APX_STATE_CLS: Any = None
 
 
