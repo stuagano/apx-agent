@@ -41,6 +41,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementResponse
 
 from ._mlflow_tracing import emit_progress, safe_span
+from ._obo import reauthorize_hint
 # Canonical inline-SQL escapers live in the dependency-free _sql_escape module
 # (so SDK-light callers can import them without pulling databricks.sdk).
 # Re-exported here for back-compat with `from ._sql import sql_escape`.
@@ -48,32 +49,7 @@ from ._sql_escape import sql_escape, sql_str_literal  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-
-def _reauthorize_hint(exc: Exception) -> RuntimeError | None:
-    """Translate an OBO scope-denial 403 into a re-authorize instruction.
-
-    Databricks Apps OBO tokens carry only the scopes the user consented to.
-    When a bundle *adds* a ``user_api_scopes`` entry (e.g. ``sql``) but the
-    caller's token predates that grant, the SQL APIs 403 with
-    ``Invalid scope, required scopes: sql`` — even though the bundle declares
-    it. The fix is operational, not code: the user must re-authorize the app
-    (revisit its consent screen) to mint a token carrying the new scope. A raw
-    ``PermissionDenied`` gives no hint of that, so we re-raise with guidance.
-
-    Returns the actionable error to raise, or ``None`` if ``exc`` isn't a
-    scope-denial (caller re-raises the original).
-    """
-    msg = str(exc)
-    if "required scopes" not in msg and "Invalid scope" not in msg:
-        return None
-    return RuntimeError(
-        f"{msg}\n\n"
-        "This is a stale OBO consent, not a missing bundle scope: the app's "
-        "forwarded-user token predates a newly-added user_api_scope. "
-        "Re-authorize the app (open its URL in a browser and approve the "
-        "permissions prompt) to mint a token that carries the new scope, "
-        "then retry."
-    )
+_reauthorize_hint = reauthorize_hint
 
 
 def decode_statement(

@@ -86,7 +86,9 @@ Fresh App Space app on profile `DEFAULT`
 | `apps stop` then `start` | App went `UNAVAILABLE` / compute `STOPPED`, `active_deployment` empty. Start rolled a **new** SNAPSHOT `01f1cd4fe31614e4aff284bfc86b65ac` (`App started successfully`, RUNNING/ACTIVE). This is not same-process resume |
 
 HTTP invoke (`POST /api/invocations` or `apx-agent agents query --profile`)
-did not complete. PAT cannot mint `databricks auth token`. Cursor local-agent
+did not complete. PAT cannot mint `databricks auth token`. PAT cannot invoke
+an Apps URL (SSO); inbound API calls need U2M/M2M OAuth
+(`apps_inbound_oauth_headers`). Cursor local-agent
 OAuth sent the callback to `http://localhost:8020/__arca_oauth_pick` (Arca
 instance picker). CLI 1.20.0 also ignores `DATABRICKS_OAUTH_CALLBACK_PORT`,
 so moving the listener to 8021 did not help.
@@ -113,5 +115,5 @@ bodies still stop at `6cdcff86` (2026-10-06).
 | #909 | Agent Bricks forces `agent-bricks-*` | MCP `mcp-` discovery; workaround is App Space `apps_api` |
 | #911 | Doctor names services that need a UI guardrail check | Attachment is UI-only |
 | #946 / #947 | #947: templating + partition shipped; ConversationStore scoped methods rejected | #946 TS vs Python client; #947 durable `user:`/`app:` backend |
-| #954 | Checks, native manifest, and migrate-agent-toml read Python `memory=` when config omits it | Deploy `require_agent_toml_ok` still skipped when there is no `[tool.apx.agent]`; native launcher still requires that table |
+| #954 | Checks, deploy, doctor, native launcher, and `config_from_agent` read Python constructor settings when there is no `AgentConfig` | `[tool.apx.agent]` remains valid until sub-project 3 removes it |
 | #836 | P3 | Dollar session cap |

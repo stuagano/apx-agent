@@ -20,6 +20,7 @@ from typing import Any
 from databricks.sdk.errors.base import DatabricksError
 
 from ._errors import ToolError
+from ._obo import reauthorize_hint
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,9 @@ def genie_tool(
         except DatabricksError as e:
             # A Genie API failure is a finding, not a pipeline-fatal 500 (#562)
             # — matches the structured genie_query_tool, which already contains.
+            hint = reauthorize_hint(e)
+            if hint is not None:
+                raise ToolError(str(hint)) from e
             raise ToolError(f"Genie query failed: {e}") from e
         if not _is_completed(msg):
             logger.warning("Genie query ended with status %s in space %s", msg.status, space_id)
@@ -188,7 +192,9 @@ def genie_query_tool(
             msg = _run_genie_query(ws, space_id, question)
         except Exception as exc:
             logger.warning("Genie query failed for space %s: %s", space_id, exc)
-            return {"error": f"Genie query failed: {exc}", "question": question}
+            hint = reauthorize_hint(exc)
+            detail = str(hint) if hint is not None else f"Genie query failed: {exc}"
+            return {"error": detail, "question": question}
 
         if not _is_completed(msg):
             return {

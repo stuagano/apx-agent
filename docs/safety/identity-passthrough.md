@@ -35,7 +35,34 @@ Genie (or clear the browser cookies) and open it again. Then retry the request.
 
 This is an OAuth/session lifecycle constraint, not a substitute for declaring
 the required scope in the bundle. The runtime surfaces the same recovery hint
-for SQL scope denials.
+for SQL, Genie, and model-serving scope denials.
+
+## Apps URL inbound auth
+
+Call a deployed Databricks App as an API with a user-to-machine or
+machine-to-machine OAuth access token (`Authorization: Bearer …`). Use
+`apps_inbound_oauth_headers(oauth_token=...)`. PAT cannot invoke an Apps URL
+(SSO). Do not send `DATABRICKS_TOKEN` at that URL.
+
+## App service principal and ACLs
+
+Each app has a dedicated service principal. Copy its application id from the
+Databricks Apps Authorization tab (doctor prints it when the app exists) and
+grant Unity Catalog on that principal, not a personal SP. Keep CAN MANAGE on
+the App object small; grant CAN USE to users who should run the agent.
+
+## Workspace OAuth-scope allowlist
+
+Workspace admins can restrict Apps OBO scopes (`allowedAppsUserApiScopes`).
+`apx-agent doctor` and deploy read that setting and fail when the plan asks
+for a blocked scope.
+
+## M2M federation
+
+Workload identity federation without a client secret is unsupported. The app
+principal path is injected `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`
+(`auth_type="oauth-m2m"`). Do not fall back to `DATABRICKS_TOKEN` for that
+principal.
 
 ## Scope limit: cross-app model calls
 

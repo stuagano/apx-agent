@@ -147,7 +147,7 @@ from ._runtime_targets import RuntimeRequirements, TargetCapability, TargetRepor
 from ._durable_agent import compile_to_durable_agent_server
 
 # Unified OBO header extraction (both runtimes use this)
-from ._obo import extract_obo_headers, make_obo_workspace_client
+from ._obo import apps_inbound_oauth_headers, extract_obo_headers, make_obo_workspace_client
 
 # Resource declaration — auto-derive MLflow resources from the agent tree
 from ._resources import (
@@ -569,6 +569,7 @@ __all__ = [
     "TargetCapability",
     "TargetReport",
     # Unified OBO header extraction
+    "apps_inbound_oauth_headers",
     "extract_obo_headers",
     "make_obo_workspace_client",
     # Resource declaration

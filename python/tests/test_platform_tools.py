@@ -263,6 +263,18 @@ async def test_foundation_model_returns_error_string_on_exception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_foundation_model_scope_denial_hints_reauthorize() -> None:
+    tool_fn = foundation_model_tool("databricks-claude-opus-4-7")
+    fake_ws = MagicMock()
+    fake_ws.serving_endpoints.query.side_effect = RuntimeError(
+        "Invalid scope, required scopes: model-serving"
+    )
+    result = await tool_fn(prompt="anything", ws=fake_ws)
+    assert "re-authorize" in result.lower()
+    assert "required scopes: model-serving" in result
+
+
+@pytest.mark.asyncio
 async def test_foundation_model_returns_empty_on_no_choices() -> None:
     tool_fn = foundation_model_tool("databricks-claude-opus-4-7")
     fake_ws = MagicMock()

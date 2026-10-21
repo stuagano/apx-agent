@@ -19,11 +19,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import urlparse
 
-if TYPE_CHECKING:
-    from ._models import AgentConfig
+from ._models import AgentConfig
 
 MIN_PYTHON = (3, 11)
 
@@ -179,6 +178,9 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
     ]
     auth = check_databricks_auth()
     authentication = [auth]
+    federation = check_apps_m2m_federation()
+    if federation is not None:
+        authentication.append(federation)
     if online:
         authentication.append(
             check_databricks_workspace(auth_ok=auth.status is Status.OK)
@@ -209,7 +211,7 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
         image_check = check_agent_image(cwd, agent_config)
         if image_check is not None:
             project.append(image_check)
-        if agent_config is not None and agent_config.target == "durable_agent_server":
+        if agent_config is None or agent_config.target == "durable_agent_server":
             project.extend(_agent_toml_rows(cwd, agent_config))
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
@@ -244,7 +246,7 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
     return groups
 
 
-def _agent_toml_rows(cwd: Path, config: AgentConfig) -> list[Check]:
+def _agent_toml_rows(cwd: Path, config: AgentConfig | None) -> list[Check]:
     """agent.toml findings, loading the agent and plan the way deploy does."""
     from contextlib import chdir  # noqa: PLC0415
 
@@ -259,8 +261,10 @@ def _agent_toml_rows(cwd: Path, config: AgentConfig) -> list[Check]:
     try:
         from ._agent_toml import check_agent_toml  # noqa: PLC0415
 
+        model = config.model if config is not None else AgentConfig.model_fields["model"].default
+        identity = config.identity if config is not None else None
         plan = _apps_authorization.compile_authorization_plan(
-            agent, model=config.model, agent_identity=config.identity)
+            agent, model=model, agent_identity=identity)
         return check_agent_toml(cwd, agent, plan, config)
     except ImportError as exc:
         return [Check("agent.toml", Status.SKIP, f"needs the apx-agent[agentbricks] extra: {exc}",
@@ -877,6 +881,28 @@ def check_a2a_trust(cwd: Path) -> Check | None:
     )
 
 
+def check_apps_m2m_federation() -> Check | None:
+    """Warn when Apps M2M is half-configured without a client secret.
+
+    Databricks Apps can use workload identity federation. apx's app principal
+    path requires the injected ``DATABRICKS_CLIENT_ID`` +
+    ``DATABRICKS_CLIENT_SECRET`` pair and will not silently treat federation
+    without a secret as supported.
+    """
+    client_id = os.environ.get("DATABRICKS_CLIENT_ID")
+    client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
+    if not client_id or client_secret:
+        return None
+    return Check(
+        "Apps M2M identity",
+        Status.WARN,
+        "DATABRICKS_CLIENT_ID is set without DATABRICKS_CLIENT_SECRET; "
+        "workload identity federation without a client secret is unsupported",
+        "Use the Databricks Apps injected client id and secret (oauth-m2m). "
+        "Do not fall back to DATABRICKS_TOKEN for the app principal.",
+    )
+
+
 def check_apps_enabled(*, auth_ok: bool) -> Check | None:
     """Verify Databricks Apps is enabled in this workspace.
 
@@ -1386,6 +1412,151 @@ def check_abac_compute_floor(cwd: Path, *, auth_ok: bool) -> Check | None:
     )
 
 
+_WORKSPACE_BOUND_KINDS = frozenset({
+    "sql_warehouse",
+    "genie_space",
+    "vector_search_index",
+    "serving_endpoint",
+    "lakebase_instance",
+})
+
+
+def _resource_missing_in_workspace(kind: str, identifier: str, exc: Exception) -> str:
+    """Doctor detail when a host-bound resource is not readable here."""
+    short = str(exc)[:120]
+    if kind in _WORKSPACE_BOUND_KINDS:
+        return (
+            f"{identifier} not found or not accessible in this workspace ({short}). "
+            "The forwarded OBO token cannot leave the app workspace"
+        )
+    return f"not found or not accessible ({short})"
+
+
+def check_apps_service_principal(app_name: str, ws: Any) -> Check:
+    """Show the dedicated app SP application id for UC grants (#973)."""
+    try:
+        app = ws.apps.get(app_name)
+    except Exception as exc:
+        code = getattr(exc, "error_code", None)
+        if code in {"NOT_FOUND", "RESOURCE_DOES_NOT_EXIST"} or "404" in str(exc):
+            return Check(
+                "App service principal",
+                Status.SKIP,
+                f"{app_name!r} is not deployed yet; copy the application id from the Apps Authorization tab after first deploy",
+                None,
+            )
+        return Check(
+            "App service principal",
+            Status.WARN,
+            f"could not read {app_name!r}",
+            "Grant Unity Catalog on the app's dedicated service principal, not a personal SP.",
+        )
+    sp_id = app.service_principal_client_id
+    if not isinstance(sp_id, str) or not sp_id:
+        return Check(
+            "App service principal",
+            Status.WARN,
+            f"{app_name!r} has no service_principal_client_id",
+            "Copy the application id from the Databricks Apps Authorization tab.",
+        )
+    return Check(
+        "App service principal",
+        Status.OK,
+        f"grant Unity Catalog to application id {sp_id} (Apps Authorization tab)",
+        None,
+    )
+
+
+def check_app_acl(app_name: str, ws: Any) -> Check:
+    """Warn when the App ACL is all CAN_MANAGE and has no CAN_USE runners (#971)."""
+    try:
+        perms = ws.apps.get_permissions(app_name)
+    except Exception as exc:
+        code = getattr(exc, "error_code", None)
+        if code in {"NOT_FOUND", "RESOURCE_DOES_NOT_EXIST"} or "404" in str(exc):
+            return Check(
+                "App ACL",
+                Status.SKIP,
+                f"{app_name!r} is not deployed yet",
+                None,
+            )
+        return Check(
+            "App ACL",
+            Status.SKIP,
+            "App permissions unread",
+            None,
+        )
+    acl = perms.access_control_list
+    if not isinstance(acl, list):
+        return Check(
+            "App ACL",
+            Status.SKIP,
+            "App permissions unread",
+            None,
+        )
+    can_manage = 0
+    can_use = 0
+    for entry in acl:
+        perms_list = entry.all_permissions
+        if not isinstance(perms_list, list):
+            continue
+        for perm in perms_list:
+            level = perm.permission_level
+            value = level.value if hasattr(level, "value") else level
+            if value == "CAN_MANAGE":
+                can_manage += 1
+            elif value == "CAN_USE":
+                can_use += 1
+    if can_manage > 0 and can_use == 0:
+        return Check(
+            "App ACL",
+            Status.WARN,
+            f"{app_name!r} has CAN_MANAGE principals and no CAN_USE runners",
+            "Keep CAN MANAGE small; grant CAN USE to users who should run the app.",
+        )
+    return Check(
+        "App ACL",
+        Status.OK,
+        f"{app_name!r}: CAN_USE={can_use} CAN_MANAGE={can_manage}",
+        None,
+    )
+
+
+def check_workspace_scope_allowlist(plan: Any, ws: Any) -> Check:
+    """Compare the plan's user_api_scopes to workspace allowedAppsUserApiScopes."""
+    from ._apps_authorization import read_workspace_apps_scope_allowlist
+
+    read = read_workspace_apps_scope_allowlist(ws)
+    if not read.readable:
+        return Check(
+            "Workspace OAuth scopes",
+            Status.SKIP,
+            "allowedAppsUserApiScopes unread",
+            "Workspace admin Restrict OAuth scopes could not be read; deploy may still fail at app start.",
+        )
+    if read.allowed_scopes is None:
+        return Check(
+            "Workspace OAuth scopes",
+            Status.OK,
+            "workspace does not restrict Apps OAuth scopes",
+            None,
+        )
+    missing = sorted(set(plan.user_api_scopes) - read.allowed_scopes)
+    if missing:
+        return Check(
+            "Workspace OAuth scopes",
+            Status.FAIL,
+            "blocked by allowedAppsUserApiScopes: " + ", ".join(missing),
+            "Ask the workspace admin to allow these scopes, or drop the tools that need them.",
+        )
+    return Check(
+        "Workspace OAuth scopes",
+        Status.OK,
+        "plan scopes are within allowedAppsUserApiScopes",
+        None,
+    )
+
+
 def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> list[Check]:
     """Probe resources on the resolved Python agent, using the checking identity.
 
@@ -1461,12 +1632,11 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
                 ws.genie.get_space(space_id=space_id)
                 checks.append(Check(f"Genie space ({space_id[:20]})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
             except Exception as exc:
-                short = str(exc)[:120]
                 checks.append(Check(
                     f"Genie space ({space_id[:20]})",
                     Status.WARN,
-                    f"not found or not accessible ({short})",
-                    f"Confirm space_id {space_id!r} exists and your principal has access.",
+                    _resource_missing_in_workspace("genie_space", space_id, exc),
+                    f"Confirm space_id {space_id!r} exists in this workspace. The forwarded OBO token cannot leave the app workspace.",
                 ))
 
         elif typ == "vector_search_index":
@@ -1475,12 +1645,11 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
                 ws.vector_search_indexes.get_index(index_name=index_name)
                 checks.append(Check(f"VS index ({index_name})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
             except Exception as exc:
-                short = str(exc)[:120]
                 checks.append(Check(
                     f"VS index ({index_name})",
                     Status.WARN,
-                    f"not found or not accessible ({short})",
-                    "Confirm the index exists and has READY status.",
+                    _resource_missing_in_workspace("vector_search_index", index_name, exc),
+                    "Confirm the index exists in this workspace. The forwarded OBO token cannot leave the app workspace.",
                 ))
 
         elif typ == "uc_function":
@@ -1503,12 +1672,37 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
                 ws.warehouses.get(id=warehouse_id)
                 checks.append(Check(f"SQL warehouse ({warehouse_id})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
             except Exception as exc:
-                short = str(exc)[:120]
                 checks.append(Check(
                     f"SQL warehouse ({warehouse_id})",
                     Status.WARN,
-                    f"not found or not accessible ({short})",
-                    f"Confirm warehouse {warehouse_id!r} exists and is running.",
+                    _resource_missing_in_workspace("sql_warehouse", warehouse_id, exc),
+                    f"Confirm warehouse {warehouse_id!r} exists in this workspace. The forwarded OBO token cannot leave the app workspace.",
+                ))
+
+        elif typ == "serving_endpoint":
+            endpoint_name = spec.identifier
+            try:
+                ws.serving_endpoints.get(endpoint_name)
+                checks.append(Check(f"Serving endpoint ({endpoint_name})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
+            except Exception as exc:
+                checks.append(Check(
+                    f"Serving endpoint ({endpoint_name})",
+                    Status.WARN,
+                    _resource_missing_in_workspace("serving_endpoint", endpoint_name, exc),
+                    f"Confirm endpoint {endpoint_name!r} exists in this workspace. The forwarded OBO token cannot leave the app workspace.",
+                ))
+
+        elif typ == "lakebase_instance":
+            instance_name = spec.identifier
+            try:
+                ws.database.get_database_instance(name=instance_name)
+                checks.append(Check(f"Lakebase ({instance_name})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
+            except Exception as exc:
+                checks.append(Check(
+                    f"Lakebase ({instance_name})",
+                    Status.WARN,
+                    _resource_missing_in_workspace("lakebase_instance", instance_name, exc),
+                    f"Confirm Lakebase instance {instance_name!r} exists in this workspace. The forwarded OBO token cannot leave the app workspace.",
                 ))
         else:
             checks.append(Check(
@@ -1521,12 +1715,15 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
             ws.warehouses.get(id=session_warehouse)
             checks.append(Check(f"Session warehouse ({session_warehouse})", Status.OK, "readable with the checking identity; runtime access is not proven", None))
         except Exception as exc:
-            short = str(exc)[:120]
             checks.append(Check(
                 f"Session warehouse ({session_warehouse})",
                 Status.WARN,
-                f"not found or not accessible ({short})",
-                f"Confirm warehouse {session_warehouse!r} exists and is running.",
+                _resource_missing_in_workspace("sql_warehouse", session_warehouse, exc),
+                f"Confirm warehouse {session_warehouse!r} exists in this workspace. The forwarded OBO token cannot leave the app workspace.",
             ))
 
+    checks.append(check_workspace_scope_allowlist(plan, ws))
+    if cfg is not None:
+        checks.append(check_apps_service_principal(cfg.name, ws))
+        checks.append(check_app_acl(cfg.name, ws))
     return checks

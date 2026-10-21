@@ -308,6 +308,21 @@ def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
     return agent
 
 
+def _config_from_project_or_agent(cwd: Path, module: str):
+    """``[tool.apx.agent]`` when present; otherwise the Python agent (sub-project 2)."""
+    from ._inspection import _load_agent_config, config_from_agent
+
+    config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    if config is not None:
+        return config, None
+    if (cwd / "databricks.yml").exists() or (cwd / "databricks.yml").is_symlink():
+        return None, None
+    if not (cwd / "agent.py").is_file() and module == "agent:agent":
+        return None, None
+    agent = _load_finalized_agent(module)
+    return config_from_agent(agent), agent
+
+
 @contextlib.contextmanager
 def _registration_import_context(cwd: Path | None) -> Iterator[None]:
     """Temporarily import an app like its local uv project."""
@@ -7586,9 +7601,8 @@ def _emit_apps_deploy_plan(
     ``--secret-env`` are reported as key names, never merged), no network.
     """
     cwd = Path.cwd()
-    from ._inspection import _load_agent_config
     try:
-        config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        config, _agent = _config_from_project_or_agent(cwd, module)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     apps_api = config is not None and config.deploy is not None and config.deploy.backend == "apps_api"
@@ -10581,10 +10595,8 @@ def _deploy_apps_impl(
     if not pin.skipped:
         log(f"# framework pin: {pin.message}")
 
-    from ._inspection import _load_agent_config
-
     try:
-        effective_config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        effective_config, preloaded_agent = _config_from_project_or_agent(cwd, module)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     apps_api = (
@@ -10598,7 +10610,7 @@ def _deploy_apps_impl(
         _preflight_databricks_cli()
         _preflight_apps(cwd, native=True, durable=True)
         app_name = app_name_override or effective_config.name
-        from ._apps_authorization import compile_authorization_plan, read_app_family_permissions
+        from ._apps_authorization import compile_authorization_plan, read_app_family_permissions, require_workspace_scope_allowlist
         from ._agents import LlmAgent
 
         session_config = effective_config
@@ -10636,6 +10648,7 @@ def _deploy_apps_impl(
         from ._agent_toml import require_agent_toml_ok
 
         require_agent_toml_ok(cwd, agent, authorization_plan, effective_config)
+        require_workspace_scope_allowlist(workspace, authorization_plan)
         return deploy_apps_api(
             cwd=cwd, agent=agent, config=effective_config, plan=authorization_plan,
             family_permissions=family_permissions, workspace=workspace, profile=profile,
@@ -10694,6 +10707,7 @@ def _deploy_apps_impl(
         authorization_summary_lines,
         compile_authorization_plan,
         read_app_family_permissions,
+        require_workspace_scope_allowlist,
     )
     native_cli = (
         effective_config is not None and effective_config.target == "durable_agent_server"
@@ -10733,6 +10747,7 @@ def _deploy_apps_impl(
         validate_native_app(app, app_name=app_name, profile=profile, no_run=no_run)
     # Check required beta APIs before image building, provisioning, or upload.
     # The same read-only checks are visible in doctor.
+    workspace = None
     needs_agentkit = effective_config is not None and (
         effective_config.target == "durable_agent_server"
         or (effective_config.memory is not None and effective_config.memory.type == "managed")
@@ -10765,7 +10780,7 @@ def _deploy_apps_impl(
                 log(f"  {check.fix}")
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
-    agent = _load_finalized_agent(module)
+    agent = preloaded_agent if preloaded_agent is not None else _load_finalized_agent(module)
     from ._agents import LlmAgent
 
     if session_config is not effective_config and isinstance(agent, LlmAgent):
@@ -10792,14 +10807,15 @@ def _deploy_apps_impl(
         family_permissions = read_app_family_permissions(cwd / "pyproject.toml")
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    if effective_config is not None and effective_config.target == "durable_agent_server":
-        from ._agent_toml import require_agent_toml_ok
+    from ._agent_toml import require_agent_toml_ok
 
-        require_agent_toml_ok(cwd, agent, authorization_plan, effective_config)
+    require_agent_toml_ok(cwd, agent, authorization_plan, effective_config)
     _validate_apps_authorization_plan(
         authorization_plan,
         family_permissions,
     )
+    if workspace is not None:
+        require_workspace_scope_allowlist(workspace, authorization_plan)
 
     if native_cli:
         if authorization_plan.service_resources or authorization_plan.app_dependencies:
@@ -11082,7 +11098,10 @@ def _deploy_apps_impl(
                 raise click.ClickException("Resolved native source differs from the staged source that passed image checks.")
             experiment_name = None
             if auto_experiment:
-                user_name = workspace.current_user.me().user_name
+                ws_client = workspace
+                if ws_client is None:
+                    ws_client = _make_scaffold_workspace_client(profile)
+                user_name = ws_client.current_user.me().user_name
                 if not isinstance(user_name, str) or not user_name:
                     raise click.ClickException("Could not resolve the tracing experiment owner in the selected workspace.")
                 experiment_name = f"/Users/{user_name}/{app_name}-{bundle_target}"

@@ -504,6 +504,11 @@ def test_apx_install_not_found(monkeypatch):
 
 
 class TestCheckDeclaredTools:
+    _AUTH_EXTRAS = ("Workspace OAuth scopes", "App service principal", "App ACL")
+
+    def _resource_checks(self, checks: list[doctor.Check]) -> list[doctor.Check]:
+        return [c for c in checks if c.name not in self._AUTH_EXTRAS]
+
     @pytest.fixture(autouse=True)
     def isolate_agent_import(self, monkeypatch):
         import sys
@@ -531,7 +536,7 @@ class TestCheckDeclaredTools:
     def test_empty_python_agent_returns_empty(self, tmp_path):
         self._project(tmp_path)
         with patch("apx_agent._defaults._make_workspace_client", return_value=MagicMock()):
-            assert doctor.check_declared_tools(tmp_path, auth_ok=True) == []
+            assert self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True)) == []
 
     def test_not_apx_project_returns_empty(self, tmp_path):
         assert doctor.check_declared_tools(tmp_path, auth_ok=True) == []
@@ -564,7 +569,7 @@ class TestCheckDeclaredTools:
         self._project(tmp_path, "genie_tool('space-1'), vector_search_tool('cat.sch.idx'), sql_tool(warehouse_id='wh-abc')")
         ws = MagicMock()
         with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
-            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
         assert len(checks) == 3
         assert all(c.status is Status.OK for c in checks)
         assert all("checking identity" in c.detail for c in checks)
@@ -576,7 +581,7 @@ class TestCheckDeclaredTools:
         self._project(tmp_path, "uc_function_tool('main.tools.my_fn')")
         ws = MagicMock()
         with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
-            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
         assert len(checks) == 1
         assert checks[0].status is Status.OK
         ws.functions.get.assert_called_once_with(name="main.tools.my_fn")
@@ -589,7 +594,7 @@ class TestCheckDeclaredTools:
         ws.functions.list.return_value = [SimpleNamespace(name="my_fn", full_name="main.tools.my_fn", comment="Do work")]
         with patch("apx_agent._defaults._make_workspace_client", return_value=ws), \
                 patch("databricks.sdk.WorkspaceClient", return_value=ws):
-            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
         assert len(checks) == 1
         assert checks[0].status is Status.OK
         ws.functions.list.assert_called_once_with(catalog_name="main", schema_name="tools")
@@ -599,7 +604,7 @@ class TestCheckDeclaredTools:
         self._project(tmp_path, "document_extract_tool(warehouse_id='wh-doc', volume='main.docs.raw', schema={'type': 'object'})")
         ws = MagicMock()
         with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
-            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
         assert len(checks) == 1
         assert checks[0].status is Status.OK
         ws.warehouses.get.assert_called_once_with(id="wh-doc")
@@ -608,7 +613,7 @@ class TestCheckDeclaredTools:
         self._project(tmp_path, "genie_tool('space-1', name='first'), genie_tool('space-1', name='second')")
         ws = MagicMock()
         with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
-            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
         assert len(checks) == 1
         assert checks[0].status is Status.OK
         ws.genie.get_space.assert_called_once_with(space_id="space-1")
@@ -618,9 +623,10 @@ class TestCheckDeclaredTools:
         ws = MagicMock()
         ws.genie.get_space.side_effect = RuntimeError("404 not found")
         with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
-            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
         assert checks[0].status is Status.WARN
         assert "bad-space" in checks[0].fix
+        assert "OBO token cannot leave the app workspace" in checks[0].detail
 
     def test_session_warehouse_is_still_probed(self, tmp_path):
         self._project(tmp_path, config=(
@@ -628,7 +634,7 @@ class TestCheckDeclaredTools:
         ))
         ws = MagicMock()
         with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
-            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
         assert len(checks) == 1
         assert checks[0].name == "Session warehouse (session-wh)"
         assert checks[0].status is Status.OK
@@ -637,7 +643,7 @@ class TestCheckDeclaredTools:
     def test_sql_no_warehouse_id_has_no_resource(self, tmp_path):
         self._project(tmp_path, "sql_tool()")
         with patch("apx_agent._defaults._make_workspace_client", return_value=MagicMock()):
-            assert doctor.check_declared_tools(tmp_path, auth_ok=True) == []
+            assert self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True)) == []
 
     def test_import_error_is_a_failure_not_no_tools(self, tmp_path):
         self._project(tmp_path, "missing_factory()")
@@ -1304,3 +1310,55 @@ class TestCheckAbacComputeFloor:
         groups = run_checks(tmp_path, online=False)
         project = dict(groups)["Project"]
         assert all(c.name != "ABAC compute floor" for c in project)
+
+
+def test_apps_m2m_federation_warns_without_secret(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "abc")
+    monkeypatch.delenv("DATABRICKS_CLIENT_SECRET", raising=False)
+    check = doctor.check_apps_m2m_federation()
+    assert check is not None
+    assert check.status is Status.WARN
+    assert "federation" in check.detail.lower()
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "present")
+    assert doctor.check_apps_m2m_federation() is None
+
+
+def test_app_service_principal_prints_application_id():
+    from types import SimpleNamespace
+
+    ws = MagicMock()
+    ws.apps.get.return_value = SimpleNamespace(service_principal_client_id="sp-app-123")
+    check = doctor.check_apps_service_principal("my-app", ws)
+    assert check.status is Status.OK
+    assert "sp-app-123" in check.detail
+    assert "secret" not in check.detail.lower()
+
+
+def test_app_acl_warns_when_only_can_manage():
+    from types import SimpleNamespace
+
+    entry = SimpleNamespace(all_permissions=[SimpleNamespace(permission_level="CAN_MANAGE")])
+    ws = MagicMock()
+    ws.apps.get_permissions.return_value = SimpleNamespace(access_control_list=[entry])
+    check = doctor.check_app_acl("my-app", ws)
+    assert check.status is Status.WARN
+    assert "CAN_USE" in check.detail
+
+
+def test_workspace_scope_allowlist_fails_on_blocked_scope():
+    from types import SimpleNamespace
+
+    from apx_agent._apps_authorization import AuthorizationPlan
+
+    ws = MagicMock()
+    ws.workspace_settings_v2.get_public_workspace_setting.return_value = SimpleNamespace(
+        effective_allowed_apps_user_api_scopes=SimpleNamespace(allowed_scopes=["genie"]),
+        allowed_apps_user_api_scopes=None,
+    )
+    plan = AuthorizationPlan(
+        operations=(), user_resources=(), service_resources=(),
+        user_api_scopes=("sql",), app_dependencies=(),
+    )
+    check = doctor.check_workspace_scope_allowlist(plan, ws)
+    assert check.status is Status.FAIL
+    assert "sql" in check.detail

@@ -435,3 +435,46 @@ def test_native_manifest_binds_python_only_memory() -> None:
     manifest = tomllib.loads(build_native_manifest(config=config, authorization_plan=plan, agent=agent))
     assert manifest["auth"]["user"]["required"] is True
     assert manifest["memory_store"]["name"] == agent.memory_config.store_name
+
+
+def test_mismatched_agent_toml_stops_deploy_without_agent_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#954: require_agent_toml_ok still runs when pyproject has no [tool.apx.agent]."""
+    from apx_agent import cli
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
+    (tmp_path / "agent.toml").write_text(BARE.replace("langgraph", "openai"))
+    (tmp_path / "databricks.yml").write_text(
+        "bundle:\n  name: p\nresources:\n  apps:\n    p:\n      name: p\n")
+    (tmp_path / "agent_server").mkdir()
+    (tmp_path / "agent_server" / "start_server.py").write_text("# DurableAgentServer\n")
+
+    def reached(*a: Any, **k: Any) -> Any:
+        raise AssertionError("staging/deploy reached with a mismatched agent.toml")
+
+    monkeypatch.setattr("apx_agent._agent_toml.stage_agent_toml", reached)
+    monkeypatch.setattr("apx_agent._agentbricks_deploy.stage_native_source", reached)
+    monkeypatch.setattr("apx_agent._apps_api_deploy.deploy_apps_api", reached)
+    monkeypatch.setattr(cli, "_preflight_databricks_cli", lambda: None)
+    monkeypatch.setattr(cli, "_preflight_apps", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_validate_responses_agent_compiler", lambda: None)
+    monkeypatch.setattr(cli, "_make_scaffold_workspace_client", lambda profile: None)
+    monkeypatch.setattr(cli._doctor_mod, "check_agent_prerequisites", lambda *a, **k: [])
+    monkeypatch.setattr(cli._doctor_mod, "check_agent_image", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_load_finalized_agent", lambda module: Agent(name="p", tools=[_noop]))
+    with pytest.raises(click.ClickException, match=r"agent\.toml: framework = openai"):
+        cli._deploy_apps_impl(cwd=tmp_path, module="agent:agent", profile=None, bundle_target="dev",
+                              no_run=True, auto_update_yml=False, auto_build_wheel=False,
+                              json_output=False, log=lambda message: None)
+
+
+def test_doctor_python_only_reports_agent_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#954: doctor still checks agent.toml when there is no [tool.apx.agent]."""
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
+    (tmp_path / "agent.py").write_text(
+        "from apx_agent import Agent, platform_tools\nagent = Agent(name='p', tools=[*platform_tools('nope')])\n")
+    (tmp_path / "agent.toml").write_text(BASE)
+    monkeypatch.chdir(tmp_path)
+    rows = _agent_toml_doctor_rows(tmp_path)
+    assert any(r.status is Status.FAIL and "nope" in r.detail for r in rows), rows
