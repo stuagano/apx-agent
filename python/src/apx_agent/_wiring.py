@@ -602,10 +602,11 @@ def finalize_agent(
         if isinstance(agent, DataAgent):
             agent.bind_workspace(ws)
 
-    if config is None and getattr(agent, "identity", None) is not None:
+    constructor_identity = getattr(agent, "identity", None)
+    if config is None and isinstance(constructor_identity, str):
         from ._agent_identity import apply_agent_identity  # noqa: PLC0415
 
-        apply_agent_identity(agent, agent.identity)
+        apply_agent_identity(agent, constructor_identity)
 
     # Scope wiring is independent of [tool.apx.agent]: a Python-API agent
     # with build_tool(scope=...) still needs a runtime guard. apply_config_

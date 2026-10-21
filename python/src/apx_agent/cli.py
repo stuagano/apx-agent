@@ -11098,7 +11098,10 @@ def _deploy_apps_impl(
                 raise click.ClickException("Resolved native source differs from the staged source that passed image checks.")
             experiment_name = None
             if auto_experiment:
-                user_name = workspace.current_user.me().user_name
+                ws_client = workspace
+                if ws_client is None:
+                    ws_client = _make_scaffold_workspace_client(profile)
+                user_name = ws_client.current_user.me().user_name
                 if not isinstance(user_name, str) or not user_name:
                     raise click.ClickException("Could not resolve the tracing experiment owner in the selected workspace.")
                 experiment_name = f"/Users/{user_name}/{app_name}-{bundle_target}"
