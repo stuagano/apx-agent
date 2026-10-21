@@ -58,6 +58,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Changed
 
+- **Native CLI vocabulary (#862).** `--target` is the hosting destination; `[tool.apx.agent].target` is the runtime. Native deploy/destroy accept `--environment` as an alias of `--bundle-target`. Doctor reports destination and declared runtime separately. Generated native dependencies stay `apx-agent[eval,agentbricks]`; `apx-agent[apps]` was never an extra, so run/doctor now tell you to install `uvicorn[standard]`.
 - **Breaking: the Apps host is `DurableAgentServer` only** (#898, #926, #930).
 - **Breaking: the TypeScript agent runtime is retired.** The internal AppKit
   host and Python tool bridge are removed. Examples run on the native server.

@@ -125,6 +125,7 @@ def test_offline_doctor_includes_unverified_agent_features(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("dependency,version,expected", [
     ("apx-agent[langgraph]", "0.5.0", Status.FAIL),
+    ("apx-agent[eval,agentbricks]", "0.5.0", Status.OK),
     ("apx-agent[langgraph,agentbricks]", "0.4.0", Status.FAIL),
     ("apx-agent[langgraph,agentbricks]", "0.5.0", Status.OK),
     ("apx-agent[langgraph,agentbricks]", None, Status.WARN),
@@ -291,6 +292,8 @@ def test_uvicorn_missing_is_warn(monkeypatch):
     c = doctor.check_uvicorn()
     assert c.status is doctor.Status.WARN
     assert c.fix is not None
+    assert "uvicorn[standard]" in c.fix
+    assert "apx-agent[apps]" not in c.fix
 
 
 def test_auth_ok(monkeypatch):
@@ -392,7 +395,19 @@ def test_target_apps(tmp_path: Path):
     _make_apps_project(tmp_path)
     c = doctor.check_target(tmp_path)
     assert c.status is doctor.Status.OK
-    assert "apps" in c.detail
+    assert "apps destination" in c.detail
+    assert "runtime" not in c.detail
+
+
+def test_target_reports_declared_runtime(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.apx.agent]\nname='x'\ntarget='durable_agent_server'\n"
+    )
+    (tmp_path / "agent.py").write_text("agent = None\n")
+    c = doctor.check_target(tmp_path)
+    assert c.status is doctor.Status.OK
+    assert "apps destination" in c.detail
+    assert "runtime durable_agent_server" in c.detail
 
 
 def test_databricks_yml_present(tmp_path: Path):

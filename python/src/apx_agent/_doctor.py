@@ -398,7 +398,7 @@ def check_uvicorn() -> Check:
             "uvicorn",
             Status.WARN,
             "not importable — required by `apx-agent run`",
-            "uv add 'apx-agent[apps]'  (includes uvicorn[standard])",
+            "uv add 'uvicorn[standard]'",
         )
 
 
@@ -1039,11 +1039,19 @@ def check_project_layout(cwd: Path) -> Check:
 def check_target(cwd: Path) -> Check:
     if not _is_apx_project(cwd):
         return Check("Target", Status.SKIP, "not in an apx project", None)
-    from apx_agent.cli import _detect_target
+    from apx_agent.cli import _detect_target, _read_apx_agent_config
 
     # _detect_target only ever returns "apps" or "model-serving"; no failure mode to surface.
     detected = _detect_target(cwd)
-    return Check("Target", Status.OK, f"{detected.target} ({detected.reason})", None)
+    runtime = _read_apx_agent_config(cwd / "pyproject.toml").get("target")
+    if isinstance(runtime, str) and runtime:
+        detail = (
+            f"{detected.target} destination ({detected.reason}); "
+            f"runtime {runtime}"
+        )
+    else:
+        detail = f"{detected.target} destination ({detected.reason})"
+    return Check("Target", Status.OK, detail, None)
 
 
 def check_extras(cwd: Path) -> Check:

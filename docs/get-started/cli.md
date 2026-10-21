@@ -16,7 +16,7 @@ apx-agent uc publish --dry-run     # preview UC function registrations
 apx-agent uc publish               # actually register
 apx-agent agents deploy --model databricks-claude-sonnet-4-6 \
            --name main.agents.my_agent              # default: --target model-serving
-apx-agent agents deploy --target apps               # bundle deploy + bundle run, no container build
+apx-agent agents deploy --target apps               # Apps destination; native projects use Agent Bricks
 apx-agent agents advertise --description "Handles X for users asking about Y"
 apx-agent supervisor add --endpoint my_agent --supervisor sa-12345
 apx-agent uc mcp-config --host https://workspace.cloud.databricks.com

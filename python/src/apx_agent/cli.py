@@ -5811,7 +5811,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
     except ImportError as e:
         raise click.ClickException(
             "uvicorn is required for `apx-agent agents run`. Install with: "
-            "uv add 'apx-agent[apps]'  (or: uv add 'uvicorn[standard]')"
+            "uv add 'uvicorn[standard]'"
         ) from e
 
     # --- resolve SPEC to a project directory ---
@@ -6713,11 +6713,12 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--target", "target", default=None,
     type=click.Choice(["model-serving", "apps"]),
-    help="Deployment destination, auto-detected from the project when omitted. "
-         "Apps uses Agent Bricks for native durable projects; existing Bundle "
-         "projects retain their configured deployment flow. Model Serving "
-         "logs an MLflow model and deploys a serving endpoint. Declare the "
-         "agent runtime separately in [tool.apx.agent].target.",
+    help="Deployment destination (where the agent is hosted), auto-detected "
+         "from the project when omitted. Distinct from the agent runtime in "
+         "[tool.apx.agent].target. Apps hosts native durable_agent_server "
+         "projects with Agent Bricks; existing Bundle projects keep their "
+         "databricks.yml flow. Model Serving logs an MLflow model and deploys "
+         "a serving endpoint.",
 )
 @click.option("--model", default=None, help="AI Gateway chat model binding. "
               "Used by --target model-serving; Apps reads the model declaration.")
@@ -6733,9 +6734,11 @@ _APPS_ONLY_DEPLOY_FLAGS = (
          "native Agent Bricks deployment.",
 )
 @click.option(
-    "--bundle-target", default="dev",
-    help="Apps deployment environment: dev or prod for native projects; "
-         "the Bundle target name for existing Bundle projects. Default: dev.",
+    "--bundle-target", "--environment", default="dev",
+    help="Deployment environment. Native Agent Bricks projects accept dev or "
+         "prod. Existing Bundle projects use this as the databricks.yml target "
+         "name. Default: dev. This is not the agent runtime "
+         "([tool.apx.agent].target).",
 )
 @click.option(
     "--no-run", is_flag=True,
@@ -7708,12 +7711,13 @@ def _emit_apps_deploy_plan(
         steps["run"] = "included in agentbricks deploy"
 
     if json_output:
-        click.echo(json.dumps({
+        payload = {
             "plan": True,
             "target": "apps",
             "target_reason": target_reason,
             "module": module,
             "bundle_target": bundle_target,
+            "environment": bundle_target,
             "app_name": app_name,
             "bundle_key": bundle_key,
             "uc_name": resolved_uc,
@@ -7723,10 +7727,14 @@ def _emit_apps_deploy_plan(
             "secret_env_keys": secret_env_keys,
             "bundle_vars": plan_vars,
             "steps": steps,
-        }))
+        }
+        if native_direct:
+            payload["runtime"] = "durable_agent_server"
+            payload["deployment_backend"] = "agentbricks"
+        click.echo(json.dumps(payload))
         return
     click.echo("# DRY RUN — plan only; nothing validated, written, or deployed")
-    click.echo(f"target: apps ({target_reason})")
+    click.echo(f"destination: apps ({target_reason})")
     click.echo(f"module: {module}")
     if native_direct:
         click.echo("runtime: durable_agent_server")
@@ -7739,9 +7747,12 @@ def _emit_apps_deploy_plan(
     click.echo(f"uc_name: {resolved_uc or '<none — UC registration would skip>'}")
     click.echo(f"wheel auto-build: {'on' if auto_build_wheel else 'off'}")
     click.echo(f"experiment: {experiment}")
-    click.echo(
-        "env keys to merge (names only): " + (", ".join(env_keys) or "(none)")
-    )
+    if native_direct:
+        click.echo("env keys: " + (", ".join(env_keys) or "(none)"))
+    else:
+        click.echo(
+            "env keys to merge (names only): " + (", ".join(env_keys) or "(none)")
+        )
     if not native_direct:
         click.echo(
             "secret env keys to merge (names only): "
@@ -11466,8 +11477,9 @@ def _maybe_write_deploy_state(
 
 @main.command()
 @click.option(
-    "--bundle-target", default="dev",
-    help="DAB target to destroy (dev / staging / prod).",
+    "--bundle-target", "--environment", default="dev",
+    help="Environment to destroy: dev or prod for native Agent Bricks apps; "
+         "the databricks.yml target name for existing Bundle projects.",
 )
 @click.option(
     "--profile", default=None,

@@ -523,7 +523,7 @@ checked: the SDK accepts scopes only when `required = true`.
 
 Declare `target: durable_agent_server` in your agent specification. New native
 projects contain `agent.py` and `pyproject.toml`, plus any declared skills or
-custom sources. They include `apx-agent[langgraph,agentbricks]` in their
+custom sources. They include `apx-agent[eval,agentbricks]` in their
 dependencies. Local `agents run` and the compiled deployment command use the same
 packaged ASGI factory. Deployment starts it with `python -m apx_agent._serve`;
 the runtime declaration selects DurableAgentServer without `APX_APPS_HOST`.
