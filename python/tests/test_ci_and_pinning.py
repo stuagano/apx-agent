@@ -54,7 +54,7 @@ def test_read_pinned_framework_ref_git_url(tmp_path: Path) -> None:
 [project]
 name = "demo"
 dependencies = [
-  "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@abc1234#subdirectory=python",
+  "apx-agent[eval] @ git+https://github.com/stuagano/apx-agent.git@abc1234#subdirectory=python",
   "mlflow>=3.0",
 ]
 """,
@@ -81,7 +81,7 @@ def test_compare_pinned_sha_skips_without_git_pin(tmp_path: Path) -> None:
         """\
 [project]
 name = "demo"
-dependencies = ["apx-agent[langgraph]"]
+dependencies = ["apx-agent[eval]"]
 """,
         encoding="utf-8",
     )
@@ -97,7 +97,7 @@ def test_compare_pinned_sha_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyP
 [project]
 name = "demo"
 dependencies = [
-  "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@aaaa1111#subdirectory=python",
+  "apx-agent[eval] @ git+https://github.com/stuagano/apx-agent.git@aaaa1111#subdirectory=python",
 ]
 """,
         encoding="utf-8",

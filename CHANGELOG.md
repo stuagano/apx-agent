@@ -58,7 +58,8 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Changed
 
-- **Native CLI vocabulary (#862).** `--target` is the hosting destination; `[tool.apx.agent].target` is the runtime. Native deploy/destroy accept `--environment` as an alias of `--bundle-target`. Doctor reports destination and declared runtime separately. Generated native dependencies stay `apx-agent[eval,agentbricks]`; `apx-agent[apps]` was never an extra, so run/doctor now tell you to install `uvicorn[standard]`.
+- **Native CLI vocabulary (#862).** `--target` is the hosting destination; `[tool.apx.agent].target` is the runtime. Native deploy/destroy accept `--environment` as an alias of `--bundle-target`. Doctor reports destination and declared runtime separately. Generated native dependencies stay `apx-agent[eval,agentbricks]`; `apx-agent[apps]` was never an extra, so run/doctor now tell you to install `uvicorn[standard]`. Example projects that still asked for the nonexistent `apx-agent[langgraph]` extra now use published extras (`eval`, plus `agentbricks` where the durable runtime is declared).
+- **Managed store live acceptance (#855/#856).** A disposable provision/CRUD/isolation probe on profile `DEFAULT` (`fevm-serverless-stable-7def3z`) succeeded and deleted its stores. Opt-in re-run: `APX_MANAGED_STATE_LIVE=1`. Retention, grants, and App-process startup remain open.
 - **Breaking: the Apps host is `DurableAgentServer` only** (#898, #926, #930).
 - **Breaking: the TypeScript agent runtime is retired.** The internal AppKit
   host and Python tool bridge are removed. Examples run on the native server.

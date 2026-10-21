@@ -3,7 +3,7 @@
 These tests verify that the optional-extras pin floors in
 ``python/pyproject.toml`` keep the resolver away from versions that break
 known-required imports. They run only when the relevant extra is installed
-locally; CI installs ``apx-agent[langgraph]`` and other extras to exercise
+locally; CI installs ``apx-agent[eval,agentbricks]`` and other extras to exercise
 them.
 """
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "apx-agent customer triage orchestrator — classifies and routes to remote specialists over A2A."
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent[langgraph]",
+    "apx-agent[eval]",
     "langgraph>=1.1.0",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.115.0",

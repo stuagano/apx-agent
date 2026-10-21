@@ -8,7 +8,7 @@ dependencies = [
     # The [langgraph] extra is required at runtime for both deploy targets:
     # compile_to_chat_agent (Model Serving) and compile_to_responses_agent
     # (Apps) both import langchain_core via the langgraph compiler.
-    "apx-agent[langgraph]",
+    "apx-agent[eval]",
     "databricks-tools-core",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.119.0",

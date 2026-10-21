@@ -3,12 +3,9 @@ name = "payroll-coworker"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    # The [langgraph] extra is REQUIRED at runtime for any app that calls
-    # ``compile_to_responses_agent``: it transitively pulls in langchain +
-    # langgraph + databricks-langchain, which the responses-agent compiler
-    # imports lazily under the hood. A bare ``apx-agent`` dep would let
-    # ``uv sync`` succeed but fail at first request inside the deployed App.
-    "apx-agent[langgraph]",
+    # The eval extra pulls mlflow.genai for ResponsesAgent Apps hosting.
+    # langgraph is a required apx-agent dependency, not an extra.
+    "apx-agent[eval]",
     # mlflow.genai.agent_server (imported by agent_server/start_server.py)
     # only exists in mlflow >=3.12; an older floor lets `uv sync` succeed but
     # the deployed App 502s with ModuleNotFoundError: mlflow.genai.

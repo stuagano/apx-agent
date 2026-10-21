@@ -5,10 +5,9 @@ description = "Investigate why data is missing from Databricks tables — traces
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    # [langgraph] drives graph execution (langchain + langgraph +
-    # databricks-langchain), [agentbricks] provides the native
-    # DurableAgentServer runtime the Apps deploy path targets.
-    "apx-agent[langgraph,agentbricks]",
+    # [agentbricks] provides the native DurableAgentServer runtime.
+    # langgraph is a required apx-agent dependency, not an extra.
+    "apx-agent[eval,agentbricks]",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.119.0",
     "pydantic-settings>=2.11.0",

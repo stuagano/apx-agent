@@ -4034,7 +4034,7 @@ def test_stage_build_manifest_no_wheel_stages_and_sanitizes(tmp_path: Path) -> N
     (proj / ".build").mkdir(parents=True)
     (proj / "pyproject.toml").write_text(
         '[project]\nname = "demo"\nversion = "0.1.0"\n'
-        'dependencies = ["apx-agent[langgraph] @ '
+        'dependencies = ["apx-agent[eval] @ '
         'git+https://github.com/stuagano/apx-agent.git@main#subdirectory=python"]\n'
     )
     (proj / "uv.lock").write_text(

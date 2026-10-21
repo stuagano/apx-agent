@@ -2,7 +2,7 @@
 name = "graph-spec-example"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["apx-agent[langgraph]"]
+dependencies = ["apx-agent[eval]"]
 
 # A YAML graph declaration: leaves under [tool.apx.agent.agents.*], a root under
 # [tool.apx.agent.root]. generate_project compiles this to a top-level agent.py

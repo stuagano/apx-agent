@@ -3,11 +3,9 @@ name = "zero-ops-diagnostics"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    # The [langgraph] extra is REQUIRED at runtime for any app that calls
-    # ``compile_to_responses_agent``: it transitively pulls in langchain +
-    # langgraph + databricks-langchain, which the responses-agent compiler
-    # imports lazily under the hood.
-    "apx-agent[langgraph]",
+    # The eval extra pulls mlflow.genai for ResponsesAgent Apps hosting.
+    # langgraph is a required apx-agent dependency, not an extra.
+    "apx-agent[eval]",
     "mlflow[databricks]>=3.0",
 ]
 
@@ -17,7 +15,7 @@ quickstart = "scripts.quickstart:main"
 [tool.uv.sources]
 # Editable local install — keeps `uv sync` working from this directory.
 # At deploy time apx deploy builds a wheel and rewrites .build/pyproject.toml
-# to reference it. Drop this block and pin "apx-agent[langgraph]==<version>"
+# to reference it. Drop this block and pin "apx-agent[eval]==<version>"
 # once published to PyPI.
 apx-agent = { path = "../..", editable = true }
 

@@ -13,9 +13,11 @@ It does not provision stores, migrate data, or change runtime behavior.
 Evidence is this checkout, the locked
 `databricks-agentbricks==0.4.0` / `databricks-sdk==0.146.0` packages, the
 closed [#331](https://github.com/stuagano/apx-agent/issues/331) transcript
-decision, and a **read-only** probe of the `fevm` profile on
-2026-10-13. That probe did not create, write, or delete anything. Writes,
-cross-actor content, retention, and cost are still not proven live.
+decision, a **read-only** probe of the `fevm` profile on 2026-10-13, and a
+disposable write/provision probe on profile `DEFAULT`
+(`fevm-serverless-stable-7def3z`) on 2026-10-21 (#855/#856). Retention and
+measured cost remain unknown. Existing `van-bsmmyz-*` stores were not
+modified.
 
 ## What this issue is for
 
@@ -455,6 +457,25 @@ Practical notes from the same session:
 - `grant_permission` was not called. Retention and measured DBU remain
   unknown. Doctor was not run against a project; the API results above
   substitute for that read-only check.
+
+### Provision / CRUD probe: `DEFAULT`, 2026-10-21
+
+Profile `DEFAULT` on workspace `fevm-serverless-stable-7def3z`. Disposable
+stores `apx-862-855-probe` and `apx-862-855-sessions` only. Both were
+deleted afterward. Re-run with `APX_MANAGED_STATE_LIVE=1 pytest
+python/tests/test_managed_state_live_reality_ctk.py`.
+
+| Step | Result |
+|---|---|
+| `provision_managed_memory` first call | Created `apx-862-855-probe`. |
+| `provision_managed_memory` second call | Idempotent: already exists. |
+| `session_stores.create` then `get` | Created and readable. |
+| APX `add` / `get` / `list` / `recall` / `update` / `delete` for actor A | All OK. Isolation vs actor B held for get, list, and recall. |
+| `memory_stores.get` of a missing name | `NOT_FOUND`. |
+| Store `delete` after emptying entries | OK for memory and session stores. |
+
+`grant_permission`, retention, and measured DBU were not part of this probe.
+No App deploy and no idle/wake run.
 
 ## Sources
 

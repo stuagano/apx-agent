@@ -4,7 +4,7 @@ Scaffolded Apps projects pin `apx-agent` from git in `pyproject.toml`:
 
 ```toml
 dependencies = [
-  "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@<ref>#subdirectory=python",
+  "apx-agent[eval,agentbricks] @ git+https://github.com/stuagano/apx-agent.git@<ref>#subdirectory=python",
 ]
 ```
 

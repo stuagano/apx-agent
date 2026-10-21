@@ -4397,7 +4397,7 @@ def test_pin_mismatch_aborts_deploy(
 [project]
 name = "test-app"
 dependencies = [
-  "apx-agent[langgraph] @ git+https://github.com/stuagano/apx-agent.git@deadbeef#subdirectory=python",
+  "apx-agent[eval] @ git+https://github.com/stuagano/apx-agent.git@deadbeef#subdirectory=python",
 ]
 """,
         encoding="utf-8",

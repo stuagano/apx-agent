@@ -5,7 +5,7 @@ description = "Example: Slack bot using apx-agent with Databricks OAuth — illu
 requires-python = ">=3.11"
 dependencies = [
     # The [langgraph] extra is required at runtime for compile_to_responses_agent.
-    "apx-agent[langgraph]",
+    "apx-agent[eval]",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.119.0",
     "uvicorn>=0.37.0",

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "apx-agent memory_demo — InMemory stores + ResponsesAgent + Databricks Apps."
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent[langgraph]",
+    "apx-agent[eval]",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
