@@ -3,10 +3,10 @@ revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version == '3.11.*' and sys_platform != 'win32'",
     "python_full_version == '3.11.*' and sys_platform == 'win32'",
@@ -278,7 +278,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "databricks-agentbricks", extras = ["langgraph"], marker = "extra == 'agentbricks'", specifier = ">=0.5.0,<0.6" },
+    { name = "databricks-agentbricks", extras = ["langgraph"], marker = "extra == 'agentbricks'", specifier = ">=0.5.0,<0.7" },
     { name = "databricks-langchain", specifier = ">=0.3.0" },
     { name = "databricks-openai", specifier = ">=0.15.0" },
     { name = "databricks-sdk", specifier = ">=0.74.0" },
@@ -750,10 +750,10 @@ version = "1.3.3"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version == '3.11.*' and sys_platform != 'win32'",
     "python_full_version == '3.11.*' and sys_platform == 'win32'",
@@ -908,7 +908,7 @@ wheels = [
 
 [[package]]
 name = "databricks-agentbricks"
-version = "0.5.0"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -925,9 +925,9 @@ dependencies = [
     { name = "tomlkit" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2a/e8/7fe217186f2459b6d7f57cfbcc3b0df0c8198f6972ea0eb86fdccb4549e8/databricks_agentbricks-0.5.0.tar.gz", hash = "sha256:04e51c07d3fd57a209c49c81c1776626fdbdb58329052abdeb3d95c7f7f3bd4e", size = 483761, upload-time = "2026-10-09T21:02:24.491Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/28/3e/59222d204996e21b52b4d9700e45b4eef078b50cabcb6affd39e7867976a/databricks_agentbricks-0.6.0.tar.gz", hash = "sha256:a91813ef5bd68d6b604199a37861e43090fbd86c0cbfa07842533f698774f28e", size = 531784, upload-time = "2026-10-16T20:45:03.714Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ac/3d/a2c4d836ea9d37637a13f1d87e81b9f79d350f820ca5944b85438717660b/databricks_agentbricks-0.5.0-py3-none-any.whl", hash = "sha256:4d251c4a6c913e3666985a76945415ccc9717c9f45cf9a34f0c5e9f961bf8ed3", size = 551930, upload-time = "2026-10-09T21:02:23.029Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/a0/dbe2383f20100433772e59a419c708ef7f33931b28b0056181f9ec65c313/databricks_agentbricks-0.6.0-py3-none-any.whl", hash = "sha256:37600b48891d0c7f12d29b1f151b510b94934fed4623634f79ffaee1b0cd2190", size = 605202, upload-time = "2026-10-16T20:45:02.113Z" },
 ]
 
 [package.optional-dependencies]
@@ -1039,10 +1039,10 @@ version = "17.0.10"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
 ]
 dependencies = [
@@ -1064,14 +1064,14 @@ wheels = [
 
 [[package]]
 name = "databricks-langchain"
-version = "0.19.0"
+version = "0.21.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "databricks-ai-bridge" },
+    { name = "databricks-ai-search" },
     { name = "databricks-mcp" },
     { name = "databricks-openai" },
     { name = "databricks-sdk" },
-    { name = "databricks-vectorsearch" },
     { name = "langchain" },
     { name = "langchain-mcp-adapters" },
     { name = "mlflow" },
@@ -1079,9 +1079,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "unitycatalog-langchain", extra = ["databricks"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ff/f5/17e6055c3577d2536119781db6181d0d27708cfed40ff069744a8f3659e2/databricks_langchain-0.19.0.tar.gz", hash = "sha256:a6e5c79f88d5f35e07dc82268efd7bed1172af0ca9fdc409dadef47b7dfc31ce", size = 34203, upload-time = "2026-04-22T02:03:05.457Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/0e/9a02e871b170e53b549e7c60fa862de342bfd2ef0a644bb42711f0f61ead/databricks_langchain-0.21.0.tar.gz", hash = "sha256:e59af3f4533a473365c3edd9c3d7f789d699839222d5084a8529c160a13979b0", size = 34306, upload-time = "2026-10-09T22:55:45.372Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/31/2f/438f7468e1f321f69da735abbdcc9c8466011d272a48da2bf8fb4d3478cf/databricks_langchain-0.19.0-py3-none-any.whl", hash = "sha256:bd2e12dc2195481dd52176ad7b38caa963c4f7736302624421d278193efc86ec", size = 39412, upload-time = "2026-04-22T02:03:04.487Z" },
+    { url = "https://files.pythonhosted.org/packages/01/84/c5ca910c99c080011d3ff81a2b97043d5580d0d9b3aed0f51d1fbc79423d/databricks_langchain-0.21.0-py3-none-any.whl", hash = "sha256:2acac9beb938c6bda0c7233824f8f1b4d8e49136b7112300da8a9972c01e94d0", size = 39523, upload-time = "2026-10-09T22:55:44.365Z" },
 ]
 
 [[package]]
@@ -3199,10 +3199,10 @@ version = "2.4.4"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d7/9f/b8cef5bffa569759033adda9481211426f12f53299629b410340795c2514/numpy-2.4.4.tar.gz", hash = "sha256:2d390634c5182175533585cc89f3608a4682ccb173cc9bb940b2881c8d6f8fa0", size = 20731587, upload-time = "2026-03-29T13:22:01.298Z" }
@@ -4003,10 +4003,10 @@ version = "0.10.9.9"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/38/31/0b210511177070c8d5d3059556194352e5753602fa64b85b7ab81ec1a009/py4j-0.10.9.9.tar.gz", hash = "sha256:f694cad19efa5bd1dee4f3e5270eb406613c974394035e5bfc4ec1aba870b879", size = 761089, upload-time = "2025-01-15T03:53:18.624Z" }
@@ -4835,10 +4835,10 @@ version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version == '3.11.*' and sys_platform != 'win32'",
     "python_full_version == '3.11.*' and sys_platform == 'win32'",
@@ -4956,10 +4956,10 @@ version = "1.17.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version == '3.11.*' and sys_platform != 'win32'",
     "python_full_version == '3.11.*' and sys_platform == 'win32'",
