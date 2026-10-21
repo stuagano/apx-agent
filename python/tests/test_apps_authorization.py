@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
+import click
 import pytest
 
 from apx_agent import Dependencies, ResourceSpec, require_user_api_scopes, tool
@@ -18,6 +21,8 @@ from apx_agent._apps_authorization import (
     compile_authorization_plan,
     infer_operation_authorization,
     read_app_family_permissions,
+    read_workspace_apps_scope_allowlist,
+    require_workspace_scope_allowlist,
 )
 from apx_agent._defaults import _get_workspace_client
 from apx_agent._resources import attach_resources
@@ -527,3 +532,46 @@ def test_authorization_summary_is_deterministic_and_complete() -> None:
         "Admin groups:",
         "  - admins: CAN_MANAGE",
     ]
+
+
+def _plan_with_scopes(*scopes: str) -> AuthorizationPlan:
+    return AuthorizationPlan(
+        operations=(),
+        user_resources=(),
+        service_resources=(),
+        user_api_scopes=scopes,
+        app_dependencies=(),
+    )
+
+
+def test_workspace_allowlist_unread_does_not_block() -> None:
+    ws = MagicMock()
+    ws.workspace_settings_v2.get_public_workspace_setting.side_effect = RuntimeError("nope")
+    read = read_workspace_apps_scope_allowlist(ws)
+    assert read.readable is False
+    require_workspace_scope_allowlist(ws, _plan_with_scopes("sql"))
+
+
+def test_workspace_allowlist_unrestricted_does_not_block() -> None:
+    ws = MagicMock()
+    ws.workspace_settings_v2.get_public_workspace_setting.return_value = SimpleNamespace(
+        effective_allowed_apps_user_api_scopes=None,
+        allowed_apps_user_api_scopes=None,
+    )
+    read = read_workspace_apps_scope_allowlist(ws)
+    assert read.readable is True
+    assert read.allowed_scopes is None
+    require_workspace_scope_allowlist(ws, _plan_with_scopes("sql"))
+
+
+def test_workspace_allowlist_missing_sql_fails_deploy() -> None:
+    ws = MagicMock()
+    ws.workspace_settings_v2.get_public_workspace_setting.return_value = SimpleNamespace(
+        effective_allowed_apps_user_api_scopes=SimpleNamespace(allowed_scopes=["genie"]),
+        allowed_apps_user_api_scopes=None,
+    )
+    with pytest.raises(click.ClickException, match="allowedAppsUserApiScopes") as raised:
+        require_workspace_scope_allowlist(ws, _plan_with_scopes("sql", "genie"))
+    msg = str(raised.value)
+    assert "- sql:" in msg
+    assert "- genie:" not in msg

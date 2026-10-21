@@ -21,12 +21,14 @@ from ._models import (
     BeforeAgentCallback,
     BeforeModelHook,
     BeforeToolHook,
+    GatewayConfig,
     InputGuardrailFn,
     MemoryBackendConfig,
     Message,
     OnModelErrorCallback,
     OnToolErrorCallback,
     OutputGuardrailFn,
+    RuntimeTarget,
     SessionBackendConfig,
     _ToolFn,
     FLOW_GRAPH_TOOL_NAME,
@@ -34,6 +36,7 @@ from ._models import (
     normalize_memory_knob,
     structured_input_schema,
 )
+from ._service_policies import ServicePoliciesConfig
 from ._inspection import (
     _inspect_tool_fn,
     _make_input_model,
@@ -179,6 +182,12 @@ class LlmAgent(BaseAgent):
         tool_loading: str = "eager",
         output_schema: type[BaseModel] | None = None,
         timeout_s: float | None = None,
+        model: str | None = None,
+        target: RuntimeTarget | None = None,
+        identity: str | None = None,
+        recovery: bool = False,
+        gateway: GatewayConfig | None = None,
+        service_policies: ServicePoliciesConfig | None = None,
     ) -> None:
         # tools is optional (#449): an orchestrator whose only capabilities are
         # config-declared sub_agents has no local tools. None → a fresh list
@@ -249,6 +258,21 @@ class LlmAgent(BaseAgent):
         self._input_guardrails = input_guardrails or []
         self._output_guardrails = output_guardrails or []
         self._context_window_tokens = context_window_tokens
+        self.model = model
+        self.target = target
+        if identity is not None:
+            from ._tool_scope import _validate_identity
+
+            try:
+                _validate_identity(identity)
+            except ValueError as exc:
+                raise ValueError(f"identity: {exc}") from exc
+        self.identity = identity
+        if recovery and target == "responses_agent":
+            raise ValueError("recovery requires target='durable_agent_server'")
+        self.recovery = recovery
+        self.gateway = gateway
+        self.service_policies = service_policies
         self.memory_config: MemoryBackendConfig | None
         self.session_config: SessionBackendConfig | None
         self.memory_config, self.session_config = normalize_memory_knob(

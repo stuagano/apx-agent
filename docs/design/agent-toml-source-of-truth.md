@@ -1,6 +1,6 @@
 # Design: `agent.toml` is the platform's source of truth
 
-**Status:** implemented (sub-project 1) · **Date:** 2026-10-19 · **Sub-project:** 1 of 4
+**Status:** implemented (sub-projects 1–2) · **Date:** 2026-10-19 · **Sub-project:** 2 of 4
 
 ## Intent
 
@@ -27,10 +27,11 @@ Success means:
 
 1. **This spec.** `agent.toml` becomes the source of truth; apx reads and
    checks it, and stops generating it.
-2. **apx settings on the agent.** Settings `LlmAgent` doesn't take yet (model,
-   target, gateway, service policies, identity, recovery) become agent
-   arguments. The launcher and generated `app.py` compile from the agent
-   object instead of `pyproject.toml`.
+2. **apx settings on the agent.** Settings `LlmAgent` didn't take yet (model,
+   target, gateway, service policies, identity, recovery) are agent
+   arguments. The launcher and generated native `start_server.py` compile from
+   the agent object when `[tool.apx.agent]` is absent. `[tool.apx.agent]` still
+   works until sub-project 3.
 3. **Remove `[tool.apx.agent]`.** Fail with migration guidance (as #944 did for
    `[[tool.apx.tools]]`), and migrate the examples, scaffold, YAML generation
    and doctor.
@@ -194,7 +195,7 @@ written. It refuses to overwrite an existing `agent.toml`. The migrated and chec
 ## Out of scope
 
 - Removing `[tool.apx.agent]` (sub-project 3).
-- Moving model, identity and other apx settings onto the agent (sub-project 2).
+- Removing remaining pyproject-only deploy flags that are not agent constructor arguments (space, replica bounds) — they stay on `[tool.apx.agent].deploy` until sub-project 3.
 - Model Serving deploy settings and the YAML spec path (sub-project 4).
 - Tool kinds added to `agent.toml` later that AgentKit's LangGraph loaders don't
   cover. `platform_tools()` rejects an unknown kind at compile time rather than

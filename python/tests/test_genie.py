@@ -220,6 +220,17 @@ class TestGenieQueryToolExecution:
         assert "error" in result
         assert "network down" in result["error"]
 
+    @pytest.mark.asyncio
+    async def test_query_tool_scope_denial_hints_reauthorize(self):
+        ws = MagicMock()
+        ws.genie.start_conversation_and_wait.side_effect = RuntimeError(
+            "Invalid scope, required scopes: genie"
+        )
+        tool = genie_query_tool("space-123")
+        result = await tool(question="anything", ws=ws)
+        assert "re-authorize" in result["error"].lower()
+        assert "required scopes: genie" in result["error"]
+
 
 class TestGenieToolContainment:
     @pytest.mark.asyncio
@@ -236,3 +247,18 @@ class TestGenieToolContainment:
         tool = genie_tool("space-123")
         with pytest.raises(ToolError, match="Genie query failed"):
             await tool(question="anything", ws=ws)
+
+    @pytest.mark.asyncio
+    async def test_genie_tool_scope_denial_hints_reauthorize(self):
+        from databricks.sdk.errors import DatabricksError
+
+        from apx_agent import ToolError
+
+        ws = MagicMock()
+        ws.genie.start_conversation_and_wait.side_effect = DatabricksError(
+            "Invalid scope, required scopes: genie"
+        )
+        tool = genie_tool("space-123")
+        with pytest.raises(ToolError, match="(?i)re-authorize") as exc:
+            await tool(question="anything", ws=ws)
+        assert "required scopes: genie" in str(exc.value)

@@ -1043,20 +1043,45 @@ def test_packaged_launcher_preserves_remote_session_binding(execution: Any, monk
                                     project_root=Path.cwd())
 
 
-@pytest.mark.parametrize("declared", [False, True])
-def test_packaged_launcher_rejects_missing_or_other_runtime_before_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, declared: bool) -> None:
+def test_packaged_launcher_rejects_other_runtime_before_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from apx_agent import AgentConfig
     from apx_agent._project_gen import generate_project
     from apx_agent._serve import create_app
 
-    if declared:
-        generate_project(AgentConfig(name="other", target="responses_agent"), tmp_path)
+    generate_project(AgentConfig(name="other", target="responses_agent"), tmp_path)
     monkeypatch.chdir(tmp_path)
     auth = MagicMock(side_effect=AssertionError("No auth for an incompatible runtime"))
     monkeypatch.setattr("apx_agent._defaults._make_workspace_client", auth)
     with pytest.raises(ValueError, match="native launcher requires"):
         create_app()
     auth.assert_not_called()
+
+
+def test_packaged_launcher_compiles_python_only_agent(
+    execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """#954: missing [tool.apx.agent] still compiles the Python agent as durable."""
+    import sys
+    from apx_agent._serve import create_app
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(agent=execution.agent))
+    monkeypatch.setenv("APX_MODEL", "bound-model")
+    monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
+    monkeypatch.delenv("AGENT_SESSION_STORE", raising=False)
+    native_app = SimpleNamespace(state=SimpleNamespace())
+    compiler = MagicMock(return_value=native_app)
+    monkeypatch.setattr("apx_agent._runtime_targets.compile_agent", compiler)
+    assert create_app() is native_app
+    kwargs = compiler.call_args.kwargs
+    assert kwargs["model"] == "bound-model"
+    assert kwargs["config"] is not None
+    assert kwargs["config"].name == "proof"
+    assert kwargs["config"].target == "durable_agent_server"
+    assert kwargs["service_ws"] is execution.ws
+    assert kwargs["session_store"] is None
+    assert kwargs["project_root"] == Path.cwd()
 
 
 def test_packaged_deployment_launcher_uses_same_factory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

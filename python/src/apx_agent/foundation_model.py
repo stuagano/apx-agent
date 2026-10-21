@@ -16,6 +16,8 @@ type, not a string.
 import logging
 from typing import Any
 
+from ._obo import reauthorize_hint
+
 logger = logging.getLogger(__name__)
 
 
@@ -91,6 +93,9 @@ def foundation_model_tool(
             response = ws.serving_endpoints.query(**kwargs)
         except Exception as e:
             logger.warning("Foundation model query failed on %s: %s", endpoint_name, e)
+            hint = reauthorize_hint(e)
+            if hint is not None:
+                return str(hint)
             return f"Model query failed: {e}"
 
         choices = getattr(response, "choices", None) or []

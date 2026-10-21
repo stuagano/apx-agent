@@ -545,11 +545,9 @@ def finalize_agent(
     *config* is supplied, knobs are applied from it; otherwise it is loaded
     from *pyproject_path*. With no config, Python tool scope guards still run.
 
-    Note: a project with no [tool.apx.agent] section is not servable (the serve
-    path requires an agent section), so finalize_agent is not invoked via the
-    serve path for such a project. ScopeGuard still attaches here when any
-    tool declares a scope, so log/deploy/Python-API paths do not silently
-    drop runtime enforcement.
+    A project with no [tool.apx.agent] still compiles from the Python agent
+    (#954). ScopeGuard still attaches here when any tool declares a scope, so
+    log/deploy/Python-API paths do not silently drop runtime enforcement.
     """
     from ._tool_config import reject_legacy_tool_config
 
@@ -581,10 +579,13 @@ def finalize_agent(
         # of their own, so per-tool overrides still win and undeclared tools
         # inherit the agent principal. Run after all tools are attached and
         # before guardrails so ScopeGuard / authorization compile see it.
-        if config.identity is not None:
+        identity = getattr(agent, "identity", None)
+        if identity is None:
+            identity = config.identity
+        if identity is not None:
             from ._agent_identity import apply_agent_identity  # noqa: PLC0415
 
-            apply_agent_identity(agent, config.identity)
+            apply_agent_identity(agent, identity)
 
         # Attach guards after memory/VS tools so ScopeGuard sees all scoped
         # tools, not just those on the agent at construction.
@@ -600,6 +601,11 @@ def finalize_agent(
 
         if isinstance(agent, DataAgent):
             agent.bind_workspace(ws)
+
+    if config is None and getattr(agent, "identity", None) is not None:
+        from ._agent_identity import apply_agent_identity  # noqa: PLC0415
+
+        apply_agent_identity(agent, agent.identity)
 
     # Scope wiring is independent of [tool.apx.agent]: a Python-API agent
     # with build_tool(scope=...) still needs a runtime guard. apply_config_

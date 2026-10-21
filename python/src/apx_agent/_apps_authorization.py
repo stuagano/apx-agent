@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse
 
+import click
+
 from ._defaults import (
     _get_principal,
     _get_request,
@@ -39,10 +41,13 @@ __all__ = [
     "AuthorizationPlan",
     "OperationAuthorization",
     "ResolvedAppDependency",
+    "WorkspaceAppsScopeAllowlist",
     "authorization_summary_lines",
     "compile_authorization_plan",
     "infer_operation_authorization",
     "read_app_family_permissions",
+    "read_workspace_apps_scope_allowlist",
+    "require_workspace_scope_allowlist",
 ]
 
 
@@ -481,4 +486,59 @@ def _is_apps_https_url(url: str) -> bool:
     return (
         parsed.scheme == "https"
         and (host == "databricksapps.com" or host.endswith(".databricksapps.com"))
+    )
+
+
+@dataclass(frozen=True)
+class WorkspaceAppsScopeAllowlist:
+    """Workspace ``allowedAppsUserApiScopes`` read-back.
+
+    ``allowed_scopes is None`` means the workspace does not restrict Apps OBO
+    scopes (or the setting payload has no list). ``readable=False`` means the
+    GET failed and callers must not treat that as an empty allowlist.
+    """
+
+    allowed_scopes: frozenset[str] | None
+    readable: bool
+
+
+def read_workspace_apps_scope_allowlist(ws: Any) -> WorkspaceAppsScopeAllowlist:
+    """Read the workspace Apps OAuth-scope allowlist. Never invent a default list."""
+    try:
+        setting = ws.workspace_settings_v2.get_public_workspace_setting(
+            "allowedAppsUserApiScopes"
+        )
+    except Exception:
+        return WorkspaceAppsScopeAllowlist(allowed_scopes=None, readable=False)
+    effective = setting.effective_allowed_apps_user_api_scopes
+    declared = setting.allowed_apps_user_api_scopes
+    message = effective if effective is not None else declared
+    if message is None:
+        return WorkspaceAppsScopeAllowlist(allowed_scopes=None, readable=True)
+    scopes = message.allowed_scopes
+    if not isinstance(scopes, list) or any(not isinstance(scope, str) for scope in scopes):
+        return WorkspaceAppsScopeAllowlist(allowed_scopes=None, readable=True)
+    return WorkspaceAppsScopeAllowlist(
+        allowed_scopes=frozenset(scopes),
+        readable=True,
+    )
+
+
+def require_workspace_scope_allowlist(ws: Any, plan: AuthorizationPlan) -> None:
+    """Fail deploy when the plan requests scopes the workspace has blocked."""
+    from ._app_space import _scope_owners
+
+    read = read_workspace_apps_scope_allowlist(ws)
+    if not read.readable or read.allowed_scopes is None:
+        return
+    missing = sorted(set(plan.user_api_scopes) - read.allowed_scopes)
+    if not missing:
+        return
+    lines = [
+        f"  - {scope}: needed by {', '.join(_scope_owners(plan, scope))}"
+        for scope in missing
+    ]
+    raise click.ClickException(
+        "Workspace allowedAppsUserApiScopes is missing required scopes; "
+        "ask the workspace admin to grant them:\n" + "\n".join(lines)
     )

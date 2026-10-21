@@ -50,11 +50,50 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ApxIdentityError",
     "apply_obo_to_custom_inputs",
+    "apps_inbound_oauth_headers",
     "extract_obo_headers",
     "make_obo_workspace_client",
+    "reauthorize_hint",
     "resolve_no_obo_or_raise",
     "scope_session_key",
 ]
+
+
+def reauthorize_hint(exc: Exception) -> RuntimeError | None:
+    """Translate an OBO scope-denial 403 into a re-authorize instruction.
+
+    Databricks Apps OBO tokens carry only the scopes the user consented to.
+    When a bundle adds a ``user_api_scopes`` entry but the caller's token
+    predates that grant, Databricks APIs 403 with ``Invalid scope, required
+    scopes: …`` even though the bundle declares it. The fix is operational:
+    the user must re-authorize the app to mint a token carrying the new scope.
+    """
+    msg = str(exc)
+    if "required scopes" not in msg and "Invalid scope" not in msg:
+        return None
+    return RuntimeError(
+        f"{msg}\n\n"
+        "This is a stale OBO consent, not a missing bundle scope: the app's "
+        "forwarded-user token predates a newly-added user_api_scope. "
+        "Re-authorize the app (open its URL in a browser and approve the "
+        "permissions prompt) to mint a token that carries the new scope, "
+        "then retry."
+    )
+
+
+def apps_inbound_oauth_headers(*, oauth_token: str) -> dict[str, str]:
+    """Authorization headers for calling a Databricks Apps URL as an API.
+
+    The Apps URL is SSO for a PAT. Pass a user-to-machine or machine-to-machine
+    OAuth access token, not ``DATABRICKS_TOKEN``. Does not log the token.
+    """
+    if not oauth_token:
+        raise ValueError("oauth_token is required to call a Databricks Apps URL")
+    if oauth_token.startswith("dapi"):
+        raise ValueError(
+            "PAT cannot invoke a Databricks Apps URL (SSO). Use U2M or M2M OAuth."
+        )
+    return {"Authorization": f"Bearer {oauth_token}"}
 
 # Scoping identity — always overwrite body with extract_obo_headers result (#615).
 _IDENTITY_CUSTOM_INPUT_KEYS = frozenset({"user_id", "user_email"})

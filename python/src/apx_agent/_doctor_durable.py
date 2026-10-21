@@ -263,25 +263,30 @@ def _stage_config(project: Path) -> _Loaded | Check:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return _fail("Config", exc)
     declared = data.get("tool", {}).get("apx", {}).get("agent")
-    if declared is None:
+    python_only = declared is None and (project / "agent.py").is_file()
+    if declared is None and not python_only:
         return Check("Config", Status.SKIP, "not an apx agent project (no [tool.apx.agent])")
     try:
         import databricks_agentkit.runtime.app  # noqa: F401 — presence check
     except ImportError:
         return Check("Config", Status.FAIL, "databricks-agentbricks is not installed in this environment", SDK_FIX)
     try:
-        from ._inspection import _agent_config_fields
+        from ._inspection import _agent_config_fields, config_from_agent
         from ._wiring import resolve_agent
 
-        # Validate the declared fields once, as durable: validating the current
-        # target first rejects durable-only settings (e.g. deploy.space) mid-migration.
-        fields = _agent_config_fields(project / "pyproject.toml", ("tool", "apx", "agent"))
-        if fields is None:
-            return Check("Config", Status.FAIL, "could not load [tool.apx.agent]")
-        config = AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
-        # The native host imports `agent:agent` (as _serve.create_app does); the
-        # pyproject `module =` key is not read by the durable runtime.
-        agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
+        if python_only:
+            agent = resolve_agent("agent:agent", None, ws=_FakeWorkspaceClient())
+            config = config_from_agent(agent)
+        else:
+            # Validate the declared fields once, as durable: validating the current
+            # target first rejects durable-only settings (e.g. deploy.space) mid-migration.
+            fields = _agent_config_fields(project / "pyproject.toml", ("tool", "apx", "agent"))
+            if fields is None:
+                return Check("Config", Status.FAIL, "could not load [tool.apx.agent]")
+            config = AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
+            # The native host imports `agent:agent` (as _serve.create_app does); the
+            # pyproject `module =` key is not read by the durable runtime.
+            agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
         origin = getattr(sys.modules.get("agent"), "__file__", None)
         if origin is None or not Path(origin).resolve().is_relative_to(project):
             return Check("Config", Status.FAIL, f"`agent` resolved outside the project ({origin})",

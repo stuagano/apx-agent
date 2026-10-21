@@ -397,3 +397,28 @@ def test_scope_session_key_namespaces_by_principal() -> None:
     assert scope_session_key({"thread_id": "T"}, "alice")["thread_id"].endswith(":T")
     assert scope_session_key({"user_id": "x"}, "x") == {"user_id": "x"}
     assert scope_session_key(None, "alice") is None
+
+
+def test_apps_inbound_oauth_headers_rejects_pat() -> None:
+    from apx_agent import apps_inbound_oauth_headers
+
+    with pytest.raises(ValueError, match="PAT cannot invoke"):
+        apps_inbound_oauth_headers(oauth_token="dapi123")
+
+
+def test_apps_inbound_oauth_headers_sets_bearer() -> None:
+    from apx_agent import apps_inbound_oauth_headers
+
+    headers = apps_inbound_oauth_headers(oauth_token="eyJhbGciOi")
+    assert headers == {"Authorization": "Bearer eyJhbGciOi"}
+    assert "dapi" not in headers["Authorization"]
+
+
+def test_reauthorize_hint_only_on_scope_denial() -> None:
+    from apx_agent._obo import reauthorize_hint
+
+    assert reauthorize_hint(RuntimeError("boom")) is None
+    hinted = reauthorize_hint(RuntimeError("Invalid scope, required scopes: genie"))
+    assert hinted is not None
+    assert "re-authorize" in str(hinted).lower()
+    assert "required scopes: genie" in str(hinted)

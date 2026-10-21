@@ -59,6 +59,19 @@ def test_identity_passthrough_page_scopes_every_hop_claim() -> None:
     assert "a2a.md" in text
 
 
+def test_identity_passthrough_covers_apps_auth_gaps() -> None:
+    """#965–#973: the safety page must name the Apps auth gaps we now encode."""
+    text = _read("safety", "identity-passthrough.md")
+    lowered = text.lower()
+    assert "re-authorize" in lowered or "reauthorize" in lowered
+    assert "u2m" in lowered or "machine-to-machine" in lowered
+    assert "pat cannot" in lowered
+    assert "federation" in lowered
+    assert "can manage" in lowered and "can use" in lowered
+    assert "authorization tab" in lowered
+    assert "allowedappsuserapiscopes" in lowered.replace("_", "").replace(" ", "")
+
+
 def test_apps_family_policy_is_operator_declared() -> None:
     """The compiler consumes policy; it does not invent project TOML."""
     text = _read("reference", "configuration.md")

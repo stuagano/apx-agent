@@ -572,6 +572,10 @@ def test_user_api_scopes_per_kind() -> None:
     assert user_api_scopes_for([ResourceSpec("vector_search_index", "i")]) == [
         "vector-search"
     ]
+    assert user_api_scopes_for([ResourceSpec("lakebase_instance", "lb")]) == [
+        "postgres"
+    ]
+    assert user_api_scopes_for([ResourceSpec("app", "peer")]) == ["apps"]
 
 
 def test_user_api_scopes_mixed_sorted_union() -> None:
@@ -624,6 +628,7 @@ def test_require_user_api_scopes_accepts_complete_current_apps_vocabulary() -> N
     from apx_agent._resources import _KNOWN_USER_API_SCOPES
 
     current_scopes = {
+        "ai-functions",
         "ai-gateway",
         "apps",
         "files",

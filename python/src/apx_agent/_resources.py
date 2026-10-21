@@ -132,6 +132,7 @@ def get_resources(fn: Any) -> list[ResourceSpec]:
 # set so a typo becomes a deploy-time error instead of another prod-only
 # "missing scopes" 500 (#563).
 _KNOWN_USER_API_SCOPES = frozenset({
+    "ai-functions",
     "ai-gateway",
     "apps",
     "files",
@@ -624,6 +625,8 @@ _KIND_TO_SCOPE: dict[str, str] = {
     "serving_endpoint": "model-serving",
     "genie_space": "genie",
     "vector_search_index": "vector-search",
+    "lakebase_instance": "postgres",
+    "app": "apps",
 }
 
 

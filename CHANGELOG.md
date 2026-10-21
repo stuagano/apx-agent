@@ -74,7 +74,9 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Fixed
 
-- **Native generated agent.toml uses Python-only memory (#954).** `build_native_manifest` and `migrate-agent-toml` apply the same `memory=` / `needs_request_user(..., agent=)` rule as the agent.toml checks, so a managed memory store declared only on the Python agent still requires `[auth.user]` and a matching `[memory_store]`.
+- **Databricks Apps auth gaps (#965–#973).** `ai-functions` is a known OBO scope; Lakebase and app resources derive `postgres` / `apps`. Doctor and deploy read workspace `allowedAppsUserApiScopes`. Host-bound resource misses say the OBO token cannot leave the app workspace. Scope-denial re-authorize hints cover SQL, Genie, and model-serving. Doctor prints the dedicated app SP application id, warns when the App ACL is all CAN MANAGE, and warns that M2M federation without a client secret is unsupported. `apps_inbound_oauth_headers` is the inbound U2M/M2M path; PAT is rejected.
+- **Apx settings on the agent (sub-project 2).** `LlmAgent` takes `model`, `target`, `identity`, `recovery`, `gateway`, and `service_policies`. Native deploy, doctor `--durable`, and the packaged launcher synthesize `AgentConfig` from that object when `[tool.apx.agent]` is absent, so a Python-only project stays on the native durable path.
+- **agent.toml checks run without `[tool.apx.agent]` (#954).** Deploy preflight, doctor, and the native launcher read Python `memory=` / `platform_tools()` when there is no `AgentConfig`. A mismatched authored `agent.toml` still fails deploy before staging.
 - **A2A Apps peers keep the request-user token (#903).** A Databricks Apps
   peer (`apps/<name>`) with a request-user token no longer takes the Apps SDK
   transport, whose auth hook signs the call as the calling app's service
