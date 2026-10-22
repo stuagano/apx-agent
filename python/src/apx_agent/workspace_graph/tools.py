@@ -34,6 +34,17 @@ def _not_found(graph: Graph, identifier: str) -> dict[str, Any]:
     }
 
 
+def _cap_connections(
+    edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Cap connection list at _LIST_CAP with count and truncated flag."""
+    return {
+        "count": len(edges),
+        "results": edges[:_LIST_CAP],
+        "truncated": len(edges) > _LIST_CAP,
+    }
+
+
 def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
     """Return six tools that query the caller's workspace graph.
 
@@ -69,7 +80,19 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
 
     async def get_asset(ws: UserClientDependency, identifier: str) -> dict[str, Any]:  # type: ignore[valid-type]
         graph = await _graph(ws)
-        return graph.get(identifier) or _not_found(graph, identifier)
+        result = graph.get(identifier)
+        if result is None:
+            return _not_found(graph, identifier)
+        outgoing = result["outgoing"]
+        incoming = result["incoming"]
+        return {
+            "node": result["node"],
+            "outgoing": outgoing[:_LIST_CAP],
+            "outgoing_count": len(outgoing),
+            "incoming": incoming[:_LIST_CAP],
+            "incoming_count": len(incoming),
+            "truncated": len(outgoing) > _LIST_CAP or len(incoming) > _LIST_CAP,
+        }
 
     async def analyze_impact(
         ws: UserClientDependency, identifier: str
@@ -86,10 +109,15 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
         if node is None:
             return _not_found(graph, identifier)
         lin = graph.lineage(node.id)
+        upstream = lin["upstream"]
+        downstream = lin["downstream"]
         return {
             "asset": _brief(node),
-            "upstream": [_brief(n) for n in lin["upstream"][:_LIST_CAP]],
-            "downstream": [_brief(n) for n in lin["downstream"][:_LIST_CAP]],
+            "upstream": [_brief(n) for n in upstream[:_LIST_CAP]],
+            "upstream_count": len(upstream),
+            "downstream": [_brief(n) for n in downstream[:_LIST_CAP]],
+            "downstream_count": len(downstream),
+            "truncated": len(upstream) > _LIST_CAP or len(downstream) > _LIST_CAP,
         }
 
     async def find_orphans(ws: UserClientDependency) -> dict[str, Any]:  # type: ignore[valid-type]
@@ -113,7 +141,9 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
             get_asset,
             "get_asset",
             "Get one asset by id or fully-qualified name: its properties (columns, comment, "
-            "owner-facing details) and every directly connected asset.",
+            "owner-facing details) and every directly connected asset. Connections (outgoing/"
+            "incoming) are capped at 50 items with outgoing_count, incoming_count, and "
+            "truncated flag to signal if results were cut.",
         ),
         (
             analyze_impact,
@@ -125,7 +155,8 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
             get_lineage,
             "get_lineage",
             "Data-flow lineage for an asset: upstream sources and downstream consumers, up to "
-            "3 hops, excluding catalog/schema containment.",
+            "3 hops, excluding catalog/schema containment. Results are capped at 50 items each "
+            "with upstream_count, downstream_count, and truncated flag to signal if cut.",
         ),
         (
             find_orphans,
