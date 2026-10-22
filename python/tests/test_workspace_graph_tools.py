@@ -191,3 +191,15 @@ async def test_get_lineage_reports_upstream_downstream_counts(hub_tools):
         assert lin["truncated"] is True
     else:
         assert lin["truncated"] is False
+
+
+def test_tools_declare_obo_scopes(tools):
+    from apx_agent._apps_authorization import infer_operation_authorization
+
+    by_name, _ = tools
+    assert len(by_name) == 6
+    for t in by_name.values():
+        op = infer_operation_authorization(t)
+        assert op.execution_identity == "user"
+        assert set(op.user_api_scopes) == set(tools_mod.SCOPES)
+    assert "genie" in tools_mod.SCOPES and "apps" in tools_mod.SCOPES

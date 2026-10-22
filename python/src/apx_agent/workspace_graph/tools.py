@@ -7,11 +7,24 @@ so ``UserClientDependency`` resolves eagerly — see catalog.py.
 import asyncio
 from typing import Any
 
+from .._resources import require_user_api_scopes
 from .._tool_factory import build_tool
 from .builder import Graph, get_graph
 from .schema import Node
 
 _LIST_CAP = 50
+
+# OBO scopes every connector needs; without them a deployed App gets only the
+# scaffold baseline (ai-gateway, sql) and every connector fails -> empty graph.
+SCOPES = [
+    "catalog.catalogs:read",
+    "catalog.schemas:read",
+    "catalog.tables:read",
+    "genie",
+    "vector-search",
+    "model-serving",
+    "apps",
+]
 
 
 def _brief(n: Node) -> dict[str, str]:
@@ -164,4 +177,7 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
             "Assets nothing reads, feeds, indexes, serves, or uses — candidates for cleanup.",
         ),
     ]
-    return [build_tool(fn, name=name, description=desc) for fn, name, desc in specs]
+    return [
+        require_user_api_scopes(build_tool(fn, name=name, description=desc), SCOPES)
+        for fn, name, desc in specs
+    ]

@@ -56,7 +56,9 @@ That adds six tools: `graph_summary`, `search_assets`, `get_asset`,
 `analyze_impact`, `get_lineage`, `find_orphans`. Both surfaces build the graph with
 the caller's credentials and cache it per caller for 10 minutes. Backed by
 `GET /_apx/discover/graph.json?catalogs=a,b&refresh=1` and
-`GET /_apx/discover/impact/{id}`.
+`GET /_apx/discover/impact/{id}`. The tools declare the OBO scopes the connectors need
+(Unity Catalog read, `genie`, `vector-search`, `model-serving`, `apps`), so `apx-agent deploy`
+grants them to the App.
 
 ### `/_apx/topology` — Interactive topology graph
 
