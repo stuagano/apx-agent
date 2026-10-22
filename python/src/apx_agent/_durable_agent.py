@@ -357,6 +357,8 @@ def compile_to_durable_agent_server(
     from ._ui_agentkit_chat import mount_agentkit_chat
 
     mount_agentkit_chat(app, model=model)
+    # Dev UI handlers read the service client here (the MLflow host sets it too).
+    app.state.workspace_client = service_ws
     app.state.dev_ui_mount_error = None
     if os.environ.get("APX_DEV_UI") != "0":
         try:

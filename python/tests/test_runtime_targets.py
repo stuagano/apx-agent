@@ -690,6 +690,13 @@ def test_native_server_mounts_agentkit_chat_and_dev_ui(
         assert config.json()["models"]["default"] == "test"
         assert client.get("/_apx/discover").status_code == (200 if dev_ui == "1" else 404)
         assert app.state.dev_ui_mount_error is None
+        # Dev UI handlers read the service client from app.state on every host.
+        assert app.state.workspace_client is execution.ws
+        if dev_ui == "1":
+            execution.ws.config.host = "https://example.cloud.databricks.com"
+            execution.ws.current_user.me.return_value.user_name = "dev@example.com"
+            context = client.get("/_apx/workspace-context")
+            assert context.status_code == 200, context.text
 
 
 @pytest.mark.parametrize("buffered", [False, True])
