@@ -1,5 +1,7 @@
 """Test that trace pages render with AgentKit theme."""
 
+import re
+
 import pytest
 from httpx import ASGITransport, AsyncClient, Response
 
@@ -67,17 +69,13 @@ async def test_semantic_span_type_hues_preserved(dev_ui_app):
     r = await _get(dev_ui_app, "/_apx/traces")
     assert r.status_code == 200
 
-    # These semantic hues MUST be preserved (different colors for different meanings):
-    # - Cyan for LLM
-    assert "#22d3ee" in r.text, "LLM span-type cyan must be preserved"
-    # - Yellow for TOOL
-    assert "#facc15" in r.text, "TOOL span-type yellow must be preserved"
-    # - Purple for CHAIN
-    assert "#a78bfa" in r.text, "CHAIN span-type purple must be preserved"
-    # - Blue (accent) for AGENT
-    assert "#1a5fc4" in r.text or "#1a73e8" in r.text, "AGENT span-type blue hue must be present"
-    # - Slate/muted for OTHER
-    assert "#92A4B3" in r.text, "OTHER span-type muted must be preserved"
+    # Semantic hues stay distinct per span type (tokens, defined in _ui_theme).
+    hues = {}
+    for kind in ("LLM", "TOOL", "CHAIN", "AGENT", "OTHER"):
+        m = re.search(r"\.stype-%s\{color:var\((--apx-[\w-]+)\)" % kind, r.text)
+        assert m, f"{kind} span type must use a theme token"
+        hues[kind] = m.group(1)
+    assert len(set(hues.values())) == 5, f"span-type hues must be distinct: {hues}"
 
 
 @pytest.mark.asyncio
@@ -86,10 +84,7 @@ async def test_status_colors_preserved(dev_ui_app):
     r = await _get(dev_ui_app, "/_apx/traces")
     assert r.status_code == 200
 
-    # Status colors MUST be preserved (different colors for different states):
-    # - Green for ok
-    assert "#3BA65E" in r.text, "OK status green must be preserved"
-    # - Red for err
-    assert "#C83243" in r.text, "ERR status red must be preserved"
-    # - Yellow for run (in-progress)
-    assert "#FACB66" in r.text, "RUN status yellow must be preserved"
+    # Status colors stay distinct per state.
+    for state, token in (("ok", "--apx-ok"), ("err", "--apx-err"), ("run", "--apx-warn")):
+        assert f".st-{state}{{color:var({token});}}" in r.text, f"{state} status color"
+

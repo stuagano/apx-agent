@@ -9,21 +9,21 @@ from typing import Any
 TABLE_CSS = r"""
   .outmeta { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; white-space:normal; }
   .outmeta .mchip { font-size:11px; padding:2px 8px; border-radius:10px;
-                                border:1px solid var(--apx-border,#445461); background:var(--apx-panel,#1F272D); color:var(--apx-muted,#92A4B3); }
+                                border:1px solid var(--apx-border); background:var(--apx-panel); color:var(--apx-muted); }
   table.out { width:100%; border-collapse:collapse; font-size:11.5px; white-space:normal; }
-  table.out th { text-align:left; color:var(--apx-muted,#92A4B3); font-weight:600; padding:6px 8px;
-                 border-bottom:1px solid var(--apx-border,#445461); white-space:nowrap;
-                 position:sticky; top:0; background:var(--apx-panel,#1F272D); }
-  table.out td { padding:5px 8px; border-bottom:1px solid var(--apx-border,#445461); vertical-align:top;
+  table.out th { text-align:left; color:var(--apx-muted); font-weight:600; padding:6px 8px;
+                 border-bottom:1px solid var(--apx-border); white-space:nowrap;
+                 position:sticky; top:0; background:var(--apx-panel); }
+  table.out td { padding:5px 8px; border-bottom:1px solid var(--apx-border); vertical-align:top;
                  max-width:340px; word-break:break-word; }
-  table.out tr:hover td { background:var(--apx-panel-2,#37444F); }
-  .muted { color:var(--apx-muted,#92A4B3); }
-  .note { margin-top:8px; color:var(--apx-muted,#92A4B3); font-size:11px; white-space:normal; }
-  details.out-raw { margin-top:10px; background:var(--apx-bg,#11171C); border:1px solid var(--apx-border,#445461); border-radius:8px; }
+  table.out tr:hover td { background:var(--apx-panel-2); }
+  .muted { color:var(--apx-muted); }
+  .note { margin-top:8px; color:var(--apx-muted); font-size:11px; white-space:normal; }
+  details.out-raw { margin-top:10px; background:var(--apx-bg); border:1px solid var(--apx-border); border-radius:8px; }
   details.out-raw > summary { padding:7px 11px; font-size:11.5px; }
   details.out-raw .body { padding:0 11px 11px; }
   details.out-raw pre { margin:0; white-space:pre-wrap; word-break:break-word;
-                            max-height:20rem; overflow:auto; font-size:11.5px; color:var(--apx-text,#E8ECF0); }
+                            max-height:20rem; overflow:auto; font-size:11.5px; color:var(--apx-text); }
 """
 
 TABLE_JS = r"""

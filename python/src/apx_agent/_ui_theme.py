@@ -11,7 +11,9 @@ Injected onto every /_apx/* page via ``_ui_nav._deploy_overlay_html``.
 from __future__ import annotations
 
 # AgentKit :root — page, surface, surface-muted, line, ink, ink-soft, accent,
-# accent-deep, success, danger, warning.
+# accent-deep, success, danger, warning, their -soft fills, and purple
+# (purple-soft and cyan are derived: AgentKit has neither, and trace
+# span types need a hue distinct from the accent).
 APX_THEME_CSS = """
   /* apx-agentkit-theme */
   :root{
@@ -20,6 +22,9 @@ APX_THEME_CSS = """
     --apx-accent:#1a73e8; --apx-accent-hover:#1a5fc4;
     --apx-ok:#137333; --apx-err:#b3261e; --apx-warn:#8b5000;
     --apx-on-accent:#ffffff;
+    --apx-accent-soft:#edf3fd; --apx-ok-soft:#e6f4ea; --apx-warn-soft:#fef3d9;
+    --apx-err-soft:#fce8e6; --apx-purple:#7040a0; --apx-purple-soft:#f3ecfa;
+    --apx-cyan:#0b7285; --apx-cyan-soft:#e3f6f9;
     --apx-shadow:0 1px 2px rgba(15,23,42,.04),0 1px 3px rgba(15,23,42,.03);
     --apx-font:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
     --apx-mono:ui-monospace,SFMono-Regular,Menlo,monospace;

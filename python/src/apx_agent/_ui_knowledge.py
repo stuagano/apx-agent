@@ -195,7 +195,7 @@ def _render_knowledge_html(
   nav a.active {{ color: var(--apx-accent); background: var(--apx-bg); border-color: var(--apx-panel-2); }}
   main {{ padding: 28px 40px; max-width: 1200px; }}
 
-  .section-title {{ font-size: 14px; color: #9bf; margin: 24px 0 12px; font-weight: 600; }}
+  .section-title {{ font-size: 14px; color: var(--apx-accent); margin: 24px 0 12px; font-weight: 600; }}
 
   /* Functions */
   .function-card {{ margin-bottom: 16px; padding: 12px; background: var(--apx-panel);

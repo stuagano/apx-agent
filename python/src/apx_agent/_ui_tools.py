@@ -693,10 +693,10 @@ _PAGE = r"""<!doctype html>
 <title>Tools — APX Dev</title>
 {APX_THEME}
 <style>
-  :root { --bg:#11171C; --panel:#1F272D; --border:#445461; --strong:#445461;
-          --text:#E8ECF0; --muted:#92A4B3; --dim:#92A4B3; --accent:#2272B4;
-          --accent-bg:#37444F; --accent-border:#445461;
-          --ok:#3BA65E; --warn:#FACB66; --err:#C83243; color-scheme:dark; }
+  :root { --bg:var(--apx-bg); --panel:var(--apx-panel); --border:var(--apx-border); --strong:var(--apx-border);
+          --text:var(--apx-text); --muted:var(--apx-muted); --dim:var(--apx-muted); --accent:var(--apx-accent);
+          --accent-bg:var(--apx-panel-2); --accent-border:var(--apx-border);
+          --ok:var(--apx-ok); --warn:var(--apx-warn); --err:var(--apx-err); color-scheme:dark; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { font-family:ui-sans-serif,system-ui,-apple-system,sans-serif; font-size:13px;
          background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
@@ -739,8 +739,8 @@ _PAGE = r"""<!doctype html>
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
   .chip { font-size:11px; font-family:ui-monospace,monospace; padding:2px 8px;
           border-radius:10px; border:1px solid var(--border); color:var(--muted); background:var(--bg); }
-  .chip.ok { color:var(--ok); border-color:#14532d; background:#04140a; }
-  .chip.warn { color:var(--warn); border-color:#5a3a00; background:#1a1200; }
+  .chip.ok { color:var(--ok); border-color:var(--apx-ok-soft); background:var(--apx-ok-soft); }
+  .chip.warn { color:var(--warn); border-color:var(--apx-warn-soft); background:var(--apx-warn-soft); }
 
   .bar { display:flex; align-items:center; gap:8px; margin:20px 0 8px; }
   .bar .lbl { font-size:10px; font-weight:700; color:var(--dim); text-transform:uppercase;
@@ -784,9 +784,9 @@ _PAGE = r"""<!doctype html>
   #banner { margin:0 26px; margin-top:16px; padding:11px 15px; border-radius:8px;
             font-size:12.5px; line-height:1.5; display:none; }
   #banner.show { display:block; }
-  #banner.ok { background:#04140a; border:1px solid #14532d; color:#a7f3c9; }
-  #banner.warn { background:#1a1200; border:1px solid #5a3a00; color:#ffd080; }
-  #banner.err { background:#2a0f0f; border:1px solid #7f1d1d; color:#fda4af; }
+  #banner.ok { background:var(--apx-ok-soft); border:1px solid var(--apx-ok-soft); color:var(--apx-ok); }
+  #banner.warn { background:var(--apx-warn-soft); border:1px solid var(--apx-warn-soft); color:var(--apx-warn); }
+  #banner.err { background:var(--apx-err-soft); border:1px solid var(--apx-err); color:var(--apx-err); }
   #banner ul { margin:6px 0 0 18px; }
   #banner code { font-family:ui-monospace,monospace; font-size:11.5px; }
 
@@ -949,7 +949,7 @@ function loadFailure(message, raw) {
     '<div style="margin-top:10px;color:var(--apx-muted);line-height:1.6;max-width:72ch">' + esc(message) +
     '<br><br>If this page is inside the console iframe, the browser may have routed the fetch through the Databricks app login instead of returning JSON.' +
     '</div>' +
-    (sample ? '<pre style="margin-top:12px;text-align:left;white-space:pre-wrap;background:#0f0f0f;border:1px solid #222;border-radius:8px;padding:12px;max-width:100%;overflow:auto">' + esc(sample.slice(0, 320)) + '</pre>' : '') +
+    (sample ? '<pre style="margin-top:12px;text-align:left;white-space:pre-wrap;background:var(--apx-bg);border:1px solid var(--apx-border);border-radius:8px;padding:12px;max-width:100%;overflow:auto">' + esc(sample.slice(0, 320)) + '</pre>' : '') +
     '</div>';
 }
 
@@ -1094,7 +1094,7 @@ function renderDetail() {
     RUN_ARGS[t.name] = skeleton === '{}' ? '' : skeleton;
   }
   parts.push('<details open><summary>Run this tool</summary><div class="body">' +
-    '<p style="color:#666;font-size:11.5px;line-height:1.6">Calls the <strong>registered</strong>' +
+    '<p style="color:var(--apx-muted);font-size:11.5px;line-height:1.6">Calls the <strong>registered</strong>' +
     ' function right now via <code>POST /_apx/replay/tool</code> — unsaved edits are not run.' +
     ' Args are a JSON object; empty is allowed. Runs on <code>Ctrl/⌘+Enter</code>.</p>' +
     '<textarea id="run-args" class="run-args" spellcheck="false"' +
@@ -1117,9 +1117,9 @@ function renderDetail() {
   if (t.llm_description || Object.keys(t.llm_schema || {}).length) {
     parts.push('<details><summary>What the model is told</summary><div class="body">' +
       (t.llm_description
-        ? '<p style="color:#c9d1d9;font-size:12px;line-height:1.6;white-space:pre-wrap">' +
+        ? '<p style="color:var(--apx-text);font-size:12px;line-height:1.6;white-space:pre-wrap">' +
           esc(t.llm_description) + '</p>'
-        : '<p style="color:#666;font-size:12px">No description available from the running agent.</p>') +
+        : '<p style="color:var(--apx-muted);font-size:12px">No description available from the running agent.</p>') +
       (Object.keys(t.llm_schema || {}).length
         ? '<div class="sig" style="margin-top:10px">input schema</div>' +
           codeBlock(JSON.stringify(t.llm_schema, null, 2), 1)
@@ -1146,7 +1146,7 @@ function renderDetail() {
     '<tr><td>model-facing tools</td><td>' + DATA.status.llm_tool_count + '</td></tr>' +
     '</table>' +
     (DATA.warnings.length
-      ? '<div style="margin-top:12px;color:#ffd080;font-size:12px;line-height:1.6">' +
+      ? '<div style="margin-top:12px;color:var(--apx-warn);font-size:12px;line-height:1.6">' +
         DATA.warnings.map((w) => '⚠ ' + esc(w)).join('<br>') + '</div>'
       : '') +
     '</div></details>');

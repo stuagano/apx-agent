@@ -31,4 +31,4 @@ async def test_tools_uses_dubois_tokens(dev_ui_app):
     # AgentKit values must be present in :root or via apx_theme_style()
     assert "#f1f3ff" in r.text, "AgentKit bg value #f1f3ff missing"
     assert "#1a73e8" in r.text, "AgentKit accent value #1a73e8 missing"
-    assert "#37444F" in r.text, "AgentKit accent-bg value #37444F missing"
+    assert "#f7f8fc" in r.text, "AgentKit panel-2 value #f7f8fc missing"

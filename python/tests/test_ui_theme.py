@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -61,3 +62,16 @@ async def test_knowledge_page_carries_theme_once(dev_ui_app):
         "the Du Bois theme should be injected exactly once into the knowledge "
         "page <head> via apx_theme_style()"
     )
+
+
+_SWEPT = ["_dev.py", "_ui_nav.py", "_ui_tools.py", "_ui_hub.py", "_ui_table.py",
+          "_ui_grounding.py", "_ui_edit.py", "_ui_knowledge.py"]
+_SRC = Path(__file__).resolve().parents[1] / "src" / "apx_agent"
+# 3-digit matches must look like CSS: "(#629)" / "#611)" are issue references.
+_HEX = re.compile(r"(?<![&\w])#[0-9a-fA-F]{6}\b|(?<![&\w(])#[0-9a-fA-F]{3}(?=[;\s'\"},])")
+
+
+@pytest.mark.parametrize("name", _SWEPT)
+def test_pages_use_theme_tokens_not_hex(name: str) -> None:
+    hexes = _HEX.findall((_SRC / name).read_text(encoding="utf-8"))
+    assert hexes == [], f"{name} hard-codes colors {sorted(set(hexes))[:12]}; use var(--apx-*)"
