@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+from unittest.mock import MagicMock
+
+from apx_agent.workspace_graph import builder, connectors
 from apx_agent.workspace_graph.builder import Graph
 from apx_agent.workspace_graph.schema import Edge, Fragment, Node, node_id
 
@@ -148,3 +152,83 @@ def test_to_json_shape():
     assert set(body) == {"nodes", "edges", "warnings", "built_at"}
     assert set(body["nodes"][0]) == {"id", "type", "name", "fqn", "props"}
     assert set(body["edges"][0]) == {"src", "dst", "type"}
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    builder._CACHE.clear()
+    yield
+    builder._CACHE.clear()
+
+
+def _ws(token: str = "u1") -> MagicMock:
+    ws = MagicMock()
+    ws.config.authenticate.return_value = {"Authorization": f"Bearer {token}"}
+    return ws
+
+
+def _fake_connectors(monkeypatch, calls: list[str]):
+    def ok(ws, catalogs):
+        calls.append("ok")
+        return Fragment(
+            [Node("table:main.s.t", "Table", "t", "main.s.t")], [], ["capped"]
+        )
+
+    def boom(ws, catalogs):
+        raise PermissionError("no Genie permission")
+
+    monkeypatch.setattr(connectors, "CONNECTORS", {"unity_catalog": ok, "genie": boom})
+    monkeypatch.setattr(
+        connectors,
+        "lineage",
+        lambda ws, fqns: Fragment(warnings=[f"lineage over {fqns}"]),
+    )
+
+
+def test_build_graph_isolates_connector_failure(monkeypatch):
+    _fake_connectors(monkeypatch, [])
+    g = builder.build_graph(_ws(), ["main"])
+    assert list(g.nodes) == ["table:main.s.t"]
+    assert g.warnings == [
+        "genie: no Genie permission",
+        "lineage: lineage over ['main.s.t']",
+        "unity_catalog: capped",
+    ]
+
+
+def test_get_graph_caches_and_refresh_bypasses(monkeypatch):
+    calls: list[str] = []
+    _fake_connectors(monkeypatch, calls)
+    ws = _ws()
+    first = builder.get_graph(ws, ["main"])
+    assert builder.get_graph(ws, ["main"]) is first
+    assert builder.get_graph(ws, ["main"], refresh=True) is not first
+    assert calls == ["ok", "ok"]
+
+
+def test_cache_isolated_per_identity(monkeypatch):
+    calls: list[str] = []
+    _fake_connectors(monkeypatch, calls)
+    a = builder.get_graph(_ws("user-a"), ["main"])
+    b = builder.get_graph(_ws("user-b"), ["main"])
+    assert a is not b
+    assert calls == ["ok", "ok"]
+    assert all("user-a" not in k for k in builder._CACHE)  # token never stored raw
+
+
+def test_cache_keyed_by_scope_and_expires(monkeypatch):
+    calls: list[str] = []
+    _fake_connectors(monkeypatch, calls)
+    ws = _ws()
+    builder.get_graph(ws, ["main"])
+    builder.get_graph(ws, ["other"])
+    assert len(calls) == 2
+    builder.get_graph(ws, ["main", "other"])
+    builder.get_graph(ws, ["other", "main"])  # order-insensitive scope
+    assert len(calls) == 3
+    clock = [1000.0]
+    monkeypatch.setattr(builder.time, "monotonic", lambda: clock[0])
+    builder.get_graph(ws, ["x"])
+    clock[0] += builder.CACHE_TTL_S + 1
+    builder.get_graph(ws, ["x"])
+    assert len(calls) == 5

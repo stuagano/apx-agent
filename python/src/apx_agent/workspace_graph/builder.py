@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import difflib
+import hashlib
+import logging
+import time
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from databricks.sdk import WorkspaceClient
+
 from .schema import ARROW_IS_DOWNSTREAM, CONTAINER_TYPES, Edge, Fragment, Node
+from . import connectors
+
+logger = logging.getLogger(__name__)
 
 
 def _brief(n: Node) -> dict[str, str]:
@@ -167,3 +177,72 @@ class Graph:
             "warnings": self.warnings,
             "built_at": self.built_at,
         }
+
+
+CACHE_TTL_S = 600.0
+
+
+def build_graph(ws: WorkspaceClient, catalogs: list[str] | None = None) -> Graph:
+    """Run every connector in parallel, then lineage over the found tables.
+
+    A connector that raises contributes nothing and leaves one warning — a
+    partial graph, never a 500.
+    """
+    fragments: list[Fragment] = []
+    warnings: list[str] = []
+
+    def _collect(name: str, run: Callable[[], Fragment]) -> None:
+        try:
+            frag = run()
+        except Exception as exc:  # noqa: BLE001 — per-connector isolation, surfaced as a warning
+            logger.warning("workspace graph connector %s failed: %s", name, exc)
+            warnings.append(f"{name}: {exc}")
+            return
+        warnings.extend(f"{name}: {w}" for w in frag.warnings)
+        fragments.append(Fragment(frag.nodes, frag.edges))
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(connectors.CONNECTORS)
+    ) as ex:
+        futs = {
+            name: ex.submit(fn, ws, catalogs)
+            for name, fn in connectors.CONNECTORS.items()
+        }
+        for name, fut in futs.items():
+            _collect(name, fut.result)
+    tables = [n.fqn for f in fragments for n in f.nodes if n.type in ("Table", "View")]
+    _collect("lineage", lambda: connectors.lineage(ws, tables))
+    return Graph(fragments, warnings=sorted(warnings))
+
+
+@dataclass
+class _Cached:
+    graph: Graph
+    at: float
+
+
+# ponytail: in-process cache — each replica builds its own; move to a shared
+# cache if Discover runs multi-replica. Concurrent misses may build twice.
+_CACHE: dict[str, _Cached] = {}
+
+
+def _identity(ws: WorkspaceClient) -> str:
+    """Hash of the caller's credential: never cross-user, token never stored raw."""
+    return hashlib.sha256(
+        ws.config.authenticate()["Authorization"].encode()
+    ).hexdigest()
+
+
+def get_graph(
+    ws: WorkspaceClient, catalogs: list[str] | None = None, *, refresh: bool = False
+) -> Graph:
+    now = time.monotonic()
+    key = f"{_identity(ws)}|{','.join(sorted(catalogs or []))}"
+    hit = _CACHE.get(key)
+    if hit is not None and not refresh and now - hit.at < CACHE_TTL_S:
+        return hit.graph
+    for stale in [k for k, v in _CACHE.items() if now - v.at >= CACHE_TTL_S]:
+        del _CACHE[stale]
+    graph = build_graph(ws, catalogs)
+    _CACHE[key] = _Cached(graph, now)
+    return graph
