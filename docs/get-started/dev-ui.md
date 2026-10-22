@@ -64,9 +64,7 @@ the caller's credentials and cache it per caller for 10 minutes. Backed by
 
 A React-flow visualization of the agent topology: agent nodes, tools, sub-agents, and platform resources (UC functions, Genie spaces, vector indexes, serving endpoints), connected by typed edges (`uses-tool`, `delegates-to`, `calls-model`, `next-step`, `branch`, `iterates`). Click any node to inspect its details in a side panel — instructions, model, JSON Schema, resource identifier, or sub-agent URL.
 
-**Drag-to-wire:** the left **Wire** palette lists workspace Apps peers, UC functions (when a catalog/schema is known), Genie spaces, and Vector Search indexes. Drag a chip onto a leaf Agent node (dashed green outline) to call the same Discover wire APIs — live hot-apply when possible, then the graph refreshes. Serving endpoints are not wireable as tools. Hidden in `?embed=1` minimap mode.
-
-**Inspector Save / Unwire:** click a leaf Agent to edit `instructions=` and Save (writes `agent.py` + hot-applies live). Click a peer SubAgent (or a Discover-wired UC/Genie/VS tool) for **Unwire** — same Discover unwire APIs, graph refreshes.
+**Inspector Save:** click a leaf Agent to edit `instructions=` and Save (writes `agent.py` + hot-applies live).
 
 **Chat dock:** a slim Chat panel on the right sends turns via `/responses` without leaving Topology. When the turn finishes, the amber last-turn route highlight refreshes automatically.
 
