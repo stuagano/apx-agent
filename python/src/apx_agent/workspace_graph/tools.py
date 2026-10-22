@@ -39,11 +39,19 @@ def _capped(nodes: list[Node]) -> dict[str, Any]:
     }
 
 
+def _partial(graph: Graph) -> dict[str, Any]:
+    """Tell the agent when some sources could not be read."""
+    if not graph.warnings:
+        return {"partial": False}
+    return {"partial": True, "warnings": graph.warnings}
+
+
 def _not_found(graph: Graph, identifier: str) -> dict[str, Any]:
     return {
         "error": "not_found",
         "identifier": identifier,
         "suggestions": graph.suggest(identifier),
+        **_partial(graph),
     }
 
 
@@ -82,14 +90,16 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
         return await asyncio.to_thread(get_graph, ws, scope)
 
     async def graph_summary(ws: UserClientDependency) -> dict[str, Any]:  # type: ignore[valid-type]
-        return (await _graph(ws)).summary()
+        graph = await _graph(ws)
+        return {**graph.summary(), **_partial(graph)}
 
     async def search_assets(
         ws: UserClientDependency,
         query: str,
         asset_type: str | None = None,  # type: ignore[valid-type]
     ) -> dict[str, Any]:
-        return _capped((await _graph(ws)).search(query, asset_type))
+        graph = await _graph(ws)
+        return {**_capped(graph.search(query, asset_type)), **_partial(graph)}
 
     async def get_asset(ws: UserClientDependency, identifier: str) -> dict[str, Any]:  # type: ignore[valid-type]
         graph = await _graph(ws)
@@ -105,6 +115,7 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
             "incoming": incoming[:_LIST_CAP],
             "incoming_count": len(incoming),
             "truncated": len(outgoing) > _LIST_CAP or len(incoming) > _LIST_CAP,
+            **_partial(graph),
         }
 
     async def analyze_impact(
@@ -114,7 +125,11 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
         node = graph.resolve(identifier)
         if node is None:
             return _not_found(graph, identifier)
-        return {"asset": _brief(node), **_capped(graph.impact(node.id))}
+        return {
+            "asset": _brief(node),
+            **_capped(graph.impact(node.id)),
+            **_partial(graph),
+        }
 
     async def get_lineage(ws: UserClientDependency, identifier: str) -> dict[str, Any]:  # type: ignore[valid-type]
         graph = await _graph(ws)
@@ -131,10 +146,20 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
             "downstream": [_brief(n) for n in downstream[:_LIST_CAP]],
             "downstream_count": len(downstream),
             "truncated": len(upstream) > _LIST_CAP or len(downstream) > _LIST_CAP,
+            **_partial(graph),
         }
 
     async def find_orphans(ws: UserClientDependency) -> dict[str, Any]:  # type: ignore[valid-type]
-        return _capped((await _graph(ws)).orphans())
+        graph = await _graph(ws)
+        out: dict[str, Any] = {**_capped(graph.orphans()), **_partial(graph)}
+        complete = not any(w.startswith("lineage:") for w in graph.warnings)
+        out["lineage_complete"] = complete
+        if not complete:
+            out["note"] = (
+                "Lineage was incomplete (see warnings); some assets listed may have "
+                "upstream or downstream data flow that was not loaded."
+            )
+        return out
 
     specs = [
         (
@@ -174,7 +199,9 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
         (
             find_orphans,
             "find_orphans",
-            "Assets nothing reads, feeds, indexes, serves, or uses — candidates for cleanup.",
+            "Candidate orphans: assets nothing reads, feeds, indexes, serves, or uses. Results "
+            "are candidates only; check lineage_complete (false means lineage was not fully "
+            "loaded, so some listed assets may have data flow that was missed).",
         ),
     ]
     return [

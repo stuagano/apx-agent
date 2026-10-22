@@ -83,6 +83,8 @@ async def test_search_truncates_at_cap(tools):
             {"id": "table:main.s.v", "type": "View", "name": "v", "fqn": "main.s.v"}
         ],
         "truncated": False,
+        "partial": True,
+        "warnings": ["genie: denied"],
     }
 
 
@@ -203,3 +205,52 @@ def test_tools_declare_obo_scopes(tools):
         assert op.execution_identity == "user"
         assert set(op.user_api_scopes) == set(tools_mod.SCOPES)
     assert "genie" in tools_mod.SCOPES and "apps" in tools_mod.SCOPES
+
+
+@pytest.mark.asyncio
+async def test_every_tool_reports_partial_and_warnings(tools):
+    by_name, _ = tools
+    calls = {
+        "graph_summary": {},
+        "search_assets": {"query": "t"},
+        "get_asset": {"identifier": "main.s.v"},
+        "analyze_impact": {"identifier": "main.s.t000"},
+        "get_lineage": {"identifier": "main.s.v"},
+        "find_orphans": {},
+    }
+    for name, kwargs in calls.items():
+        out = await by_name[name](ws=WS, **kwargs)
+        assert out["partial"] is True, name
+        assert out["warnings"] == ["genie: denied"], name
+    for name in ("get_asset", "analyze_impact", "get_lineage"):
+        miss = await by_name[name](ws=WS, identifier="zzz")
+        assert miss["error"] == "not_found"
+        assert miss["partial"] is True and miss["warnings"] == ["genie: denied"]
+
+
+@pytest.mark.asyncio
+async def test_clean_graph_is_not_partial(monkeypatch):
+    monkeypatch.setattr(
+        tools_mod,
+        "get_graph",
+        lambda ws, c: Graph([Fragment([Node("table:a.b.c", "Table", "c", "a.b.c")])]),
+    )
+    by_name = {t.__name__: t for t in workspace_graph_tools()}
+    out = await by_name["search_assets"](ws=WS, query="c")
+    assert out["partial"] is False and "warnings" not in out
+    orphans = await by_name["find_orphans"](ws=WS)
+    assert orphans["lineage_complete"] is True and "note" not in orphans
+
+
+@pytest.mark.asyncio
+async def test_find_orphans_flags_incomplete_lineage(monkeypatch):
+    node = Node("table:a.b.c", "Table", "c", "a.b.c")
+    monkeypatch.setattr(
+        tools_mod,
+        "get_graph",
+        lambda ws, c: Graph([Fragment([node], [], ["lineage: 3 of 5 tables failed"])]),
+    )
+    by_name = {t.__name__: t for t in workspace_graph_tools()}
+    out = await by_name["find_orphans"](ws=WS)
+    assert out["lineage_complete"] is False
+    assert out["note"].startswith("Lineage was incomplete")
