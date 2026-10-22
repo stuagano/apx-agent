@@ -927,15 +927,6 @@ def route_highlight_from_spans(
     }
 
 
-def _discover_target_for_agent_id(agent_id: str) -> str:
-    """Map a topology agent node id to the Discover wire ``target`` name."""
-    if agent_id == "agent:root":
-        return "agent"
-    if agent_id.startswith("agent:root."):
-        return agent_id.rsplit(".", 1)[-1]
-    return "agent"
-
-
 def _leaf_editable(agent: "BaseAgent") -> bool:
     """True when inspector may edit instructions on this agent class."""
     from ._agents import LlmAgent
@@ -947,18 +938,9 @@ def _leaf_editable(agent: "BaseAgent") -> bool:
 def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
     """Return the ``InspectResponse`` dict for ``node_id``, or ``None`` if unknown."""
     from ._resources import get_resources
-    from ._ui_edit import _find_agent_router_path, _is_factory_tool_binding
 
     if not node_id:
         return None
-
-    source = ""
-    path = _find_agent_router_path()
-    if path is not None and path.exists():
-        try:
-            source = path.read_text()
-        except Exception:
-            source = ""
 
     # Agent IDs: ``agent:root`` (root) or ``agent:root.<child_name>...`` (nested)
     if node_id == "agent:root" or node_id.startswith("agent:root."):
@@ -969,7 +951,6 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
         instr = _instructions_for(agent_obj)
         tools = _agent_tools(agent_obj)
         sub_count = len(_iter_child_agents(agent_obj)) + len(_agent_sub_agent_urls(agent_obj))
-        wire_target = _discover_target_for_agent_id(node_id)
         agent_details: dict[str, Any] = {
             "className": type(agent_obj).__name__,
             "instructions": instr[:4096] if instr else None,
@@ -980,11 +961,7 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
         max_iter = getattr(agent_obj, "_max_iterations", None)
         if max_iter is not None:
             agent_details["maxIterations"] = max_iter
-        actions: dict[str, Any] = {
-            "canEditInstructions": _leaf_editable(agent_obj),
-            "canUnwire": False,
-            "wireTarget": wire_target,
-        }
+        actions: dict[str, Any] = {"canEditInstructions": _leaf_editable(agent_obj)}
         return {
             "id": node_id,
             "type": _agent_class_to_node_type(agent_obj),
@@ -1018,19 +995,6 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
             tool_node_type = mapped[0] if mapped else "Tool"
         else:
             tool_node_type = "Tool"
-        wire_target = _discover_target_for_agent_id(owner_agent_id)
-        can_unwire = bool(source) and _is_factory_tool_binding(source, tool_name)
-        tool_actions: dict[str, Any] = {
-            "canEditInstructions": False,
-            "canUnwire": can_unwire,
-            "wireTarget": wire_target,
-        }
-        if can_unwire:
-            tool_actions["unwire"] = {
-                "kind": "tool",
-                "target": wire_target,
-                "binding_name": tool_name,
-            }
         return {
             "id": node_id,
             "type": tool_node_type,
@@ -1043,7 +1007,7 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
                 "isSync": not inspect.iscoroutinefunction(fn),
                 "hasObOTokenDep": _tool_has_obo_dep(fn),
             },
-            "actions": tool_actions,
+            "actions": {"canEditInstructions": False},
         }
 
     # Resource IDs: ``<prefix>:<identifier>``
@@ -1067,11 +1031,10 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
     # Differentiate ServingEndpoint vs SubAgent: SubAgent if any LlmAgent in the
     # tree lists this URL as a sub_agent. (Only matters for endpoint: prefix.)
     if prefix == "endpoint":
-        for agent_obj, agent_id in _walk_all_agents(ctx):
+        for agent_obj, _agent_id in _walk_all_agents(ctx):
             urls = _agent_sub_agent_urls(agent_obj)
             if identifier in urls:
                 ref = _classify_sub_agent(identifier)
-                wire_target = _discover_target_for_agent_id(agent_id)
                 return {
                     "id": node_id,
                     "type": "SubAgent",
@@ -1083,16 +1046,7 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
                         "resolvedName": ref.display_name,
                         "ref": identifier,
                     },
-                    "actions": {
-                        "canEditInstructions": False,
-                        "canUnwire": True,
-                        "wireTarget": wire_target,
-                        "unwire": {
-                            "kind": "agent",
-                            "target": wire_target,
-                            "ref": identifier,
-                        },
-                    },
+                    "actions": {"canEditInstructions": False},
                 }
 
     detail_kind = _RESOURCE_KIND_TO_DETAIL_KIND.get(kind, kind)
@@ -1109,7 +1063,7 @@ def inspect_node(ctx: "AgentContext", node_id: str) -> dict[str, Any] | None:
         "label": identifier,
         "description": f"{kind}: {identifier}",
         "resource": resource_details,
-        "actions": {"canEditInstructions": False, "canUnwire": False},
+        "actions": {"canEditInstructions": False},
     }
 
 

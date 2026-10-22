@@ -1,24 +1,16 @@
 // App shell for /_apx/topology — owns selection state, fetches the topology JSON,
-// and wires together <TopologyGraph />, <WirePalette />, and <NodeInspector />.
+// and wires together <TopologyGraph />, and <NodeInspector />.
 //
 // Chrome matches the shared Dev UI nav (_ui_nav.py): APX badge + text tabs.
-// Drag-from-Discover rail → drop on leaf Agent → POST wire API → refresh.
 // Tracing badge + last-turn route highlight from MLflow / ring buffer.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TopologyGraph } from "./TopologyGraph";
 import { NodeInspector } from "./NodeInspector";
-import { WirePalette } from "./WirePalette";
+import { NAV_LINKS } from "./nav";
 import { ChatDock } from "./ChatDock";
 import { WorkflowPanel } from "./WorkflowPanel";
 import type { ExampleWorkflow, TopoNode, TopologyResponse } from "./types";
-import {
-  fetchDiscoverTargets,
-  isLeafAgentType,
-  postWire,
-  topologyNodeToWireTarget,
-  type WirePayload,
-} from "./wire";
 import {
   fetchLastRoute,
   fetchTracingInfo,
@@ -39,17 +31,6 @@ interface Toast {
   text: string;
   ok: boolean;
 }
-
-/** Keep aligned with APX_NAV_PAGES in _ui_nav.py (no emoji chrome). */
-const NAV_LINKS: ReadonlyArray<{ href: string; label: string; slug: string }> = [
-  { href: "/_apx/agent", label: "Chat", slug: "agent" },
-  { href: "/_apx/edit", label: "Edit", slug: "edit" },
-  { href: "/_apx/eval", label: "Eval", slug: "eval" },
-  { href: "/_apx/discover", label: "Discover", slug: "discover" },
-  { href: "/_apx/grounding", label: "Grounding", slug: "grounding" },
-  { href: "/_apx/probe", label: "Probe", slug: "probe" },
-  { href: "/_apx/topology", label: "Topology", slug: "topology" },
-];
 
 const EMBED =
   typeof window !== "undefined" &&
@@ -95,14 +76,7 @@ export default function App() {
     error: null,
     selected: null,
   });
-  const [targets, setTargets] = useState<
-    Array<{ name: string; eligible: boolean; reason?: string | null }>
-  >([]);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [wiring, setWiring] = useState(false);
-  const [ucContext, setUcContext] = useState<{ catalog?: string; schema?: string }>(
-    {},
-  );
   const [tracing, setTracing] = useState<TracingInfo | null>(null);
   const [route, setRoute] = useState<LastRoute | null>(null);
   const [tracingOpen, setTracingOpen] = useState(false);
@@ -140,16 +114,6 @@ export default function App() {
       });
   }, []);
 
-  const loadTargets = useCallback(() => {
-    fetchDiscoverTargets()
-      .then((list) => setTargets(list.map((t) => ({
-        name: t.name,
-        eligible: t.eligible,
-        reason: t.reason,
-      }))))
-      .catch(() => setTargets([]));
-  }, []);
-
   const loadTracing = useCallback(() => {
     fetchTracingInfo()
       .then((info) => {
@@ -180,21 +144,9 @@ export default function App() {
 
   useEffect(() => {
     load();
-    loadTargets();
     loadTracing();
     loadRoute();
-    fetch("/_apx/workspace-context")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (!d) return;
-        const catalog = (d.used_catalogs || [])[0] as string | undefined;
-        const sch = (d.used_schemas || [])[0] as string | undefined;
-        const schema =
-          sch && sch.includes(".") ? sch.split(".")[1] : sch;
-        setUcContext({ catalog, schema });
-      })
-      .catch(() => undefined);
-  }, [load, loadTargets, loadTracing, loadRoute]);
+  }, [load, loadTracing, loadRoute]);
 
   useEffect(() => {
     const workflows = state.data?.workflows ?? [];
@@ -210,24 +162,6 @@ export default function App() {
     }, ROUTE_POLL_MS);
     return () => window.clearInterval(id);
   }, [loadRoute]);
-
-  const eligibleTargets = useMemo(
-    () => targets.filter((t) => t.eligible).map((t) => t.name),
-    [targets],
-  );
-
-  const droppableIds = useMemo(() => {
-    const ids = new Set<string>();
-    const data = state.data;
-    if (!data) return ids;
-    for (const n of data.nodes) {
-      if (!isLeafAgentType(n.type)) continue;
-      if (topologyNodeToWireTarget(n.id, eligibleTargets)) {
-        ids.add(n.id);
-      }
-    }
-    return ids;
-  }, [state.data, eligibleTargets]);
 
   const observedNodeIds = useMemo(
     () => new Set([
@@ -301,41 +235,6 @@ export default function App() {
     setChatOpen(true);
   };
 
-  const onWireDrop = async (nodeId: string, payload: WirePayload) => {
-    if (!nodeId || !droppableIds.has(nodeId)) {
-      const blocked = targets.find((t) => !t.eligible);
-      const hint = blocked?.reason
-        ? blocked.reason
-        : "Drop onto a leaf Agent node (green dashed outline).";
-      showToast(hint, false);
-      return;
-    }
-    const target = topologyNodeToWireTarget(nodeId, eligibleTargets);
-    if (!target) {
-      showToast("Drop on a leaf Agent that has an agent.py assignment.", false);
-      return;
-    }
-    setWiring(true);
-    try {
-      const result = await postWire(payload, target);
-      if (!result.ok) {
-        showToast(result.detail || result.error || "Wire failed", false);
-        return;
-      }
-      const label = result.ref || result.binding_name || "item";
-      const live = result.applied_live
-        ? "Live in Chat — no deploy needed."
-        : "Saved to agent.py — restart if Chat does not pick it up.";
-      showToast(`Wired ${label} → ${target}. ${live}`, true);
-      load();
-      loadTargets();
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : String(err), false);
-    } finally {
-      setWiring(false);
-    }
-  };
-
   const saveExperiment = async () => {
     const eid = expDraft.trim();
     if (!eid) {
@@ -378,7 +277,6 @@ export default function App() {
             <span className="badge">APX dev</span>
             <span className="apx-nav-meta">
               {nodeCount} {nodeCount === 1 ? "node" : "nodes"}
-              {wiring ? " · wiring…" : ""}
             </span>
             <button
               type="button"
@@ -394,7 +292,6 @@ export default function App() {
                 className="apx-nav-refresh"
                 onClick={() => {
                   load();
-                  loadTargets();
                   loadTracing();
                   loadRoute();
                 }}
@@ -475,9 +372,7 @@ export default function App() {
           <div className="apx-empty">
             <div className="apx-empty-title">No tools or sub-agents yet</div>
             <div className="apx-empty-body">
-              Drag from the Discover rail onto a leaf Agent, or wire from{" "}
-              <a href="/_apx/discover">Discover</a> /{" "}
-              <a href="/_apx/edit">Edit</a>.
+              No tools or sub-agents yet. Add them in <a href="/_apx/edit">Edit</a>.
             </div>
             <button type="button" className="apx-btn" onClick={load}>
               Refresh
@@ -485,9 +380,6 @@ export default function App() {
           </div>
         ) : (
           <div className="apx-content">
-            {!EMBED && (
-              <WirePalette catalog={ucContext.catalog} schema={ucContext.schema} />
-            )}
             <div className="apx-workspace">
               <WorkflowPanel
                 workflows={data.workflows ?? []}
@@ -509,10 +401,8 @@ export default function App() {
                   selected={state.selected}
                   routeNodeIds={routeNodeIds}
                   routeEdgeIds={routeEdgeIds}
-                  droppableIds={droppableIds}
                   showMap={data.nodes.length >= 12}
                   onNodeClick={(id) => setState((s) => ({ ...s, selected: id }))}
-                  onWireDrop={EMBED ? undefined : onWireDrop}
                 />
               </div>
             </div>
@@ -526,7 +416,6 @@ export default function App() {
                 onMutated={(msg) => {
                   showToast(msg, true);
                   load();
-                  loadTargets();
                 }}
                 onError={(msg) => showToast(msg, false)}
               />

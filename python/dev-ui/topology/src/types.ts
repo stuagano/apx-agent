@@ -127,18 +127,8 @@ export interface SubAgentDetails {
   ref?: string;
 }
 
-export interface InspectUnwireAction {
-  kind: "agent" | "tool";
-  target: string;
-  ref?: string;
-  binding_name?: string;
-}
-
 export interface InspectActions {
   canEditInstructions?: boolean;
-  canUnwire?: boolean;
-  wireTarget?: string;
-  unwire?: InspectUnwireAction;
 }
 
 export interface InspectResponse {

@@ -705,13 +705,6 @@ pre {
   background: color-mix(in srgb, #5EEAD4 14%, transparent);
 }
 
-.react-flow__node.apx-droppable {
-  cursor: copy;
-  outline: 1px dashed var(--accent-border);
-  outline-offset: 3px;
-  border-radius: 6px;
-}
-
 .apx-toast {
   position: fixed;
   bottom: 22px;

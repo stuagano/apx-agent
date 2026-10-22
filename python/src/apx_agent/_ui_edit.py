@@ -769,34 +769,6 @@ def _outer_call_name(source: str, target: str) -> str | None:
     return None
 
 
-_FACTORY_TOOL_CALLEES = frozenset({
-    "uc_function_tool",
-    "genie_tool",
-    "vector_search_tool",
-})
-
-
-def _is_factory_tool_binding(source: str, binding_name: str) -> bool:
-    """True when ``binding_name = uc_function_tool|genie_tool|vector_search_tool(...)``."""
-    import ast as _ast
-
-    try:
-        tree = _ast.parse(source)
-    except SyntaxError:
-        return False
-    for node in tree.body:
-        if not (
-            isinstance(node, _ast.Assign)
-            and node.targets
-            and isinstance(node.targets[0], _ast.Name)
-            and node.targets[0].id == binding_name
-            and isinstance(node.value, _ast.Call)
-        ):
-            continue
-        return _call_func_name(node.value) in _FACTORY_TOOL_CALLEES
-    return False
-
-
 def _set_agent_wrapper(source: str, wrapper: str, *, target: str = "agent") -> str:
     """Change the single-agent wrapper of ``{target}`` while preserving the inner
     ``Agent(...)`` call verbatim — name=, sub_agents=, temperature=, everything.
