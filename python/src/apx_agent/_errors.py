@@ -62,26 +62,29 @@ class OutputValidationError(ValueError):
 
 
 class SessionBudgetExceeded(Exception):
-    """A session's cumulative token usage crossed its declared cap.
+    """A session's cumulative token or usd usage crossed its declared cap.
 
-    Raised on a served turn when an ``LlmAgent(session_budget={"tokens": N})``'s
-    running total — summed across ALL turns of one session (``thread_id``) and
-    persisted in the compiled graph's keyed ``state`` channel — reaches or
-    crosses ``N``. This is a **per-session cumulative** cap enforced at the
-    **turn boundary**: checked before a turn runs (refused if the session is
-    already at/over cap) and after it completes (raised if this turn's usage
-    pushed the total past cap). It is NOT a per-turn cap and does NOT interrupt
-    mid-turn — LangGraph runs the tool loop in one call.
+    Raised on a served turn when an ``LlmAgent(session_budget={"tokens": N})``
+    and/or ``{"usd": D}`` running total — summed across ALL turns of one
+    session (``thread_id``) and persisted in the compiled graph's keyed
+    ``state`` channel — reaches or crosses the cap. This is a **per-session
+    cumulative** cap enforced at the **turn boundary**: checked before a turn
+    runs (refused if the session is already at/over cap) and after it completes
+    (raised if this turn's usage pushed the total past cap). It is NOT a
+    per-turn cap and does NOT interrupt mid-turn — LangGraph runs the tool
+    loop in one call.
 
     Cumulative enforcement requires a configured checkpointer (the durable home
     of the counter across turns); without one it degrades to per-turn.
     """
 
-    def __init__(self, spent: int, cap: int) -> None:
+    def __init__(self, spent: int | float, cap: int | float, *, unit: str = "tokens") -> None:
         self.spent = spent
         self.cap = cap
+        self.unit = unit
+        kind = "usd" if unit == "usd" else "token"
         super().__init__(
-            f"session token budget exceeded: spent {spent} of {cap} cap"
+            f"session {kind} budget exceeded: spent {spent} of {cap} cap"
         )
 
 

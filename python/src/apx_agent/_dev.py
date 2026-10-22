@@ -87,6 +87,7 @@ from ._apx_models import (
     DiscoverGraphResponse,
     DiscoverImpactResponse,
 )
+from ._cost import usd_for_token_usage
 from ._models import AgentContext, AgentTool
 from ._topology import (
     annotate_topology,
@@ -1796,18 +1797,19 @@ def _fetch_traces_list_sync(experiment_id: str | None, max_results: int) -> list
     for t in traces:
         info = t.info
         dur_ms = int(info.execution_duration / 1_000_000) if info.execution_duration else None
-        # Token cost from trace metadata. Rates: claude-sonnet-4-6 via Databricks
-        # AI Gateway = $3/MTok input, $15/MTok output. Falls back to 0 gracefully.
+        # Token cost from trace metadata using published FMAPI rates (#836).
         cost_usd: float | None = None
         try:
             meta = getattr(info, "request_metadata", None) or {}
             token_raw = meta.get("mlflow.trace.tokenUsage")
             if token_raw:
                 tu = _json.loads(token_raw)
-                cost_usd = round(
-                    (tu.get("input_tokens", 0) * 3 + tu.get("output_tokens", 0) * 15) / 1_000_000,
-                    6,
+                priced = usd_for_token_usage(
+                    int(tu.get("input_tokens") or 0),
+                    int(tu.get("output_tokens") or 0),
+                    model="databricks-claude-sonnet-4-6",
                 )
+                cost_usd = None if priced is None else round(priced, 6)
         except Exception:
             pass
         rows.append({
