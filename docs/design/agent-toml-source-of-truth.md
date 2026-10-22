@@ -1,6 +1,6 @@
 # Design: `agent.toml` is the platform's source of truth
 
-**Status:** implemented (sub-projects 1–2) · **Date:** 2026-10-19 · **Sub-project:** 2 of 4
+**Status:** sub-project 1 implemented; sub-project 2 partly (#974) · **Date:** 2026-10-19
 
 ## Intent
 
@@ -191,6 +191,35 @@ written. It refuses to overwrite an existing `agent.toml`. The migrated and chec
 - `platform-tool-runs-under-apx-guards-live` (live, fevm): an `agent.toml`
   Genie tool called through `platform_tools()` on a deployed durable agent
   carries apx audit attributes and runs as the request user.
+
+## Sub-project 2: settings on the agent
+
+#974 put `model`, `target`, `identity`, `recovery`, `gateway` and
+`service_policies` on `LlmAgent`, read by `config_from_agent` only when
+`[tool.apx.agent]` is absent. Remaining:
+
+- **One seam.** `resolve_settings(agent, toml)` replaces `config_from_agent`
+  in the launcher, generated `app.py`, deploy, doctor and
+  `compile_agent(config=None)`. It always returns an `AgentConfig`, so the
+  `agent.toml` checks always run (closes #954).
+- **Both sources merge.** Equal values pass; different values fail:
+  `model: agent.py sets 'A' on agent 'root'; [tool.apx.agent] sets 'B'. Set it in one place.`
+  Today Python is silently ignored, except `identity`, where it silently wins.
+- **Every agent class takes the settings, inherited downward.** Per-agent
+  (`model`, `identity`, `service_policies`, `guardrails`, `knowledge`,
+  `vector_search_index`): own value, else nearest ancestor, else `.toml`, else
+  default. A leaf compiles with its own model; its tools get its own identity
+  (today only the root's tools are stamped). App-wide (`target`, `recovery`,
+  `gateway`, `session`, `bindings`, `url`, `registry`, `api_prefix`): a
+  non-root value that differs fails: `target is app-wide; set it on the root agent (found on 'researcher').`
+- **Fails early.** Deploy before upload, doctor as a stage, the launcher at
+  startup. `APX_MODEL` still pins the app model.
+- **Migration.** `.toml`-only projects are unchanged. Fields move one at a
+  time; a field set in both places with the same value passes. No migrate
+  command. `agents new` writes `model` and `target` in `agent.py`.
+- **Tests.** `resolve_settings` rules and errors; per-leaf model and identity;
+  a composite Python-only project boots with `/readyz` 200; #954 checks run
+  without a config; the existing suite unchanged.
 
 ## Out of scope
 
