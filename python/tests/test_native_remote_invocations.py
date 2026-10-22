@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from databricks_agentkit.runtime.auth import RequestAuthContext
 from pydantic import BaseModel, ConfigDict
 
-from apx_agent import AgentConfig, Dependencies, LlmAgent, SequentialAgent
+from apx_agent import AgentConfig, Dependencies, HandoffAgent, KeywordRouter, LlmAgent, LoopAgent, ParallelAgent, RouterAgent, SequentialAgent
 from tests.test_runtime_targets import execution, _write_native_pyproject, ToolModel  # noqa: F401
 from tests.test_native_invocation_contract import headers
 
@@ -36,6 +36,35 @@ def test_native_input_and_binding_are_explicit_declarations():
 def test_native_input_rejects_reserved_state_slots(key):
     with pytest.raises(ValueError):
         LlmAgent(input_schema=DomainInput, input_key=key)
+
+
+@pytest.mark.parametrize("transport", ["native", "legacy"])
+@pytest.mark.parametrize("depth", [0, 1, 2])
+@pytest.mark.parametrize("control, wrap", [
+    ("sequence", lambda child: child),
+    ("parallel", lambda child: ParallelAgent([child])),
+    ("loop", lambda child: LoopAgent(child)),
+    ("router", lambda child: RouterAgent([child])),
+    ("keyword_branch", lambda child: KeywordRouter([("route", child, ["match"])], LlmAgent(name="fallback"))),
+    ("keyword_default", lambda child: KeywordRouter([("route", LlmAgent(name="fallback"), ["match"])], child)),
+    ("handoff", lambda child: HandoffAgent([child])),
+])
+def test_binding_transport_preserves_control_ancestry(transport, depth, control, wrap):
+    from apx_agent._wiring import _apply_remote_leaf_bindings
+
+    root = LlmAgent(name="specialist", input_schema=DomainInput, input_key="domain_input")
+    for index in range(depth):
+        root = SequentialAgent([root], name=f"nested_{index}")
+    root = wrap(root)
+    reference = {"transport": "native", "url": "https://child.example"} if transport == "native" else "https://child.example/.well-known/agent.json"
+    config = AgentConfig(name="parent", bindings={"specialist": reference})
+    if transport == "native" and control != "sequence":
+        with pytest.raises(ValueError, match="Native bindings require a sequential leaf"):
+            _apply_remote_leaf_bindings(root, config.bindings)
+        assert not hasattr(root, "_apx_remote_leaf_bindings")
+    else:
+        _apply_remote_leaf_bindings(root, config.bindings)
+        assert root._apx_remote_leaf_bindings["specialist"].transport == ("native" if transport == "native" else "a2a")
 
 
 @pytest.fixture

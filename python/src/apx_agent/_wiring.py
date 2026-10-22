@@ -465,7 +465,8 @@ def _apply_remote_leaf_bindings(
             return
 
         for child, position in children:
-            _walk(child, position)
+            # A nested sequence must not erase unsupported native control ancestry.
+            _walk(child, position if control_position in {None, "sequence"} else control_position)
 
     _walk(root)
     resolved: dict[str, _RemoteLeafBinding] = {}
