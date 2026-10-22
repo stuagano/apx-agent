@@ -223,8 +223,9 @@ class _Cached:
 
 
 # ponytail: in-process cache — each replica builds its own; move to a shared
-# cache if Discover runs multi-replica. Concurrent misses may build twice.
+# cache if Discover runs multi-replica. Misses for the same key share one build.
 _CACHE: dict[str, _Cached] = {}
+_INFLIGHT: dict[str, concurrent.futures.Future[Graph]] = {}
 _LOCK = threading.Lock()
 
 
@@ -246,7 +247,21 @@ def get_graph(
             return hit.graph
         for stale in [k for k, v in _CACHE.items() if now - v.at >= CACHE_TTL_S]:
             _CACHE.pop(stale, None)
-    graph = build_graph(ws, catalogs)
+        future = _INFLIGHT.get(key)
+        is_builder = future is None
+        if future is None:
+            future = _INFLIGHT[key] = concurrent.futures.Future()
+    if not is_builder:
+        return future.result()
+    try:
+        graph = build_graph(ws, catalogs)
+    except BaseException as exc:
+        with _LOCK:
+            _INFLIGHT.pop(key, None)
+        future.set_exception(exc)
+        raise
     with _LOCK:
         _CACHE[key] = _Cached(graph, now)
+        _INFLIGHT.pop(key, None)
+    future.set_result(graph)
     return graph

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -256,3 +258,74 @@ def test_concurrent_get_graph_thread_safe(monkeypatch):
         results = [f.result(timeout=5) for f in futures]
     assert all(isinstance(g, Graph) for g in results)
     assert len(results) == 16
+
+
+def test_concurrent_misses_share_one_build(monkeypatch):
+    import threading
+
+    gate = threading.Event()
+    started = threading.Event()
+    runs: list[int] = []
+
+    def slow(ws, catalogs):
+        runs.append(1)
+        started.set()
+        gate.wait(5)
+        return Fragment([Node("table:main.s.t", "Table", "t", "main.s.t")])
+
+    monkeypatch.setattr(connectors, "CONNECTORS", {"unity_catalog": slow})
+    monkeypatch.setattr(connectors, "lineage", lambda ws, fqns: Fragment())
+    ws = _ws()
+    results: list[Graph] = []
+
+    def call() -> None:
+        results.append(builder.get_graph(ws, ["main"]))
+
+    threads = [threading.Thread(target=call) for _ in range(5)]
+    for t in threads:
+        t.start()
+    assert started.wait(5)
+    time.sleep(0.2)  # let the other callers reach the in-flight build
+    gate.set()
+    for t in threads:
+        t.join(5)
+    assert len(runs) == 1
+    assert len(results) == 5 and all(g is results[0] for g in results)
+    assert builder._INFLIGHT == {}
+
+
+def test_failed_build_raises_in_all_waiters_and_retries(monkeypatch):
+    import threading
+
+    gate = threading.Event()
+    started = threading.Event()
+    runs: list[int] = []
+
+    def boom_build(ws, catalogs):
+        runs.append(1)
+        started.set()
+        gate.wait(5)
+        raise RuntimeError("build exploded")
+
+    monkeypatch.setattr(builder, "build_graph", boom_build)
+    ws = _ws()
+    errors: list[BaseException] = []
+
+    def call() -> None:
+        try:
+            builder.get_graph(ws, ["main"])
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=call) for _ in range(4)]
+    for t in threads:
+        t.start()
+    assert started.wait(5)
+    time.sleep(0.2)  # let the other callers reach the in-flight build
+    gate.set()
+    for t in threads:
+        t.join(5)
+    assert len(runs) == 1 and len(errors) == 4
+    assert builder._INFLIGHT == {}
+    monkeypatch.setattr(builder, "build_graph", lambda ws, c: Graph([]))
+    assert isinstance(builder.get_graph(ws, ["main"]), Graph)
