@@ -24,8 +24,12 @@ export interface DiscoverGraphProps {
 
 function Inner(props: DiscoverGraphProps) {
   const { nodes, edges, selected, impacted, collapsedCounts, onSelect, onToggleSchema } = props;
+  const pos = useMemo(
+    () => dagrePositions(nodes.map((n) => n.id), edges.map((e) => ({ source: e.src, target: e.dst }))),
+    [nodes, edges],
+  );
+  const typeById = useMemo(() => new Map(nodes.map((n) => [n.id, n.type])), [nodes]);
   const rf = useMemo(() => {
-    const pos = dagrePositions(nodes.map((n) => n.id), edges.map((e) => ({ source: e.src, target: e.dst })));
     const lit = (id: string) => impacted?.has(id) || id === selected;
     const rfNodes: Node[] = nodes.map((n) => {
       const color = NODE_COLORS[n.type] ?? "#92A4B3";
@@ -74,7 +78,7 @@ function Inner(props: DiscoverGraphProps) {
       };
     });
     return { rfNodes, rfEdges };
-  }, [nodes, edges, selected, impacted, collapsedCounts]);
+  }, [nodes, edges, pos, selected, impacted, collapsedCounts]);
 
   return (
     <ReactFlow
@@ -93,7 +97,7 @@ function Inner(props: DiscoverGraphProps) {
       <Background color="#37444F" gap={20} />
       <Controls />
       <MiniMap pannable zoomable maskColor="rgba(17, 23, 28, 0.7)" style={{ background: "#11171C" }}
-        nodeColor={(n) => NODE_COLORS[nodes.find((x) => x.id === n.id)?.type ?? ""] ?? "#92A4B3"} />
+        nodeColor={(n) => NODE_COLORS[typeById.get(n.id) ?? ""] ?? "#92A4B3"} />
     </ReactFlow>
   );
 }
