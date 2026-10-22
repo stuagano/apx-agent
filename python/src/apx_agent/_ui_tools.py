@@ -696,7 +696,7 @@ _PAGE = r"""<!doctype html>
   :root { --bg:var(--apx-bg); --panel:var(--apx-panel); --border:var(--apx-border); --strong:var(--apx-border);
           --text:var(--apx-text); --muted:var(--apx-muted); --dim:var(--apx-muted); --accent:var(--apx-accent);
           --accent-bg:var(--apx-panel-2); --accent-border:var(--apx-border);
-          --ok:var(--apx-ok); --warn:var(--apx-warn); --err:var(--apx-err); color-scheme:dark; }
+          --ok:var(--apx-ok); --warn:var(--apx-warn); --err:var(--apx-err); }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { font-family:ui-sans-serif,system-ui,-apple-system,sans-serif; font-size:13px;
          background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }

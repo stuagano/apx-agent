@@ -26,7 +26,6 @@ import json
 import os
 import uuid
 from collections.abc import Callable
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -57,10 +56,6 @@ class MemorySearchRequest(BaseModel):
     query: str = Field(min_length=1)
     limit: int = Field(default=10, ge=1, le=100)
     actor: str | None = None
-
-
-class SessionItemsRequest(BaseModel):
-    items: list[dict[str, Any]] = Field(min_length=1)
 
 
 def _env(name: str) -> str | None:
@@ -109,22 +104,13 @@ def _is_deployed() -> bool:
     return _env("DATABRICKS_APP_NAME") is not None and not is_local
 
 
-def _workspace_client() -> Any:
-    from databricks_agentkit import workspace_client
-
-    return workspace_client()
-
-
-def _workspace_host() -> str | None:
-    """Best-effort workspace host for building MLflow links; never raises."""
-    try:
-        host = _workspace_client().config.host
-    except Exception:  # noqa: BLE001 - a link is best-effort; the config route must still answer
-        host = _env("DATABRICKS_HOST")
+def _workspace_host(ws: Any) -> str | None:
+    """Workspace host for building MLflow links, from the host's service client."""
+    host = ws.config.host if ws is not None else _env("DATABRICKS_HOST")
     return host.rstrip("/") if host else None
 
 
-def _tracing() -> dict[str, Any]:
+def _tracing(ws: Any) -> dict[str, Any]:
     """Whether MLflow tracing is configured, plus a best-effort link to its experiment."""
     destination = next((v for v in map(_env, _TRACING_DESTINATION_VARS) if v is not None), None)
     experiment_id = _env("MLFLOW_EXPERIMENT_ID")
@@ -135,7 +121,7 @@ def _tracing() -> dict[str, Any]:
             # A local OSS MLflow server: link into its own UI.
             base = destination.rstrip("/")
             url = f"{base}/#/experiments/{experiment_id}" if experiment_id else base
-        elif host := _workspace_host():
+        elif host := _workspace_host(ws):
             url = f"{host}/ml/experiments/{experiment_id}" if experiment_id else f"{host}/ml/experiments"
     return {"enabled": enabled, "experiment_id": experiment_id, "url": url}
 
@@ -145,20 +131,20 @@ def _rank_models(default: str, names: list[str]) -> list[str]:
     return [default, *sorted({n for n in names if n != default})]
 
 
-def _discover_chat_models(default: str) -> list[str]:
+def _discover_chat_models(ws: Any, default: str) -> list[str]:
     """AI Gateway chat models for the picker; falls back to just the default."""
     from databricks_agentkit.runtime.model_services import list_ai_gateway_model_services
 
     try:
-        names = list_ai_gateway_model_services(_workspace_client())
+        names = list_ai_gateway_model_services(ws)
     except Exception:  # noqa: BLE001 - a broken listing must not break the picker
         names = []
     return _rank_models(default, list(names))
 
 
 class _ManagedStateClient:
-    def __init__(self) -> None:
-        self._workspace = _workspace_client()
+    def __init__(self, ws: Any) -> None:
+        self._workspace = ws
 
     def _do(self, method: str, path: str, *, query: dict[str, Any] | None = None,
             body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -203,16 +189,6 @@ class _ManagedStateClient:
                         query={"filter": f"actor_id = {json.dumps(actor)}",
                                "order_by": "last_activity_time desc", "page_size": 50})
 
-    def append_session_items(self, session_id: str, items: list[dict[str, Any]]) -> dict[str, Any]:
-        return self._do("POST",
-                        f"{_AGENTS_API}/session-stores/{_session_store()}/sessions/{session_id}/items:append",
-                        body={"items": [{"data": item} for item in items]})
-
-
-@lru_cache(maxsize=1)
-def _state_client() -> _ManagedStateClient:
-    return _ManagedStateClient()
-
 
 async def _managed_call(operation: Callable[..., dict[str, Any]], *args: Any) -> dict[str, Any]:
     try:
@@ -248,11 +224,14 @@ def _chat_sessions(result: dict[str, Any]) -> list[dict[str, Any]]:
     return sessions
 
 
-def mount_agentkit_chat(app: FastAPI, *, model: str) -> None:
+def mount_agentkit_chat(app: FastAPI, *, model: str, ws: Any) -> None:
     """Mount the AgentKit chat page, its assets, and its config/demo APIs on ``app``.
 
     ``model`` is the model the host serves; the picker pins it as the default.
+    ``ws`` is the host's service client (the App SP), reused for the panels so
+    no route builds a client on the event loop.
     """
+    state = _ManagedStateClient(ws)
     from databricks_agentkit.runtime.store import runtime_store_is_persistent_environment
 
     app.mount(_ASSETS_PREFIX, StaticFiles(directory=_UI_ROOT), name="apx-agentkit-assets")
@@ -307,37 +286,37 @@ def mount_agentkit_chat(app: FastAPI, *, model: str) -> None:
                 "store": f"memory-stores/{memory_store}" if memory_store else None,
                 "actor": actor,
             },
-            "tracing": _tracing(),
+            "tracing": _tracing(ws),
         }
 
     @app.get("/_apx/api/demo/models", include_in_schema=False)
     async def demo_models() -> dict[str, Any]:
         # Discovery can take seconds in a large workspace; kept off the config route.
-        return {"default": model, "available": await asyncio.to_thread(_discover_chat_models, model)}
+        return {"default": model, "available": await asyncio.to_thread(_discover_chat_models, ws, model)}
 
     @app.post("/_apx/api/demo/memory/entries", include_in_schema=False)
     async def create_memory_entry(request: Request, payload: MemoryEntryRequest) -> dict[str, Any]:
         _require_memory()
-        return await _managed_call(_state_client().create_memory_entry, _request_actor(request), payload,
+        return await _managed_call(state.create_memory_entry, _request_actor(request), payload,
                                    _request_session_id(request))
 
     @app.get("/_apx/api/demo/memory/entries", include_in_schema=False)
     async def list_memory_entries(request: Request, path_prefix: str | None = Query(default=None),
                                   actor: str | None = Query(default=None)) -> dict[str, Any]:
         _require_memory()
-        return await _managed_call(_state_client().list_memory_entries, actor or _request_actor(request),
+        return await _managed_call(state.list_memory_entries, actor or _request_actor(request),
                                    path_prefix)
 
     @app.post("/_apx/api/demo/memory/search", include_in_schema=False)
     async def search_memory_entries(request: Request, payload: MemorySearchRequest) -> dict[str, Any]:
         _require_memory()
-        return await _managed_call(_state_client().search_memory_entries, payload.actor or _request_actor(request),
+        return await _managed_call(state.search_memory_entries, payload.actor or _request_actor(request),
                                    payload)
 
     @app.post("/_apx/api/demo/sessions", include_in_schema=False)
     async def ensure_session(request: Request) -> dict[str, Any]:
         _require_session()
-        return await _managed_call(_state_client().ensure_session, _request_actor(request),
+        return await _managed_call(state.ensure_session, _request_actor(request),
                                    _request_session_id(request))
 
     @app.get("/_apx/api/demo/sessions", include_in_schema=False)
@@ -351,28 +330,17 @@ def mount_agentkit_chat(app: FastAPI, *, model: str) -> None:
                 "current_session_id": session_id,
                 "managed": False,
             }
-        result = await _managed_call(_state_client().list_sessions, actor)
+        result = await _managed_call(state.list_sessions, actor)
         return {**result, "sessions": _chat_sessions(result), "current_session_id": session_id, "managed": True}
 
     @app.post("/_apx/api/demo/sessions/{session_id}/open", include_in_schema=False)
     async def open_session(request: Request, session_id: str) -> JSONResponse:
         _require_session()
-        session = await _managed_call(_state_client().get_session, session_id)
+        session = await _managed_call(state.get_session, session_id)
         if session.get("actor_id") != _request_actor(request):
             raise HTTPException(status_code=403, detail="Session belongs to another actor.")
         return JSONResponse({"session_id": session_id, "previous_session_id": _request_session_id(request),
                              "managed": True})
-
-    @app.get("/_apx/api/demo/session", include_in_schema=False)
-    async def get_session(request: Request) -> dict[str, Any]:
-        _require_session()
-        return await _managed_call(_state_client().get_session, _request_session_id(request))
-
-    @app.post("/_apx/api/demo/session/items", include_in_schema=False)
-    async def append_session_items(request: Request, payload: SessionItemsRequest) -> dict[str, Any]:
-        _require_session()
-        return await _managed_call(_state_client().append_session_items, _request_session_id(request),
-                                   payload.items)
 
     @app.get("/_apx/api/demo/session/items", include_in_schema=False)
     async def list_session_items(request: Request) -> dict[str, Any]:

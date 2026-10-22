@@ -75,3 +75,14 @@ _HEX = re.compile(r"(?<![&\w])#[0-9a-fA-F]{6}\b|(?<![&\w(])#[0-9a-fA-F]{3}(?=[;\
 def test_pages_use_theme_tokens_not_hex(name: str) -> None:
     hexes = _HEX.findall((_SRC / name).read_text(encoding="utf-8"))
     assert hexes == [], f"{name} hard-codes colors {sorted(set(hexes))[:12]}; use var(--apx-*)"
+
+
+def test_no_page_forces_dark_color_scheme() -> None:
+    for path in sorted(_SRC.glob("_ui_*.py")) + [_SRC / "_dev.py"]:
+        assert "color-scheme:dark" not in path.read_text(encoding="utf-8").replace(" ", ""), path.name
+
+
+def test_feedback_save_hover_keeps_label_readable() -> None:
+    css = (_SRC / "_dev.py").read_text(encoding="utf-8")
+    hover = re.search(r"\.fb-save-btn:hover\{\{([^}]*)\}\}", css)
+    assert hover and "color:var(--apx-on-accent)" in hover.group(1), "hover fills --apx-ok; label must contrast"

@@ -356,7 +356,7 @@ def compile_to_durable_agent_server(
     # (the /_apx/agent shell's Chat tab) ahead of the dev UI's legacy chat page.
     from ._ui_agentkit_chat import mount_agentkit_chat
 
-    mount_agentkit_chat(app, model=model)
+    mount_agentkit_chat(app, model=model, ws=service_ws)
     # Dev UI handlers read the service client here (the MLflow host sets it too).
     app.state.workspace_client = service_ws
     app.state.dev_ui_mount_error = None

@@ -1082,7 +1082,7 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
 #fb-rationale.visible{{display:block}}
 .fb-save-btn{{background:var(--apx-ok-soft);border:1px solid var(--apx-ok);color:var(--apx-ok);border-radius:4px;padding:3px 12px;font-size:12px;cursor:pointer;display:none}}
 .fb-save-btn.visible{{display:inline-block}}
-.fb-save-btn:hover{{background:var(--apx-ok)}}
+.fb-save-btn:hover{{background:var(--apx-ok);color:var(--apx-on-accent)}}
 .fb-screenshot{{margin-top:8px;max-width:480px;border-radius:4px;border:1px solid var(--apx-border)}}
 #fb-prev-note{{font-size:11px;color:var(--apx-muted);font-style:italic}}
 .fb-hint{{font-size:11px;color:var(--apx-muted);margin-top:2px}}

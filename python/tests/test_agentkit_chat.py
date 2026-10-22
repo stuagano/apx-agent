@@ -44,7 +44,7 @@ def chat_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Tes
     monkeypatch.delenv("AGENT_MEMORY_STORE", raising=False)
     monkeypatch.delenv("AGENT_SESSION_STORE", raising=False)
     app = FastAPI()
-    mount_agentkit_chat(app, model="system.ai.test-model")
+    mount_agentkit_chat(app, model="system.ai.test-model", ws=None)
     with TestClient(app) as client:  # lifespan adds the "/" page
         yield client
 
@@ -97,7 +97,7 @@ def test_project_root_ui_keeps_slash(tmp_path: Path, monkeypatch: pytest.MonkeyP
     (tmp_path / "dist").mkdir()
     (tmp_path / "dist" / "index.html").write_text("<h1>project ui</h1>")
     app = FastAPI()
-    mount_agentkit_chat(app, model="m")
+    mount_agentkit_chat(app, model="m", ws=None)
     app.mount("/", StaticFiles(directory=tmp_path / "dist", html=True), name="client")
     with TestClient(app) as client:
         assert "project ui" in client.get("/").text
@@ -115,6 +115,8 @@ def test_topology_bundle_carries_agentkit_palette() -> None:
         Artifact(str(css[0]), min_bytes=1000, must_contain="#f1f3ff", must_not_contain="#11171C"),
         Artifact(str(css[0]), min_bytes=1000, must_contain="#1a73e8"),
         *(Artifact(str(p), min_bytes=1000, must_not_contain="#11171C") for p in js),
+        # Discover edges must stay visible on the #f1f3ff canvas.
+        *(Artifact(str(p), min_bytes=1000, must_not_contain="#d9dce6") for p in assets.glob("discover-*.js")),
     )
 
 
@@ -126,3 +128,31 @@ def test_data_inspector_launcher_is_current_durable_template() -> None:
     assert (server / "start_host.py").read_text(encoding="utf-8") == _START_HOST_CONTENT
     # The `agents deploy --target apps` launcher gate (cli.py) keys on this name.
     assert "DurableAgentServer" in _START_SERVER_CONTENT
+
+
+def test_chat_uses_host_service_client_not_a_fresh_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    import databricks_agentkit
+    from apx_agent._ui_agentkit_chat import mount_agentkit_chat
+
+    def no_fresh_client() -> None:
+        raise AssertionError("must reuse the host's service client")
+
+    monkeypatch.setattr(databricks_agentkit, "workspace_client", no_fresh_client)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks")
+    monkeypatch.setenv("MLFLOW_EXPERIMENT_ID", "42")
+    ws = MagicMock()
+    ws.config.host = "https://example.cloud.databricks.com/"
+    app = FastAPI()
+    mount_agentkit_chat(app, model="m", ws=ws)
+    with TestClient(app) as client:
+        tracing = client.get("/_apx/api/ui/config", params={"session_id": "s"}).json()["tracing"]
+    assert tracing["url"] == "https://example.cloud.databricks.com/ml/experiments/42"
+
+
+def test_unused_session_write_routes_are_not_mounted(chat_client: TestClient) -> None:
+    assert chat_client.post("/_apx/api/demo/session/items", params={"session_id": "s"},
+                            json={"items": [{"role": "user", "content": "x"}]}).status_code in (404, 405)
+    assert chat_client.get("/_apx/api/demo/session", params={"session_id": "s"}).status_code == 404
