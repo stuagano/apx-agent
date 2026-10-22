@@ -9,7 +9,6 @@ may advertise a link outside the canonical set. This is the automated answer to
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -35,9 +34,6 @@ def app() -> FastAPI:
     return a
 
 
-DISCOVER_PAGE = (
-    Path(__file__).resolve().parents[1] / "src" / "apx_agent" / "_static" / "topology" / "discover.html"
-)
 CANONICAL_SLUGS = {slug for slug, _ in APX_NAV_PAGES}
 # Pages whose nav bar we render server-side and want to audit for dead links.
 NAV_PAGE_SLUGS = ["agent", "edit", "setup", "eval", "probe"]
@@ -54,12 +50,6 @@ class TestCanonicalNavRoutesResolve:
         # relative asset paths resolve).
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             r = await ac.get(f"/_apx/{slug}", follow_redirects=True)
-        if slug == "discover" and not (DISCOVER_PAGE).exists():
-            # Discover is a React bundle entry; until it is built the route
-            # answers a 503 build hint (the SPA lands in a later task).
-            assert r.status_code == 503
-            assert "Discover UI not built" in r.text
-            return
         assert r.status_code == 200, (
             f"/_apx/{slug} resolved to {r.status_code} — a nav link points at a "
             f"page that no longer renders. Update APX_NAV_PAGES or restore the route."

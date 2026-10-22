@@ -108,3 +108,11 @@ async def test_old_wire_routes_are_gone(app, path):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
         r = await ac.post(f"/_apx/discover/{path}", json={})
     assert r.status_code in (404, 405)
+
+
+@pytest.mark.asyncio
+async def test_discover_page_serves_built_spa(app):
+    r = await _get(app, "/_apx/discover")
+    assert r.status_code == 200
+    assert '<div id="root">' in r.text
+    assert "apx-agent · discover" in r.text

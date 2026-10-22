@@ -13,11 +13,12 @@ export default defineConfig({
     outDir: path.resolve(__dirname, "../../src/apx_agent/_static/topology"),
     emptyOutDir: true,
     sourcemap: false,
-    // Single chunk for simplicity — the bundle is small enough not to need
-    // code-splitting, and one file keeps the wheel listing tidy.
+    // Two pages share one dependency graph, theme, and asset folder:
+    // index.html → /_apx/topology, discover.html → /_apx/discover.
     rollupOptions: {
-      output: {
-        manualChunks: undefined,
+      input: {
+        index: path.resolve(__dirname, "index.html"),
+        discover: path.resolve(__dirname, "discover.html"),
       },
     },
   },
@@ -30,7 +31,8 @@ export default defineConfig({
       "/_apx/topology/inspect": "http://localhost:8000",
       "/_apx/topology/tracing": "http://localhost:8000",
       "/_apx/traces": "http://localhost:8000",
-      "/_apx/discover": "http://localhost:8000",
+      "/_apx/discover/graph.json": "http://localhost:8000",
+      "/_apx/discover/impact": "http://localhost:8000",
       "/_apx/workspace-context": "http://localhost:8000",
       "/_apx/setup": "http://localhost:8000",
       "/invocations": "http://localhost:8000",
