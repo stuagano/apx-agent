@@ -71,7 +71,7 @@ function Inner(props: DiscoverGraphProps) {
         labelStyle: { fill: "#5f6469", fontSize: 10 },
         labelBgStyle: { fill: "#f1f3ff", fillOpacity: 0.85 },
         style: {
-          stroke: s?.color ?? "#d9dce6",
+          stroke: s?.color ?? "#777d86",
           strokeDasharray: s?.dashed ? "5 4" : undefined,
           opacity: impacted && !(lit(e.src) && lit(e.dst)) ? 0.15 : 1,
         },

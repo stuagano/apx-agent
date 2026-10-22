@@ -118,7 +118,7 @@ function layout(
       labelBgBorderRadius: 3,
       animated: onRoute,
       style: {
-        stroke: onRoute ? "#8b5000" : incident ? "var(--accent, #1a73e8)" : "#d9dce6",
+        stroke: onRoute ? "#8b5000" : incident ? "var(--accent, #1a73e8)" : "#777d86",
         strokeWidth: onRoute ? 2.5 : incident ? 2 : 1,
       },
     };
