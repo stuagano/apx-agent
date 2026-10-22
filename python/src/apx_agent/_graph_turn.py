@@ -7,7 +7,8 @@ import hashlib
 import json
 from typing import Any, Callable
 
-from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_turn
+from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_turn, usd_cap_for
+from ._errors import SessionBudgetExceeded
 from ._mlflow_tracing import safe_span
 
 
@@ -37,6 +38,8 @@ def run_graph_turn(
     Host targets own credentials, protocol conversion and conversation stores.
     """
     budget_cap = cap_for(agent)
+    usd_cap = usd_cap_for(agent)
+    budget_model = getattr(agent, "model", None)
     snapshot = graph.get_state(config) if config else None
     pre_count = len(snapshot.values.get("messages", [])) if snapshot else 0
     continuing = False
@@ -54,28 +57,37 @@ def run_graph_turn(
             if record["input_digest"] != digest:
                 raise ValueError("Recovery input differs from the checkpointed invocation")
             pre_count, prior = record["pre_count"], record["prior_tokens"]
+            raw_usd = record.get("prior_usd", 0)
+            prior_usd = 0.0 if raw_usd is None else float(raw_usd)
         else:
             if recovery and any(
                 (state.metadata or {}).get("databricks_agentkit.invocation_id") == invocation_id
                 for state in graph.get_state_history(config)
             ):
                 raise ValueError("Cannot recover an invocation behind a newer session checkpoint")
-            prior = int((snapshot.values.get("state") or {}).get("session_tokens", 0)) if snapshot else 0
+            state = snapshot.values.get("state") or {} if snapshot else {}
+            prior = int(state.get("session_tokens", 0))
+            raw_usd = state.get("session_usd", 0)
+            prior_usd = 0.0 if raw_usd is None else float(raw_usd)
             record = {"invocation_id": invocation_id, "input_digest": digest,
-                      "pre_count": pre_count, "prior_tokens": prior}
+                      "pre_count": pre_count, "prior_tokens": prior, "prior_usd": prior_usd}
         config = {**config, "metadata": {
             # LangGraph checkpoint metadata retains scalars, not nested dicts.
             **config.get("metadata", {}), "apx_turn": json.dumps(record, sort_keys=True),
             "databricks_agentkit.invocation_id": invocation_id,
         }}
         if budget_cap is not None and prior >= budget_cap:
-            from ._errors import SessionBudgetExceeded
-
             raise SessionBudgetExceeded(spent=prior, cap=budget_cap)
+        if usd_cap is not None and prior_usd >= usd_cap:
+            raise SessionBudgetExceeded(spent=prior_usd, cap=usd_cap, unit="usd")
     else:
         if recovery:
             raise ValueError("Recovery requires an invocation ID")
-        prior = enforce_before_turn(graph, config, budget_cap) if budget_cap is not None else 0
+        prior = (
+            enforce_before_turn(graph, config, budget_cap, usd_cap=usd_cap)
+            if budget_cap is not None or usd_cap is not None
+            else 0
+        )
     with safe_span("graph.invoke", span_type="CHAIN"):
         if invocation_id is not None:
             from ._audit import stamp_invocation_correlation
@@ -110,12 +122,18 @@ def run_graph_turn(
 
     paused = read_interrupt(graph, config)
     if paused is not None:
-        if budget_cap is not None:
-            accrue_turn(graph, config, prior, result["messages"][pre_count:], strict=invocation_id is not None)
+        if budget_cap is not None or usd_cap is not None:
+            accrue_turn(
+                graph, config, prior, result["messages"][pre_count:],
+                strict=invocation_id is not None, usd_cap=usd_cap, model=budget_model,
+            )
         return GraphTurn(messages=[], approval_required=paused, resumed=resume is not None)
 
     start = pre_count if resume is not None else pre_count + len(messages)
     new_messages = result["messages"][start:]
-    if budget_cap is not None:
-        enforce_after_turn(graph, config, prior, new_messages, budget_cap, strict=invocation_id is not None)
+    if budget_cap is not None or usd_cap is not None:
+        enforce_after_turn(
+            graph, config, prior, new_messages, budget_cap,
+            strict=invocation_id is not None, usd_cap=usd_cap, model=budget_model,
+        )
     return GraphTurn(messages=new_messages, approval_required=None, resumed=resume is not None)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, Literal
@@ -178,7 +179,7 @@ class LlmAgent(BaseAgent):
         name: str | None = None,
         memory: str = "off",
         output_key: str | None = None,
-        session_budget: dict[str, int] | None = None,
+        session_budget: dict[str, int | float] | None = None,
         tool_loading: str = "eager",
         output_schema: type[BaseModel] | None = None,
         timeout_s: float | None = None,
@@ -216,27 +217,38 @@ class LlmAgent(BaseAgent):
             raise TypeError("output_schema must be a Pydantic BaseModel subclass")
         self._output_schema = output_schema
         if timeout_s is not None:
-            import math
-
             if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or not math.isfinite(timeout_s) or timeout_s <= 0:
                 raise ValueError("timeout_s must be a positive finite number")
         self._timeout_s = timeout_s
-        # Cumulative per-session token cap (#768). Only "tokens" is supported;
-        # enforced at the served-turn boundary against the checkpointer-persisted
-        # running total (see _budget.py). None = uncapped.
+        # Cumulative per-session token and/or usd cap (#768, #836). Enforced at
+        # the served-turn boundary against the checkpointer-persisted running
+        # total (see _budget.py). None = uncapped.
         if session_budget is not None:
-            if set(session_budget) != {"tokens"}:
+            allowed = {"tokens", "usd"}
+            extra = set(session_budget) - allowed
+            if extra or not session_budget:
                 raise ValueError(
-                    f"session_budget supports only the 'tokens' key, got "
+                    f"session_budget supports 'tokens' and/or 'usd', got "
                     f"{sorted(session_budget)}"
                 )
-            tokens = session_budget["tokens"]
-            # bool is an int subclass — reject it explicitly. A non-positive cap
-            # would refuse every turn; a non-int crashes the first comparison.
-            if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
-                raise ValueError(
-                    f"session_budget['tokens'] must be a positive int, got {tokens!r}"
-                )
+            stored: dict[str, int | float] = {}
+            if "tokens" in session_budget:
+                tokens = session_budget["tokens"]
+                # bool is an int subclass — reject it explicitly. A non-positive cap
+                # would refuse every turn; a non-int crashes the first comparison.
+                if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+                    raise ValueError(
+                        f"session_budget['tokens'] must be a positive int, got {tokens!r}"
+                    )
+                stored["tokens"] = tokens
+            if "usd" in session_budget:
+                usd = session_budget["usd"]
+                if isinstance(usd, bool) or not isinstance(usd, (int, float)) or not math.isfinite(usd) or usd <= 0:
+                    raise ValueError(
+                        f"session_budget['usd'] must be a positive finite number, got {usd!r}"
+                    )
+                stored["usd"] = float(usd)
+            session_budget = stored
         self._session_budget = session_budget
         # Deferred tool loading (#767): "eager" binds every author tool on the
         # first compiled hop (today's behavior). "deferred" advertises only
