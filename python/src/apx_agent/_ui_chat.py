@@ -253,19 +253,6 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
       const initial = (location.hash || "#{default_slug}").slice(1);
       selectTab(initial);
       window._selectTab = selectTab;
-      try {{
-        const q = new URLSearchParams(location.search);
-        if (q.get("wired") === "1") {{
-          const toast = document.createElement("div");
-          toast.textContent = "Discover wiring applied — try it in Chat. A full redeploy is only needed if hot-apply failed.";
-          toast.style.cssText = "position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:3000;background:var(--apx-panel-2);border:1px solid var(--apx-panel-2);color:var(--apx-ok);padding:10px 16px;border-radius:8px;font-size:12px;max-width:90vw;";
-          document.body.appendChild(toast);
-          setTimeout(() => toast.remove(), 8000);
-          q.delete("wired");
-          const next = location.pathname + (q.toString() ? "?" + q : "") + location.hash;
-          history.replaceState(null, "", next);
-        }}
-      }} catch (e) {{}}
       window._dashFrame = frame;
       // Sidebar toggle
       document.getElementById("btn-sidebar-toggle").addEventListener("click", () => {{

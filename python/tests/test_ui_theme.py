@@ -48,14 +48,15 @@ async def _get(app, path):
 
 # The theme is injected into each server-rendered page's <head> (the true
 # universal choke point; the deploy overlay is dropped on embed/some pages).
-# `discover` always renders its <head> server-side, so it's the mechanism proof.
+# `knowledge` always renders its <head> server-side, so it's the mechanism proof.
+# Discover is now a React SPA, like topology, so it is out of scope here.
 # Whole-surface coverage across all nav slugs is asserted in test_dubois_sweep
 # once every module has been migrated (topology is a React SPA — out of scope).
 @pytest.mark.asyncio
-async def test_discover_page_carries_theme_once(dev_ui_app):
-    r = await _get(dev_ui_app, "/_apx/discover")
+async def test_knowledge_page_carries_theme_once(dev_ui_app):
+    r = await _get(dev_ui_app, "/_apx/knowledge")
     assert r.status_code == 200
     assert r.text.count("apx-dubois-theme") == 1, (
-        "the Du Bois theme should be injected exactly once into the discover "
+        "the Du Bois theme should be injected exactly once into the knowledge "
         "page <head> via apx_theme_style()"
     )

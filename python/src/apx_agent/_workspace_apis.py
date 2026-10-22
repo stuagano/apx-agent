@@ -35,18 +35,6 @@ def _host(ws: Any) -> str:
     return _normalise_host(ws.config.host) if ws.config.host else ""
 
 
-def discover_workspace_apis(ws: Any, *, limit_per_kind: int = 50) -> list[WorkspaceApiInfo]:
-    """Removed in Task 6 with /_apx/workspace-apis — best-effort aggregate of the listers."""
-    found: list[WorkspaceApiInfo] = []
-    for lister in (list_serving_endpoints, list_genie_spaces, list_vector_search_indexes):
-        try:
-            found.extend(lister(ws, limit=limit_per_kind))
-        except Exception as e:
-            logger.info("%s failed: %s", lister.__name__, e)
-    found.sort(key=lambda a: (a.kind, a.name.lower()))
-    return found
-
-
 def list_serving_endpoints(ws: Any, *, limit: int = 50) -> list[WorkspaceApiInfo]:
     host = _host(ws)
     out: list[WorkspaceApiInfo] = []

@@ -29,14 +29,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from ._models import (
     FLOW_GRAPH_FULL_GRAPH_ENDPOINT,
     FLOW_GRAPH_LAST_ROUTE_ENDPOINT,
     FLOW_GRAPH_SCHEMA_VERSION,
 )
-from ._ui_edit import _require_python_binding
 
 # ── POST /_apx/eval/data ─────────────────────────────────────────────────────
 
@@ -384,171 +383,31 @@ class WorkspaceContextResponse(BaseModel):
     used_schemas: list[str]
 
 
-class WorkspaceDiscoveredAgent(BaseModel):
-    """One agent from ``GET /_apx/workspace-agents`` (Apps A2A and/or UC tags)."""
-
-    name: str
-    source: str  # "app" | "uc"
-    app_name: str | None = None
-    url: str | None = None
-    description: str | None = None
-    tools: list[str] = []
-    tool_count: int = 0
-    state: str = "unknown"
-    uc_name: str | None = None
-    model_endpoint: str | None = None
-
-
-class WorkspaceAgentsResponse(BaseModel):
-    """Shape of ``GET /_apx/workspace-agents`` — workspace peer discovery."""
-
-    agents: list[WorkspaceDiscoveredAgent]
-
-
-class WorkspaceFunctionInfo(BaseModel):
-    """One UC function from ``GET /_apx/workspace-functions``."""
-
-    full_name: str
-    catalog: str
-    schema_name: str
-    name: str
-    comment: str | None = None
-
-
-class WorkspaceFunctionsResponse(BaseModel):
-    """Shape of ``GET /_apx/workspace-functions``."""
-
-    catalog: str
-    schema_name: str
-    functions: list[WorkspaceFunctionInfo]
-
-
-class WorkspaceApiInfo(BaseModel):
-    """One API surface from ``GET /_apx/workspace-apis``.
-
-    ``kind`` is ``serving_endpoint``, ``genie_space``, or ``vector_search_index``.
-    Genie and Vector Search include Managed MCP URLs when the workspace host
-    is known; serving endpoints expose the HTTP invocations URL instead.
-    """
-
-    kind: str
-    name: str
-    state: str | None = None
-    description: str | None = None
-    url: str | None = None
-    mcp_url: str | None = None
-    extra: dict[str, Any] | None = None
-
-
-class WorkspaceApisResponse(BaseModel):
-    """Shape of ``GET /_apx/workspace-apis``."""
-
-    apis: list[WorkspaceApiInfo]
-
-
-class DiscoverColumnInfo(BaseModel):
-    """One column in a Discover table metadata response."""
-
-    name: str
+class GraphNodeModel(BaseModel):
+    id: str
     type: str
-    nullable: bool | None = None
-    comment: str | None = None
-
-
-class DiscoverTableInfo(BaseModel):
-    """One table in ``GET /_apx/discover/tables``."""
-
     name: str
-    full_name: str
-    table_type: str = ""
-    comment: str | None = None
-    columns: list[DiscoverColumnInfo] = []
-    row_count: int | None = None
+    fqn: str
+    props: dict[str, Any]
 
 
-class DiscoverTablesResponse(BaseModel):
-    """Shape of ``GET /_apx/discover/tables``."""
-
-    catalog: str
-    schema_name: str
-    tables: list[DiscoverTableInfo]
+class GraphEdgeModel(BaseModel):
+    src: str
+    dst: str
+    type: str
 
 
-class DiscoverSampleResponse(BaseModel):
-    """Shape of ``GET /_apx/discover/sample``."""
-
-    table: str
-    columns: list[str]
-    rows: list[dict[str, Any]]
-    truncated: bool
+class DiscoverGraphResponse(BaseModel):
+    nodes: list[GraphNodeModel]
+    edges: list[GraphEdgeModel]
+    warnings: list[str]
+    built_at: str
 
 
-class DiscoverTargetInfo(BaseModel):
-    """One agent assignment from ``GET /_apx/discover/targets``."""
+class DiscoverImpactResponse(BaseModel):
+    id: str
+    impacted: list[str]
 
-    name: str
-    kind: str
-    eligible: bool
-    reason: str | None = None
-    sub_agents: list[str] = []
-
-
-class DiscoverTargetsResponse(BaseModel):
-    """Shape of ``GET /_apx/discover/targets``."""
-
-    targets: list[DiscoverTargetInfo]
-    source_path: str | None = None
-
-
-class DiscoverWireAgentRequest(BaseModel):
-    """Body for ``POST /_apx/discover/wire-agent`` / ``unwire-agent``.
-
-    ``url`` is required for wire; unwire may omit it when ``ref`` is set.
-    """
-
-    url: str = ""
-    name: str | None = None
-    app_name: str | None = None
-    target: str = "agent"
-    use_env: bool = True
-    ref: str | None = None  # for unwire: exact sub_agents entry to remove
-
-
-class DiscoverWireToolRequest(BaseModel):
-    """Body for ``POST /_apx/discover/wire-tool`` / ``unwire-tool``."""
-
-    kind: str  # uc_function | genie_space | vector_search_index
-    target: str = "agent"
-    full_name: str | None = None  # uc_function
-    space_id: str | None = None  # genie_space
-    title: str | None = None  # genie display name for slug
-    index_name: str | None = None  # vector_search_index
-    columns: list[str] | None = None
-    binding_name: str | None = None  # override / unwire key
-
-    @field_validator("binding_name")
-    @classmethod
-    def _binding_name_is_identifier(cls, v: str | None) -> str | None:
-        """#630: reject non-identifier / keyword names before the handler runs."""
-        if v is None:
-            return None
-        stripped = v.strip()
-        if not stripped:
-            return None
-        return _require_python_binding(stripped)
-
-
-class DiscoverWireResponse(BaseModel):
-    """Shared success shape for Discover wire/unwire mutators."""
-
-    ok: bool
-    restart_required: bool = False
-    applied_live: bool = False
-    target: str | None = None
-    ref: str | None = None
-    binding_name: str | None = None
-    already_present: bool = False
-    error: str | None = None
 
 
 class TopologyNode(BaseModel):

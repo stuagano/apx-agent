@@ -5,11 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ._sql import run_sql
-
 _INVALID_IDENTIFIER = re.compile(r"[`;\x00-\x1f\x7f]")
 _MAX_TABLES = 100
-_MAX_SAMPLE_ROWS = 100
 
 
 def _validate_identifier(value: str, label: str) -> str:
@@ -19,20 +16,6 @@ def _validate_identifier(value: str, label: str) -> str:
     if _INVALID_IDENTIFIER.search(stripped):
         raise ValueError(f"{label} contains an unsupported character")
     return stripped
-
-
-def _quote_identifier(value: str, label: str) -> str:
-    return f"`{_validate_identifier(value, label)}`"
-
-
-def _qualified_table(catalog: str, schema: str, table: str) -> str:
-    return ".".join(
-        (
-            _quote_identifier(catalog, "catalog"),
-            _quote_identifier(schema, "schema"),
-            _quote_identifier(table, "table"),
-        )
-    )
 
 
 def _column_info(column: Any) -> dict[str, Any]:
@@ -117,29 +100,3 @@ def list_discover_tables(
         )
     return sorted(tables, key=lambda item: item["name"].lower())
 
-
-def sample_discover_table(
-    ws: Any,
-    catalog: str,
-    schema: str,
-    table: str,
-    *,
-    warehouse_id: str | None = None,
-    limit: int = 20,
-) -> dict[str, Any]:
-    """Return a bounded preview, executing as the caller's workspace client."""
-
-    if limit < 1 or limit > _MAX_SAMPLE_ROWS:
-        raise ValueError(f"limit must be between 1 and {_MAX_SAMPLE_ROWS}")
-    qualified = _qualified_table(catalog, schema, table)
-    rows = run_sql(
-        ws,
-        f"SELECT * FROM {qualified} LIMIT {limit + 1}",
-        warehouse_id=warehouse_id or None,
-    )
-    return {
-        "table": f"{catalog}.{schema}.{table}",
-        "columns": list(rows[0].keys()) if rows else [],
-        "rows": rows[:limit],
-        "truncated": len(rows) > limit,
-    }
