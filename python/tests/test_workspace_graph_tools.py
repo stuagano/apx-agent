@@ -182,17 +182,10 @@ async def test_get_lineage_reports_upstream_downstream_counts(hub_tools):
     # Pick a downstream node - it should have the hub as upstream
     lin = await by_name["get_lineage"](ws=WS, identifier="main.s.dst000")
     assert lin["asset"]["id"] == "table:main.s.dst000"
-    # Upstream should contain the hub (and potentially others)
-    assert lin["upstream_count"] >= 1
-    # The upstream list should be capped at 50
-    assert len(lin["upstream"]) <= 50
-    # Downstream should be empty or capped at 50
-    assert len(lin["downstream"]) <= 50
-    # Truncated flag should reflect whether any list was cut
-    if lin["upstream_count"] > 50 or lin["downstream_count"] > 50:
-        assert lin["truncated"] is True
-    else:
-        assert lin["truncated"] is False
+    assert lin["upstream_count"] == 61  # the hub plus its 60 sources
+    assert len(lin["upstream"]) == 50
+    assert lin["downstream_count"] == 0 and lin["downstream"] == []
+    assert lin["truncated"] is True
 
 
 def test_tools_declare_obo_scopes(tools):

@@ -93,6 +93,15 @@ async def test_graph_json_apps_without_obo_is_401(app, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_impact_apps_without_obo_is_401(app, monkeypatch):
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+    monkeypatch.setattr(builder, "get_graph", lambda *a, **k: pytest.fail("must not build without OBO"))
+    r = await _get(app, "/_apx/discover/impact/table:main.s.t")
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", [
     "/_apx/workspace-agents", "/_apx/workspace-functions?catalog=a&schema=b", "/_apx/workspace-apis",
     "/_apx/discover/tables?catalog=a&schema=b", "/_apx/discover/sample?catalog=a&schema=b&table=c",

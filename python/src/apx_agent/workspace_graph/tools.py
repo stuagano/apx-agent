@@ -55,17 +55,6 @@ def _not_found(graph: Graph, identifier: str) -> dict[str, Any]:
     }
 
 
-def _cap_connections(
-    edges: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Cap connection list at _LIST_CAP with count and truncated flag."""
-    return {
-        "count": len(edges),
-        "results": edges[:_LIST_CAP],
-        "truncated": len(edges) > _LIST_CAP,
-    }
-
-
 def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
     """Return six tools that query the caller's workspace graph.
 
@@ -96,7 +85,7 @@ def workspace_graph_tools(catalogs: list[str] | None = None) -> list[Any]:
     async def search_assets(
         ws: UserClientDependency,
         query: str,
-        asset_type: str | None = None,  # type: ignore[valid-type]
+        asset_type: str | None = None,
     ) -> dict[str, Any]:
         graph = await _graph(ws)
         return {**_capped(graph.search(query, asset_type)), **_partial(graph)}

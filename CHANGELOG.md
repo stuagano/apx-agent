@@ -12,6 +12,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Added
 
+- **Discover workspace graph.** `workspace_graph_tools()` gives agents six OBO-scoped tools over the caller's Unity Catalog, Genie, Vector Search, Model Serving and Apps graph, and the Discover canvas renders the same graph from `/_apx/discover/graph.json` and `/_apx/discover/impact/{id}`.
 - **`{user:}` / `{app:}` instruction templating (#947).** `{user:pref}` and `{app:flag}` substitute from the keyed `state` dict. ConversationStore persistence stores only unprefixed session keys; managed session/memory stores are not a user/app KV, so cross-session scoped writes stay open. [keyed-state-scopes](docs/design/keyed-state-scopes.md).
 - **Existing-agent registration from its card (#834).** Hub registration keeps the crawled card's `instructions` and `tools` (skills stay the fallback), and copies the response `traceparent` onto the card as `trace_header`. `RemoteDatabricksAgent` uses those card fields the same way.
 - **Native durable runtime.** Agent declarations compile to a native MLflow
@@ -97,6 +98,12 @@ and managed sessions and memory replace app-owned state on that path.
 - How a durable agent operates, App Space vs serverless runtime vs horizontal
   scaling, where managed stores live, and the native execution boundary
   (#880–#897).
+
+### Removed
+
+- The old Discover list/wire UI and its routes: `/_apx/workspace-agents`,
+  `/_apx/workspace-functions`, `/_apx/workspace-apis`, and
+  `/_apx/discover/{tables,sample,targets,wire-agent,unwire-agent,wire-tool,unwire-tool}`.
 
 ## [0.7.1] — 2026-10-01
 

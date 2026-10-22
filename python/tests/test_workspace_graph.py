@@ -356,3 +356,10 @@ def test_clean_graph_keeps_full_ttl(monkeypatch):
     assert builder.get_graph(ws, ["main"]) is first
     clock[0] += builder.CACHE_TTL_S
     assert builder.get_graph(ws, ["main"]) is not first
+
+
+def test_search_asset_type_is_case_insensitive():
+    g = Graph([Fragment([Node("table:a.b.c", "Table", "c", "a.b.c")])])
+    assert [n.id for n in g.search("c", "table")] == ["table:a.b.c"]
+    assert [n.id for n in g.search("c", "TABLE")] == ["table:a.b.c"]
+    assert g.search("c", "view") == []

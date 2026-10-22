@@ -62,10 +62,11 @@ class Graph:
 
     def search(self, query: str, asset_type: str | None = None) -> list[Node]:
         q = query.strip().lower()
+        kind = asset_type.lower() if asset_type else None
         hits = [
             n
             for n in self.nodes.values()
-            if (asset_type is None or n.type == asset_type)
+            if (kind is None or n.type.lower() == kind)
             and (not q or q in n.name.lower() or q in n.fqn.lower() or q in n.id)
         ]
         return sorted(hits, key=lambda n: (n.name.lower(), n.id))
