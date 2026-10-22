@@ -65,7 +65,7 @@ from ._defaults import (
     _get_workspace_client,
     get_databricks_headers,
 )
-from ._budget import cap_for
+from ._budget import cap_for, usd_cap_for
 from ._errors import OutputValidationError
 from ._mlflow_tracing import emit_progress
 from ._tool_search import (
@@ -463,7 +463,12 @@ def _compile_llm_agent(
     }
     # The keyed ``state`` channel is needed by state tools, session_budget
     # (state["session_tokens"]), and deferred tool_search (state["bound_tools"]).
-    if _agent_has_state_tool(agent) or cap_for(agent) is not None or is_deferred(agent):
+    if (
+        _agent_has_state_tool(agent)
+        or cap_for(agent) is not None
+        or usd_cap_for(agent) is not None
+        or is_deferred(agent)
+    ):
         create_kwargs["state_schema"] = state_schema()
     if ctx.checkpointer is not None:
         # Thread-scoped short-term memory: the create_agent runtime persists

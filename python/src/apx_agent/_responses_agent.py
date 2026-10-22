@@ -64,7 +64,7 @@ from typing import TYPE_CHECKING, Any, Callable, Generator, NamedTuple
 
 from ._a2a_models import output_data_parts, with_input_data_parts
 from ._agents import BaseAgent
-from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_turn
+from ._budget import accrue_turn, cap_for, enforce_after_turn, enforce_before_turn, usd_cap_for
 from ._audit import (
     AuditAttrs,
     set_audit_attrs,
@@ -1430,10 +1430,11 @@ def compile_to_responses_agent(
                 # Session budget (#768): refuse before running if already over.
                 # Key cross-turn persistence on `cp` (checkpointer), not lg_config.
                 budget_cap = cap_for(_agent)
+                usd_cap = usd_cap_for(_agent)
                 budget_config = lg_config if cp is not None else None
                 budget_prior = (
-                    enforce_before_turn(graph, budget_config, budget_cap)
-                    if budget_cap is not None
+                    enforce_before_turn(graph, budget_config, budget_cap, usd_cap=usd_cap)
+                    if budget_cap is not None or usd_cap is not None
                     else 0
                 )
                 turn_lc_messages: list[Any] = []
@@ -1498,8 +1499,11 @@ def compile_to_responses_agent(
                 if paused is not None:
                     # Count the model tokens spent up to the pause (#768) so a
                     # repeatedly-pausing session can't bypass the cumulative cap.
-                    if budget_cap is not None:
-                        accrue_turn(graph, budget_config, budget_prior, turn_lc_messages)
+                    if budget_cap is not None or usd_cap is not None:
+                        accrue_turn(
+                            graph, budget_config, budget_prior, turn_lc_messages,
+                            usd_cap=usd_cap, model=effective_model,
+                        )
                     appr_item = _approval_output_item(paused, thread_id)
                     yield ResponsesAgentStreamEvent(
                         type="response.output_item.done",
@@ -1528,9 +1532,10 @@ def compile_to_responses_agent(
                     return
 
                 # Session budget: add this turn's usage, persist, raise if crossed.
-                if budget_cap is not None:
+                if budget_cap is not None or usd_cap is not None:
                     enforce_after_turn(
-                        graph, budget_config, budget_prior, turn_lc_messages, budget_cap
+                        graph, budget_config, budget_prior, turn_lc_messages, budget_cap,
+                        usd_cap=usd_cap, model=effective_model,
                     )
 
             if not _use_sdk:

@@ -12,6 +12,10 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Added
 
+- **Session dollar cap (#836).** `LlmAgent(session_budget={"usd": D})` (alone or
+  with `tokens`) refuses a served turn when cumulative usage, priced from the
+  same token metadata, reaches `D`. Rates come from published FMAPI list
+  prices; a model without a rate fails closed instead of running uncapped.
 - **`{user:}` / `{app:}` instruction templating (#947).** `{user:pref}` and `{app:flag}` substitute from the keyed `state` dict. ConversationStore persistence stores only unprefixed session keys; managed session/memory stores are not a user/app KV, so cross-session scoped writes stay open. [keyed-state-scopes](docs/design/keyed-state-scopes.md).
 - **Existing-agent registration from its card (#834).** Hub registration keeps the crawled card's `instructions` and `tools` (skills stay the fallback), and copies the response `traceparent` onto the card as `trace_header`. `RemoteDatabricksAgent` uses those card fields the same way.
 - **Native durable runtime.** Agent declarations compile to a native MLflow

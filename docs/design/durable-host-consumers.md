@@ -116,4 +116,4 @@ bodies still stop at `6cdcff86` (2026-10-06).
 | #911 | Doctor names services that need a UI guardrail check | Attachment is UI-only |
 | #946 / #947 | #947: templating + partition shipped; ConversationStore scoped methods rejected | #946 TS vs Python client; #947 durable `user:`/`app:` backend |
 | #954 | Checks, deploy, doctor, native launcher, and `config_from_agent` read Python constructor settings when there is no `AgentConfig` | `[tool.apx.agent]` remains valid until sub-project 3 removes it |
-| #836 | P3 | Dollar session cap |
+| #836 | `session_budget={"usd": D}` on served turns, priced from usage metadata | Live billing vs published FMAPI list prices |

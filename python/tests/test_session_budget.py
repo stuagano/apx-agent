@@ -203,9 +203,11 @@ def test_ac7_exception_shape_and_validation() -> None:
     assert "per-session" in doc or "cumulative" in doc
     assert "turn-boundary" in doc or "turn boundary" in doc
     assert "same iteration" not in doc
-    # tokens-only validation
+    # tokens and/or usd; unknown keys still fail
     with pytest.raises(ValueError):
         LlmAgent(name="a", tools=[], instructions="x", session_budget={"dollars": 5})
+    LlmAgent(name="a", tools=[], instructions="x", session_budget={"usd": 1})
+    LlmAgent(name="a", tools=[], instructions="x", session_budget={"tokens": 100, "usd": 0.5})
 
 
 # --------------------------------------------------------------------------- AC-8
@@ -280,3 +282,47 @@ def test_budget_config_keyed_on_checkpointer_presence() -> None:
     graph = MagicMock()
     assert enforce_before_turn(graph, None, cap=100) == 0
     graph.get_state.assert_not_called()  # no checkpointer → no state read
+
+
+SONNET = "databricks-claude-sonnet-4-6"
+# 30 in * $3/MTok + 30 out * $15/MTok = $0.00054 per fake turn
+PER_TURN_USD = 0.00054
+
+
+def test_usd_cap_cumulative_predict_crosses(fake_model: None) -> None:
+    chat = chat_agent_for(
+        LlmAgent(name="a", tools=[], instructions="Be helpful.", session_budget={"usd": 0.001}),
+        model=SONNET, conversation_store=None, checkpointer=InMemorySaver(),
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        _predict(chat, "one", "u1", "T")
+        with pytest.raises(SessionBudgetExceeded) as ei:
+            _predict(chat, "two", "u2", "T")
+    assert ei.value.unit == "usd"
+    assert ei.value.spent >= 2 * PER_TURN_USD
+    assert ei.value.cap == 0.001
+
+
+def test_usd_cap_without_rate_fails_closed(fake_model: None) -> None:
+    chat = chat_agent_for(
+        LlmAgent(name="a", tools=[], instructions="Be helpful.", session_budget={"usd": 1}),
+        model="unknown-endpoint", conversation_store=None, checkpointer=InMemorySaver(),
+    )
+    with patch("apx_agent._defaults._make_workspace_client", return_value=_ws()):
+        with pytest.raises(ValueError, match="published rate"):
+            _predict(chat, "one", "u1", "T")
+
+
+def test_usd_validation_rejects_bad_values() -> None:
+    for bad in ({"usd": 0}, {"usd": -1}, {"usd": True}, {"usd": float("nan")}):
+        with pytest.raises(ValueError):
+            LlmAgent(session_budget=bad)
+    LlmAgent(session_budget={"usd": 0.01})
+
+
+def test_usd_only_cap_does_not_require_tokens() -> None:
+    from apx_agent._budget import cap_for, usd_cap_for
+
+    agent = LlmAgent(session_budget={"usd": 1.25})
+    assert cap_for(agent) is None
+    assert usd_cap_for(agent) == 1.25
