@@ -313,38 +313,6 @@ def _load_agent_config(
     return config
 
 
-def config_from_agent(agent: Any) -> AgentConfig:
-    """Build AgentConfig from constructor-declared apx settings (sub-project 2)."""
-    name = getattr(agent, "_name", None)
-    if not name:
-        name = "agent"
-    raw: dict[str, Any] = {"name": name}
-    model = getattr(agent, "model", None)
-    if model is not None:
-        raw["model"] = model
-    target = getattr(agent, "target", None)
-    if target is not None:
-        raw["target"] = target
-    identity = getattr(agent, "identity", None)
-    if identity is not None:
-        raw["identity"] = identity
-    if getattr(agent, "recovery", False):
-        raw["recovery"] = True
-    gateway = getattr(agent, "gateway", None)
-    if gateway is not None:
-        raw["gateway"] = gateway
-    policies = getattr(agent, "service_policies", None)
-    if policies is not None:
-        raw["service_policies"] = policies
-    memory = getattr(agent, "memory_config", None)
-    if memory is not None:
-        raw["memory"] = memory
-    session = getattr(agent, "session_config", None)
-    if session is not None:
-        raw["session"] = session
-    return AgentConfig.model_validate(raw)
-
-
 # ---------------------------------------------------------------------------
 # Schema helpers
 # ---------------------------------------------------------------------------

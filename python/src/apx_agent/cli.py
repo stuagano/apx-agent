@@ -309,18 +309,17 @@ def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
 
 
 def _config_from_project_or_agent(cwd: Path, module: str):
-    """``[tool.apx.agent]`` when present; otherwise the Python agent (sub-project 2)."""
-    from ._inspection import _load_agent_config, config_from_agent
+    """The effective config: ``[tool.apx.agent]`` merged with the Python agent's settings."""
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
 
     config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
-    if config is not None:
-        return config, None
     if (cwd / "databricks.yml").exists() or (cwd / "databricks.yml").is_symlink():
-        return None, None
+        return config, None
     if not (cwd / "agent.py").is_file() and module == "agent:agent":
-        return None, None
+        return config, None
     agent = _load_finalized_agent(module)
-    return config_from_agent(agent), agent
+    return resolve_settings(agent, config), agent
 
 
 @contextlib.contextmanager

@@ -91,6 +91,8 @@ def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> Non
     spec.write_text(yaml.safe_dump(config.model_dump(mode="json", exclude_none=True)))
     generate_project(load_spec(spec), tmp_path)
     verify(Artifact(str(tmp_path / "databricks.yml"), must_contain="shared-space"))
+    verify(Artifact(str(tmp_path / "agent_server" / "start_server.py"), min_bytes=200,
+                    must_contain="resolve_settings(agent, _load_agent_config())"))
     loaded = _load_agent_config(pyproject_path=tmp_path / "pyproject.toml")
     assert loaded == config
     namespace: dict[str, Any] = {}

@@ -11,7 +11,7 @@ import click
 import pytest
 
 from apx_agent import Agent
-from apx_agent._inspection import config_from_agent
+from apx_agent._settings import resolve_settings
 
 
 def _noop(q: str) -> str:
@@ -39,7 +39,7 @@ def test_agent_rejects_invalid_identity() -> None:
         Agent(name="a", tools=[_noop], identity="not-a-mode")
 
 
-def test_config_from_agent_copies_constructor_settings() -> None:
+def test_resolve_settings_copies_constructor_settings() -> None:
     agent = Agent(
         name="triage",
         tools=[_noop],
@@ -48,7 +48,7 @@ def test_config_from_agent_copies_constructor_settings() -> None:
         recovery=True,
         memory="managed",
     )
-    config = config_from_agent(agent)
+    config = resolve_settings(agent, None)
     assert config.name == "triage"
     assert config.model == "databricks-claude-sonnet-4-6"
     assert config.target == "durable_agent_server"
@@ -169,3 +169,96 @@ def test_composite_rejects_invalid_identity_and_recovery_on_responses() -> None:
         SequentialAgent([_leaf()], identity="not-a-mode")
     with pytest.raises(ValueError, match="recovery requires"):
         SequentialAgent([_leaf()], recovery=True, target="responses_agent")
+
+
+def test_launcher_fails_on_conflict_with_toml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import sys
+    from apx_agent._serve import create_app
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\n'
+        'model = "toml-model"\ntarget = "durable_agent_server"\n')
+    monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(agent=Agent(name="p", tools=[_noop], model="py-model")))
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda **k: MagicMock())
+    monkeypatch.setattr("apx_agent._runtime_targets.compile_agent", MagicMock())
+    with pytest.raises(ValueError, match="Set it in one place"):
+        create_app()
+
+
+def test_launcher_accepts_a_composite_python_only_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import sys
+    from apx_agent._serve import create_app
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
+    root = SequentialAgent([Agent(name="a", tools=[_noop])], model="m", target="durable_agent_server")
+    monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(agent=root))
+    monkeypatch.delenv("APX_MODEL", raising=False)
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda **k: MagicMock())
+    compiler = MagicMock(return_value=SimpleNamespace(state=SimpleNamespace()))
+    monkeypatch.setattr("apx_agent._runtime_targets.compile_agent", compiler)
+    create_app()
+    assert compiler.call_args.kwargs["model"] == "m"
+    assert compiler.call_args.kwargs["config"].target == "durable_agent_server"
+
+
+def test_launcher_rejects_python_only_responses_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import sys
+    from apx_agent._serve import create_app
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
+    monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(
+        agent=Agent(name="p", tools=[_noop], model="m", target="responses_agent")))
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda **k: MagicMock())
+    with pytest.raises(ValueError, match="on the root agent or in \\[tool.apx.agent\\]"):
+        create_app()
+
+
+def test_durable_doctor_reports_a_conflict_as_config_fail(tmp_path: Path) -> None:
+    from apx_agent._doctor import Status
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0.1.0"\n\n[tool.apx.agent]\nname = "p"\nmodel = "toml-model"\n')
+    (root / "agent.py").write_text(
+        "from apx_agent import LlmAgent\nagent = LlmAgent(name='p', tools=[], model='py-model')\n")
+    checks = {c.name: c for c in check_durable_readiness(root)}
+    assert checks["Config"].status is Status.FAIL
+    assert "Set it in one place" in checks["Config"].detail
+
+
+def test_durable_doctor_loads_a_composite_python_only_root(tmp_path: Path) -> None:
+    from apx_agent._doctor import Status
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0.1.0"\n')
+    (root / "agent.py").write_text(
+        "from apx_agent import LlmAgent, SequentialAgent\n"
+        "agent = SequentialAgent([LlmAgent(name='a', tools=[])], model='m', target='durable_agent_server')\n")
+    checks = {c.name: c for c in check_durable_readiness(root)}
+    assert checks["Config"].status is Status.OK
+    assert "SequentialAgent" in checks["Config"].detail
+
+
+def test_deploy_config_merges_agent_and_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import cli
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\nmodel = "toml-model"\n')
+    (tmp_path / "agent.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_load_finalized_agent", lambda module: Agent(name="p", tools=[_noop], model="py-model"))
+    with pytest.raises(ValueError, match="Set it in one place"):
+        cli._config_from_project_or_agent(tmp_path, "agent:agent")
+    monkeypatch.setattr(cli, "_load_finalized_agent", lambda module: Agent(name="p", tools=[_noop], identity="obo"))
+    config, agent = cli._config_from_project_or_agent(tmp_path, "agent:agent")
+    assert (config.model, config.identity, agent.identity) == ("toml-model", "obo", "obo")

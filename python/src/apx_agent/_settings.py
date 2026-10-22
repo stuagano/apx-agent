@@ -63,7 +63,7 @@ def resolve_settings(agent: BaseAgent, toml: AgentConfig | None) -> AgentConfig:
             if field in toml.model_fields_set and theirs != mine:
                 raise ValueError(f"{field}: agent.py sets {mine!r} on agent {_label(agent)!r}; "
                                  f"[tool.apx.agent] sets {theirs!r}. Set it in one place.")
-        config = toml.model_copy(update={f: getattr(ours, f) for f in declared})
+        config = toml.model_copy(update={f: getattr(ours, f) for f in declared}) if declared else toml
 
     effective: dict[int, dict[str, Any]] = {}
     for node, parent in _tree(agent):
