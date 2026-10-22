@@ -143,3 +143,12 @@ def test_toml_memory_wins_over_the_agents_bound_memory() -> None:
     toml = _toml(memory={"type": "managed", "store_name": "toml-store"})
     root = _leaf(memory="managed")
     assert resolve_settings(root, toml).memory == toml.memory
+
+
+def test_shared_agent_inheriting_different_identities_fails() -> None:
+    from apx_agent._settings import SettingsConflict
+
+    shared = _leaf("shared")
+    root = SequentialAgent([SequentialAgent([shared], identity="obo"), SequentialAgent([shared], identity="sp")])
+    with pytest.raises(SettingsConflict, match="'shared' is reached through parents that give it different identity"):
+        resolve_settings(root, None)

@@ -262,3 +262,40 @@ def test_deploy_config_merges_agent_and_toml(tmp_path: Path, monkeypatch: pytest
         cli._merged_config(Agent(name="p", tools=[_noop], model="py-model"), toml)
     config = cli._merged_config(Agent(name="p", tools=[_noop], identity="obo"), toml)
     assert (config.model, config.identity) == ("toml-model", "obo")
+
+
+def test_mixed_native_deploy_pins_the_merged_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import cli
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\ntarget = "durable_agent_server"\n')
+    (tmp_path / "agent.py").write_text("")
+    (tmp_path / "agent.toml").write_text(
+        'schema_version = 1\n\n[agent]\nframework = "openai"\nserver = "agentbricks"\n')
+    apps: list[Any] = []
+    rechecked: list[Any] = []
+
+    def prerequisites(config: Any, **k: Any) -> list[Any]:
+        rechecked.append(config.model)
+        return []
+
+    def reached(*a: Any, **k: Any) -> Any:
+        raise AssertionError("bundle/staging reached")
+
+    monkeypatch.setattr("apx_agent._agent_toml.stage_agent_toml", reached)
+    monkeypatch.setattr("apx_agent._agentbricks_deploy.stage_native_source", reached)
+    monkeypatch.setattr(cli, "_read_databricks_yml", reached)
+    monkeypatch.setattr(cli, "_preflight_databricks_cli", lambda: None)
+    monkeypatch.setattr(cli, "_preflight_apps", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_make_scaffold_workspace_client", lambda profile: None)
+    monkeypatch.setattr(cli._doctor_mod, "check_agent_prerequisites", prerequisites)
+    monkeypatch.setattr(cli._doctor_mod, "check_agent_image", lambda *a, **k: None)
+    monkeypatch.setattr("apx_agent._agentbricks_deploy.validate_native_app", lambda app, **k: apps.append(app))
+    monkeypatch.setattr(cli, "_load_finalized_agent", lambda module: Agent(name="p", tools=[_noop], model="py-model"))
+    with pytest.raises(click.ClickException, match=r"agent\.toml"):
+        cli._deploy_apps_impl(cwd=tmp_path, module="agent:agent", profile=None, bundle_target="dev",
+                              no_run=True, auto_update_yml=False, auto_build_wheel=False,
+                              json_output=False, log=lambda message: None)
+    env = {e["name"]: e["value"] for e in apps[-1]["config"]["env"]}
+    assert env["APX_MODEL"] == "py-model"
+    assert "py-model" in rechecked  # prerequisites re-run on the merged config

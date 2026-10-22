@@ -340,6 +340,26 @@ def _merged_config(agent, config):
         raise click.ClickException(str(exc)) from exc
 
 
+def _recheck_prerequisites(config, ws) -> None:
+    """Prerequisites ran on [tool.apx.agent] before the agent loaded; re-run them on the merged config."""
+    probe = config.model_copy(update={"session": None}) if config.session is not None else config
+    for online in (False, True) if ws is not None else (False,):
+        kwargs = {"ws": ws, "provision_stores": False} if online else {}
+        for check in _doctor_mod.check_agent_prerequisites(probe, online=online, **kwargs):
+            if check.status is _doctor_mod.Status.FAIL:
+                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+
+
+def _sync_native_app(app, config) -> None:
+    """Refresh env a native app compiled from [tool.apx.agent] before the agent loaded (APX_MODEL)."""
+    from ._agentbricks_deploy import compile_native_app
+
+    fresh = {e["name"]: e["value"] for e in compile_native_app(config)["config"]["env"]}
+    for entry in app["config"]["env"]:
+        if entry["name"] in fresh:
+            entry["value"] = fresh[entry["name"]]
+
+
 @contextlib.contextmanager
 def _registration_import_context(cwd: Path | None) -> Iterator[None]:
     """Temporarily import an app like its local uv project."""
@@ -10648,7 +10668,10 @@ def _deploy_apps_impl(
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         agent = _load_finalized_agent(module)
-        effective_config = _merged_config(agent, effective_config)
+        merged = _merged_config(agent, effective_config)
+        if merged != effective_config:
+            _recheck_prerequisites(merged, workspace)
+            session_config = effective_config = merged
         if isinstance(agent, LlmAgent):
             for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=True):
                 if check.name != "Managed sessions" or check.status is not _doctor_mod.Status.FAIL:
@@ -10812,7 +10835,12 @@ def _deploy_apps_impl(
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
     if effective_config is not None:
-        effective_config = _merged_config(agent, effective_config)
+        merged = _merged_config(agent, effective_config)
+        if merged != effective_config:
+            _recheck_prerequisites(merged, workspace)
+            if native_direct:
+                _sync_native_app(app, merged)
+        effective_config = merged
     effective_model = (
         effective_config.model if effective_config is not None else _APPS_DEFAULT_MODEL
     )

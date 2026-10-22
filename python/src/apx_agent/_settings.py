@@ -28,7 +28,9 @@ def _label(agent: BaseAgent) -> str:
 
 
 def _tree(root: BaseAgent) -> list[tuple[BaseAgent, BaseAgent | None]]:
-    """(agent, parent) pairs breadth-first, so a parent precedes its children; each agent once."""
+    """(agent, parent) pairs breadth-first, so a parent precedes its children.
+
+    An agent reached through a second parent appears again, but its children are walked once."""
     from ._topology import _iter_child_agents
     from ._wiring import _agent_tool_nested_agents
 
@@ -37,10 +39,10 @@ def _tree(root: BaseAgent) -> list[tuple[BaseAgent, BaseAgent | None]]:
     queue: list[tuple[BaseAgent, BaseAgent | None]] = [(root, None)]
     while queue:
         node, parent = queue.pop(0)  # ponytail: list as queue; agent trees are small
+        pairs.append((node, parent))  # a revisit is kept: resolve_settings checks it agrees
         if id(node) in seen:
             continue
         seen.add(id(node))
-        pairs.append((node, parent))
         queue += [(child, node) for _, child in _iter_child_agents(node)]
         queue += [(child, node) for child in _agent_tool_nested_agents(node)]
     return pairs
@@ -87,9 +89,16 @@ def resolve_settings(agent: BaseAgent, toml: AgentConfig | None) -> AgentConfig:
                 if value is not None and value != getattr(config, field):
                     raise SettingsConflict(f"{field} is app-wide; set it on the root agent (found on {_label(node)!r}).")
             inherited = effective[id(parent)]
-            effective[id(node)] = {
+            values = {
                 f: getattr(node, f, None) if getattr(node, f, None) is not None else inherited[f] for f in PER_AGENT
             }
+            if id(node) in effective:
+                differ = [f for f in PER_AGENT if values[f] != effective[id(node)][f]]
+                if differ:
+                    raise SettingsConflict(f"{_label(node)!r} is reached through parents that give it different "
+                                           f"{', '.join(differ)}; set it on the agent itself.")
+                continue
+            effective[id(node)] = values
         if not isinstance(node, BaseAgent):
             continue
         node._overrides = MappingProxyType(
