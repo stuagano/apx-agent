@@ -1,5 +1,5 @@
 // App shell for /_apx/topology — owns selection state, fetches the topology JSON,
-// and wires together <TopologyGraph />, and <NodeInspector />.
+// and wires together <TopologyGraph /> and <NodeInspector />.
 //
 // Chrome matches the shared Dev UI nav (_ui_nav.py): APX badge + text tabs.
 // Tracing badge + last-turn route highlight from MLflow / ring buffer.

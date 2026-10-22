@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { NAV_LINKS } from "../nav";
 import { DetailPanel } from "./DetailPanel";
 import { DiscoverGraph } from "./DiscoverGraph";
-import { EDGE_LEGEND, NODE_COLORS, NODE_TYPES, type GraphResponse } from "./types";
+import { EDGE_LEGEND, NODE_COLORS, NODE_TYPES, type GraphNode, type GraphResponse } from "./types";
 
 const COLLAPSE_ABOVE = 2000; // Lattice: collapse schemas instead of virtualizing
 
@@ -14,15 +14,25 @@ export default function DiscoverApp() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [catalogs, setCatalogs] = useState("");
+  const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
   const [hiddenTypes, setHiddenTypes] = useState<ReadonlySet<string>>(new Set());
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [impacted, setImpacted] = useState<ReadonlySet<string> | null>(null);
+  const [impactError, setImpactError] = useState<string | null>(null);
+  const [loadedScope, setLoadedScope] = useState("");
+
+  // Debounce: the input stays responsive, but dagre only re-runs once typing pauses.
+  useEffect(() => {
+    const t = setTimeout(() => setQuery(queryInput), 250);
+    return () => clearTimeout(t);
+  }, [queryInput]);
 
   const load = useCallback((scope: string, refresh: boolean) => {
     setLoading(true);
     setError(null);
+    setLoadedScope(scope.trim());
     const q = new URLSearchParams();
     if (scope.trim()) q.set("catalogs", scope.trim());
     if (refresh) q.set("refresh", "1");
@@ -34,6 +44,7 @@ export default function DiscoverApp() {
       .then((g) => {
         setGraph(g);
         setImpacted(null);
+        setImpactError(null);
         setCollapsed(new Set(g.nodes.length > COLLAPSE_ABOVE ? g.nodes.filter((n) => n.type === "Schema").map((n) => n.id) : []));
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
@@ -60,18 +71,28 @@ export default function DiscoverApp() {
 
   const { nodes, edges, collapsedCounts } = useMemo(() => {
     const all = graph?.nodes ?? [];
+    const q = query.trim().toLowerCase();
+    const matches = (n: GraphNode) =>
+      !q || n.name.toLowerCase().includes(q) || n.fqn.toLowerCase().includes(q);
+    const byNodeId = new Map(all.map((n) => [n.id, n]));
     const hiddenBySchema = new Map<string, number>();
     const hiddenIds = new Set<string>();
+    const revealedSchemas = new Set<string>();
     for (const e of graph?.edges ?? []) {
       if (e.type === "contains" && collapsed.has(e.src)) {
+        const child = byNodeId.get(e.dst);
+        // A search match inside a collapsed schema is shown, and keeps its schema visible.
+        if (q && child && !hiddenTypes.has(child.type) && matches(child)) {
+          revealedSchemas.add(e.src);
+          continue;
+        }
         hiddenIds.add(e.dst);
         hiddenBySchema.set(e.src, (hiddenBySchema.get(e.src) ?? 0) + 1);
       }
     }
-    const q = query.trim().toLowerCase();
     const visible = all.filter((n) =>
       !hiddenTypes.has(n.type) && !hiddenIds.has(n.id)
-      && (!q || n.name.toLowerCase().includes(q) || n.fqn.toLowerCase().includes(q)));
+      && (matches(n) || revealedSchemas.has(n.id)));
     const ids = new Set(visible.map((n) => n.id));
     return {
       nodes: visible,
@@ -81,11 +102,19 @@ export default function DiscoverApp() {
   }, [graph, hiddenTypes, collapsed, query]);
 
   const runImpact = (id: string) => {
-    const q = catalogs.trim() ? `?catalogs=${encodeURIComponent(catalogs.trim())}` : "";
+    setImpactError(null);
+    // Impact uses the scope the graph was loaded with, not whatever is typed in the box now.
+    const q = loadedScope ? `?catalogs=${encodeURIComponent(loadedScope)}` : "";
     fetch(`/_apx/discover/impact/${encodeURIComponent(id)}${q}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d: { impacted: string[] }) => setImpacted(new Set(d.impacted)))
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => setImpactError(e instanceof Error ? e.message : String(e)));
+  };
+
+  const selectNode = (id: string | null) => {
+    setSelected(id);
+    setImpacted(null);
+    setImpactError(null);
   };
 
   const toggle = (set: ReadonlySet<string>, v: string) => {
@@ -95,10 +124,11 @@ export default function DiscoverApp() {
   };
 
   const sel = selected ? byId.get(selected) : undefined;
+  const isEmbedded = typeof window !== "undefined" && window.self !== window.top;
 
   return (
     <div className="apx-app">
-      <div id="apx-header">
+      {!isEmbedded && <div id="apx-header">
         <div id="apx-nav">
           <span className="badge">APX dev</span>
           <span className="apx-nav-meta">
@@ -110,15 +140,16 @@ export default function DiscoverApp() {
             ))}
           </nav>
         </div>
-      </div>
-      <main className="apx-main with-nav">
+      </div>}
+      <main className={`apx-main ${isEmbedded ? "" : "with-nav"}`}>
         <div className="apx-content">
           <aside className="apx-palette">
             <div className="apx-palette-head">
               <div className="apx-palette-title">Workspace graph</div>
               <div className="apx-palette-sub">Assets visible to your identity — the same graph your agent's tools query.</div>
             </div>
-            <input className="apx-dg-input" placeholder="Search name or fqn" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <input className="apx-dg-input" placeholder="Search name or fqn" aria-label="Search assets"
+              value={queryInput} onChange={(e) => setQueryInput(e.target.value)} />
             <label className="apx-palette-sub" htmlFor="apx-dg-catalogs">Catalogs (comma-separated; empty = first 10)</label>
             <input id="apx-dg-catalogs" className="apx-dg-input" value={catalogs} onChange={(e) => setCatalogs(e.target.value)}
               list="apx-dg-catalog-list" onKeyDown={(e) => { if (e.key === "Enter") load(catalogs, false); }} />
@@ -153,7 +184,7 @@ export default function DiscoverApp() {
             {graph && graph.warnings.length > 0 && (
               <div className="apx-dg-warnings" role="status">
                 Partial graph — {graph.warnings.length} source{graph.warnings.length === 1 ? "" : "s"} could not be read:
-                <ul>{graph.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
+                <ul>{graph.warnings.map((w, i) => <li key={`${i}-${w}`}>{w}</li>)}</ul>
               </div>
             )}
             <div className="apx-graph">
@@ -170,16 +201,16 @@ export default function DiscoverApp() {
                   <div className="apx-empty-body">Change the catalog scope, filters, or search.</div></div>
               ) : (
                 <DiscoverGraph nodes={nodes} edges={edges} selected={selected} impacted={impacted}
-                  collapsedCounts={collapsedCounts} onSelect={setSelected}
+                  collapsedCounts={collapsedCounts} onSelect={selectNode}
                   onToggleSchema={(id) => setCollapsed((s) => toggle(s, id))} />
               )}
             </div>
           </div>
           {sel && graph && (
             <DetailPanel node={sel} edges={graph.edges} byId={byId}
-              impactCount={impacted ? impacted.size : null}
-              onSelect={setSelected} onImpact={() => runImpact(sel.id)}
-              onClearImpact={() => setImpacted(null)} onClose={() => { setSelected(null); setImpacted(null); }} />
+              impactCount={impacted ? impacted.size : null} impactError={impactError}
+              onSelect={selectNode} onImpact={() => runImpact(sel.id)}
+              onClearImpact={() => setImpacted(null)} onClose={() => selectNode(null)} />
           )}
         </div>
       </main>

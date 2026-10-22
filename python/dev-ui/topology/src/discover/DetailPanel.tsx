@@ -8,6 +8,7 @@ export interface DetailPanelProps {
   edges: GraphEdge[];
   byId: ReadonlyMap<string, GraphNode>;
   impactCount: number | null;
+  impactError: string | null;
   onSelect: (id: string) => void;
   onImpact: () => void;
   onClearImpact: () => void;
@@ -57,7 +58,7 @@ export function DetailPanel(p: DetailPanelProps) {
           <div className="apx-dg-name-lg">{p.node.name}</div>
           <code className="apx-dg-muted">{p.node.fqn}</code>
         </div>
-        <button type="button" className="apx-btn" onClick={p.onClose}>×</button>
+        <button type="button" className="apx-btn" aria-label="Close" onClick={p.onClose}>×</button>
       </div>
       <div className="apx-palette-actions">
         {p.impactCount === null ? (
@@ -68,6 +69,7 @@ export function DetailPanel(p: DetailPanelProps) {
           </button>
         )}
       </div>
+      {p.impactError && <div className="apx-dg-warnings" role="alert">Impact failed: {p.impactError}</div>}
       {Object.entries(p.node.props).map(([k, v]) => <Prop key={k} k={k} v={v} />)}
       {out.length > 0 && (<><div className="apx-palette-sub">Outgoing</div><ul className="apx-dg-conns">{out.map((e) => link(e.dst, e.type))}</ul></>)}
       {inc.length > 0 && (<><div className="apx-palette-sub">Incoming</div><ul className="apx-dg-conns">{inc.map((e) => link(e.src, e.type))}</ul></>)}

@@ -33,8 +33,8 @@ export async function apxDevFetch(url: string, init: RequestInit = {}): Promise<
   const headers = new Headers(init.headers || {});
   const token = readToken();
   if (token) headers.set("X-APX-Dev-Token", token);
-  // Discover wire/unwire on Apps requires APX_DEV_UI_TOKEN (#611). Ordinary
-  // Dev-UI writes still accept Apps SSO alone.
+  // Forward the dev-UI token when one is stored; on Apps, protected Dev-UI
+  // writes require APX_DEV_UI_TOKEN while ordinary writes accept Apps SSO alone.
   return fetch(url, { ...init, headers });
 }
 

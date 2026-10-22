@@ -1,8 +1,7 @@
 // Right-side details panel for the topology UI.
 //
 // Fetches `/_apx/topology/inspect/{nodeId}` on mount and whenever `nodeId`
-// changes. Supports Save (instructions)
-// via the same Discover SSO write paths.
+// changes. Supports Save (instructions).
 
 import { useEffect, useState } from "react";
 import type {
