@@ -869,7 +869,7 @@ def _render_landing(ctx: AgentContext) -> str:
     return f'<div id="landing">{"".join(parts)}</div>'
 
 
-def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False) -> str:
+def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False, native: bool = False) -> str:
     """Return a self-contained HTML page for interactively testing the agent."""
     from ._ui_table import TABLE_CSS, TABLE_JS
 
@@ -2804,6 +2804,7 @@ inputEl.addEventListener('keydown', e => {{
 // ── Submit ──
 form.addEventListener('submit', async e => {{
   e.preventDefault();
+  if ({str(native).lower()}) return;
   const text = inputEl.value.trim();
   if (!text) return;
   document.getElementById('landing')?.remove();
@@ -2967,9 +2968,20 @@ finalizeTrace(null, 'done');
 inputEl.focus();
 </script>
 {_deploy_overlay_html()}
+{{APX_NATIVE_CHAT}}
 </body>
 </html>"""
-    return page.replace("{APX_TABLE_CSS}", TABLE_CSS).replace("{APX_TABLE_JS}", TABLE_JS)
+    from ._ui_native_chat import native_chat_script
+
+    if native:
+        from ._ui_root_chat import _inline_vendor
+
+        page = page.replace('<script src="/_apx/vendor/marked.min.js"></script>', _inline_vendor())
+        page = page.replace('<script src="/_apx/vendor/purify.min.js"></script>', '')
+        # Native hosts mount chat only; legacy eval, history and deploy controls have no backend.
+        page = page.replace('</head>', '<style>#right-panel,.resize-handle,header nav,#btn-deploy,#setup-banner {display:none!important}</style></head>', 1)
+    return (page.replace("{APX_TABLE_CSS}", TABLE_CSS).replace("{APX_TABLE_JS}", TABLE_JS)
+            .replace("{APX_NATIVE_CHAT}", native_chat_script(root=False) if native else ""))
 
 
 def _build_apx_openapi_spec(

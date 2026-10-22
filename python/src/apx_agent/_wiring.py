@@ -1532,17 +1532,14 @@ def mount_durable_protocol(
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
 ) -> None:
-    """Mount ``/mcp``, ``/.well-known/agent.json``, and ``/health`` only.
+    """Mount discovery and native chat without legacy invocation handlers.
 
-    The Databricks Apps path uses :func:`mount_mcp_endpoints`, which also
-    mounts the root chat UI and ``/_apx/*``. A native ``DurableAgentServer``
-    already serves invocations, so it gets the discovery routes without those
-    extra surfaces. MCP setup still runs inside the host lifespan, the same
-    way :func:`mount_mcp_endpoints` does. :func:`setup_agent` mounts the
-    protocol routes itself, so this does not mount them a second time.
-    ``_apx_protocol_only`` tells that setup to skip the root chat and dev UI.
+    The SDK owns invocation routes and their auth. Keep setup's legacy UI
+    mounts disabled and select native transport explicitly for these pages.
+    The developer chat is opt-in on Apps; the end-user chat is always served.
     """
     app.state._apx_protocol_only = True
+    app.state._apx_native_chat = True
     _state_key = "_apx_durable_protocol_state"
 
     async def _startup() -> None:
@@ -1550,6 +1547,18 @@ def mount_durable_protocol(
         if ctx is None:
             logger.info("mount_durable_protocol: no agent config \u2014 /mcp will 503")
             return
+        from ._ui_root_chat import build_root_chat_router
+
+        app.include_router(build_root_chat_router())
+        if os.environ.get("APX_DEV_UI", "0" if os.environ.get("DATABRICKS_APP_NAME") else "1") != "0":
+            from fastapi.responses import HTMLResponse
+            from ._ui_chat import _render_agent_ui
+
+            @app.get("/_apx/chat", include_in_schema=False)
+            async def native_chat(request: Request) -> HTMLResponse:
+                return HTMLResponse(_render_agent_ui(
+                    ctx, embed=request.query_params.get("embed") == "1", native=True,
+                ))
         try:
             mcp_lifecycle = await _setup_mcp(app, ctx)
         except Exception as exc:  # pragma: no cover \u2014 defensive

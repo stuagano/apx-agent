@@ -5,8 +5,8 @@ Apps deployments). This surface ships in *every* runtime and carries no dev
 write-guard. Markdown libs are inlined from ``_static/vendor`` so the page is
 self-contained (no ``/vendor`` asset route, no CDN — private-link-safe).
 
-It talks to ``POST /invocations``. A body of ``{input:[...]}`` is
-answered as ``{output:[...]}``; ChatAgent callers still send ``{messages}``.
+The host selects native ``/api/invocations`` or declared legacy ``/invocations``
+transport. Native reconnects read persisted state and events without resubmission.
 """
 
 from __future__ import annotations
@@ -125,6 +125,7 @@ __VENDOR__
   }
 
   async function send(text) {
+    if (__NATIVE__) return;
     history.push({ role: 'user', content: text });
     bubble('user', text);
     sendBtn.disabled = true;
@@ -179,12 +180,13 @@ __VENDOR__
     input.style.height = input.scrollHeight + 'px';
   });
 </script>
+__NATIVE_SCRIPT__
 </body>
 </html>
 """
 
 
-def render_root_chat(name: str = "Agent", description: str | None = None) -> str:
+def render_root_chat(name: str = "Agent", description: str | None = None, *, native: bool = False) -> str:
     """The full self-contained chat page, titled for this agent.
 
     :param name: Agent name shown in the title bar and tab. Escaped.
@@ -197,11 +199,15 @@ def render_root_chat(name: str = "Agent", description: str | None = None) -> str
         safe_desc = html.escape(description)
         header += f'<span class="desc">{safe_desc}</span>'
     theme = apx_theme_style()
+    from ._ui_native_chat import native_chat_script
+
     return (
         _PAGE.replace("__VENDOR__", _inline_vendor())
         .replace("__THEME__", theme)
         .replace("__TITLE__", title)
         .replace("__HEADER__", header)
+        .replace("__NATIVE__", str(native).lower())
+        .replace("__NATIVE_SCRIPT__", native_chat_script(root=True) if native else "")
     )
 
 
@@ -220,6 +226,8 @@ def build_root_chat_router() -> APIRouter:
         cfg = getattr(ctx, "config", None)
         name = getattr(cfg, "name", None) or "Agent"
         description = getattr(cfg, "description", None)
-        return HTMLResponse(render_root_chat(name, description))
+        return HTMLResponse(render_root_chat(
+            name, description, native=getattr(request.app.state, "_apx_native_chat", False),
+        ))
 
     return router
