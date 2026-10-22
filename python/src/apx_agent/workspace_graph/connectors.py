@@ -27,6 +27,8 @@ from .schema import Edge, Fragment, Node, node_id
 
 MAX_CATALOGS = 10
 MAX_SCHEMAS = 50
+MAX_LISTED = 50  # per-kind cap passed to the serving / genie / vector-search listers
+MAX_DETAIL_WORKERS = 8
 _SKIP_CATALOGS = frozenset({"system"})
 
 
@@ -154,7 +156,10 @@ _SECURABLE_PREFIX = {"TABLE": "table", "VOLUME": "volume", "FUNCTION": "function
 def serving(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
     """Serving endpoints; ``serves`` edges to the UC models they host."""
     frag = Fragment()
-    for api in list_serving_endpoints(ws):
+    listed = list_serving_endpoints(ws, limit=MAX_LISTED)
+    if len(listed) == MAX_LISTED:
+        frag.warnings.append(f"showing first {MAX_LISTED} serving endpoints")
+    for api in listed:
         nid = node_id("serving", api.name)
         extra = api.extra or {}
         frag.nodes.append(
@@ -183,8 +188,20 @@ def _genie_tables(ws: WorkspaceClient, space_id: str) -> list[str]:
 def genie(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
     """Genie spaces; ``uses`` edges to the tables each space is configured with."""
     frag = Fragment()
-    for api in list_genie_spaces(ws):
-        space_id = (api.extra or {})["space_id"]
+    listed = list_genie_spaces(ws, limit=MAX_LISTED)
+    if len(listed) == MAX_LISTED:
+        frag.warnings.append(f"showing first {MAX_LISTED} genie spaces")
+    space_ids = [(api.extra or {})["space_id"] for api in listed]
+
+    def _detail(space_id: str) -> list[str] | Exception:
+        try:
+            return _genie_tables(ws, space_id)
+        except Exception as exc:  # noqa: BLE001 — one space's detail denied: warn, keep the node
+            return exc
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_DETAIL_WORKERS) as ex:
+        details = list(ex.map(_detail, space_ids))
+    for api, space_id, tables in zip(listed, space_ids, details):
         nid = node_id("genie", space_id)
         frag.nodes.append(
             Node(
@@ -195,10 +212,8 @@ def genie(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
                 {"description": api.description, "mcp_url": api.mcp_url},
             )
         )
-        try:
-            tables = _genie_tables(ws, space_id)
-        except Exception as exc:  # noqa: BLE001 — one space's detail denied: warn, keep the node
-            frag.warnings.append(f"{api.name} tables: {exc}")
+        if isinstance(tables, Exception):
+            frag.warnings.append(f"{api.name} tables: {tables}")
             continue
         frag.edges.extend(Edge(nid, node_id("table", t), "uses") for t in tables)
     return frag
@@ -207,7 +222,10 @@ def genie(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
 def vector_search(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
     """Vector Search indexes; ``indexesFrom`` edges to their source tables."""
     frag = Fragment()
-    for api in list_vector_search_indexes(ws):
+    listed = list_vector_search_indexes(ws, limit=MAX_LISTED)
+    if len(listed) == MAX_LISTED:
+        frag.warnings.append(f"showing first {MAX_LISTED} vector search indexes")
+    for api in listed:
         extra = api.extra or {}
         nid = node_id("vsindex", api.name)
         frag.nodes.append(
@@ -252,7 +270,17 @@ def apps(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
     apps.list denial reads as zero apps rather than a warning.
     """
     frag = Fragment()
-    for agent in discover_app_agents(ws):
+    agents = list(discover_app_agents(ws))
+
+    def _detail(app_name: str) -> list[AppResource] | Exception:
+        try:
+            return ws.apps.get(app_name).resources or []
+        except Exception as exc:  # noqa: BLE001 — one app's detail denied: warn, keep the node
+            return exc
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_DETAIL_WORKERS) as ex:
+        details = list(ex.map(_detail, [a.app_name for a in agents]))
+    for agent, resources in zip(agents, details):
         nid = node_id("app", agent.app_name)
         frag.nodes.append(
             Node(
@@ -267,10 +295,8 @@ def apps(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
                 },
             )
         )
-        try:
-            resources = ws.apps.get(agent.app_name).resources or []
-        except Exception as exc:  # noqa: BLE001 — one app's detail denied: warn, keep the node
-            frag.warnings.append(f"{agent.app_name} resources: {exc}")
+        if isinstance(resources, Exception):
+            frag.warnings.append(f"{agent.app_name} resources: {resources}")
             continue
         for r in resources:
             target = _app_resource_target(r)

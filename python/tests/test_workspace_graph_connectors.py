@@ -327,3 +327,118 @@ def test_connector_registry_names():
         "vector_search",
         "apps",
     }
+
+
+def test_serving_warns_when_listing_cap_hit():
+    ws = MagicMock()
+    ws.config.host = "https://h"
+    ws.serving_endpoints.list.return_value = [
+        SimpleNamespace(name=f"ep{i}", state=None, task=None, config=None)
+        for i in range(60)
+    ]
+    frag = connectors.serving(ws, None)
+    assert len(frag.nodes) == 50
+    assert frag.warnings == ["showing first 50 serving endpoints"]
+
+
+def test_genie_warns_when_listing_cap_hit():
+    ws = MagicMock()
+    ws.config.host = "https://h"
+    ws.genie.list_spaces.return_value = SimpleNamespace(
+        spaces=[
+            SimpleNamespace(space_id=f"g{i}", title=f"S{i}", description=None)
+            for i in range(60)
+        ],
+        next_page_token="more",
+    )
+    ws.genie.get_space.return_value = SimpleNamespace(serialized_space=None)
+    frag = connectors.genie(ws, None)
+    assert len(frag.nodes) == 50
+    assert frag.warnings == ["showing first 50 genie spaces"]
+
+
+def test_vector_search_warns_when_listing_cap_hit(monkeypatch):
+    monkeypatch.setattr(
+        "apx_agent._ui_probe._discover_vs_indexes",
+        lambda ws: [
+            {
+                "endpoint": "vs-ep",
+                "endpoint_state": "ONLINE",
+                "index": f"main.s.idx{i}",
+                "source_table": None,
+                "ready": True,
+                "columns": [],
+            }
+            for i in range(60)
+        ],
+    )
+    ws = MagicMock()
+    ws.config.host = "https://h"
+    frag = connectors.vector_search(ws, None)
+    assert len(frag.nodes) == 50
+    assert frag.warnings == ["showing first 50 vector search indexes"]
+
+
+def test_genie_details_fetched_concurrently_in_order():
+    import threading
+
+    barrier = threading.Barrier(2, timeout=3)
+
+    def get_space(space_id, include_serialized_space):
+        barrier.wait()  # serial fetching would never reach 2 waiters
+        return SimpleNamespace(
+            serialized_space=json.dumps(
+                {"data_sources": {"tables": [{"identifier": f"m.s.{space_id}"}]}}
+            )
+        )
+
+    ws = MagicMock()
+    ws.config.host = "https://h"
+    ws.genie.list_spaces.return_value = SimpleNamespace(
+        spaces=[
+            SimpleNamespace(space_id=f"g{i}", title=f"S{i}", description=None)
+            for i in range(2)
+        ],
+        next_page_token=None,
+    )
+    ws.genie.get_space.side_effect = get_space
+    frag = connectors.genie(ws, None)
+    assert frag.warnings == []
+    assert [n.id for n in frag.nodes] == ["genie:g0", "genie:g1"]
+    assert [(e.src, e.dst) for e in frag.edges] == [
+        ("genie:g0", "table:m.s.g0"),
+        ("genie:g1", "table:m.s.g1"),
+    ]
+
+
+def test_apps_details_fetched_concurrently_in_order(monkeypatch):
+    import threading
+
+    barrier = threading.Barrier(2, timeout=3)
+    agents = [
+        AppAgentInfo(
+            name=f"a{i}",
+            app_name=f"app{i}",
+            url=None,
+            description=None,
+            tool_count=0,
+            state="RUNNING",
+            tools=(),
+        )
+        for i in range(2)
+    ]
+    monkeypatch.setattr(
+        "apx_agent.workspace_graph.connectors.discover_app_agents", lambda ws: agents
+    )
+
+    def get(name):
+        barrier.wait()
+        if name == "app0":
+            raise PermissionError("denied")
+        return SimpleNamespace(resources=[])
+
+    ws = MagicMock()
+    ws.apps.get.side_effect = get
+    frag = connectors.apps(ws, None)
+    assert [n.id for n in frag.nodes] == ["app:app0", "app:app1"]
+    assert frag.warnings == ["app0 resources: denied"]
