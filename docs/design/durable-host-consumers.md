@@ -112,7 +112,7 @@ bodies still stop at `6cdcff86` (2026-10-06).
 | #858 | `apx memory extract` / `_memory_extract.py` | GitHub text still says extraction is unshipped |
 | #864 | Consumer freeze + stop/start SNAPSHOT rollover | Session/invocation HTTP after worker loss (needs Apps OAuth, not PAT) |
 | #575 | Wait | UC Agent Services GA |
-| #909 | Agent Bricks forces `agent-bricks-*` | MCP `mcp-` discovery; workaround is App Space `apps_api` |
+| #909 | Durable `mcp-` names without App Space route to Apps API (`apx_agent._serve`) | Live MCP discovery on a workspace; App Space remains optional |
 | #911 | Doctor names services that need a UI guardrail check | Attachment is UI-only |
 | #946 / #947 | #947: templating + partition shipped; ConversationStore scoped methods rejected | #946 TS vs Python client; #947 durable `user:`/`app:` backend |
 | #954 | Checks, deploy, doctor, native launcher, and `config_from_agent` read Python constructor settings when there is no `AgentConfig` | `[tool.apx.agent]` remains valid until sub-project 3 removes it |

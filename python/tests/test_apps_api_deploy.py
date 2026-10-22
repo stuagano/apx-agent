@@ -357,8 +357,8 @@ def test_uv_lock_unsets_frozen_only_for_that_call(tmp_path: Path, monkeypatch: p
     ("row2", '\n[tool.apx.agent.deploy]\nspace = "app-space"\n', BUNDLE.format(app="mcp-row2", extra=SPACE), None, "mcp-row2"),
     ("row3", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\nspace = "app-space"\n', None, "apps_api", "row3"),
     ("row4", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "row4"),
-    # #909: an mcp- name keeps MCP discovery without an App Space.
-    ("mcp-row4", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "mcp-row4"),
+    # #909: an mcp- name keeps MCP discovery without an App Space or deploy table.
+    ("mcp-row4", "", None, "apps_api", "mcp-row4"),
 ])
 def test_agents_deploy_routes_all_four_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, deploy: str, bundle: str | None,
@@ -373,8 +373,60 @@ def test_agents_deploy_routes_all_four_rows(
     if backend == "apps_api":
         assert payload["deployment_backend"] == "apps_api"
         assert "agent-bricks-" not in payload["app_name"]
+        if deploy == "":
+            assert payload["entrypoint"] == "apx_agent._serve"
     else:
         assert payload.get("deployment_backend") != "apps_api"
+
+
+def test_doctor_routes_mcp_name_without_space_or_bundle(tmp_path: Path) -> None:
+    from apx_agent._doctor import Status
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _doctor_project(tmp_path, "mcp-row", deploy="", bundle=None, agent=LLM.format(name="mcp-row"))
+    deploy_check = next(check for check in check_durable_readiness(root) if check.name == "Deploy")
+    assert deploy_check.status is Status.OK, deploy_check.detail
+    assert "Apps API dedicated" in deploy_check.detail
+    assert "mcp-row" in deploy_check.detail
+
+
+def test_mcp_name_without_deploy_table_keeps_declared_name(tmp_path: Path) -> None:
+    from apx_agent.cli import _resolve_project_app_name
+
+    root = _doctor_project(tmp_path, "mcp-named", deploy="", bundle=None, agent=LLM.format(name="mcp-named"))
+    assert _resolve_project_app_name(root) == "mcp-named"
+
+
+def test_route_mcp_app_to_apps_api_skips_space_and_bundle(tmp_path: Path) -> None:
+    from apx_agent._apps_api_deploy import MCP_APPS_ENTRYPOINT, route_mcp_app_to_apps_api
+
+    bare = AgentConfig(name="mcp-bare", target="durable_agent_server")
+    routed = route_mcp_app_to_apps_api(bare)
+    assert routed is not None and routed.deploy is not None
+    assert routed.deploy.backend == "apps_api"
+    assert routed.deploy.entrypoint == MCP_APPS_ENTRYPOINT
+
+    spaced = AgentConfig(
+        name="mcp-space", target="durable_agent_server", deploy={"space": "app-space"},
+    )
+    assert route_mcp_app_to_apps_api(spaced) is spaced
+
+    explicit = AgentConfig(
+        name="mcp-explicit", target="durable_agent_server",
+        deploy={"backend": "apps_api", "entrypoint": "app"},
+    )
+    assert route_mcp_app_to_apps_api(explicit) is explicit
+
+    (tmp_path / "databricks.yml").write_text("bundle:\n  name: mcp-bundled\n")
+    bundled = AgentConfig(name="mcp-bundled", target="durable_agent_server")
+    assert route_mcp_app_to_apps_api(bundled, cwd=tmp_path) is bundled
+
+
+def test_compile_native_app_refuses_mcp_rename() -> None:
+    from apx_agent._agentbricks_deploy import compile_native_app
+
+    with pytest.raises(click.ClickException, match="apps_api"):
+        compile_native_app(AgentConfig(name="mcp-bare", target="durable_agent_server"))
 
 
 def test_apps_api_name_is_not_agent_bricks_prefixed(tmp_path: Path) -> None:

@@ -539,15 +539,15 @@ def _stage_deploy(loaded: _Loaded) -> Check:
     import yaml
 
     from ._agentbricks_deploy import validate_cli_deployment
+    from ._apps_api_deploy import preflight_apps_api, route_mcp_app_to_apps_api
 
-    declared = loaded.config.deploy
+    config = route_mcp_app_to_apps_api(loaded.config, cwd=loaded.project)
+    declared = None if config is None else config.deploy
     if declared is not None and declared.backend == "apps_api":
         # Rows 3 and 4 are declaration-driven. A missing databricks.yml is expected
         # and must not SKIP this stage.
         try:
-            from ._apps_api_deploy import preflight_apps_api
-
-            return Check("Deploy", Status.OK, preflight_apps_api(loaded.project, loaded.config, loaded.agent))
+            return Check("Deploy", Status.OK, preflight_apps_api(loaded.project, config, loaded.agent))
         except click.ClickException as exc:
             return Check("Deploy", Status.FAIL, exc.message, "Fix the Apps API declaration and re-run (first rejection only).")
         except BaseException as exc:
