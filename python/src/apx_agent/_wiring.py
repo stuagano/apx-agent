@@ -419,7 +419,7 @@ def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None
 
 def _apply_remote_leaf_bindings(
     root: BaseAgent,
-    bindings: dict[str, str],
+    bindings: dict[str, Any],
 ) -> None:
     """Resolve named leaf bindings once without changing the logical graph."""
     if hasattr(root, "_apx_remote_leaf_bindings"):
@@ -477,7 +477,8 @@ def _apply_remote_leaf_bindings(
                 f"leaf; found {len(matches)}"
             )
 
-        card_url = resolve_env_var(reference).strip()
+        native = not isinstance(reference, str)
+        card_url = resolve_env_var(reference.url if native else reference).strip()
         if not card_url:
             raise ValueError(
                 f"remote binding {logical_name!r} resolved to a blank A2A card URL"
@@ -504,13 +505,17 @@ def _apply_remote_leaf_bindings(
             )
 
         control_position = matches[0]
+        if native and (control_position not in {None, "sequence"} or parsed.path not in {"", "/"}):
+            raise ValueError("Native bindings require a sequential leaf and an App base URL")
         # Loop/handoff peers route via a typed control signal on the reply
         # (ControlSignal → reconstructed sentinel tool_call), so a bound leaf in
         # these positions resolves like a sequential one. A handoff peer may only
         # transfer to a sibling in the local graph (FR-4 allowlist).
         transfer_targets = handoff_siblings.get(logical_name, frozenset())
         resolved[logical_name] = _RemoteLeafBinding(
-            logical_name, card_url, transfer_targets=transfer_targets
+            logical_name, card_url, transfer_targets=transfer_targets,
+            transport="native" if native else "a2a",
+            timeout_s=reference.timeout_s if native else 60,
         )
 
     setattr(root, "_apx_remote_leaf_bindings", MappingProxyType(resolved))

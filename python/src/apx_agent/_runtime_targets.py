@@ -103,7 +103,8 @@ def inspect_target(
     for node in nodes:
         nodes.extend(child for _, child in _iter_child_agents(node) if child not in nodes)
     declared = {
-        "user_identity": any(op.requires_request_context for op in operations) or bool(list(_iter_sub_agents(agent))),
+        "user_identity": any(op.requires_request_context for op in operations) or bool(list(_iter_sub_agents(agent)))
+        or any(binding.transport == "native" for binding in getattr(agent, "_apx_remote_leaf_bindings", {}).values()),
         "long_term_memory": (config is not None and config.memory is not None) or any(getattr(node, "memory_config", None) is not None for node in nodes),
         "sessions": effective_session is not None or any(getattr(node, "session_config", None) is not None for node in nodes),
     }

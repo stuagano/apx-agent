@@ -117,6 +117,7 @@ class CompileContext:
     across turns. Requires a ``thread_id`` in the invoke config."""
     request: "Request | None" = None
     remote_leaf_bindings: Mapping[str, _RemoteLeafBinding] = field(default_factory=dict)
+    logical_predecessor: str | None = None
     escalate_failures: bool = False
     step_path: tuple[str, ...] = ()
     fixture_replay: _FixtureReplay | None = None
@@ -530,9 +531,10 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
     protected = escalate or _has_step_policy(agent) or ctx.fixture_replay is not None
     path = ctx.step_path or (agent._name or "sequence",)
 
-    def _step(sub: BaseAgent, name: str) -> Any:
+    def _step(sub: BaseAgent, name: str, predecessor: str | None) -> Any:
         step_path = (*path, name)
-        child_ctx = replace(ctx, escalate_failures=escalate, step_path=step_path if protected else ctx.step_path)
+        child_ctx = replace(ctx, escalate_failures=escalate, step_path=step_path if protected else ctx.step_path,
+                            logical_predecessor=predecessor)
         compiled = _compile_any(sub, child_ctx)
         if not agent._instructions and not protected:
             return compiled
@@ -584,7 +586,7 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
         if name in node_names:
             name = f"{name}_{i}"  # disambiguate accidental collisions
         node_names.append(name)
-        graph.add_node(name, _step(sub, name))
+        graph.add_node(name, _step(sub, name, node_names[-2] if i else ctx.logical_predecessor))
 
     if protected and not ctx.step_path:
         # Do not let caller-supplied or prior-turn failure/evidence state affect
@@ -1204,6 +1206,7 @@ def _agent_needs_node_wrap(agent: LlmAgent) -> bool:
         or agent._after_agent_callback is not None
         or getattr(agent, "_output_key", None)
         or agent._output_schema is not None
+        or agent._input_schema is not None
         or _has_template(agent)
     )
 
@@ -1229,6 +1232,10 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
     async def _node(state: dict[str, Any]) -> dict[str, Any]:
         input_msgs = list(state["messages"])
         keyed = state.get("state") or {}
+        if agent._input_schema is not None:
+            from ._native_input import native_data_part
+
+            native_data_part(agent._input_schema, keyed.get(agent._input_key))
 
         await agent._invoke_callback(agent._before_agent_callback, input_msgs)
         rejection = await agent._apply_input_guardrails(input_msgs)
@@ -1446,6 +1453,10 @@ def _compile_bound_remote_leaf(
 
     async def _node(state: dict[str, Any]) -> dict[str, Any]:
         messages: list[Message | dict[str, Any]] = []
+        if binding.transport == "native":
+            from ._native_remote import invoke_native_leaf
+
+            return await invoke_native_leaf(logical_leaf, binding, state, _incoming_headers(), ctx.logical_predecessor)
         for index, message in enumerate(state["messages"]):
             if isinstance(message, ToolMessage) or (
                 isinstance(message, AIMessage) and message.tool_calls

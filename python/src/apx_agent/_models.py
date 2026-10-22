@@ -644,6 +644,15 @@ def normalize_workflows(value: Any) -> list[ExampleWorkflow]:
     ]
 
 
+class NativeBinding(BaseModel):
+    """Explicit SDK-native remote; legacy string bindings retain A2A transport."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    transport: Literal["native"]
+    url: str
+    timeout_s: float = Field(default=60, gt=0, le=600)
+
+
 class AgentConfig(BaseModel):
     """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
 
@@ -700,8 +709,8 @@ class AgentConfig(BaseModel):
     max_iterations: int = 10  # safety cap on the tool-calling loop
     vector_search_index: str | None = None  # FQ index name; wired as a vector_search_tool by finalize_agent
     sub_agents: list[str] = []  # URLs (or $ENV_VAR refs) of remote agents to consume as tools
-    bindings: dict[str, str] = Field(default_factory=dict)
-    """Logical leaf name to remote A2A card URL or `$ENV_VAR` reference."""
+    bindings: dict[str, str | NativeBinding] = Field(default_factory=dict)
+    """Logical leaf to A2A card URL / `$ENV_VAR`, or explicit native App binding."""
     url: str | None = None  # Public URL of this agent (supports $ENV_VAR); used for registry self-announcement
     registry: str | None = None  # URL of an agent registry to auto-register with on startup (supports $ENV_VAR)
     api_prefix: str = "/api"  # route prefix for tool endpoints

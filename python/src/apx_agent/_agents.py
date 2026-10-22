@@ -131,6 +131,8 @@ class LlmAgent(BaseAgent):
     ``SequentialAgent`` or ``ParallelAgent`` composition.
 
     ``output_schema`` declares a Pydantic model for the final JSON answer.
+    ``input_schema`` and ``input_key`` declare a bounded native domain object
+    and its keyed-state slot, available to tools through ``Dependencies.State``.
     The compiled producer validates strictly before publishing JSON-compatible
     data to ``output_key`` or calling ``after_agent_callback``. ``run`` still
     returns a string (serialized validated JSON); ``stream`` buffers typed
@@ -182,6 +184,8 @@ class LlmAgent(BaseAgent):
         session_budget: dict[str, int | float] | None = None,
         tool_loading: str = "eager",
         output_schema: type[BaseModel] | None = None,
+        input_schema: type[BaseModel] | None = None,
+        input_key: str | None = None,
         timeout_s: float | None = None,
         model: str | None = None,
         target: RuntimeTarget | None = None,
@@ -216,6 +220,11 @@ class LlmAgent(BaseAgent):
         ):
             raise TypeError("output_schema must be a Pydantic BaseModel subclass")
         self._output_schema = output_schema
+        from ._native_input import validate_input_declaration
+
+        validate_input_declaration(input_schema, input_key)
+        self._input_schema = input_schema
+        self._input_key = input_key
         if timeout_s is not None:
             if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or not math.isfinite(timeout_s) or timeout_s <= 0:
                 raise ValueError("timeout_s must be a positive finite number")

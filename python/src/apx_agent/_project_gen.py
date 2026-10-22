@@ -172,11 +172,11 @@ def _build_pyproject(config: "AgentConfig") -> str:
     lines.append("")
 
     if config.bindings:
-        _write_toml_section(
-            lines,
-            "tool.apx.agent.bindings",
-            config.bindings,
-        )
+        lines.append("[tool.apx.agent.bindings]")
+        for key, binding in config.bindings.items():
+            value = binding if isinstance(binding, str) else binding.model_dump()
+            lines.append(f"{key} = {_toml_value_nested(value)}")
+        lines.append("")
 
     # [tool.apx.agent.service_policies] — omit the default empty declaration
     # so existing generated projects remain byte-for-byte compatible.
