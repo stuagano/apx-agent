@@ -304,22 +304,40 @@ def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
             f"Failed to import agent module: {e}\n"
             "Check that your agent file has no syntax errors and all imports are available."
         ) from e
-    finalize_agent(agent, config, pyproject_path=None)
+    from ._settings import SettingsConflict
+
+    try:
+        finalize_agent(agent, config, pyproject_path=None)
+    except SettingsConflict as e:
+        raise click.ClickException(str(e)) from e
     return agent
 
 
 def _config_from_project_or_agent(cwd: Path, module: str):
-    """The effective config: ``[tool.apx.agent]`` merged with the Python agent's settings."""
+    """``[tool.apx.agent]`` when present (merged later); otherwise the Python agent's settings."""
     from ._inspection import _load_agent_config
     from ._settings import resolve_settings
 
     config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    if config is not None:
+        # Merged once the deploy flow loads the agent (after its prerequisite checks).
+        return config, None
     if (cwd / "databricks.yml").exists() or (cwd / "databricks.yml").is_symlink():
-        return config, None
+        return None, None
     if not (cwd / "agent.py").is_file() and module == "agent:agent":
-        return config, None
+        return None, None
     agent = _load_finalized_agent(module)
-    return resolve_settings(agent, config), agent
+    return resolve_settings(agent, None), agent
+
+
+def _merged_config(agent, config):
+    """``[tool.apx.agent]`` merged with the agent's settings; a conflict is a CLI error."""
+    from ._settings import SettingsConflict, resolve_settings
+
+    try:
+        return resolve_settings(agent, config)
+    except SettingsConflict as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @contextlib.contextmanager
@@ -10630,6 +10648,7 @@ def _deploy_apps_impl(
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         agent = _load_finalized_agent(module)
+        effective_config = _merged_config(agent, effective_config)
         if isinstance(agent, LlmAgent):
             for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=True):
                 if check.name != "Managed sessions" or check.status is not _doctor_mod.Status.FAIL:
@@ -10792,6 +10811,8 @@ def _deploy_apps_impl(
                 log(f"  {check.fix}")
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+    if effective_config is not None:
+        effective_config = _merged_config(agent, effective_config)
     effective_model = (
         effective_config.model if effective_config is not None else _APPS_DEFAULT_MODEL
     )

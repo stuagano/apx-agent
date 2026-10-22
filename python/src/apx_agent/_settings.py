@@ -18,6 +18,10 @@ APP_WIDE = ("target", "recovery", "gateway", "service_policies", "guardrails", "
 _ROOT_ONLY = {"memory": "memory_config", "session": "session_config"}
 
 
+class SettingsConflict(ValueError):
+    """Python and [tool.apx.agent], or a child and the root, declare different values."""
+
+
 def _label(agent: BaseAgent) -> str:
     name = getattr(agent, "_name", None)
     return name if name else type(agent).__name__
@@ -43,27 +47,35 @@ def _tree(root: BaseAgent) -> list[tuple[BaseAgent, BaseAgent | None]]:
 
 
 def resolve_settings(agent: BaseAgent, toml: AgentConfig | None) -> AgentConfig:
-    """The app's effective AgentConfig. Raises ValueError on a conflict.
+    """The app's effective AgentConfig. Raises SettingsConflict on a conflict.
+
+    An object that isn't a BaseAgent (a custom or test agent) reads as declaring nothing.
 
     Writes each node's per-agent values that differ from the app's into
     ``node._overrides``; recomputed on every call, so calling twice is safe."""
     declared: dict[str, Any] = {
-        f: getattr(agent, f) for f in (*PER_AGENT, *APP_WIDE) if getattr(agent, f) is not None
+        f: getattr(agent, f, None) for f in (*PER_AGENT, *APP_WIDE) if getattr(agent, f, None) is not None
     }
+    # memory/session only fill gaps: finalize_agent binds the toml's onto the agent, so no conflict check.
     declared.update({
-        f: getattr(agent, attr) for f, attr in _ROOT_ONLY.items() if getattr(agent, attr, None) is not None
+        f: getattr(agent, attr) for f, attr in _ROOT_ONLY.items()
+        if getattr(agent, attr, None) is not None and (toml is None or f not in toml.model_fields_set)
     })
     name = getattr(agent, "_name", None)
-    ours = AgentConfig.model_validate({"name": name if name else "agent", **declared})
+    # Validate against the toml's target: cross-field rules (e.g. sessions) depend on it.
+    base = {"target": toml.target} if toml is not None else {}
+    ours = AgentConfig.model_validate({"name": name if name else "agent", **base, **declared})
     if toml is None:
         config = ours
     else:
         for field in declared:
             theirs, mine = getattr(toml, field), getattr(ours, field)
             if field in toml.model_fields_set and theirs != mine:
-                raise ValueError(f"{field}: agent.py sets {mine!r} on agent {_label(agent)!r}; "
+                raise SettingsConflict(f"{field}: agent.py sets {mine!r} on agent {_label(agent)!r}; "
                                  f"[tool.apx.agent] sets {theirs!r}. Set it in one place.")
         config = toml.model_copy(update={f: getattr(ours, f) for f in declared}) if declared else toml
+
+    from ._agents import BaseAgent
 
     effective: dict[int, dict[str, Any]] = {}
     for node, parent in _tree(agent):
@@ -71,13 +83,15 @@ def resolve_settings(agent: BaseAgent, toml: AgentConfig | None) -> AgentConfig:
             effective[id(node)] = {f: getattr(config, f) for f in PER_AGENT}
         else:
             for field in APP_WIDE:
-                value = getattr(node, field)
+                value = getattr(node, field, None)
                 if value is not None and value != getattr(config, field):
-                    raise ValueError(f"{field} is app-wide; set it on the root agent (found on {_label(node)!r}).")
+                    raise SettingsConflict(f"{field} is app-wide; set it on the root agent (found on {_label(node)!r}).")
             inherited = effective[id(parent)]
             effective[id(node)] = {
-                f: getattr(node, f) if getattr(node, f) is not None else inherited[f] for f in PER_AGENT
+                f: getattr(node, f, None) if getattr(node, f, None) is not None else inherited[f] for f in PER_AGENT
             }
+        if not isinstance(node, BaseAgent):
+            continue
         node._overrides = MappingProxyType(
             {f: v for f, v in effective[id(node)].items() if v is not None and v != getattr(config, f)}
         )

@@ -80,3 +80,66 @@ def test_shared_leaf_is_visited_once() -> None:
     shared = _leaf("shared", target="durable_agent_server")
     root = SequentialAgent([shared, shared], target="durable_agent_server")
     assert resolve_settings(root, None).target == "durable_agent_server"
+
+
+from apx_agent import _compile
+from apx_agent._compile import compile_to_langgraph
+from apx_agent._tool_scope import get_scope
+from apx_agent._wiring import finalize_agent
+
+
+def _record_models(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    seen: list[str] = []
+    real = _compile._build_chat_databricks
+
+    def build(model: str, **kwargs):
+        seen.append(model)
+        return real(model, **kwargs)
+
+    monkeypatch.setattr(_compile, "_build_chat_databricks", build)
+    return seen
+
+
+def test_leaf_compiles_with_its_own_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _record_models(monkeypatch)
+    root = SequentialAgent([_leaf("a", model="special"), _leaf("b")], model="app")
+    resolve_settings(root, None)
+    compile_to_langgraph(root, ws=None, model="app")
+    assert sorted(seen) == ["app", "special"]
+
+
+def test_apx_model_pin_wins_for_inheriting_leaves(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _record_models(monkeypatch)
+    root = SequentialAgent([_leaf("a"), _leaf("b", model="special")], model="app")
+    resolve_settings(root, None)
+    compile_to_langgraph(root, ws=None, model="pinned")
+    assert sorted(seen) == ["pinned", "special"]
+
+
+def test_each_leafs_tools_get_its_own_identity() -> None:
+    def tool_a(q: str) -> str:
+        """A."""
+        return q
+
+    def tool_b(q: str) -> str:
+        """B."""
+        return q
+
+    a = Agent(name="a", tools=[tool_a], identity="obo")
+    b = Agent(name="b", tools=[tool_b])
+    root = SequentialAgent([a, b], identity="sp", target="durable_agent_server", model="m")
+    finalize_agent(root, resolve_settings(root, None))
+    assert get_scope(a._tool_fns[0]).identity == "obo"
+    assert get_scope(b._tool_fns[0]).identity == "sp"
+
+
+def test_an_object_without_settings_reads_as_unset() -> None:
+    toml = _toml(model="m")
+    assert resolve_settings(object(), toml) is toml  # type: ignore[arg-type]
+
+
+def test_toml_memory_wins_over_the_agents_bound_memory() -> None:
+    # finalize_agent binds [tool.apx.agent].memory onto the agent; that is not a conflict.
+    toml = _toml(memory={"type": "managed", "store_name": "toml-store"})
+    root = _leaf(memory="managed")
+    assert resolve_settings(root, toml).memory == toml.memory

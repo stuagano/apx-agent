@@ -256,9 +256,9 @@ def test_deploy_config_merges_agent_and_toml(tmp_path: Path, monkeypatch: pytest
         '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\nmodel = "toml-model"\n')
     (tmp_path / "agent.py").write_text("")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_load_finalized_agent", lambda module: Agent(name="p", tools=[_noop], model="py-model"))
-    with pytest.raises(ValueError, match="Set it in one place"):
-        cli._config_from_project_or_agent(tmp_path, "agent:agent")
-    monkeypatch.setattr(cli, "_load_finalized_agent", lambda module: Agent(name="p", tools=[_noop], identity="obo"))
-    config, agent = cli._config_from_project_or_agent(tmp_path, "agent:agent")
-    assert (config.model, config.identity, agent.identity) == ("toml-model", "obo", "obo")
+    toml, preloaded = cli._config_from_project_or_agent(tmp_path, "agent:agent")
+    assert preloaded is None  # the agent loads after the deploy prerequisite checks
+    with pytest.raises(click.ClickException, match="Set it in one place"):
+        cli._merged_config(Agent(name="p", tools=[_noop], model="py-model"), toml)
+    config = cli._merged_config(Agent(name="p", tools=[_noop], identity="obo"), toml)
+    assert (config.model, config.identity) == ("toml-model", "obo")

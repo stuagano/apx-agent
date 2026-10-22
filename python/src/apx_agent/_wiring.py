@@ -529,6 +529,18 @@ def ensure_scope_guard(agent: BaseAgent) -> None:
         attach_scope_guard(leaf)
 
 
+def _apply_leaf_identities(agent: BaseAgent, config: AgentConfig | None) -> None:
+    """Stamp each leaf's effective identity onto that leaf's tools that declare none."""
+    from ._agent_identity import apply_agent_identity  # noqa: PLC0415
+    from ._settings import resolve_settings  # noqa: PLC0415
+
+    app = resolve_settings(agent, config)
+    for leaf in _collect_guardrail_targets(agent):
+        identity = leaf._overrides.get("identity", app.identity)
+        if identity is not None:
+            apply_agent_identity(leaf, identity)
+
+
 def finalize_agent(
     agent: BaseAgent,
     config: AgentConfig | None = None,
@@ -579,13 +591,7 @@ def finalize_agent(
         # of their own, so per-tool overrides still win and undeclared tools
         # inherit the agent principal. Run after all tools are attached and
         # before guardrails so ScopeGuard / authorization compile see it.
-        identity = getattr(agent, "identity", None)
-        if identity is None:
-            identity = config.identity
-        if identity is not None:
-            from ._agent_identity import apply_agent_identity  # noqa: PLC0415
-
-            apply_agent_identity(agent, identity)
+        _apply_leaf_identities(agent, config)
 
         # Attach guards after memory/VS tools so ScopeGuard sees all scoped
         # tools, not just those on the agent at construction.
@@ -602,11 +608,8 @@ def finalize_agent(
         if isinstance(agent, DataAgent):
             agent.bind_workspace(ws)
 
-    constructor_identity = getattr(agent, "identity", None)
-    if config is None and isinstance(constructor_identity, str):
-        from ._agent_identity import apply_agent_identity  # noqa: PLC0415
-
-        apply_agent_identity(agent, constructor_identity)
+    if config is None:
+        _apply_leaf_identities(agent, None)
 
     # Scope wiring is independent of [tool.apx.agent]: a Python-API agent
     # with build_tool(scope=...) still needs a runtime guard. apply_config_
