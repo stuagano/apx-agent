@@ -116,3 +116,13 @@ def test_topology_bundle_carries_agentkit_palette() -> None:
         Artifact(str(css[0]), min_bytes=1000, must_contain="#1a73e8"),
         *(Artifact(str(p), min_bytes=1000, must_not_contain="#11171C") for p in js),
     )
+
+
+def test_data_inspector_launcher_is_current_durable_template() -> None:
+    from apx_agent._project_gen import _START_HOST_CONTENT, _START_SERVER_CONTENT
+
+    server = SRC.parents[1] / "examples" / "data-inspector" / "agent_server"
+    assert (server / "start_server.py").read_text(encoding="utf-8") == _START_SERVER_CONTENT
+    assert (server / "start_host.py").read_text(encoding="utf-8") == _START_HOST_CONTENT
+    # The `agents deploy --target apps` launcher gate (cli.py) keys on this name.
+    assert "DurableAgentServer" in _START_SERVER_CONTENT
