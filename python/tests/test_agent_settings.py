@@ -132,3 +132,40 @@ def test_launcher_compiles_from_agent_model(
     assert kwargs["config"].name == "proof"
     assert kwargs["config"].target == "durable_agent_server"
     assert kwargs["service_ws"] is ws
+
+
+from apx_agent import HandoffAgent, KeywordRouter, LoopAgent, ParallelAgent, RouterAgent, SequentialAgent
+
+
+def _leaf(name: str = "leaf", **settings: Any) -> Agent:
+    return Agent(name=name, tools=[_noop], **settings)
+
+
+@pytest.mark.parametrize("build", [
+    lambda **s: SequentialAgent([_leaf()], **s),
+    lambda **s: ParallelAgent([_leaf()], **s),
+    lambda **s: RouterAgent([_leaf()], **s),
+    lambda **s: LoopAgent(_leaf(), **s),
+    lambda **s: HandoffAgent([_leaf()], **s),
+    lambda **s: KeywordRouter([("a", _leaf(), ["a"])], default=_leaf("d"), **s),
+])
+def test_every_agent_class_takes_settings(build: Any) -> None:
+    agent = build(model="m", target="durable_agent_server", knowledge="./okf")
+    assert (agent.model, agent.target, agent.knowledge) == ("m", "durable_agent_server", "./okf")
+
+
+def test_unset_settings_are_none() -> None:
+    agent = SequentialAgent([_leaf()])
+    assert agent.model is None and agent.recovery is None and agent.identity is None
+
+
+def test_unknown_setting_is_a_type_error() -> None:
+    with pytest.raises(TypeError, match="modle"):
+        SequentialAgent([_leaf()], modle="m")  # type: ignore[call-arg]
+
+
+def test_composite_rejects_invalid_identity_and_recovery_on_responses() -> None:
+    with pytest.raises(ValueError, match="identity"):
+        SequentialAgent([_leaf()], identity="not-a-mode")
+    with pytest.raises(ValueError, match="recovery requires"):
+        SequentialAgent([_leaf()], recovery=True, target="responses_agent")
