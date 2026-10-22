@@ -11,7 +11,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.apps import AppResource
@@ -289,7 +289,10 @@ def lineage(ws: WorkspaceClient, table_fqns: list[str]) -> Fragment:
         )
 
     def _one(fqn: str) -> list[Edge]:
-        resp = ws.api_client.do("GET", _LINEAGE_PATH, query={"table_name": fqn})
+        resp = cast(
+            dict[str, Any],
+            ws.api_client.do("GET", _LINEAGE_PATH, query={"table_name": fqn}),
+        )
         return [
             Edge(
                 node_id("table", fqn),
