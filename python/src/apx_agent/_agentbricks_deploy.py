@@ -62,6 +62,11 @@ def compile_native_app(config: AgentConfig) -> dict[str, Any]:
     """Compile the native app command and environment without a Bundle."""
     from ._memory_wiring import declared_replica_bounds, declared_max_replicas, scaled_in_memory, scaled_in_memory_error
 
+    if config.name.startswith("mcp-"):
+        raise click.ClickException(
+            "Agent Bricks would rename mcp- apps and drop MCP discovery. "
+            "Durable mcp- names deploy through backend='apps_api' automatically."
+        )
     if scaled_in_memory(config, ws=None):
         raise click.ClickException(scaled_in_memory_error(declared_max_replicas(config)))
     env = [

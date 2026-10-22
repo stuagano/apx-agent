@@ -31,8 +31,9 @@ and managed sessions and memory replace app-owned state on that path.
   App Space projects (#907, #908).
 - **Apps API deploy path.** `[tool.apx.agent.deploy] backend = "apps_api"`,
   with `entrypoint`, `include` and `env`, deploys with get-or-create steps and
-  keeps the declared app name. Use it for `mcp-` names that the Agent Bricks CLI
-  would rename (#913, #915).
+  keeps the declared app name. Durable `mcp-` names without App Space take this
+  path automatically so MCP discovery is not renamed to `agent-bricks-mcp-*`
+  (#909, #913, #915).
 - **Agent identity (#816).** `[tool.apx.agent] identity` declares the agent's own
   principal: `"sp"`, `"obo"` or `"named-sp:<name>"`. Tools that declare no
   identity inherit it; a per-tool `identity` still wins. `apx-agent deploy`

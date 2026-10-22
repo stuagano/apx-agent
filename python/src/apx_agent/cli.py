@@ -310,17 +310,18 @@ def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
 
 def _config_from_project_or_agent(cwd: Path, module: str):
     """``[tool.apx.agent]`` when present; otherwise the Python agent (sub-project 2)."""
+    from ._apps_api_deploy import route_mcp_app_to_apps_api
     from ._inspection import _load_agent_config, config_from_agent
 
     config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
     if config is not None:
-        return config, None
+        return route_mcp_app_to_apps_api(config, cwd=cwd), None
     if (cwd / "databricks.yml").exists() or (cwd / "databricks.yml").is_symlink():
         return None, None
     if not (cwd / "agent.py").is_file() and module == "agent:agent":
         return None, None
     agent = _load_finalized_agent(module)
-    return config_from_agent(agent), agent
+    return route_mcp_app_to_apps_api(config_from_agent(agent), cwd=cwd), agent
 
 
 @contextlib.contextmanager
@@ -10298,7 +10299,10 @@ def _resolve_project_app_name(
     if not (cwd / "databricks.yml").exists() and not (cwd / "databricks.yml").is_symlink():
         from ._inspection import _load_agent_config
         from ._agentbricks_deploy import compile_native_app
-        config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        from ._apps_api_deploy import route_mcp_app_to_apps_api
+        config = route_mcp_app_to_apps_api(
+            _load_agent_config(pyproject_path=cwd / "pyproject.toml"), cwd=cwd,
+        )
         # Apps API keeps the declared name. Only the Agent Bricks path adds its prefix.
         if config is not None and config.deploy is not None and config.deploy.backend == "apps_api":
             return config.name

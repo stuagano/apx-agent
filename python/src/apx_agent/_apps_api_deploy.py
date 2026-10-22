@@ -10,6 +10,7 @@ from typing import Any
 import click
 
 from ._apps_authorization import AppFamilyPermissions, AuthorizationPlan
+from ._models import AgentConfig, DeployConfig
 
 GRANT_UPDATE_MASK = "user_api_scopes,resources"
 APX_MODEL_ENV = "APX_MODEL"
@@ -17,6 +18,25 @@ TRACKING_ENV = "MLFLOW_TRACKING_URI"
 EXPERIMENT_ENV = "MLFLOW_EXPERIMENT_ID"
 MEMORY_ENV = "AGENT_MEMORY_STORE"
 SESSION_ENV = "AGENT_SESSION_STORE"
+MCP_APPS_ENTRYPOINT = "apx_agent._serve"
+
+
+def route_mcp_app_to_apps_api(config: AgentConfig | None, *, cwd: Path | None = None) -> AgentConfig | None:
+    """Keep ``mcp-`` names discoverable: Agent Bricks would prefix ``agent-bricks-`` (#909)."""
+    if config is None or not config.name.startswith("mcp-"):
+        return config
+    if config.target != "durable_agent_server":
+        return config
+    deploy = config.deploy
+    if deploy is not None and (deploy.backend == "apps_api" or deploy.space is not None):
+        return config
+    if cwd is not None and ((cwd / "databricks.yml").exists() or (cwd / "databricks.yml").is_symlink()):
+        return config
+    if deploy is None:
+        routed = DeployConfig(backend="apps_api", entrypoint=MCP_APPS_ENTRYPOINT)
+    else:
+        routed = deploy.model_copy(update={"backend": "apps_api", "entrypoint": MCP_APPS_ENTRYPOINT})
+    return config.model_copy(update={"deploy": routed})
 
 
 def deploy_apps_api(

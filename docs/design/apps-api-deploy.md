@@ -42,9 +42,12 @@ This is the routing table. "Four rows" means these four, and no others.
 | 3 | `apps_api` | set | this spec, App Space branch | preflight the same Apps API space rules, offline |
 | 4 | `apps_api` | absent | this spec, dedicated branch | preflight the same Apps API dedicated rules, offline |
 
-Rows 1 and 2 are unchanged. Doctor does not deploy, create apps, or create
-stores. For rows 3 and 4 it checks the declaration and the staged source shape
-only, with the same offline posture as today.
+Rows 1 and 2 are unchanged, except a durable `mcp-` name with no `space` and
+no `databricks.yml` is routed to row 4 automatically (`entrypoint` defaults
+to `apx_agent._serve`) so Agent Bricks cannot rename it to `agent-bricks-mcp-*`
+(#909). Doctor does not deploy, create apps, or create stores. For rows 3 and
+4 it checks the declaration and the staged source shape only, with the same
+offline posture as today.
 
 ## Steps
 
