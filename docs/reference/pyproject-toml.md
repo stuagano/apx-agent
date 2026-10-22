@@ -42,6 +42,29 @@ module      = "agent:agent"
 | `examples` | list[string] | `[]` | Starter prompts shown as chips on the chat landing page |
 | `sub_agents` | list[string] | `[]` | URLs of remote agents to attach as tools |
 
+### Setting these in Python
+
+Any agent accepts the runtime fields as keyword arguments. A field set both in
+Python and in `[tool.apx.agent]` must have the same value.
+
+```python
+# before: pyproject.toml
+# [tool.apx.agent]
+# model = "system.ai.claude-sonnet-4-6"
+# target = "durable_agent_server"
+
+# after: agent.py
+agent = SequentialAgent(
+    [researcher, Agent(name="writer", tools=[draft], model="system.ai.claude-opus-4-7")],
+    model="system.ai.claude-sonnet-4-6",
+    target="durable_agent_server",
+)
+```
+
+`model` and `identity` are per-agent: an agent uses its own value, else its
+nearest ancestor's, else the app's. Every other field is app-wide: set it on
+the root; a different value on a child fails.
+
 ### `examples` — starter prompts
 
 ```toml
