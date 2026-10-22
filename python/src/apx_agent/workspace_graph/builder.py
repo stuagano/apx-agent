@@ -6,6 +6,7 @@ import concurrent.futures
 import difflib
 import hashlib
 import logging
+import threading
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator
@@ -224,6 +225,7 @@ class _Cached:
 # ponytail: in-process cache — each replica builds its own; move to a shared
 # cache if Discover runs multi-replica. Concurrent misses may build twice.
 _CACHE: dict[str, _Cached] = {}
+_LOCK = threading.Lock()
 
 
 def _identity(ws: WorkspaceClient) -> str:
@@ -238,11 +240,13 @@ def get_graph(
 ) -> Graph:
     now = time.monotonic()
     key = f"{_identity(ws)}|{','.join(sorted(catalogs or []))}"
-    hit = _CACHE.get(key)
-    if hit is not None and not refresh and now - hit.at < CACHE_TTL_S:
-        return hit.graph
-    for stale in [k for k, v in _CACHE.items() if now - v.at >= CACHE_TTL_S]:
-        del _CACHE[stale]
+    with _LOCK:
+        hit = _CACHE.get(key)
+        if hit is not None and not refresh and now - hit.at < CACHE_TTL_S:
+            return hit.graph
+        for stale in [k for k, v in _CACHE.items() if now - v.at >= CACHE_TTL_S]:
+            _CACHE.pop(stale, None)
     graph = build_graph(ws, catalogs)
-    _CACHE[key] = _Cached(graph, now)
+    with _LOCK:
+        _CACHE[key] = _Cached(graph, now)
     return graph

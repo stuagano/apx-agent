@@ -232,3 +232,27 @@ def test_cache_keyed_by_scope_and_expires(monkeypatch):
     clock[0] += builder.CACHE_TTL_S + 1
     builder.get_graph(ws, ["x"])
     assert len(calls) == 5
+
+
+def test_concurrent_get_graph_thread_safe(monkeypatch):
+    import concurrent.futures
+
+    _fake_connectors(monkeypatch, [])
+    clock = [1000.0]
+    monkeypatch.setattr(builder.time, "monotonic", lambda: clock[0])
+
+    def call_get_graph(scope_idx: int) -> Graph:
+        # Each thread gets a slightly different scope to create independent cache entries
+        return builder.get_graph(_ws(), [f"scope_{scope_idx}"])
+
+    # First: warm the cache with a few entries
+    for i in range(4):
+        call_get_graph(i)
+
+    # Then: make prior entries stale and run concurrent requests
+    clock[0] += builder.CACHE_TTL_S + 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+        futures = [ex.submit(call_get_graph, i) for i in range(16)]
+        results = [f.result(timeout=5) for f in futures]
+    assert all(isinstance(g, Graph) for g in results)
+    assert len(results) == 16
