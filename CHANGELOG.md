@@ -12,6 +12,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Added
 
+- **Discover workspace graph.** `workspace_graph_tools()` gives agents six OBO-scoped tools over the caller's Unity Catalog, Genie, Vector Search, Model Serving and Apps graph, and the Discover canvas renders the same graph from `/_apx/discover/graph.json` and `/_apx/discover/impact/{id}`.
 - **Session dollar cap (#836).** `LlmAgent(session_budget={"usd": D})` (alone or
   with `tokens`) refuses a served turn when cumulative usage, priced from the
   same token metadata, reaches `D`. Rates come from published FMAPI list
@@ -101,6 +102,12 @@ and managed sessions and memory replace app-owned state on that path.
 - How a durable agent operates, App Space vs serverless runtime vs horizontal
   scaling, where managed stores live, and the native execution boundary
   (#880–#897).
+
+### Removed
+
+- The old Discover list/wire UI and its routes: `/_apx/workspace-agents`,
+  `/_apx/workspace-functions`, `/_apx/workspace-apis`, and
+  `/_apx/discover/{tables,sample,targets,wire-agent,unwire-agent,wire-tool,unwire-tool}`.
 
 ## [0.7.1] — 2026-10-01
 

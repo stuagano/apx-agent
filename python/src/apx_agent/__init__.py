@@ -97,6 +97,7 @@ from .catalog import (
     uc_function_toolkit,
 )
 from .uc_comment import uc_comment_tool
+from .workspace_graph import workspace_graph_tools
 
 # Platform tool factories
 from .vector_search import vector_search_tool
@@ -535,6 +536,7 @@ __all__ = [
     "genie_tool",
     "catalog_tool",
     "lineage_tool",
+    "workspace_graph_tools",
     "schema_tool",
     "uc_function_tool",
     "uc_function_toolkit",

@@ -8,23 +8,21 @@ Each surface is self-contained and styled to a shared dark theme; a fixed header
 On a **deployed App**, chat/Discover/Probe/Topology work behind workspace SSO.
 Discover **and Setup** inventory GETs use the caller's OBO token and **fail
 closed** (401) when it is missing — they do not list under the App service
-principal (#612, #627). That covers `/_apx/setup/catalogs`, `/schemas`,
-`/tables`, `/warehouses`, `/vs-indexes` and the Setup page's auto-prefill probe,
-so a suggestion never names a resource only the App SP can read. Operators who
+principal (#612, #627). That covers `/_apx/discover/graph.json`,
+`/_apx/discover/impact/{id}`, `/_apx/setup/catalogs`, `/schemas`, `/tables`,
+`/warehouses`, `/vs-indexes` and the Setup page's auto-prefill probe, so a
+suggestion never names a resource only the App SP can read. Operators who
 genuinely want App-SP inventory opt in with
 `APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true`.
 
 Inventory GETs are **intentionally not** gated by `APX_DEV_UI_TOKEN` (#629):
 any signed-in Apps user may enumerate catalogs / UC functions / Genie / Vector
 Search / peer Apps **visible to them** under their own grants. That is
-caller-scoped discovery, not App-SP recon. Mutating wire/unwire still requires
-the operator secret (#611) because those change the shared live agent for
-everyone.
+caller-scoped discovery, not App-SP recon. Discover is read-only.
 
 **Write** routes (edit, create tools, replay) are allowed for any **signed-in
-Apps user** (SSO / `X-Forwarded-Access-Token`). Discover wire/unwire additionally
-requires `APX_DEV_UI_TOKEN` (#611). Optional `APX_DEV_UI_TOKEN` also covers
-non-browser automation.
+Apps user** (SSO / `X-Forwarded-Access-Token`). Optional `APX_DEV_UI_TOKEN`
+covers non-browser automation.
 
 Model Serving deployments use AI Playground as the equivalent surface.
 
@@ -35,37 +33,32 @@ Tabbed shell (Chat · Edit · Tools · Eval · **Discover** · Probe) for testin
 agent. Streams responses, surfaces tool calls inline, and hosts the other
 `/_apx/*` pages in an iframe.
 
-### `/_apx/discover` — Workspace peer + UC tool + API discovery
-Auto-scans Databricks Apps for `/.well-known/agent.json` A2A cards, merges
-UC-tagged apx models, lists Unity Catalog functions as tool candidates, and
-surfaces Model Serving endpoints, Genie spaces, and Vector Search indexes
-(with Managed MCP URLs where Databricks hosts them). Runs on page load;
-Refresh re-scans. Backed by `GET /_apx/workspace-agents`,
-`/_apx/workspace-functions`, and `/_apx/workspace-apis`.
+### `/_apx/discover` — Workspace graph
 
-**Wire-back (writes `agent.py` + hot-applies live):** pick a leaf Agent in the
-**Wire into** dropdown, then:
+A canvas of the Databricks workspace as **your** identity sees it: catalogs,
+schemas, tables, views, volumes, UC functions, registered models, Genie spaces,
+Vector Search indexes, Model Serving endpoints, and apx agents running as Apps.
+The edges are `contains`, `derivedFrom` (view→table), `feedsInto` (lineage),
+`indexesFrom` (index→table), `serves` (endpoint→model), and `uses` (Genie/App→asset).
+Search, filter by type, choose the catalog scope, click an asset for its properties
+and connections, and press **Impact** to light up everything downstream. Above
+2,000 assets, schemas start collapsed (double-click one to expand it). If a source
+can't be read (for example, no Genie permission), you get a warning banner and a
+partial graph, not an error.
 
-- **Add as sub-agent** on Apps peers that have a URL — appends
-  `$APX_PEER_<SLUG>_URL` to `sub_agents=`, writes the URL into `.env`, and
-  materializes the remote tool on the **running** agent so Chat can use it
-  immediately (no Apps redeploy)
-- **Unwire** appears on peers already in `sub_agents=` for the selected leaf
-- **Attach as tool** on UC functions, Genie spaces, and Vector Search indexes —
-  splices `uc_function_tool` / `genie_tool` / `vector_search_tool` into
-  `tools=` and registers them live. Before writing, Discover **probes** the
-  resource under the caller's OBO token (same SDK getters Probe uses) and
-  **rejects** (403) when the wiring principal cannot resolve it — so a planted
-  tool is not deferred mid-turn failure for an id the operator cannot see
-  (#628). Lookup ≠ full EXECUTE-at-SQL-time; UC still enforces at invocation.
-- Model Serving cards stay display-only (set `model=` / use Playground)
+It is the same graph agents query:
 
-Mutating Discover / Topology wire calls on a **deployed App** require the
-operator secret ``APX_DEV_UI_TOKEN`` (open Discover/Topology with
-`?token=<secret>`). SSO alone is not enough — wire/unwire mutates the shared
-live agent for every App user. Local ``apx-agent run`` stays open. Source is
-still written so the next real deploy/restart stays consistent; prefer Chat
-right after wire when the banner says live apply succeeded.
+    from apx_agent import Agent, workspace_graph_tools
+
+    agent = Agent(tools=[*workspace_graph_tools(catalogs=["main"])])
+
+That adds six tools: `graph_summary`, `search_assets`, `get_asset`,
+`analyze_impact`, `get_lineage`, `find_orphans`. Both surfaces build the graph with
+the caller's credentials and cache it per caller for 10 minutes. Backed by
+`GET /_apx/discover/graph.json?catalogs=a,b&refresh=1` and
+`GET /_apx/discover/impact/{id}`. The tools declare the OBO scopes the connectors need
+(Unity Catalog read, `genie`, `vector-search`, `model-serving`, `apps`), so `apx-agent deploy`
+grants them to the App.
 
 ### `/_apx/topology` — Interactive topology graph
 
@@ -73,9 +66,7 @@ right after wire when the banner says live apply succeeded.
 
 A React-flow visualization of the agent topology: agent nodes, tools, sub-agents, and platform resources (UC functions, Genie spaces, vector indexes, serving endpoints), connected by typed edges (`uses-tool`, `delegates-to`, `calls-model`, `next-step`, `branch`, `iterates`). Click any node to inspect its details in a side panel — instructions, model, JSON Schema, resource identifier, or sub-agent URL.
 
-**Drag-to-wire:** the left **Wire** palette lists workspace Apps peers, UC functions (when a catalog/schema is known), Genie spaces, and Vector Search indexes. Drag a chip onto a leaf Agent node (dashed green outline) to call the same Discover wire APIs — live hot-apply when possible, then the graph refreshes. Serving endpoints are not wireable as tools. Hidden in `?embed=1` minimap mode.
-
-**Inspector Save / Unwire:** click a leaf Agent to edit `instructions=` and Save (writes `agent.py` + hot-applies live). Click a peer SubAgent (or a Discover-wired UC/Genie/VS tool) for **Unwire** — same Discover unwire APIs, graph refreshes.
+**Inspector Save:** click a leaf Agent to edit `instructions=` and Save (writes `agent.py` + hot-applies live).
 
 **Chat dock:** a slim Chat panel on the right sends turns via `/responses` without leaving Topology. When the turn finishes, the amber last-turn route highlight refreshes automatically.
 

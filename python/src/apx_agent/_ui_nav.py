@@ -9,9 +9,9 @@ def _apx_dev_fetch_js() -> str:
     """JS ``fetch`` wrapper for Dev UI writes.
 
     On deployed Apps, ordinary writes are authorized by Apps SSO
-    (``X-Forwarded-Access-Token`` injected by the proxy). Discover
-    wire/unwire additionally requires ``APX_DEV_UI_TOKEN`` (#611) — forward
-    ``X-APX-Dev-Token`` from ``localStorage`` / ``?token=`` when set.
+    (``X-Forwarded-Access-Token`` injected by the proxy). For non-browser
+    automation, forward ``X-APX-Dev-Token`` from ``localStorage`` /
+    ``?token=`` when set.
     """
     return """
 <script>
