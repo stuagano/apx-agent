@@ -329,3 +329,30 @@ def test_failed_build_raises_in_all_waiters_and_retries(monkeypatch):
     assert builder._INFLIGHT == {}
     monkeypatch.setattr(builder, "build_graph", lambda ws, c: Graph([]))
     assert isinstance(builder.get_graph(ws, ["main"]), Graph)
+
+
+def test_partial_graph_expires_after_short_ttl(monkeypatch):
+    calls: list[str] = []
+    _fake_connectors(monkeypatch, calls)  # genie raises -> warnings -> partial
+    clock = [1000.0]
+    monkeypatch.setattr(builder.time, "monotonic", lambda: clock[0])
+    ws = _ws()
+    first = builder.get_graph(ws, ["main"])
+    assert first.warnings
+    clock[0] += builder.PARTIAL_TTL_S - 1
+    assert builder.get_graph(ws, ["main"]) is first
+    clock[0] += 2
+    assert builder.get_graph(ws, ["main"]) is not first
+    assert len(calls) == 2
+
+
+def test_clean_graph_keeps_full_ttl(monkeypatch):
+    monkeypatch.setattr(builder, "build_graph", lambda ws, c: Graph([]))
+    clock = [1000.0]
+    monkeypatch.setattr(builder.time, "monotonic", lambda: clock[0])
+    ws = _ws()
+    first = builder.get_graph(ws, ["main"])
+    clock[0] += builder.PARTIAL_TTL_S + 1
+    assert builder.get_graph(ws, ["main"]) is first
+    clock[0] += builder.CACHE_TTL_S
+    assert builder.get_graph(ws, ["main"]) is not first

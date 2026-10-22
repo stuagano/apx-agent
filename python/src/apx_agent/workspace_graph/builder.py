@@ -181,6 +181,7 @@ class Graph:
 
 
 CACHE_TTL_S = 600.0
+PARTIAL_TTL_S = 60.0  # graphs with connector warnings are retried sooner
 
 
 def build_graph(ws: WorkspaceClient, catalogs: list[str] | None = None) -> Graph:
@@ -220,6 +221,7 @@ def build_graph(ws: WorkspaceClient, catalogs: list[str] | None = None) -> Graph
 class _Cached:
     graph: Graph
     at: float
+    ttl: float
 
 
 # ponytail: in-process cache — each replica builds its own; move to a shared
@@ -243,9 +245,9 @@ def get_graph(
     key = f"{_identity(ws)}|{','.join(sorted(catalogs or []))}"
     with _LOCK:
         hit = _CACHE.get(key)
-        if hit is not None and not refresh and now - hit.at < CACHE_TTL_S:
+        if hit is not None and not refresh and now - hit.at < hit.ttl:
             return hit.graph
-        for stale in [k for k, v in _CACHE.items() if now - v.at >= CACHE_TTL_S]:
+        for stale in [k for k, v in _CACHE.items() if now - v.at >= v.ttl]:
             _CACHE.pop(stale, None)
         future = _INFLIGHT.get(key)
         is_builder = future is None
@@ -261,7 +263,9 @@ def get_graph(
         future.set_exception(exc)
         raise
     with _LOCK:
-        _CACHE[key] = _Cached(graph, now)
+        _CACHE[key] = _Cached(
+            graph, now, PARTIAL_TTL_S if graph.warnings else CACHE_TTL_S
+        )
         _INFLIGHT.pop(key, None)
     future.set_result(graph)
     return graph
