@@ -387,6 +387,30 @@ class AutoscaleConfig(BaseModel):
         return self
 
 
+class DeployResourceConfig(BaseModel):
+    """Explicit service attachment; never contributes tool identity or user scopes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["experiment", "sql_warehouse", "serving_endpoint"]
+    identifier: str
+    permission: Literal["CAN_MANAGE", "CAN_USE", "CAN_QUERY"]
+
+    @model_validator(mode="after")
+    def _literal_grant(self) -> "DeployResourceConfig":
+        patterns = {
+            "experiment": r"[0-9]+",
+            "sql_warehouse": r"[a-fA-F0-9]+",
+            "serving_endpoint": r"[A-Za-z0-9][A-Za-z0-9_-]*",
+        }
+        permissions = {"experiment": "CAN_MANAGE", "sql_warehouse": "CAN_USE", "serving_endpoint": "CAN_QUERY"}
+        if not re.fullmatch(patterns[self.kind], self.identifier):
+            raise ValueError(f"deploy.resources requires a literal {self.kind} identifier")
+        if self.permission != permissions[self.kind]:
+            raise ValueError(f"deploy.resources {self.kind} requires {permissions[self.kind]}")
+        return self
+
+
 class DeployConfig(_BackendConfig):
     """Declared Apps horizontal scaling — maps to ``[tool.apx.agent.deploy]``.
 
@@ -411,6 +435,12 @@ class DeployConfig(_BackendConfig):
     """Extra project-relative paths staged by the Apps API deploy. Not a glob."""
     env: dict[str, str] = Field(default_factory=dict)
     """Literal env merged into the Apps API ``app.yaml``. Empty unless declared."""
+    resources: list[DeployResourceConfig] = Field(default_factory=list)
+    """Deploy-owned service attachments for dedicated Apps API apps, additional to real tool resources.
+
+    Explicit declarations replace legacy attachments; existing grants are never imported.
+    These do not change compiled runtime authorization or forwarded user scopes.
+    """
 
     @field_validator("entrypoint")
     @classmethod
@@ -445,6 +475,12 @@ class DeployConfig(_BackendConfig):
 
     @model_validator(mode="after")
     def _exclusive(self) -> "DeployConfig":
+        if self.resources:
+            if self.backend != "apps_api" or self.space is not None:
+                raise ValueError("deploy.resources requires a dedicated backend='apps_api' app")
+            keys = [(item.kind, item.identifier) for item in self.resources]
+            if len(keys) != len(set(keys)):
+                raise ValueError("Duplicate deploy.resources attachment")
         if self.space is not None:
             if not self.space.strip() or "${" in self.space:
                 raise ValueError("deploy.space must be a literal non-empty App Space name")

@@ -46,6 +46,42 @@ Rows 1 and 2 are unchanged. Doctor does not deploy, create apps, or create
 stores. For rows 3 and 4 it checks the declaration and the staged source shape
 only, with the same offline posture as today.
 
+## Explicit deployment attachments
+
+Dedicated `apps_api` projects may declare deployment-owned service attachments
+without inventing service tools or changing the identity of user operations:
+
+```toml
+[[tool.apx.agent.deploy.resources]]
+kind = "experiment"
+identifier = "1694681152367532"
+permission = "CAN_MANAGE"
+
+[[tool.apx.agent.deploy.resources]]
+kind = "sql_warehouse"
+identifier = "e60471096d7311eb"
+permission = "CAN_USE"
+
+[[tool.apx.agent.deploy.resources]]
+kind = "serving_endpoint"
+identifier = "databricks-claude-opus-4-8"
+permission = "CAN_QUERY"
+```
+
+These three kinds and their corresponding permissions are the closed supported
+set. Identifiers must be literal platform identifiers, without environment or
+template expansion. Unknown fields and duplicate declarations fail validation.
+App Space and other backends reject nonempty declarations.
+
+The backend renders real service-tool resources first, then these attachments in
+declaration order. Duplicate resource identities or generated-name collisions
+fail before staging or workspace mutations. No legacy grants are imported: the
+result replaces the App's resource array, and an absent list preserves the
+existing derived-only behavior. Attachments do not modify compiled tool identity,
+user resources, user API scopes, or runtime authorization. A serving endpoint
+attachment does not authorize the chat model's AI Gateway scope.
+Experiment selection and tracing configuration remain separate declarations.
+
 ## Steps
 
 `deploy_apps_api(...)` runs these seven steps in order. Each remote resource

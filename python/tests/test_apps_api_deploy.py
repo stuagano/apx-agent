@@ -49,6 +49,91 @@ def _project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def test_explicit_deploy_resources_preserve_attachments(harness: dict[str, Any]) -> None:
+    resources = [
+        {"kind": "experiment", "identifier": "1694681152367532", "permission": "CAN_MANAGE"},
+        {"kind": "sql_warehouse", "identifier": "e60471096d7311eb", "permission": "CAN_USE"},
+        {"kind": "serving_endpoint", "identifier": "databricks-claude-opus-4-8", "permission": "CAN_QUERY"},
+    ]
+    config = _config(resources=resources)
+    agent = LlmAgent(name="proof")
+    before = compile_authorization_plan(agent, model=config.model)
+    assert build_native_manifest(config=config, authorization_plan=before, agent=agent) == build_native_manifest(
+        config=_config(), authorization_plan=before, agent=agent,
+    )
+    _deploy(harness, config, agent)
+    app = harness["ws"].apps.create_update.call_args.kwargs["app"]
+    assert [r.as_dict() for r in app.resources] == [
+        {"name": r.name, **{key: body}} for r, key, body in zip(app.resources,
+            ["experiment", "sql_warehouse", "serving_endpoint"], [
+                {"experiment_id": "1694681152367532", "permission": "CAN_MANAGE"},
+                {"id": "e60471096d7311eb", "permission": "CAN_USE"},
+                {"name": "databricks-claude-opus-4-8", "permission": "CAN_QUERY"},
+            ], strict=True)
+    ]
+    assert app.user_api_scopes == ["sql"]
+    assert compile_authorization_plan(agent, model=config.model) == before
+
+
+@pytest.mark.parametrize("resource", [
+    {"kind": "job", "identifier": "123", "permission": "CAN_MANAGE"},
+    {"kind": "experiment", "identifier": "123", "permission": "CAN_QUERY"},
+    {"kind": "experiment", "identifier": "${EXPERIMENT}", "permission": "CAN_MANAGE"},
+    {"kind": "sql_warehouse", "identifier": "../warehouse", "permission": "CAN_USE"},
+    {"kind": "serving_endpoint", "identifier": " endpoint ", "permission": "CAN_QUERY"},
+    {"kind": "experiment", "identifier": "123", "permission": "CAN_MANAGE", "scope": "all-apis"},
+    {"kind": "experiment", "identifier": "123", "permission": "CAN_MANAGE", "secret": "secret-ref"},
+])
+def test_invalid_deploy_resources_are_rejected(resource: dict[str, str]) -> None:
+    with pytest.raises(ValueError):
+        _config(resources=[resource])
+
+
+def test_deploy_resources_roundtrip_and_placement_guards() -> None:
+    import tomllib
+    from apx_agent._project_gen import _build_pyproject
+
+    resource = {"kind": "experiment", "identifier": "123", "permission": "CAN_MANAGE"}
+    config = _config(resources=[resource])
+    loaded = AgentConfig.model_validate(tomllib.loads(_build_pyproject(config))["tool"]["apx"]["agent"])
+    assert loaded.deploy.resources == config.deploy.resources
+    for changes in ({"space": "space"}, {"backend": "agentbricks", "entrypoint": None}):
+        with pytest.raises(ValueError, match="dedicated"):
+            _config(resources=[resource], **changes)
+    with pytest.raises(ValueError, match="Duplicate"):
+        _config(resources=[resource, resource])
+    with pytest.raises(ValueError, match="durable_agent_server"):
+        AgentConfig(name="bad", target="langgraph", deploy=config.deploy)
+
+
+def test_deploy_resources_reject_derived_collision_before_mutation(harness: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent._apps_api_deploy import deployment_resources
+    from apx_agent._resources import ResourceSpec
+
+    resource = {"kind": "sql_warehouse", "identifier": "abc123", "permission": "CAN_USE"}
+    plan = AuthorizationPlan((), (), (ResourceSpec("sql_warehouse", "abc123"),), (), ())
+    with pytest.raises(click.ClickException, match="collides"):
+        deployment_resources(_config(resources=[resource]), plan)
+    monkeypatch.setattr("apx_agent._resources._bounded_name", lambda *args: "collision")
+    resources = [resource, {"kind": "experiment", "identifier": "123", "permission": "CAN_MANAGE"}]
+    with pytest.raises(click.ClickException, match="collides"):
+        _deploy(harness, _config(resources=resources), LlmAgent(name="proof"))
+    assert harness["state"]["calls"] == []
+    assert not (harness["project"] / ".build").exists()
+
+
+def test_deploy_resources_combine_with_service_resources() -> None:
+    from apx_agent._apps_api_deploy import deployment_resources
+    from apx_agent._resources import ResourceSpec
+
+    config = _config(resources=[{"kind": "experiment", "identifier": "123", "permission": "CAN_MANAGE"}])
+    plan = AuthorizationPlan((), (), (ResourceSpec("sql_warehouse", "abc123"),), (), ())
+    result = deployment_resources(config, plan)
+    assert result[0]["sql_warehouse"] == {"id": "abc123", "permission": "CAN_USE"}
+    assert result[1]["experiment"] == {"experiment_id": "123", "permission": "CAN_MANAGE"}
+    assert result == deployment_resources(config, plan)
+
+
 class _Wait:
     def __init__(self, value: Any) -> None:
         self.value = value
@@ -131,17 +216,24 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return {"project": project, "ws": ws, "state": state}
 
 
-def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any) -> None:
+def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any, *, profile: str | None = "chosen") -> None:
     from apx_agent._apps_api_deploy import deploy_apps_api
 
     deploy_apps_api(
         cwd=box["project"], agent=agent, config=config, plan=AuthorizationPlan((), (), (), ("sql",), ()),
         family_permissions=SimpleNamespace(can_use_groups=(), can_manage_groups=()), workspace=box["ws"],
-        profile="chosen", bundle_target="dev", app_name="proof", auto_experiment=True, auto_build_wheel=False,
+        profile=profile, bundle_target="dev", app_name="proof", auto_experiment=True, auto_build_wheel=False,
         readyz_gate=True, register_uc=False, uc_name=None, module="agent:agent", no_run=False, vars=(),
         env_pairs=(), secret_env_pairs=(), app_name_override=None, json_output=False, extra_version_tags={},
         poll_timeout_seconds=1, readyz_attempts=1, pin=SimpleNamespace(), log=lambda message: None,
     )
+
+
+def test_deploy_resources_still_require_explicit_profile(harness: dict[str, Any]) -> None:
+    config = _config(resources=[{"kind": "experiment", "identifier": "123", "permission": "CAN_MANAGE"}])
+    with pytest.raises(click.ClickException, match="explicit --profile"):
+        _deploy(harness, config, LlmAgent(name="proof"), profile=None)
+    assert harness["state"]["calls"] == []
 
 
 def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any]) -> None:

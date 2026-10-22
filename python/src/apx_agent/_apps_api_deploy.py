@@ -63,6 +63,7 @@ def deploy_apps_api(
         raise click.ClickException("Apps API uses the declared app name; --app-name cannot rename it.")
     if family_permissions.can_use_groups or family_permissions.can_manage_groups:
         raise click.ClickException("Apps API deployment cannot reconcile app-family grants; configure access separately.")
+    resources = deployment_resources(config, plan)
 
     from ._runtime_targets import inspect_target
 
@@ -76,7 +77,7 @@ def deploy_apps_api(
     build_dir = _stage(cwd, config, agent, plan, log)
     _ensure_memory_store(workspace, config, log)
     app = _ensure_app(workspace, app_name=app_name, space=space, description=config.description or None, log=log)
-    _apply_grants(workspace, app_name=app_name, space=space, profile=profile, plan=plan, family_permissions=family_permissions, log=log)
+    _apply_grants(workspace, app_name=app_name, space=space, profile=profile, plan=plan, family_permissions=family_permissions, log=log, resources=resources)
     env = _runtime_and_env(workspace, profile=profile, app_name=app_name, space=space, config=config,
                            session_store=report.session_store, bundle_target=bundle_target, auto_experiment=auto_experiment,
                            env_pairs=env_pairs, app=app, log=log)
@@ -268,9 +269,37 @@ def _wait_compute_active(workspace: Any, app_name: str, log: Callable[[str], Non
         delay = min(delay * 1.5, 15.0)
 
 
+def deployment_resources(config: Any, plan: AuthorizationPlan) -> list[dict[str, Any]]:
+    """Render the complete declared attachment set without reading legacy grants.
+
+    Reject overlaps before staging or workspace mutations. Deployment attachments
+    do not enter the compiled authorization plan or grant user API scopes.
+    """
+    from ._resources import ResourceSpec, _bounded_name, resources_to_databricks_yml
+
+    result = resources_to_databricks_yml(plan.service_resources)
+    keys = {(spec.kind, spec.identifier) for spec in plan.service_resources}
+    names = {entry["name"] for entry in result}
+    for resource in config.deploy.resources:
+        key = (resource.kind, resource.identifier)
+        if resource.kind == "experiment":
+            entry = {"name": _bounded_name(resource.identifier, resource.kind), "experiment": {
+                "experiment_id": resource.identifier, "permission": resource.permission,
+            }}
+        else:
+            entry = resources_to_databricks_yml([ResourceSpec(*key)])[0]
+        if key in keys or entry["name"] in names:
+            raise click.ClickException(f"deploy.resources collides with another attachment: {resource.kind} {resource.identifier}")
+        keys.add(key)
+        names.add(entry["name"])
+        result.append(entry)
+    return result
+
+
 def _apply_grants(
     workspace: Any, *, app_name: str, space: str | None, profile: str | None,
     plan: AuthorizationPlan, family_permissions: AppFamilyPermissions, log: Callable[[str], None],
+    resources: list[dict[str, Any]] | None = None,
 ) -> None:
     if space is not None:
         from ._app_space import validate_space_deployment
@@ -286,10 +315,11 @@ def _apply_grants(
     from databricks.sdk.service.apps import App, AppResource
     from ._resources import resources_to_databricks_yml
 
-    resources = [AppResource.from_dict(entry) for entry in resources_to_databricks_yml(plan.service_resources)]
+    attachments = resources_to_databricks_yml(plan.service_resources) if resources is None else resources
+    app_resources = [AppResource.from_dict(entry) for entry in attachments]
     # The SDK requires name. The mask is what the API applies; name is not in it.
     # Empty lists are the declared sets. Omitting them could leave old grants in place.
-    app = App(name=app_name, user_api_scopes=list(plan.user_api_scopes), resources=resources)
+    app = App(name=app_name, user_api_scopes=list(plan.user_api_scopes), resources=app_resources)
     try:
         workspace.apps.create_update(app_name, GRANT_UPDATE_MASK, app=app).result()
     except Exception as exc:
