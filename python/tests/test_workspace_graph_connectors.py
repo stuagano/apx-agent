@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
+from apx_agent._apps_discovery import AppAgentInfo
 from apx_agent._discover_data import list_discover_tables
 from apx_agent.workspace_graph import connectors
 
@@ -123,3 +127,203 @@ def test_default_catalogs_capped_with_warning():
     assert len(cats) == connectors.MAX_CATALOGS
     assert "catalog:system" not in cats and "catalog:__internal" not in cats
     assert any("12 catalogs" in w for w in frag.warnings)
+
+
+def test_serving_connector_links_served_models():
+    ws = MagicMock()
+    ws.config.host = "https://h.cloud.databricks.com"
+    ws.serving_endpoints.list.return_value = [
+        SimpleNamespace(
+            name="churn-ep",
+            state=SimpleNamespace(ready=SimpleNamespace(value="READY")),
+            task=None,
+            config=SimpleNamespace(
+                served_entities=[SimpleNamespace(entity_name="main.sales.churn")]
+            ),
+        )
+    ]
+    frag = connectors.serving(ws, None)
+    assert [(n.id, n.type) for n in frag.nodes] == [
+        ("serving:churn-ep", "ServingEndpoint")
+    ]
+    assert [(e.dst, e.type) for e in frag.edges] == [
+        ("model:main.sales.churn", "serves")
+    ]
+
+
+def test_serving_connector_raises_on_denied_list():
+    ws = MagicMock()
+    ws.config.host = "https://h"
+    ws.serving_endpoints.list.side_effect = PermissionError("denied")
+    with pytest.raises(PermissionError):
+        connectors.serving(ws, None)
+
+
+def test_genie_connector_uses_serialized_space_tables():
+    ws = MagicMock()
+    ws.config.host = "https://h"
+    ws.genie.list_spaces.return_value = SimpleNamespace(
+        spaces=[SimpleNamespace(space_id="g1", title="Sales", description=None)],
+        next_page_token=None,
+    )
+    ws.genie.get_space.return_value = SimpleNamespace(
+        serialized_space=json.dumps(
+            {"data_sources": {"tables": [{"identifier": "Main.Sales.Orders"}]}}
+        )
+    )
+    frag = connectors.genie(ws, None)
+    assert [n.id for n in frag.nodes] == ["genie:g1"]
+    assert [(e.dst, e.type) for e in frag.edges] == [
+        ("table:main.sales.orders", "uses")
+    ]
+    ws.genie.get_space.assert_called_once_with("g1", include_serialized_space=True)
+
+
+def test_genie_space_detail_failure_is_a_warning():
+    ws = MagicMock()
+    ws.config.host = "https://h"
+    ws.genie.list_spaces.return_value = SimpleNamespace(
+        spaces=[SimpleNamespace(space_id="g1", title="Sales", description=None)],
+        next_page_token=None,
+    )
+    ws.genie.get_space.side_effect = PermissionError("no CAN_VIEW")
+    frag = connectors.genie(ws, None)
+    assert [n.id for n in frag.nodes] == ["genie:g1"]
+    assert frag.warnings == ["Sales tables: no CAN_VIEW"]
+
+
+def test_vector_search_connector(monkeypatch):
+    monkeypatch.setattr(
+        "apx_agent._ui_probe._discover_vs_indexes",
+        lambda ws: [
+            {
+                "endpoint": "vs-ep",
+                "endpoint_state": "ONLINE",
+                "index": "main.sales.orders_idx",
+                "source_table": "main.sales.orders",
+                "ready": True,
+                "columns": ["content"],
+            }
+        ],
+    )
+    ws = MagicMock()
+    ws.config.host = "https://h"
+    frag = connectors.vector_search(ws, None)
+    assert [n.id for n in frag.nodes] == ["vsindex:main.sales.orders_idx"]
+    assert [(e.dst, e.type) for e in frag.edges] == [
+        ("table:main.sales.orders", "indexesFrom")
+    ]
+
+
+def test_vector_search_connector_raises_when_endpoints_unlistable(monkeypatch):
+    monkeypatch.setattr(
+        "apx_agent._ui_probe._discover_vs_indexes",
+        lambda ws: [{"error": "Could not list endpoints: denied"}],
+    )
+    ws = MagicMock()
+    ws.config.host = "https://h"
+    with pytest.raises(RuntimeError, match="denied"):
+        connectors.vector_search(ws, None)
+
+
+def test_apps_connector_uses_declared_resources(monkeypatch):
+    from databricks.sdk.service.apps import (
+        AppResource,
+        AppResourceGenieSpace,
+        AppResourceGenieSpaceGenieSpacePermission,
+        AppResourceServingEndpoint,
+        AppResourceServingEndpointServingEndpointPermission,
+        AppResourceUcSecurable,
+        AppResourceUcSecurableUcSecurablePermission,
+        AppResourceUcSecurableUcSecurableType,
+    )
+
+    monkeypatch.setattr(
+        "apx_agent.workspace_graph.connectors.discover_app_agents",
+        lambda ws: [
+            AppAgentInfo(
+                name="triage",
+                app_name="triage-app",
+                url="https://t.databricksapps.com",
+                description=None,
+                tool_count=1,
+                state="RUNNING",
+                tools=("lookup",),
+            )
+        ],
+    )
+    ws = MagicMock()
+    ws.apps.get.return_value = SimpleNamespace(
+        resources=[
+            AppResource(
+                name="t",
+                uc_securable=AppResourceUcSecurable(
+                    securable_full_name="main.sales.orders",
+                    securable_type=AppResourceUcSecurableUcSecurableType.TABLE,
+                    permission=AppResourceUcSecurableUcSecurablePermission.SELECT,
+                ),
+            ),
+            AppResource(
+                name="g",
+                genie_space=AppResourceGenieSpace(
+                    name="g",
+                    space_id="g1",
+                    permission=AppResourceGenieSpaceGenieSpacePermission.CAN_VIEW,
+                ),
+            ),
+            AppResource(
+                name="e",
+                serving_endpoint=AppResourceServingEndpoint(
+                    name="churn-ep",
+                    permission=AppResourceServingEndpointServingEndpointPermission.CAN_QUERY,
+                ),
+            ),
+        ]
+    )
+    frag = connectors.apps(ws, None)
+    assert [n.id for n in frag.nodes] == ["app:triage-app"]
+    assert {(e.dst, e.type) for e in frag.edges} == {
+        ("table:main.sales.orders", "uses"),
+        ("genie:g1", "uses"),
+        ("serving:churn-ep", "uses"),
+    }
+
+
+def test_lineage_connector_feeds_into_and_caps(monkeypatch):
+    monkeypatch.setattr(connectors, "MAX_LINEAGE_TABLES", 2)
+    ws = MagicMock()
+
+    def _do(method, path, query):
+        if query["table_name"] == "main.sales.bad":
+            raise PermissionError("no lineage access")
+        return {
+            "downstreams": [
+                {
+                    "tableInfo": {
+                        "catalog_name": "main",
+                        "schema_name": "sales",
+                        "name": "daily",
+                    }
+                }
+            ]
+        }
+
+    ws.api_client.do.side_effect = _do
+    frag = connectors.lineage(
+        ws, ["main.sales.orders", "main.sales.bad", "main.sales.ignored"]
+    )
+    assert [(e.src, e.dst, e.type) for e in frag.edges] == [
+        ("table:main.sales.orders", "table:main.sales.daily", "feedsInto")
+    ]
+    assert "checked first 2 of 3 tables" in frag.warnings[0]
+    assert "1 of 2 tables failed" in frag.warnings[1]
+
+
+def test_connector_registry_names():
+    assert set(connectors.CONNECTORS) == {
+        "unity_catalog",
+        "serving",
+        "genie",
+        "vector_search",
+        "apps",
+    }
