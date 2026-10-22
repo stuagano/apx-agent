@@ -37,13 +37,13 @@ def _apx_dev_fetch_js() -> str:
 
 def _apx_nav_css() -> str:
     return """
-  #apx-header { position:fixed;top:0;left:0;right:0;z-index:1000;background:var(--apx-panel,#1F272D);border-bottom:1px solid var(--apx-border,#445461); }
+  #apx-header { position:fixed;top:0;left:0;right:0;z-index:1000;background:var(--apx-panel);border-bottom:1px solid var(--apx-border);box-shadow:var(--apx-shadow); }
   #apx-nav { padding:10px 16px;display:flex;align-items:center;gap:10px;height:44px; }
-  .badge { background:var(--apx-panel-2,#37444F);color:var(--apx-accent,#2272B4);font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px;letter-spacing:.5px;text-transform:uppercase; }
+  .badge { background:var(--apx-panel-2);color:var(--apx-accent);font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;letter-spacing:.5px;text-transform:uppercase; }
   nav { margin-left:auto;display:flex;gap:4px; }
-  nav a { font-size:12px;color:var(--apx-muted,#92A4B3);text-decoration:none;padding:3px 10px;border-radius:5px;border:1px solid transparent; }
-  nav a:hover { color:var(--apx-text,#E8ECF0);border-color:var(--apx-border,#445461); }
-  nav a.active { color:var(--apx-accent,#2272B4);background:var(--apx-panel-2,#37444F);border-color:var(--apx-border,#445461); }
+  nav a { font-size:12px;color:var(--apx-muted);text-decoration:none;padding:4px 10px;border-radius:8px;border:1px solid transparent; }
+  nav a:hover { color:var(--apx-text);background:var(--apx-panel-2); }
+  nav a.active { color:var(--apx-accent);background:var(--apx-panel-2);border-color:var(--apx-border); }
 """
 
 

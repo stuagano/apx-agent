@@ -26,7 +26,7 @@ class TestGroundingUsesDuBoisTheme:
         r = await _get(dev_ui_app, "/_apx/grounding")
         assert r.status_code == 200
         # Theme marker is present in the rendered HTML
-        assert "apx-dubois-theme" in r.text
+        assert "apx-agentkit-theme" in r.text
         # Legacy hex values are gone
         legacy_hexes = [
             "#0a0a0a",  # old bg

@@ -15,22 +15,23 @@ from apx_agent._ui_theme import (
 )
 
 
-def test_theme_defines_dubois_tokens():
+def test_theme_defines_agentkit_tokens():
+    # Values from the vendored AgentKit chat (_static/agentkit_chat/styles.css).
     for var, value in [
-        ("--apx-bg", "#11171C"),
-        ("--apx-panel", "#1F272D"),
-        ("--apx-border", "#445461"),
-        ("--apx-text", "#E8ECF0"),
-        ("--apx-accent", "#2272B4"),
+        ("--apx-bg", "#f1f3ff"),
+        ("--apx-panel", "#ffffff"),
+        ("--apx-border", "#e7e9f0"),
+        ("--apx-text", "#1f2124"),
+        ("--apx-accent", "#1a73e8"),
     ]:
         assert var in APX_THEME_CSS, f"{var} missing from theme"
-        assert value in APX_THEME_CSS, f"{var} should use Du Bois value {value}"
+        assert f"{var}:{value}" in APX_THEME_CSS, f"{var} should use AgentKit value {value}"
 
 
 def test_theme_style_is_one_style_block():
     s = apx_theme_style()
     assert s.startswith("<style>") and s.endswith("</style>")
-    assert "apx-dubois-theme" in s
+    assert "apx-agentkit-theme" in s
 
 
 def test_shared_components_defined_with_tokens():
@@ -56,7 +57,7 @@ async def _get(app, path):
 async def test_knowledge_page_carries_theme_once(dev_ui_app):
     r = await _get(dev_ui_app, "/_apx/knowledge")
     assert r.status_code == 200
-    assert r.text.count("apx-dubois-theme") == 1, (
+    assert r.text.count("apx-agentkit-theme") == 1, (
         "the Du Bois theme should be injected exactly once into the knowledge "
         "page <head> via apx_theme_style()"
     )
