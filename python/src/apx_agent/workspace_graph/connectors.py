@@ -149,7 +149,7 @@ def unity_catalog(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
 
 
 MAX_LINEAGE_TABLES = 200
-_LINEAGE_PATH = "/api/2.1/unity-catalog/lineage-tracking/table-lineage"
+_LINEAGE_PATH = "/api/2.0/lineage-tracking/table-lineage"
 _SECURABLE_PREFIX = {"TABLE": "table", "VOLUME": "volume", "FUNCTION": "function"}
 
 

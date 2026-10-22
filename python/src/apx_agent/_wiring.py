@@ -1448,8 +1448,7 @@ def mount_mcp_endpoints(
     # Mounted in local ``apx run`` AND deployed Databricks Apps so peers can
     # discover each other from a live App URL. Ordinary write routes stay
     # gated by Apps SSO (or optional ``APX_DEV_UI_TOKEN`` for automation).
-    # Discover wire/unwire additionally requires ``APX_DEV_UI_TOKEN`` on Apps
-    # (#611 — shared live-agent mutation). See ``_dev._enforce_dev_write_auth``.
+    # See ``_dev._enforce_dev_write_auth``.
     app.state.dev_ui_mount_error = None
     if os.environ.get("APX_DEV_UI") != "0":
         try:

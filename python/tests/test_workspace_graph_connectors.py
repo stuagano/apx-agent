@@ -294,6 +294,8 @@ def test_lineage_connector_feeds_into_and_caps(monkeypatch):
     ws = MagicMock()
 
     def _do(method, path, query):
+        # The real endpoint; /api/2.1/unity-catalog/... 404s ("No API found").
+        assert (method, path) == ("GET", "/api/2.0/lineage-tracking/table-lineage")
         if query["table_name"] == "main.sales.bad":
             raise PermissionError("no lineage access")
         return {
