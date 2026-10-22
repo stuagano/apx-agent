@@ -27,3 +27,60 @@ def test_vendored_paths_are_rewritten_under_apx() -> None:
     assert "/_apx/api/demo/" in js and "/_apx/api/ui/config" in js
     # The invocation API stays where DurableAgentServer serves it.
     assert '"/api/invocations"' in js
+
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def chat_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
+    from apx_agent._ui_agentkit_chat import mount_agentkit_chat
+
+    monkeypatch.chdir(tmp_path)  # no agent.toml store bindings
+    monkeypatch.delenv("AGENT_MEMORY_STORE", raising=False)
+    monkeypatch.delenv("AGENT_SESSION_STORE", raising=False)
+    app = FastAPI()
+    mount_agentkit_chat(app, model="system.ai.test-model")
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("path", ["/", "/_apx/chat", "/_apx/assets/agentkit/app.js"])
+def test_chat_routes_serve_with_no_store(chat_client: TestClient, path: str) -> None:
+    response = chat_client.get(path)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert len(response.content) > 1000
+
+
+def test_ui_config_reports_compiled_model(chat_client: TestClient) -> None:
+    config = chat_client.get("/_apx/api/ui/config", params={"session_id": "s1"}).json()
+    assert config["models"]["default"] == "system.ai.test-model"
+    assert config["session_id"] == "s1"
+    assert config["memory"]["enabled"] is False
+
+
+def test_ui_config_requires_session_id(chat_client: TestClient) -> None:
+    assert chat_client.get("/_apx/api/ui/config").status_code == 400
+
+
+def test_memory_routes_503_without_store(chat_client: TestClient) -> None:
+    response = chat_client.get("/_apx/api/demo/memory/entries", params={"session_id": "s1"})
+    assert response.status_code == 503
+
+
+def test_sessions_list_local_without_store(chat_client: TestClient) -> None:
+    body = chat_client.get("/_apx/api/demo/sessions", params={"session_id": "s1"}).json()
+    assert body["managed"] is False and body["current_session_id"] == "s1"
+
+
+def test_session_items_is_honest_empty_transcript(chat_client: TestClient) -> None:
+    body = chat_client.get("/_apx/api/demo/session/items", params={"session_id": "s1"}).json()
+    assert body["session_items"] == [] and "#978" in body["note"]
+
+
+def test_rank_models_pins_default_first() -> None:
+    from apx_agent._ui_agentkit_chat import _rank_models
+
+    assert _rank_models("b", ["c", "b", "a", "a"]) == ["b", "a", "c"]
