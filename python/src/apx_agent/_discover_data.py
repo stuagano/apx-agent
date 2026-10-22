@@ -1,4 +1,4 @@
-"""User-scoped Unity Catalog table inspection for the Discover page."""
+"""User-scoped Unity Catalog table metadata for the workspace graph."""
 
 from __future__ import annotations
 
@@ -60,6 +60,17 @@ def _row_count(detail: Any) -> int | None:
         return None
 
 
+def _view_dependencies(detail: Any) -> list[str]:
+    deps = (
+        getattr(getattr(detail, "view_dependencies", None), "dependencies", None) or []
+    )
+    return [
+        d.table.table_full_name
+        for d in deps
+        if getattr(d, "table", None) is not None and d.table.table_full_name
+    ]
+
+
 def list_discover_tables(
     ws: Any,
     catalog: str,
@@ -79,7 +90,9 @@ def list_discover_tables(
         name = str(getattr(table, "name", None) or "")
         if not name:
             continue
-        full_name = str(getattr(table, "full_name", None) or f"{catalog}.{schema}.{name}")
+        full_name = str(
+            getattr(table, "full_name", None) or f"{catalog}.{schema}.{name}"
+        )
         detail = table
         try:
             detail = ws.tables.get(full_name)
@@ -91,10 +104,15 @@ def list_discover_tables(
             {
                 "name": name,
                 "full_name": full_name,
-                "table_type": getattr(table_type, "value", None) or str(table_type or ""),
-                "comment": getattr(detail, "comment", None) or getattr(table, "comment", None),
-                "columns": [_column_info(c) for c in (getattr(detail, "columns", None) or [])],
+                "table_type": getattr(table_type, "value", None)
+                or str(table_type or ""),
+                "comment": getattr(detail, "comment", None)
+                or getattr(table, "comment", None),
+                "columns": [
+                    _column_info(c) for c in (getattr(detail, "columns", None) or [])
+                ],
                 "row_count": _row_count(detail),
+                "view_dependencies": _view_dependencies(detail),
             }
         )
     return sorted(tables, key=lambda item: item["name"].lower())
