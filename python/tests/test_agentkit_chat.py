@@ -29,13 +29,15 @@ def test_vendored_paths_are_rewritten_under_apx() -> None:
     assert '"/api/invocations"' in js
 
 
+from collections.abc import Iterator
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def chat_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
+def chat_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[TestClient]:
     from apx_agent._ui_agentkit_chat import mount_agentkit_chat
 
     monkeypatch.chdir(tmp_path)  # no agent.toml store bindings
@@ -43,7 +45,8 @@ def chat_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     monkeypatch.delenv("AGENT_SESSION_STORE", raising=False)
     app = FastAPI()
     mount_agentkit_chat(app, model="system.ai.test-model")
-    return TestClient(app)
+    with TestClient(app) as client:  # lifespan adds the "/" page
+        yield client
 
 
 @pytest.mark.parametrize("path", ["/", "/_apx/chat", "/_apx/assets/agentkit/app.js"])
@@ -84,3 +87,18 @@ def test_rank_models_pins_default_first() -> None:
     from apx_agent._ui_agentkit_chat import _rank_models
 
     assert _rank_models("b", ["c", "b", "a", "a"]) == ["b", "a", "c"]
+
+
+def test_project_root_ui_keeps_slash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.staticfiles import StaticFiles
+    from apx_agent._ui_agentkit_chat import mount_agentkit_chat
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "index.html").write_text("<h1>project ui</h1>")
+    app = FastAPI()
+    mount_agentkit_chat(app, model="m")
+    app.mount("/", StaticFiles(directory=tmp_path / "dist", html=True), name="client")
+    with TestClient(app) as client:
+        assert "project ui" in client.get("/").text
+        assert "/_apx/assets/agentkit/app.js" in client.get("/_apx/chat").text

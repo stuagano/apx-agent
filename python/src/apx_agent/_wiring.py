@@ -1533,13 +1533,14 @@ def mount_durable_protocol(
 ) -> None:
     """Mount ``/mcp``, ``/.well-known/agent.json``, and ``/health`` only.
 
-    The Databricks Apps path uses :func:`mount_mcp_endpoints`, which also
-    mounts the root chat UI and ``/_apx/*``. A native ``DurableAgentServer``
-    already serves invocations, so it gets the discovery routes without those
-    extra surfaces. MCP setup still runs inside the host lifespan, the same
-    way :func:`mount_mcp_endpoints` does. :func:`setup_agent` mounts the
-    protocol routes itself, so this does not mount them a second time.
-    ``_apx_protocol_only`` tells that setup to skip the root chat and dev UI.
+    The MLflow-host path uses :func:`mount_mcp_endpoints`, which also mounts
+    apx's root chat and ``/_apx/*``. A native ``DurableAgentServer`` already
+    serves invocations; its compiler mounts the AgentKit chat and ``/_apx/*``
+    itself at compile time (``compile_to_durable_agent_server``), so they
+    exist even without an agent config. MCP setup still runs inside the host
+    lifespan, the same way :func:`mount_mcp_endpoints` does. :func:`setup_agent`
+    mounts the protocol routes itself, so this does not mount them a second
+    time. ``_apx_protocol_only`` tells that setup to skip the browser UIs.
     """
     app.state._apx_protocol_only = True
     _state_key = "_apx_durable_protocol_state"

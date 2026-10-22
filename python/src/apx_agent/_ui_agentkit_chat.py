@@ -5,7 +5,7 @@ Ported from ``databricks-agentbricks==0.5.0``
 assets live in ``_static/agentkit_chat`` (see its VENDORED.md). The template's
 paths move under ``/_apx``: assets go to ``/_apx/assets/agentkit``, and the
 config and demo APIs go to ``/_apx/api/{ui,demo}``. The page itself is served
-at ``/`` and ``/_apx/chat``. Chat turns use DurableAgentServer's own
+at ``/_apx/chat``, and at ``/`` unless the project mounts its own root UI. Chat turns use DurableAgentServer's own
 ``/api/invocations``.
 
 Differences from the template:
@@ -268,8 +268,16 @@ def mount_agentkit_chat(app: FastAPI, *, model: str) -> None:
     async def index() -> FileResponse:
         return FileResponse(_UI_ROOT / "index.html")
 
-    for page in _PAGE_PATHS:
-        app.add_api_route(page, index, methods=["GET"], include_in_schema=False)
+    app.add_api_route("/_apx/chat", index, methods=["GET"], include_in_schema=False)
+
+    async def _add_root_page() -> None:
+        # Appended at startup, so a project UI mounted at "/" after compile
+        # (e.g. a client/dist StaticFiles catch-all) stays ahead and keeps "/".
+        app.add_api_route("/", index, methods=["GET"], include_in_schema=False)
+
+    from ._wiring import _chain_lifespan
+
+    _chain_lifespan(app, _add_root_page)
 
     @app.get("/_apx/api/ui/config", include_in_schema=False)
     async def ui_config(request: Request) -> dict[str, Any]:
