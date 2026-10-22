@@ -196,30 +196,36 @@ written. It refuses to overwrite an existing `agent.toml`. The migrated and chec
 
 #974 put `model`, `target`, `identity`, `recovery`, `gateway` and
 `service_policies` on `LlmAgent`, read by `config_from_agent` only when
-`[tool.apx.agent]` is absent. Remaining:
+`[tool.apx.agent]` is absent. #961 and #974 together fixed the three #954 gaps
+(Python-only memory reaches the `agent.toml` checks, and deploy runs them).
+Remaining:
 
 - **One seam.** `resolve_settings(agent, toml)` replaces `config_from_agent`
-  in the launcher, generated `app.py`, deploy, doctor and
-  `compile_agent(config=None)`. It always returns an `AgentConfig`, so the
-  `agent.toml` checks always run (closes #954).
+  in the launcher, generated `app.py`, deploy, doctor and `finalize_agent`.
 - **Both sources merge.** Equal values pass; different values fail:
   `model: agent.py sets 'A' on agent 'root'; [tool.apx.agent] sets 'B'. Set it in one place.`
   Today Python is silently ignored, except `identity`, where it silently wins.
-- **Every agent class takes the settings, inherited downward.** Per-agent
-  (`model`, `identity`, `service_policies`, `guardrails`, `knowledge`,
-  `vector_search_index`): own value, else nearest ancestor, else `.toml`, else
-  default. A leaf compiles with its own model; its tools get its own identity
-  (today only the root's tools are stamped). App-wide (`target`, `recovery`,
-  `gateway`, `session`, `bindings`, `url`, `registry`, `api_prefix`): a
-  non-root value that differs fails: `target is app-wide; set it on the root agent (found on 'researcher').`
+- **Every agent class takes the settings.** Unknown setting names are a
+  `TypeError`.
+  - Per-agent (`model`, `identity`): own value, else nearest ancestor, else the
+    app value. A leaf compiles with its own model; its tools get its own
+    identity (today only the root's tools are stamped). `APX_MODEL` pins the
+    app model; a leaf with a different model of its own keeps it.
+  - App-wide (`target`, `recovery`, `gateway`, `service_policies`,
+    `guardrails`, `knowledge`, `vector_search_index`, `bindings`, `url`,
+    `registry`, `api_prefix`): a value below the root that differs fails:
+    `target is app-wide; set it on the root agent (found on 'researcher').`
+    Their consumers read one value per app today; making any of them per-agent
+    is a later change, never a silent ignore.
+  - `memory` / `session` keep #974's rule: read from the root's `memory=` knob.
 - **Fails early.** Deploy before upload, doctor as a stage, the launcher at
-  startup. `APX_MODEL` still pins the app model.
+  startup (its existing target error names both places).
 - **Migration.** `.toml`-only projects are unchanged. Fields move one at a
   time; a field set in both places with the same value passes. No migrate
-  command. `agents new` writes `model` and `target` in `agent.py`.
+  command. The scaffold moves with sub-project 3, when `[tool.apx.agent]` goes.
 - **Tests.** `resolve_settings` rules and errors; per-leaf model and identity;
-  a composite Python-only project boots with `/readyz` 200; #954 checks run
-  without a config; the existing suite unchanged.
+  a composite Python-only project loads in doctor and the launcher; the
+  existing suite unchanged.
 
 ## Out of scope
 
