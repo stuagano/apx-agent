@@ -137,4 +137,38 @@ def test_no_cli_site_reads_agent_settings_from_the_raw_table() -> None:
 
     source = (Path(__file__).resolve().parents[1] / "src" / "apx_agent" / "cli.py").read_text()
     raw = re.findall(r'_read_apx_agent_config\([^)]*\)\.get\("(model|name|description|data)"\)', source)
-    assert raw == ["name", "name"], raw  # status / prompt: Task 3 makes them static
+    assert raw == [], raw
+
+
+_DURABLE_PY = "from apx_agent import Agent\nagent = Agent(name='durable-d', target='durable_agent_server', tools=[])\n"
+
+
+def test_detect_target_sees_a_python_declared_durable_target(tmp_path: Path) -> None:
+    from apx_agent.cli import _detect_target
+
+    detected = _detect_target(_project(tmp_path, _DURABLE_PY))
+    assert detected.target == "apps" and "durable" in detected.reason
+
+
+def test_detect_target_never_imports_agent_py(tmp_path: Path) -> None:
+    from apx_agent.cli import _detect_target
+
+    root = _project(tmp_path, "raise RuntimeError('import side effect')\nagent = None\n")
+    assert _detect_target(root).target in ("apps", "model-serving")
+
+
+def test_runnable_scan_finds_a_python_only_durable_project(tmp_path: Path) -> None:
+    from apx_agent.cli import _find_runnable_agents
+
+    child = tmp_path / "orders"
+    child.mkdir()
+    _project(child, _DURABLE_PY)
+    assert ("orders", child) in _find_runnable_agents(tmp_path)
+
+
+def test_status_name_comes_from_agent_py_statically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent.cli import _status_prompt_string
+
+    root = _project(tmp_path, _DURABLE_PY, "[tool.apx.agent]\n")
+    monkeypatch.chdir(root)
+    assert "durable-d" in _status_prompt_string(root)

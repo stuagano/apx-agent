@@ -500,6 +500,15 @@ class _DetectedTarget(NamedTuple):
     reason: str
 
 
+def _declares_durable(project: Path) -> bool:
+    """A durable target declared in agent.py (read statically) or in the TOML. Never imports."""
+    from ._inspection import static_agent_setting
+
+    durable = "durable_agent_server"
+    return (static_agent_setting(project / "agent.py", "target") == durable
+            or _read_apx_agent_config(project / "pyproject.toml").get("target") == durable)
+
+
 def _detect_target(cwd: Path | None = None) -> _DetectedTarget:
     """Infer the project's target (model-serving vs apps) from its layout.
 
@@ -511,7 +520,7 @@ def _detect_target(cwd: Path | None = None) -> _DetectedTarget:
     echo why a target was auto-detected. Pass ``--target`` to override.
     """
     cwd = cwd or Path.cwd()
-    if _read_apx_agent_config(cwd / "pyproject.toml").get("target") == "durable_agent_server":
+    if _declares_durable(cwd):
         return _DetectedTarget("apps", "declared durable_agent_server runtime")
     if (cwd / "agent_server" / "start_server.py").exists():
         return _DetectedTarget("apps", "agent_server/start_server.py present")
@@ -1240,6 +1249,14 @@ def _resolve_active_profile() -> str | None:
     return saved if isinstance(saved, str) and saved else None
 
 
+def _project_name(cwd: Path) -> str | None:
+    """The agent's name from agent.py (read statically, never imported), else the TOML's."""
+    from ._inspection import static_agent_setting
+
+    toml = _read_apx_agent_config(cwd / "pyproject.toml")
+    return static_agent_setting(cwd / "agent.py", "name") or toml.get("name")
+
+
 def _status_prompt_string(cwd: Path) -> str:
     """Compact ``apx:name(target) ▸ profile`` context string for a shell prompt.
 
@@ -1251,7 +1268,7 @@ def _status_prompt_string(cwd: Path) -> str:
 
         in_project = _d._is_apx_project(cwd)
         profile = _resolve_active_profile()
-        name = _read_apx_agent_config().get("name") if in_project else None
+        name = _project_name(cwd) if in_project else None
         target = _detect_target(cwd).target if in_project else None
         parts = []
         if in_project:
@@ -1306,7 +1323,7 @@ def status(
     cwd = Path.cwd()
     in_project = _d._is_apx_project(cwd)
     profile = _resolve_active_profile()
-    name = _read_apx_agent_config().get("name") if in_project else None
+    name = _project_name(cwd) if in_project else None
     target = _detect_target(cwd).target if in_project else None
 
     if as_json:
@@ -2612,7 +2629,7 @@ def _materialize_yaml_project(
             (target / "databricks.yml").exists()
             or (
                 config.target == "durable_agent_server" and (target / "agent.py").is_file()
-                and _read_apx_agent_config(target / "pyproject.toml").get("target") == "durable_agent_server"
+                and _declares_durable(target)
             )
         )
     ):
@@ -5972,7 +5989,7 @@ def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
 
     def _is_runnable(d: Path) -> bool:
         return (
-            (_read_apx_agent_config(d / "pyproject.toml").get("target") == "durable_agent_server" and (d / "agent.py").is_file())
+            (_declares_durable(d) and (d / "agent.py").is_file())
             or (d / "agent_server" / "start_server.py").exists()
             or ((d / "app.py").exists() and not (d / "databricks.yml").exists())
         )
