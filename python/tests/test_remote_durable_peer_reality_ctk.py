@@ -106,3 +106,36 @@ async def test_hub_invoke_reaches_a_durable_peer(durable_peer: Any, monkeypatch:
                                headers={"X-Forwarded-User": "alice@x.com"})
     assert response.status_code == 200, response.text
     assert SENTINEL in str(response.json())
+
+
+async def test_card_behind_apps_oauth_is_fetched_with_the_callers_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apps 302s an unauthenticated card request (seen live). The remote must read
+    the card with the caller's credentials, or it never learns the durable endpoint."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if "authorization" not in request.headers:
+            return httpx.Response(302, headers={"location": "https://login.example/"})
+        if request.url.path == "/.well-known/agent.json":
+            return httpx.Response(200, json={"name": "peer", "description": "", "url": "https://peer.test",
+                                             "invocationsEndpoint": "https://peer.test/api/invocations"})
+        if request.url.path == "/api/invocations":
+            return httpx.Response(200, json={"output": {"messages": [{"type": "ai", "content": SENTINEL}]}})
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    real_client = httpx.AsyncClient
+
+    def routed(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", routed)
+    remote = RemoteDatabricksAgent("https://peer.test")
+    await remote._init_quietly()  # startup: unauthenticated, 302 → degraded
+    reply = await remote._run_with_incoming_headers(
+        [{"role": "user", "content": "hello"}],
+        {"Authorization": "Bearer user-token", "X-Forwarded-Access-Token": "user-token"},
+    )
+    assert SENTINEL in reply
+    assert "/invocations" not in seen

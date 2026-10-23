@@ -469,21 +469,25 @@ class RemoteDatabricksAgent(BaseAgent):
     # Initialization — fetch agent card
     # ------------------------------------------------------------------
 
-    async def init(self) -> None:
-        """Fetch the agent card. Safe to call multiple times (idempotent)."""
+    async def init(self, headers: Mapping[str, str] | None = None) -> None:
+        """Fetch the agent card. Safe to call multiple times (idempotent).
+
+        ``headers`` are trusted-origin credentials (from ``_obo_headers``); a
+        private Databricks App 302s the card request without them.
+        """
         if self._card is not None:
             return
-        await self._fetch_card()
+        await self._fetch_card(headers)
 
-    async def _init_quietly(self) -> None:
+    async def _init_quietly(self, headers: Mapping[str, str] | None = None) -> None:
         """init(), but card-fetch failure is non-fatal.
 
-        A private Databricks App 302s the unauthenticated card request, yet
-        run()/stream() still work — they forward the caller's OBO token and
-        the base URL is already known from the constructor.
+        Startup fetches without credentials and a private App 302s it; each call
+        retries with the caller's credentials, so the card (and a durable peer's
+        endpoint, #980) is learned on first authenticated use.
         """
         try:
-            await self.init()
+            await self.init(headers)
         except Exception as e:
             logger.warning(
                 "Agent card fetch failed for %s: %s — proceeding without card",
@@ -491,11 +495,11 @@ class RemoteDatabricksAgent(BaseAgent):
                 e,
             )
 
-    async def _fetch_card(self) -> None:
+    async def _fetch_card(self, headers: Mapping[str, str] | None = None) -> None:
         from httpx import AsyncClient
 
         async with AsyncClient(timeout=10.0) as client:
-            response = await client.get(self._card_url, headers=self._extra_headers)
+            response = await client.get(self._card_url, headers={**self._extra_headers, **(headers or {})})
             response.raise_for_status()
             try:
                 data = response.json()
@@ -618,7 +622,7 @@ class RemoteDatabricksAgent(BaseAgent):
         messages: Sequence[Message | dict[str, Any]],
         incoming_headers: Mapping[str, str],
     ) -> str:
-        await self._init_quietly()
+        await self._init_quietly(self._obo_headers(incoming_headers))
         obo_headers = self._obo_headers(incoming_headers)
         corr_headers = self._correlation_headers()
 
@@ -658,7 +662,7 @@ class RemoteDatabricksAgent(BaseAgent):
         return await self._call_via_http(messages, {**obo_headers, **corr_headers})
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
-        await self._init_quietly()
+        await self._init_quietly(self._obo_headers(request.headers))
         obo_headers = self._obo_headers(request.headers)
         corr_headers = self._correlation_headers()
 
@@ -999,7 +1003,7 @@ class RemoteDatabricksAgent(BaseAgent):
         HTTP and ordinary SDK calls retain the response envelope, including
         business DataParts. Long-task continuation remains text-only.
         """
-        await self._init_quietly()
+        await self._init_quietly(self._obo_headers(incoming_headers))
         obo_headers = self._obo_headers(incoming_headers)
         corr_headers = self._correlation_headers()
 
