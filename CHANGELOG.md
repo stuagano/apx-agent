@@ -12,6 +12,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Added
 
+- **Agent settings from Python everywhere.** `eval`, `lint`, `test`, deploy registration, `agents register`, `advertise` and `supervisor add` read `model`, `name`, `description` and `data` from the Python agent as well as the TOML. Doctor imports agent.py under isolation. Target detection, project scans and `status` read agent.py statically, without importing it. Durable discovery uses the compiled config instead of re-reading the working directory, and the dev-UI grounding action no longer edits pyproject.toml.
 - **CLI metadata homes.** `profile` and `experiment` live in `[tool.apx]` (`profile` in `.apx.local`). Registration keys (`registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`, `tools_table`) live in `[tool.apx.deploy]`. `migrate-config` moves them, and CLI writers now edit only their own TOML section.
 - **`[tool.apx.deploy]` and `migrate-config`.** Deploy settings (`name`, `host`, `space`, instances/autoscale, `backend`) have their own table next to #986's `app_name`. Dev-UI `examples=` is an agent setting. `apx-agent agents migrate-config` moves a project off `[tool.apx.agent]`, keeping the table until Python declares every field.
 - **apx settings on any agent.** Every agent class takes apx runtime settings; `resolve_settings` merges them with `[tool.apx.agent]` and fails on conflicting values. Leaves compile with their own `model` and stamp their own `identity`.

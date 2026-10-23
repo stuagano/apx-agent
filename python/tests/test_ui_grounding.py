@@ -15,7 +15,6 @@ from apx_agent._okf import okf_columns, write_okf_bundle
 from apx_agent._ui_grounding import (
     apply_column_descriptions,
     build_column_curation,
-    ensure_knowledge_in_pyproject,
     generate_column_descriptions,
     generate_okf_pack,
     grounding_columns_payload,
@@ -188,12 +187,13 @@ def test_generate_okf_pack_writes_bundle_and_wires_knowledge(tmp_path):
     (tmp_path / "agent.py").write_text(
         'from apx_agent import DataAgent\n\nagent = DataAgent("samples", "nyctaxi", name="t")\n'
     )
+    pyproject_before = (tmp_path / "pyproject.toml").read_bytes()
     ws = _FakeWs({"trips": {"trip_id": "unique id", "fare": "fare amount"}})
     result = generate_okf_pack(ws, "samples", "nyctaxi", project_root=tmp_path)
     assert result["ok"] is True and result["table_count"] == 1
     assert (tmp_path / ".apx" / "okf" / "tables" / "trips.md").is_file()
     assert (tmp_path / ".apx" / "schema.json").is_file()
-    assert 'knowledge = "./.apx/okf"' in (tmp_path / "pyproject.toml").read_text()
+    assert (tmp_path / "pyproject.toml").read_bytes() == pyproject_before  # 3b-2: agent.py only
     assert 'knowledge="./.apx/okf"' in (tmp_path / "agent.py").read_text()
     cols = {c["name"]: c["description"] for c in okf_columns(tmp_path / ".apx" / "okf")["trips"]}
     assert cols["trip_id"] == "unique id"
@@ -207,12 +207,6 @@ def test_generate_okf_pack_refuses_existing_without_force(tmp_path):
     generate_okf_pack(ws, "samples", "nyctaxi", project_root=tmp_path)
     with pytest.raises(ValueError, match="already exists"):
         generate_okf_pack(ws, "samples", "nyctaxi", project_root=tmp_path)
-
-
-def test_ensure_knowledge_idempotent(tmp_path):
-    py = tmp_path / "pyproject.toml"
-    py.write_text('[tool.apx.agent]\nname = "t"\nknowledge = "./.apx/okf"\n')
-    assert ensure_knowledge_in_pyproject(tmp_path) is False
 
 
 def test_grounding_columns_payload_empty_with_source():

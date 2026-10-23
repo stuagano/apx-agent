@@ -255,6 +255,56 @@ def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]
     local_keys = {**_table(local, "agent"), **{k: local[k] for k in DEV_KEYS if k in local}}
     return {**legacy, **{k: v for k, (_, v) in homes.items()}, **local_keys}
 
+_AGENT_SETTING_KEYS = ("name", "model", "description", "data")
+
+
+def _effective_config(cwd: Path, module: str = "agent:agent") -> "AgentConfig | None":
+    """The current project's merged config: TOML + the Python agent's settings (3b-2).
+
+    Imports and finalizes agent.py, so use it only for the project the command runs in."""
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
+
+    toml = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    if not (cwd / "agent.py").is_file():
+        return toml
+    try:
+        agent = _load_finalized_agent(module)
+    except click.ClickException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any import-time failure is the user's agent.py
+        raise click.ClickException(f"could not import agent.py: {type(exc).__name__}: {exc}") from exc
+    config = resolve_settings(agent, toml)
+    # description is a constructor argument, not a merged setting: fill it from the
+    # root agent only where the TOML leaves it unset (no new conflict rule).
+    description = getattr(agent, "_description", None)
+    if description and "description" not in config.model_fields_set:
+        config = config.model_copy(update={"description": description})
+    return config
+
+
+def _with_agent_settings(flat: dict[str, Any], cwd: Path | None = None, *, module: str = "agent:agent") -> dict[str, Any]:
+    """*flat* with the agent settings the project declares (TOML or Python) merged in.
+
+    Declared means in the resolved config's ``model_fields_set``; defaults never
+    appear, so "no model declared" still reads as missing. A placeholder name
+    (an unnamed root agent) isn't a declaration."""
+    config = _effective_config(cwd or Path.cwd(), module)
+    if config is None:
+        return flat
+    merged = dict(flat)
+    for key in _AGENT_SETTING_KEYS:
+        # A key already in *flat* came from the TOML or .apx.local (which overrides it);
+        # Python can't disagree with the TOML without a SettingsConflict, so only fill gaps.
+        if key in flat or key not in config.model_fields_set:
+            continue
+        value = getattr(config, key)
+        if value is None or (key == "name" and value == "agent"):
+            continue
+        merged[key] = value.model_dump() if hasattr(value, "model_dump") else value
+    return merged
+
+
 def _load_agent(module_spec: str) -> Any:
     """Import ``module:variable`` and return the agent.
 
@@ -450,6 +500,15 @@ class _DetectedTarget(NamedTuple):
     reason: str
 
 
+def _declares_durable(project: Path) -> bool:
+    """A durable target declared in agent.py (read statically) or in the TOML. Never imports."""
+    from ._inspection import static_agent_setting
+
+    durable = "durable_agent_server"
+    return (static_agent_setting(project / "agent.py", "target") == durable
+            or _read_apx_agent_config(project / "pyproject.toml").get("target") == durable)
+
+
 def _detect_target(cwd: Path | None = None) -> _DetectedTarget:
     """Infer the project's target (model-serving vs apps) from its layout.
 
@@ -461,7 +520,7 @@ def _detect_target(cwd: Path | None = None) -> _DetectedTarget:
     echo why a target was auto-detected. Pass ``--target`` to override.
     """
     cwd = cwd or Path.cwd()
-    if _read_apx_agent_config(cwd / "pyproject.toml").get("target") == "durable_agent_server":
+    if _declares_durable(cwd):
         return _DetectedTarget("apps", "declared durable_agent_server runtime")
     if (cwd / "agent_server" / "start_server.py").exists():
         return _DetectedTarget("apps", "agent_server/start_server.py present")
@@ -1190,6 +1249,15 @@ def _resolve_active_profile() -> str | None:
     return saved if isinstance(saved, str) and saved else None
 
 
+def _project_name(cwd: Path) -> str | None:
+    """The agent's name from agent.py (read statically, never imported), else the TOML's."""
+    from ._inspection import static_agent_setting
+
+    toml = _read_apx_agent_config(cwd / "pyproject.toml")
+    # TOML first, the same precedence as _with_agent_settings (one answer for status and deploy).
+    return toml.get("name") or static_agent_setting(cwd / "agent.py", "name")
+
+
 def _status_prompt_string(cwd: Path) -> str:
     """Compact ``apx:name(target) ▸ profile`` context string for a shell prompt.
 
@@ -1201,7 +1269,7 @@ def _status_prompt_string(cwd: Path) -> str:
 
         in_project = _d._is_apx_project(cwd)
         profile = _resolve_active_profile()
-        name = _read_apx_agent_config().get("name") if in_project else None
+        name = _project_name(cwd) if in_project else None
         target = _detect_target(cwd).target if in_project else None
         parts = []
         if in_project:
@@ -1256,7 +1324,7 @@ def status(
     cwd = Path.cwd()
     in_project = _d._is_apx_project(cwd)
     profile = _resolve_active_profile()
-    name = _read_apx_agent_config().get("name") if in_project else None
+    name = _project_name(cwd) if in_project else None
     target = _detect_target(cwd).target if in_project else None
 
     if as_json:
@@ -2562,7 +2630,7 @@ def _materialize_yaml_project(
             (target / "databricks.yml").exists()
             or (
                 config.target == "durable_agent_server" and (target / "agent.py").is_file()
-                and _read_apx_agent_config(target / "pyproject.toml").get("target") == "durable_agent_server"
+                and _declares_durable(target)
             )
         )
     ):
@@ -5922,7 +5990,7 @@ def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
 
     def _is_runnable(d: Path) -> bool:
         return (
-            (_read_apx_agent_config(d / "pyproject.toml").get("target") == "durable_agent_server" and (d / "agent.py").is_file())
+            (_declares_durable(d) and (d / "agent.py").is_file())
             or (d / "agent_server" / "start_server.py").exists()
             or ((d / "app.py").exists() and not (d / "databricks.yml").exists())
         )
@@ -6671,7 +6739,14 @@ def eval_cmd(
 
     from ._inspection import _resolve_agent_pyproject
 
-    config = _read_apx_agent_config() if endpoint_url else _read_apx_agent_config(_resolve_agent_pyproject())
+    # A remote --endpoint-url eval must not import the local agent.
+    if endpoint_url:
+        config = _read_apx_agent_config()
+    else:
+        project = _resolve_agent_pyproject()
+        config = _read_apx_agent_config(project)
+        if project is not None:
+            config = _with_agent_settings(config, project.parent)
     effective_experiment = experiment or config.get("experiment")
 
     if endpoint_url:
@@ -7294,7 +7369,7 @@ def deploy(
             "skips the deploy step — combined, nothing would happen. Drop "
             "one of the two."
         )
-    config = _read_apx_agent_config()
+    config = _with_agent_settings(_read_apx_agent_config())
     if model is None:
         raise click.UsageError(
             "--model is required when --target model-serving. "
@@ -10520,6 +10595,10 @@ def _register_apps_manifest_step(
         )
         return None
 
+    if "model" not in config or "name" not in config:
+        # Declared Python settings (3b-2), imported the way the step imports the agent below.
+        with _registration_import_context(load_cwd):
+            config = _with_agent_settings(config, load_cwd or Path.cwd(), module=module)
     model = config.get("model")
     if not model:
         msg = (
@@ -11991,7 +12070,7 @@ def _do_advertise(
     from apx_agent import publish_to_registry
     from apx_agent._publish import publish_tools_to_registry
 
-    cfg = _read_apx_agent_config()
+    cfg = _with_agent_settings(_read_apx_agent_config())
     profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
     if profile:
         os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
@@ -12200,7 +12279,7 @@ def supervisor_add(
     """
     if endpoint and app:
         raise click.UsageError("--endpoint and --app are mutually exclusive — pass one.")
-    cfg = _read_apx_agent_config()
+    cfg = _with_agent_settings(_read_apx_agent_config())
     profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
     if profile:
         os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
@@ -13369,7 +13448,11 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
 
     agent = _load_finalized_agent(module)
 
-    effective_model = model or _read_apx_agent_config().get("model")
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
+
+    declared = resolve_settings(agent, _load_agent_config())
+    effective_model = model or (declared.model if "model" in declared.model_fields_set else None)
 
     findings = lint_agent(agent, model=effective_model)
 
@@ -13668,7 +13751,11 @@ def test_cmd(
     """
     agent = _load_finalized_agent(module)
 
-    effective_model = model or _read_apx_agent_config().get("model")
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
+
+    declared = resolve_settings(agent, _load_agent_config())
+    effective_model = model or (declared.model if "model" in declared.model_fields_set else None)
     if not effective_model:
         raise click.UsageError(
             "Pass --model NAME or set [tool.apx.agent].model in pyproject.toml."
@@ -14320,7 +14407,7 @@ def register_agent_cmd(
     """
     with _json_cli_errors(as_json):
         cwd = Path.cwd()
-        config = _read_apx_agent_config()
+        config = _with_agent_settings(_read_apx_agent_config(), cwd, module=module)
         profile = profile or config.get("profile")
         if profile:
             # register_apps_manifest logs via ambient mlflow auth — make the

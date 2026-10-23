@@ -1,6 +1,6 @@
 # Design: `agent.toml` is the platform's source of truth
 
-**Status:** sub-projects 1–2 (#984) and 3a (#990) implemented; 3b-1 proposed · **Date:** 2026-10-19
+**Status:** sub-projects 1–2 (#984) 3a (#990) and 3b-1 (#992) implemented; 3b-2 proposed · **Date:** 2026-10-19
 
 ## Intent
 
@@ -420,6 +420,102 @@ profile`. The file is gitignored, so the command copies it to
 - **Real projects:** for every in-repo example, `_read_apx_agent_config`
   returns the same dict before and after this change.
 - **Gate:** `make check` and pre-commit on the changed files.
+
+## Sub-project 3b-2: agent-setting readers use the effective config
+
+Some readers take agent settings (`target`, `model`, `name`, `description`,
+`data`) straight from `[tool.apx.agent]`. After 3d those values exist only in
+Python, so these readers move to the merged view that deploy already uses.
+
+### The helper
+
+`_effective_config(cwd, module="agent:agent") -> AgentConfig | None`:
+
+1. loads `[tool.apx.agent]` and `[tool.apx.deploy]` with `_load_agent_config`;
+2. imports and finalizes `agent.py`, if it exists, through `_load_finalized_agent`;
+3. returns `resolve_settings(agent, toml)`.
+
+With no `agent.py`, it returns the TOML config, which may be `None`.
+
+If `agent.py` fails to import:
+
+| Caller | Result |
+|---|---|
+| Commands that need the settings (status, eval, lint, deploy registration, `agents register`) | `ClickException`: `could not import agent.py: <Type>: <msg>` |
+| Doctor | a FAIL check with that message; the other checks still run |
+| Doctor's checks | import under `doctor --durable`'s isolation harness (fake workspace clients, network blocked) |
+
+Heuristics never import: `_detect_target`, the cross-directory scans
+(`_find_runnable_agents`, `_materialize_yaml_project`) and the shell prompt
+string read `target=` / `name=` from `agent.py` statically (`ast`, literal
+values only), falling back to the TOML. Importing another project's `agent.py`
+in one process collides on the module name `agent`, and import-time code can
+reach the network.
+
+`_read_apx_agent_config` stays import-free. Its metadata keys are read before
+`agent.py` loads, and `profile` lookup must never depend on the agent importing.
+Deploy's ordering doesn't change: prerequisite checks, then the import, then the
+merge.
+
+### Readers
+
+- **CLI commands.** Agent-setting reads move to the effective config; metadata
+  reads stay on `_read_apx_agent_config`. Commands that already load the agent
+  reuse it.
+  - `status` and its prompt string read `name` from it.
+  - `eval` and `lint` read `model`.
+  - Deploy registration (`_register_apps_manifest_step`) reads `model` and `name`.
+  - `agents register` reads `model` and `name`.
+  - Deploy's own `data` and `name` reads move too.
+- **`_detect_target` and the scans.** The durable-target check reads a static
+  `target=` from `agent.py`, else the TOML. Their callers don't change.
+- **Doctor.**
+  - The "Model service" check and the AI Gateway guardrails warning (`model`,
+    `service_policies.attachments`) read the effective config.
+  - The "is this an apx project" check also accepts an `agent.py` with no
+    `[tool.apx.agent]`.
+- **Durable discovery.** `compile_agent` passes its resolved config into
+  `compile_to_durable_agent_server`. `_durable_discovery_config` stops re-reading
+  `[tool.apx.agent]` from the working directory, which also removes its
+  "reload at the declared target" special case.
+- **Dev-UI grounding.** `ensure_knowledge_in_pyproject` is deleted; the action
+  writes `knowledge=` into `agent.py` only.
+- **Left for 3d.** The legacy `template =` readers (`_resolve_apps_uc_name`,
+  doctor's template fallback, `resolve_agent`), because `template =` itself goes
+  in 3d.
+
+### Testing
+
+- **Helper:**
+  - a Python-only project returns the agent's `model`, `name` and `target`;
+  - a `.toml`-only project returns the TOML config unchanged;
+  - a mixed project returns the merged config, and a conflict raises the
+    `SettingsConflict` message;
+  - no `agent.py` returns the TOML config or `None`;
+  - a broken `agent.py` raises `could not import agent.py: …`.
+- **Readers, on a Python-only project:**
+  - `status` shows the agent's name;
+  - `eval` and `lint` use the agent's model;
+  - deploy registration and `agents register` record the agent's `model` and
+    `name`;
+  - `_detect_target` returns `apps` for a Python-declared durable target
+    without importing `agent.py` (an `agent.py` that raises at import still
+    gets a result);
+  - doctor's "Model service" check passes and the project counts as an apx
+    project;
+  - with a broken `agent.py`, doctor reports a FAIL check and the other checks
+    still run.
+- **Durable discovery** works from the config `compile_agent` passed in. The
+  test deletes `pyproject.toml` after compile, and discovery still serves the
+  agent's settings.
+- **Dev-UI grounding** writes `knowledge=` to `agent.py`, and leaves
+  `pyproject.toml` byte-identical.
+- **No behavior change:**
+  - every in-repo example gets the same `_detect_target` result and doctor
+    check statuses before and after;
+  - the existing suite and deploy's prerequisite ordering test pass unchanged.
+- **Gate:** `make check`, pre-commit on the changed files, and the PR CI subset
+  under xdist.
 
 ## Out of scope
 
