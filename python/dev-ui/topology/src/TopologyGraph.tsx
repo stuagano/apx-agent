@@ -6,10 +6,9 @@
 //   - Selection highlights the node (accent box-shadow) and its incident edges.
 //   - Edge labels show `kind`.
 //   - Click → onNodeClick(nodeId).
-//   - Drop Discover palette chips onto leaf Agents → onWireDrop(nodeId, payload).
 //   - MiniMap + Controls only when showMap (large graphs).
 
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
+import { useEffect, useMemo } from "react";
 import {
   Background,
   Controls,
@@ -22,14 +21,9 @@ import {
   type NodeMouseHandler,
   Position,
 } from "@xyflow/react";
-import dagre from "dagre";
 
 import { NODE_STYLE, type NodeType, type TopologyResponse } from "./types";
-import {
-  WIRE_MIME,
-  isLeafAgentType,
-  type WirePayload,
-} from "./wire";
+import { NODE_WIDTH, dagrePositions } from "./layout";
 
 import "@xyflow/react/dist/style.css";
 
@@ -40,26 +34,18 @@ export interface TopologyGraphProps {
   routeNodeIds?: ReadonlySet<string>;
   /** Edges lit by the latest Chat turn. */
   routeEdgeIds?: ReadonlySet<string>;
-  droppableIds?: ReadonlySet<string>;
   /** Show MiniMap + zoom Controls (default: off for small graphs). */
   showMap?: boolean;
   onNodeClick: (nodeId: string) => void;
-  onWireDrop?: (nodeId: string, payload: WirePayload) => void;
 }
 
-const DEFAULT_NODE_STYLE = { fill: "#37444F", stroke: "#92A4B3" };
+const DEFAULT_NODE_STYLE = { fill: "#f7f8fc", stroke: "#5f6469" };
 const styleFor = (type: string) =>
   NODE_STYLE[type as NodeType] ?? DEFAULT_NODE_STYLE;
 
 const EMBED =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("embed") === "1";
-
-const NODE_WIDTH = 200;
-const NODE_HEIGHT = 56;
-const RANKDIR = "LR";
-const NODESEP = 60;
-const RANKSEP = 120;
 
 interface LayoutResult {
   nodes: Node[];
@@ -82,72 +68,38 @@ function layout(
   selected: string | null,
   routeNodeIds: ReadonlySet<string> | undefined,
   routeEdgeIds: ReadonlySet<string> | undefined,
-  droppableIds: ReadonlySet<string> | undefined,
-  dropHoverId: string | null,
 ): LayoutResult {
-  const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: RANKDIR, nodesep: NODESEP, ranksep: RANKSEP });
-  g.setDefaultEdgeLabel(() => ({}));
-
-  for (const n of data.nodes) {
-    g.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
-  }
-  for (const e of data.edges) {
-    g.setEdge(e.source, e.target);
-  }
-
-  dagre.layout(g);
+  const pos = dagrePositions(data.nodes.map((n) => n.id), data.edges);
 
   const rfNodes: Node[] = data.nodes.map((n) => {
-    const pos = g.node(n.id);
     const style = styleFor(n.type);
     const badges = contextBadges(n.metadata);
     const isSelected = selected === n.id;
     const onRoute = !!routeNodeIds?.has(n.id);
-    const isDroppable = !!droppableIds?.has(n.id) && isLeafAgentType(n.type);
-    const isDropHover = dropHoverId === n.id;
     return {
       id: n.id,
-      position: {
-        x: (pos?.x ?? 0) - NODE_WIDTH / 2,
-        y: (pos?.y ?? 0) - NODE_HEIGHT / 2,
-      },
+      position: pos.get(n.id)!,
       data: {
         label: badges.length ? `${n.label}  ${badges.join(" · ")}` : n.label,
         topoType: n.type,
-        droppable: isDroppable,
       },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
-      className: [
-        isDroppable ? "apx-droppable" : "",
-        isDropHover ? "apx-drop-hover" : "",
-        onRoute ? "apx-route-active" : "",
-      ]
-        .filter(Boolean)
-        .join(" "),
+      className: onRoute ? "apx-route-active" : "",
       style: {
         background: style.fill,
-        border: `1.5px solid ${
-          isDropHover ? "#3BA65E" : onRoute ? "#FACB66" : style.stroke
-        }`,
+        border: `1.5px solid ${onRoute ? "#8b5000" : style.stroke}`,
         borderRadius: 6,
-        color: "#E8ECF0",
+        color: "#1f2124",
         fontSize: 12,
         fontWeight: 500,
         padding: "8px 12px",
         width: NODE_WIDTH,
         boxShadow: isSelected
-          ? "0 0 0 2px var(--accent, #2272B4)"
+          ? "0 0 0 2px var(--accent, #1a73e8)"
           : onRoute
-            ? "0 0 0 2px #FACB66, 0 0 12px rgba(250, 203, 102, 0.35)"
-            : isDropHover
-              ? "0 0 0 2px #3BA65E"
-              : isDroppable
-                ? "0 0 0 1px rgba(74, 222, 128, 0.35)"
-                : undefined,
-        outline: isDroppable ? "1px dashed rgba(74, 222, 128, 0.4)" : undefined,
-        outlineOffset: 2,
+            ? "0 0 0 2px #8b5000, 0 0 12px rgba(139, 80, 0, 0.25)"
+            : undefined,
       },
     };
   });
@@ -160,13 +112,13 @@ function layout(
       source: e.source,
       target: e.target,
       label: e.kind,
-      labelStyle: { fill: onRoute ? "#FACB66" : "#92A4B3", fontSize: 10 },
-      labelBgStyle: { fill: "#11171C", fillOpacity: 0.85 },
+      labelStyle: { fill: onRoute ? "#8b5000" : "#5f6469", fontSize: 10 },
+      labelBgStyle: { fill: "#f1f3ff", fillOpacity: 0.85 },
       labelBgPadding: [4, 2] as [number, number],
       labelBgBorderRadius: 3,
       animated: onRoute,
       style: {
-        stroke: onRoute ? "#FACB66" : incident ? "var(--accent, #2272B4)" : "#445461",
+        stroke: onRoute ? "#8b5000" : incident ? "var(--accent, #1a73e8)" : "#777d86",
         strokeWidth: onRoute ? 2.5 : incident ? 2 : 1,
       },
     };
@@ -185,93 +137,24 @@ function FitOnResize() {
   return null;
 }
 
-function hitNodeId(
-  flowPos: { x: number; y: number },
-  nodes: Node[],
-): string | null {
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    const n = nodes[i]!;
-    const w = typeof n.style?.width === "number" ? n.style.width : NODE_WIDTH;
-    const h = NODE_HEIGHT;
-    if (
-      flowPos.x >= n.position.x &&
-      flowPos.x <= n.position.x + w &&
-      flowPos.y >= n.position.y &&
-      flowPos.y <= n.position.y + h
-    ) {
-      return n.id;
-    }
-  }
-  return null;
-}
-
 function TopologyGraphInner(props: TopologyGraphProps) {
   const {
     data,
     selected,
     routeNodeIds,
     routeEdgeIds,
-    droppableIds,
     showMap = false,
     onNodeClick,
-    onWireDrop,
   } = props;
-  const [dropHoverId, setDropHoverId] = useState<string | null>(null);
-  const { screenToFlowPosition } = useReactFlow();
 
   const { nodes, edges } = useMemo(
-    () =>
-      layout(data, selected, routeNodeIds, routeEdgeIds, droppableIds, dropHoverId),
-    [data, selected, routeNodeIds, routeEdgeIds, droppableIds, dropHoverId],
+    () => layout(data, selected, routeNodeIds, routeEdgeIds),
+    [data, selected, routeNodeIds, routeEdgeIds],
   );
 
   const handleNodeClick: NodeMouseHandler = (_event, node) => {
     onNodeClick(node.id);
   };
-
-  const parsePayload = (e: DragEvent): WirePayload | null => {
-    const raw =
-      e.dataTransfer.getData(WIRE_MIME) || e.dataTransfer.getData("text/plain");
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as WirePayload;
-    } catch {
-      return null;
-    }
-  };
-
-  const onDragOver = useCallback(
-    (e: DragEvent) => {
-      if (!onWireDrop) return;
-      e.preventDefault();
-      e.stopPropagation();
-      e.dataTransfer.dropEffect = "copy";
-      const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      const id = hitNodeId(flowPos, nodes);
-      if (id && droppableIds?.has(id)) {
-        setDropHoverId(id);
-      } else {
-        setDropHoverId(null);
-      }
-    },
-    [onWireDrop, screenToFlowPosition, nodes, droppableIds],
-  );
-
-  const onDrop = useCallback(
-    (e: DragEvent) => {
-      if (!onWireDrop) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      const id = hitNodeId(flowPos, nodes);
-      setDropHoverId(null);
-      const payload = parsePayload(e);
-      if (!payload) return;
-      // Always invoke so App can toast "not eligible" when id isn't droppable
-      onWireDrop(id || "", payload);
-    },
-    [onWireDrop, screenToFlowPosition, nodes],
-  );
 
   return (
     <ReactFlow
@@ -283,27 +166,24 @@ function TopologyGraphInner(props: TopologyGraphProps) {
       proOptions={{ hideAttribution: true }}
       minZoom={0.2}
       maxZoom={2}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-      onDragLeave={() => setDropHoverId(null)}
     >
       <FitOnResize />
-      <Background color="#37444F" gap={20} />
+      <Background color="#f7f8fc" gap={20} />
       {!EMBED && showMap && <Controls />}
       {!EMBED && showMap && (
         <MiniMap
           pannable
           zoomable
-          maskColor="rgba(17, 23, 28, 0.7)"
-          style={{ background: "#11171C" }}
+          maskColor="rgba(241, 243, 255, 0.7)"
+          style={{ background: "#f1f3ff" }}
           nodeColor={(node) => {
             const topoNode = data.nodes.find((n) => n.id === node.id);
-            if (!topoNode) return "#445461";
+            if (!topoNode) return "#d9dce6";
             return styleFor(topoNode.type).stroke;
           }}
           nodeStrokeColor={(node) => {
             const topoNode = data.nodes.find((n) => n.id === node.id);
-            if (!topoNode) return "#445461";
+            if (!topoNode) return "#d9dce6";
             return styleFor(topoNode.type).stroke;
           }}
         />

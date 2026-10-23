@@ -83,18 +83,10 @@ from ._apx_models import (
     WarehouseInfo,
     WireAgentRequest,
     WireAgentResponse,
-    WorkspaceAgentsResponse,
-    WorkspaceApisResponse,
     WorkspaceContextResponse,
-    WorkspaceFunctionsResponse,
-    DiscoverTargetsResponse,
-    DiscoverTablesResponse,
-    DiscoverSampleResponse,
-    DiscoverWireAgentRequest,
-    DiscoverWireResponse,
-    DiscoverWireToolRequest,
+    DiscoverGraphResponse,
+    DiscoverImpactResponse,
 )
-from ._discover_data import list_discover_tables, sample_discover_table
 from ._cost import usd_for_token_usage
 from ._models import AgentContext, AgentTool
 from ._topology import (
@@ -121,16 +113,6 @@ from ._ui_edit import (
     _fix_sql_identifiers,
     _remove_tool,
     _parse_agent_nodes,
-    _list_sub_agent_targets,
-    _append_sub_agent,
-    _remove_sub_agent,
-    _peer_env_key,
-    _slug_tool_name,
-    _require_python_binding,
-    _existing_binding_names,
-    _splice_factory_tool,
-    _remove_factory_binding,
-    _get_agent_sub_agents,
 )
 from ._ui_setup import (
     _find_env_path,
@@ -183,16 +165,7 @@ class _TTLCache:
 # Module-level singletons — survive request boundaries, reset on process restart.
 _EVAL_CASES_CACHE: _TTLCache = _TTLCache(ttl=300)   # 5 min — ratings change infrequently
 _TRACES_LIST_CACHE: _TTLCache = _TTLCache(ttl=60)   # 60 s — traces change with each run
-# UC schema discovery: keyed by (catalog, schema) tuple — dict[tuple, _TTLCache]
-_SCHEMA_CACHE: dict[tuple[str, str], _TTLCache] = {}
 _GROUNDING_COLUMNS_CACHE: _TTLCache = _TTLCache(ttl=600)  # 10 min — UC comments rarely change
-
-
-def _schema_cache_for(catalog: str, schema: str) -> _TTLCache:
-    key = (catalog, schema)
-    if key not in _SCHEMA_CACHE:
-        _SCHEMA_CACHE[key] = _TTLCache(ttl=600)  # 10 min per catalog.schema
-    return _SCHEMA_CACHE[key]
 
 
 class _EditPanelInventory(NamedTuple):
@@ -278,8 +251,8 @@ class _JudgeOutput(NamedTuple):
 
 
 _TRACE_CSS = """
-  :root{--bg:#11171C;--panel:#1F272D;--border:#445461;--text:#E8ECF0;--muted:#92A4B3;
-        --accent:#2272B4;--accent-bg:#37444F;--accent-border:#445461;}
+  :root{--bg:var(--apx-bg);--panel:var(--apx-panel);--border:var(--apx-border);--text:var(--apx-text);--muted:var(--apx-muted);
+        --accent:var(--apx-accent);--accent-bg:var(--apx-panel-2);--accent-border:var(--apx-border);}
   *{box-sizing:border-box;margin:0;padding:0;}
   body{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;
        font-size:13px;background:var(--bg);color:var(--text);min-height:100vh;}
@@ -292,7 +265,7 @@ _TRACE_CSS = """
   .back{margin-left:auto;font-size:12px;color:var(--accent);text-decoration:none;
         padding:4px 10px;border:1px solid var(--accent-border);border-radius:5px;
         background:var(--accent-bg);}
-  .back:hover{background:#2F3A49;}
+  .back:hover{background:var(--apx-panel-2);}
   main{padding:24px 28px;max-width:960px;}
   .meta{color:var(--muted);font-size:11px;margin-bottom:20px;
         font-family:monospace;word-break:break-all;}
@@ -301,12 +274,12 @@ _TRACE_CSS = """
   th{color:var(--muted);text-align:left;padding:6px 10px;
      border-bottom:1px solid var(--border);font-weight:500;white-space:nowrap;}
   td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top;}
-  tr:hover td{background:#1F272D;}
+  tr:hover td{background:var(--apx-panel);}
   td a{color:var(--accent);text-decoration:none;}
   td a:hover{text-decoration:underline;}
-  .st-ok{color:#3BA65E;} .st-err{color:#C83243;} .st-run{color:#FACB66;}
+  .st-ok{color:var(--apx-ok);} .st-err{color:var(--apx-err);} .st-run{color:var(--apx-warn);}
   .tool-fails-card{display:flex;flex-wrap:wrap;gap:8px 14px;padding:10px 12px;
-                   margin:0 0 12px;background:#2A3139;border:1px solid #37444F;
+                   margin:0 0 12px;background:var(--apx-panel-2);border:1px solid var(--apx-panel-2);
                    border-radius:10px;font-size:12px;}
   #tool-fails[hidden]{display:none;}
   .tool-fail{font-family:monospace;}
@@ -317,7 +290,7 @@ _TRACE_CSS = """
   .trace-diff-go:disabled{opacity:.4;cursor:not-allowed;}
   .td-pick{margin-right:6px;}
   .trace-diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-  .trace-diff-card{background:#2A3139;border:1px solid #37444F;border-radius:10px;
+  .trace-diff-card{background:var(--apx-panel-2);border:1px solid var(--apx-panel-2);border-radius:10px;
                    padding:12px 14px;display:flex;flex-direction:column;gap:8px;}
   .trace-diff-label{font-size:11px;color:var(--muted);text-transform:uppercase;
                     letter-spacing:.04em;}
@@ -333,55 +306,55 @@ _TRACE_CSS = """
              border-radius:7px;overflow:hidden;}
   .span-head{display:flex;align-items:center;gap:10px;padding:9px 13px;
              cursor:pointer;user-select:none;}
-  .span-head:hover{background:#2A3139;}
+  .span-head:hover{background:var(--apx-panel-2);}
   .stype{font-size:10px;font-weight:600;padding:2px 7px;border-radius:10px;
          text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;}
-  .stype-LLM{color:#22d3ee;background:#0A2E3B;}
-  .stype-TOOL{color:#facc15;background:#3B3B0A;}
-  .stype-CHAIN{color:#a78bfa;background:#3B0A3B;}
-  .stype-AGENT{color:#4299E0;background:#1F2E42;}
-  .stype-OTHER{color:#92A4B3;background:#2A3139;}
+  .stype-LLM{color:var(--apx-cyan);background:var(--apx-cyan-soft);}
+  .stype-TOOL{color:var(--apx-warn);background:var(--apx-warn-soft);}
+  .stype-CHAIN{color:var(--apx-purple);background:var(--apx-purple-soft);}
+  .stype-AGENT{color:var(--apx-accent-hover);background:var(--apx-accent-soft);}
+  .stype-OTHER{color:var(--apx-muted);background:var(--apx-panel-2);}
   .sname{font-weight:500;font-size:13px;flex:1;overflow:hidden;
          text-overflow:ellipsis;white-space:nowrap;}
   .sdur{font-family:monospace;font-size:11px;color:var(--muted);white-space:nowrap;}
   .sstatus{font-size:10px;font-weight:600;white-space:nowrap;}
-  .sstatus-ok{color:#3BA65E;} .sstatus-err{color:#C83243;}
+  .sstatus-ok{color:var(--apx-ok);} .sstatus-err{color:var(--apx-err);}
   .span-body{padding:10px 14px;border-top:1px solid var(--border);
              display:none;flex-direction:column;gap:8px;}
   .span-body.open{display:flex;}
   .io-block{display:flex;flex-direction:column;gap:4px;}
   .io-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;
-            color:#92A4B3;font-weight:600;}
-  pre.io-pre{background:#11171C;border:1px solid #445461;border-radius:5px;
+            color:var(--apx-muted);font-weight:600;}
+  pre.io-pre{background:var(--apx-bg);border:1px solid var(--apx-border);border-radius:5px;
              padding:8px 10px;font-size:11px;font-family:monospace;
-             color:#92A4B3;white-space:pre-wrap;word-break:break-all;
+             color:var(--apx-muted);white-space:pre-wrap;word-break:break-all;
              max-height:240px;overflow-y:auto;}
   /* Compact, deduped conversation view (chat payloads) */
   .convo{display:flex;flex-direction:column;gap:5px;}
   .tmsg{display:flex;gap:8px;font-size:12px;line-height:1.45;align-items:baseline;}
-  .trole{flex:none;min-width:74px;color:#92A4B3;font-size:10px;font-weight:600;
+  .trole{flex:none;min-width:74px;color:var(--apx-muted);font-size:10px;font-weight:600;
          text-transform:uppercase;letter-spacing:.4px;font-family:ui-monospace,monospace;}
-  .trole-tool{color:#3BA65E;}
-  .tcontent{color:#E8ECF0;white-space:pre-wrap;word-break:break-word;
+  .trole-tool{color:var(--apx-ok);}
+  .tcontent{color:var(--apx-text);white-space:pre-wrap;word-break:break-word;
             font-family:ui-monospace,monospace;font-size:11.5px;}
   details.tsys{font-size:12px;}
-  details.tsys>summary,details.tprefix>summary{cursor:pointer;color:#92A4B3;font-size:11px;
+  details.tsys>summary,details.tprefix>summary{cursor:pointer;color:var(--apx-muted);font-size:11px;
             list-style:none;padding:1px 0;}
   details.tsys>summary::-webkit-details-marker,
   details.tprefix>summary::-webkit-details-marker{display:none;}
-  details.tsys>summary::before,details.tprefix>summary::before{content:"▸ ";color:#445461;}
+  details.tsys>summary::before,details.tprefix>summary::before{content:"▸ ";color:var(--apx-border);}
   details.tsys[open]>summary::before,details.tprefix[open]>summary::before{content:"▾ ";}
-  details.tprefix{border-left:2px solid #445461;padding-left:8px;margin:2px 0;}
+  details.tprefix{border-left:2px solid var(--apx-border);padding-left:8px;margin:2px 0;}
   details.tprefix[open]{display:flex;flex-direction:column;gap:5px;}
-  pre.tpre{background:#11171C;border:1px solid #445461;border-radius:5px;margin:4px 0 0;
-           padding:8px 10px;font-size:11px;font-family:monospace;color:#92A4B3;
+  pre.tpre{background:var(--apx-bg);border:1px solid var(--apx-border);border-radius:5px;margin:4px 0 0;
+           padding:8px 10px;font-size:11px;font-family:monospace;color:var(--apx-muted);
            white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;}
-  .span-event{font-size:11px;color:#92A4B3;padding:3px 14px 3px 30px;
-              border-top:1px solid #37444F;font-family:monospace;
+  .span-event{font-size:11px;color:var(--apx-muted);padding:3px 14px 3px 30px;
+              border-top:1px solid var(--apx-panel-2);font-family:monospace;
               white-space:pre-wrap;word-break:break-word;}
   .indent{border-left:2px solid var(--border);padding-left:16px;margin-top:4px;}
-  .err-banner{background:#3D1B1F;border:1px solid #8B3D47;border-radius:6px;
-              padding:12px 16px;color:#F5A0AA;margin-bottom:16px;}
+  .err-banner{background:var(--apx-err-soft);border:1px solid var(--apx-err);border-radius:6px;
+              padding:12px 16px;color:var(--apx-err);margin-bottom:16px;}
 """
 _TRACE_CSS += "\n" + TABLE_CSS
 
@@ -447,10 +420,10 @@ def _render_traces_list(rows: list | None, agent_name: str | None) -> str:
 {apx_theme_style()}
 <style>{_TRACE_CSS}
 .fb-cell{{white-space:nowrap}}
-.fb-btn{{background:none;border:1px solid var(--border,#445461);border-radius:4px;cursor:pointer;font-size:.9rem;padding:.1rem .4rem;opacity:.5}}
+.fb-btn{{background:none;border:1px solid var(--border,var(--apx-border));border-radius:4px;cursor:pointer;font-size:.9rem;padding:.1rem .4rem;opacity:.5}}
 .fb-btn:hover{{opacity:1}}
-.fb-btn.active.up{{opacity:1;border-color:#2e7d32}}
-.fb-btn.active.down{{opacity:1;border-color:#c62828}}
+.fb-btn.active.up{{opacity:1;border-color:var(--apx-ok)}}
+.fb-btn.active.down{{opacity:1;border-color:var(--apx-err)}}
 </style>
 <script>
 async function submitFeedback(tid, value, btn) {{
@@ -1099,20 +1072,20 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
 <style>{_TRACE_CSS}
 .feedback{{display:flex;flex-direction:column;gap:.4rem;margin-top:.5rem}}
 .fb-row{{display:flex;align-items:center;gap:.5rem}}
-.fb-btn{{background:none;border:1px solid var(--border,#445461);border-radius:4px;cursor:pointer;font-size:1rem;padding:.1rem .5rem;opacity:.6}}
+.fb-btn{{background:none;border:1px solid var(--border,var(--apx-border));border-radius:4px;cursor:pointer;font-size:1rem;padding:.1rem .5rem;opacity:.6}}
 .fb-btn:hover{{opacity:1}}
 .fb-btn.active{{opacity:1;border-color:currentColor}}
-.fb-btn.up.active{{color:#3BA65E}}
-.fb-btn.down.active{{color:#C83243}}
-#fb-msg{{font-size:.75rem;color:#92A4B3}}
-#fb-rationale{{width:100%;max-width:520px;background:#37444F;border:1px solid #445461;color:#E8ECF0;border-radius:4px;padding:5px 8px;font-size:12px;font-family:inherit;resize:vertical;min-height:48px;display:none}}
+.fb-btn.up.active{{color:var(--apx-ok)}}
+.fb-btn.down.active{{color:var(--apx-err)}}
+#fb-msg{{font-size:.75rem;color:var(--apx-muted)}}
+#fb-rationale{{width:100%;max-width:520px;background:var(--apx-panel-2);border:1px solid var(--apx-border);color:var(--apx-text);border-radius:4px;padding:5px 8px;font-size:12px;font-family:inherit;resize:vertical;min-height:48px;display:none}}
 #fb-rationale.visible{{display:block}}
-.fb-save-btn{{background:#2A4A30;border:1px solid #3BA65E;color:#7ADB8B;border-radius:4px;padding:3px 12px;font-size:12px;cursor:pointer;display:none}}
+.fb-save-btn{{background:var(--apx-ok-soft);border:1px solid var(--apx-ok);color:var(--apx-ok);border-radius:4px;padding:3px 12px;font-size:12px;cursor:pointer;display:none}}
 .fb-save-btn.visible{{display:inline-block}}
-.fb-save-btn:hover{{background:#335D39}}
-.fb-screenshot{{margin-top:8px;max-width:480px;border-radius:4px;border:1px solid #445461}}
-#fb-prev-note{{font-size:11px;color:#92A4B3;font-style:italic}}
-.fb-hint{{font-size:11px;color:#92A4B3;margin-top:2px}}
+.fb-save-btn:hover{{background:var(--apx-ok);color:var(--apx-on-accent)}}
+.fb-screenshot{{margin-top:8px;max-width:480px;border-radius:4px;border:1px solid var(--apx-border)}}
+#fb-prev-note{{font-size:11px;color:var(--apx-muted);font-style:italic}}
+.fb-hint{{font-size:11px;color:var(--apx-muted);margin-top:2px}}
 </style></head><body>
 <header>
   <span class="badge">APX</span><h1>Trace</h1>
@@ -1132,7 +1105,7 @@ def _render_trace_detail(trace_id: str, spans: list | None, error: str | None) -
       </div>
       <div class="fb-hint" id="fb-hint" style="display:none">
         Saved to MLflow as a <code>quality</code> assessment on this trace.
-        Collect ~20 ratings then go to <a href="/_apx/eval" style="color:#60b0ff">Eval → Judge Alignment</a> to run MemAlign.
+        Collect ~20 ratings then go to <a href="/_apx/eval" style="color:var(--apx-accent)">Eval → Judge Alignment</a> to run MemAlign.
       </div>
       <div id="fb-prev-note"></div>
       <div id="fb-screenshot-wrap"></div>
@@ -1263,13 +1236,9 @@ def _parse_judge_output(text: str) -> _JudgeOutput:
 #       - Else if ``APX_DEV_UI_TOKEN`` is set and matches ``X-APX-Dev-Token``
 #         (or ``?token=``) → allow (CI / non-browser automation).
 #       - Else → 403.
-#   * Discover wire/unwire (#611) is stricter on Apps: SSO alone is NOT
-#     enough. Those routes mutate the process-global live agent (and
-#     ``agent.py``) for every App user, so they require a matching
-#     ``APX_DEV_UI_TOKEN``. Open Discover with ``?token=<secret>``.
 #
 # Browser Dev UI ordinary writes therefore work for any signed-in App user —
-# no pasted operator token. Discover wire/unwire needs the operator secret.
+# no pasted operator token.
 # The guard is attached once at the router level and only enforces on
 # state-changing methods plus the SSRF probe / per-principal data reads, so
 # benign read GETs stay open.
@@ -1279,20 +1248,12 @@ def _parse_judge_output(text: str) -> _JudgeOutput:
 # own grants (caller-scoped discovery). That is not App-SP recon — handlers use
 # ``_ws_prefer_obo`` and fail closed without OBO (#612). Requiring
 # ``APX_DEV_UI_TOKEN`` for inventory would break Discover browse for ordinary
-# App users; mutations stay operator-gated (#611).
+# App users. Discover is read-only; there are no Discover mutations.
 # ---------------------------------------------------------------------------
 
 _DEV_TOKEN_HEADER = "x-apx-dev-token"
 _OBO_TOKEN_HEADER = "x-forwarded-access-token"
 _DEV_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
-# Discover mutations that hot-apply onto the shared live AgentContext (#611).
-_DISCOVER_MUTATION_SEGMENTS = (
-    "/discover/wire-agent",
-    "/discover/unwire-agent",
-    "/discover/wire-tool",
-    "/discover/unwire-tool",
-)
 
 # Read GETs that expose per-principal data (approvals, conversations + their
 # items, memories, traces). Gated like writes on a deployed App so anonymous
@@ -1360,42 +1321,6 @@ def _enforce_dev_write_auth(request: Request) -> None:
     )
 
 
-def _enforce_discover_operator_auth(request: Request) -> None:
-    """Authorize Discover wire/unwire on a deployed App (#611).
-
-    These routes mutate the shared live agent for every principal. SSO alone
-    is a confused-deputy footgun — require ``APX_DEV_UI_TOKEN``. Local
-    ``apx-agent run`` stays open for the solo-dev loop.
-    """
-    import hmac
-
-    if not _is_deployed_app():
-        return
-
-    raw = os.environ.get("APX_DEV_UI_TOKEN")
-    token = raw.strip() if raw else ""
-    if not token:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Discover wire/unwire on a deployed App requires APX_DEV_UI_TOKEN "
-                "(shared live-agent mutation). Set the App secret, then open "
-                "Discover with ?token=<secret>."
-            ),
-        )
-    supplied = _supplied_dev_token(request)
-    if supplied and hmac.compare_digest(supplied, token):
-        return
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            "Discover wire/unwire requires the operator X-APX-Dev-Token "
-            "(SSO alone cannot mutate the shared live agent). "
-            "Open /_apx/discover?token=<APX_DEV_UI_TOKEN>."
-        ),
-    )
-
-
 async def _dev_write_guard(request: Request) -> None:
     """Router-level dependency: gate state-changing methods, the SSRF probe, and
     per-principal data reads.
@@ -1422,8 +1347,6 @@ async def _dev_write_guard(request: Request) -> None:
     )
     if request.method in _DEV_WRITE_METHODS or is_side_effecting_get or is_data_read:
         _enforce_dev_write_auth(request)
-        if any(seg in path for seg in _DISCOVER_MUTATION_SEGMENTS):
-            _enforce_discover_operator_auth(request)
 
 
 def inject_create_tool_meta(ctx: AgentContext) -> None:
@@ -3551,12 +3474,60 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "used_schemas": used_schemas,
         }
 
+    def _discover_scope(catalogs: str | None) -> list[str] | None:
+        if catalogs is None:
+            return None
+        names = [c.strip() for c in catalogs.split(",") if c.strip()]
+        return names or None
+
     @router.get("/_apx/discover", include_in_schema=False)
     async def discover_ui() -> Any:
-        """Workspace peer-agent + UC-function discovery page."""
-        from ._ui_discover import render_discover_ui
+        """Workspace graph viewer — second entry of the Topology bundle."""
+        page = _topo_static_root / "discover.html"
+        if not page.exists():
+            return HTMLResponse(
+                "Discover UI not built — run "
+                "<code>cd python/dev-ui/topology &amp;&amp; npm run build</code>.",
+                status_code=503,
+            )
+        return FileResponse(page, media_type="text/html")
 
-        return HTMLResponse(render_discover_ui())
+    @router.get("/_apx/discover/graph.json", response_model=DiscoverGraphResponse)
+    async def discover_graph(
+        request: Request, catalogs: str | None = None, refresh: bool = False
+    ) -> Any:
+        """The caller's workspace graph — the same graph their agent tools see.
+
+        OBO only (#612): fails closed (401) on Apps without a user token.
+        """
+        import asyncio as _asyncio
+
+        from ._defaults import _ws_prefer_obo
+        from .workspace_graph import builder
+
+        ws = _ws_prefer_obo(request)
+        graph = await _asyncio.to_thread(
+            builder.get_graph, ws, _discover_scope(catalogs), refresh=refresh
+        )
+        return graph.to_json()
+
+    @router.get("/_apx/discover/impact/{node_id:path}", response_model=DiscoverImpactResponse)
+    async def discover_impact(request: Request, node_id: str, catalogs: str | None = None) -> Any:
+        """Downstream ids for the canvas highlight — same path as ``analyze_impact``."""
+        import asyncio as _asyncio
+
+        from ._defaults import _ws_prefer_obo
+        from .workspace_graph import builder
+
+        ws = _ws_prefer_obo(request)
+        graph = await _asyncio.to_thread(builder.get_graph, ws, _discover_scope(catalogs))
+        node = graph.resolve(node_id)
+        if node is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "suggestions": graph.suggest(node_id)},
+            )
+        return {"id": node.id, "impacted": [n.id for n in graph.impact(node.id)]}
 
     @router.get("/_apx/hub", include_in_schema=False)
     async def hub_ui() -> Any:
@@ -3564,68 +3535,6 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         from ._ui_hub import render_hub_ui
 
         return HTMLResponse(render_hub_ui())
-
-    @router.get("/_apx/workspace-agents", response_model=WorkspaceAgentsResponse)
-    async def workspace_agents(request: Request) -> Any:
-        """Discover apx agents in the workspace (Apps A2A cards + UC tags).
-
-        Best-effort: Apps that don't answer ``/.well-known/agent.json`` and
-        UC models without ``apx.agent.name`` are omitted. Never raises.
-
-        Uses the caller's OBO token so ``apps.list`` runs as the signed-in user.
-        In Apps, fails closed (401) when OBO is missing — never lists under
-        App SP while implying user-scoped Discover (#612).
-        """
-        import asyncio as _asyncio
-
-        from ._apps_discovery import discover_app_agents
-        from ._defaults import _ws_prefer_obo
-        from ._topology import discover_topology
-
-        ws: WorkspaceClient = _ws_prefer_obo(request)
-        app_agents = await _asyncio.to_thread(discover_app_agents, ws)
-        by_key: dict[str, dict[str, Any]] = {}
-        for a in app_agents:
-            key = (a.name or a.app_name).replace("-", "_").lower()
-            by_key[key] = {
-                "name": a.name,
-                "source": "app",
-                "app_name": a.app_name,
-                "url": a.url,
-                "description": a.description,
-                "tools": list(a.tools),
-                "tool_count": a.tool_count,
-                "state": a.state,
-                "uc_name": None,
-                "model_endpoint": None,
-            }
-        try:
-            topo = await _asyncio.to_thread(discover_topology, ws)
-        except Exception:
-            topo = None
-        if topo is not None:
-            for node in topo.nodes:
-                key = node.name.replace("-", "_").lower()
-                if key in by_key:
-                    by_key[key]["uc_name"] = node.uc_name
-                    by_key[key]["model_endpoint"] = node.model_endpoint
-                    if by_key[key]["tool_count"] == 0 and node.tool_count:
-                        by_key[key]["tool_count"] = node.tool_count
-                else:
-                    by_key[key] = {
-                        "name": node.name,
-                        "source": "uc",
-                        "app_name": None,
-                        "url": None,
-                        "description": None,
-                        "tools": [],
-                        "tool_count": node.tool_count or 0,
-                        "state": "registered",
-                        "uc_name": node.uc_name,
-                        "model_endpoint": node.model_endpoint,
-                    }
-        agents = sorted(by_key.values(), key=lambda x: x["name"].lower())
-        return {"agents": agents}
 
     # -----------------------------------------------------------------------
     # Hub routes: register/list/get/deregister per-caller agent registrations
@@ -3890,26 +3799,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if request.headers.get("X-Forwarded-Host"):
             forwarded["X-Forwarded-Host"] = request.headers["X-Forwarded-Host"]
 
-        # POST to the agent's /invocations endpoint
-        url = f"{card.url.rstrip('/')}/invocations"
-        payload = {
-            "input": invoke_req.input,
-        }
+        # Same transport as a declared sub-agent: reads the peer's card and posts
+        # the durable contract to a DurableAgentServer, else /invocations (#980).
+        from ._remote import RemoteDatabricksAgent
 
+        peer = RemoteDatabricksAgent(card.url, headers=forwarded)
         try:
-            async with AsyncClient(timeout=120) as client:
-                resp = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json", **forwarded},
-                )
-                if resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"Agent {card.id} returned {resp.status_code}: {resp.text}"
-                    )
-                return resp.json()
+            await peer.init()
+            return await peer._post_via_http([{"role": "user", "content": invoke_req.input}], forwarded)
         except Exception as exc:
-            logger.error("Failed to invoke agent %s at %s: %s", agent_id, url, exc)
+            logger.error("Failed to invoke agent %s at %s: %s", agent_id, card.url, exc)
             raise HTTPException(
                 status_code=502,
                 detail=f"Failed to invoke agent: {exc}",
@@ -3936,464 +3835,6 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         # naturally enforced (SELECT failure for a user without grants).
         agents = list_registry_agents(ws=ws)
         return agents
-
-    @router.get("/_apx/workspace-functions", response_model=WorkspaceFunctionsResponse)
-    async def workspace_functions(
-        request: Request,
-        catalog: str,
-        schema: str,
-    ) -> Any:
-        """List Unity Catalog functions in ``catalog.schema`` (tool candidates)."""
-        import asyncio as _asyncio
-
-        from ._defaults import _ws_prefer_obo
-
-        if not catalog.strip() or not schema.strip():
-            raise HTTPException(status_code=400, detail="catalog and schema are required")
-        ws: WorkspaceClient = _ws_prefer_obo(request)
-        cat, sch = catalog.strip(), schema.strip()
-
-        def _list() -> list[dict[str, Any]]:
-            out: list[dict[str, Any]] = []
-            try:
-                for fn in ws.functions.list(catalog_name=cat, schema_name=sch):
-                    name = getattr(fn, "name", None) or ""
-                    full = getattr(fn, "full_name", None) or f"{cat}.{sch}.{name}"
-                    out.append({
-                        "full_name": full,
-                        "catalog": cat,
-                        "schema_name": sch,
-                        "name": name,
-                        "comment": getattr(fn, "comment", None),
-                    })
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
-            out.sort(key=lambda r: r["name"].lower())
-            return out
-
-        functions = await _asyncio.to_thread(_list)
-        return {"catalog": cat, "schema_name": sch, "functions": functions}
-
-    @router.get("/_apx/workspace-apis", response_model=WorkspaceApisResponse)
-    async def workspace_apis(request: Request) -> Any:
-        """Discover Model Serving, Genie, and Vector Search APIs (with Managed MCP URLs).
-
-        Best-effort per source — a permission error on one family omits that
-        family rather than failing the whole response.
-
-        Uses the caller's OBO token (Genie / VS often need user grants the App
-        SP does not have). In Apps, fails closed (401) without OBO (#612).
-        """
-        import asyncio as _asyncio
-
-        from ._defaults import _ws_prefer_obo
-        from ._workspace_apis import discover_workspace_apis
-
-        ws: WorkspaceClient = _ws_prefer_obo(request)
-
-        def _run() -> list[dict[str, Any]]:
-            return [
-                {
-                    "kind": a.kind,
-                    "name": a.name,
-                    "state": a.state,
-                    "description": a.description,
-                    "url": a.url,
-                    "mcp_url": a.mcp_url,
-                    "extra": a.extra,
-                }
-                for a in discover_workspace_apis(ws)
-            ]
-
-        apis = await _asyncio.to_thread(_run)
-        return {"apis": apis}
-
-    @router.get("/_apx/discover/tables", response_model=DiscoverTablesResponse)
-    async def discover_tables(request: Request, catalog: str, schema: str) -> Any:
-        """List bounded table metadata using the signed-in user's grants.
-
-        Results are cached per (catalog, schema) for 10 minutes so repeated
-        visits to the Discover page don't re-query UC on every open.
-        """
-        import asyncio as _asyncio
-        from ._defaults import _ws_prefer_obo
-
-        cache = _schema_cache_for(catalog, schema)
-        if cache.fresh:
-            cached = cache.get()
-            return {"catalog": catalog, "schema_name": schema, "tables": cached}
-
-        ws: WorkspaceClient = _ws_prefer_obo(request)
-
-        async def _refresh() -> None:
-            try:
-                tables = await _asyncio.to_thread(list_discover_tables, ws, catalog, schema)
-                cache.put(tables)
-            except Exception:
-                cache._refreshing = False
-
-        cached_tables = cache.get()
-        if cached_tables is not None and not cache._refreshing:
-            # Stale-while-revalidate: return cached, refresh in background
-            cache._refreshing = True
-            _asyncio.create_task(_refresh())
-            return {"catalog": catalog, "schema_name": schema, "tables": cached_tables}
-
-        # First load — fetch synchronously
-        try:
-            tables = await _asyncio.to_thread(list_discover_tables, ws, catalog, schema)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Could not list table metadata: {exc}") from exc
-        cache.put(tables)
-        return {"catalog": catalog, "schema_name": schema, "tables": tables}
-
-    @router.get("/_apx/discover/sample", response_model=DiscoverSampleResponse)
-    async def discover_sample(
-        request: Request,
-        catalog: str,
-        schema: str,
-        table: str,
-        warehouse_id: str | None = None,
-        limit: int = 20,
-    ) -> Any:
-        """Return a bounded SQL preview under the caller's OBO identity."""
-        import asyncio as _asyncio
-
-        from fastapi.encoders import jsonable_encoder
-
-        from ._defaults import _ws_prefer_obo
-
-        ws: WorkspaceClient = _ws_prefer_obo(request)
-        try:
-            preview = await _asyncio.to_thread(
-                sample_discover_table,
-                ws,
-                catalog,
-                schema,
-                table,
-                warehouse_id=warehouse_id,
-                limit=limit,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Could not sample table: {exc}") from exc
-        return jsonable_encoder(preview)
-
-    @router.get("/_apx/discover/targets", response_model=DiscoverTargetsResponse)
-    async def discover_targets() -> Any:
-        """List Agent/LlmAgent leaves eligible for remote ``sub_agents=`` wiring."""
-        path = _find_agent_router_path()
-        if path is None or not path.exists():
-            return {"targets": [], "source_path": None}
-        source = path.read_text()
-        return {
-            "targets": _list_sub_agent_targets(source),
-            "source_path": str(path),
-        }
-
-    async def _persist_discover_edit(
-        request: Request, path: Path, content: str, *, env_updates: dict[str, str] | None = None
-    ) -> None:
-        """Write agent source (+ optional .env) and best-effort workspace upload."""
-        try:
-            compile(content, str(path), "exec")
-        except SyntaxError as e:
-            raise HTTPException(
-                status_code=400, detail=f"Syntax error at line {e.lineno}: {e.msg}"
-            ) from e
-        path.write_text(content)
-        await _ws_upload_agent_file(request, path, content)
-        if env_updates:
-            env_path = _find_env_path()
-            if env_path is not None:
-                _write_env_file(env_path, env_updates)
-                await _ws_upload_agent_file(request, env_path, env_path.read_text())
-
-    @router.post("/_apx/discover/wire-agent", response_model=DiscoverWireResponse)
-    async def discover_wire_agent(request: Request, body: DiscoverWireAgentRequest) -> Any:
-        """Append a remote Apps peer to ``sub_agents=`` and hot-apply onto the live agent."""
-        from ._discover_hot import hot_apply_sub_agent
-
-        url = (body.url or "").strip()
-        if not url:
-            raise HTTPException(
-                status_code=400,
-                detail="url is required (UC-only agents without an Apps URL cannot be wired)",
-            )
-        # #610: SSRF + Apps-host allowlist before any disk / live-agent mutation.
-        wire_reason = validate_wire_peer_url(url)
-        if wire_reason is not None:
-            raise HTTPException(status_code=400, detail=wire_reason)
-        path = _find_agent_router_path()
-        if path is None or not path.exists():
-            raise HTTPException(status_code=400, detail="agent.py not found — Discover wire needs on-disk source")
-        target = (body.target or "agent").strip() or "agent"
-        source = path.read_text()
-        targets = {t["name"]: t for t in _list_sub_agent_targets(source)}
-        info = targets.get(target)
-        if info is None or not info.get("eligible"):
-            reason = (info or {}).get("reason") or f"`{target}` is not an Agent/LlmAgent leaf"
-            raise HTTPException(status_code=400, detail=reason)
-
-        env_key: str | None = None
-        env_updates: dict[str, str] | None = None
-        if body.use_env:
-            label = (body.app_name or body.name or "peer").strip()
-            env_key = _peer_env_key(label)
-            ref = f"${env_key}"
-            env_updates = {env_key: url}
-        else:
-            ref = url
-
-        try:
-            updated, already = _append_sub_agent(source, ref, target=target)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-
-        if not already:
-            await _persist_discover_edit(request, path, updated, env_updates=env_updates)
-
-        applied_live = False
-        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
-        if ctx is not None and ctx.agent is not None:
-            try:
-                applied_live = await hot_apply_sub_agent(
-                    ctx, target=target, ref=ref, url=url, env_key=env_key
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("hot-apply sub-agent failed: %s", e)
-
-        return {
-            "ok": True,
-            "restart_required": not applied_live,
-            "applied_live": applied_live,
-            "target": target,
-            "ref": ref,
-            "already_present": already,
-        }
-
-    @router.post("/_apx/discover/unwire-agent", response_model=DiscoverWireResponse)
-    async def discover_unwire_agent(request: Request, body: DiscoverWireAgentRequest) -> Any:
-        """Remove a peer ref from ``sub_agents=`` and drop it from the live agent."""
-        from ._discover_hot import hot_remove_sub_agent
-
-        path = _find_agent_router_path()
-        if path is None or not path.exists():
-            raise HTTPException(status_code=400, detail="agent.py not found")
-        target = (body.target or "agent").strip() or "agent"
-        ref = (body.ref or "").strip()
-        if not ref:
-            if body.use_env:
-                label = (body.app_name or body.name or "peer").strip()
-                ref = f"${_peer_env_key(label)}"
-            else:
-                ref = (body.url or "").strip()
-        if not ref:
-            raise HTTPException(status_code=400, detail="ref or url is required to unwire")
-
-        source = path.read_text()
-        present = ref in _get_agent_sub_agents(source, target)
-        if present:
-            try:
-                updated = _remove_sub_agent(source, ref, target=target)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
-            await _persist_discover_edit(request, path, updated)
-
-        applied_live = False
-        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
-        if ctx is not None and ctx.agent is not None:
-            try:
-                applied_live = await hot_remove_sub_agent(ctx, target=target, ref=ref)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("hot-remove sub-agent failed: %s", e)
-
-        return {
-            "ok": True,
-            "restart_required": present and not applied_live,
-            "applied_live": applied_live,
-            "target": target,
-            "ref": ref,
-            "already_present": present,
-        }
-
-    @router.post("/_apx/discover/wire-tool", response_model=DiscoverWireResponse)
-    async def discover_wire_tool(request: Request, body: DiscoverWireToolRequest) -> Any:
-        """Splice a UC / Genie / Vector Search factory tool and hot-apply it live."""
-        from ._discover_hot import hot_apply_factory_tool
-        from ._ui_edit import _agent_tool_names, _find_root_agent_call
-
-        path = _find_agent_router_path()
-        if path is None or not path.exists():
-            raise HTTPException(status_code=400, detail="agent.py not found — Discover wire needs on-disk source")
-        target = (body.target or "agent").strip() or "agent"
-        kind = (body.kind or "").strip()
-        source = path.read_text()
-
-        if _find_root_agent_call(source, target) is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"`{target}` is not a leaf Agent — pick an Agent/LlmAgent/DataAgent target",
-            )
-
-        existing = _existing_binding_names(source)
-        binding = (body.binding_name or "").strip() or None
-        full = space_id = index = None
-        cols: list[str] | None = None
-
-        if kind == "uc_function":
-            full = (body.full_name or "").strip()
-            if not full or full.count(".") != 2:
-                raise HTTPException(status_code=400, detail="full_name must be catalog.schema.function")
-            binding = binding or _slug_tool_name(full, existing)
-            call_expr = f"uc_function_tool({full!r})"
-            imports = ["uc_function_tool"]
-        elif kind == "genie_space":
-            space_id = (body.space_id or "").strip()
-            if not space_id:
-                raise HTTPException(status_code=400, detail="space_id is required for genie_space")
-            label = (body.title or body.full_name or space_id).strip()
-            binding = binding or _slug_tool_name(f"ask_{label}", existing)
-            if not binding.startswith("ask_") and "ask" not in binding:
-                binding = _slug_tool_name(f"ask_{binding}", existing)
-            call_expr = f"genie_tool({space_id!r}, name={binding!r})"
-            imports = ["genie_tool"]
-        elif kind == "vector_search_index":
-            index = (body.index_name or body.full_name or "").strip()
-            if not index or index.count(".") != 2:
-                raise HTTPException(status_code=400, detail="index_name must be catalog.schema.index")
-            cols = body.columns or ["content"]
-            binding = binding or _slug_tool_name(f"vs_{index.split('.')[-1]}", existing)
-            cols_lit = "[" + ", ".join(repr(c) for c in cols) + "]"
-            call_expr = (
-                f"vector_search_tool({index!r}, columns={cols_lit}, name={binding!r})"
-            )
-            imports = ["vector_search_tool"]
-        elif kind == "serving_endpoint":
-            raise HTTPException(
-                status_code=400,
-                detail="Model Serving endpoints are not tools — set model= / use Playground",
-            )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"unsupported kind {kind!r}; use uc_function, genie_space, or vector_search_index",
-            )
-
-        # #630: binding is interpolated into agent.py as a Name — reject anything
-        # that would not parse (user override or a keyword-shaped auto-slug).
-        try:
-            binding = _require_python_binding(binding)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-
-        # #628: probe reachability under the caller's OBO before planting. Shape
-        # validation alone let operators wire ids that only fail mid-turn; reuse
-        # Probe's SDK getters so wire and Probe agree on "resolves for this
-        # principal." Lookup ≠ EXECUTE-at-SQL-time, but it is the same gate
-        # doctor/probe use and stops the empty-plant class of failure.
-        from ._defaults import _ws_prefer_obo
-        from ._ui_probe import _verify_resource
-
-        probe_id = full or space_id or index or ""
-        try:
-            await asyncio.to_thread(_verify_resource, _ws_prefer_obo(request), kind, probe_id)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"{kind} {probe_id!r} is not accessible to the wiring principal "
-                    f"({type(exc).__name__}: {exc}). Grant access before wiring, or "
-                    f"pick a resource you can resolve under OBO (#628)."
-                ),
-            ) from exc
-
-        tools_now = _agent_tool_names(source, target) or []
-        already = binding in tools_now and binding in existing
-        if not already:
-            try:
-                updated = _splice_factory_tool(
-                    source,
-                    import_names=imports,
-                    binding_name=binding,
-                    call_expr=call_expr,
-                    target=target,
-                )
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
-            await _persist_discover_edit(request, path, updated)
-
-        applied_live = False
-        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
-        if ctx is not None and ctx.agent is not None:
-            try:
-                applied_live = await hot_apply_factory_tool(
-                    ctx,
-                    target=target,
-                    kind=kind,
-                    binding_name=binding,
-                    full_name=full,
-                    space_id=space_id,
-                    index_name=index,
-                    columns=cols,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("hot-apply tool failed: %s", e)
-
-        return {
-            "ok": True,
-            "restart_required": not applied_live,
-            "applied_live": applied_live,
-            "target": target,
-            "binding_name": binding,
-            "already_present": already,
-        }
-
-    @router.post("/_apx/discover/unwire-tool", response_model=DiscoverWireResponse)
-    async def discover_unwire_tool(request: Request, body: DiscoverWireToolRequest) -> Any:
-        """Remove a Discover-wired factory binding from source and the live agent."""
-        from ._discover_hot import hot_remove_factory_tool
-
-        binding = (body.binding_name or "").strip()
-        if not binding:
-            raise HTTPException(status_code=400, detail="binding_name is required to unwire a tool")
-        try:
-            binding = _require_python_binding(binding)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        path = _find_agent_router_path()
-        if path is None or not path.exists():
-            raise HTTPException(status_code=400, detail="agent.py not found")
-        target = (body.target or "agent").strip() or "agent"
-        source = path.read_text()
-        updated = _remove_factory_binding(source, binding)
-        present = updated != source
-        if present:
-            await _persist_discover_edit(request, path, updated)
-
-        applied_live = False
-        ctx: AgentContext | None = getattr(request.app.state, "agent_context", None)
-        if ctx is not None and ctx.agent is not None:
-            try:
-                applied_live = await hot_remove_factory_tool(
-                    ctx, target=target, binding_name=binding
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("hot-remove tool failed: %s", e)
-
-        return {
-            "ok": True,
-            "restart_required": present and not applied_live,
-            "applied_live": applied_live,
-            "target": target,
-            "binding_name": binding,
-            "already_present": present,
-        }
 
     @router.get("/_apx/grounding")
     async def grounding_ui() -> Any:
@@ -5524,7 +4965,6 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         _EVAL_CASES_CACHE.clear()
         _TRACES_LIST_CACHE.clear()
         _GROUNDING_COLUMNS_CACHE.clear()
-        _SCHEMA_CACHE.clear()
         return {"ok": True, "message": "All caches cleared."}
 
     @router.get("/_apx/wizard", include_in_schema=False)

@@ -481,7 +481,7 @@ def _compile_llm_agent(
             )
         )
     llm = _build_chat_databricks(
-        ctx.model,
+        agent._overrides.get("model", ctx.model),
         temperature=getattr(agent, "_temperature", None),
         max_tokens=getattr(agent, "_max_tokens", None),
     )
@@ -968,7 +968,7 @@ def _compile_router_agent(agent: RouterAgent, ctx: CompileContext) -> Any:
     fallback = route_names[0]
 
     def _router_decision(state: dict) -> dict[str, Any]:
-        llm = _build_chat_databricks(ctx.model).bind_tools(transfer_tools)
+        llm = _build_chat_databricks(agent._overrides.get("model", ctx.model)).bind_tools(transfer_tools)
         sys_msg = SystemMessage(content=(
             (agent._instructions or "").strip()
             + "\nBased on the user's request, select the most appropriate agent "
@@ -1319,7 +1319,10 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
             if len(calls) != 1 or len(outputs) != 1 or outputs[0].status != "success" or last_ai is None:
                 raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "required_tool_execution"}])
             # Only this leaf's executed result can become evidence, never the model's rewrite.
-            text = outputs[0].content
+            tool_text = outputs[0].content
+            if not isinstance(tool_text, str):
+                raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "output_tool_json_text"}])
+            text = tool_text
             # This is deterministic completion, not another model generation.
             authoritative = AIMessage(content=text)
             new_msgs.append(authoritative)
@@ -1435,6 +1438,7 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
         if fixture_replay is not None:
             fixture_replay.record(step_path, payload)
         if native_part is not None:
+            assert last_ai is not None
             child = last_ai.additional_kwargs.get("apx_native_invocation") if native_remote else None
             emit_native_step(agent, native_part, input_part, child, logical_predecessor)
         return update

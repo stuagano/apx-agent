@@ -30,6 +30,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import os
+import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -290,6 +291,28 @@ def _reply_text(data: Any, *, url: str, agent_name: str) -> str:
     )
 
 
+def _durable_reply(data: Any) -> dict[str, Any]:
+    """A DurableAgentServer reply as the ChatAgent ``messages`` shape ``_reply_text`` reads.
+
+    The durable contract answers ``{"output": {"status", "messages": [...]}}``
+    with LangChain message dumps (``{"type": "ai", "content": ...}``).
+    """
+    output = data.get("output") if isinstance(data, dict) else None
+    messages = output.get("messages") if isinstance(output, dict) else None
+    if not isinstance(messages, list):
+        return data if isinstance(data, dict) else {"output": data}
+    replies = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("type") != "ai":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "".join(block["text"] for block in content if isinstance(block, dict) and "text" in block)
+        if isinstance(content, str) and content:
+            replies.append({"role": "assistant", "content": content})
+    return {"messages": replies}
+
+
 def _continue_request(event: Any) -> dict[str, Any] | None:
     """The event's ``task_continue_request`` as a re-sendable dict, else None.
 
@@ -353,6 +376,9 @@ class RemoteDatabricksAgent(BaseAgent):
     max_continuations:
         Maximum continuation rounds before raising. Defaults to 10.
     """
+
+    # The peer's DurableAgentServer endpoint, read from its card (#980).
+    _durable_url: str | None = None
 
     def __init__(
         self,
@@ -445,21 +471,25 @@ class RemoteDatabricksAgent(BaseAgent):
     # Initialization — fetch agent card
     # ------------------------------------------------------------------
 
-    async def init(self) -> None:
-        """Fetch the agent card. Safe to call multiple times (idempotent)."""
+    async def init(self, headers: Mapping[str, str] | None = None) -> None:
+        """Fetch the agent card. Safe to call multiple times (idempotent).
+
+        ``headers`` are trusted-origin credentials (from ``_obo_headers``); a
+        private Databricks App 302s the card request without them.
+        """
         if self._card is not None:
             return
-        await self._fetch_card()
+        await self._fetch_card(headers)
 
-    async def _init_quietly(self) -> None:
+    async def _init_quietly(self, headers: Mapping[str, str] | None = None) -> None:
         """init(), but card-fetch failure is non-fatal.
 
-        A private Databricks App 302s the unauthenticated card request, yet
-        run()/stream() still work — they forward the caller's OBO token and
-        the base URL is already known from the constructor.
+        Startup fetches without credentials and a private App 302s it; each call
+        retries with the caller's credentials, so the card (and a durable peer's
+        endpoint, #980) is learned on first authenticated use.
         """
         try:
-            await self.init()
+            await self.init(headers)
         except Exception as e:
             logger.warning(
                 "Agent card fetch failed for %s: %s — proceeding without card",
@@ -467,11 +497,11 @@ class RemoteDatabricksAgent(BaseAgent):
                 e,
             )
 
-    async def _fetch_card(self) -> None:
+    async def _fetch_card(self, headers: Mapping[str, str] | None = None) -> None:
         from httpx import AsyncClient
 
         async with AsyncClient(timeout=10.0) as client:
-            response = await client.get(self._card_url, headers=self._extra_headers)
+            response = await client.get(self._card_url, headers={**self._extra_headers, **(headers or {})})
             response.raise_for_status()
             try:
                 data = response.json()
@@ -522,6 +552,18 @@ class RemoteDatabricksAgent(BaseAgent):
                     self._card_url,
                     self._base_url,
                 )
+
+        # A durable peer serves /api/invocations, not MLflow's /invocations. The
+        # user token rides this request, so only the endpoint's path is used,
+        # joined to the trusted base: a card cannot redirect the token, and a
+        # card built inside the App container (https://localhost:8000) still works.
+        endpoint = data.get("invocationsEndpoint")
+        if isinstance(endpoint, str) and endpoint:
+            from urllib.parse import urlsplit
+
+            path = urlsplit(endpoint).path
+            if path.startswith("/"):
+                self._durable_url = f"{self._base_url}{path}"
 
         # Try to infer app name if not already set
         if not self._app_name:
@@ -584,7 +626,7 @@ class RemoteDatabricksAgent(BaseAgent):
         messages: Sequence[Message | dict[str, Any]],
         incoming_headers: Mapping[str, str],
     ) -> str:
-        await self._init_quietly()
+        await self._init_quietly(self._obo_headers(incoming_headers))
         obo_headers = self._obo_headers(incoming_headers)
         corr_headers = self._correlation_headers()
 
@@ -600,8 +642,9 @@ class RemoteDatabricksAgent(BaseAgent):
             )
 
         # DatabricksOpenAI authenticates as the app SP and overwrites
-        # Authorization, so a request-user token takes direct HTTP instead.
-        if self._app_name and not self._sdk_drops_user_token(obo_headers):
+        # Authorization, so a request-user token takes direct HTTP instead. A
+        # durable peer has its own contract, so it always takes direct HTTP.
+        if self._app_name and self._durable_url is None and not self._sdk_drops_user_token(obo_headers):
             try:
                 response = await self._post_via_sdk(messages, corr_headers)
             except Exception as exc:
@@ -623,7 +666,7 @@ class RemoteDatabricksAgent(BaseAgent):
         return await self._call_via_http(messages, {**obo_headers, **corr_headers})
 
     async def stream(self, messages: list[Message], request: Request) -> AsyncGenerator[str, None]:
-        await self._init_quietly()
+        await self._init_quietly(self._obo_headers(request.headers))
         obo_headers = self._obo_headers(request.headers)
         corr_headers = self._correlation_headers()
 
@@ -638,7 +681,7 @@ class RemoteDatabricksAgent(BaseAgent):
         # they arrive (#447). Fall back to HTTP only when nothing has been
         # yielded yet; a mid-stream failure must not replay from the start.
         # Skip it when a user token is present: the SDK signs as the app SP.
-        if self._app_name and not self._sdk_drops_user_token(obo_headers):
+        if self._app_name and self._durable_url is None and not self._sdk_drops_user_token(obo_headers):
             emitted = False
             try:
                 async for chunk in self._stream_via_sdk(messages, corr_headers):
@@ -901,6 +944,8 @@ class RemoteDatabricksAgent(BaseAgent):
         """
         from httpx import AsyncClient
 
+        if self._durable_url is not None:
+            return await self._post_durable(messages, headers, self._durable_url)
         payload: dict[str, Any] = {
             "input": _responses_input(messages),
         }
@@ -924,6 +969,32 @@ class RemoteDatabricksAgent(BaseAgent):
         self._last_http_url = url
         return data
 
+    async def _post_durable(
+        self,
+        messages: Sequence[Message | dict[str, Any]],
+        headers: dict[str, str],
+        url: str,
+    ) -> dict[str, Any]:
+        """POST the durable contract: user text only, one fresh invocation and session.
+
+        The durable input accepts user text messages only; the peer keeps its own
+        history per session, and each delegated call is its own session.
+        """
+        from httpx import AsyncClient
+
+        user_turns = [
+            {"role": "user", "content": item["content"]}
+            for item in _responses_input(messages)
+            if item.get("role") == "user" and isinstance(item.get("content"), str)
+        ]
+        payload = {"id": str(uuid.uuid4()), "session_id": uuid.uuid4().hex, "input": user_turns}
+        async with AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(url, json=payload, headers={"Content-Type": "application/json", **headers})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Remote agent {self.name} returned {resp.status_code}: {resp.text}")
+        self._last_http_url = url
+        return _durable_reply(resp.json())
+
     async def run_with_control(
         self,
         messages: Sequence[Message | dict[str, Any]],
@@ -936,7 +1007,7 @@ class RemoteDatabricksAgent(BaseAgent):
         HTTP and ordinary SDK calls retain the response envelope, including
         business DataParts. Long-task continuation remains text-only.
         """
-        await self._init_quietly()
+        await self._init_quietly(self._obo_headers(incoming_headers))
         obo_headers = self._obo_headers(incoming_headers)
         corr_headers = self._correlation_headers()
 
@@ -949,7 +1020,7 @@ class RemoteDatabricksAgent(BaseAgent):
 
         # The Apps SDK signs as the calling app's SP, so a request-user token
         # goes straight to direct HTTP (same as a peer with no app name).
-        if self._app_name and not self._sdk_drops_user_token(obo_headers):
+        if self._app_name and self._durable_url is None and not self._sdk_drops_user_token(obo_headers):
             try:
                 response = await self._post_via_sdk(messages, corr_headers)
             except Exception as exc:
@@ -988,6 +1059,11 @@ class RemoteDatabricksAgent(BaseAgent):
         """Direct POST /invocations with stream=true, parsing SSE."""
         from httpx import AsyncClient
 
+        if self._durable_url is not None:
+            # ponytail: one chunk — the durable SSE event format isn't parsed here.
+            data = await self._post_durable(messages, headers, self._durable_url)
+            yield _reply_text(data, url=self._last_http_url, agent_name=self.name)
+            return
         payload: dict[str, Any] = {
             "input": _responses_input(messages),
             "stream": True,

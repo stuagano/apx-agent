@@ -262,11 +262,10 @@ os.environ.setdefault("APX_RUNTIME", "apps")
 from agent import agent
 from apx_agent import compile_agent
 from apx_agent._defaults import _make_workspace_client
-from apx_agent._inspection import _load_agent_config, config_from_agent
+from apx_agent._inspection import _load_agent_config
+from apx_agent._settings import resolve_settings
 
-config = _load_agent_config()
-if config is None:
-    config = config_from_agent(agent)
+config = resolve_settings(agent, _load_agent_config())
 ws = _make_workspace_client()
 app = compile_agent(
     agent, config=config, target="durable_agent_server",

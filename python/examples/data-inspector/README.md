@@ -134,19 +134,26 @@ DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn app:app --port 9000 --relo
 
 ## Part 3: Deploy to Databricks Apps
 
-### Step 1: Review `app.yml`
+### Step 1: Review the deploy declaration
 
-No env vars need to be set — the workspace client is injected automatically and there are no required configuration values:
+The App runs as a `DurableAgentServer`. `[tool.apx.agent.deploy]` in
+`pyproject.toml` selects the Apps API backend, which keeps the `mcp-` app name
+that External MCP discovery needs. Deploy generates `app.yaml`
+(`python -m agent_server`), so the project has no root manifest:
 
-```yaml
-# app.yml — no changes required for a basic deployment
-command: ["uvicorn", "app:app", "--workers", "2"]
+```toml
+[tool.apx.agent.deploy]
+backend = "apps_api"
+entrypoint = "agent_server"
+include = ["databricks_tools_core-0.1.0-py3-none-any.whl"]
 ```
+
+The App serves the chat at `/`, the apx dev UI under `/_apx/*`, and `/mcp`.
 
 ### Step 2: Deploy
 
 ```bash
-uv run apx-agent agents deploy
+uv run apx-agent agents deploy --target apps --profile my-workspace
 ```
 
 ### Step 3: Verify
@@ -206,7 +213,8 @@ data-inspector/
 ├── tools.py                      # all 10 tools
 ├── app.py                        # FastAPI app (uvicorn target: app:app)
 ├── agent_server/
-│   └── start_server.py           # FastAPI entry point
-├── app.yml                       # Databricks Apps runtime config
+│   ├── __main__.py               # `python -m agent_server` (deploy entrypoint)
+│   ├── start_host.py             # runs uvicorn on start_server:app
+│   └── start_server.py           # DurableAgentServer app (generated)
 └── databricks.yml                # Asset Bundle — build, deploy, app resource
 ```

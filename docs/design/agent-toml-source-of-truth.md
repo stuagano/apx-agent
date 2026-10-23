@@ -1,6 +1,6 @@
 # Design: `agent.toml` is the platform's source of truth
 
-**Status:** implemented (sub-projects 1–2) · **Date:** 2026-10-19 · **Sub-project:** 2 of 4
+**Status:** sub-projects 1–2 (#984) and 3a (#990) implemented; 3b-1 proposed · **Date:** 2026-10-19
 
 ## Intent
 
@@ -32,9 +32,14 @@ Success means:
    arguments. The launcher and generated native `start_server.py` compile from
    the agent object when `[tool.apx.agent]` is absent. `[tool.apx.agent]` still
    works until sub-project 3.
-3. **Remove `[tool.apx.agent]`.** Fail with migration guidance (as #944 did for
-   `[[tool.apx.tools]]`), and migrate the examples, scaffold, YAML generation
-   and doctor.
+3. **Remove `[tool.apx.agent]`**, in four PRs:
+   - **3a.** Homes for the last fields (`[tool.apx.deploy]`, `examples=`) and
+     `apx-agent agents migrate-config`.
+   - **3b.** Readers and generators use the new homes, in three PRs: 3b-1 CLI
+     metadata, 3b-2 agent-setting readers, 3b-3 scaffold and YAML generation.
+   - **3c.** Migrate the in-repo projects with `migrate-config`.
+   - **3d.** `[tool.apx.agent]` is an error naming `migrate-config`, as #944
+     did for `[[tool.apx.tools]]`. `template =` and `module =` are removed.
 4. **The rest.** A home for Model Serving deploy settings (`responses_agent`),
    and the YAML spec path (#152).
 
@@ -192,10 +197,234 @@ written. It refuses to overwrite an existing `agent.toml`. The migrated and chec
   Genie tool called through `platform_tools()` on a deployed durable agent
   carries apx audit attributes and runs as the request user.
 
+## Sub-project 2: settings on the agent
+
+#974 put `model`, `target`, `identity`, `recovery`, `gateway` and
+`service_policies` on `LlmAgent`, read by `config_from_agent` only when
+`[tool.apx.agent]` is absent. #961 and #974 together fixed the three #954 gaps
+(Python-only memory reaches the `agent.toml` checks, and deploy runs them).
+Remaining:
+
+- **One seam.** `resolve_settings(agent, toml)` replaces `config_from_agent`
+  in the launcher, generated `app.py`, deploy, doctor and `finalize_agent`.
+- **Both sources merge.** Equal values pass; different values fail:
+  `model: agent.py sets 'A' on agent 'root'; [tool.apx.agent] sets 'B'. Set it in one place.`
+  Today Python is silently ignored, except `identity`, where it silently wins.
+- **Every agent class takes the settings.** Unknown setting names are a
+  `TypeError`.
+  - Per-agent (`model`, `identity`): own value, else nearest ancestor, else the
+    app value. A leaf compiles with its own model; its tools get its own
+    identity (today only the root's tools are stamped). `APX_MODEL` pins the
+    app model; a leaf with a different model of its own keeps it.
+  - App-wide (`target`, `recovery`, `gateway`, `service_policies`,
+    `guardrails`, `knowledge`, `vector_search_index`, `bindings`, `url`,
+    `registry`, `api_prefix`): a value below the root that differs fails:
+    `target is app-wide; set it on the root agent (found on 'researcher').`
+    Their consumers read one value per app today; making any of them per-agent
+    is a later change, never a silent ignore.
+  - `memory` / `session` keep #974's rule: read from the root's `memory=` knob.
+- **Fails early.** Deploy before upload, doctor as a stage, the launcher at
+  startup (its existing target error names both places).
+- **Migration.** `.toml`-only projects are unchanged. Fields move one at a
+  time; a field set in both places with the same value passes. No migrate
+  command. The scaffold moves with sub-project 3, when `[tool.apx.agent]` goes.
+- **Tests.** `resolve_settings` rules and errors; per-leaf model and identity;
+  a composite Python-only project loads in doctor and the launcher; the
+  existing suite unchanged.
+
+## Sub-project 3a: homes for the last fields
+
+After #984, runtime settings live on the agent. A few things still have no
+home outside `[tool.apx.agent]`:
+
+- deploy settings;
+- `host`;
+- the app `name`, which deploy needs before it imports `agent.py`;
+- dev-UI `examples`.
+
+`data`, `executor`, `workflows` and `example` are YAML-spec inputs only. No
+pyproject sets them, and the generator compiles them to Python.
+
+### `[tool.apx.deploy]`
+
+```toml
+[tool.apx.deploy]
+name = "orders-agent"     # optional; defaults to [project].name
+host = "apps"             # apps | model_serving
+space = "shared-space"    # an App Space picks compute; without one:
+# instances = 2           #   fixed count, or [tool.apx.deploy.autoscale] min/max, 1-5
+backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
+```
+
+- **Shape and validation.** The table holds `DeployConfig`'s fields at the top
+  level, plus `name` and `host`. Validation is `DeployConfig`'s:
+  - `instances` XOR `autoscale`;
+  - `entrypoint` is required for `apps_api`;
+  - `include` paths must stay inside the project.
+- **`name` default.** `[project].name`, but only when neither table sets
+  `name`. A default never conflicts with a declared value.
+- **`app_name`** (#986) already lives here. It names the Apps API App, and
+  `_apps_api_app_name` reads it, so the fold leaves it alone.
+- **No import.** Deploy reads the table without importing `agent.py`, so its
+  prerequisite checks still run before import.
+- **One seam.** `_load_agent_config` folds the table into the `AgentConfig` it
+  returns, as `name`, `host` and `deploy`. Readers of `config.deploy` and
+  `config.name` don't change.
+  - With only `[tool.apx.deploy]`, the config is built from that table, and
+    `resolve_settings` adds the Python settings.
+  - With neither table, it returns `None`, as today.
+- **Conflicts.** A field can sit in both `[tool.apx.agent]` (or its `.deploy`
+  sub-table) and `[tool.apx.deploy]`. Equal values pass. Different values fail:
+  `deploy.space is declared in both [tool.apx.agent.deploy] and [tool.apx.deploy] with different values; keep [tool.apx.deploy].`
+
+### `examples=`
+
+`examples` becomes an app-wide agent setting (`list[str]`) in `AgentSettings`.
+It merges through `resolve_settings`, so the dev UI's reads of
+`config.examples` don't change.
+
+### `apx-agent agents migrate-config`
+
+The command is safe to run repeatedly. Each run:
+
+1. Moves `name`, `host` and `[tool.apx.agent.deploy]` into `[tool.apx.deploy]`.
+2. Prints the keyword arguments for each runtime field the agent doesn't
+   declare yet, for example `Agent(..., model="…", examples=["…"])`. It never
+   edits `agent.py`.
+3. Imports the agent and runs `resolve_settings`. If every remaining
+   `[tool.apx.agent]` field is declared in Python with an equal value, it
+   deletes the table. Otherwise it keeps the table and lists what's missing.
+4. Re-parses the file with `tomllib`, reloads the config, and requires the
+   effective config to be equal before and after. If it differs, the command
+   restores the file and fails.
+
+It edits the file as text, cutting the `[tool.apx.agent*]` sections and
+appending `[tool.apx.deploy]` with `_project_gen`'s `_toml_value`, so there's
+no new dependency. It refuses to run on a `pyproject.toml` with uncommitted
+changes, so git is the undo.
+
+These are errors:
+
+- `module =` other than `agent:agent`: rename the module or file.
+- `template =`: generate an `agent.py` from the template first.
+- `data`, `executor`, `workflows` or `example`: move them to the YAML spec.
+
+### Testing
+
+- **Loader:**
+  - `[tool.apx.deploy]` alone gives `name`, `host` and `deploy`, with `name`
+    defaulting to `[project].name`.
+  - With both tables, equal values pass and different values fail with the
+    message above.
+  - With neither table, it returns `None`.
+  - `DeployConfig` validation fires from the new table.
+- **Deploy before import.** A deploy with only `[tool.apx.deploy]` reads
+  `space` and `backend`, and fails its prerequisite checks without importing
+  `agent.py`. This is a variant of
+  `test_agent_prerequisites_block_deployment_before_upload`.
+- **`examples=`** round-trips through `resolve_settings`, shows on the dev-UI
+  landing page, and fails as app-wide when set on a child.
+- **`migrate-config`**, run on a copy of `data-inspector`:
+  - Run 1 writes `[tool.apx.deploy]`, prints the snippet and keeps the table.
+  - Run 2, after the snippet is pasted into `agent.py`, removes the table.
+  - Each run is read back with
+    `ctk.verify(Artifact(..., must_contain="[tool.apx.deploy]"))` and
+    `tomllib`, and the effective config is equal before and after.
+  - It refuses a dirty file, `module =` other than `agent:agent`, and
+    `template =`.
+  - A forced read-back mismatch restores the file.
+- **Gate:** `make check` and pre-commit on the changed files. The existing
+  suite passes unchanged.
+
+## Sub-project 3b-1: homes for CLI metadata
+
+`_read_apx_agent_config` (cli.py) returns `[tool.apx.agent]` as a flat dict,
+merged with the gitignored `.apx.local`. About 30 call sites read keys from it
+that aren't `AgentConfig` fields:
+
+- `profile` and `experiment`, used by the dev loop;
+- `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`
+  and `tools_table`, used by UC registration, supervisor and publishing.
+
+These run before `agent.py` is imported, so they get tables rather than agent
+settings.
+
+### Homes
+
+| Key | Home |
+|---|---|
+| `profile`, `experiment` | top-level `[tool.apx]` (and `.apx.local` `[tool.apx]`) |
+| `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`, `tools_table` | `[tool.apx.deploy]` |
+| every other key | unchanged here; agent-setting readers move in 3b-2 |
+
+### The reader
+
+- **Same name and result.** `_read_apx_agent_config` keeps its name and its
+  flat-dict result, so its call sites don't change.
+- **Allow-lists.** It reads only the keys above from each new table. The older
+  `[tool.apx.deploy]` keys (`target = "apps"`, `bundle_name`, `app_name`) are
+  never read. In particular `target` must not land in the dict's `target`
+  key, which `_detect_target` reads as the runtime.
+- **Precedence**, lowest to highest:
+  1. `[tool.apx.agent]`;
+  2. the new tables;
+  3. `.apx.local`, both `[tool.apx]` and, until 3d, its old `[tool.apx.agent]`
+     table.
+- **Conflicts.** A key set in both `[tool.apx.agent]` and its new home with
+  different values fails:
+  `{key} is declared in both [tool.apx.agent] and {home} with different values; keep {home}.`
+
+### Writers
+
+`_save_to_pyproject` currently replaces `key = …` with a regex across the whole
+file, so it can rewrite a same-named key in another table. The replacement
+edits only inside its target section, and creates the section if it's missing:
+
+- the profile picker writes `profile` to `.apx.local` `[tool.apx]`;
+- supervisor-create writes `supervisor_id` to `[tool.apx.deploy]`.
+
+### `migrate-config`
+
+The keys above stop being "remove by hand":
+
+- the registration keys move to `[tool.apx.deploy]`;
+- `profile` and `experiment` move to `[tool.apx]`.
+
+The read-back now also requires `_read_apx_agent_config`'s dict to be equal
+before and after.
+
+An old `.apx.local` `[tool.apx.agent] profile` is rewritten as `[tool.apx]
+profile`. The file is gitignored, so the command copies it to
+`.apx.local.bak` first.
+
+### Testing
+
+- **Reader:**
+  - each key resolves from its new home, its old home and `.apx.local`;
+  - the precedence order holds;
+  - a conflict fails with the message above;
+  - the old deploy table's `target = "apps"` never reaches `target`;
+  - unknown keys in the new tables are ignored.
+- **Writer:**
+  - the profile picker writes `.apx.local` `[tool.apx]`, creating it if
+    needed;
+  - `supervisor_id` lands in `[tool.apx.deploy]`;
+  - a same-named key in another table is untouched (regression for the
+    whole-file regex).
+- **`migrate-config`:**
+  - `data-triage`'s real `registered_model` moves and the table can be
+    removed;
+  - `profile` and `experiment` move to `[tool.apx]`;
+  - `.apx.local` is migrated and backed up;
+  - the read-back covers the metadata dict.
+- **Real projects:** for every in-repo example, `_read_apx_agent_config`
+  returns the same dict before and after this change.
+- **Gate:** `make check` and pre-commit on the changed files.
+
 ## Out of scope
 
-- Removing `[tool.apx.agent]` (sub-project 3).
-- Removing remaining pyproject-only deploy flags that are not agent constructor arguments (space, replica bounds) — they stay on `[tool.apx.agent].deploy` until sub-project 3.
+- Switching readers off `[tool.apx.agent]`, migrating the in-repo projects, and
+  rejecting the table (3b–3d).
 - Model Serving deploy settings and the YAML spec path (sub-project 4).
 - Tool kinds added to `agent.toml` later that AgentKit's LangGraph loaders don't
   cover. `platform_tools()` rejects an unknown kind at compile time rather than

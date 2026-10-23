@@ -20,7 +20,7 @@ async def test_edit_uses_dubois_tokens(dev_ui_app):
     """Verify /_apx/edit uses theme tokens, not legacy hex colors."""
     r = await _get(dev_ui_app, "/_apx/edit")
     assert r.status_code == 200
-    assert "apx-dubois-theme" in r.text, "Missing theme marker"
+    assert "apx-agentkit-theme" in r.text, "Missing theme marker"
 
     # Extract the main edit UI style block (between <title> and first <script>)
     # This isolates the edit UI from injected overlays defined in other modules

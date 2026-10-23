@@ -14,7 +14,7 @@ sync:
 variables:
   llm_endpoint_name:
     description: Foundation model endpoint the agent calls.
-    default: databricks-claude-sonnet-4-6
+    default: system.ai.claude-sonnet-4-6
   mlflow_experiment_id:
     description: MLflow experiment ID for tracing.
     default: ""

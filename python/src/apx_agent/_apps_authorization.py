@@ -403,11 +403,14 @@ def compile_authorization_plan(
             operation.principal or "",
         ),
     ))
-    names: set[str] = set()
+    # One tool (or one peer) reachable from several leaves is one operation; two
+    # different declarations under one name are ambiguous and rejected.
+    by_name: dict[str, OperationAuthorization] = {}
     for operation in operations:
-        if operation.name in names:
+        if operation.name in by_name and by_name[operation.name] != operation:
             raise ValueError(f"Duplicate reachable operation name {operation.name!r}.")
-        names.add(operation.name)
+        by_name[operation.name] = operation
+    operations = tuple(by_name.values())
     user_resources: set[ResourceSpec] = set()
     # The chat model is not a serving_endpoint grant. get_llm always calls it
     # through Unity Catalog AI Gateway, so the OBO scope is ``ai-gateway``
@@ -494,7 +497,7 @@ class WorkspaceAppsScopeAllowlist:
     """Workspace ``allowedAppsUserApiScopes`` read-back.
 
     ``allowed_scopes is None`` means the workspace does not restrict Apps OBO
-    scopes (or the setting payload has no list). ``readable=False`` means the
+    scopes (no list, or the ``"*"`` wildcard list). ``readable=False`` means the
     GET failed and callers must not treat that as an empty allowlist.
     """
 
@@ -517,6 +520,8 @@ def read_workspace_apps_scope_allowlist(ws: Any) -> WorkspaceAppsScopeAllowlist:
         return WorkspaceAppsScopeAllowlist(allowed_scopes=None, readable=True)
     scopes = message.allowed_scopes
     if not isinstance(scopes, list) or any(not isinstance(scope, str) for scope in scopes):
+        return WorkspaceAppsScopeAllowlist(allowed_scopes=None, readable=True)
+    if "*" in scopes:  # the wildcard allowlist: every scope is allowed
         return WorkspaceAppsScopeAllowlist(allowed_scopes=None, readable=True)
     return WorkspaceAppsScopeAllowlist(
         allowed_scopes=None if "*" in scopes else frozenset(scopes),

@@ -1,13 +1,11 @@
 // Right-side details panel for the topology UI.
 //
 // Fetches `/_apx/topology/inspect/{nodeId}` on mount and whenever `nodeId`
-// changes. Supports Save (instructions) and Unwire (peer / factory tool)
-// via the same Discover SSO write paths.
+// changes. Supports Save (instructions).
 
 import { useEffect, useState } from "react";
 import type {
   AgentDetails,
-  InspectActions,
   InspectResponse,
   NodeType,
   ResourceDetails,
@@ -18,8 +16,6 @@ import type {
   TopologyExecution,
 } from "./types";
 import {
-  postUnwireAgent,
-  postUnwireTool,
   saveInstructions,
 } from "./wire";
 import sampleTopology from "./sample-topology.json";
@@ -31,7 +27,7 @@ export interface NodeInspectorProps {
   execution?: TopologyExecution;
   artifactSummaries?: ArtifactSummary[];
   onClose: () => void;
-  /** Called after a successful Save / Unwire so the graph can refresh. */
+  /** Called after a successful Save so the graph can refresh. */
   onMutated?: (msg: string) => void;
   onError?: (msg: string) => void;
 }
@@ -142,16 +138,6 @@ const actionsRowStyle: React.CSSProperties = {
   marginTop: 12,
 };
 
-const dangerBtnStyle: React.CSSProperties = {
-  font: "inherit",
-  cursor: "pointer",
-  color: "#F792A6",
-  background: "#37444F",
-  border: "1px solid #C83243",
-  borderRadius: 6,
-  padding: "6px 12px",
-};
-
 const preStyle: React.CSSProperties = {
   margin: 0,
   maxHeight: 300,
@@ -237,11 +223,7 @@ function buildFallback(nodeId: string): InspectResponse | null {
     return {
       ...base,
       agent,
-      actions: {
-        canEditInstructions: true,
-        canUnwire: false,
-        wireTarget: "agent",
-      },
+      actions: { canEditInstructions: true },
     };
   }
 
@@ -253,7 +235,7 @@ function buildFallback(nodeId: string): InspectResponse | null {
         resourceKind,
         identifier: node.label,
       },
-      actions: { canEditInstructions: false, canUnwire: false },
+      actions: { canEditInstructions: false },
     };
   }
 
@@ -267,12 +249,7 @@ function buildFallback(nodeId: string): InspectResponse | null {
     return {
       ...base,
       subAgent,
-      actions: {
-        canEditInstructions: false,
-        canUnwire: true,
-        wireTarget: "agent",
-        unwire: { kind: "agent", target: "agent", ref: "$APX_PEER_EXAMPLE_URL" },
-      },
+      actions: { canEditInstructions: false },
     };
   }
 
@@ -289,7 +266,7 @@ function buildFallback(nodeId: string): InspectResponse | null {
     isSync: true,
     hasObOTokenDep: false,
   };
-  return { ...base, tool, actions: { canEditInstructions: false, canUnwire: false } };
+  return { ...base, tool, actions: { canEditInstructions: false } };
 }
 
 export function NodeInspector(props: NodeInspectorProps) {
@@ -368,39 +345,6 @@ export function NodeInspector(props: NodeInspectorProps) {
     }
   };
 
-  const onUnwire = async (actions: InspectActions) => {
-    const uw = actions.unwire;
-    if (!uw) return;
-    const label =
-      uw.kind === "agent"
-        ? uw.ref || data?.label || "peer"
-        : uw.binding_name || data?.label || "tool";
-    if (!window.confirm(`Unwire ${label} from ${uw.target}?`)) return;
-    setBusy(true);
-    try {
-      const result =
-        uw.kind === "agent"
-          ? await postUnwireAgent({ target: uw.target, ref: uw.ref || "" })
-          : await postUnwireTool({
-              target: uw.target,
-              binding_name: uw.binding_name || "",
-            });
-      if (!result.ok) {
-        onError?.(result.detail || result.error || "Unwire failed");
-        return;
-      }
-      const live = result.applied_live
-        ? "Removed live — no deploy needed."
-        : "Removed from agent.py — restart if Chat still sees it.";
-      onMutated?.(`Unwired ${label}. ${live}`);
-      onClose();
-    } catch (err: unknown) {
-      onError?.(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div style={panelStyle}>
       <div style={headerStyle}>
@@ -419,7 +363,7 @@ export function NodeInspector(props: NodeInspectorProps) {
         {loading && <div style={{ color: "var(--muted)" }}>Loading…</div>}
 
         {error && !loading && (
-          <div style={{ color: "#C83243" }}>Could not load node details: {error}</div>
+          <div style={{ color: "#b3261e" }}>Could not load node details: {error}</div>
         )}
 
         {data && !loading && !error && (
@@ -432,7 +376,6 @@ export function NodeInspector(props: NodeInspectorProps) {
             setInstrDraft={setInstrDraft}
             busy={busy}
             onSaveInstructions={onSaveInstructions}
-            onUnwire={onUnwire}
           />
         )}
       </div>
@@ -449,7 +392,6 @@ function InspectBody({
   setInstrDraft,
   busy,
   onSaveInstructions,
-  onUnwire,
 }: {
   data: InspectResponse;
   node?: TopoNode;
@@ -459,7 +401,6 @@ function InspectBody({
   setInstrDraft: (v: string) => void;
   busy: boolean;
   onSaveInstructions: () => void;
-  onUnwire: (actions: InspectActions) => void;
 }) {
   const actions = data.actions;
   const metadata = node?.metadata;
@@ -513,27 +454,6 @@ function InspectBody({
       {data.tool && <ToolSection details={data.tool} />}
       {data.resource && <ResourceSection details={data.resource} />}
       {data.subAgent && <SubAgentSection details={data.subAgent} />}
-
-      {actions?.canUnwire && actions.unwire && (
-        <section style={sectionStyle}>
-          <div style={sectionTitleStyle}>Edit</div>
-          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
-            Remove this {actions.unwire.kind === "agent" ? "peer" : "tool"} from{" "}
-            <code>{actions.unwire.target}</code> (writes agent.py + hot-applies when
-            possible).
-          </div>
-          <div style={actionsRowStyle}>
-            <button
-              type="button"
-              style={dangerBtnStyle}
-              disabled={busy}
-              onClick={() => onUnwire(actions)}
-            >
-              {busy ? "Working…" : "Unwire"}
-            </button>
-          </div>
-        </section>
-      )}
     </>
   );
 }

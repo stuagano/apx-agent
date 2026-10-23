@@ -92,7 +92,7 @@ def deploy_apps_api(
         cwd=cwd, app_name=app_name, profile=profile, module=module, bundle_target=bundle_target,
         readyz_gate=readyz_gate, readyz_attempts=readyz_attempts, poll_timeout_seconds=poll_timeout_seconds,
         register_uc=register_uc, uc_name=uc_name, session_store=report.session_store,
-        agent_name=_agent_name(agent), experiment_id=env.get(EXPERIMENT_ENV),
+        experiment_id=env.get(EXPERIMENT_ENV),
         extra_version_tags=extra_version_tags, pin=pin, json_output=json_output, log=log,
         smoke_input=native_smoke_input, smoke_agent=agent,
     )
@@ -192,11 +192,6 @@ def _ensure_app(workspace: Any, *, app_name: str, space: str | None, description
 def _app_space(existing: Any) -> str | None:
     current = existing.space
     return current if isinstance(current, str) and current else None
-
-
-def _agent_name(agent: Any) -> str | None:
-    name = vars(agent).get("_name")
-    return name if isinstance(name, str) and name else None
 
 
 def _refuse_move(existing: Any, space: str | None) -> None:
@@ -458,7 +453,7 @@ def _upload_and_rollout(build_dir: Path, *, app_name: str, profile: str, workspa
 def _verify(
     *, cwd: Path, app_name: str, profile: str | None, module: str, bundle_target: str,
     readyz_gate: bool, readyz_attempts: int, poll_timeout_seconds: int, register_uc: bool,
-    uc_name: str | None, session_store: str | None, agent_name: str | None, experiment_id: str | None,
+    uc_name: str | None, session_store: str | None, experiment_id: str | None,
     extra_version_tags: dict[str, str] | None, pin: Any, json_output: bool, log: Callable[[str], None],
     smoke_input: dict[str, Any] | None = None, smoke_agent: Any = None,
 ) -> str:
@@ -481,7 +476,7 @@ def _verify(
         ok = ok and isinstance(checks, dict) and checks.get("durable") is True
         if ok:
             log(f"# execution smoke: POST {app_url}/api/invocations")
-            smoke = _check_native_execution(app_url, profile=profile, session_store=session_store, agent_name=agent_name,
+            smoke = _check_native_execution(app_url, profile=profile, session_store=session_store,
                                             smoke_input=smoke_input, smoke_agent=smoke_agent)
             ok = smoke.completed
             if not ok and isinstance(checks, dict):

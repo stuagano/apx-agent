@@ -42,6 +42,65 @@ module      = "agent:agent"
 | `examples` | list[string] | `[]` | Starter prompts shown as chips on the chat landing page |
 | `sub_agents` | list[string] | `[]` | URLs of remote agents to attach as tools |
 
+### Setting these in Python
+
+Any agent accepts the runtime fields as keyword arguments. A field set both in
+Python and in `[tool.apx.agent]` must have the same value.
+
+```python
+# before: pyproject.toml
+# [tool.apx.agent]
+# model = "system.ai.claude-sonnet-4-6"
+# target = "durable_agent_server"
+
+# after: agent.py
+agent = SequentialAgent(
+    [researcher, Agent(name="writer", tools=[draft], model="system.ai.claude-opus-4-7")],
+    model="system.ai.claude-sonnet-4-6",
+    target="durable_agent_server",
+)
+```
+
+`model` and `identity` are per-agent: an agent uses its own value, else its
+nearest ancestor's, else the app's. Every other field is app-wide: set it on
+the root; a different value on a child fails.
+
+### `[tool.apx.deploy]` — deploy settings
+
+Deploy settings live in their own table, which deploy reads without importing
+`agent.py`:
+
+```toml
+[tool.apx.deploy]
+name = "orders-agent"     # optional; defaults to [project].name
+app_name = "mcp-orders"   # optional; Apps API App name, when it differs from name
+host = "apps"             # apps | model_serving
+space = "shared-space"    # an App Space picks compute; without one:
+# instances = 2           #   fixed count, or [tool.apx.deploy.autoscale] min/max, 1-5
+backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
+```
+
+A field set both here and in `[tool.apx.agent]` (or `[tool.apx.agent.deploy]`)
+must have the same value.
+
+`[tool.apx.deploy]` also holds the registration and publishing keys:
+`registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table` and
+`tools_table`. Dev-loop keys live in top-level `[tool.apx]`:
+
+```toml
+[tool.apx]
+experiment = "/Users/you@example.com/orders"   # MLflow experiment for run/eval/trace
+# profile lives in the gitignored .apx.local, under [tool.apx]
+```
+
+To move a project off `[tool.apx.agent]`:
+
+1. Commit your work.
+2. Run `apx-agent agents migrate-config`. It moves the deploy settings here
+   and prints the keyword arguments to add to your root agent.
+3. Add those arguments, commit, and run it again. It removes
+   `[tool.apx.agent]` once every field is declared in Python.
+
 ### `examples` — starter prompts
 
 ```toml

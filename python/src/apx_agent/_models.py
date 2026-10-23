@@ -1079,6 +1079,9 @@ class AgentCard(BaseModel):
     instructions: str = ""
     tools: list[dict[str, Any]] = []
     mcpEndpoint: str | None = None  # SSE URL for MCP clients; populated at request time
+    # Set by a DurableAgentServer host: peers post the durable contract here
+    # instead of MLflow's /invocations (#980). Populated at request time.
+    invocationsEndpoint: str | None = None
     flowGraph: A2AFlowGraph | None = None
 
 

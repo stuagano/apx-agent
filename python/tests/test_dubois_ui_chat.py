@@ -21,7 +21,7 @@ async def test_chat_uses_dubois_tokens(dev_ui_app):
     assert r.status_code == 200
 
     # Theme marker must be present
-    assert "apx-dubois-theme" in r.text
+    assert "apx-agentkit-theme" in r.text
 
     # Legacy palette hex colors must be gone from the rendered page (check as complete hex values)
     hex_colors = re.findall(r'(?<![0-9a-fA-F])#[0-9a-fA-F]{3,6}(?![0-9a-fA-F])', r.text)

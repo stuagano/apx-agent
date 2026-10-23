@@ -212,22 +212,21 @@ def _parse_module_spec(spec: str) -> _ModuleSpec:
 
 
 def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
-    """Read ``[tool.apx.agent]`` from ``pyproject.toml`` in cwd.
+    """CLI view of the project's apx settings as one flat dict.
 
-    Also merges personal overrides from ``.apx.local`` (a gitignored TOML
-    file in the project root). Keys in ``.apx.local`` take precedence —
-    this is where user-specific values like ``profile`` live so they are
-    never committed to version control.
+    Merges, lowest to highest: ``[tool.apx.agent]``; the dev keys from top-level
+    ``[tool.apx]`` and the registration keys from ``[tool.apx.deploy]``
+    (sub-project 3b-1); then ``.apx.local`` (gitignored: ``[tool.apx]`` and its
+    older ``[tool.apx.agent]`` table). A key declared in ``[tool.apx.agent]``
+    and its new home with different values is an error.
 
-    Returns an empty dict if the file is missing, malformed, or doesn't
-    have the section.
+    Returns an empty dict if the files are missing, malformed, or declare nothing.
     """
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover
-        import tomli as tomllib  # type: ignore[no-redef]
+    import tomllib
 
-    def _read_toml_section(path: Path) -> dict[str, Any]:
+    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
+
+    def _apx(path: Path) -> dict[str, Any]:
         if not path.exists():
             return {}
         try:
@@ -235,22 +234,26 @@ def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]
         except Exception:
             return {}
         tool = data.get("tool", {})
-        if not isinstance(tool, dict):
-            return {}
-        apx = tool.get("apx", {})
-        if not isinstance(apx, dict):
-            return {}
-        agent_cfg = apx.get("agent", {})
-        return agent_cfg if isinstance(agent_cfg, dict) else {}
+        apx = tool.get("apx", {}) if isinstance(tool, dict) else {}
+        return apx if isinstance(apx, dict) else {}
 
-    cwd = (pyproject_path.parent if pyproject_path else Path.cwd())
-    committed = _read_toml_section(pyproject_path or cwd / "pyproject.toml")
+    def _table(apx: dict[str, Any], key: str) -> dict[str, Any]:
+        value = apx.get(key, {})
+        return value if isinstance(value, dict) else {}
 
-    # .apx.local uses the same [tool.apx.agent] structure but is gitignored.
-    local_overrides = _read_toml_section(cwd / ".apx.local")
-
-    return {**committed, **local_overrides}
-
+    cwd = pyproject_path.parent if pyproject_path else Path.cwd()
+    committed = _apx(pyproject_path or cwd / "pyproject.toml")
+    legacy = _table(committed, "agent")
+    homes = {k: ("[tool.apx]", committed[k]) for k in DEV_KEYS if k in committed}
+    deploy = _table(committed, "deploy")
+    homes.update({k: ("[tool.apx.deploy]", deploy[k]) for k in REGISTRATION_KEYS if k in deploy})
+    for key, (home, value) in homes.items():
+        if key in legacy and legacy[key] != value:
+            raise click.ClickException(
+                f"{key} is declared in both [tool.apx.agent] and {home} with different values; keep {home}.")
+    local = _apx(cwd / ".apx.local")
+    local_keys = {**_table(local, "agent"), **{k: local[k] for k in DEV_KEYS if k in local}}
+    return {**legacy, **{k: v for k, (_, v) in homes.items()}, **local_keys}
 
 def _load_agent(module_spec: str) -> Any:
     """Import ``module:variable`` and return the agent.
@@ -304,23 +307,60 @@ def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
             f"Failed to import agent module: {e}\n"
             "Check that your agent file has no syntax errors and all imports are available."
         ) from e
-    finalize_agent(agent, config, pyproject_path=None)
+    from ._settings import SettingsConflict
+
+    try:
+        finalize_agent(agent, config, pyproject_path=None)
+    except SettingsConflict as e:
+        raise click.ClickException(str(e)) from e
     return agent
 
 
 def _config_from_project_or_agent(cwd: Path, module: str):
-    """``[tool.apx.agent]`` when present; otherwise the Python agent (sub-project 2)."""
-    from ._inspection import _load_agent_config, config_from_agent
+    """``[tool.apx.agent]`` when present (merged later); otherwise the Python agent's settings."""
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
 
     config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
     if config is not None:
+        # Merged once the deploy flow loads the agent (after its prerequisite checks).
         return config, None
     if (cwd / "databricks.yml").exists() or (cwd / "databricks.yml").is_symlink():
         return None, None
     if not (cwd / "agent.py").is_file() and module == "agent:agent":
         return None, None
     agent = _load_finalized_agent(module)
-    return config_from_agent(agent), agent
+    return resolve_settings(agent, None), agent
+
+
+def _merged_config(agent, config):
+    """``[tool.apx.agent]`` merged with the agent's settings; a conflict is a CLI error."""
+    from ._settings import SettingsConflict, resolve_settings
+
+    try:
+        return resolve_settings(agent, config)
+    except SettingsConflict as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _recheck_prerequisites(config, ws) -> None:
+    """Prerequisites ran on [tool.apx.agent] before the agent loaded; re-run them on the merged config."""
+    probe = config.model_copy(update={"session": None}) if config.session is not None else config
+    for online in (False, True) if ws is not None else (False,):
+        kwargs = {"ws": ws, "provision_stores": False} if online else {}
+        for check in _doctor_mod.check_agent_prerequisites(probe, online=online, **kwargs):
+            if check.status is _doctor_mod.Status.FAIL:
+                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+
+
+def _sync_native_app(app, config) -> None:
+    """Refresh env a native app compiled from [tool.apx.agent] before the agent loaded (APX_MODEL)."""
+    from ._agentbricks_deploy import compile_native_app
+
+    fresh = {e["name"]: e["value"] for e in compile_native_app(config)["config"]["env"]}
+    for entry in app["config"]["env"]:
+        if entry["name"] in fresh:
+            entry["value"] = fresh[entry["name"]]
 
 
 @contextlib.contextmanager
@@ -530,48 +570,49 @@ def _databrickscfg_profiles() -> list[str]:
     return names
 
 
+def _set_toml_key(path: Path, section: str, key: str, value: str) -> None:
+    """Set ``key = "<value>"`` inside ``[section]`` only, creating the section/file if missing."""
+    from ._migrate_config import set_key_text
+
+    try:
+        text = set_key_text(path.read_text() if path.exists() else "", section, key, value)
+    except ValueError as exc:
+        raise click.ClickException(f"{path.name}: {exc}; edit it by hand.") from exc
+    path.write_text(text)
+
+
 def _save_to_pyproject(key: str, value: str, *, local: bool = False) -> bool:
-    """Write ``key = "<value>"`` into ``[tool.apx.agent]``.
+    """Write ``key = "<value>"`` into the key's home table (sub-project 3b-1).
 
-    When ``local=True``, writes to ``.apx.local`` (gitignored) instead of
-    ``pyproject.toml``. Use ``local=True`` for personal settings like
-    ``profile`` that should not be committed to version control.
-
-    Returns True on success.
+    ``local=True`` writes ``.apx.local`` ``[tool.apx]`` (gitignored, personal
+    settings like ``profile``). Registration keys go to ``[tool.apx.deploy]``.
+    Anything else still goes to an existing ``[tool.apx.agent]``. Returns True on success.
     """
+    import tomllib
+
+    from ._inspection import REGISTRATION_KEYS
+
+    def _in_legacy(path: Path) -> bool:
+        # A key still in [tool.apx.agent] is updated there, so the file never declares it twice.
+        try:
+            return key in tomllib.loads(path.read_text()).get("tool", {}).get("apx", {}).get("agent", {})
+        except (OSError, tomllib.TOMLDecodeError):
+            return False
+
     if local:
         target = Path.cwd() / ".apx.local"
-        if not target.exists():
-            # Bootstrap a minimal .apx.local with the required section.
-            target.write_text("[tool.apx.agent]\n")
-        content = target.read_text()
-        if "[tool.apx.agent]" not in content:
-            content += "\n[tool.apx.agent]\n"
-    else:
-        target = Path.cwd() / "pyproject.toml"
-        if not target.exists():
-            return False
-        content = target.read_text()
-        if "[tool.apx.agent]" not in content:
-            return False
-
-    escaped = value.replace('"', '\\"')
-    if re.search(rf'^\s*{re.escape(key)}\s*=', content, re.MULTILINE):
-        content = re.sub(
-            rf'^\s*{re.escape(key)}\s*=.*$',
-            f'{key} = "{escaped}"',
-            content,
-            flags=re.MULTILINE,
-        )
-    else:
-        content = re.sub(
-            r'(\[tool\.apx\.agent\])',
-            f'[tool.apx.agent]\n{key} = "{escaped}"',
-            content,
-        )
-    target.write_text(content)
+        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx", key, value)
+        return True
+    target = Path.cwd() / "pyproject.toml"
+    if not target.exists():
+        return False
+    if key in REGISTRATION_KEYS:
+        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx.deploy", key, value)
+        return True
+    if "[tool.apx.agent]" not in target.read_text():
+        return False
+    _set_toml_key(target, "tool.apx.agent", key, value)
     return True
-
 
 def _save_profile_to_pyproject(profile: str) -> bool:
     return _save_to_pyproject("profile", profile, local=True)
@@ -4943,6 +4984,114 @@ def migrate_agent_toml(module: str) -> None:
     click.echo(f"wrote {path}")
 
 
+@agents.command("migrate-config")
+def migrate_config() -> None:
+    """Move [tool.apx.agent] to [tool.apx.deploy] and the Python agent (safe to re-run)."""
+    import subprocess
+
+    from . import _migrate_config
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
+
+    import importlib.util
+    import tomllib
+
+    cwd = Path.cwd()
+    pyproject = cwd / "pyproject.toml"
+    local_path = cwd / ".apx.local"
+    local_text = local_path.read_text() if local_path.exists() else None
+    try:
+        local_new = _migrate_config.migrate_local(local_text) if local_text is not None else None
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        raise click.ClickException(f".apx.local: {exc}") from exc
+
+    def _apply_local() -> None:
+        # Last, and only after pyproject.toml migrated (or had nothing to do).
+        if local_new is None or local_text is None:
+            return
+        backup = cwd / ".apx.local.bak"
+        n = 2
+        while backup.exists():
+            backup, n = cwd / f".apx.local.bak.{n}", n + 1
+        before_flat = _read_apx_agent_config(pyproject)
+        backup.write_text(local_text)
+        local_path.write_text(local_new)
+        if _read_apx_agent_config(pyproject) != before_flat:
+            local_path.write_text(local_text)
+            raise click.ClickException("migrating .apx.local changed the effective settings; restored it.")
+        click.echo(f"migrated .apx.local to [tool.apx] (backup: {backup.name})")
+
+    if "agent" not in tomllib.loads(pyproject.read_text()).get("tool", {}).get("apx", {}):
+        _apply_local()
+        if local_new is None:
+            click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
+        return
+    status = subprocess.run(["git", "status", "--porcelain", "--", "pyproject.toml"],
+                            cwd=cwd, capture_output=True, text=True, check=False)
+    if status.returncode != 0 or status.stdout.strip():
+        raise click.ClickException(
+            "pyproject.toml has uncommitted changes; commit them first (git is migrate-config's undo).")
+    agent_py = cwd / "agent.py"
+    if not agent_py.is_file():
+        raise click.ClickException(f"no agent.py in {cwd}; migrate-config reads the agent to see what Python declares.")
+    if str(cwd) not in sys.path:
+        sys.path.insert(0, str(cwd))  # agent.py's own imports (tools/, …)
+    # Load this project's agent.py, never another `agent` module on sys.path; no finalize_agent,
+    # so the agent carries only what Python declares.
+    spec = importlib.util.spec_from_file_location("agent", agent_py)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["agent"] = module
+    try:
+        spec.loader.exec_module(module)
+        agent = module.agent
+    except Exception as exc:  # noqa: BLE001 — any import failure is the user's agent.py
+        sys.modules.pop("agent", None)
+        raise click.ClickException(f"could not import agent.py: {type(exc).__name__}: {exc}") from exc
+    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
+
+    def _meta() -> dict[str, Any]:
+        flat = _read_apx_agent_config(pyproject)
+        return {k: flat[k] for k in (*DEV_KEYS, *REGISTRATION_KEYS) if k in flat}
+
+    before_meta = _meta()
+    try:
+        before = _load_agent_config(pyproject_path=pyproject)
+        migration = _migrate_config.plan_migration(pyproject, agent)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    original = pyproject.read_text()
+    if migration.text == original:
+        click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
+        return
+    pyproject.write_text(migration.text)
+    try:
+        after = _load_agent_config(pyproject_path=pyproject)
+        # Constructor fields were checked against the agent by plan_migration; once the
+        # table is gone they fall back to defaults in the config, so they're excluded here.
+        skip = set(_migrate_config._CONSTRUCTOR)
+        same = (before is not None and after is not None
+                and resolve_settings(agent, after).model_dump(exclude=skip)
+                == resolve_settings(agent, before).model_dump(exclude=skip)
+                and _meta() == before_meta)
+    except (ValueError, click.ClickException):
+        same = False
+    if not same:
+        pyproject.write_text(original)
+        raise click.ClickException("migrate-config changed the effective config; restored pyproject.toml.")
+    _apply_local()
+    click.echo("moved deploy settings to [tool.apx.deploy]")
+    if migration.removed_agent_table:
+        click.echo("removed [tool.apx.agent]: every field is declared in Python")
+    else:
+        click.echo("kept [tool.apx.agent]:")
+        if migration.missing:
+            click.echo("  add these to the root agent, then re-run:")
+            click.echo("    " + _migrate_config.snippet(migration.missing))
+        if migration.manual:
+            click.echo("  remove by hand once handled elsewhere: " + ", ".join(migration.manual))
+
+
 @agents.command("ontology-jumpstart")
 @click.argument("model_json", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--catalog", required=True, help="APX catalog envelope for generated grounding.")
@@ -7631,7 +7780,7 @@ def _emit_apps_deploy_plan(
         assert config is not None and config.deploy is not None
         if vars or secret_env_pairs or no_run:
             raise click.ClickException("Apps API deployment does not support Bundle --var, --secret-env, or --no-run.")
-        app_name = config.name
+        app_name = _apps_api_app_name(cwd, config.name)
         bundle_key = config.name
         doc: dict[str, Any] = {}
         placement = f"App Space {config.deploy.space}" if config.deploy.space else "dedicated"
@@ -9068,24 +9217,6 @@ def _native_execution_completed(body: Any) -> str | list[Any] | None:
     return content
 
 
-def _native_session_thread(agent_name: str | None, session_id: str, principal: str | None = None) -> Any:
-    """The checkpoint key native execution derives from the agent and session.
-
-    Mirrors the durable handler's scope: ``[agent._name, session_id]`` for
-    app-auth, ``[agent._name, principal, session_id]`` when a request user is
-    resolved. The result is a LangGraph ``RunnableConfig`` so it can be passed
-    to ``DatabricksSessionStoreSaver.get_tuple``.
-    """
-    import hashlib
-
-    from langchain_core.runnables import RunnableConfig
-
-    scope = [agent_name, session_id] if principal is None else [agent_name, principal, session_id]
-    key = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
-    config: RunnableConfig = {"configurable": {"thread_id": key, "actor_id": key}}
-    return config
-
-
 def _native_session_has_message(checkpoint: Any, content: str | list[Any]) -> bool:
     """True when a LangGraph checkpoint stores this assistant text."""
     if checkpoint is None:
@@ -9133,8 +9264,6 @@ def _check_native_execution(
     *,
     profile: str | None,
     session_store: str | None,
-    agent_name: str | None = None,
-    user_scoped: bool = False,
     smoke_input: dict[str, Any] | None = None,
     smoke_agent: Any = None,
 ) -> _NativeExecutionSmoke:
@@ -9142,7 +9271,7 @@ def _check_native_execution(
 
     ``/readyz`` stays a store probe. This is the separate execution smoke: the
     deployed app must return a completed assistant message. When the deploy
-    knows the managed session store and agent name, the same thread is read
+    knows the managed session store, the session this invocation wrote is read
     back through the SDK saver. The bearer token is never logged. Never raises.
     """
     import json as _json
@@ -9197,7 +9326,14 @@ def _check_native_execution(
     except Exception:
         body = None
     content = _native_execution_completed(body)
-    if content is not None and smoke_agent is not None:
+    if content is None or not isinstance(body, dict):
+        snippet = "typed response omitted" if smoke_input is not None else (raw.decode("utf-8", errors="replace")[:160] if raw else "empty body")
+        return _NativeExecutionSmoke(
+            completed=False,
+            detail=f"invocation HTTP {status} did not return a completed assistant message: {snippet}",
+            readback=False,
+        )
+    if smoke_agent is not None:
         from ._agents import SequentialAgent
         from ._a2a_models import data_parts
 
@@ -9216,13 +9352,6 @@ def _check_native_execution(
                 schema.model_validate_json(encoded, strict=True)
             except Exception:
                 return _NativeExecutionSmoke(completed=False, detail="invocation did not return a valid declared typed output", readback=False)
-    if content is None:
-        snippet = "typed response omitted" if smoke_input is not None else (raw.decode("utf-8", errors="replace")[:160] if raw else "empty body")
-        return _NativeExecutionSmoke(
-            completed=False,
-            detail=f"invocation HTTP {status} did not return a completed assistant message: {snippet}",
-            readback=False,
-        )
     if session_store is None:
         return _NativeExecutionSmoke(completed=True, detail="assistant message returned", readback=False)
 
@@ -10359,6 +10488,16 @@ def _resolve_project_uc_name(cwd: Path) -> str | None:
     return None
 
 
+def _apps_api_app_name(cwd: Path, agent_name: str) -> str:
+    """The Apps API App name: ``[tool.apx.deploy] app_name`` when declared, else the
+    agent name. The agent name is also a peer's tool name, so it can stay snake_case
+    while the App keeps an ``mcp-`` name for External MCP discovery."""
+    import tomllib
+
+    deploy = tomllib.loads((cwd / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("deploy", {})
+    return deploy["app_name"] if "app_name" in deploy else agent_name
+
+
 def _resolve_project_app_name(
     cwd: Path, *, bundle_target: str | None = None, profile: str | None = None,
 ) -> str:
@@ -10369,7 +10508,7 @@ def _resolve_project_app_name(
         config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
         # Apps API keeps the declared name. Only the Agent Bricks path adds its prefix.
         if config is not None and config.deploy is not None and config.deploy.backend == "apps_api":
-            return config.name
+            return _apps_api_app_name(cwd, config.name)
         if config is not None and config.target == "durable_agent_server" and (config.deploy is None or config.deploy.space is None):
             return compile_native_app(config)["name"]
     if bundle_target is not None:
@@ -10683,7 +10822,7 @@ def _deploy_apps_impl(
         assert effective_config is not None and effective_config.deploy is not None
         _preflight_databricks_cli()
         _preflight_apps(cwd, native=True, durable=True)
-        app_name = app_name_override or effective_config.name
+        app_name = app_name_override or _apps_api_app_name(cwd, effective_config.name)
         from ._apps_authorization import compile_authorization_plan, read_app_family_permissions, require_workspace_scope_allowlist
         from ._agents import LlmAgent
 
@@ -10705,6 +10844,10 @@ def _deploy_apps_impl(
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
         agent = preloaded_agent if preloaded_agent is not None else _load_finalized_agent(module)
+        merged = _merged_config(agent, effective_config)
+        if merged != effective_config:
+            _recheck_prerequisites(merged, workspace)
+            session_config = effective_config = merged
         _prepare_native_smoke_input(agent, smoke_input, readyz_gate=readyz_gate)
         if isinstance(agent, LlmAgent):
             for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=True):
@@ -10871,6 +11014,13 @@ def _deploy_apps_impl(
                 log(f"  {check.fix}")
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+    if effective_config is not None:
+        merged = _merged_config(agent, effective_config)
+        if merged != effective_config:
+            _recheck_prerequisites(merged, workspace)
+            if native_direct:
+                _sync_native_app(app, merged)
+        effective_config = merged
     effective_model = (
         effective_config.model if effective_config is not None else _APPS_DEFAULT_MODEL
     )
@@ -10909,8 +11059,6 @@ def _deploy_apps_impl(
     # None until a durable target is inspected. Smoke uses this so a composite
     # does not read back the auto-attached session it never bound.
     bound_session: str | None = None
-    # Set from the staged agent.toml: a request-user agent scopes its sessions by caller.
-    native_user_scoped = False
     if space_name is not None or (effective_config is not None and effective_config.target == "durable_agent_server"):
         from ._runtime_targets import inspect_target
 
@@ -11063,10 +11211,6 @@ def _deploy_apps_impl(
                     config=effective_config, authorization_plan=authorization_plan, agent=agent), log)
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
-            from ._agent_toml import load_agent_toml
-
-            staged_project = load_agent_toml(staged.parent)
-            native_user_scoped = staged_project is not None and staged_project.user_auth.required
 
         if space_client is not None:
             from ._app_space import validate_space_source
@@ -11332,8 +11476,6 @@ def _deploy_apps_impl(
                     app_url,
                     profile=profile,
                     session_store=bound_session,
-                    agent_name=getattr(agent, "_name", None),
-                    user_scoped=native_user_scoped,
                     smoke_input=native_smoke_input,
                     smoke_agent=agent,
                 )
@@ -11882,7 +12024,7 @@ def _do_create_supervisor(
             click.echo("  apx-agent agents advertise")
         else:
             click.echo("\nAdd this to your shared pyproject.toml so every agent can advertise with zero args:")
-            click.echo("\n  [tool.apx.agent]")
+            click.echo("\n  [tool.apx.deploy]")
             click.echo(f'  supervisor_id = "{supervisor_id}"')
 
 

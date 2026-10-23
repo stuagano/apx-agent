@@ -204,8 +204,47 @@ def _patch_handler_signature(
 # ---------------------------------------------------------------------------
 
 
+_AGENT_SECTION = ("tool", "apx", "agent")
+DEV_KEYS = ("profile", "experiment")
+"""Dev-loop CLI keys: top-level [tool.apx] (and .apx.local [tool.apx]). Sub-project 3b-1."""
+REGISTRATION_KEYS = ("registered_model", "catalog", "schema", "supervisor_id", "registry_table", "tools_table")
+"""Registration/publishing CLI keys: [tool.apx.deploy]. Sub-project 3b-1."""
+
+
+def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """Merge ``[tool.apx.deploy]`` (name, host, DeployConfig keys) into agent *fields*; other keys stay put."""
+    table = data.get("tool", {}).get("apx", {}).get("deploy")
+    if not table:
+        return fields
+    from ._models import DeployConfig
+
+    merged = dict(fields)
+    deploy = dict(merged.get("deploy", {}))
+    for key, value in table.items():
+        # Only 3a's keys fold in; Apps-target metadata (target, bundle_name, app_name) has its own readers.
+        if key not in ("name", "host") and key not in DeployConfig.model_fields:
+            continue
+        if key in ("name", "host"):
+            target, label, suffix = merged, key, ""
+        else:
+            target, label, suffix = deploy, f"deploy.{key}", ".deploy"
+        if key in target and target[key] != value:
+            raise ValueError(f"{label} is declared in both [tool.apx.agent{suffix}] and [tool.apx.deploy] "
+                             "with different values; keep [tool.apx.deploy].")
+        target[key] = value
+    if deploy:
+        merged["deploy"] = deploy
+    if merged and "name" not in merged:
+        name = data.get("project", {}).get("name")
+        if name:
+            merged["name"] = name
+    return merged
+
+
 def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str, Any] | None:
-    """AgentConfig fields declared at ``section_path`` in *path*, or None."""
+    """AgentConfig fields declared at ``section_path`` in *path*, or None.
+
+    For the APX section, ``[tool.apx.deploy]`` is folded in (sub-project 3a)."""
     import tomllib
 
     with open(path, "rb") as f:
@@ -214,8 +253,10 @@ def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str,
     for key in section_path:
         section = section.get(key, {})
         if not section:
-            return None
-    fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields}
+            break
+    fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields} if section else {}
+    if section_path == _AGENT_SECTION:
+        fields = _fold_deploy_table(data, fields)
     # Deploy-envelope keys alone do not declare an agent config.
     return fields if fields else None
 
@@ -311,38 +352,6 @@ def _load_agent_config(
         "[%s] loaded from %s (name=%s)", ".".join(section_path), resolved, config.name
     )
     return config
-
-
-def config_from_agent(agent: Any) -> AgentConfig:
-    """Build AgentConfig from constructor-declared apx settings (sub-project 2)."""
-    name = getattr(agent, "_name", None)
-    if not name:
-        name = "agent"
-    raw: dict[str, Any] = {"name": name}
-    model = getattr(agent, "model", None)
-    if model is not None:
-        raw["model"] = model
-    target = getattr(agent, "target", None)
-    if target is not None:
-        raw["target"] = target
-    identity = getattr(agent, "identity", None)
-    if identity is not None:
-        raw["identity"] = identity
-    if getattr(agent, "recovery", False):
-        raw["recovery"] = True
-    gateway = getattr(agent, "gateway", None)
-    if gateway is not None:
-        raw["gateway"] = gateway
-    policies = getattr(agent, "service_policies", None)
-    if policies is not None:
-        raw["service_policies"] = policies
-    memory = getattr(agent, "memory_config", None)
-    if memory is not None:
-        raw["memory"] = memory
-    session = getattr(agent, "session_config", None)
-    if session is not None:
-        raw["session"] = session
-    return AgentConfig.model_validate(raw)
 
 
 # ---------------------------------------------------------------------------

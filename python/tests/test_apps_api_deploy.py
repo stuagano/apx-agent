@@ -260,6 +260,15 @@ def test_deploy_resources_still_require_explicit_profile(harness: dict[str, Any]
     assert harness["state"]["calls"] == []
 
 
+def test_sync_uploads_the_gitignored_build_tree(harness: dict[str, Any]) -> None:
+    """``.build/`` is gitignored and ``databricks sync`` honors .gitignore, so
+    without an include override the source folder ends up empty (seen live)."""
+    _deploy(harness, _config(), LlmAgent(name="proof"))
+    sync = next(call for call in harness["state"]["calls"] if isinstance(call, tuple) and call[0] == "sync")
+    assert "--include" in sync and sync[sync.index("--include") + 1] == "**"
+    assert sync[sync.index("--exclude") + 1] == "uv.lock"
+
+
 def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any]) -> None:
     config = _config(space="app-space", include=["prompts.py"], env={"DATA_INSPECTOR_URL": "https://inspector.example"})
     _deploy(harness, config, LlmAgent(name="proof"))
@@ -531,6 +540,23 @@ def test_agents_deploy_routes_all_four_rows(
         assert "agent-bricks-" not in payload["app_name"]
     else:
         assert payload.get("deployment_backend") != "apps_api"
+
+
+def test_apps_api_honors_declared_deploy_app_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """[tool.apx.deploy] app_name wins over the agent name (the agent name is a tool name)."""
+    from apx_agent.cli import _resolve_project_app_name
+
+    root = _doctor_project(
+        tmp_path, "inspector", deploy='\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n',
+        bundle=None, agent=LLM.format(name="inspector"),
+    )
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + '\n[tool.apx.deploy]\napp_name = "mcp-inspector"\n')
+    assert _resolve_project_app_name(root) == "mcp-inspector"
+    monkeypatch.chdir(root)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--dry-run", "--json-output"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["app_name"] == "mcp-inspector"
 
 
 def test_apps_api_name_is_not_agent_bricks_prefixed(tmp_path: Path) -> None:

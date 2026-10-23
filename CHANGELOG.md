@@ -12,6 +12,10 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Added
 
+- **CLI metadata homes.** `profile` and `experiment` live in `[tool.apx]` (`profile` in `.apx.local`). Registration keys (`registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`, `tools_table`) live in `[tool.apx.deploy]`. `migrate-config` moves them, and CLI writers now edit only their own TOML section.
+- **`[tool.apx.deploy]` and `migrate-config`.** Deploy settings (`name`, `host`, `space`, instances/autoscale, `backend`) have their own table next to #986's `app_name`. Dev-UI `examples=` is an agent setting. `apx-agent agents migrate-config` moves a project off `[tool.apx.agent]`, keeping the table until Python declares every field.
+- **apx settings on any agent.** Every agent class takes apx runtime settings; `resolve_settings` merges them with `[tool.apx.agent]` and fails on conflicting values. Leaves compile with their own `model` and stamp their own `identity`.
+- **Discover workspace graph.** `workspace_graph_tools()` gives agents six OBO-scoped tools over the caller's Unity Catalog, Genie, Vector Search, Model Serving and Apps graph, and the Discover canvas renders the same graph from `/_apx/discover/graph.json` and `/_apx/discover/impact/{id}`.
 - **Session dollar cap (#836).** `LlmAgent(session_budget={"usd": D})` (alone or
   with `tokens`) refuses a served turn when cumulative usage, priced from the
   same token metadata, reaches `D`. Rates come from published FMAPI list
@@ -101,6 +105,12 @@ and managed sessions and memory replace app-owned state on that path.
 - How a durable agent operates, App Space vs serverless runtime vs horizontal
   scaling, where managed stores live, and the native execution boundary
   (#880–#897).
+
+### Removed
+
+- The old Discover list/wire UI and its routes: `/_apx/workspace-agents`,
+  `/_apx/workspace-functions`, `/_apx/workspace-apis`, and
+  `/_apx/discover/{tables,sample,targets,wire-agent,unwire-agent,wire-tool,unwire-tool}`.
 
 ## [0.7.1] — 2026-10-01
 

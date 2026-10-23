@@ -535,6 +535,18 @@ def ensure_scope_guard(agent: BaseAgent) -> None:
         attach_scope_guard(leaf)
 
 
+def _apply_leaf_identities(agent: BaseAgent, config: AgentConfig | None) -> None:
+    """Stamp each leaf's effective identity onto that leaf's tools that declare none."""
+    from ._agent_identity import apply_agent_identity  # noqa: PLC0415
+    from ._settings import resolve_settings  # noqa: PLC0415
+
+    app = resolve_settings(agent, config)
+    for leaf in _collect_guardrail_targets(agent):
+        identity = leaf._overrides.get("identity", app.identity)
+        if identity is not None:
+            apply_agent_identity(leaf, identity)
+
+
 def finalize_agent(
     agent: BaseAgent,
     config: AgentConfig | None = None,
@@ -585,13 +597,7 @@ def finalize_agent(
         # of their own, so per-tool overrides still win and undeclared tools
         # inherit the agent principal. Run after all tools are attached and
         # before guardrails so ScopeGuard / authorization compile see it.
-        identity = getattr(agent, "identity", None)
-        if identity is None:
-            identity = config.identity
-        if identity is not None:
-            from ._agent_identity import apply_agent_identity  # noqa: PLC0415
-
-            apply_agent_identity(agent, identity)
+        _apply_leaf_identities(agent, config)
 
         # Attach guards after memory/VS tools so ScopeGuard sees all scoped
         # tools, not just those on the agent at construction.
@@ -608,11 +614,8 @@ def finalize_agent(
         if isinstance(agent, DataAgent):
             agent.bind_workspace(ws)
 
-    constructor_identity = getattr(agent, "identity", None)
-    if config is None and isinstance(constructor_identity, str):
-        from ._agent_identity import apply_agent_identity  # noqa: PLC0415
-
-        apply_agent_identity(agent, constructor_identity)
+    if config is None:
+        _apply_leaf_identities(agent, None)
 
     # Scope wiring is independent of [tool.apx.agent]: a Python-API agent
     # with build_tool(scope=...) still needs a runtime guard. apply_config_
@@ -775,6 +778,9 @@ async def setup_agent(
             config,
             ws=getattr(app.state, "workspace_client", None),
         )
+    from ._settings import resolve_settings  # noqa: PLC0415
+
+    config = resolve_settings(agent, config)
 
     # Merge sub_agents from config
     if config.sub_agents:
@@ -979,14 +985,19 @@ def _mount_protocol_routes(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=404, detail="Agent protocol not configured"
             )
-        base = str(request.base_url).rstrip("/")
+        # Behind the Apps proxy request.base_url is the container address
+        # (https://localhost:8000); the forwarded host is the App's public URL.
+        forwarded_host = request.headers.get("x-forwarded-host")
+        base = f"https://{forwarded_host}" if forwarded_host else str(request.base_url).rstrip("/")
         mcp_available = (
             getattr(request.app.state, "mcp_server", None) is not None
         )
+        durable = getattr(request.app.state, "apx_durable_host", False)
         return ctx.card.model_copy(
             update={
                 "url": base,
                 "mcpEndpoint": f"{base}/mcp" if mcp_available else None,
+                "invocationsEndpoint": f"{base}/api/invocations" if durable else None,
             }
         )
 
@@ -1454,8 +1465,7 @@ def mount_mcp_endpoints(
     # Mounted in local ``apx run`` AND deployed Databricks Apps so peers can
     # discover each other from a live App URL. Ordinary write routes stay
     # gated by Apps SSO (or optional ``APX_DEV_UI_TOKEN`` for automation).
-    # Discover wire/unwire additionally requires ``APX_DEV_UI_TOKEN`` on Apps
-    # (#611 — shared live-agent mutation). See ``_dev._enforce_dev_write_auth``.
+    # See ``_dev._enforce_dev_write_auth``.
     app.state.dev_ui_mount_error = None
     if os.environ.get("APX_DEV_UI") != "0":
         try:
@@ -1538,14 +1548,11 @@ def mount_durable_protocol(
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
 ) -> None:
-    """Mount discovery and native chat without legacy invocation handlers.
+    """Mount discovery without legacy invocation handlers or browser routes.
 
-    The SDK owns invocation routes and their auth. Keep setup's legacy UI
-    mounts disabled and select native transport explicitly for these pages.
-    The developer chat is opt-in on Apps; the end-user chat is always served.
+    The native compiler owns chat selection; setup only supplies protocol context.
     """
     app.state._apx_protocol_only = True
-    app.state._apx_native_chat = True
     _state_key = "_apx_durable_protocol_state"
 
     async def _startup() -> None:
@@ -1553,20 +1560,6 @@ def mount_durable_protocol(
         if ctx is None:
             logger.info("mount_durable_protocol: no agent config \u2014 /mcp will 503")
             return
-        from ._ui_root_chat import build_root_chat_router
-        from ._ui_native_chat import native_input_router
-
-        app.include_router(build_root_chat_router())
-        app.include_router(native_input_router(agent))
-        if os.environ.get("APX_DEV_UI", "0" if os.environ.get("DATABRICKS_APP_NAME") else "1") != "0":
-            from fastapi.responses import HTMLResponse
-            from ._ui_chat import _render_agent_ui
-
-            @app.get("/_apx/chat", include_in_schema=False)
-            async def native_chat(request: Request) -> HTMLResponse:
-                return HTMLResponse(_render_agent_ui(
-                    ctx, embed=request.query_params.get("embed") == "1", native=True,
-                ))
         try:
             mcp_lifecycle = await _setup_mcp(app, ctx)
         except Exception as exc:  # pragma: no cover \u2014 defensive

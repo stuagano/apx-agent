@@ -7,14 +7,18 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from httpx import ASGITransport, AsyncClient
+
+from apx_agent import AgentConfig, AgentContext
 
 from apx_agent._dev import (
     _dev_write_guard,
+    build_dev_ui_router,
     _enforce_dev_write_auth,
-    _enforce_discover_operator_auth,
     _parse_judge_output,
 )
+from apx_agent._models import AgentCard
 from apx_agent._ui_probe import _validate_probe_url, validate_wire_peer_url
 
 
@@ -68,79 +72,6 @@ def test_deployed_token_still_works_as_automation_override(monkeypatch):
     )
 
 
-# --- #611: Discover wire/unwire requires operator token on Apps ------------
-
-
-def test_discover_operator_local_allows(monkeypatch):
-    monkeypatch.delenv("DATABRICKS_APP_PORT", raising=False)
-    monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
-    _enforce_discover_operator_auth(_req(path="/_apx/discover/wire-agent"))
-
-
-def test_discover_operator_deployed_sso_alone_denies(monkeypatch):
-    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
-    monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
-    with pytest.raises(HTTPException) as exc:
-        _enforce_discover_operator_auth(
-            _req(
-                path="/_apx/discover/wire-agent",
-                headers={"x-forwarded-access-token": "obo-user-token"},
-            )
-        )
-    assert exc.value.status_code == 403
-    assert "shared live agent" in exc.value.detail.lower() or "operator" in exc.value.detail.lower()
-
-
-def test_discover_operator_deployed_requires_configured_token(monkeypatch):
-    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
-    monkeypatch.delenv("APX_DEV_UI_TOKEN", raising=False)
-    with pytest.raises(HTTPException) as exc:
-        _enforce_discover_operator_auth(
-            _req(
-                path="/_apx/discover/wire-tool",
-                headers={"x-forwarded-access-token": "obo-user-token"},
-            )
-        )
-    assert exc.value.status_code == 403
-    assert "APX_DEV_UI_TOKEN" in exc.value.detail
-
-
-def test_discover_operator_matching_token_allows(monkeypatch):
-    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
-    monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
-    _enforce_discover_operator_auth(
-        _req(path="/_apx/discover/wire-agent", headers={"x-apx-dev-token": "s3cret"})
-    )
-    _enforce_discover_operator_auth(
-        _req(path="/_apx/discover/unwire-tool", query={"token": "s3cret"})
-    )
-
-
-@pytest.mark.asyncio
-async def test_guard_discover_mutation_needs_operator_even_with_sso(monkeypatch):
-    monkeypatch.setenv("DATABRICKS_APP_PORT", "8080")
-    monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
-    sso = {"x-forwarded-access-token": "obo-user-token"}
-
-    with pytest.raises(HTTPException) as exc:
-        await _dev_write_guard(
-            _req(method="POST", path="/_apx/discover/wire-agent", headers=sso)
-        )
-    assert exc.value.status_code == 403
-
-    # Ordinary writes still accept SSO alone.
-    await _dev_write_guard(_req(method="POST", path="/_apx/edit", headers=sso))
-
-    # Discover mutation with matching operator token succeeds.
-    await _dev_write_guard(
-        _req(
-            method="POST",
-            path="/_apx/discover/wire-agent",
-            headers={**sso, "x-apx-dev-token": "s3cret"},
-        )
-    )
-
-
 @pytest.mark.asyncio
 async def test_guard_discover_inventory_gets_not_gated_by_operator_token(
     monkeypatch,
@@ -148,7 +79,7 @@ async def test_guard_discover_inventory_gets_not_gated_by_operator_token(
     """#629: Discover inventory GETs stay open at the router — intentional.
 
     Any signed-in OBO user may enumerate resources *visible to them*; the
-    operator token gates wire/unwire only (#611). Handlers still fail closed
+    operator token gates dev-UI writes only (#611). Handlers still fail closed
     without OBO via ``_ws_prefer_obo`` (#612). This locks the product decision
     not to require ``APX_DEV_UI_TOKEN`` for inventory reads.
     """
@@ -156,9 +87,8 @@ async def test_guard_discover_inventory_gets_not_gated_by_operator_token(
     monkeypatch.setenv("APX_DEV_UI_TOKEN", "s3cret")
     # No SSO header and no operator token — guard must still allow these GETs.
     for path in (
-        "/_apx/workspace-agents",
-        "/_apx/workspace-functions",
-        "/_apx/workspace-apis",
+        "/_apx/discover/graph.json",
+        "/_apx/discover/impact/table:main.s.t",
         "/_apx/setup/catalogs",
         "/_apx/setup/schemas",
         "/_apx/setup/tables",
@@ -176,7 +106,8 @@ def test_dev_ui_docs_state_discover_inventory_intentional_under_obo():
     assert "APX_DEV_UI_TOKEN" in text
     # Intentional: inventory is caller-scoped grants, not operator-gated.
     assert "own grants" in text.lower() or "visible to them" in text.lower()
-    assert "wire/unwire" in text.lower()
+    assert "/_apx/discover/graph.json" in text
+    assert "wire/unwire" not in text.lower()
 
 
 @pytest.mark.asyncio
@@ -361,3 +292,140 @@ async def test_mlflow_read_no_traces_skips(monkeypatch):
 
     result = await probe._check_mlflow_read()
     assert result["status"] == "skip"
+
+# --- #627: Setup inventory runs as the caller (restored from the removed
+# Discover UI test module; these routes are still live) -----------------------
+
+
+def _make_ctx() -> AgentContext:
+    config = AgentConfig(name="disc-test", model="claude-fake")
+    card = AgentCard(name="disc-test", description="", skills=[])
+    return AgentContext(config=config, tools=[], card=card, agent=None)  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def app() -> FastAPI:
+    a = FastAPI()
+    a.state.agent_context = _make_ctx()
+    a.state.workspace_client = MagicMock()
+    a.include_router(build_dev_ui_router())
+    return a
+
+
+def _inventory_ws(prefix: str) -> MagicMock:
+    """Workspace client whose inventory is tagged with ``prefix`` so a test can
+    tell which identity a Setup listing ran under."""
+    ws = MagicMock()
+    catalog = MagicMock()
+    catalog.name = f"{prefix}_catalog"
+    schema = MagicMock()
+    schema.name = f"{prefix}_schema"
+    table = MagicMock()
+    table.name = f"{prefix}_table"
+    warehouse = MagicMock()
+    warehouse.id = f"{prefix}-wh"
+    warehouse.name = f"{prefix} warehouse"
+    warehouse.state = MagicMock(value="RUNNING")
+    ws.catalogs.list.return_value = [catalog]
+    ws.schemas.list.return_value = [schema]
+    ws.tables.list.return_value = [table]
+    ws.warehouses.list.return_value = [warehouse]
+    return ws
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,params,expected", [
+    ("/_apx/setup/catalogs", {}, ["obo_catalog"]),
+    ("/_apx/setup/schemas", {"catalog": "obo_catalog"}, ["obo_schema"]),
+    (
+        "/_apx/setup/tables",
+        {"catalog": "obo_catalog", "schema": "obo_schema"},
+        ["obo_table"],
+    ),
+    (
+        "/_apx/setup/warehouses",
+        {},
+        [{"id": "obo-wh", "name": "obo warehouse", "state": "RUNNING"}],
+    ),
+])
+async def test_setup_inventory_lists_under_caller_obo_client(
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    params: dict[str, str],
+    expected: list,
+):
+    """#627: Setup inventory is user-scoped like Discover, not App-SP-scoped."""
+    obo_ws = _inventory_ws("obo")
+    app.state.workspace_client = _inventory_ws("sp")
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda _request: obo_ws)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get(
+            route,
+            params=params,
+            headers={"X-Forwarded-Access-Token": "obo-token"},
+        )
+
+    assert r.status_code == 200, r.text
+    assert r.json() == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,params", [
+    ("/_apx/setup/catalogs", {}),
+    ("/_apx/setup/schemas", {"catalog": "sp_catalog"}),
+    ("/_apx/setup/tables", {"catalog": "sp_catalog", "schema": "sp_schema"}),
+    ("/_apx/setup/warehouses", {}),
+    ("/_apx/setup/vs-indexes", {}),
+])
+async def test_setup_inventory_apps_no_obo_returns_401(
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    params: dict[str, str],
+):
+    """#627: Setup inventory fails closed on Apps without OBO (no App SP list)."""
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-app")
+    monkeypatch.delenv("APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK", raising=False)
+    sp_ws = _inventory_ws("sp")
+    for lister in (
+        sp_ws.catalogs.list,
+        sp_ws.schemas.list,
+        sp_ws.tables.list,
+        sp_ws.warehouses.list,
+        sp_ws.vector_search_endpoints.list_endpoints,
+    ):
+        lister.side_effect = AssertionError("must not list under App SP without OBO")
+    app.state.workspace_client = sp_ws
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get(route, params=params)
+
+    assert r.status_code == 401, r.text
+
+
+@pytest.mark.asyncio
+async def test_setup_page_seeds_defaults_from_caller_obo_client(
+    app: FastAPI, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """#627: the Setup page's auto-prefill probes as the caller, not the App SP."""
+    obo_ws = _inventory_ws("obo")
+    app.state.workspace_client = _inventory_ws("sp")
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda _request: obo_ws)
+    monkeypatch.setattr("apx_agent._dev._find_env_path", lambda: tmp_path / ".env")
+
+    probed: list[MagicMock] = []
+    monkeypatch.setattr(
+        "apx_agent._dev._pick_workspace_defaults",
+        lambda ws: probed.append(ws) or {},
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        r = await ac.get(
+            "/_apx/setup",
+            headers={"X-Forwarded-Access-Token": "obo-token"},
+        )
+
+    assert r.status_code == 200
+    assert probed == [obo_ws]

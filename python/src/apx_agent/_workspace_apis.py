@@ -2,7 +2,7 @@
 
 Lists Model Serving endpoints, Genie spaces, and Vector Search indexes the
 caller can see, and attaches Managed MCP URLs where Databricks hosts one.
-Best-effort: each source fails independently and never raises to the caller.
+List failures raise; the workspace graph turns them into warnings.
 """
 
 from __future__ import annotations
@@ -31,129 +31,92 @@ class WorkspaceApiInfo:
     extra: dict[str, Any] | None = None
 
 
-def discover_workspace_apis(ws: Any, *, limit_per_kind: int = 50) -> list[WorkspaceApiInfo]:
-    """Discover serving endpoints, Genie spaces, and Vector Search indexes.
-
-    ``limit_per_kind`` caps each family so a busy workspace doesn't flood the UI.
-    """
-    host = ""
-    try:
-        host = _normalise_host(getattr(getattr(ws, "config", None), "host", "") or "")
-    except Exception:
-        host = ""
-
-    found: list[WorkspaceApiInfo] = []
-    found.extend(_list_serving(ws, host, limit_per_kind))
-    found.extend(_list_genie(ws, host, limit_per_kind))
-    found.extend(_list_vector_search(ws, host, limit_per_kind))
-    found.sort(key=lambda a: (a.kind, a.name.lower()))
-    return found
+def _host(ws: Any) -> str:
+    return _normalise_host(ws.config.host) if ws.config.host else ""
 
 
-def _list_serving(ws: Any, host: str, limit: int) -> list[WorkspaceApiInfo]:
+def list_serving_endpoints(ws: Any, *, limit: int = 50) -> list[WorkspaceApiInfo]:
+    host = _host(ws)
     out: list[WorkspaceApiInfo] = []
-    try:
-        endpoints = list(ws.serving_endpoints.list())
-    except Exception as e:
-        logger.info("serving_endpoints.list failed: %s", e)
-        return out
-    for ep in endpoints[:limit]:
-        name = getattr(ep, "name", None) or ""
+    for ep in list(ws.serving_endpoints.list())[:limit]:
+        name = ep.name
         if not name:
             continue
-        state = None
-        try:
-            st = getattr(getattr(ep, "state", None), "ready", None)
-            state = getattr(st, "value", None) or (str(st) if st is not None else None)
-        except Exception:
-            state = None
-        task = getattr(ep, "task", None)
-        url = f"{host}/serving-endpoints/{name}/invocations" if host else None
+        ready = ep.state.ready if ep.state else None
+        state = ready.value if ready is not None else None
+        task = ep.task
+        served = (
+            [e.entity_name for e in (ep.config.served_entities or []) if e.entity_name]
+            if ep.config
+            else []
+        )
         out.append(
             WorkspaceApiInfo(
                 kind="serving_endpoint",
                 name=name,
                 state=state,
                 description=str(task) if task else "Model Serving endpoint",
-                url=url,
+                url=f"{host}/serving-endpoints/{name}/invocations" if host else None,
                 mcp_url=None,  # serving endpoints are not Managed MCP today
-                extra={"task": str(task) if task else None},
+                extra={"task": str(task) if task else None, "served_entities": served},
             )
         )
     return out
 
 
-def _list_genie(ws: Any, host: str, limit: int) -> list[WorkspaceApiInfo]:
-    out: list[WorkspaceApiInfo] = []
+def list_genie_spaces(ws: Any, *, limit: int = 50) -> list[WorkspaceApiInfo]:
+    host = _host(ws)
     spaces: list[Any] = []
-    try:
-        page_token = None
-        while len(spaces) < limit:
-            kwargs: dict[str, Any] = {"page_size": min(200, limit - len(spaces))}
-            if page_token:
-                kwargs["page_token"] = page_token
-            resp = ws.genie.list_spaces(**kwargs)
-            batch = list(getattr(resp, "spaces", None) or [])
-            spaces.extend(batch)
-            page_token = getattr(resp, "next_page_token", None)
-            if not page_token or not batch:
-                break
-    except Exception as e:
-        logger.info("genie.list_spaces failed: %s", e)
-        return out
-
+    page_token = None
+    while len(spaces) < limit:
+        kwargs: dict[str, Any] = {"page_size": min(200, limit - len(spaces))}
+        if page_token:
+            kwargs["page_token"] = page_token
+        resp = ws.genie.list_spaces(**kwargs)
+        batch = list(resp.spaces or [])
+        spaces.extend(batch)
+        page_token = resp.next_page_token
+        if not page_token or not batch:
+            break
+    out: list[WorkspaceApiInfo] = []
     for space in spaces[:limit]:
-        space_id = getattr(space, "space_id", None) or ""
-        title = getattr(space, "title", None) or str(space_id)
-        if not space_id:
+        if not space.space_id:
             continue
-        built = _build_url("genie_space", str(space_id), host) if host else None
-        desc = getattr(space, "description", None) or f"Genie space {space_id}"
+        space_id = str(space.space_id)
+        built = _build_url("genie_space", space_id, host) if host else None
         out.append(
             WorkspaceApiInfo(
                 kind="genie_space",
-                name=str(title),
-                state=None,
-                description=desc,
-                url=None,
+                name=str(space.title) if space.title else space_id,
+                description=space.description or f"Genie space {space_id}",
                 mcp_url=built.url if built else None,
-                extra={"space_id": str(space_id)},
+                extra={"space_id": space_id},
             )
         )
     return out
 
 
-def _list_vector_search(ws: Any, host: str, limit: int) -> list[WorkspaceApiInfo]:
+def list_vector_search_indexes(ws: Any, *, limit: int = 50) -> list[WorkspaceApiInfo]:
+    from ._ui_probe import _discover_vs_indexes
+
+    host = _host(ws)
+    rows = _discover_vs_indexes(ws)
+    if rows and all(r.get("error") and not r.get("index") for r in rows):
+        raise RuntimeError(rows[0]["error"])
     out: list[WorkspaceApiInfo] = []
-    try:
-        from ._ui_probe import _discover_vs_indexes
-
-        rows = _discover_vs_indexes(ws)
-    except Exception as e:
-        logger.info("vector search discovery failed: %s", e)
-        return out
-
-    count = 0
     for row in rows:
-        if row.get("error") and not row.get("index"):
-            continue
-        idx = row.get("index") or ""
+        idx = row.get("index")
         if not idx:
             continue
-        if count >= limit:
+        if len(out) >= limit:
             break
-        count += 1
         built = _build_url("vector_search_index", idx, host) if host else None
         out.append(
             WorkspaceApiInfo(
                 kind="vector_search_index",
                 name=idx,
-                state="ready" if row.get("ready") else (row.get("endpoint_state") or "unknown"),
-                description=(
-                    f"VS endpoint {row.get('endpoint')}"
-                    + (f" · source {row['source_table']}" if row.get("source_table") else "")
-                ),
-                url=None,
+                state="ready" if row.get("ready") else row.get("endpoint_state"),
+                description=f"VS endpoint {row.get('endpoint')}",
                 mcp_url=built.url if built else None,
                 extra={
                     "endpoint": row.get("endpoint"),

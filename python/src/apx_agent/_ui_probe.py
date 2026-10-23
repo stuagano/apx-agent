@@ -1194,7 +1194,7 @@ def _is_trusted_agent_host(host: str) -> bool:
 
 
 def validate_wire_peer_url(url: str) -> str | None:
-    """SSRF + Apps-host allowlist for Discover ``wire-agent`` / hot-apply.
+    """SSRF + Apps-host allowlist for peer-agent URLs (A2A card probes, hub registration).
 
     Stricter than :func:`_validate_probe_url`: peers must be ``https`` and the
     host must be on the trusted-host allowlist (via :func:`_is_trusted_agent_host`).

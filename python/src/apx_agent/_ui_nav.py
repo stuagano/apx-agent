@@ -9,9 +9,9 @@ def _apx_dev_fetch_js() -> str:
     """JS ``fetch`` wrapper for Dev UI writes.
 
     On deployed Apps, ordinary writes are authorized by Apps SSO
-    (``X-Forwarded-Access-Token`` injected by the proxy). Discover
-    wire/unwire additionally requires ``APX_DEV_UI_TOKEN`` (#611) — forward
-    ``X-APX-Dev-Token`` from ``localStorage`` / ``?token=`` when set.
+    (``X-Forwarded-Access-Token`` injected by the proxy). For non-browser
+    automation, forward ``X-APX-Dev-Token`` from ``localStorage`` /
+    ``?token=`` when set.
     """
     return """
 <script>
@@ -37,13 +37,13 @@ def _apx_dev_fetch_js() -> str:
 
 def _apx_nav_css() -> str:
     return """
-  #apx-header { position:fixed;top:0;left:0;right:0;z-index:1000;background:var(--apx-panel,#1F272D);border-bottom:1px solid var(--apx-border,#445461); }
+  #apx-header { position:fixed;top:0;left:0;right:0;z-index:1000;background:var(--apx-panel);border-bottom:1px solid var(--apx-border);box-shadow:var(--apx-shadow); }
   #apx-nav { padding:10px 16px;display:flex;align-items:center;gap:10px;height:44px; }
-  .badge { background:var(--apx-panel-2,#37444F);color:var(--apx-accent,#2272B4);font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px;letter-spacing:.5px;text-transform:uppercase; }
+  .badge { background:var(--apx-panel-2);color:var(--apx-accent);font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;letter-spacing:.5px;text-transform:uppercase; }
   nav { margin-left:auto;display:flex;gap:4px; }
-  nav a { font-size:12px;color:var(--apx-muted,#92A4B3);text-decoration:none;padding:3px 10px;border-radius:5px;border:1px solid transparent; }
-  nav a:hover { color:var(--apx-text,#E8ECF0);border-color:var(--apx-border,#445461); }
-  nav a.active { color:var(--apx-accent,#2272B4);background:var(--apx-panel-2,#37444F);border-color:var(--apx-border,#445461); }
+  nav a { font-size:12px;color:var(--apx-muted);text-decoration:none;padding:4px 10px;border-radius:8px;border:1px solid transparent; }
+  nav a:hover { color:var(--apx-text);background:var(--apx-panel-2); }
+  nav a.active { color:var(--apx-accent);background:var(--apx-panel-2);border-color:var(--apx-border); }
 """
 
 
@@ -121,37 +121,37 @@ def _deploy_overlay_html() -> str:
 </script>
 """ + _apx_dev_fetch_js() + """
 <style>
-  #btn-deploy { background: var(--apx-panel-2,#37444F); color: var(--apx-accent,#2272B4); border: 1px solid var(--apx-border,#445461);
+  #btn-deploy { background: var(--apx-panel-2); color: var(--apx-accent); border: 1px solid var(--apx-border);
                 border-radius: 6px; padding: 5px 14px; font-size: 12px; font-weight: 600;
                 cursor: pointer; white-space: nowrap; }
-  #btn-deploy:hover { background: var(--apx-border,#445461); }
+  #btn-deploy:hover { background: var(--apx-border); }
   #btn-deploy:disabled { opacity: .5; cursor: default; }
   #deploy-overlay { display: none; position: fixed; inset: 0; z-index: 2000;
                     background: rgba(0,0,0,.75); align-items: center; justify-content: center; }
   #deploy-overlay.open { display: flex; }
-  #deploy-modal { background: var(--apx-panel,#1F272D); border: 1px solid var(--apx-border,#445461); border-radius: 10px;
+  #deploy-modal { background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 10px;
                   width: min(700px, 95vw); max-height: 80vh; display: flex;
                   flex-direction: column; overflow: hidden; }
-  #deploy-modal-head { padding: 12px 16px; border-bottom: 1px solid var(--apx-border,#445461);
+  #deploy-modal-head { padding: 12px 16px; border-bottom: 1px solid var(--apx-border);
                        display: flex; align-items: center; justify-content: space-between; }
-  #deploy-modal-head h2 { font-size: 13px; font-weight: 600; color: var(--apx-text,#E8ECF0); }
-  #deploy-modal-close { background: none; border: none; color: var(--apx-muted,#92A4B3); font-size: 18px;
+  #deploy-modal-head h2 { font-size: 13px; font-weight: 600; color: var(--apx-text); }
+  #deploy-modal-close { background: none; border: none; color: var(--apx-muted); font-size: 18px;
                         cursor: pointer; padding: 2px 6px; }
-  #deploy-modal-close:hover { color: var(--apx-text,#E8ECF0); }
+  #deploy-modal-close:hover { color: var(--apx-text); }
   #deploy-log { flex: 1; overflow-y: auto; padding: 12px 16px;
                 font-family: var(--apx-mono,monospace); font-size: 11px; line-height: 1.6;
-                color: var(--apx-muted,#92A4B3); white-space: pre-wrap; word-break: break-all; }
-  #deploy-log .log-err { color: var(--apx-err,#C83243); }
-  #deploy-log .log-ok { color: var(--apx-ok,#3BA65E); }
-  #deploy-log .log-dim { color: var(--apx-muted,#92A4B3); }
-  #deploy-foot { padding: 10px 16px; border-top: 1px solid var(--apx-border,#445461);
+                color: var(--apx-muted); white-space: pre-wrap; word-break: break-all; }
+  #deploy-log .log-err { color: var(--apx-err); }
+  #deploy-log .log-ok { color: var(--apx-ok); }
+  #deploy-log .log-dim { color: var(--apx-muted); }
+  #deploy-foot { padding: 10px 16px; border-top: 1px solid var(--apx-border);
                  display: flex; align-items: center; gap: 10px; }
-  #deploy-status { flex: 1; font-size: 12px; color: var(--apx-muted,#92A4B3); }
-  #deploy-status.ok { color: var(--apx-ok,#3BA65E); }
-  #deploy-status.err { color: var(--apx-err,#C83243); }
-  #deploy-close-btn { background: transparent; color: var(--apx-muted,#92A4B3); border: 1px solid var(--apx-border,#445461);
+  #deploy-status { flex: 1; font-size: 12px; color: var(--apx-muted); }
+  #deploy-status.ok { color: var(--apx-ok); }
+  #deploy-status.err { color: var(--apx-err); }
+  #deploy-close-btn { background: transparent; color: var(--apx-muted); border: 1px solid var(--apx-border);
                       border-radius: 6px; padding: 5px 14px; font-size: 12px; cursor: pointer; }
-  #deploy-close-btn:hover { color: var(--apx-text,#E8ECF0); border-color: var(--apx-border,#445461); }
+  #deploy-close-btn:hover { color: var(--apx-text); border-color: var(--apx-border); }
 </style>
 
 <div id="deploy-overlay">
@@ -293,22 +293,22 @@ def _topology_minimap_html() -> str:
     return """
 <style>
   #apx-mm { position: fixed; right: 16px; bottom: 16px; z-index: 1200;
-            width: 320px; height: 220px; background: var(--apx-bg,#11171C);
-            border: 1px solid var(--apx-border,#445461); border-radius: 10px; overflow: hidden;
+            width: 320px; height: 220px; background: var(--apx-bg);
+            border: 1px solid var(--apx-border); border-radius: 10px; overflow: hidden;
             box-shadow: 0 8px 30px rgba(0,0,0,.55); display: flex;
             flex-direction: column; transition: width .22s ease, height .22s ease; }
   #apx-mm.expanded { width: min(880px, 78vw); height: min(620px, 78vh); }
   #apx-mm-bar { height: 28px; flex-shrink: 0; display: flex; align-items: center;
-                gap: 6px; padding: 0 8px; background: var(--apx-panel,#1F272D);
-                border-bottom: 1px solid var(--apx-border,#445461); cursor: default; user-select: none; }
-  #apx-mm-bar .t { font-size: 11px; font-weight: 600; color: var(--apx-muted,#92A4B3); letter-spacing: .4px;
+                gap: 6px; padding: 0 8px; background: var(--apx-panel);
+                border-bottom: 1px solid var(--apx-border); cursor: default; user-select: none; }
+  #apx-mm-bar .t { font-size: 11px; font-weight: 600; color: var(--apx-muted); letter-spacing: .4px;
                    text-transform: uppercase; }
   #apx-mm-bar .sp { margin-left: auto; }
-  #apx-mm-bar button { background: none; border: none; color: var(--apx-muted,#92A4B3); cursor: pointer;
+  #apx-mm-bar button { background: none; border: none; color: var(--apx-muted); cursor: pointer;
                        font-size: 13px; line-height: 1; padding: 3px 5px; border-radius: 4px; }
-  #apx-mm-bar button:hover { color: var(--apx-text,#E8ECF0); background: var(--apx-panel-2,#37444F); }
+  #apx-mm-bar button:hover { color: var(--apx-text); background: var(--apx-panel-2); }
   #apx-mm-body { flex: 1; position: relative; }
-  #apx-mm-frame { width: 100%; height: 100%; border: 0; background: var(--apx-bg,#11171C); }
+  #apx-mm-frame { width: 100%; height: 100%; border: 0; background: var(--apx-bg); }
   /* Transparent catcher: lets a thumbnail click expand the widget. Removed in
      expanded state so the graph itself receives pan/zoom/click events. */
   #apx-mm-catch { position: absolute; inset: 0; cursor: zoom-in; background: transparent; }
@@ -316,8 +316,8 @@ def _topology_minimap_html() -> str:
   #apx-mm.min { width: auto; height: auto; }
   #apx-mm.min #apx-mm-bar, #apx-mm.min #apx-mm-body { display: none; }
   #apx-mm-pill { display: none; align-items: center; gap: 6px; cursor: pointer;
-                 padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--apx-accent,#2272B4);
-                 background: var(--apx-panel-2,#37444F); border: none; }
+                 padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--apx-accent);
+                 background: var(--apx-panel-2); border: none; }
   #apx-mm.min #apx-mm-pill { display: flex; }
 </style>
 <div id="apx-mm" aria-label="Agent topology minimap">

@@ -659,10 +659,9 @@ def test_native_server_exposes_invoke_readback_replay_and_native_chat(
         assert ("GET", "/health") in started
         assert ("GET", "/") in started
         assert ("GET", "/_apx/chat") in started
-        assert "apxNativeChat" in client.get("/").text
-        assert "apxNativeChat" in client.get("/_apx/chat").text
+        assert "/_apx/assets/agentkit/app.js" in client.get("/").text
+        assert "/_apx/assets/agentkit/app.js" in client.get("/_apx/chat").text
         assert ("POST", "/invocations") not in started
-        assert ("POST", "/_apx/eval/judge") not in started
         # This agent has no user-scoped tool, so discovery must not invent one.
         assert app.auth_policy.requires_user is False
         assert client.get("/health").status_code == 200
@@ -670,6 +669,38 @@ def test_native_server_exposes_invoke_readback_replay_and_native_chat(
         assert card.status_code == 200
         assert card.json()["mcpEndpoint"].endswith("/mcp")
     assert missing.status_code == 405
+
+
+@pytest.mark.parametrize("dev_ui", ["1", "0"])
+def test_native_server_mounts_agentkit_chat_and_dev_ui(
+    execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dev_ui: str,
+) -> None:
+    from fastapi.testclient import TestClient
+    from apx_agent import compile_agent
+
+    _write_native_pyproject(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setenv("APX_DEV_UI", dev_ui)
+    app = compile_agent(execution.agent, target="durable_agent_server", model="test", service_ws=execution.ws)
+    with TestClient(app) as client:
+        for path in ("/", "/_apx/chat"):
+            page = client.get(path)
+            assert page.status_code == 200
+            # The vendored AgentKit page, not apx's legacy chat (route order).
+            assert "/_apx/assets/agentkit/app.js" in page.text
+        config = client.get("/_apx/api/ui/config", params={"session_id": "s"})
+        assert config.json()["models"]["default"] == "test"
+        assert client.get("/_apx/discover").status_code == (200 if dev_ui == "1" else 404)
+        assert app.state.dev_ui_mount_error is None
+        # Dev UI handlers read the service client from app.state on every host.
+        assert app.state.workspace_client is execution.ws
+        if dev_ui == "1":
+            execution.ws.config.host = "https://example.cloud.databricks.com"
+            execution.ws.current_user.me.return_value.user_name = "dev@example.com"
+            context = client.get("/_apx/workspace-context")
+            assert context.status_code == 200, context.text
 
 
 @pytest.mark.parametrize("buffered", [False, True])

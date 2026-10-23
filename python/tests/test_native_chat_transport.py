@@ -6,6 +6,14 @@ from tests.test_native_invocation_contract import native, request_body  # noqa: 
 from tests.test_runtime_targets import execution  # noqa: F401
 
 
+@pytest.fixture(autouse=True)
+def chat_environment(request, monkeypatch):
+    callspec = request.node.callspec if hasattr(request.node, "callspec") else None
+    if callspec is not None and "enabled" in callspec.params:
+        monkeypatch.setenv("APX_DEV_UI", callspec.params["enabled"])
+
+
+@pytest.mark.parametrize("native", [True], indirect=True)
 def test_native_chat_mounts_without_legacy_handlers(native):
     assert native.client.get("/").status_code == 200
     assert "apxNativeChat" in native.client.get("/").text
@@ -62,9 +70,9 @@ def test_native_untyped_discovery_does_not_accept_typed_payload():
 
 
 @pytest.mark.parametrize("enabled", ["0", "1"])
-def test_native_dev_chat_enablement(request, monkeypatch, enabled):
-    monkeypatch.setenv("APX_DEV_UI", enabled)
-    host = request.getfixturevalue("native")
+@pytest.mark.parametrize("native", [True], indirect=True)
+def test_native_dev_chat_enablement(enabled, native):
+    host = native
     response = host.client.get("/_apx/chat")
     assert response.status_code == (200 if enabled == "1" else 404)
     if enabled == "1":
@@ -72,3 +80,42 @@ def test_native_dev_chat_enablement(request, monkeypatch, enabled):
         assert 'src="/_apx/vendor/' not in response.text
     assert host.client.post("/invocations", json={}).status_code == 404
     assert host.client.post("/_apx/eval/judge", json={}).status_code == 404
+
+
+@pytest.mark.parametrize("declaration", ["input", "output"])
+@pytest.mark.parametrize("project_root", [False, True])
+def test_typed_chat_without_config_preserves_declaration_and_project_root(
+    execution, monkeypatch, tmp_path, declaration, project_root,
+):
+    from fastapi.testclient import TestClient
+    from apx_agent import LlmAgent, SequentialAgent, compile_agent
+    from tests.test_native_remote_invocations import DomainInput
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setenv("APX_DEV_UI", "1")
+    kwargs = {"input_schema": DomainInput, "input_key": "domain"} if declaration == "input" else {"output_schema": DomainInput}
+    agent = SequentialAgent([LlmAgent(name="typed", **kwargs)])
+    app = compile_agent(agent, target="durable_agent_server", model="test", service_ws=execution.ws)
+    if project_root:
+        @app.get("/")
+        async def own_root():
+            return {"project": "own root"}
+
+    with TestClient(app) as client:
+        root = client.get("/")
+        if project_root:
+            assert root.json() == {"project": "own root"}
+        else:
+            assert "apxNativeChat" in root.text
+        chat = client.get("/_apx/chat")
+        assert chat.status_code == 200 and "apxNativeChat" in chat.text
+        assert "native-execution-cards" in chat.text
+        assert client.get("/_apx/api/ui/config").status_code == 404
+        assert client.post("/_apx/eval/judge", json={}).status_code == 404
+        assert client.post("/invocations", json={}).status_code == 404
+        schema = client.get("/api/input-schema").json()
+        assert schema == (DomainInput.model_json_schema() if declaration == "input" else None)
+        validation = client.post("/api/input-validation", json={"amount": 4})
+        assert validation.status_code == (200 if declaration == "input" else 422)

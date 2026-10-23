@@ -650,12 +650,10 @@ def test_inspect_agent_actions_can_edit_instructions() -> None:
     ctx = _make_ctx(Agent(tools=[], instructions="be brief"))
     node = inspect_node(ctx, "agent:root")
     assert node is not None
-    assert node["actions"]["canEditInstructions"] is True
-    assert node["actions"]["canUnwire"] is False
-    assert node["actions"]["wireTarget"] == "agent"
+    assert node["actions"] == {"canEditInstructions": True}
 
 
-def test_inspect_sub_agent_actions_can_unwire(monkeypatch) -> None:
+def test_inspect_sub_agent_actions_read_only(monkeypatch) -> None:
     monkeypatch.setenv("APX_PEER_MCP_DATA_INSPECTOR_URL", "https://peer.example.com")
     agent = Agent(
         tools=[],
@@ -667,31 +665,17 @@ def test_inspect_sub_agent_actions_can_unwire(monkeypatch) -> None:
     assert node is not None
     assert node["type"] == "SubAgent"
     assert node["label"] == "mcp-data-inspector"
-    assert node["actions"]["canUnwire"] is True
-    assert node["actions"]["unwire"]["kind"] == "agent"
-    assert node["actions"]["unwire"]["ref"] == "$APX_PEER_MCP_DATA_INSPECTOR_URL"
+    assert node["actions"] == {"canEditInstructions": False}
 
 
-def test_inspect_builtin_tool_not_unwirable() -> None:
+def test_inspect_builtin_tool_actions_read_only() -> None:
     def run_sql(query: str) -> str:
         return query
 
     ctx = _make_ctx(Agent(tools=[run_sql], instructions="x"))
     node = inspect_node(ctx, "tool:agent:root:run_sql")
     assert node is not None
-    assert node["actions"]["canUnwire"] is False
-
-
-def test_is_factory_tool_binding() -> None:
-    from apx_agent._ui_edit import _is_factory_tool_binding
-
-    src = '''
-from apx_agent import Agent, uc_function_tool
-lookup = uc_function_tool("main.tools.lookup")
-agent = Agent(tools=[lookup], instructions="x")
-'''
-    assert _is_factory_tool_binding(src, "lookup") is True
-    assert _is_factory_tool_binding(src, "agent") is False
+    assert node["actions"] == {"canEditInstructions": False}
 
 
 def test_route_highlight_from_spans_lights_tool_path() -> None:

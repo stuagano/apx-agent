@@ -1,27 +1,34 @@
-"""Shared Du Bois design tokens + component CSS for the /_apx/* dev UI.
+"""Shared design tokens + component CSS for the /_apx/* dev UI.
 
-Color values are copied verbatim from @databricks/design-system
-(dubois-colors.less). The dev UI is server-rendered HTML with no npm/build, so
-we adopt Du Bois *values*, not its React components. Dark-only for now; the vars
-are structured so a light theme could be layered on later.
+Values come from the vendored AgentKit chat app
+(``_static/agentkit_chat/styles.css``), so every dev-UI page shares its light
+look. The dev UI is server-rendered HTML with no npm/build; pages consume the
+``--apx-*`` tokens, never hex literals.
 
 Injected onto every /_apx/* page via ``_ui_nav._deploy_overlay_html``.
 """
 
 from __future__ import annotations
 
-# Du Bois greys/accents (dubois-colors.less): grey800/700/650/600, grey100,
-# grey350, blue600/500, green500, coral, lemon.
+# AgentKit :root — page, surface, surface-muted, line, ink, ink-soft, accent,
+# accent-deep, success, danger, warning, their -soft fills, and purple
+# (purple-soft and cyan are derived: AgentKit has neither, and trace
+# span types need a hue distinct from the accent).
 APX_THEME_CSS = """
-  /* apx-dubois-theme */
+  /* apx-agentkit-theme */
   :root{
-    --apx-bg:#11171C; --apx-panel:#1F272D; --apx-panel-2:#37444F;
-    --apx-border:#445461; --apx-text:#E8ECF0; --apx-muted:#92A4B3;
-    --apx-accent:#2272B4; --apx-accent-hover:#4299E0;
-    --apx-ok:#3BA65E; --apx-err:#C83243; --apx-warn:#FACB66;
-    --apx-on-accent:#FFFFFF;
-    --apx-font:"DM Sans",ui-sans-serif,system-ui,-apple-system,sans-serif;
-    --apx-mono:"DM Mono",ui-monospace,monospace;
+    --apx-bg:#f1f3ff; --apx-panel:#ffffff; --apx-panel-2:#f7f8fc;
+    --apx-border:#e7e9f0; --apx-text:#1f2124; --apx-muted:#5f6469;
+    --apx-accent:#1a73e8; --apx-accent-hover:#1a5fc4;
+    --apx-ok:#137333; --apx-err:#b3261e; --apx-warn:#8b5000;
+    --apx-on-accent:#ffffff;
+    --apx-accent-soft:#edf3fd; --apx-ok-soft:#e6f4ea; --apx-warn-soft:#fef3d9;
+    --apx-err-soft:#fce8e6; --apx-purple:#7040a0; --apx-purple-soft:#f3ecfa;
+    --apx-cyan:#0b7285; --apx-cyan-soft:#e3f6f9;
+    --apx-shadow:0 1px 2px rgba(15,23,42,.04),0 1px 3px rgba(15,23,42,.03);
+    --apx-font:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --apx-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+    color-scheme:light;
   }
   body{font-family:var(--apx-font);background:var(--apx-bg);color:var(--apx-text);}
 """
@@ -31,7 +38,7 @@ APX_THEME_CSS = """
 # hex literals (enforced by test_shared_components_defined_with_tokens).
 APX_COMPONENTS_CSS = """
   .apx-card{background:var(--apx-panel);border:1px solid var(--apx-border);
-            border-radius:10px;padding:12px 14px;}
+            border-radius:12px;padding:12px 14px;box-shadow:var(--apx-shadow);}
   .apx-badge{background:var(--apx-panel-2);color:var(--apx-accent);font-size:11px;
              font-weight:600;padding:2px 8px;border-radius:4px;letter-spacing:.5px;
              text-transform:uppercase;}

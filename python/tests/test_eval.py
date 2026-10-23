@@ -347,3 +347,36 @@ class TestEndpointPredictFn:
         predict = endpoint_predict_fn("https://app.example.com", stream=True)
         with patch("urllib.request.urlopen", return_value=fake):
             assert predict("x") == "Final answer."
+
+
+class TestDurablePeerEval:
+    """DurableAgentServer Apps serve /api/invocations, not /invocations (#980)."""
+
+    DURABLE = {"id": "i", "status": "completed",
+               "output": {"status": "completed", "messages": [
+                   {"type": "human", "content": "q"}, {"type": "ai", "content": "durable answer"}]}}
+
+    def _resp(self, status: int, payload: dict) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = status
+        resp.json.return_value = payload
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    def test_app_predict_fn_falls_back_to_durable_contract(self):
+        predict = app_predict_fn("http://my-agent.com", token="t")
+        with patch("httpx.post", side_effect=[self._resp(404, {}), self._resp(200, self.DURABLE)]) as post:
+            assert predict("q") == "durable answer"
+        url, body = post.call_args_list[1].args[0], post.call_args_list[1].kwargs["json"]
+        assert url == "http://my-agent.com/api/invocations"
+        assert body["input"] == [{"role": "user", "content": "q"}] and body["id"] and body["session_id"]
+
+    def test_endpoint_predict_fn_falls_back_to_durable_contract(self):
+        import urllib.error
+
+        predict = endpoint_predict_fn("http://my-agent.com", token="t", stream=False)
+        not_found = urllib.error.HTTPError("http://my-agent.com/invocations", 404, "Not Found", {}, None)
+        with patch("urllib.request.urlopen", side_effect=not_found), \
+                patch("httpx.post", return_value=self._resp(200, self.DURABLE)) as post:
+            assert predict({"request": "q"}) == "durable answer"
+        assert post.call_args.args[0] == "http://my-agent.com/api/invocations"

@@ -95,6 +95,7 @@ async def invoke_native_leaf(agent: Any, binding: _RemoteLeafBinding, state: dic
     child_id = str(uuid.uuid5(uuid.UUID(scope["id"]), f"{binding.logical_name}:{ordinal}"))
     correlation = validate_correlation({"parent_invocation_id": scope["id"], "transport_sender": scope["sender"],
                                         "logical_predecessor": predecessor})
+    assert correlation is not None
     # User text remains user text; intermediate assistant/tool history never crosses ingress.
     messages = [{"role": "user", "content": m.content} for m in state["messages"]
                 if isinstance(m, HumanMessage) and not m.additional_kwargs.get("apx_data_parts")]

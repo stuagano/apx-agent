@@ -122,8 +122,32 @@ select that deployment explicitly.
 
 Apps is the deployment destination. The server determines how requests execute.
 New Apps projects default to `durable_agent_server`. To create a compatibility
-project with MLflow AgentServer, the dev UI and Bundle deployment, run
+project with MLflow AgentServer and Bundle deployment, run
 `apx-agent agents scaffold my-agent --runtime responses_agent`.
+
+A `durable_agent_server` App with ordinary text agents serves the AgentKit chat app at `/` and
+`/_apx/chat`, and the apx dev UI (Discover, Topology, Edit, Eval, Probe and the
+rest) under `/_apx/*`. Chat turns go to the server's own `/api/invocations`. If
+a project mounts its own UI at `/`, that UI keeps the root and the chat stays at
+`/_apx/chat`. Set `APX_DEV_UI=0` to drop the dev UI pages; the chat (`/`,
+`/_apx/chat`) and its `/_apx/assets/agentkit` and `/_apx/api/{ui,demo}` routes
+still serve. The chat's memory and session panels call the managed stores as the
+App service principal. They act for the actor in the forwarded identity
+headers, or for a caller-supplied `?actor=`, so any signed-in App user can read
+another actor's memory entries through the App's grants. This matches the
+upstream AgentKit chat app; see
+[the A2A trust model](../design/a2a-trust-model.md) for the per-hop identity
+model apx uses elsewhere.
+
+If any agent leaf declares `input_schema` or `output_schema`, the host instead
+serves the native workflow chat. It validates declared request JSON and displays
+SDK invocation replay and execution evidence. The root page remains available
+(unless the project supplies its own); `/_apx/chat` is enabled locally and is
+opt-in on Apps with `APX_DEV_UI=1`. Typed hosts do not mount the full developer
+router or its legacy evaluation and replay actions. Input discovery and validation
+remain available at `/api/input-schema` and `/api/input-validation`, including
+for Python-only declarations without discovered project configuration.
+
 `--target model-serving` retains its existing layout and Responses-compatible
 contract; it rejects `--runtime durable_agent_server`.
 

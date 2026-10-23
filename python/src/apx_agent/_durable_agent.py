@@ -6,18 +6,36 @@ import asyncio
 import contextvars
 import hashlib
 import json
+import logging
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
+
+from fastapi import Request
 
 from ._agents import BaseAgent, LlmAgent
 from ._compile import compile_to_langgraph
 from ._graph_turn import run_graph_turn
 from ._platform_tools import ClientFor, platform_tool_leaves
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from ._apps_authorization import AuthorizationPlan
     from ._models import AgentConfig
+
+
+def session_thread_config(agent_name: str | None, session_id: str, user_id: str | None) -> dict[str, Any]:
+    """The checkpoint thread for one durable session.
+
+    ``[agent, session]`` for app-auth; ``[agent, user, session]`` whenever the
+    request carries a user (the Apps proxy forwards one on every signed-in
+    call). Shared by the handler and the deploy smoke's read-back (#985).
+    """
+    scope = [agent_name, session_id] if user_id is None else [agent_name, user_id, session_id]
+    key = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
+    return {"configurable": {"thread_id": key, "actor_id": key}}
 
 
 def durable_request_headers(auth: Any, *, principal: str, forward: bool) -> Any:
@@ -243,11 +261,8 @@ def compile_durable_handlers(
             session = context.session_id
             if not isinstance(session, str) or not session:
                 raise ValueError("A checkpointed invocation requires a non-empty session_id")
-            scope = [getattr(agent, "_name", None), session]
-            if headers is not None:
-                scope.insert(1, headers.user_id)
-            key = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
-            config = {"configurable": {"thread_id": key, "actor_id": key}}
+            config = session_thread_config(getattr(agent, "_name", None), session,
+                                           headers.user_id if headers is not None else None)
         from langchain_core.messages import HumanMessage
 
         graph = compile_to_langgraph(
@@ -376,16 +391,58 @@ def compile_to_durable_agent_server(
         app.recover(handlers.invoke)
 
     from ._resources import _iter_sub_agents
-    from ._wiring import mount_durable_protocol
+    from ._wiring import _chain_lifespan, _collect_guardrail_targets, mount_durable_protocol
+    from ._ui_native_chat import native_input_router
 
-    # Discovery only. DurableAgentServer already owns /api/invocations and its
-    # auth policy; this does not mount the root chat UI or /_apx/*. setup_agent
-    # fetches remote tools when a config exists, so this does not fetch again.
+    # Discovery routes. DurableAgentServer already owns /api/invocations and its
+    # auth policy; the browser UIs are mounted just below, not by setup_agent.
+    # setup_agent fetches remote tools when a config exists, so this does not
+    # fetch again.
     # The compiler does not receive the caller's AgentConfig; cwd discovery must
     # still validate as this target, or a space/apps_api declaration (legal only
     # with durable_agent_server) fails during lifespan startup.
     discovery = _durable_discovery_config()
     mount_durable_protocol(app, agent, config=discovery)
+    app.include_router(native_input_router(agent))
+    typed_workflow = any(
+        getattr(leaf, "_input_schema", None) is not None or getattr(leaf, "_output_schema", None) is not None
+        for leaf in _collect_guardrail_targets(agent)
+    )
+    if typed_workflow:
+        from fastapi.responses import HTMLResponse
+        from ._ui_chat import _render_agent_ui
+        from ._ui_root_chat import build_root_chat_router
+
+        app.state._apx_native_chat = True
+
+        async def _mount_native_chat() -> None:
+            app.include_router(build_root_chat_router())
+            if os.environ.get("APX_DEV_UI", "0" if os.environ.get("DATABRICKS_APP_NAME") else "1") != "0":
+                @app.get("/_apx/chat", include_in_schema=False)
+                async def native_chat(request: Request) -> HTMLResponse:
+                    return HTMLResponse(_render_agent_ui(
+                        getattr(app.state, "agent_context", None),
+                        embed=request.query_params.get("embed") == "1", native=True,
+                    ))
+
+        _chain_lifespan(app, _mount_native_chat)
+    else:
+        from ._ui_agentkit_chat import mount_agentkit_chat
+
+        mount_agentkit_chat(app, model=model, ws=service_ws)
+    # Dev UI handlers read the service client here (the MLflow host sets it too).
+    app.state.workspace_client = service_ws
+    # The card advertises /api/invocations so peers use the durable contract.
+    app.state.apx_durable_host = True
+    app.state.dev_ui_mount_error = None
+    if not typed_workflow and os.environ.get("APX_DEV_UI") != "0":
+        try:
+            from ._dev import build_dev_ui_router
+
+            app.include_router(build_dev_ui_router())
+        except Exception as exc:  # recorded, never hidden (same as mount_mcp_endpoints)
+            app.state.dev_ui_mount_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("Dev UI not mounted on durable host: %s", app.state.dev_ui_mount_error)
     # setup_agent fetches remotes when a config exists. With no config it returns
     # before that fetch, so the card materialization (#436) still has to run.
     if discovery is None and list(_iter_sub_agents(agent)):

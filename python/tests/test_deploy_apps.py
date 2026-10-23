@@ -1129,10 +1129,10 @@ def test_native_deploy_hands_rollout_to_agentbricks(
         smoke.assert_called_once()
         assert smoke.call_args.args[0] == payload["url"]
         assert smoke.call_args.kwargs["session_store"] == "apx-my-app-sessions"
-        assert smoke.call_args.kwargs["agent_name"] == "native"
-        # The smoke reads the session under the key the staged manifest's auth implies.
-        staged_auth = AgentProject.load(scaffold / ".build").user_auth
-        assert smoke.call_args.kwargs["user_scoped"] is staged_auth.required
+        # The SDK namespaces session ids by caller, so the smoke takes no key inputs (#985).
+        assert set(smoke.call_args.kwargs) == {"profile", "session_store", "smoke_input", "smoke_agent"}
+        assert smoke.call_args.kwargs["smoke_input"] is None
+        assert isinstance(smoke.call_args.kwargs["smoke_agent"], LlmAgent)
     if failure:
         assert result.exit_code != 0, result.output
         if failure == "execution":
@@ -1151,6 +1151,31 @@ def test_native_deploy_hands_rollout_to_agentbricks(
         }
         ws.apps.get_space.assert_not_called()
         assert any(call[:3] == ["apps", "get", "agent-bricks-my-app"] for call in calls)
+
+
+def test_deploy_table_prerequisites_block_before_import(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[tool.apx.deploy] is read with the config, still before agent.py is imported (3a)."""
+    from apx_agent import AgentConfig, LlmAgent
+    from apx_agent._project_gen import generate_project
+    from databricks.sdk.errors import DatabricksError
+
+    (scaffold / "databricks.yml").unlink()
+    generate_project(AgentConfig(name="my-app", target="durable_agent_server",
+                                 memory={"type": "managed", "store_name": "agent-memory"}), scaffold)
+    with open(scaffold / "pyproject.toml", "a") as f:
+        f.write('\n[tool.apx.deploy]\nhost = "apps"\n')
+    calls = _install_subprocess_mock(monkeypatch)
+    ws = MagicMock()
+    ws.api_client.do.side_effect = DatabricksError("hidden backend detail", error_code="FEATURE_DISABLED")
+    monkeypatch.setattr("apx_agent.cli._make_scaffold_workspace_client", lambda profile: ws)
+    loaded = MagicMock(return_value=LlmAgent(name="my-app"))
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", loaded)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--profile", "chosen"])
+    assert result.exit_code != 0
+    loaded.assert_not_called()
+    assert not any(call[:2] in (["bundle", "deploy"], ["bundle", "run"]) for call in calls)
 
 
 @pytest.mark.parametrize("failure", ["feature", "image"])

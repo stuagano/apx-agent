@@ -53,6 +53,7 @@ def test_typed_smoke_checks_output(monkeypatch, output, content):
 
 def test_typed_smoke_fails_before_deploy_provisioning(tmp_path, monkeypatch):
     agent = LlmAgent(name="typed", input_schema=Domain, input_key="domain")
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "typed"\nversion = "0.1.0"\n')
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "compare_pinned_sha", lambda cwd: SimpleNamespace(matches=True, skipped=True))
     config = AgentConfig(name="typed", target="durable_agent_server", deploy={"backend": "apps_api", "entrypoint": "app.py"})

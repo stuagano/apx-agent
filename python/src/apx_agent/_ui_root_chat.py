@@ -44,10 +44,7 @@ _PAGE = """<!doctype html>
 <title>__TITLE__</title>
 __THEME__
 <style>
-  /* Palette uses Du Bois design tokens from _ui_theme. */
-  :root {
-    color-scheme: dark;
-  }
+  /* Palette uses the design tokens from _ui_theme. */
   * { box-sizing: border-box; }
   body { margin: 0; font-family: var(--apx-font);
          font-size: 14px; line-height: 1.5; display: flex; flex-direction: column;

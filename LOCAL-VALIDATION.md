@@ -4,8 +4,9 @@
 
 - Owner: `authoritative-tool-completion`, branch `stuartg-dev/authoritative-tool-completion`.
 - Intentional exact-deployed base: `0541b1c3d57a5a4d345056aab2b85e9f78732bd7`.
-- Implementation and validation were authorized locally. After reviewing the results,
-  the user authorized committing and pushing this branch. Merge, package publication,
+- Implementation and validation were initially authorized locally. The user subsequently
+  authorized push, PR creation, and merge, then explicitly approved promoting the full
+  prerequisite stack and resolving its conflicts with current main. Package publication,
   deployment, hosted invocation, permission changes, and timeout increases remain outside scope.
 - Original Curinos checkout/environment/evidence and unrelated APX worktrees preserved.
 - Handoff context: [HANDOFF-RECEIPT.md](HANDOFF-RECEIPT.md).
@@ -106,12 +107,59 @@ patch applies cleanly to the original Curinos checkout without applying it.
 The original reviewed environment's installed `_compile.py` still matches the exact
 base byte-for-byte (SHA-256 `d1c3fb3df018821bd421dd5d6227db92762c7000a4539379cea787f0dd6c6afb`).
 
-Implementation and local validation are complete. The three APX code/test files and
-handoff/report/Curinos patch are included in the authorized branch commit and push.
-The handoff receipt records the original local-only authorization; the subsequent
-user instruction to push supersedes that limit for this branch. Retain this checkout
-for its local validation logs and isolated regression fixtures; no PR or merge is part
-of this push.
+The original completion fix and its report/Curinos patch were committed as `81dbe4a2`
+and pushed. The handoff receipt records the original local-only authorization;
+subsequent user instructions supersede that limit for push, PR creation, and merge.
+
+## Main integration and promotion
+
+PR #993 includes the twelve native-runtime prerequisites absent from main, the
+completion fix, and the merge of `e7548e92` into this branch. The exact deployed
+base remains in branch history; the implementation was not rebased onto main.
+
+- Retained main's Python settings resolution and extended its binding types to
+  include `NativeBinding`.
+- Retained exact host-returned checkpoint verification rather than searching
+  recently active sessions for a matching answer.
+- Selected native workflow chat for declared input/output schemas, including
+  nested leaves and Python-only declarations. Ordinary agents retain main's
+  AgentKit chat. Typed hosts keep Apps opt-in for developer chat and exclude
+  the full developer router's legacy execution actions. Both preserve project
+  root-page ownership.
+- Made the existing authoritative JSON-text requirement explicit before
+  guardrails, and clarified non-null invariants for type checking.
+- Independent integration review found the competing chat mounts and the native
+  binding annotation mismatch. Both were fixed and independently re-reviewed;
+  no remaining findings were reported in the bounded source review.
+
+The first combined full gate found nine fixture/expectation failures: eight
+deployment tests expected the old smoke argument set, and one typed-smoke fixture
+lacked the project file read by main's new App-name resolution. Their assertions
+now cover the combined contract, retaining the pre-provisioning rejection check.
+An earlier focused run also caught developer-chat fixture setup occurring after
+host startup; the environment is now set before the fixture starts.
+
+The full Python type check initially found six errors in prerequisite code.
+After explicit validation and type narrowing, it reports **0 errors, 4 warnings**.
+The warnings concern two single-use TypeVars and two optional PostgreSQL checkpoint
+imports. [Log](.build/integration-pyright-final.log).
+Final native contract tests: **160 passed**; settings/chat tests: **33 passed**.
+Changed-file lint passes. A broader all-file lint scan reports pre-existing
+violations in unrelated example files; no lint rule was disabled.
+The corrected integration against `e7548e92` passed `make check`: **5,537 passed,
+13 skipped, 222 warnings**, with both public-PyPI lock checks passing.
+[Log](.build/integration-check-final.log).
+
+The initial merged Curinos run returned **944 passed, 4 failed**. All four
+failures were staged native launcher checks: main's new settings resolution
+correctly rejects the project's explicit Sonnet TOML model conflicting with its
+Python leaf's Opus model. [curinos-native-settings.patch](curinos-native-settings.patch)
+removes the redundant TOML declaration, leaving Python settings and `APX_MODEL`
+as the model source. It was applied only to the copied source and independently
+reviewed; the original checkout remains untouched. `git apply --check` passes
+against the original checkout. All **12 startup tests** then passed, and the
+native workflow suite passed **22 tests**. Adopting this merged APX stack in
+Curinos requires both supplied compatibility patches.
 
 ## Proof limits
 

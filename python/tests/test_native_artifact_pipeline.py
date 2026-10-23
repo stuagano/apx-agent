@@ -216,18 +216,20 @@ def test_authoritative_completion_needs_one_model_call_and_preserves_tool_state(
                if isinstance(message, AIMessage) and message.usage_metadata) == 2
 
 
-@pytest.mark.parametrize("failure", ["missing", "duplicate", "error", "schema", "guardrail", "denied"])
+@pytest.mark.parametrize("failure", ["missing", "duplicate", "error", "schema", "guardrail", "denied", "content_blocks"])
 def test_authoritative_failure_never_completes_or_calls_model_again(failure, monkeypatch):
     from apx_agent import compile_to_langgraph
     from apx_agent._errors import ToolError
 
     calls, completed, tool_effects = [], [], []
 
-    def record(value: str) -> str:
+    def record(value: str) -> str | list[dict[str, str]]:
         """Return exact evidence or an explicit tool error."""
         tool_effects.append(value)
         if failure == "error":
             raise ToolError("unavailable")
+        if failure == "content_blocks":
+            return [{"type": "text", "text": '{"amount":4}'}]
         return '{"amount":"invalid"}' if failure == "schema" else '{"amount":4}'
 
     class FailureModel(ToolModel):
