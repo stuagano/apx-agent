@@ -1,6 +1,6 @@
 # Design: `agent.toml` is the platform's source of truth
 
-**Status:** sub-projects 1–2 (#984) 3a (#990) and 3b-1 (#992) implemented; 3b-2 proposed · **Date:** 2026-10-19
+**Status:** sub-projects 1–2 (#984) 3a (#990), 3b-1 (#992) and 3b-2 (#994) implemented; 3b-3a proposed · **Date:** 2026-10-19
 
 ## Intent
 
@@ -36,7 +36,8 @@ Success means:
    - **3a.** Homes for the last fields (`[tool.apx.deploy]`, `examples=`) and
      `apx-agent agents migrate-config`.
    - **3b.** Readers and generators use the new homes, in three PRs: 3b-1 CLI
-     metadata, 3b-2 agent-setting readers, 3b-3 scaffold and YAML generation.
+     metadata, 3b-2 agent-setting readers, 3b-3 scaffold and YAML generation
+     (3b-3a puts memory/session backends on the agent first).
    - **3c.** Migrate the in-repo projects with `migrate-config`.
    - **3d.** `[tool.apx.agent]` is an error naming `migrate-config`, as #944
      did for `[[tool.apx.tools]]`. `template =` and `module =` are removed.
@@ -516,6 +517,89 @@ merge.
   - the existing suite and deploy's prerequisite ordering test pass unchanged.
 - **Gate:** `make check`, pre-commit on the changed files, and the PR CI subset
   under xdist.
+
+## Sub-project 3b-3a: memory and session backends on the agent
+
+`memory=` is a one-word knob (`"off"`, `"managed"`, `"persistent"`). It
+refuses `"lakebase"` because the knob can't carry connection details, and it
+points users at `[tool.apx.agent.memory]` / `[tool.apx.agent.session]` instead.
+Every Apps scaffold writes a Lakebase session block by default. Once 3d removes
+the table, those details need a home on the agent.
+
+```python
+from apx_agent import Agent, MemoryBackendConfig, SessionBackendConfig
+
+agent = Agent(
+    name="orders", tools=[...],
+    memory=MemoryBackendConfig(type="lakebase", host="${LAKEBASE_HOST}",
+                               database="orders", table_name="main.orders.apx_memory"),
+    session=SessionBackendConfig(type="lakebase", host="${LAKEBASE_HOST}", database="orders"),
+)
+```
+
+- **`memory=`** also accepts a `MemoryBackendConfig`, or a dict validated as one.
+- **`session=`** is new. It takes a `SessionBackendConfig` or a dict, and
+  replaces the session part of a one-word knob (for example `"managed"` sets
+  both).
+- **No new rules.** Both feed the existing `memory_config` / `session_config`,
+  which `resolve_settings` already reads from the root agent, with the TOML
+  winning gaps as in #984. Validation is the models' own.
+- **`${VAR}` values** resolve at wiring time (`_memory_wiring` calls
+  `resolve_env_var`), so Python and TOML behave the same.
+- **`migrate-config`** already prints runtime fields as `key=<repr>`, and a
+  dict's repr is a valid literal, so `[tool.apx.agent.session]` becomes
+  `session={...}` with no new code.
+- One-word knobs and managed stores are unchanged; `agent.toml` still owns
+  managed stores.
+
+**Testing:**
+- a Lakebase memory or session declared in Python reaches the effective config;
+- a dict and a model give the same config;
+- `session=` replaces the knob's session;
+- an invalid backend fails at construction with the model's message;
+- `migrate-config` moves the Apps scaffold's default Lakebase session block, and
+  removes `[tool.apx.agent]` once the snippet is pasted;
+- the existing suite passes unchanged.
+
+## Sub-project 3b-3b: generators write Python and `[tool.apx.deploy]`
+
+### `generate_project` (YAML spec to project)
+
+| File | Gets |
+|---|---|
+| `agent.py` | every runtime setting as a keyword argument on the root agent: `name`, `model`, `target`, `description`, `instructions`, `knowledge`, `examples`, `identity`, `recovery`, `bindings`, `service_policies`, `memory`/`session`, and the rest |
+| `pyproject.toml` | `[tool.apx.deploy]` (`name`, `host`, the deploy fields) and `[tool.apx]` metadata; no `[tool.apx.agent]`, no `module =` |
+
+- `render_agent_py` adds the settings to the root constructor it already emits,
+  for template roots (`CoworkerAgent(...)`, `DataAgent(...)`) and graph roots
+  (`SequentialAgent(...)` and the others).
+- `_build_pyproject` writes only the two tables above.
+- `workflows`, `data` and `executor` become app-wide agent settings, like
+  `examples` (one line each in `AgentSettings` and `APP_WIDE`), because the dev
+  UI, deploy and the runtime read them.
+
+### `scaffold` templates
+
+- **Model-serving, Apps base, Apps coworker and native.** `agent.py` gets
+  `model=`, `name=`, `description=` and `target=` (and `knowledge=` where it's
+  written today). `pyproject.toml` keeps `[tool.apx.deploy]` and drops
+  `[tool.apx.agent]`.
+- **The default Lakebase session block** becomes a `session={...}` argument;
+  `--no-lakebase` is unchanged. The commented memory block becomes a commented
+  `memory={...}` argument.
+- `scaffold --force` keeps its runtime-preservation check, which
+  `_detect_target` now answers from `agent.py`.
+
+### Testing
+
+- **YAML read-back:** for each YAML spec under `examples/` and each template,
+  generate the project, load it as the launcher does, and require the effective
+  config to equal the spec's `AgentConfig`.
+- **Scaffolds:** every variant produces a project with no `[tool.apx.agent]`,
+  whose effective config carries the same `name`, `model`, `target` and
+  `session`.
+- `scaffolds-a-runnable-project` and the generated-project tests pass, and
+  `data-inspector`'s launcher still matches the template.
 
 ## Out of scope
 
