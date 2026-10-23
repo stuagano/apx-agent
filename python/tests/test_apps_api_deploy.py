@@ -152,10 +152,12 @@ def _app(space: str | None, *, compute: str = "ACTIVE") -> SimpleNamespace:
 @pytest.fixture
 def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     from databricks.sdk.errors import NotFound
+    from databricks.sdk.service.workspace import ObjectType
 
     project = _project(tmp_path)
     state: dict[str, Any] = {"app": None, "memory": False, "session": False, "calls": []}
     ws = MagicMock()
+    ws.workspace.get_status.return_value = SimpleNamespace(object_type=ObjectType.FILE)
 
     def get_app(name: str) -> Any:
         state["calls"].append("apps.get")
@@ -270,6 +272,8 @@ def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any])
     assert names.index("runtime") < names.index("sync") < names.index("apps") < names.index("poll")
     assert names.index("poll") < names.index("readyz") < names.index("smoke")
     assert "apps.update" not in names
+    sync = next(item for item in harness["state"]["calls"] if isinstance(item, tuple) and item[0] == "sync")
+    assert sync[3:] == ("--include", "**", "--exclude", "uv.lock", "--exclude", ".databricks/**")
     app_yaml = yaml.safe_load((harness["project"] / ".build" / "app.yaml").read_text().split("\n", 1)[1])
     # The upload omits uv.lock and Apps installs nothing from a bare pyproject.toml (#956).
     assert app_yaml["command"] == ["uv", "run", "python", "-m", "app"]
@@ -284,6 +288,44 @@ def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any])
     again = [item if isinstance(item, str) else item[0] for item in harness["state"]["calls"]]
     assert "apps.create" not in again and "memory.create" not in again and "session.create" not in again
     assert "session.grant" in again
+
+
+@pytest.mark.parametrize("missing", ["app.yaml", "agent.toml", "pyproject.toml"])
+def test_empty_upload_does_not_start_rollout(harness, missing):
+    from databricks.sdk.errors import NotFound
+    from databricks.sdk.service.workspace import ObjectType
+
+    def status(path):
+        if path.endswith("/" + missing):
+            raise NotFound("missing staged manifest")
+        return SimpleNamespace(object_type=ObjectType.FILE)
+    harness["ws"].workspace.get_status.side_effect = status
+    with pytest.raises(click.ClickException, match="source verification failed"):
+        _deploy(harness, _config(), LlmAgent(name="proof"))
+    assert not any(isinstance(item, tuple) and item[:2] == ("apps", "deploy") for item in harness["state"]["calls"])
+
+
+def test_rollout_failure_does_not_claim_previous_app_is_active(harness, monkeypatch):
+    def run(args, profile=None):
+        return SimpleNamespace(returncode=1 if args[:2] == ["apps", "deploy"] else 0, stdout="", stderr="")
+    monkeypatch.setattr("apx_agent.cli._run_databricks_cmd", run)
+    with pytest.raises(click.ClickException) as exc:
+        _deploy(harness, _config(), LlmAgent(name="proof"))
+    assert "may be unavailable" in str(exc.value)
+    assert "previous deployment was left in place" not in str(exc.value)
+
+
+def test_failed_sync_does_not_claim_atomic_upload_or_start_rollout(harness, monkeypatch):
+    commands = []
+    def run(args, profile=None):
+        commands.append(args)
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+    monkeypatch.setattr("apx_agent.cli._run_databricks_cmd", run)
+    with pytest.raises(click.ClickException, match="App rollout was not attempted") as exc:
+        _deploy(harness, _config(), LlmAgent(name="proof"))
+    assert "source was not replaced" not in str(exc.value)
+    assert not any(args[:2] == ["apps", "deploy"] for args in commands)
+    harness["ws"].workspace.get_status.assert_not_called()
 
 
 def test_dedicated_update_mask_and_no_liquid_read(harness: dict[str, Any]) -> None:

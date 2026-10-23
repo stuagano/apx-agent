@@ -426,6 +426,8 @@ def _stage_lock(build_dir: Path, auto_build_wheel: bool, log: Callable[[str], No
 
 
 def _upload_and_rollout(build_dir: Path, *, app_name: str, profile: str, workspace: Any, log: Callable[[str], None]) -> None:
+    from databricks.sdk.service.workspace import ObjectType
+
     from .cli import _run_databricks_cmd
 
     me = workspace.current_user.me()
@@ -433,12 +435,23 @@ def _upload_and_rollout(build_dir: Path, *, app_name: str, profile: str, workspa
     if not isinstance(user, str) or not user or "/" in user:
         raise click.ClickException("Could not resolve the current workspace user for the Apps API source path.")
     destination = f"/Workspace/Users/{user}/apx_deployments/{app_name}"
-    sync = _run_databricks_cmd(["sync", str(build_dir), destination, "--exclude", "uv.lock"], profile)
+    # The backend owns this stage; repository ignore rules commonly exclude .build.
+    sync = _run_databricks_cmd(["sync", str(build_dir), destination, "--include", "**",
+                                "--exclude", "uv.lock", "--exclude", ".databricks/**"], profile)
     if sync.returncode != 0:
-        raise click.ClickException(f"`databricks sync` failed (exit {sync.returncode}); source was not replaced and nothing was deleted.")
+        raise click.ClickException(f"`databricks sync` failed (exit {sync.returncode}); App rollout was not attempted.")
+    for filename in ("app.yaml", "agent.toml", "pyproject.toml"):
+        try:
+            uploaded = workspace.workspace.get_status(f"{destination}/{filename}")
+            if uploaded.object_type != ObjectType.FILE:
+                raise ValueError("Expected a workspace file")
+        except Exception:
+            raise click.ClickException(
+                f"Uploaded source verification failed for {filename}; App rollout was not attempted. Inspect {destination} and retry."
+            ) from None
     deploy = _run_databricks_cmd(["apps", "deploy", app_name, "--source-code-path", destination], profile)
     if deploy.returncode != 0:
-        raise click.ClickException(f"`databricks apps deploy` failed (exit {deploy.returncode}); the previous deployment was left in place.")
+        raise click.ClickException(f"`databricks apps deploy` failed (exit {deploy.returncode}); the app may be unavailable. Inspect its deployment status before retrying.")
     log(f"  uploaded {destination} and rolled out {app_name}")
 
 

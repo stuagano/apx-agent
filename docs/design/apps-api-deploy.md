@@ -89,8 +89,8 @@ step is get-or-create. A rerun is safe because a step that already succeeded
 finds the resource and continues. A rerun is not a checkpoint resume: there is
 no saved cursor, and a step always redoes its local work.
 
-Nothing in this path deletes an app, a store, an experiment, or uploaded
-source on failure. Nothing is rolled back. An app is never moved between
+Nothing in this path deletes an app, a store, or an experiment on failure.
+Source sync can replace or delete remote files. Nothing is rolled back. An app is never moved between
 spaces, and a space app is never silently turned into a dedicated app.
 
 ### 1. Stage the source
@@ -214,7 +214,7 @@ Bricks' stricter `trace_grant == "granted"` policy is not imported here.
 This path does not call `deploy_native_project`. Upload is:
 
 ```text
-databricks sync .build <ws_path> --exclude uv.lock
+databricks sync .build <ws_path> --include '**' --exclude uv.lock --exclude '.databricks/**'
 databricks apps deploy <name> --source-code-path <ws_path>
 ```
 
@@ -222,9 +222,16 @@ databricks apps deploy <name> --source-code-path <ws_path>
 `<me>` is the current workspace user. The app name is the declared app name,
 not an `agent-bricks-` prefixed name.
 
-The sync excludes the project root `uv.lock` only. The staged lock at
-`.build/uv.lock` is what the app must install from, and it must be part of the
-uploaded tree. Before upload, `_stage_build_manifest` still owns that lock:
+Explicit inclusion applies only to the backend-owned staged tree, whose files
+were already selected by the declaration. It overrides repository ignore rules
+such as `**/.build`; it does not broaden staging inputs. Sync excludes the staged
+`uv.lock` and local `.databricks` sync metadata. The generated `uv run` command
+resolves dependencies on the host. After sync succeeds, APX verifies that
+`app.yaml`, `agent.toml`, and `pyproject.toml` exist as workspace files before
+attempting rollout. This catches an empty upload; it does not prove every remote
+file matches the local tree.
+
+Before upload, `_stage_build_manifest` still owns the local lock:
 
 - wheel deploys regenerate `.build/uv.lock` with `uv lock`;
 - other deploys copy the source lock;
@@ -258,6 +265,11 @@ delete the resources created by earlier steps.
 
 A failed verify leaves the new deployment in place and exits non-zero. The
 next run reuses the app and replaces the uploaded source.
+
+A failed sync can leave partially changed source, but APX does not attempt App
+rollout afterward. A failed rollout can leave the app unavailable; inspect the
+deployment status before retrying. APX does not claim the old deployment remains
+active.
 
 ## Migration
 
