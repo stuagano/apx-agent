@@ -529,6 +529,38 @@ def _ai_gateway_model_service_name(model: str) -> str | None:
     return None
 
 
+def _declared_settings(cwd: Path) -> "dict[str, Any] | Check":
+    """Doctor's view of the agent settings: the raw ``[tool.apx.agent]`` table, with declared
+    Python settings filling its gaps (3b-2). A FAIL check if agent.py won't import.
+
+    The raw table is read as before (never validated here; the agent-config check reports a
+    malformed one). Python settings come from an isolated import, and only when the TOML is valid."""
+    import tomllib
+
+    from ._doctor_durable import effective_config_isolated
+    from ._inspection import _load_agent_config
+
+    try:
+        raw = tomllib.loads((cwd / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("agent", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        raw = {}
+    settings = dict(raw) if isinstance(raw, dict) else {}
+    try:
+        _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except Exception:  # noqa: BLE001 — an invalid TOML config is the agent-config check's to report
+        return settings
+    try:
+        config = effective_config_isolated(cwd)
+    except Exception as exc:  # noqa: BLE001 — doctor reports, never raises, on a broken agent.py
+        return Check("Agent import", Status.FAIL, f"could not import agent.py: {type(exc).__name__}: {exc}",
+                     "Fix the error in agent.py, then re-run apx-agent doctor.")
+    for key in ("model", "service_policies"):
+        if key not in settings and config is not None and key in config.model_fields_set:
+            value = getattr(config, key)
+            settings[key] = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+    return settings
+
+
 def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
     """Verify the configured chat model is reachable through UC AI Gateway.
 
@@ -544,23 +576,10 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
     """
     if not auth_ok:
         return None
-    pyproject = cwd / "pyproject.toml"
-    if not pyproject.exists():
-        return None
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover
-        try:
-            import tomli as tomllib  # type: ignore[no-redef]
-        except ImportError:
-            return None
-    try:
-        data = tomllib.loads(pyproject.read_text())
-    except Exception:
-        return None
-    model: str | None = (
-        data.get("tool", {}).get("apx", {}).get("agent", {}).get("model")
-    )
+    settings = _declared_settings(cwd)
+    if isinstance(settings, Check):
+        return settings
+    model: str | None = settings.get("model")
     if not model:
         return None
     label = f"Model service ({model})"
@@ -620,22 +639,10 @@ def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
     """
     if not auth_ok or not _is_apx_project(cwd):
         return None
-    pyproject = cwd / "pyproject.toml"
-    if not pyproject.exists():
-        return None
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover
-        try:
-            import tomli as tomllib  # type: ignore[no-redef]
-        except ImportError:
-            return None
-    try:
-        data = tomllib.loads(pyproject.read_text())
-    except Exception:
-        return None
-    agent = data.get("tool", {}).get("apx", {}).get("agent", {})
-    model: str | None = agent.get("model")
+    settings = _declared_settings(cwd)
+    if isinstance(settings, Check):
+        return None  # an import failure is reported once, by check_model_endpoint
+    model: str | None = settings.get("model")
     if not model:
         return None
 
@@ -644,7 +651,7 @@ def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
         return None
 
     services = [_ai_gateway_model_service_name(model) or model]
-    for attachment in agent.get("service_policies", {}).get("attachments", []):
+    for attachment in settings.get("service_policies", {}).get("attachments", []):
         # Malformed entries are reported by the agent-config check.
         if "target_type" not in attachment or "target" not in attachment:
             continue
@@ -1025,12 +1032,13 @@ def check_deploy_provenance(cwd: Path, *, auth_ok: bool) -> Check | None:
 
 
 def _is_apx_project(cwd: Path) -> bool:
-    """True when cwd looks like a scaffolded apx project."""
-    pyproject = cwd / "pyproject.toml"
-    if not pyproject.exists():
-        return False
+    """True when cwd looks like an apx project: an apx TOML table, or an agent.py using apx_agent."""
+    pyproject, agent_py = cwd / "pyproject.toml", cwd / "agent.py"
     try:
-        return "[tool.apx.agent]" in pyproject.read_text()
+        text = pyproject.read_text() if pyproject.exists() else ""
+        if "[tool.apx.agent]" in text or "[tool.apx.deploy]" in text:
+            return True
+        return agent_py.is_file() and "apx_agent" in agent_py.read_text()
     except OSError:
         return False
 

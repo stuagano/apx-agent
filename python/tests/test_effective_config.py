@@ -172,3 +172,36 @@ def test_status_name_comes_from_agent_py_statically(tmp_path: Path, monkeypatch:
     root = _project(tmp_path, _DURABLE_PY, "[tool.apx.agent]\n")
     monkeypatch.chdir(root)
     assert "durable-d" in _status_prompt_string(root)
+
+
+def test_doctor_reads_a_python_declared_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import _doctor
+
+    root = _project(tmp_path, "from apx_agent import Agent\nagent = Agent(name='m', model='cat.sch.model', tools=[])\n")
+    seen: list[str] = []
+
+    def fake_service_name(model: str) -> None:
+        seen.append(model)
+        return None
+
+    monkeypatch.setattr(_doctor, "_ai_gateway_model_service_name", fake_service_name)
+    check = _doctor.check_model_endpoint(root, auth_ok=True)
+    assert seen == ["cat.sch.model"] and check is not None
+
+
+def test_a_python_only_project_is_an_apx_project(tmp_path: Path) -> None:
+    from apx_agent._doctor import _is_apx_project
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert _is_apx_project(_project(tmp_path / "a", "from apx_agent import Agent\nagent = Agent(name='x', tools=[])\n"))
+    assert not _is_apx_project(_project(tmp_path / "b", "print('hi')\n"))
+
+
+def test_doctor_reports_a_broken_agent_py(tmp_path: Path) -> None:
+    from apx_agent._doctor import Status, check_model_endpoint
+
+    root = _project(tmp_path, "raise RuntimeError('boom')\n")
+    check = check_model_endpoint(root, auth_ok=True)
+    assert check is not None and check.status is Status.FAIL
+    assert "could not import agent.py: RuntimeError: boom" in check.detail
