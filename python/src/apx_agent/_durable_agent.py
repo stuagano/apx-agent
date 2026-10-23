@@ -269,6 +269,9 @@ def compile_durable_handlers(
         if turn.approval_required is not None:
             return {"status": "interrupted", "messages": [], "approval_required": turn.approval_required}
         result = {"status": "completed", "messages": [m.model_dump(mode="json") for m in turn.messages]}
+        if config is not None:
+            # The SDK namespaces sessions before dispatch; callers cannot reconstruct this key.
+            result["checkpoint"] = {"thread_id": config["configurable"]["thread_id"]}
         if correlation is not None:
             result["correlation"] = correlation
         return result

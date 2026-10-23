@@ -291,6 +291,25 @@ was created.
 
 ## Testing
 
+Native deployment keeps the readiness, execution, and managed-checkpoint gates.
+For a declared `input_schema`, supply a local JSON domain object with
+`apx-agent agents deploy --smoke-input /path/to/smoke.json --profile PROFILE`.
+APX validates it before staging or provisioning, using the declared schema and
+the native 64 KiB input contract. Keep this local fixture outside deployment
+source includes. The option is rejected for untyped agents, non-native targets,
+or a disabled execution gate; untyped deployments retain the default pong probe.
+The smoke also validates a declared final object output through its DataPart;
+non-object RootModel output uses the compiler's canonical JSON text contract.
+
+A checkpointed native response includes `output.checkpoint.thread_id`, an opaque
+server-derived checkpoint identifier. The SDK namespaces session IDs before APX
+dispatch, so deployment reads back this exact coordinate with the independently
+authorized saver rather than reconstructing it from the caller's session ID.
+The response does not expose raw session IDs, principals, tokens, or store
+locations; uncheckpointed responses omit the coordinate. Native child calls use
+their stable invocation ID as their session ID, providing checkpoint continuity
+for that child invocation and its retries, not cross-turn conversation history.
+
 Unit tests use a mocked `WorkspaceClient`. They assert:
 
 - the seven steps run in the order above, and a second run does not call

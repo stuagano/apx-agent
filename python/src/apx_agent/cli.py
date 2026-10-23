@@ -6780,6 +6780,10 @@ _APPS_ONLY_DEPLOY_FLAGS = (
          "tracing. ON by default for Apps.",
 )
 @click.option(
+    "--smoke-input", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None,
+    help="JSON domain object for the native execution smoke; required for agents with input_schema.",
+)
+@click.option(
     "--readyz-gate/--no-readyz-gate", default=True,
     help="Post-deploy health gate, ON by default for BOTH targets. With "
          "--target apps: after the app reaches RUNNING, GET <app_url>/readyz "
@@ -6982,6 +6986,7 @@ def deploy(
     version: int | None,
     assume_yes: bool,
     hot_swap: bool,
+    smoke_input: Path | None = None,
 ) -> None:
     """Deploy a declared agent to Databricks Apps or Model Serving.
 
@@ -7028,6 +7033,8 @@ def deploy(
     ``docs/engine-scope/apps-uc-registry-shim-design.md``).
     """
     if spec and (spec.endswith(".yaml") or spec.endswith(".yml")):
+        if smoke_input is not None:
+            raise click.UsageError("--smoke-input requires a native Apps project, not a YAML deploy.")
         if dry_run:
             raise click.UsageError(
                 "--dry-run is not supported with a SPEC.yaml deploy — "
@@ -7057,6 +7064,8 @@ def deploy(
     else:
         target_reason = "explicit --target"
 
+    if smoke_input is not None and target != "apps":
+        raise click.UsageError("--smoke-input is only supported for native Apps deployments.")
     if target == "apps":
         # Flag hygiene (issue #413): the apps branch never reads the
         # model-serving-only options — warn instead of silently dropping them.
@@ -7082,6 +7091,11 @@ def deploy(
                 err=True,
             )
         if dry_run:
+            if smoke_input is not None:
+                config, agent = _config_from_project_or_agent(Path.cwd(), module or "agent:agent")
+                if config is None or config.target != "durable_agent_server":
+                    raise click.UsageError("--smoke-input is only supported for native Apps deployments.")
+                _prepare_native_smoke_input(agent or _load_finalized_agent(module or "agent:agent"), smoke_input, readyz_gate=readyz_gate)
             _emit_apps_deploy_plan(
                 module=module or "agent:agent",
                 target_reason=target_reason,
@@ -7117,6 +7131,7 @@ def deploy(
             uc_name=uc_name,
             poll_timeout_seconds=timeout_seconds,
             readyz_attempts=readyz_retries,
+            smoke_input=smoke_input,
         )
         return
 
@@ -9023,7 +9038,7 @@ def _check_readyz(
     return _ReadyzResult(is_ready=False, checks={"error": f"readyz unreachable: {last_error}"})
 
 
-def _native_execution_completed(body: Any) -> str | None:
+def _native_execution_completed(body: Any) -> str | list[Any] | None:
     """Return the assistant text when a native invocation completed, else None.
 
     DurableAgentServer wraps the handler result in ``output``. The handler
@@ -9043,7 +9058,12 @@ def _native_execution_completed(body: Any) -> str | None:
         return None
     content = last.get("content")
     role = last.get("type") or last.get("role")
-    if role not in ("ai", "assistant") or not isinstance(content, str) or not content:
+    if role not in ("ai", "assistant") or last.get("tool_calls"):
+        return None
+    if isinstance(content, list):
+        return content if any(isinstance(part, dict) and part.get("type") == "text"
+                              and isinstance(part.get("text"), str) and part["text"] for part in content) else None
+    if not isinstance(content, str) or not content:
         return None
     return content
 
@@ -9066,7 +9086,7 @@ def _native_session_thread(agent_name: str | None, session_id: str, principal: s
     return config
 
 
-def _native_session_has_message(checkpoint: Any, content: str) -> bool:
+def _native_session_has_message(checkpoint: Any, content: str | list[Any]) -> bool:
     """True when a LangGraph checkpoint stores this assistant text."""
     if checkpoint is None:
         return False
@@ -9084,6 +9104,30 @@ def _native_session_has_message(checkpoint: Any, content: str) -> bool:
     return False
 
 
+def _prepare_native_smoke_input(agent: Any, path: Path | None, *, readyz_gate: bool) -> dict[str, Any] | None:
+    """Validate local domain input before staging or provisioning any resource."""
+    from ._native_input import input_leaf, native_data_part
+
+    schema = getattr(input_leaf(agent), "_input_schema", None)
+    if path is None:
+        if schema is not None and readyz_gate:
+            raise click.ClickException("Typed native execution requires --smoke-input PATH containing a valid JSON domain object.")
+        return None
+    if not readyz_gate:
+        raise click.ClickException("--smoke-input requires the readiness/execution gate to be enabled.")
+    if schema is None:
+        raise click.ClickException("--smoke-input requires a declared input_schema.")
+    try:
+        with path.open("rb") as source:
+            raw = source.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("input exceeds 64 KiB")
+        part = native_data_part(schema, json.loads(raw))
+    except (OSError, ValueError, RecursionError):
+        raise click.ClickException("Invalid --smoke-input: expected a JSON domain object matching input_schema within the native 64 KiB limit.") from None
+    return {"messages": [], "apx_data_parts": [part]}
+
+
 def _check_native_execution(
     app_url: str,
     *,
@@ -9091,6 +9135,8 @@ def _check_native_execution(
     session_store: str | None,
     agent_name: str | None = None,
     user_scoped: bool = False,
+    smoke_input: dict[str, Any] | None = None,
+    smoke_agent: Any = None,
 ) -> _NativeExecutionSmoke:
     """POST one ChatAgent invocation after native ``/readyz`` is durable.
 
@@ -9119,7 +9165,7 @@ def _check_native_execution(
     payload = {
         "id": invocation_id,
         "session_id": session_id,
-        "input": {"messages": [{"role": "user", "content": "Reply with the single word pong."}]},
+        "input": smoke_input if smoke_input is not None else {"messages": [{"role": "user", "content": "Reply with the single word pong."}]},
     }
     url = app_url.rstrip("/") + "/api/invocations"
     raw = b""
@@ -9151,8 +9197,27 @@ def _check_native_execution(
     except Exception:
         body = None
     content = _native_execution_completed(body)
+    if content is not None and smoke_agent is not None:
+        from ._agents import SequentialAgent
+        from ._a2a_models import data_parts
+
+        while isinstance(smoke_agent, SequentialAgent):
+            smoke_agent = smoke_agent._agents[-1]
+        schema = getattr(smoke_agent, "_output_schema", None)
+        if schema is not None:
+            try:
+                if schema.model_json_schema().get("type") == "object":
+                    parts = data_parts(body["output"]["messages"][-1].get("additional_kwargs"))
+                    if len(parts) != 1:
+                        raise ValueError("Expected one typed output artifact")
+                    encoded = _json.dumps(parts[0]["data"], allow_nan=False)
+                else:
+                    encoded = content if isinstance(content, str) else "".join(part["text"] for part in content if isinstance(part, dict) and part.get("type") == "text")
+                schema.model_validate_json(encoded, strict=True)
+            except Exception:
+                return _NativeExecutionSmoke(completed=False, detail="invocation did not return a valid declared typed output", readback=False)
     if content is None:
-        snippet = raw.decode("utf-8", errors="replace")[:160] if raw else "empty body"
+        snippet = "typed response omitted" if smoke_input is not None else (raw.decode("utf-8", errors="replace")[:160] if raw else "empty body")
         return _NativeExecutionSmoke(
             completed=False,
             detail=f"invocation HTTP {status} did not return a completed assistant message: {snippet}",
@@ -9161,15 +9226,18 @@ def _check_native_execution(
     if session_store is None:
         return _NativeExecutionSmoke(completed=True, detail="assistant message returned", readback=False)
 
+    checkpoint = body["output"].get("checkpoint")
+    if (not isinstance(checkpoint, dict) or set(checkpoint) != {"thread_id"}
+            or not isinstance(checkpoint["thread_id"], str) or re.fullmatch(r"[0-9a-f]{64}", checkpoint["thread_id"]) is None):
+        return _NativeExecutionSmoke(completed=False, detail="invocation did not return its checkpoint coordinate", readback=False)
     try:
         from databricks.sdk import WorkspaceClient
         from databricks_agentkit.langgraph.session_store import DatabricksSessionStoreSaver
 
         ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
         saver = DatabricksSessionStoreSaver(session_store, workspace_client=ws)
-        # A request-user agent scopes the thread by the caller, who is the deployer here.
-        principal = ws.current_user.me().id if user_scoped else None
-        saved = saver.get_tuple(_native_session_thread(agent_name, session_id, principal))
+        key = checkpoint["thread_id"]
+        saved = saver.get_tuple({"configurable": {"thread_id": key, "actor_id": key}})
     except Exception as exc:
         return _NativeExecutionSmoke(
             completed=False,
@@ -10523,6 +10591,7 @@ def _deploy_apps(
     app_name_override: str | None = None,
     poll_timeout_seconds: int = 300,
     readyz_attempts: int = 5,
+    smoke_input: Path | None = None,
 ) -> str:
     """Implement ``apx-agent agents deploy --target apps``.
 
@@ -10558,6 +10627,7 @@ def _deploy_apps(
             extra_version_tags=_provenance_version_tags(cwd),
             poll_timeout_seconds=poll_timeout_seconds,
             readyz_attempts=readyz_attempts,
+            smoke_input=smoke_input,
             log=log,
         )
 
@@ -10583,6 +10653,7 @@ def _deploy_apps_impl(
     extra_version_tags: dict[str, str] | None = None,
     poll_timeout_seconds: int = 300,
     readyz_attempts: int = 5,
+    smoke_input: Path | None = None,
     log: Any,
 ) -> str:
     """Inner body of ``_deploy_apps`` — see docstring there."""
@@ -10599,6 +10670,9 @@ def _deploy_apps_impl(
         effective_config, preloaded_agent = _config_from_project_or_agent(cwd, module)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    native_smoke_input = None
+    if smoke_input is not None and (effective_config is None or effective_config.target != "durable_agent_server"):
+        raise click.ClickException("--smoke-input is only supported for native Apps deployments.")
     apps_api = (
         effective_config is not None and effective_config.deploy is not None
         and effective_config.deploy.backend == "apps_api"
@@ -10630,7 +10704,8 @@ def _deploy_apps_impl(
             log(f"# {check.name}: {check.detail}")
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
-        agent = _load_finalized_agent(module)
+        agent = preloaded_agent if preloaded_agent is not None else _load_finalized_agent(module)
+        _prepare_native_smoke_input(agent, smoke_input, readyz_gate=readyz_gate)
         if isinstance(agent, LlmAgent):
             for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=True):
                 if check.name != "Managed sessions" or check.status is not _doctor_mod.Status.FAIL:
@@ -10658,6 +10733,7 @@ def _deploy_apps_impl(
             secret_env_pairs=secret_env_pairs, app_name_override=app_name_override,
             json_output=json_output, extra_version_tags=extra_version_tags,
             poll_timeout_seconds=poll_timeout_seconds, readyz_attempts=readyz_attempts, pin=pin, log=log,
+            smoke_input=smoke_input,
         )
     native_direct = (
         effective_config is not None and effective_config.target == "durable_agent_server"
@@ -10783,6 +10859,8 @@ def _deploy_apps_impl(
     agent = preloaded_agent if preloaded_agent is not None else _load_finalized_agent(module)
     from ._agents import LlmAgent
 
+    if effective_config is not None and effective_config.target == "durable_agent_server":
+        native_smoke_input = _prepare_native_smoke_input(agent, smoke_input, readyz_gate=readyz_gate)
     if session_config is not effective_config and isinstance(agent, LlmAgent):
         effective_config = session_config
         for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli or app.get("space") is not None):
@@ -11256,6 +11334,8 @@ def _deploy_apps_impl(
                     session_store=bound_session,
                     agent_name=getattr(agent, "_name", None),
                     user_scoped=native_user_scoped,
+                    smoke_input=native_smoke_input,
+                    smoke_agent=agent,
                 )
                 if smoke.completed:
                     log(f"  execution: {smoke.detail}")

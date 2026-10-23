@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import httpx
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langgraph.checkpoint.memory import InMemorySaver
 from fastapi.testclient import TestClient
 from databricks_agentkit.runtime.auth import RequestAuthContext
 from pydantic import BaseModel, ConfigDict
@@ -106,7 +107,8 @@ def two_hosts(execution, monkeypatch, tmp_path):  # noqa: F811
                           output_schema=DomainInput, output_key="domain_result")
     specialist._after_model = lambda output: output
     from apx_agent._durable_agent import compile_to_durable_agent_server
-    child = compile_to_durable_agent_server(specialist, model="test", service_ws=execution.ws, require_user=True)
+    saver = InMemorySaver()
+    child = compile_to_durable_agent_server(specialist, model="test", service_ws=execution.ws, require_user=True, checkpointer=saver)
     root = SequentialAgent(name="parent", agents=[specialist])
     from apx_agent._wiring import _apply_remote_leaf_bindings
     config = AgentConfig(name="parent", bindings={"specialist": {"transport": "native", "url": "https://child.example"}})
@@ -135,7 +137,7 @@ def two_hosts(execution, monkeypatch, tmp_path):  # noqa: F811
         monkeypatch.setattr("httpx.AsyncClient", lambda **kwargs: original_client(**{**kwargs, "transport": httpx.MockTransport(route)}))
         yield SimpleNamespace(parent=parent_client, child=child_client, parent_app=parent, child_app=child,
                               consumed=consumed, sent=sent, specialist=specialist, controls=controls,
-                              principals=principals, root=root)
+                              principals=principals, root=root, saver=saver)
 
 
 def user_headers(principal="alice"):
@@ -160,6 +162,15 @@ def test_two_native_hosts_execute_typed_input_once_and_retain_real_records(two_h
     assert two_hosts.consumed == [{"amount": 7}]
     child_body = json.loads(next(r.content for r in two_hosts.sent if r.method == "POST"))
     child_id = child_body["id"]
+    assert child_body["session_id"] == child_id
+    child_record = two_hosts.child.get(f"/api/invocations/{child_id}", headers=headers()).json()
+    coordinate = child_record["output"]["checkpoint"]
+    assert set(coordinate) == {"thread_id"}
+    checkpoint = two_hosts.saver.get_tuple({"configurable": coordinate})
+    assert checkpoint is not None
+    saved_answer = checkpoint.checkpoint["channel_values"]["messages"][-1]
+    assert saved_answer.model_dump(mode="json") == child_record["output"]["messages"][-1]
+    assert "checkpoint" not in response.json()["output"]
     assert child_id != body["id"]
     assert child_body["input"]["apx_data_parts"] == [part]
     assert child_body["input"]["correlation"]["parent_invocation_id"] == body["id"]
@@ -172,6 +183,10 @@ def test_two_native_hosts_execute_typed_input_once_and_retain_real_records(two_h
     assert response.json()["output"]["messages"][-1]["additional_kwargs"]["apx_data_parts"][0]["data"] == {"amount": 8}
     assert two_hosts.parent.post("/api/invocations", json=body, headers=headers()).status_code == 200
     assert two_hosts.consumed == [{"amount": 7}]
+    persisted = repr((two_hosts.saver.storage, two_hosts.saver.writes, two_hosts.saver.blobs))
+    assert "credential-sentinel" not in persisted
+    assert "RequestAuthContext" not in persisted
+    assert "WorkspaceClient" not in persisted
     for app in [two_hosts.parent_app, two_hosts.child_app]:
         store = app._runtime.runtime_store
         saved = json.dumps({"states": [asdict(s) for s in store.states.values()],
@@ -198,11 +213,30 @@ def test_two_hosts_missing_user_conflict_and_distinct_principals(two_hosts):
         alice = client.get(f"/api/invocations/{identifier}", headers=user_headers()).json()
         bob = client.get(f"/api/invocations/{identifier}", headers=user_headers("bob")).json()
         assert alice != bob
+        if client is two_hosts.child:
+            assert alice["output"]["checkpoint"] != bob["output"]["checkpoint"]
     for app in [two_hosts.parent_app, two_hosts.child_app]:
         store = app._runtime.runtime_store
         saved = json.dumps({"states": [asdict(s) for s in store.states.values()],
                             "events": [asdict(e) for e in store.persisted_events]})
         assert "credential-sentinel" not in saved
+
+
+def test_managed_native_smoke_reads_real_sdk_checkpoint(two_hosts, monkeypatch):
+    import io
+    from apx_agent import cli
+
+    monkeypatch.setattr(cli, "_run_databricks_cmd", lambda *a, **k: SimpleNamespace(returncode=0, stdout='{"access_token":"test"}'))
+    def invoke(req, timeout):
+        response = two_hosts.child.post("/api/invocations", json=json.loads(req.data), headers=user_headers())
+        assert response.status_code == 200, response.text
+        return io.BytesIO(response.content)
+    monkeypatch.setattr("urllib.request.urlopen", invoke)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda **k: SimpleNamespace())
+    monkeypatch.setattr("databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", lambda *a, **k: two_hosts.saver)
+    smoke = cli._check_native_execution("https://child.example", profile="test", session_store="managed",
+                                        smoke_input=domain_request()["input"], smoke_agent=two_hosts.specialist)
+    assert smoke.completed and smoke.readback, smoke.detail
 
 
 def test_native_invalid_specialist_output_fails_both_records(two_hosts):

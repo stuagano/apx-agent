@@ -216,7 +216,7 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return {"project": project, "ws": ws, "state": state}
 
 
-def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any, *, profile: str | None = "chosen") -> None:
+def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any, *, profile: str | None = "chosen", smoke_input: Path | None = None) -> None:
     from apx_agent._apps_api_deploy import deploy_apps_api
 
     deploy_apps_api(
@@ -226,7 +226,29 @@ def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any, *, profile: st
         readyz_gate=True, register_uc=False, uc_name=None, module="agent:agent", no_run=False, vars=(),
         env_pairs=(), secret_env_pairs=(), app_name_override=None, json_output=False, extra_version_tags={},
         poll_timeout_seconds=1, readyz_attempts=1, pin=SimpleNamespace(), log=lambda message: None,
+        smoke_input=smoke_input,
     )
+
+
+def test_apps_api_validates_and_forwards_typed_smoke(harness, monkeypatch, tmp_path):
+    from tests.test_native_deploy_smoke import Domain
+
+    agent = LlmAgent(name="proof", input_schema=Domain, input_key="domain", output_schema=Domain)
+    with pytest.raises(click.ClickException, match="--smoke-input"):
+        _deploy(harness, _config(), agent)
+    assert harness["state"]["calls"] == []
+    assert not (harness["project"] / ".build").exists()
+    path = tmp_path / "smoke.json"
+    path.write_text('{"value": 1}')
+    captured = {}
+    def smoke(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(completed=True, detail="ok")
+    monkeypatch.setattr("apx_agent.cli._check_native_execution", smoke)
+    _deploy(harness, _config(), agent, smoke_input=path)
+    assert captured["smoke_input"]["apx_data_parts"][0]["data"] == {"value": 1}
+    assert captured["smoke_agent"] is agent
+    assert not (harness["project"] / ".build" / "smoke.json").exists()
 
 
 def test_deploy_resources_still_require_explicit_profile(harness: dict[str, Any]) -> None:

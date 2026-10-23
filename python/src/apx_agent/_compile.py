@@ -1211,7 +1211,7 @@ def _agent_needs_node_wrap(agent: LlmAgent) -> bool:
     )
 
 
-def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalate_failures: bool = False, step_path: tuple[str, ...] = (), fixture_replay: _FixtureReplay | None = None) -> Any:
+def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalate_failures: bool = False, step_path: tuple[str, ...] = (), fixture_replay: _FixtureReplay | None = None, checkpointer: Any | None = None) -> Any:
     """Wrap an ``LlmAgent``'s runnable in a graph node that applies the served
     hooks (G1) and keyed-state surface (G3): ``{key}`` instruction templating
     on the way in, ``output_key`` on the way out.
@@ -1386,7 +1386,7 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
     graph.add_node("agent", node)  # type: ignore[arg-type]  # StateNode generic cannot infer state->dict nodes
     graph.add_edge(START, "agent")
     graph.add_edge("agent", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def _invoke_node_sync(node: Any, state: dict[str, Any]) -> dict[str, Any]:
@@ -1525,14 +1525,15 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
         leaf_name = agent._name
         binding = None if leaf_name is None else ctx.remote_leaf_bindings.get(leaf_name)
         templated = _has_template(agent)
+        wrapped = _agent_needs_node_wrap(agent) or ctx.escalate_failures or agent._timeout_s is not None or ctx.fixture_replay is not None
         if binding is not None:
             runnable = _compile_bound_remote_leaf(agent, binding, ctx)
         else:
             runnable = _compile_llm_agent(
-                agent, ctx, bake_prompt=not templated and agent._output_schema is None,
+                agent, replace(ctx, checkpointer=None) if wrapped else ctx, bake_prompt=not templated and agent._output_schema is None,
             )
-        if _agent_needs_node_wrap(agent) or ctx.escalate_failures or agent._timeout_s is not None or ctx.fixture_replay is not None:
-            runnable = _wrap_agent_node(agent, runnable, templated=templated, escalate_failures=ctx.escalate_failures, step_path=ctx.step_path, fixture_replay=ctx.fixture_replay)
+        if wrapped:
+            runnable = _wrap_agent_node(agent, runnable, templated=templated, escalate_failures=ctx.escalate_failures, step_path=ctx.step_path, fixture_replay=ctx.fixture_replay, checkpointer=ctx.checkpointer)
         return runnable
     if isinstance(agent, SequentialAgent):
         return _compile_sequential_agent(agent, ctx)

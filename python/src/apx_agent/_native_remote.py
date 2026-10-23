@@ -63,7 +63,8 @@ async def invoke_native_leaf(agent: Any, binding: _RemoteLeafBinding, state: dic
     # User text remains user text; intermediate assistant/tool history never crosses ingress.
     messages = [{"role": "user", "content": m.content} for m in state["messages"]
                 if isinstance(m, HumanMessage) and not m.additional_kwargs.get("apx_data_parts")]
-    body = {"id": child_id, "input": {"messages": messages, "apx_data_parts": [part], "correlation": correlation}}
+    body = {"id": child_id, "session_id": child_id,
+            "input": {"messages": messages, "apx_data_parts": [part], "correlation": correlation}}
     path = f"{binding.card_url.rstrip('/')}/api/invocations"
 
     async def request() -> dict[str, Any]:

@@ -4715,7 +4715,8 @@ def test_native_execution_reads_session_back(monkeypatch) -> None:
     def fake_urlopen(req, timeout=None):
         seen["session_id"] = json.loads(req.data.decode())["session_id"]
         body = json.dumps({
-            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}]},
+            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}],
+                       "checkpoint": {"thread_id": "a" * 64}},
         }).encode()
         return io.BytesIO(body)
 
@@ -4725,7 +4726,7 @@ def test_native_execution_reads_session_back(monkeypatch) -> None:
             assert workspace_client.profile == "fevm"
 
         def get_tuple(self, config: dict[str, Any]) -> Any:
-            expected = cli._native_session_thread("demo", seen["session_id"])
+            expected = {"configurable": {"thread_id": "a" * 64, "actor_id": "a" * 64}}
             assert config == expected
             return SimpleNamespace(checkpoint={
                 "channel_values": {"messages": [Message(type="ai", content="pong")]},
@@ -4756,7 +4757,8 @@ def test_native_execution_fails_when_session_readback_misses(monkeypatch) -> Non
 
     def fake_urlopen(req, timeout=None):
         body = json.dumps({
-            "output": {"status": "completed", "messages": [{"role": "assistant", "content": "pong"}]},
+            "output": {"status": "completed", "messages": [{"role": "assistant", "content": "pong"}],
+                       "checkpoint": {"thread_id": "a" * 64}},
         }).encode()
         return io.BytesIO(body)
 
@@ -10006,10 +10008,7 @@ def test_interactive_resolve_allows_manual_catalog_and_schema(monkeypatch):
 
 
 def test_native_execution_reads_back_a_user_scoped_session(monkeypatch) -> None:
-    """A request-user agent keys its checkpoint by [agent, user id, session] (the
-    durable handler's scope). The smoke runs as the deployer, so it must read that
-    key, not the unscoped one (live: every user-auth deploy failed the gate)."""
-    import hashlib
+    """Read the host's opaque key, which includes its SDK session namespace."""
     import io
     import urllib.request
     from types import SimpleNamespace as Message
@@ -10022,7 +10021,8 @@ def test_native_execution_reads_back_a_user_scoped_session(monkeypatch) -> None:
     def fake_urlopen(req, timeout=None):
         seen["session_id"] = json.loads(req.data.decode())["session_id"]
         return io.BytesIO(json.dumps({
-            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}]},
+            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}],
+                       "checkpoint": {"thread_id": "b" * 64}},
         }).encode())
 
     class _Saver:
@@ -10030,8 +10030,7 @@ def test_native_execution_reads_back_a_user_scoped_session(monkeypatch) -> None:
             pass
 
         def get_tuple(self, config: dict[str, Any]) -> Any:
-            scoped = hashlib.sha256(json.dumps(["demo", "u-123", seen["session_id"]]).encode()).hexdigest()
-            assert config["configurable"]["thread_id"] == scoped
+            assert config["configurable"]["thread_id"] == "b" * 64
             return SimpleNamespace(checkpoint={
                 "channel_values": {"messages": [Message(type="ai", content="pong")]},
             })

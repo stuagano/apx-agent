@@ -47,6 +47,7 @@ def deploy_apps_api(
     readyz_attempts: int,
     pin: Any,
     log: Callable[[str], None],
+    smoke_input: Path | None = None,
 ) -> str:
     """Run the Apps API path. Re-running is safe; nothing is deleted on failure."""
     if config.target != "durable_agent_server" or config.deploy is None or config.deploy.backend != "apps_api":
@@ -63,6 +64,9 @@ def deploy_apps_api(
         raise click.ClickException("Apps API uses the declared app name; --app-name cannot rename it.")
     if family_permissions.can_use_groups or family_permissions.can_manage_groups:
         raise click.ClickException("Apps API deployment cannot reconcile app-family grants; configure access separately.")
+    from .cli import _prepare_native_smoke_input
+
+    native_smoke_input = _prepare_native_smoke_input(agent, smoke_input, readyz_gate=readyz_gate)
     resources = deployment_resources(config, plan)
 
     from ._runtime_targets import inspect_target
@@ -90,6 +94,7 @@ def deploy_apps_api(
         register_uc=register_uc, uc_name=uc_name, session_store=report.session_store,
         agent_name=_agent_name(agent), experiment_id=env.get(EXPERIMENT_ENV),
         extra_version_tags=extra_version_tags, pin=pin, json_output=json_output, log=log,
+        smoke_input=native_smoke_input, smoke_agent=agent,
     )
 
 
@@ -442,6 +447,7 @@ def _verify(
     readyz_gate: bool, readyz_attempts: int, poll_timeout_seconds: int, register_uc: bool,
     uc_name: str | None, session_store: str | None, agent_name: str | None, experiment_id: str | None,
     extra_version_tags: dict[str, str] | None, pin: Any, json_output: bool, log: Callable[[str], None],
+    smoke_input: dict[str, Any] | None = None, smoke_agent: Any = None,
 ) -> str:
     import json
 
@@ -462,7 +468,8 @@ def _verify(
         ok = ok and isinstance(checks, dict) and checks.get("durable") is True
         if ok:
             log(f"# execution smoke: POST {app_url}/api/invocations")
-            smoke = _check_native_execution(app_url, profile=profile, session_store=session_store, agent_name=agent_name)
+            smoke = _check_native_execution(app_url, profile=profile, session_store=session_store, agent_name=agent_name,
+                                            smoke_input=smoke_input, smoke_agent=smoke_agent)
             ok = smoke.completed
             if not ok and isinstance(checks, dict):
                 checks = {**checks, "agent_execution": smoke.detail}
