@@ -262,6 +262,8 @@ backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
   - `include` paths must stay inside the project.
 - **`name` default.** `[project].name`, but only when neither table sets
   `name`. A default never conflicts with a declared value.
+- **`app_name`** (#986) already lives here. It names the Apps API App, and
+  `_apps_api_app_name` reads it, so the fold leaves it alone.
 - **No import.** Deploy reads the table without importing `agent.py`, so its
   prerequisite checks still run before import.
 - **One seam.** `_load_agent_config` folds the table into the `AgentConfig` it

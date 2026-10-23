@@ -65,6 +65,32 @@ agent = SequentialAgent(
 nearest ancestor's, else the app's. Every other field is app-wide: set it on
 the root; a different value on a child fails.
 
+### `[tool.apx.deploy]` — deploy settings
+
+Deploy settings live in their own table, which deploy reads without importing
+`agent.py`:
+
+```toml
+[tool.apx.deploy]
+name = "orders-agent"     # optional; defaults to [project].name
+app_name = "mcp-orders"   # optional; Apps API App name, when it differs from name
+host = "apps"             # apps | model_serving
+space = "shared-space"    # an App Space picks compute; without one:
+# instances = 2           #   fixed count, or [tool.apx.deploy.autoscale] min/max, 1-5
+backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
+```
+
+A field set both here and in `[tool.apx.agent]` (or `[tool.apx.agent.deploy]`)
+must have the same value.
+
+To move a project off `[tool.apx.agent]`:
+
+1. Commit your work.
+2. Run `apx-agent agents migrate-config`. It moves the deploy settings here
+   and prints the keyword arguments to add to your root agent.
+3. Add those arguments, commit, and run it again. It removes
+   `[tool.apx.agent]` once every field is declared in Python.
+
 ### `examples` — starter prompts
 
 ```toml
