@@ -443,7 +443,14 @@ If `agent.py` fails to import:
 |---|---|
 | Commands that need the settings (status, eval, lint, deploy registration, `agents register`) | `ClickException`: `could not import agent.py: <Type>: <msg>` |
 | Doctor | a FAIL check with that message; the other checks still run |
-| `_detect_target` (a layout heuristic) | falls back to its layout markers, and logs the import error at debug level |
+| Doctor's checks | import under `doctor --durable`'s isolation harness (fake workspace clients, network blocked) |
+
+Heuristics never import: `_detect_target`, the cross-directory scans
+(`_find_runnable_agents`, `_materialize_yaml_project`) and the shell prompt
+string read `target=` / `name=` from `agent.py` statically (`ast`, literal
+values only), falling back to the TOML. Importing another project's `agent.py`
+in one process collides on the module name `agent`, and import-time code can
+reach the network.
 
 `_read_apx_agent_config` stays import-free. Its metadata keys are read before
 `agent.py` loads, and `profile` lookup must never depend on the agent importing.
@@ -460,8 +467,8 @@ merge.
   - Deploy registration (`_register_apps_manifest_step`) reads `model` and `name`.
   - `agents register` reads `model` and `name`.
   - Deploy's own `data` and `name` reads move too.
-- **`_detect_target`.** The durable-target check reads the effective config when
-  `agent.py` exists, and the TOML config otherwise. Its callers don't change.
+- **`_detect_target` and the scans.** The durable-target check reads a static
+  `target=` from `agent.py`, else the TOML. Their callers don't change.
 - **Doctor.**
   - The "Model service" check and the AI Gateway guardrails warning (`model`,
     `service_policies.attachments`) read the effective config.
@@ -491,8 +498,9 @@ merge.
   - `eval` and `lint` use the agent's model;
   - deploy registration and `agents register` record the agent's `model` and
     `name`;
-  - `_detect_target` returns `apps` for a Python-declared durable target, and
-    falls back to the layout markers when `agent.py` raises;
+  - `_detect_target` returns `apps` for a Python-declared durable target
+    without importing `agent.py` (an `agent.py` that raises at import still
+    gets a result);
   - doctor's "Model service" check passes and the project counts as an apx
     project;
   - with a broken `agent.py`, doctor reports a FAIL check and the other checks
