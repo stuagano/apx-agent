@@ -980,10 +980,12 @@ def _mount_protocol_routes(app: FastAPI) -> None:
         mcp_available = (
             getattr(request.app.state, "mcp_server", None) is not None
         )
+        durable = getattr(request.app.state, "apx_durable_host", False)
         return ctx.card.model_copy(
             update={
                 "url": base,
                 "mcpEndpoint": f"{base}/mcp" if mcp_available else None,
+                "invocationsEndpoint": f"{base}/api/invocations" if durable else None,
             }
         )
 

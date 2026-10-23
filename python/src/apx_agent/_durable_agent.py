@@ -368,6 +368,8 @@ def compile_to_durable_agent_server(
     mount_agentkit_chat(app, model=model, ws=service_ws)
     # Dev UI handlers read the service client here (the MLflow host sets it too).
     app.state.workspace_client = service_ws
+    # The card advertises /api/invocations so peers use the durable contract.
+    app.state.apx_durable_host = True
     app.state.dev_ui_mount_error = None
     if os.environ.get("APX_DEV_UI") != "0":
         try:
