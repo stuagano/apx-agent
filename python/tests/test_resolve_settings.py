@@ -152,3 +152,23 @@ def test_shared_agent_inheriting_different_identities_fails() -> None:
     root = SequentialAgent([SequentialAgent([shared], identity="obo"), SequentialAgent([shared], identity="sp")])
     with pytest.raises(SettingsConflict, match="'shared' is reached through parents that give it different identity"):
         resolve_settings(root, None)
+
+
+def test_examples_round_trip_and_are_app_wide() -> None:
+    from apx_agent._settings import SettingsConflict
+
+    assert resolve_settings(_leaf(examples=["Top 5 customers"]), None).examples == ["Top 5 customers"]
+    with pytest.raises(SettingsConflict, match="examples is app-wide"):
+        resolve_settings(SequentialAgent([_leaf("child", examples=["x"])]), None)
+
+
+def test_dev_ui_context_carries_python_examples() -> None:
+    import asyncio
+
+    from fastapi import FastAPI
+
+    from apx_agent._wiring import setup_agent
+
+    agent = _leaf("demo", examples=["Show me sample customers"])
+    ctx = asyncio.run(setup_agent(FastAPI(), agent, config=AgentConfig(name="demo")))
+    assert ctx is not None and ctx.config.examples == ["Show me sample customers"]

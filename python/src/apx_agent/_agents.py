@@ -103,6 +103,7 @@ class AgentSettings(TypedDict, total=False):
     url: str
     registry: str
     api_prefix: str
+    examples: list[str]
 
 
 class BaseAgent:
@@ -125,6 +126,7 @@ class BaseAgent:
     url: str | None = None
     registry: str | None = None
     api_prefix: str | None = None
+    examples: list[str] | None = None
     _overrides: Mapping[str, Any] = MappingProxyType({})
     """Per-agent values that differ from the app's; written by resolve_settings."""
 

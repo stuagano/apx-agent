@@ -772,6 +772,9 @@ async def setup_agent(
             config,
             ws=getattr(app.state, "workspace_client", None),
         )
+    from ._settings import resolve_settings  # noqa: PLC0415
+
+    config = resolve_settings(agent, config)
 
     # Merge sub_agents from config
     if config.sub_agents:
