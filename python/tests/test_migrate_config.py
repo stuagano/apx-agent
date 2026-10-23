@@ -184,3 +184,38 @@ def test_existing_app_name_survives_the_migration(tmp_path: Path) -> None:
     text = _PYPROJECT + '\n[tool.apx.deploy]\napp_name = "mcp-inspector"\n'
     migration = plan_migration(_write(tmp_path, text), Agent(name="inspector", tools=[]))
     assert tomllib.loads(migration.text)["tool"]["apx"]["deploy"]["app_name"] == "mcp-inspector"
+
+
+def test_keys_that_are_not_settings_are_listed_for_manual_removal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _repo(tmp_path, _AGENT_PY_FULL)
+    (root / "pyproject.toml").write_text(_PYPROJECT.replace('[tool.apx.agent]\n', '[tool.apx.agent]\nregistered_model = "c.s.m"\n'))
+    _commit_all(root)
+    result = _run(root, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "remove by hand once handled elsewhere: registered_model" in result.output
+    assert "Agent(..., )" not in result.output
+
+
+def test_fully_migrated_project_needs_no_agent_import(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _repo(tmp_path, "raise RuntimeError('boom')\n")
+    (root / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nspace = "s"\n')
+    _commit_all(root)
+    result = _run(root, monkeypatch)
+    assert result.exit_code == 0 and "nothing to migrate" in result.output
+
+
+@pytest.mark.parametrize(("agent_py", "message"), [
+    (None, "no agent.py in"),
+    ("raise RuntimeError('boom')\n", "could not import agent.py: RuntimeError: boom"),
+])
+def test_agent_import_problems_are_clean_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                agent_py: str | None, message: str) -> None:
+    root = _repo(tmp_path, _AGENT_PY_BARE)
+    if agent_py is None:
+        (root / "agent.py").unlink()
+    else:
+        (root / "agent.py").write_text(agent_py)
+    _commit_all(root)
+    result = _run(root, monkeypatch)
+    assert result.exit_code != 0 and message in result.output
+    assert "Traceback" not in result.output

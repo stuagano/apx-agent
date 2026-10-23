@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +31,8 @@ class Migration:
     text: str
     missing: dict[str, Any]
     removed_agent_table: bool
+    manual: list[str] = field(default_factory=list)
+    """[tool.apx.agent] keys that aren't settings; the user removes them by hand."""
 
 
 def cut_sections(text: str, prefix: str) -> str:
@@ -113,7 +115,8 @@ def plan_migration(pyproject: Path, agent: BaseAgent) -> Migration:
     else:
         removed = True
     new = new.rstrip("\n") + "\n\n" + _deploy_block(deploy)
-    return Migration(new.rstrip("\n") + "\n", missing, removed)
+    manual = sorted(set(remaining) - set(runtime))
+    return Migration(new.rstrip("\n") + "\n", missing, removed, manual)
 
 
 def snippet(missing: dict[str, Any]) -> str:

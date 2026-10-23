@@ -91,3 +91,24 @@ def test_app_name_is_left_to_its_own_reader(tmp_path: Path) -> None:
     path = _project(tmp_path, '[tool.apx.deploy]\napp_name = "mcp-orders"\nhost = "apps"\n')
     config = _load_agent_config(pyproject_path=path)
     assert (config.name, config.host) == ("orders-agent", "apps")
+
+
+def test_existing_apps_target_metadata_is_left_alone(tmp_path: Path) -> None:
+    # Pre-3a [tool.apx.deploy] carries Apps-target metadata (target, bundle_name) read elsewhere.
+    path = _project(tmp_path, '[tool.apx.agent]\nname = "a"\n\n[tool.apx.deploy]\ntarget = "apps"\n'
+                              'bundle_name = "mcp-a"\napp_name = "mcp-a"\n')
+    config = _load_agent_config(pyproject_path=path)
+    assert config.name == "a" and config.deploy is None
+
+
+def test_a_table_of_only_foreign_keys_declares_no_config(tmp_path: Path) -> None:
+    path = _project(tmp_path, '[tool.apx.deploy]\napp_name = "mcp-x"\ntarget = "apps"\n')
+    assert _load_agent_config(pyproject_path=path) is None
+
+
+def test_every_in_repo_project_still_loads() -> None:
+    root = Path(__file__).resolve().parents[1]
+    projects = sorted(p for p in root.glob("examples/**/pyproject.toml") if ".venv" not in p.parts)
+    assert projects
+    for path in projects:
+        _load_agent_config(pyproject_path=path)  # raises on a regression

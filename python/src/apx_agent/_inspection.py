@@ -208,14 +208,17 @@ _AGENT_SECTION = ("tool", "apx", "agent")
 
 
 def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
-    """Merge ``[tool.apx.deploy]`` (name, host, DeployConfig keys) into agent *fields*; ``app_name`` stays put."""
+    """Merge ``[tool.apx.deploy]`` (name, host, DeployConfig keys) into agent *fields*; other keys stay put."""
     table = data.get("tool", {}).get("apx", {}).get("deploy")
     if not table:
         return fields
+    from ._models import DeployConfig
+
     merged = dict(fields)
     deploy = dict(merged.get("deploy", {}))
     for key, value in table.items():
-        if key == "app_name":  # the Apps API App name (#986); _apps_api_app_name reads it
+        # Only 3a's keys fold in; Apps-target metadata (target, bundle_name, app_name) has its own readers.
+        if key not in ("name", "host") and key not in DeployConfig.model_fields:
             continue
         if key in ("name", "host"):
             target, label, suffix = merged, key, ""
@@ -227,7 +230,7 @@ def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str
         target[key] = value
     if deploy:
         merged["deploy"] = deploy
-    if "name" not in merged:
+    if merged and "name" not in merged:
         name = data.get("project", {}).get("name")
         if name:
             merged["name"] = name
