@@ -572,24 +572,13 @@ def _databrickscfg_profiles() -> list[str]:
 
 def _set_toml_key(path: Path, section: str, key: str, value: str) -> None:
     """Set ``key = "<value>"`` inside ``[section]`` only, creating the section/file if missing."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    line = f'{key} = "{escaped}"\n'
-    lines = path.read_text().splitlines(keepends=True) if path.exists() else []
-    header = f"[{section}]"
-    start = next((i for i, text in enumerate(lines) if text.strip() == header), None)
-    if start is None:
-        prefix = "" if not lines or lines[-1].endswith("\n") else "\n"
-        path.write_text("".join(lines) + prefix + ("\n" if lines else "") + header + "\n" + line)
-        return
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
-    for i in range(start + 1, end):
-        if pattern.match(lines[i]):
-            lines[i] = line
-            break
-    else:
-        lines.insert(start + 1, line)
-    path.write_text("".join(lines))
+    from ._migrate_config import set_key_text
+
+    try:
+        text = set_key_text(path.read_text() if path.exists() else "", section, key, value)
+    except ValueError as exc:
+        raise click.ClickException(f"{path.name}: {exc}; edit it by hand.") from exc
+    path.write_text(text)
 
 
 def _save_to_pyproject(key: str, value: str, *, local: bool = False) -> bool:
@@ -599,16 +588,26 @@ def _save_to_pyproject(key: str, value: str, *, local: bool = False) -> bool:
     settings like ``profile``). Registration keys go to ``[tool.apx.deploy]``.
     Anything else still goes to an existing ``[tool.apx.agent]``. Returns True on success.
     """
+    import tomllib
+
     from ._inspection import REGISTRATION_KEYS
 
+    def _in_legacy(path: Path) -> bool:
+        # A key still in [tool.apx.agent] is updated there, so the file never declares it twice.
+        try:
+            return key in tomllib.loads(path.read_text()).get("tool", {}).get("apx", {}).get("agent", {})
+        except (OSError, tomllib.TOMLDecodeError):
+            return False
+
     if local:
-        _set_toml_key(Path.cwd() / ".apx.local", "tool.apx", key, value)
+        target = Path.cwd() / ".apx.local"
+        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx", key, value)
         return True
     target = Path.cwd() / "pyproject.toml"
     if not target.exists():
         return False
     if key in REGISTRATION_KEYS:
-        _set_toml_key(target, "tool.apx.deploy", key, value)
+        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx.deploy", key, value)
         return True
     if "[tool.apx.agent]" not in target.read_text():
         return False
@@ -5001,14 +5000,29 @@ def migrate_config() -> None:
     pyproject = cwd / "pyproject.toml"
     local_path = cwd / ".apx.local"
     local_text = local_path.read_text() if local_path.exists() else None
-    local_new = _migrate_config.migrate_local(local_text) if local_text is not None else None
-    if local_new is not None:
-        import shutil
+    try:
+        local_new = _migrate_config.migrate_local(local_text) if local_text is not None else None
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        raise click.ClickException(f".apx.local: {exc}") from exc
 
-        shutil.copyfile(local_path, cwd / ".apx.local.bak")
+    def _apply_local() -> None:
+        # Last, and only after pyproject.toml migrated (or had nothing to do).
+        if local_new is None or local_text is None:
+            return
+        backup = cwd / ".apx.local.bak"
+        n = 2
+        while backup.exists():
+            backup, n = cwd / f".apx.local.bak.{n}", n + 1
+        before_flat = _read_apx_agent_config(pyproject)
+        backup.write_text(local_text)
         local_path.write_text(local_new)
-        click.echo("migrated .apx.local to [tool.apx] (backup: .apx.local.bak)")
+        if _read_apx_agent_config(pyproject) != before_flat:
+            local_path.write_text(local_text)
+            raise click.ClickException("migrating .apx.local changed the effective settings; restored it.")
+        click.echo(f"migrated .apx.local to [tool.apx] (backup: {backup.name})")
+
     if "agent" not in tomllib.loads(pyproject.read_text()).get("tool", {}).get("apx", {}):
+        _apply_local()
         if local_new is None:
             click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
         return
@@ -5065,6 +5079,7 @@ def migrate_config() -> None:
     if not same:
         pyproject.write_text(original)
         raise click.ClickException("migrate-config changed the effective config; restored pyproject.toml.")
+    _apply_local()
     click.echo("moved deploy settings to [tool.apx.deploy]")
     if migration.removed_agent_table:
         click.echo("removed [tool.apx.agent]: every field is declared in Python")

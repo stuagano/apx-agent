@@ -265,3 +265,41 @@ def test_cli_migrates_apx_local_with_a_backup_even_when_pyproject_is_done(
     assert tomllib.loads((root / ".apx.local").read_text()) == {"tool": {"apx": {"profile": "dev"}}}
     assert (root / ".apx.local.bak").read_text() == '[tool.apx.agent]\nprofile = "dev"\n'
     assert "migrated .apx.local" in result.output
+
+
+def test_migrate_local_never_overrides_a_newer_tool_apx_key() -> None:
+    from apx_agent._migrate_config import migrate_local
+
+    out = migrate_local('[tool.apx]\nprofile = "new"\n\n[tool.apx.agent]\nprofile = "stale"\n')
+    assert out is not None and tomllib.loads(out) == {"tool": {"apx": {"profile": "new"}}}
+
+
+def test_tool_apx_nested_values_survive_moving_dev_keys(tmp_path: Path) -> None:
+    text = _PYPROJECT.replace('[tool.apx.agent]\n', '[tool.apx.agent]\nprofile = "dev"\n')
+    text += '\n[tool.apx]\nmeta = { a = 1 }\nother.x = 2\n'
+    migration = plan_migration(_write(tmp_path, text), Agent(name="inspector", tools=[]))
+    apx = tomllib.loads(migration.text)["tool"]["apx"]
+    assert (apx["profile"], apx["meta"], apx["other"]) == ("dev", {"a": 1}, {"x": 2})
+
+
+def test_apx_local_is_untouched_when_the_pyproject_migration_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repo(tmp_path, _AGENT_PY_BARE)
+    (root / ".apx.local").write_text('[tool.apx.agent]\nprofile = "dev"\n')
+    (root / "pyproject.toml").write_text(_PYPROJECT + "\n# dirty\n")
+    result = _run(root, monkeypatch)
+    assert result.exit_code != 0
+    assert (root / ".apx.local").read_text() == '[tool.apx.agent]\nprofile = "dev"\n'
+
+
+def test_an_existing_backup_is_never_overwritten(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _repo(tmp_path, _AGENT_PY_BARE)
+    (root / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nspace = "s"\n')
+    _commit_all(root)
+    (root / ".apx.local").write_text('[tool.apx.agent]\nprofile = "dev"\n')
+    (root / ".apx.local.bak").write_text("PRECIOUS")
+    result = _run(root, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert (root / ".apx.local.bak").read_text() == "PRECIOUS"
+    assert (root / ".apx.local.bak.2").read_text() == '[tool.apx.agent]\nprofile = "dev"\n'

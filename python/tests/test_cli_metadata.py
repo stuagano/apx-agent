@@ -102,3 +102,33 @@ def test_writer_adds_to_an_existing_section_with_other_keys(tmp_path: Path) -> N
     path = _write(tmp_path, '[tool.apx]\nexperiment = "/e"\n')
     _set_toml_key(path, "tool.apx", "profile", "dev")
     assert tomllib.loads(path.read_text())["tool"]["apx"] == {"experiment": "/e", "profile": "dev"}
+
+
+def test_saving_a_key_still_in_the_legacy_table_updates_it_there(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent.cli import _save_profile_to_pyproject, _save_to_pyproject
+
+    _write(tmp_path, '[tool.apx.agent]\nsupervisor_id = "old"\n', local='[tool.apx.agent]\nprofile = "old"\n')
+    monkeypatch.chdir(tmp_path)
+    assert _save_to_pyproject("supervisor_id", "new") and _save_profile_to_pyproject("new")
+    flat = _read_apx_agent_config(tmp_path / "pyproject.toml")  # no conflict
+    assert (flat["supervisor_id"], flat["profile"]) == ("new", "new")
+
+
+@pytest.mark.parametrize("header", ["[tool.apx.deploy]  # deploy", "[ tool.apx.deploy ]"])
+def test_writer_recognises_commented_and_spaced_headers(tmp_path: Path, header: str) -> None:
+    from apx_agent.cli import _set_toml_key
+
+    path = _write(tmp_path, f'{header}\napp_name = "a"\n')
+    _set_toml_key(path, "tool.apx.deploy", "supervisor_id", "s")
+    assert tomllib.loads(path.read_text())["tool"]["apx"]["deploy"] == {"app_name": "a", "supervisor_id": "s"}
+
+
+def test_writer_refuses_to_write_invalid_toml(tmp_path: Path) -> None:
+    from apx_agent.cli import _set_toml_key
+
+    body = '[tool.apx]\nnote = """\n[not a header]\n"""\nprofile = "x"\n'
+    path = _write(tmp_path, body)
+    original = path.read_text()
+    with pytest.raises(click.ClickException, match="would not be valid TOML"):
+        _set_toml_key(path, "tool.apx", "profile", "y")
+    assert path.read_text() == original
