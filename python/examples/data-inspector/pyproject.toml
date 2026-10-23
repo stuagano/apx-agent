@@ -41,7 +41,7 @@ api-prefix = "/api"
 name = "data_inspector"
 target = "durable_agent_server"
 description = "Inspect and forensically analyze Delta tables — check data presence, binary search version history, diff versions, and audit who changed what"
-model = "databricks-claude-sonnet-4-6"
+model = "system.ai.claude-sonnet-4-6"
 module = "agent:agent"
 profile = "fe-stable"
 url = ""
@@ -52,7 +52,7 @@ registry = ""
 # backend requires an agent-bricks- name.
 backend = "apps_api"
 entrypoint = "agent_server"
-include = ["databricks_tools_core-0.1.0-py3-none-any.whl"]
+include = ["app.py", "databricks_tools_core-0.1.0-py3-none-any.whl"]
 
 [tool.apx.deploy]
 # App name MUST start with 'mcp-' for Databricks External MCP discovery.
