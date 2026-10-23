@@ -208,13 +208,15 @@ _AGENT_SECTION = ("tool", "apx", "agent")
 
 
 def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
-    """Merge ``[tool.apx.deploy]`` (name, host, DeployConfig keys) into agent *fields*."""
+    """Merge ``[tool.apx.deploy]`` (name, host, DeployConfig keys) into agent *fields*; ``app_name`` stays put."""
     table = data.get("tool", {}).get("apx", {}).get("deploy")
     if not table:
         return fields
     merged = dict(fields)
     deploy = dict(merged.get("deploy", {}))
     for key, value in table.items():
+        if key == "app_name":  # the Apps API App name (#986); _apps_api_app_name reads it
+            continue
         if key in ("name", "host"):
             target, label, suffix = merged, key, ""
         else:

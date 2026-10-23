@@ -4980,6 +4980,58 @@ def migrate_agent_toml(module: str) -> None:
     click.echo(f"wrote {path}")
 
 
+@agents.command("migrate-config")
+def migrate_config() -> None:
+    """Move [tool.apx.agent] to [tool.apx.deploy] and the Python agent (safe to re-run)."""
+    import importlib
+    import subprocess
+
+    from . import _migrate_config
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
+
+    cwd = Path.cwd()
+    pyproject = cwd / "pyproject.toml"
+    status = subprocess.run(["git", "status", "--porcelain", "--", "pyproject.toml"],
+                            cwd=cwd, capture_output=True, text=True, check=False)
+    if status.returncode != 0 or status.stdout.strip():
+        raise click.ClickException(
+            "pyproject.toml has uncommitted changes; commit them first (git is migrate-config's undo).")
+    if str(cwd) not in sys.path:
+        sys.path.insert(0, str(cwd))
+    sys.modules.pop("agent", None)
+    agent = importlib.import_module("agent").agent  # raw: no finalize_agent, so only what Python declares
+    try:
+        before = _load_agent_config(pyproject_path=pyproject)
+        migration = _migrate_config.plan_migration(pyproject, agent)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    original = pyproject.read_text()
+    if migration.text == original:
+        click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
+        return
+    pyproject.write_text(migration.text)
+    try:
+        after = _load_agent_config(pyproject_path=pyproject)
+        # Constructor fields were checked against the agent by plan_migration; once the
+        # table is gone they fall back to defaults in the config, so they're excluded here.
+        skip = set(_migrate_config._CONSTRUCTOR)
+        same = (before is not None and after is not None
+                and resolve_settings(agent, after).model_dump(exclude=skip)
+                == resolve_settings(agent, before).model_dump(exclude=skip))
+    except ValueError:
+        same = False
+    if not same:
+        pyproject.write_text(original)
+        raise click.ClickException("migrate-config changed the effective config; restored pyproject.toml.")
+    click.echo("moved deploy settings to [tool.apx.deploy]")
+    if migration.removed_agent_table:
+        click.echo("removed [tool.apx.agent]: every field is declared in Python")
+    else:
+        click.echo("kept [tool.apx.agent]; add these to the root agent, then re-run:")
+        click.echo("  " + _migrate_config.snippet(migration.missing))
+
+
 @agents.command("ontology-jumpstart")
 @click.argument("model_json", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--catalog", required=True, help="APX catalog envelope for generated grounding.")

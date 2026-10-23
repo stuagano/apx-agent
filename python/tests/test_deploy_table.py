@@ -84,3 +84,10 @@ def test_durable_doctor_reads_a_deploy_only_project(tmp_path: Path) -> None:
     (root / "agent.py").write_text("from apx_agent import LlmAgent\nagent = LlmAgent(name='p', tools=[])\n")
     checks = {c.name: c for c in check_durable_readiness(root)}
     assert checks["Config"].status is Status.OK
+
+
+def test_app_name_is_left_to_its_own_reader(tmp_path: Path) -> None:
+    # [tool.apx.deploy] app_name (#986) names the Apps API App; it isn't an AgentConfig field.
+    path = _project(tmp_path, '[tool.apx.deploy]\napp_name = "mcp-orders"\nhost = "apps"\n')
+    config = _load_agent_config(pyproject_path=path)
+    assert (config.name, config.host) == ("orders-agent", "apps")
