@@ -294,10 +294,12 @@ def _with_agent_settings(flat: dict[str, Any], cwd: Path | None = None) -> dict[
         return flat
     merged = dict(flat)
     for key in _AGENT_SETTING_KEYS:
-        if key not in config.model_fields_set:
+        # A key already in *flat* came from the TOML or .apx.local (which overrides it);
+        # Python can't disagree with the TOML without a SettingsConflict, so only fill gaps.
+        if key in flat or key not in config.model_fields_set:
             continue
         value = getattr(config, key)
-        if value is None or (key == "name" and value == "agent" and "name" not in flat):
+        if value is None or (key == "name" and value == "agent"):
             continue
         merged[key] = value.model_dump() if hasattr(value, "model_dump") else value
     return merged
@@ -6719,7 +6721,14 @@ def eval_cmd(
 
     from ._inspection import _resolve_agent_pyproject
 
-    config = _read_apx_agent_config() if endpoint_url else _read_apx_agent_config(_resolve_agent_pyproject())
+    # A remote --endpoint-url eval must not import the local agent.
+    if endpoint_url:
+        config = _read_apx_agent_config()
+    else:
+        project = _resolve_agent_pyproject()
+        config = _read_apx_agent_config(project)
+        if project is not None:
+            config = _with_agent_settings(config, project.parent)
     effective_experiment = experiment or config.get("experiment")
 
     if endpoint_url:
@@ -7342,7 +7351,7 @@ def deploy(
             "skips the deploy step — combined, nothing would happen. Drop "
             "one of the two."
         )
-    config = _read_apx_agent_config()
+    config = _with_agent_settings(_read_apx_agent_config())
     if model is None:
         raise click.UsageError(
             "--model is required when --target model-serving. "
@@ -10483,7 +10492,7 @@ def _resolve_project_uc_name(cwd: Path) -> str | None:
     an Apps bundle name (``databricks.yml``) composed via
     ``_resolve_apps_uc_name``, else ``[tool.apx.agent].registered_model``.
     """
-    config = _read_apx_agent_config(cwd / "pyproject.toml")
+    config = _with_agent_settings(_read_apx_agent_config(cwd / "pyproject.toml"), cwd)
     try:
         app_name = _resolve_project_app_name(cwd)
     except Exception:
@@ -12039,7 +12048,7 @@ def _do_advertise(
     from apx_agent import publish_to_registry
     from apx_agent._publish import publish_tools_to_registry
 
-    cfg = _read_apx_agent_config()
+    cfg = _with_agent_settings(_read_apx_agent_config())
     profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
     if profile:
         os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
@@ -12248,7 +12257,7 @@ def supervisor_add(
     """
     if endpoint and app:
         raise click.UsageError("--endpoint and --app are mutually exclusive — pass one.")
-    cfg = _read_apx_agent_config()
+    cfg = _with_agent_settings(_read_apx_agent_config())
     profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
     if profile:
         os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
@@ -13417,7 +13426,11 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
 
     agent = _load_finalized_agent(module)
 
-    effective_model = model or _read_apx_agent_config().get("model")
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
+
+    declared = resolve_settings(agent, _load_agent_config())
+    effective_model = model or (declared.model if "model" in declared.model_fields_set else None)
 
     findings = lint_agent(agent, model=effective_model)
 
@@ -13716,7 +13729,11 @@ def test_cmd(
     """
     agent = _load_finalized_agent(module)
 
-    effective_model = model or _read_apx_agent_config().get("model")
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
+
+    declared = resolve_settings(agent, _load_agent_config())
+    effective_model = model or (declared.model if "model" in declared.model_fields_set else None)
     if not effective_model:
         raise click.UsageError(
             "Pass --model NAME or set [tool.apx.agent].model in pyproject.toml."
@@ -14368,7 +14385,7 @@ def register_agent_cmd(
     """
     with _json_cli_errors(as_json):
         cwd = Path.cwd()
-        config = _read_apx_agent_config()
+        config = _with_agent_settings(_read_apx_agent_config(), cwd)
         profile = profile or config.get("profile")
         if profile:
             # register_apps_manifest logs via ambient mlflow auth — make the

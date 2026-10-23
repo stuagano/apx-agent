@@ -20,13 +20,20 @@ def _project(tmp_path: Path, agent_py: str | None, toml: str | None = None) -> P
 
 @pytest.fixture
 def in_project(monkeypatch: pytest.MonkeyPatch):
+    saved = sys.modules.pop("agent", None)
+
     def enter(root: Path) -> Path:
         monkeypatch.chdir(root)
         monkeypatch.syspath_prepend(str(root))
         monkeypatch.setenv("APX_PYPROJECT", str(root / "pyproject.toml"))
-        monkeypatch.delitem(sys.modules, "agent", raising=False)
+        sys.modules.pop("agent", None)
         return root
-    return enter
+
+    yield enter
+    # The project's agent.py was imported as `agent`; never leak it into later tests.
+    sys.modules.pop("agent", None)
+    if saved is not None:
+        sys.modules["agent"] = saved
 
 
 def test_static_read_returns_literal_keywords(tmp_path: Path) -> None:
@@ -94,3 +101,40 @@ def test_isolated_effective_config_imports_under_the_doctor_harness(tmp_path: Pa
     config = effective_config_isolated(root)
     assert config is not None and (config.name, config.model) == ("iso", "mi")
     assert "agent" not in set(sys.modules) - before
+
+
+def test_lint_uses_the_python_declared_model(tmp_path: Path, in_project, monkeypatch: pytest.MonkeyPatch) -> None:
+    from click.testing import CliRunner
+
+    from apx_agent import cli
+
+    in_project(_project(tmp_path, "from apx_agent import Agent\nagent = Agent(name='l', model='py-model', tools=[])\n"))
+    seen: list[str | None] = []
+
+    def fake_lint(agent, model=None):
+        seen.append(model)
+        return []
+
+    monkeypatch.setattr("apx_agent._lint.lint_agent", fake_lint)
+    CliRunner().invoke(cli.main, ["eval", "lint"])
+    assert seen == ["py-model"]
+
+
+def test_eval_without_a_model_anywhere_is_still_a_usage_error(tmp_path: Path, in_project) -> None:
+    from click.testing import CliRunner
+
+    from apx_agent import cli
+
+    root = in_project(_project(tmp_path, "from apx_agent import Agent\nagent = Agent(name='e', tools=[])\n"))
+    (root / "evals").mkdir()
+    (root / "evals" / "basic.yaml").write_text("cases: []\n")
+    result = CliRunner().invoke(cli.main, ["eval", "run", "evals/basic.yaml"])
+    assert result.exit_code != 0 and "--model is required" in result.output
+
+
+def test_no_cli_site_reads_agent_settings_from_the_raw_table() -> None:
+    import re
+
+    source = (Path(__file__).resolve().parents[1] / "src" / "apx_agent" / "cli.py").read_text()
+    raw = re.findall(r'_read_apx_agent_config\([^)]*\)\.get\("(model|name|description|data)"\)', source)
+    assert raw == ["name", "name"], raw  # status / prompt: Task 3 makes them static
