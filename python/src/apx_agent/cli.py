@@ -4999,8 +4999,18 @@ def migrate_config() -> None:
 
     cwd = Path.cwd()
     pyproject = cwd / "pyproject.toml"
+    local_path = cwd / ".apx.local"
+    local_text = local_path.read_text() if local_path.exists() else None
+    local_new = _migrate_config.migrate_local(local_text) if local_text is not None else None
+    if local_new is not None:
+        import shutil
+
+        shutil.copyfile(local_path, cwd / ".apx.local.bak")
+        local_path.write_text(local_new)
+        click.echo("migrated .apx.local to [tool.apx] (backup: .apx.local.bak)")
     if "agent" not in tomllib.loads(pyproject.read_text()).get("tool", {}).get("apx", {}):
-        click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
+        if local_new is None:
+            click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
         return
     status = subprocess.run(["git", "status", "--porcelain", "--", "pyproject.toml"],
                             cwd=cwd, capture_output=True, text=True, check=False)
@@ -5024,6 +5034,13 @@ def migrate_config() -> None:
     except Exception as exc:  # noqa: BLE001 — any import failure is the user's agent.py
         sys.modules.pop("agent", None)
         raise click.ClickException(f"could not import agent.py: {type(exc).__name__}: {exc}") from exc
+    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
+
+    def _meta() -> dict[str, Any]:
+        flat = _read_apx_agent_config(pyproject)
+        return {k: flat[k] for k in (*DEV_KEYS, *REGISTRATION_KEYS) if k in flat}
+
+    before_meta = _meta()
     try:
         before = _load_agent_config(pyproject_path=pyproject)
         migration = _migrate_config.plan_migration(pyproject, agent)
@@ -5041,8 +5058,9 @@ def migrate_config() -> None:
         skip = set(_migrate_config._CONSTRUCTOR)
         same = (before is not None and after is not None
                 and resolve_settings(agent, after).model_dump(exclude=skip)
-                == resolve_settings(agent, before).model_dump(exclude=skip))
-    except ValueError:
+                == resolve_settings(agent, before).model_dump(exclude=skip)
+                and _meta() == before_meta)
+    except (ValueError, click.ClickException):
         same = False
     if not same:
         pyproject.write_text(original)
