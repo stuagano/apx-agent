@@ -205,3 +205,21 @@ def test_doctor_reports_a_broken_agent_py(tmp_path: Path) -> None:
     check = check_model_endpoint(root, auth_ok=True)
     assert check is not None and check.status is Status.FAIL
     assert "could not import agent.py: RuntimeError: boom" in check.detail
+
+
+def test_durable_discovery_uses_the_compiled_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import Agent
+    from apx_agent import _durable_agent
+    from apx_agent._models import AgentConfig
+
+    seen: list[AgentConfig | None] = []
+    monkeypatch.setattr("apx_agent._wiring.mount_durable_protocol",
+                        lambda app, agent, config: seen.append(config))
+    config = AgentConfig(name="disc", model="m", target="durable_agent_server")
+    monkeypatch.chdir(tmp_path)  # no pyproject.toml here: discovery must not read the working directory
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    _durable_agent.compile_to_durable_agent_server(Agent(name="disc", tools=[]), model="m", service_ws=MagicMock(),
+                                                   config=config)
+    assert seen and seen[0] == config.model_copy(update={"target": "durable_agent_server"})

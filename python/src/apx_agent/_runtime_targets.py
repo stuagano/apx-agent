@@ -226,4 +226,5 @@ def compile_agent(
 
     return compile_to_durable_agent_server(agent, model=model, service_ws=service_ws, checkpointer=checkpointer,
                                            session_store=report.session_store, require_user=report.user_identity_required,
-                                           recovery=report.recovery_enabled, project_root=project_root)
+                                           recovery=report.recovery_enabled, project_root=project_root,
+                                           config=config)
