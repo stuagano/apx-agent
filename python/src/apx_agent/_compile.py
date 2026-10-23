@@ -379,6 +379,32 @@ def _governance_exception_middleware() -> Any:
     return _GovernanceErrorMiddleware()
 
 
+def _authoritative_output_middleware(tool_name: str) -> Any:
+    """Stop after the current invocation's output-tool batch, before another model call."""
+    from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
+    from langchain_core.messages import AIMessage
+
+    class OutputState(AgentState):
+        _apx_output_start: int
+
+    class _AuthoritativeOutputMiddleware(AgentMiddleware):
+        state_schema = OutputState
+
+        def before_agent(self, state: Any, runtime: Any) -> dict[str, Any]:
+            return {"_apx_output_start": len(state["messages"])}
+
+        @hook_config(can_jump_to=["end"])
+        def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+            # ToolNode has finished the entire batch; the outer wrapper validates it.
+            if any(call["name"] == tool_name
+                   for message in state["messages"][state["_apx_output_start"]:]
+                   if isinstance(message, AIMessage) for call in message.tool_calls):
+                return {"jump_to": "end"}
+            return None
+
+    return _AuthoritativeOutputMiddleware()
+
+
 def _compile_llm_agent(
     agent: LlmAgent,
     ctx: CompileContext,
@@ -430,6 +456,8 @@ def _compile_llm_agent(
         raise ValueError(f"{agent._name}: duplicate tool name(s) {', '.join(map(repr, duplicates))}; "
                          "rename the Python tool or the platform tool.")
     middleware = [_governance_exception_middleware()]
+    if agent._output_tool is not None:
+        middleware.append(_authoritative_output_middleware(agent._output_tool))
     if ctx.escalate_failures:
         from ._step_contract import unavailable_middleware
 
@@ -493,7 +521,8 @@ def _compile_llm_agent(
         # superstep; allow two graph supersteps per requested iteration so a
         # tool-calling turn isn't cut off mid-round, plus a small margin for
         # the terminal answer hop.
-        config["recursion_limit"] = max_iter * 2 + 1
+        # Authoritative completion adds one entry node and one gate per round.
+        config["recursion_limit"] = max_iter * 3 + 3 if agent._output_tool is not None else max_iter * 2 + 1
     if config:
         runnable = runnable.with_config(**config)
     return runnable
@@ -1291,10 +1320,9 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
                 raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "required_tool_execution"}])
             # Only this leaf's executed result can become evidence, never the model's rewrite.
             text = outputs[0].content
-            extra = dict(last_ai.additional_kwargs)
-            extra.pop("apx_data_parts", None)
-            authoritative = last_ai.model_copy(update={"content": text, "additional_kwargs": extra})
-            new_msgs = [authoritative if message is last_ai else message for message in new_msgs]
+            # This is deterministic completion, not another model generation.
+            authoritative = AIMessage(content=text)
+            new_msgs.append(authoritative)
             last_ai = authoritative
 
         guard_text = text

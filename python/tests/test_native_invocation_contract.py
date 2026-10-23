@@ -11,13 +11,14 @@ from databricks_agentkit.runtime.auth import RequestAuthContext
 from databricks_agentkit.runtime.store import InMemoryRuntimeStore
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import RootModel
 
 from apx_agent import Dependencies, FunctionPolicy, LlmAgent, PolicyAction, PolicyGate, PolicyResult, compile_agent
 from tests.test_runtime_targets import execution, _write_native_pyproject  # noqa: F401
 
 
 @pytest.fixture
-def native(execution, monkeypatch, tmp_path):
+def native(execution, monkeypatch, tmp_path, request):
     principals = []
 
     def record(value: str, principal: Dependencies.Principal) -> str:
@@ -37,7 +38,9 @@ def native(execution, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
-    agent = LlmAgent(name="contract", tools=[record])
+    authoritative = request.param if hasattr(request, "param") else False
+    typed = {"output_schema": RootModel[str], "output_tool": "record"} if authoritative else {}
+    agent = LlmAgent(name="contract", tools=[record], **typed)
     # Buffered output gives a deterministic persisted application event.
     agent._after_model = lambda output: output
     saver = InMemorySaver()
@@ -131,6 +134,7 @@ def test_native_principal_reads_and_saved_state_exclude_credentials(native):
     assert not native.app._request_auth
 
 
+@pytest.mark.parametrize("native", [False, True], indirect=True, ids=["ordinary", "authoritative"])
 def test_native_approval_is_interrupted_output_inside_completed_invocation(native):
     native.agent._before_tool = PolicyGate([
         FunctionPolicy(lambda event: PolicyResult(action=PolicyAction.ASK, reason="approval required")),

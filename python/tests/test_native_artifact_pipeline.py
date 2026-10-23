@@ -143,6 +143,176 @@ def test_authoritative_output_uses_executed_tool_not_schema_valid_model_rewrite(
     assert run.result["messages"][-1].additional_kwargs["apx_data_parts"][0] == native_data_part(Packet, {"amount": 4})
 
 
+@pytest.mark.parametrize("mode", ["sync", "async", "stream"])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_authoritative_completion_needs_one_model_call_and_preserves_tool_state(mode, mixed, monkeypatch):
+    from apx_agent import compile_to_langgraph
+    from langchain_core.callbacks import BaseCallbackHandler
+
+    calls, ended, tool_started, tool_ended, completed = [], [], [], [], []
+
+    class CallCounter(BaseCallbackHandler):
+        def on_chat_model_start(self, serialized, messages, **kwargs):
+            calls.append(kwargs["run_id"])
+
+        def on_llm_end(self, response, **kwargs):
+            ended.append(kwargs["run_id"])
+
+        def on_tool_start(self, serialized, input_str, **kwargs):
+            tool_started.append(kwargs["run_id"])
+
+        def on_tool_end(self, output, **kwargs):
+            tool_ended.append(kwargs["run_id"])
+
+    def record(value: str, state: Dependencies.State) -> str:
+        """Record exact governed evidence."""
+        state["written"] = value
+        return '{"amount":4}'
+
+    effects = []
+
+    def helper() -> str:
+        """Finish an accompanying operation."""
+        effects.append("helper")
+        return "done"
+
+    class BatchModel(ToolModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            reply = result.generations[0].message
+            if mixed and reply.tool_calls:
+                reply.tool_calls.append({"name": "helper", "args": {}, "id": "helper-call", "type": "tool_call"})
+            return result
+
+    monkeypatch.setattr("apx_agent._compile._build_chat_databricks", lambda *a, **k: BatchModel())
+    agent = LlmAgent(name="proof", tools=[record, helper], output_schema=Packet,
+                     output_key="signal", output_tool="record", max_iterations=1,
+                     after_agent_callback=completed.append)
+    graph = compile_to_langgraph(agent, ws=None, model="offline")
+    inputs = {"messages": [*executed(900, "prior"), HumanMessage(content="record")], "state": {}}
+    config = {"callbacks": [CallCounter()]}
+
+    async def invoke():
+        if mode == "stream":
+            results = [value async for value in graph.astream(inputs, config, stream_mode="values")]
+            return results[-1]
+        return await graph.ainvoke(inputs, config)
+
+    result = graph.invoke(inputs, config) if mode == "sync" else asyncio.run(invoke())
+    assert len(calls) == 1
+    assert ended == calls
+    assert len(tool_started) == (2 if mixed else 1)
+    assert set(tool_ended) == set(tool_started)
+    assert completed == ['{"value": 4, "day": "2026-01-01"}']
+    assert effects == (["helper"] if mixed else [])
+    assert result["state"]["written"] == "proof"
+    assert result["state"]["signal"] == {"value": 4, "day": "2026-01-01"}
+    final = result["messages"][-1]
+    assert isinstance(final, AIMessage) and not final.tool_calls
+    assert final.usage_metadata is None
+    assert final.response_metadata == {}
+    assert final.id != result["messages"][3].id
+    assert sum(message.usage_metadata["total_tokens"] for message in result["messages"]
+               if isinstance(message, AIMessage) and message.usage_metadata) == 2
+
+
+@pytest.mark.parametrize("failure", ["missing", "duplicate", "error", "schema", "guardrail", "denied"])
+def test_authoritative_failure_never_completes_or_calls_model_again(failure, monkeypatch):
+    from apx_agent import compile_to_langgraph
+    from apx_agent._errors import ToolError
+
+    calls, completed, tool_effects = [], [], []
+
+    def record(value: str) -> str:
+        """Return exact evidence or an explicit tool error."""
+        tool_effects.append(value)
+        if failure == "error":
+            raise ToolError("unavailable")
+        return '{"amount":"invalid"}' if failure == "schema" else '{"amount":4}'
+
+    class FailureModel(ToolModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            calls.append("model")
+            if failure == "missing":
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content='{"amount":900}'))])
+            reply = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            if failure == "duplicate" and reply.generations[0].message.tool_calls:
+                reply.generations[0].message.tool_calls.append({"name": "record", "args": {"value": "duplicate"}, "id": "duplicate", "type": "tool_call"})
+            return reply
+
+    def deny(*args):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("apx_agent._compile._build_chat_databricks", lambda *a, **k: FailureModel())
+    agent = LlmAgent(name="proof", tools=[record], output_schema=Packet, output_key="signal",
+                     output_tool="record", after_agent_callback=completed.append,
+                     before_tool=deny if failure == "denied" else None,
+                     output_guardrails=[lambda text: "blocked"] if failure == "guardrail" else [])
+    graph = compile_to_langgraph(agent, ws=None, model="offline")
+    with pytest.raises(ValueError):
+        asyncio.run(graph.ainvoke({"messages": [HumanMessage(content="record")]}))
+    assert calls == ["model"]
+    assert completed == []
+    if failure in {"missing", "denied"}:
+        assert tool_effects == []
+
+
+def test_normal_tool_agent_still_generates_final_model_answer(monkeypatch):
+    from apx_agent import compile_to_langgraph
+
+    def record(value: str) -> str:
+        """Record a value."""
+        return value
+
+    monkeypatch.setattr("apx_agent._compile._build_chat_databricks", lambda *a, **k: ToolModel())
+    graph = compile_to_langgraph(LlmAgent(tools=[record]), ws=None, model="offline")
+    result = graph.invoke({"messages": [HumanMessage(content="record")]})
+    assert result["messages"][-1].content == "Recorded proof"
+    assert len([message for message in result["messages"] if isinstance(message, AIMessage)]) == 2
+
+
+def test_authoritative_gate_allows_helper_rounds_and_isolates_concurrent_invocations(monkeypatch):
+    from apx_agent import compile_to_langgraph
+
+    calls = []
+
+    def helper() -> str:
+        """Prepare the output tool."""
+        return "ready"
+
+    async def record(state: Dependencies.State) -> str:
+        """Return the invocation's evidence after yielding to another invocation."""
+        await asyncio.sleep(0)
+        return json.dumps({"amount": state["amount"]})
+
+    class PreparingModel(ToolModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            calls.append("model")
+            if isinstance(messages[-1], ToolMessage):
+                assert messages[-1].name == "helper", "No generation after authoritative output"
+                name = "record"
+            else:
+                name = "helper"
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(
+                content="", tool_calls=[{"name": name, "args": {}, "id": str(uuid.uuid4())}],
+            ))])
+
+    monkeypatch.setattr("apx_agent._compile._build_chat_databricks", lambda *a, **k: PreparingModel())
+    graph = compile_to_langgraph(LlmAgent(tools=[helper, record], output_schema=Packet,
+        output_key="signal", output_tool="record", max_iterations=2), ws=None, model="offline")
+
+    async def run():
+        return await asyncio.gather(*(graph.ainvoke({
+            "messages": [HumanMessage(content="record")], "state": {"amount": amount},
+        }) for amount in (4, 8)))
+
+    results = asyncio.run(run())
+    assert [result["state"]["signal"] for result in results] == [
+        {"value": 4, "day": "2026-01-01"}, {"value": 8, "day": "2026-01-01"},
+    ]
+    assert calls == ["model"] * 4
+
+
 def test_prior_leaf_tool_history_cannot_satisfy_current_execution():
     with pytest.raises(ValueError):
         run_leaf({"amount": 900}, tool=True, history=executed())
