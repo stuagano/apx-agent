@@ -519,7 +519,7 @@ def read_workspace_apps_scope_allowlist(ws: Any) -> WorkspaceAppsScopeAllowlist:
     if not isinstance(scopes, list) or any(not isinstance(scope, str) for scope in scopes):
         return WorkspaceAppsScopeAllowlist(allowed_scopes=None, readable=True)
     return WorkspaceAppsScopeAllowlist(
-        allowed_scopes=frozenset(scopes),
+        allowed_scopes=None if "*" in scopes else frozenset(scopes),
         readable=True,
     )
 
