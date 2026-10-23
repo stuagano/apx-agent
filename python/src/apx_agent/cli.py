@@ -9085,11 +9085,14 @@ def _native_execution_completed(body: Any) -> str | None:
     return content
 
 
-def _native_session_thread(agent_name: str | None, session_id: str, principal: str | None = None) -> Any:
-    """The checkpoint key native execution derives from the agent, caller and session."""
-    from ._durable_agent import session_thread_config
+def _active_since(entry: dict[str, Any], started: float) -> bool:
+    """True when a listed session was active at or after ``started`` (epoch seconds)."""
+    from datetime import datetime
 
-    return session_thread_config(agent_name, session_id, principal)
+    stamp = entry.get("last_activity_time")
+    if not isinstance(stamp, str):
+        return False
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() >= started
 
 
 def _native_session_has_message(checkpoint: Any, content: str) -> bool:
@@ -9115,20 +9118,22 @@ def _check_native_execution(
     *,
     profile: str | None,
     session_store: str | None,
-    agent_name: str | None = None,
-    user_scoped: bool = False,
 ) -> _NativeExecutionSmoke:
     """POST one ChatAgent invocation after native ``/readyz`` is durable.
 
     ``/readyz`` stays a store probe. This is the separate execution smoke: the
     deployed app must return a completed assistant message. When the deploy
-    knows the managed session store and agent name, the same thread is read
+    knows the managed session store, the session this invocation wrote is read
     back through the SDK saver. The bearer token is never logged. Never raises.
     """
     import json as _json
+    import time
     import urllib.error
     import urllib.request
     import uuid
+
+    # Session activity timestamps are server-side; allow modest clock skew.
+    started = time.time() - 60
 
     token: str | None = None
     try:
@@ -9193,14 +9198,22 @@ def _check_native_execution(
 
         ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
         saver = DatabricksSessionStoreSaver(session_store, workspace_client=ws)
-        # The handler keys the thread by the caller whenever the request carries a
-        # user (the Apps proxy forwards the deployer here); app-auth requests that
-        # reach it without one use the unkeyed thread. A request-user agent is
-        # always caller-keyed (#985).
-        principal = ws.current_user.me().id
-        threads = [_native_session_thread(agent_name, session_id, principal)]
-        if not user_scoped:
-            threads.append(_native_session_thread(agent_name, session_id))
+        # The SDK namespaces session_id by the request's identity (host, app,
+        # principal), so the deployer cannot rebuild the thread key. Find the
+        # session this invocation just wrote among the recently active ones (#985).
+        # ponytail: newest 20 sessions; a store busier than that between the POST and
+        # this read needs a server-side filter on the smoke's own session.
+        listed = ws.api_client.do("GET", f"/api/2.0/agents/session-stores/{session_store}/sessions",
+                                  query={"order_by": "last_activity_time desc", "page_size": 20})
+        recent = listed["sessions"] if isinstance(listed, dict) and "sessions" in listed else []
+        from langchain_core.runnables import RunnableConfig
+
+        threads: list[RunnableConfig] = [
+            {"configurable": {"thread_id": entry["session_id"], "actor_id": entry["actor_id"]}}
+            for entry in recent
+            if isinstance(entry, dict) and "session_id" in entry and "actor_id" in entry
+            and _active_since(entry, started)
+        ]
         saved = next((t for t in map(saver.get_tuple, threads) if _native_session_has_message(t, content)), None)
     except Exception as exc:
         return _NativeExecutionSmoke(
@@ -10884,8 +10897,6 @@ def _deploy_apps_impl(
     # None until a durable target is inspected. Smoke uses this so a composite
     # does not read back the auto-attached session it never bound.
     bound_session: str | None = None
-    # Set from the staged agent.toml: a request-user agent scopes its sessions by caller.
-    native_user_scoped = False
     if space_name is not None or (effective_config is not None and effective_config.target == "durable_agent_server"):
         from ._runtime_targets import inspect_target
 
@@ -11038,10 +11049,6 @@ def _deploy_apps_impl(
                     config=effective_config, authorization_plan=authorization_plan, agent=agent), log)
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
-            from ._agent_toml import load_agent_toml
-
-            staged_project = load_agent_toml(staged.parent)
-            native_user_scoped = staged_project is not None and staged_project.user_auth.required
 
         if space_client is not None:
             from ._app_space import validate_space_source
@@ -11307,8 +11314,6 @@ def _deploy_apps_impl(
                     app_url,
                     profile=profile,
                     session_store=bound_session,
-                    agent_name=getattr(agent, "_name", None),
-                    user_scoped=native_user_scoped,
                 )
                 if smoke.completed:
                     log(f"  execution: {smoke.detail}")
