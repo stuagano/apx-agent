@@ -398,7 +398,8 @@ def _upload_and_rollout(build_dir: Path, *, app_name: str, profile: str, workspa
     if not isinstance(user, str) or not user or "/" in user:
         raise click.ClickException("Could not resolve the current workspace user for the Apps API source path.")
     destination = f"/Workspace/Users/{user}/apx_deployments/{app_name}"
-    sync = _run_databricks_cmd(["sync", str(build_dir), destination, "--exclude", "uv.lock"], profile)
+    # .build/ is gitignored and sync honors .gitignore; --include "**" uploads it.
+    sync = _run_databricks_cmd(["sync", str(build_dir), destination, "--include", "**", "--exclude", "uv.lock"], profile)
     if sync.returncode != 0:
         raise click.ClickException(f"`databricks sync` failed (exit {sync.returncode}); source was not replaced and nothing was deleted.")
     deploy = _run_databricks_cmd(["apps", "deploy", app_name, "--source-code-path", destination], profile)

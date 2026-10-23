@@ -144,6 +144,15 @@ def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any) -> None:
     )
 
 
+def test_sync_uploads_the_gitignored_build_tree(harness: dict[str, Any]) -> None:
+    """``.build/`` is gitignored and ``databricks sync`` honors .gitignore, so
+    without an include override the source folder ends up empty (seen live)."""
+    _deploy(harness, _config(), LlmAgent(name="proof"))
+    sync = next(call for call in harness["state"]["calls"] if isinstance(call, tuple) and call[0] == "sync")
+    assert "--include" in sync and sync[sync.index("--include") + 1] == "**"
+    assert sync[sync.index("--exclude") + 1] == "uv.lock"
+
+
 def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any]) -> None:
     config = _config(space="app-space", include=["prompts.py"], env={"DATA_INSPECTOR_URL": "https://inspector.example"})
     _deploy(harness, config, LlmAgent(name="proof"))
