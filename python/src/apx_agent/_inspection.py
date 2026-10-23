@@ -205,6 +205,10 @@ def _patch_handler_signature(
 
 
 _AGENT_SECTION = ("tool", "apx", "agent")
+DEV_KEYS = ("profile", "experiment")
+"""Dev-loop CLI keys: top-level [tool.apx] (and .apx.local [tool.apx]). Sub-project 3b-1."""
+REGISTRATION_KEYS = ("registered_model", "catalog", "schema", "supervisor_id", "registry_table", "tools_table")
+"""Registration/publishing CLI keys: [tool.apx.deploy]. Sub-project 3b-1."""
 
 
 def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:

@@ -188,11 +188,11 @@ def test_existing_app_name_survives_the_migration(tmp_path: Path) -> None:
 
 def test_keys_that_are_not_settings_are_listed_for_manual_removal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _repo(tmp_path, _AGENT_PY_FULL)
-    (root / "pyproject.toml").write_text(_PYPROJECT.replace('[tool.apx.agent]\n', '[tool.apx.agent]\nregistered_model = "c.s.m"\n'))
+    (root / "pyproject.toml").write_text(_PYPROJECT.replace('[tool.apx.agent]\n', '[tool.apx.agent]\ncustom_flag = "x"\n'))
     _commit_all(root)
     result = _run(root, monkeypatch)
     assert result.exit_code == 0, result.output
-    assert "remove by hand once handled elsewhere: registered_model" in result.output
+    assert "remove by hand once handled elsewhere: custom_flag" in result.output
     assert "Agent(..., )" not in result.output
 
 
@@ -219,3 +219,87 @@ def test_agent_import_problems_are_clean_errors(tmp_path: Path, monkeypatch: pyt
     result = _run(root, monkeypatch)
     assert result.exit_code != 0 and message in result.output
     assert "Traceback" not in result.output
+
+
+def test_metadata_keys_move_to_their_homes(tmp_path: Path) -> None:
+    text = _PYPROJECT.replace('[tool.apx.agent]\n',
+                              '[tool.apx.agent]\nregistered_model = "c.s.m"\nprofile = "dev"\nexperiment = "/e"\n')
+    text += '\n[tool.apx]\nkeep = 1\n\n[tool.apx.metadata]\napp-name = "x"\n'
+    agent = Agent(name="inspector", tools=[], model="system.ai.claude-sonnet-4-6",
+                  instructions="Inspect tables.", examples=["Show tables", "Count rows"])
+    migration = plan_migration(_write(tmp_path, text), agent)
+    data = tomllib.loads(migration.text)
+    assert migration.manual == [] and migration.removed_agent_table is True
+    assert data["tool"]["apx"]["deploy"]["registered_model"] == "c.s.m"
+    assert data["tool"]["apx"]["profile"] == "dev" and data["tool"]["apx"]["experiment"] == "/e"
+    assert data["tool"]["apx"]["keep"] == 1
+    assert data["tool"]["apx"]["metadata"] == {"app-name": "x"}
+
+
+def test_data_triage_registered_model_is_not_manual(tmp_path: Path) -> None:
+    real = Path(__file__).resolve().parents[1] / "examples" / "data-triage-agent" / "pyproject.toml"
+    migration = plan_migration(_write(tmp_path, real.read_text()), Agent(name="data_triage_agent", tools=[]))
+    data = tomllib.loads(migration.text)
+    assert "registered_model" not in migration.manual
+    assert data["tool"]["apx"]["deploy"]["registered_model"] == "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"
+    assert data["tool"]["apx"]["deploy"]["app_name"] == "mcp-data-triage-agent"
+
+
+def test_migrate_local_moves_the_legacy_profile() -> None:
+    from apx_agent._migrate_config import migrate_local
+
+    out = migrate_local('[tool.apx.agent]\nprofile = "dev"\n')
+    assert out is not None and tomllib.loads(out) == {"tool": {"apx": {"profile": "dev"}}}
+    assert migrate_local('[tool.apx]\nprofile = "dev"\n') is None
+
+
+def test_cli_migrates_apx_local_with_a_backup_even_when_pyproject_is_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repo(tmp_path, _AGENT_PY_BARE)
+    (root / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nspace = "s"\n')
+    _commit_all(root)
+    (root / ".apx.local").write_text('[tool.apx.agent]\nprofile = "dev"\n')
+    result = _run(root, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert tomllib.loads((root / ".apx.local").read_text()) == {"tool": {"apx": {"profile": "dev"}}}
+    assert (root / ".apx.local.bak").read_text() == '[tool.apx.agent]\nprofile = "dev"\n'
+    assert "migrated .apx.local" in result.output
+
+
+def test_migrate_local_never_overrides_a_newer_tool_apx_key() -> None:
+    from apx_agent._migrate_config import migrate_local
+
+    out = migrate_local('[tool.apx]\nprofile = "new"\n\n[tool.apx.agent]\nprofile = "stale"\n')
+    assert out is not None and tomllib.loads(out) == {"tool": {"apx": {"profile": "new"}}}
+
+
+def test_tool_apx_nested_values_survive_moving_dev_keys(tmp_path: Path) -> None:
+    text = _PYPROJECT.replace('[tool.apx.agent]\n', '[tool.apx.agent]\nprofile = "dev"\n')
+    text += '\n[tool.apx]\nmeta = { a = 1 }\nother.x = 2\n'
+    migration = plan_migration(_write(tmp_path, text), Agent(name="inspector", tools=[]))
+    apx = tomllib.loads(migration.text)["tool"]["apx"]
+    assert (apx["profile"], apx["meta"], apx["other"]) == ("dev", {"a": 1}, {"x": 2})
+
+
+def test_apx_local_is_untouched_when_the_pyproject_migration_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repo(tmp_path, _AGENT_PY_BARE)
+    (root / ".apx.local").write_text('[tool.apx.agent]\nprofile = "dev"\n')
+    (root / "pyproject.toml").write_text(_PYPROJECT + "\n# dirty\n")
+    result = _run(root, monkeypatch)
+    assert result.exit_code != 0
+    assert (root / ".apx.local").read_text() == '[tool.apx.agent]\nprofile = "dev"\n'
+
+
+def test_an_existing_backup_is_never_overwritten(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _repo(tmp_path, _AGENT_PY_BARE)
+    (root / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nspace = "s"\n')
+    _commit_all(root)
+    (root / ".apx.local").write_text('[tool.apx.agent]\nprofile = "dev"\n')
+    (root / ".apx.local.bak").write_text("PRECIOUS")
+    result = _run(root, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert (root / ".apx.local.bak").read_text() == "PRECIOUS"
+    assert (root / ".apx.local.bak.2").read_text() == '[tool.apx.agent]\nprofile = "dev"\n'

@@ -49,6 +49,36 @@ def cut_sections(text: str, prefix: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "".join(out))
 
 
+def set_key_text(text: str, section: str, key: str, value: str) -> str:
+    """Set ``key = "<value>"`` inside ``[section]`` of *text* only; add the section if missing.
+
+    Raises ValueError if the result isn't valid TOML (the caller writes nothing)."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    line = f'{key} = "{escaped}"\n'
+    lines = text.splitlines(keepends=True)
+    headers = [(i, m.group(1)) for i, l in enumerate(lines) if (m := _HEADER.match(l))]
+    start = next((i for i, name in headers if name == section), None)
+    if start is None:
+        body = "".join(lines)
+        if body and not body.endswith("\n"):
+            body += "\n"
+        out = body + ("\n" if body else "") + f"[{section}]\n" + line
+    else:
+        end = next((i for i, _ in headers if i > start), len(lines))
+        pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+        hit = next((i for i in range(start + 1, end) if pattern.match(lines[i])), None)
+        if hit is None:
+            lines.insert(start + 1, line)
+        else:
+            lines[hit] = line
+        out = "".join(lines)
+    try:
+        tomllib.loads(out)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"setting {key} in [{section}] would not be valid TOML: {exc}") from exc
+    return out
+
+
 def _deploy_block(table: dict[str, Any]) -> str:
     from ._project_gen import _write_toml_section
 
@@ -92,6 +122,11 @@ def plan_migration(pyproject: Path, agent: BaseAgent) -> Migration:
         if key in raw:
             deploy[key] = raw[key]
     deploy.update(raw.get("deploy", {}))
+    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
+    from ._project_gen import _write_toml_section
+
+    deploy.update({k: raw[k] for k in REGISTRATION_KEYS if k in raw})
+    dev = {k: raw[k] for k in DEV_KEYS if k in raw and k not in apx}
     deploy_only = {"tool": {"apx": {"deploy": deploy}}, "project": data.get("project", {})}
     from ._inspection import _fold_deploy_table
 
@@ -100,11 +135,10 @@ def plan_migration(pyproject: Path, agent: BaseAgent) -> Migration:
                if k in AgentConfig.model_fields and k not in ("name", "host", "deploy")}
     missing = {k: v for k, v in runtime.items() if not _covered(k, v, agent, after)}
 
-    remaining = {k: v for k, v in raw.items() if k not in ("name", "host", "deploy", "module")}
+    moved = ("name", "host", "deploy", "module", *DEV_KEYS, *REGISTRATION_KEYS)
+    remaining = {k: v for k, v in raw.items() if k not in moved}
     new = cut_sections(cut_sections(text, "tool.apx.deploy"), "tool.apx.agent")
     if missing or set(remaining) - set(runtime):
-        from ._project_gen import _write_toml_section
-
         lines: list[str] = []
         _write_toml_section(lines, "tool.apx.agent", {k: v for k, v in remaining.items() if not isinstance(v, dict)})
         for key, value in remaining.items():
@@ -114,9 +148,36 @@ def plan_migration(pyproject: Path, agent: BaseAgent) -> Migration:
         removed = False
     else:
         removed = True
+    for key, value in dev.items():  # inserted into [tool.apx]; its other keys and nested data stay
+        new = set_key_text(new, "tool.apx", key, str(value))
     new = new.rstrip("\n") + "\n\n" + _deploy_block(deploy)
     manual = sorted(set(remaining) - set(runtime))
     return Migration(new.rstrip("\n") + "\n", missing, removed, manual)
+
+
+def migrate_local(text: str) -> str | None:
+    """``.apx.local``: move dev keys from its old ``[tool.apx.agent]`` to ``[tool.apx]``; None if nothing to do.
+
+    A key already in ``[tool.apx]`` is newer (the profile picker writes it) and wins."""
+    from ._inspection import DEV_KEYS
+    from ._project_gen import _write_toml_section
+
+    data = tomllib.loads(text)
+    apx = data.get("tool", {}).get("apx", {})
+    legacy = apx.get("agent", {})
+    move = [k for k in DEV_KEYS if k in legacy]
+    if not move:
+        return None
+    rest = {k: v for k, v in legacy.items() if k not in move}
+    out = cut_sections(text, "tool.apx.agent")
+    for key in move:
+        if key not in apx:
+            out = set_key_text(out, "tool.apx", key, str(legacy[key]))
+    if rest:
+        lines: list[str] = []
+        _write_toml_section(lines, "tool.apx.agent", rest)
+        out = out.rstrip("\n") + "\n\n" + "\n".join(lines)
+    return out.rstrip("\n") + "\n"
 
 
 def snippet(missing: dict[str, Any]) -> str:

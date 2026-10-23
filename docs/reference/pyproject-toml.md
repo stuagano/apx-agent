@@ -83,6 +83,16 @@ backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
 A field set both here and in `[tool.apx.agent]` (or `[tool.apx.agent.deploy]`)
 must have the same value.
 
+`[tool.apx.deploy]` also holds the registration and publishing keys:
+`registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table` and
+`tools_table`. Dev-loop keys live in top-level `[tool.apx]`:
+
+```toml
+[tool.apx]
+experiment = "/Users/you@example.com/orders"   # MLflow experiment for run/eval/trace
+# profile lives in the gitignored .apx.local, under [tool.apx]
+```
+
 To move a project off `[tool.apx.agent]`:
 
 1. Commit your work.

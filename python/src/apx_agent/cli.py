@@ -212,22 +212,21 @@ def _parse_module_spec(spec: str) -> _ModuleSpec:
 
 
 def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
-    """Read ``[tool.apx.agent]`` from ``pyproject.toml`` in cwd.
+    """CLI view of the project's apx settings as one flat dict.
 
-    Also merges personal overrides from ``.apx.local`` (a gitignored TOML
-    file in the project root). Keys in ``.apx.local`` take precedence —
-    this is where user-specific values like ``profile`` live so they are
-    never committed to version control.
+    Merges, lowest to highest: ``[tool.apx.agent]``; the dev keys from top-level
+    ``[tool.apx]`` and the registration keys from ``[tool.apx.deploy]``
+    (sub-project 3b-1); then ``.apx.local`` (gitignored: ``[tool.apx]`` and its
+    older ``[tool.apx.agent]`` table). A key declared in ``[tool.apx.agent]``
+    and its new home with different values is an error.
 
-    Returns an empty dict if the file is missing, malformed, or doesn't
-    have the section.
+    Returns an empty dict if the files are missing, malformed, or declare nothing.
     """
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover
-        import tomli as tomllib  # type: ignore[no-redef]
+    import tomllib
 
-    def _read_toml_section(path: Path) -> dict[str, Any]:
+    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
+
+    def _apx(path: Path) -> dict[str, Any]:
         if not path.exists():
             return {}
         try:
@@ -235,22 +234,26 @@ def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]
         except Exception:
             return {}
         tool = data.get("tool", {})
-        if not isinstance(tool, dict):
-            return {}
-        apx = tool.get("apx", {})
-        if not isinstance(apx, dict):
-            return {}
-        agent_cfg = apx.get("agent", {})
-        return agent_cfg if isinstance(agent_cfg, dict) else {}
+        apx = tool.get("apx", {}) if isinstance(tool, dict) else {}
+        return apx if isinstance(apx, dict) else {}
 
-    cwd = (pyproject_path.parent if pyproject_path else Path.cwd())
-    committed = _read_toml_section(pyproject_path or cwd / "pyproject.toml")
+    def _table(apx: dict[str, Any], key: str) -> dict[str, Any]:
+        value = apx.get(key, {})
+        return value if isinstance(value, dict) else {}
 
-    # .apx.local uses the same [tool.apx.agent] structure but is gitignored.
-    local_overrides = _read_toml_section(cwd / ".apx.local")
-
-    return {**committed, **local_overrides}
-
+    cwd = pyproject_path.parent if pyproject_path else Path.cwd()
+    committed = _apx(pyproject_path or cwd / "pyproject.toml")
+    legacy = _table(committed, "agent")
+    homes = {k: ("[tool.apx]", committed[k]) for k in DEV_KEYS if k in committed}
+    deploy = _table(committed, "deploy")
+    homes.update({k: ("[tool.apx.deploy]", deploy[k]) for k in REGISTRATION_KEYS if k in deploy})
+    for key, (home, value) in homes.items():
+        if key in legacy and legacy[key] != value:
+            raise click.ClickException(
+                f"{key} is declared in both [tool.apx.agent] and {home} with different values; keep {home}.")
+    local = _apx(cwd / ".apx.local")
+    local_keys = {**_table(local, "agent"), **{k: local[k] for k in DEV_KEYS if k in local}}
+    return {**legacy, **{k: v for k, (_, v) in homes.items()}, **local_keys}
 
 def _load_agent(module_spec: str) -> Any:
     """Import ``module:variable`` and return the agent.
@@ -567,48 +570,49 @@ def _databrickscfg_profiles() -> list[str]:
     return names
 
 
+def _set_toml_key(path: Path, section: str, key: str, value: str) -> None:
+    """Set ``key = "<value>"`` inside ``[section]`` only, creating the section/file if missing."""
+    from ._migrate_config import set_key_text
+
+    try:
+        text = set_key_text(path.read_text() if path.exists() else "", section, key, value)
+    except ValueError as exc:
+        raise click.ClickException(f"{path.name}: {exc}; edit it by hand.") from exc
+    path.write_text(text)
+
+
 def _save_to_pyproject(key: str, value: str, *, local: bool = False) -> bool:
-    """Write ``key = "<value>"`` into ``[tool.apx.agent]``.
+    """Write ``key = "<value>"`` into the key's home table (sub-project 3b-1).
 
-    When ``local=True``, writes to ``.apx.local`` (gitignored) instead of
-    ``pyproject.toml``. Use ``local=True`` for personal settings like
-    ``profile`` that should not be committed to version control.
-
-    Returns True on success.
+    ``local=True`` writes ``.apx.local`` ``[tool.apx]`` (gitignored, personal
+    settings like ``profile``). Registration keys go to ``[tool.apx.deploy]``.
+    Anything else still goes to an existing ``[tool.apx.agent]``. Returns True on success.
     """
+    import tomllib
+
+    from ._inspection import REGISTRATION_KEYS
+
+    def _in_legacy(path: Path) -> bool:
+        # A key still in [tool.apx.agent] is updated there, so the file never declares it twice.
+        try:
+            return key in tomllib.loads(path.read_text()).get("tool", {}).get("apx", {}).get("agent", {})
+        except (OSError, tomllib.TOMLDecodeError):
+            return False
+
     if local:
         target = Path.cwd() / ".apx.local"
-        if not target.exists():
-            # Bootstrap a minimal .apx.local with the required section.
-            target.write_text("[tool.apx.agent]\n")
-        content = target.read_text()
-        if "[tool.apx.agent]" not in content:
-            content += "\n[tool.apx.agent]\n"
-    else:
-        target = Path.cwd() / "pyproject.toml"
-        if not target.exists():
-            return False
-        content = target.read_text()
-        if "[tool.apx.agent]" not in content:
-            return False
-
-    escaped = value.replace('"', '\\"')
-    if re.search(rf'^\s*{re.escape(key)}\s*=', content, re.MULTILINE):
-        content = re.sub(
-            rf'^\s*{re.escape(key)}\s*=.*$',
-            f'{key} = "{escaped}"',
-            content,
-            flags=re.MULTILINE,
-        )
-    else:
-        content = re.sub(
-            r'(\[tool\.apx\.agent\])',
-            f'[tool.apx.agent]\n{key} = "{escaped}"',
-            content,
-        )
-    target.write_text(content)
+        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx", key, value)
+        return True
+    target = Path.cwd() / "pyproject.toml"
+    if not target.exists():
+        return False
+    if key in REGISTRATION_KEYS:
+        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx.deploy", key, value)
+        return True
+    if "[tool.apx.agent]" not in target.read_text():
+        return False
+    _set_toml_key(target, "tool.apx.agent", key, value)
     return True
-
 
 def _save_profile_to_pyproject(profile: str) -> bool:
     return _save_to_pyproject("profile", profile, local=True)
@@ -4994,8 +4998,33 @@ def migrate_config() -> None:
 
     cwd = Path.cwd()
     pyproject = cwd / "pyproject.toml"
+    local_path = cwd / ".apx.local"
+    local_text = local_path.read_text() if local_path.exists() else None
+    try:
+        local_new = _migrate_config.migrate_local(local_text) if local_text is not None else None
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        raise click.ClickException(f".apx.local: {exc}") from exc
+
+    def _apply_local() -> None:
+        # Last, and only after pyproject.toml migrated (or had nothing to do).
+        if local_new is None or local_text is None:
+            return
+        backup = cwd / ".apx.local.bak"
+        n = 2
+        while backup.exists():
+            backup, n = cwd / f".apx.local.bak.{n}", n + 1
+        before_flat = _read_apx_agent_config(pyproject)
+        backup.write_text(local_text)
+        local_path.write_text(local_new)
+        if _read_apx_agent_config(pyproject) != before_flat:
+            local_path.write_text(local_text)
+            raise click.ClickException("migrating .apx.local changed the effective settings; restored it.")
+        click.echo(f"migrated .apx.local to [tool.apx] (backup: {backup.name})")
+
     if "agent" not in tomllib.loads(pyproject.read_text()).get("tool", {}).get("apx", {}):
-        click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
+        _apply_local()
+        if local_new is None:
+            click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
         return
     status = subprocess.run(["git", "status", "--porcelain", "--", "pyproject.toml"],
                             cwd=cwd, capture_output=True, text=True, check=False)
@@ -5019,6 +5048,13 @@ def migrate_config() -> None:
     except Exception as exc:  # noqa: BLE001 — any import failure is the user's agent.py
         sys.modules.pop("agent", None)
         raise click.ClickException(f"could not import agent.py: {type(exc).__name__}: {exc}") from exc
+    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
+
+    def _meta() -> dict[str, Any]:
+        flat = _read_apx_agent_config(pyproject)
+        return {k: flat[k] for k in (*DEV_KEYS, *REGISTRATION_KEYS) if k in flat}
+
+    before_meta = _meta()
     try:
         before = _load_agent_config(pyproject_path=pyproject)
         migration = _migrate_config.plan_migration(pyproject, agent)
@@ -5036,12 +5072,14 @@ def migrate_config() -> None:
         skip = set(_migrate_config._CONSTRUCTOR)
         same = (before is not None and after is not None
                 and resolve_settings(agent, after).model_dump(exclude=skip)
-                == resolve_settings(agent, before).model_dump(exclude=skip))
-    except ValueError:
+                == resolve_settings(agent, before).model_dump(exclude=skip)
+                and _meta() == before_meta)
+    except (ValueError, click.ClickException):
         same = False
     if not same:
         pyproject.write_text(original)
         raise click.ClickException("migrate-config changed the effective config; restored pyproject.toml.")
+    _apply_local()
     click.echo("moved deploy settings to [tool.apx.deploy]")
     if migration.removed_agent_table:
         click.echo("removed [tool.apx.agent]: every field is declared in Python")
@@ -11934,7 +11972,7 @@ def _do_create_supervisor(
             click.echo("  apx-agent agents advertise")
         else:
             click.echo("\nAdd this to your shared pyproject.toml so every agent can advertise with zero args:")
-            click.echo("\n  [tool.apx.agent]")
+            click.echo("\n  [tool.apx.deploy]")
             click.echo(f'  supervisor_id = "{supervisor_id}"')
 
 
