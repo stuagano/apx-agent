@@ -135,26 +135,6 @@ def grounding_columns_payload(
     }
 
 
-def ensure_knowledge_in_pyproject(project_root: Path) -> bool:
-    """Insert ``knowledge = "./.apx/okf"`` under ``[tool.apx.agent]`` when absent.
-
-    Returns ``True`` when the file was modified.
-    """
-    path = project_root / "pyproject.toml"
-    if not path.is_file():
-        return False
-    text = path.read_text()
-    if re.search(r"(?m)^\s*knowledge\s*=", text):
-        return False
-    m = re.search(r"(?m)^\[tool\.apx\.agent\]\s*$", text)
-    if not m:
-        return False
-    insert_at = m.end()
-    updated = text[:insert_at] + f"\n{_KNOWLEDGE_TOML}" + text[insert_at:]
-    path.write_text(updated)
-    return True
-
-
 def ensure_knowledge_in_agent_py(project_root: Path) -> bool:
     """Add ``knowledge="./.apx/okf"`` to the first DataAgent/CoworkerAgent call.
 
@@ -263,8 +243,7 @@ def generate_okf_pack(
     regen = okf_manifest(okf_root) or manifest
     (apx / "schema.json").write_text(dump_schema_cache(regen))
 
-    knowledge_wired = ensure_knowledge_in_pyproject(root)
-    agent_wired = ensure_knowledge_in_agent_py(root)
+    agent_wired = ensure_knowledge_in_agent_py(root)  # knowledge= lives on the agent (3b-2)
 
     return {
         "ok": True,
@@ -272,7 +251,7 @@ def generate_okf_pack(
         "schema": schema,
         "table_count": len(tables),
         "okf_root": str(okf_root),
-        "knowledge_wired": knowledge_wired or agent_wired,
+        "knowledge_wired": agent_wired,
         "restart_required": True,
     }
 

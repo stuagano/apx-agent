@@ -116,6 +116,10 @@ subsequent user instructions supersede that limit for push, PR creation, and mer
 PR #993 includes the twelve native-runtime prerequisites absent from main, the
 completion fix, and the merge of `e7548e92` into this branch. The exact deployed
 base remains in branch history; the implementation was not rebased onto main.
+Main subsequently advanced to `0376860d` (#994); that commit was merged as well.
+The final integration preserves its effective-configuration readers, isolated
+doctor imports, passed native discovery configuration, and startup-time remote
+tool materialization. Independent review of the actual merge found no issues.
 
 - Retained main's Python settings resolution and extended its binding types to
   include `NativeBinding`.
@@ -160,6 +164,17 @@ reviewed; the original checkout remains untouched. `git apply --check` passes
 against the original checkout. All **12 startup tests** then passed, and the
 native workflow suite passed **22 tests**. Adopting this merged APX stack in
 Curinos requires both supplied compatibility patches.
+
+Final Curinos regression against the `0376860d` integration, with both patches
+applied only to the copied source: **948 passed, 1 dependency warning**, in
+269.89 seconds. [Log](.build/curinos-main-final.log). The original installed
+compiler still has the exact deployed SHA-256 recorded above.
+
+Final APX `make check` against `0376860d`: **5,563 passed, 13 skipped,
+242 warnings**, exit 0; both public-PyPI lock checks passed.
+[Log](.build/final-main-check.log). Final full-source Pyright: **0 errors,
+4 warnings** ([log](.build/final-main-pyright.log)); changed-file lint passed
+([log](.build/final-main-lint.log)). No skip or validation rule was weakened.
 
 ## Proof limits
 

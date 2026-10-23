@@ -92,28 +92,6 @@ def build_native_manifest(
     return "\n".join(lines)
 
 
-def _durable_discovery_config() -> AgentConfig | None:
-    """The cwd agent config, validated as the target this compiler just built.
-
-    ``compile_to_durable_agent_server`` does not receive the caller's config, and
-    protocol setup rediscovers ``[tool.apx.agent]`` from the working directory.
-    Doctor and other callers override ``target`` to ``durable_agent_server``
-    without rewriting the file. Reloading that file at its declared target
-    rejects ``deploy.space`` / ``backend='apps_api'``, which are legal only on
-    this target. A missing file stays ``None`` so setup can return early.
-    """
-    from ._inspection import _agent_config_fields, _resolve_agent_pyproject
-    from ._models import AgentConfig
-
-    resolved = _resolve_agent_pyproject(("tool", "apx", "agent"), None)
-    if resolved is None or not resolved.exists():
-        return None
-    fields = _agent_config_fields(resolved, ("tool", "apx", "agent"))
-    if fields is None:
-        return None
-    return AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
-
-
 # The current turn's RequestAuthContext. Genie tools are built once at startup,
 # so their identity resolver reads the request from here at call time.
 _REQUEST_AUTH: contextvars.ContextVar[Any] = contextvars.ContextVar("apx_platform_request_auth")
@@ -350,6 +328,7 @@ def compile_to_durable_agent_server(
     require_user: bool = False,
     recovery: bool = False,
     project_root: Path | None = None,
+    config: AgentConfig | None = None,
 ) -> Any:
     """Create the optional SDK server without importing ResponsesAgent.
 
@@ -398,10 +377,9 @@ def compile_to_durable_agent_server(
     # auth policy; the browser UIs are mounted just below, not by setup_agent.
     # setup_agent fetches remote tools when a config exists, so this does not
     # fetch again.
-    # The compiler does not receive the caller's AgentConfig; cwd discovery must
-    # still validate as this target, or a space/apps_api declaration (legal only
-    # with durable_agent_server) fails during lifespan startup.
-    discovery = _durable_discovery_config()
+    # compile_agent's resolved config, never re-read from cwd (3b-2). Callers such as doctor
+    # validate it at another target; discovery serves this durable host, as before.
+    discovery = config.model_copy(update={"target": "durable_agent_server"}) if config is not None else None
     mount_durable_protocol(app, agent, config=discovery)
     app.include_router(native_input_router(agent))
     typed_workflow = any(
@@ -443,13 +421,15 @@ def compile_to_durable_agent_server(
         except Exception as exc:  # recorded, never hidden (same as mount_mcp_endpoints)
             app.state.dev_ui_mount_error = f"{type(exc).__name__}: {exc}"
             logger.warning("Dev UI not mounted on durable host: %s", app.state.dev_ui_mount_error)
-    # setup_agent fetches remotes when a config exists. With no config it returns
-    # before that fetch, so the card materialization (#436) still has to run.
-    if discovery is None and list(_iter_sub_agents(agent)):
+    # setup_agent fetches remotes when it finds a config (passed in, or its own cwd
+    # fallback). With none it returns before that fetch, so the card materialization
+    # (#436) still has to run; decide at startup, after setup_agent has run.
+    if list(_iter_sub_agents(agent)):
         from ._wiring import _chain_lifespan
 
         async def _materialize_sub_agents() -> None:
-            await agent.fetch_remote_tools()
+            if getattr(app.state, "agent_context", None) is None:
+                await agent.fetch_remote_tools()
 
         _chain_lifespan(app, _materialize_sub_agents)
 
