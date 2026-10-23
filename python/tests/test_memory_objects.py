@@ -73,3 +73,11 @@ def test_an_auto_attached_managed_session_is_not_a_declaration() -> None:
     assert "session" not in toml.model_fields_set
     agent = Agent(name="o", tools=[], target="responses_agent", session=_SESSION)
     assert resolve_settings(agent, toml).session == SessionBackendConfig(**_SESSION)
+
+
+def test_a_knob_invented_session_never_beats_the_tomls_default() -> None:
+    # memory="persistent" invents a Lakebase session; on a durable project the TOML's
+    # auto-filled managed session must still win, as before 3b-3a.
+    toml = AgentConfig.model_validate({"name": "o"})
+    config = resolve_settings(Agent(name="o", tools=[], memory="persistent"), toml)
+    assert config.session is not None and config.session.type == "managed"

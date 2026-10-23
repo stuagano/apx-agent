@@ -326,3 +326,11 @@ def test_a_lakebase_session_table_moves_to_session_kwarg(tmp_path: Path, monkeyp
     second = _run(root, monkeypatch)
     assert second.exit_code == 0, second.output
     assert "agent" not in tomllib.loads((root / "pyproject.toml").read_text())["tool"]["apx"]
+
+
+def test_a_managed_memory_table_converges(tmp_path: Path) -> None:
+    text = _PYPROJECT.replace('[tool.apx.agent]\n', '[tool.apx.agent]\n') + '\n[tool.apx.agent.memory]\ntype = "managed"\n'
+    agent = Agent(name="inspector", tools=[], model="system.ai.claude-sonnet-4-6", instructions="Inspect tables.",
+                  examples=["Show tables", "Count rows"], memory="managed")
+    migration = plan_migration(_write(tmp_path, text), agent)
+    assert "memory" not in migration.missing, migration.missing

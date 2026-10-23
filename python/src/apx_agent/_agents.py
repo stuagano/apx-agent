@@ -373,6 +373,7 @@ class LlmAgent(BaseAgent):
             memory_config, session_config = MemoryBackendConfig.model_validate(memory), None
         if session is not None:
             session_config = SessionBackendConfig.model_validate(session)
+        self._session_explicit = session is not None
         self.memory_config, self.session_config = memory_config, session_config
 
         # Pre-analyze all functions at construction time
