@@ -271,12 +271,13 @@ def _stage_config(project: Path) -> _Loaded | Check:
     except ImportError:
         return Check("Config", Status.FAIL, "databricks-agentbricks is not installed in this environment", SDK_FIX)
     try:
-        from ._inspection import _agent_config_fields, config_from_agent
+        from ._inspection import _agent_config_fields
+        from ._settings import resolve_settings
         from ._wiring import resolve_agent
 
         if python_only:
             agent = resolve_agent("agent:agent", None, ws=_FakeWorkspaceClient())
-            config = config_from_agent(agent)
+            config = resolve_settings(agent, None)
         else:
             # Validate the declared fields once, as durable: validating the current
             # target first rejects durable-only settings (e.g. deploy.space) mid-migration.
@@ -287,6 +288,7 @@ def _stage_config(project: Path) -> _Loaded | Check:
             # The native host imports `agent:agent` (as _serve.create_app does); the
             # pyproject `module =` key is not read by the durable runtime.
             agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
+            config = resolve_settings(agent, config)
         origin = getattr(sys.modules.get("agent"), "__file__", None)
         if origin is None or not Path(origin).resolve().is_relative_to(project):
             return Check("Config", Status.FAIL, f"`agent` resolved outside the project ({origin})",

@@ -7,11 +7,13 @@ import inspect
 import logging
 import math
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
+from typing_extensions import TypedDict, Unpack
 
 from ._models import (
     AfterAgentCallback,
@@ -23,6 +25,7 @@ from ._models import (
     BeforeModelHook,
     BeforeToolHook,
     GatewayConfig,
+    GuardrailsConfig,
     InputGuardrailFn,
     MemoryBackendConfig,
     Message,
@@ -84,12 +87,63 @@ def _card_structured_input_schema(card: dict[str, Any]) -> dict[str, Any] | None
     return structured_input_schema(skill.get("inputSchema"))
 
 
+class AgentSettings(TypedDict, total=False):
+    """apx runtime settings any agent may declare (agent-toml-source-of-truth.md, sub-project 2)."""
+
+    model: str
+    target: RuntimeTarget
+    identity: str
+    recovery: bool
+    gateway: GatewayConfig
+    service_policies: ServicePoliciesConfig
+    guardrails: GuardrailsConfig
+    knowledge: str
+    vector_search_index: str
+    bindings: dict[str, str]
+    url: str
+    registry: str
+    api_prefix: str
+
+
 class BaseAgent:
     """Abstract base for all agent types.
 
     Subclass to create custom orchestration patterns, or use the built-in
     ``LlmAgent`` (alias: ``Agent``), ``SequentialAgent``, and ``ParallelAgent``.
     """
+
+    model: str | None = None
+    target: RuntimeTarget | None = None
+    identity: str | None = None
+    recovery: bool | None = None
+    gateway: GatewayConfig | None = None
+    service_policies: ServicePoliciesConfig | None = None
+    guardrails: GuardrailsConfig | None = None
+    knowledge: str | None = None
+    vector_search_index: str | None = None
+    bindings: dict[str, str] | None = None
+    url: str | None = None
+    registry: str | None = None
+    api_prefix: str | None = None
+    _overrides: Mapping[str, Any] = MappingProxyType({})
+    """Per-agent values that differ from the app's; written by resolve_settings."""
+
+    def _set_settings(self, settings: AgentSettings) -> None:
+        unknown = sorted(set(settings) - set(AgentSettings.__annotations__))
+        if unknown:
+            raise TypeError(f"unknown agent setting(s): {', '.join(unknown)}")
+        identity = settings.get("identity")
+        if identity is not None:
+            from ._tool_scope import _validate_identity
+
+            try:
+                _validate_identity(identity)
+            except ValueError as exc:
+                raise ValueError(f"identity: {exc}") from exc
+        if settings.get("recovery") and settings.get("target") == "responses_agent":
+            raise ValueError("recovery requires target='durable_agent_server'")
+        for key, value in settings.items():
+            setattr(self, key, value)
 
     async def run(self, messages: list[Message], request: Request) -> str:
         """Run and return the final text response."""
@@ -183,12 +237,7 @@ class LlmAgent(BaseAgent):
         tool_loading: str = "eager",
         output_schema: type[BaseModel] | None = None,
         timeout_s: float | None = None,
-        model: str | None = None,
-        target: RuntimeTarget | None = None,
-        identity: str | None = None,
-        recovery: bool = False,
-        gateway: GatewayConfig | None = None,
-        service_policies: ServicePoliciesConfig | None = None,
+        **settings: Unpack[AgentSettings],
     ) -> None:
         # tools is optional (#449): an orchestrator whose only capabilities are
         # config-declared sub_agents has no local tools. None → a fresh list
@@ -270,21 +319,7 @@ class LlmAgent(BaseAgent):
         self._input_guardrails = input_guardrails or []
         self._output_guardrails = output_guardrails or []
         self._context_window_tokens = context_window_tokens
-        self.model = model
-        self.target = target
-        if identity is not None:
-            from ._tool_scope import _validate_identity
-
-            try:
-                _validate_identity(identity)
-            except ValueError as exc:
-                raise ValueError(f"identity: {exc}") from exc
-        self.identity = identity
-        if recovery and target == "responses_agent":
-            raise ValueError("recovery requires target='durable_agent_server'")
-        self.recovery = recovery
-        self.gateway = gateway
-        self.service_policies = service_policies
+        self._set_settings(settings)
         self.memory_config: MemoryBackendConfig | None
         self.session_config: SessionBackendConfig | None
         self.memory_config, self.session_config = normalize_memory_knob(
@@ -711,7 +746,8 @@ class LoopAgent(BaseAgent):
 
     FINISH_TOOL = "finish_loop"
 
-    def __init__(self, agent: LlmAgent, max_iterations: int = 5) -> None:
+    def __init__(self, agent: LlmAgent, max_iterations: int = 5, **settings: Unpack[AgentSettings]) -> None:
+        self._set_settings(settings)
         self._inner = agent
         self._max_iterations = max_iterations
 
@@ -807,7 +843,9 @@ class SequentialAgent(BaseAgent):
         instructions: str = "",
         name: str | None = None,
         on_failure: Literal["raise", "escalate"] = "raise",
+        **settings: Unpack[AgentSettings],
     ) -> None:
+        self._set_settings(settings)
         if not agents:
             raise ValueError("SequentialAgent requires at least one agent")
         self._agents = agents
@@ -896,7 +934,8 @@ class SequentialAgent(BaseAgent):
 class ParallelAgent(BaseAgent):
     """Runs all agents concurrently with the same input and merges their responses."""
 
-    def __init__(self, agents: list[BaseAgent], instructions: str = "") -> None:
+    def __init__(self, agents: list[BaseAgent], instructions: str = "", **settings: Unpack[AgentSettings]) -> None:
+        self._set_settings(settings)
         if not agents:
             raise ValueError("ParallelAgent requires at least one agent")
         self._agents = agents
@@ -1007,7 +1046,9 @@ class RouterAgent(BaseAgent):
         self,
         agents: list[tuple[str, str, BaseAgent]] | list[BaseAgent],
         instructions: str = "",
+        **settings: Unpack[AgentSettings],
     ) -> None:
+        self._set_settings(settings)
         self._routes = _normalize_router_agents(agents)
         self._instructions = instructions
 
@@ -1154,7 +1195,9 @@ class HandoffAgent(BaseAgent):
         agents: dict[str, LlmAgent] | list[LlmAgent],
         start: str | None = None,
         max_handoffs: int = 5,
+        **settings: Unpack[AgentSettings],
     ) -> None:
+        self._set_settings(settings)
         agents_dict = _normalize_handoff_agents(agents)
         if start is None:
             start = next(iter(agents_dict))
@@ -1270,7 +1313,9 @@ class KeywordRouter(BaseAgent):
         self,
         branches: list[tuple[str, BaseAgent, list[str]]],
         default: BaseAgent,
+        **settings: Unpack[AgentSettings],
     ) -> None:
+        self._set_settings(settings)
         if not branches:
             raise ValueError("KeywordRouter requires at least one branch")
         seen: set[str] = set()

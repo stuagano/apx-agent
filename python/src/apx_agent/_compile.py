@@ -451,7 +451,7 @@ def _compile_llm_agent(
             )
         )
     llm = _build_chat_databricks(
-        ctx.model,
+        agent._overrides.get("model", ctx.model),
         temperature=getattr(agent, "_temperature", None),
         max_tokens=getattr(agent, "_max_tokens", None),
     )
@@ -936,7 +936,7 @@ def _compile_router_agent(agent: RouterAgent, ctx: CompileContext) -> Any:
     fallback = route_names[0]
 
     def _router_decision(state: dict) -> dict[str, Any]:
-        llm = _build_chat_databricks(ctx.model).bind_tools(transfer_tools)
+        llm = _build_chat_databricks(agent._overrides.get("model", ctx.model)).bind_tools(transfer_tools)
         sys_msg = SystemMessage(content=(
             (agent._instructions or "").strip()
             + "\nBased on the user's request, select the most appropriate agent "
