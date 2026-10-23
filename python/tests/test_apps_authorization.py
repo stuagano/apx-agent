@@ -564,6 +564,19 @@ def test_workspace_allowlist_unrestricted_does_not_block() -> None:
     require_workspace_scope_allowlist(ws, _plan_with_scopes("sql"))
 
 
+def test_workspace_allowlist_wildcard_does_not_block() -> None:
+    """``["*"]`` is the "all scopes allowed" allowlist (seen live on a workspace)."""
+    ws = MagicMock()
+    ws.workspace_settings_v2.get_public_workspace_setting.return_value = SimpleNamespace(
+        effective_allowed_apps_user_api_scopes=SimpleNamespace(allowed_scopes=["*"]),
+        allowed_apps_user_api_scopes=None,
+    )
+    read = read_workspace_apps_scope_allowlist(ws)
+    assert read.readable is True
+    assert read.allowed_scopes is None
+    require_workspace_scope_allowlist(ws, _plan_with_scopes("sql", "catalog.tables:read"))
+
+
 def test_workspace_allowlist_missing_sql_fails_deploy() -> None:
     ws = MagicMock()
     ws.workspace_settings_v2.get_public_workspace_setting.return_value = SimpleNamespace(
