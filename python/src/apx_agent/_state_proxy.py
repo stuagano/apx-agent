@@ -9,7 +9,10 @@ docs/design/keyed-state-tool-access.md (G3 increment 2).
 from __future__ import annotations
 
 from collections.abc import Iterator, MutableMapping
+from copy import deepcopy
 from typing import Any
+
+from ._native_input import NATIVE_ARTIFACTS_KEY
 
 
 class StateProxy(MutableMapping[str, Any]):
@@ -26,14 +29,20 @@ class StateProxy(MutableMapping[str, Any]):
         self._writes: dict[str, Any] = {}
 
     def __getitem__(self, key: str) -> Any:
+        if key == NATIVE_ARTIFACTS_KEY:
+            return deepcopy(self._source[key])
         if key in self._writes:
             return self._writes[key]
         return self._source[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
+        if key == NATIVE_ARTIFACTS_KEY:
+            raise ValueError("Native artifact state is reserved for the framework")
         self._writes[key] = value
 
     def __delitem__(self, key: str) -> None:
+        if key == NATIVE_ARTIFACTS_KEY:
+            raise ValueError("Native artifact state is reserved for the framework")
         # Deletion is recorded as a write of None (the reducer can't remove a
         # key; this is the closest in-graph semantic). Documented limitation.
         if key not in self._source and key not in self._writes:

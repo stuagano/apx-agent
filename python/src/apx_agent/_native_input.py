@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from typing import Any
 
 from pydantic import BaseModel
 
 from ._a2a_models import data_parts
+
+NATIVE_ARTIFACTS_KEY = "apx_native_artifacts"
 
 
 def validate_input_declaration(schema: type[BaseModel] | None, key: str | None) -> None:
@@ -19,7 +22,7 @@ def validate_input_declaration(schema: type[BaseModel] | None, key: str | None) 
             or schema.model_config.get("extra") != "forbid" or schema.model_json_schema().get("type") != "object"):
         raise ValueError("input_schema requires an object BaseModel with extra='forbid'")
     if (not isinstance(key, str) or re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{0,63}", key) is None
-            or key in {"messages", "state", "auth", "session_id", "invocation_id", "principal", "headers", "session_tokens", "session_usd"}):
+            or key in {NATIVE_ARTIFACTS_KEY, "messages", "state", "auth", "session_id", "invocation_id", "principal", "headers", "session_tokens", "session_usd"}):
         raise ValueError("input_key must be a non-reserved domain state slot")
 
 
@@ -60,9 +63,9 @@ def native_data_part(schema: type[BaseModel], payload: Any, part: dict[str, Any]
     if (not isinstance(metadata, dict) or set(metadata) != {"artifact_id", "sha256"}
             or not isinstance(metadata["artifact_id"], str)
             or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", metadata["artifact_id"]) is None
-            or metadata["sha256"] != digest or validated["data"] != payload):
+            or metadata["sha256"] != digest or _bounded_json(validated["data"]) != encoded):
         raise ValueError("Native input artifact integrity mismatch")
-    return validated
+    return deepcopy(part)
 
 
 def input_leaf(agent: Any) -> Any:

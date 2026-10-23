@@ -220,13 +220,13 @@ def compile_durable_handlers(
             if message.get("role") != "user" or not isinstance(message.get("content"), str):
                 raise ValueError("Native input accepts user text messages only")
         resume = value.get("resume")
-        from ._native_input import input_leaf, native_data_part
+        from ._native_input import NATIVE_ARTIFACTS_KEY, input_leaf, native_data_part
         from ._native_remote import validate_correlation
 
         correlation = validate_correlation(value.get("correlation"))
         leaf = input_leaf(agent)
         schema = getattr(leaf, "_input_schema", None)
-        domain_input = None
+        domain_input = {NATIVE_ARTIFACTS_KEY: {}}
         parts = value.get("apx_data_parts")
         if parts is not None or schema is not None:
             if schema is None or not isinstance(parts, list) or len(parts) != 1 or resume is not None or recovery:
@@ -235,7 +235,7 @@ def compile_durable_handlers(
             if not isinstance(part, dict):
                 raise ValueError("Native typed input requires a data artifact")
             part = native_data_part(schema, part.get("data"), part)
-            domain_input = {leaf._input_key: part["data"]}
+            domain_input[leaf._input_key] = part["data"]
         if resume is not None and checkpointer is None:
             raise ValueError("Approval resume requires a checkpointed session")
         config = None
@@ -293,12 +293,15 @@ def compile_durable_handlers(
         from ._native_remote import _NATIVE_INVOCATION
 
         def emit_native(event: dict[str, Any]) -> None:
+            from datetime import datetime, timezone
+
+            # The SDK persists event payloads but supplies no record/event timestamp.
+            event = {**event, "recorded_at": datetime.now(timezone.utc).isoformat(), "timestamp_source": "application_emit"}
             asyncio.run_coroutine_threadsafe(context.emit(event), loop).result()
 
-        native_bindings = any(binding.transport == "native" for binding in getattr(agent, "_apx_remote_leaf_bindings", {}).values())
         invocation_token = _NATIVE_INVOCATION.set(
-            {"id": context.invocation_id, "sender": getattr(agent, "_name", None), "calls": {},
-             "emit": emit_native if can_emit else None} if native_bindings else None)
+            {"id": getattr(context, "invocation_id", None), "sender": getattr(agent, "_name", None), "calls": {},
+             "emit": emit_native if can_emit else None})
         try:
             platform = dict(static)
             if project_root is not None and refs:
