@@ -17,9 +17,9 @@ def render_hub_ui() -> str:
   <style>
     {_apx_nav_css()}
     :root {{
-      --bg:#11171C; --panel:#1F272D; --border:#445461; --text:#E8ECF0;
-      --muted:#92A4B3; --accent:#2272B4; --accent-bg:#37444F; --accent-border:#445461;
-      --ok:#3BA65E; --ok-bg:#37444F; --err:#E74C3C;
+      --bg:var(--apx-bg); --panel:var(--apx-panel); --border:var(--apx-border); --text:var(--apx-text);
+      --muted:var(--apx-muted); --accent:var(--apx-accent); --accent-bg:var(--apx-panel-2); --accent-border:var(--apx-border);
+      --ok:var(--apx-ok); --ok-bg:var(--apx-panel-2); --err:var(--apx-err);
     }}
     * {{ box-sizing:border-box; }}
     body {{ margin:0; background:var(--bg); color:var(--text);
@@ -33,7 +33,7 @@ def render_hub_ui() -> str:
                     border:1px solid var(--accent-border); border-radius:6px; padding:6px 12px; }}
     button:disabled {{ opacity:.5; cursor:default; }}
     button.secondary {{ color:var(--text); background:var(--panel); border-color:var(--border); }}
-    button.danger {{ color:#E74C3C; background:var(--panel); border-color:#E74C3C; }}
+    button.danger {{ color:var(--apx-err); background:var(--panel); border-color:var(--apx-err); }}
     input {{ font:inherit; background:var(--bg); color:var(--text);
             border:1px solid var(--border); border-radius:6px; padding:6px 10px; }}
     input:focus {{ outline:none; border-color:var(--accent); }}
@@ -41,8 +41,8 @@ def render_hub_ui() -> str:
              padding:12px 14px; margin-bottom:8px; }}
     .card h3 {{ margin:0 0 4px; font-size:13px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }}
     .card-status {{ font-size:11px; padding:2px 6px; border-radius:4px; }}
-    .card-status.live {{ color:#3BA65E; background:#052e1c; }}
-    .card-status.unreachable {{ color:#E74C3C; background:#3d1a1a; }}
+    .card-status.live {{ color:var(--apx-ok); background:var(--apx-ok-soft); }}
+    .card-status.unreachable {{ color:var(--apx-err); background:var(--apx-err-soft); }}
     .card-status.unknown {{ color:var(--muted); background:var(--border); }}
     .card-desc {{ color:var(--muted); font-size:12px; margin:4px 0 8px; }}
     .card-meta {{ font-size:11px; color:var(--muted); font-family:var(--apx-mono); margin:4px 0; }}
@@ -51,8 +51,8 @@ def render_hub_ui() -> str:
                   border-radius:4px; padding:2px 6px; color:var(--text); }}
     .card-actions {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:10px; }}
     .empty {{ color:var(--muted); padding:16px 0; font-style:italic; }}
-    .err {{ color:#E74C3C; font-size:12px; margin-top:6px; }}
-    .success {{ color:#3BA65E; font-size:12px; margin-top:6px; }}
+    .err {{ color:var(--apx-err); font-size:12px; margin-top:6px; }}
+    .success {{ color:var(--apx-ok); font-size:12px; margin-top:6px; }}
     .hint {{ color:var(--muted); font-size:11px; margin-top:4px; }}
     a {{ color:var(--accent); text-decoration:none; }}
     a:hover {{ text-decoration:underline; }}

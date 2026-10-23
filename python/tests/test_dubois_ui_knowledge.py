@@ -17,10 +17,10 @@ async def _get(app, path: str) -> Response:
 
 @pytest.mark.asyncio
 async def test_knowledge_uses_dubois_tokens(dev_ui_app):
-    """Knowledge tab must use apx-dubois-theme and no legacy hex colors."""
+    """Knowledge tab must use apx-agentkit-theme and no legacy hex colors."""
     r = await _get(dev_ui_app, "/_apx/knowledge")
     assert r.status_code == 200
-    assert "apx-dubois-theme" in r.text, "Knowledge page missing apx-dubois-theme marker"
+    assert "apx-agentkit-theme" in r.text, "Knowledge page missing apx-agentkit-theme marker"
 
     # Check for legacy hexes that should have been replaced with tokens (6-digit hex patterns)
     legacy_hexes = ["#0a0a0a", "#60b0ff", "#e5e7eb", "#2a2a2a", "#0d0d0d", "#0f0f0f", "#1a1a1a"]
@@ -51,11 +51,11 @@ async def test_knowledge_has_expected_tokens(dev_ui_app):
 
 @pytest.mark.asyncio
 async def test_root_chat_uses_dubois_tokens():
-    """Root chat page (rendered directly) must use apx-dubois-theme and no legacy hex colors."""
+    """Root chat page (rendered directly) must use apx-agentkit-theme and no legacy hex colors."""
     from apx_agent._ui_root_chat import render_root_chat
 
     html = render_root_chat(name="Test Agent", description="Test Description")
-    assert "apx-dubois-theme" in html, "Root chat page missing apx-dubois-theme marker"
+    assert "apx-agentkit-theme" in html, "Root chat page missing apx-agentkit-theme marker"
 
     # Check for legacy hexes that should have been replaced with tokens (6-digit hex patterns)
     legacy_hexes = ["#0a0a0a", "#60b0ff", "#e5e7eb", "#2a2a2a", "#0d1f38", "#1e3a5f"]

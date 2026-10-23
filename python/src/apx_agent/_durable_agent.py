@@ -6,6 +6,8 @@ import asyncio
 import contextvars
 import hashlib
 import json
+import logging
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
@@ -14,6 +16,8 @@ from ._agents import BaseAgent, LlmAgent
 from ._compile import compile_to_langgraph
 from ._graph_turn import run_graph_turn
 from ._platform_tools import ClientFor, platform_tool_leaves
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ._apps_authorization import AuthorizationPlan
@@ -339,14 +343,31 @@ def compile_to_durable_agent_server(
     from ._resources import _iter_sub_agents
     from ._wiring import mount_durable_protocol
 
-    # Discovery only. DurableAgentServer already owns /api/invocations and its
-    # auth policy; this does not mount the root chat UI or /_apx/*. setup_agent
-    # fetches remote tools when a config exists, so this does not fetch again.
+    # Discovery routes. DurableAgentServer already owns /api/invocations and its
+    # auth policy; the browser UIs are mounted just below, not by setup_agent.
+    # setup_agent fetches remote tools when a config exists, so this does not
+    # fetch again.
     # The compiler does not receive the caller's AgentConfig; cwd discovery must
     # still validate as this target, or a space/apps_api declaration (legal only
     # with durable_agent_server) fails during lifespan startup.
     discovery = _durable_discovery_config()
     mount_durable_protocol(app, agent, config=discovery)
+    # Browser surfaces. The AgentKit chat registers first so it owns /_apx/chat
+    # (the /_apx/agent shell's Chat tab) ahead of the dev UI's legacy chat page.
+    from ._ui_agentkit_chat import mount_agentkit_chat
+
+    mount_agentkit_chat(app, model=model, ws=service_ws)
+    # Dev UI handlers read the service client here (the MLflow host sets it too).
+    app.state.workspace_client = service_ws
+    app.state.dev_ui_mount_error = None
+    if os.environ.get("APX_DEV_UI") != "0":
+        try:
+            from ._dev import build_dev_ui_router
+
+            app.include_router(build_dev_ui_router())
+        except Exception as exc:  # recorded, never hidden (same as mount_mcp_endpoints)
+            app.state.dev_ui_mount_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("Dev UI not mounted on durable host: %s", app.state.dev_ui_mount_error)
     # setup_agent fetches remotes when a config exists. With no config it returns
     # before that fetch, so the card materialization (#436) still has to run.
     if discovery is None and list(_iter_sub_agents(agent)):

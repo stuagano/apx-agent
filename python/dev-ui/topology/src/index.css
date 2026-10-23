@@ -1,24 +1,24 @@
-/* Tokens aligned with /_apx/discover and _ui_nav.py */
+/* Tokens aligned with _ui_theme.py (AgentKit palette) */
 
 :root {
-  /* Du Bois palette — aligned with _ui_theme.py --apx-* tokens */
-  --bg: #11171C;
-  --panel: #1F272D;
-  --border: #445461;
-  --text: #E8ECF0;
-  --muted: #92A4B3;
-  --dim: #92A4B3;
-  --accent: #2272B4;
-  --accent-bg: #37444F;
-  --accent-border: #445461;
-  --ok: #3BA65E;
-  --ok-bg: #37444F;
-  --code-bg: #11171C;
-  --warn: #FACB66;
-  --err: #C83243;
-  font-family: "DM Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  /* AgentKit palette — aligned with _ui_theme.py --apx-* tokens */
+  --bg: #f1f3ff;
+  --panel: #ffffff;
+  --border: #e7e9f0;
+  --text: #1f2124;
+  --muted: #5f6469;
+  --dim: #777d86;
+  --accent: #1a73e8;
+  --accent-bg: #edf3fd;
+  --accent-border: #d9dce6;
+  --ok: #137333;
+  --ok-bg: #e6f4ea;
+  --code-bg: #f7f8fc;
+  --warn: #8b5000;
+  --err: #b3261e;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 * {
@@ -696,13 +696,13 @@ pre {
 }
 
 .apx-pill.genie_space {
-  color: #A78BFA; /* genie = purple, kept distinct as a category hue */
-  background: color-mix(in srgb, #A78BFA 16%, transparent);
+  color: #7040a0; /* genie = purple, kept distinct as a category hue */
+  background: color-mix(in srgb, #7040a0 16%, transparent);
 }
 
 .apx-pill.vector_search_index {
-  color: #5EEAD4; /* vector index = teal, kept distinct as a category hue */
-  background: color-mix(in srgb, #5EEAD4 14%, transparent);
+  color: #0f766e; /* vector index = teal, kept distinct as a category hue */
+  background: color-mix(in srgb, #0f766e 14%, transparent);
 }
 
 .apx-toast {

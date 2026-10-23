@@ -32,7 +32,7 @@ function Inner(props: DiscoverGraphProps) {
   const rf = useMemo(() => {
     const lit = (id: string) => impacted?.has(id) || id === selected;
     const rfNodes: Node[] = nodes.map((n) => {
-      const color = NODE_COLORS[n.type] ?? "#92A4B3";
+      const color = NODE_COLORS[n.type] ?? "#5f6469";
       const hidden = collapsedCounts.get(n.id);
       return {
         id: n.id,
@@ -50,14 +50,14 @@ function Inner(props: DiscoverGraphProps) {
         },
         style: {
           width: NODE_WIDTH,
-          background: "#11171C",
-          color: "#E8ECF0",
-          border: `1.5px solid ${impacted?.has(n.id) ? "#FACB66" : color}`,
+          background: "#f1f3ff",
+          color: "#1f2124",
+          border: `1.5px solid ${impacted?.has(n.id) ? "#8b5000" : color}`,
           borderRadius: 6,
           padding: "6px 10px",
           fontSize: 12,
           opacity: impacted && !lit(n.id) ? 0.2 : 1,
-          boxShadow: n.id === selected ? "0 0 0 2px var(--accent, #2272B4)" : undefined,
+          boxShadow: n.id === selected ? "0 0 0 2px var(--accent, #1a73e8)" : undefined,
         },
       };
     });
@@ -68,10 +68,10 @@ function Inner(props: DiscoverGraphProps) {
         source: e.src,
         target: e.dst,
         label: e.type === "contains" ? undefined : e.type,
-        labelStyle: { fill: "#92A4B3", fontSize: 10 },
-        labelBgStyle: { fill: "#11171C", fillOpacity: 0.85 },
+        labelStyle: { fill: "#5f6469", fontSize: 10 },
+        labelBgStyle: { fill: "#f1f3ff", fillOpacity: 0.85 },
         style: {
-          stroke: s?.color ?? "#445461",
+          stroke: s?.color ?? "#777d86",
           strokeDasharray: s?.dashed ? "5 4" : undefined,
           opacity: impacted && !(lit(e.src) && lit(e.dst)) ? 0.15 : 1,
         },
@@ -94,10 +94,10 @@ function Inner(props: DiscoverGraphProps) {
       maxZoom={2}
       proOptions={{ hideAttribution: true }}
     >
-      <Background color="#37444F" gap={20} />
+      <Background color="#f7f8fc" gap={20} />
       <Controls />
-      <MiniMap pannable zoomable maskColor="rgba(17, 23, 28, 0.7)" style={{ background: "#11171C" }}
-        nodeColor={(n) => NODE_COLORS[typeById.get(n.id) ?? ""] ?? "#92A4B3"} />
+      <MiniMap pannable zoomable maskColor="rgba(241, 243, 255, 0.7)" style={{ background: "#f1f3ff" }}
+        nodeColor={(n) => NODE_COLORS[typeById.get(n.id) ?? ""] ?? "#5f6469"} />
     </ReactFlow>
   );
 }

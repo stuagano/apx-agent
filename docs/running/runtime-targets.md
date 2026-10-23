@@ -122,8 +122,22 @@ select that deployment explicitly.
 
 Apps is the deployment destination. The server determines how requests execute.
 New Apps projects default to `durable_agent_server`. To create a compatibility
-project with MLflow AgentServer, the dev UI and Bundle deployment, run
+project with MLflow AgentServer and Bundle deployment, run
 `apx-agent agents scaffold my-agent --runtime responses_agent`.
+
+A `durable_agent_server` App serves the AgentKit chat app at `/` and
+`/_apx/chat`, and the apx dev UI (Discover, Topology, Edit, Eval, Probe and the
+rest) under `/_apx/*`. Chat turns go to the server's own `/api/invocations`. If
+a project mounts its own UI at `/`, that UI keeps the root and the chat stays at
+`/_apx/chat`. Set `APX_DEV_UI=0` to drop the dev UI pages; the chat (`/`,
+`/_apx/chat`) and its `/_apx/assets/agentkit` and `/_apx/api/{ui,demo}` routes
+still serve. The chat's memory and session panels call the managed stores as the
+App service principal. They act for the actor in the forwarded identity
+headers, or for a caller-supplied `?actor=`, so any signed-in App user can read
+another actor's memory entries through the App's grants. This matches the
+upstream AgentKit chat app; see
+[the A2A trust model](../design/a2a-trust-model.md) for the per-hop identity
+model apx uses elsewhere.
 `--target model-serving` retains its existing layout and Responses-compatible
 contract; it rejects `--runtime durable_agent_server`.
 
