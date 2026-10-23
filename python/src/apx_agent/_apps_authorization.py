@@ -403,11 +403,14 @@ def compile_authorization_plan(
             operation.principal or "",
         ),
     ))
-    names: set[str] = set()
+    # One tool (or one peer) reachable from several leaves is one operation; two
+    # different declarations under one name are ambiguous and rejected.
+    by_name: dict[str, OperationAuthorization] = {}
     for operation in operations:
-        if operation.name in names:
+        if operation.name in by_name and by_name[operation.name] != operation:
             raise ValueError(f"Duplicate reachable operation name {operation.name!r}.")
-        names.add(operation.name)
+        by_name[operation.name] = operation
+    operations = tuple(by_name.values())
     user_resources: set[ResourceSpec] = set()
     # The chat model is not a serving_endpoint grant. get_llm always calls it
     # through Unity Catalog AI Gateway, so the OBO scope is ``ai-gateway``

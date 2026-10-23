@@ -976,7 +976,10 @@ def _mount_protocol_routes(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=404, detail="Agent protocol not configured"
             )
-        base = str(request.base_url).rstrip("/")
+        # Behind the Apps proxy request.base_url is the container address
+        # (https://localhost:8000); the forwarded host is the App's public URL.
+        forwarded_host = request.headers.get("x-forwarded-host")
+        base = f"https://{forwarded_host}" if forwarded_host else str(request.base_url).rstrip("/")
         mcp_available = (
             getattr(request.app.state, "mcp_server", None) is not None
         )

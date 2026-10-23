@@ -19,6 +19,7 @@ dependencies = [
     "sqlglot>=20.0.0",
     "sqlfluff>=3.0.0",
     "plutoprint==0.19.0",
+    "databricks-tools-core",
 ]
 
 [dependency-groups]
@@ -45,7 +46,7 @@ api-prefix = "/api"
 [tool.apx.agent]
 name = "data_triage_agent"
 description = "Investigate why data is missing from Databricks tables or APIs — traces lineage, checks job failures, and inspects source code"
-model = "databricks-claude-sonnet-4-6"
+model = "system.ai.claude-sonnet-4-6"
 module = "agent:agent"
 target = "durable_agent_server"
 url = ""
@@ -59,8 +60,13 @@ registered_model = "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"
 # recovered in the background (no background recovery).
 
 [tool.apx.agent.deploy]
-# Must match the bundle app's `space:` (see databricks.yml).
-space = "app-space"
+# Apps API keeps the mcp- app name (External MCP discovery) on a dedicated App;
+# the Agent Bricks backend requires an agent-bricks- name.
+backend = "apps_api"
+entrypoint = "app"
+include = ["app.py", "api.py", "prompts.py", "integrations", "databricks_tools_core-0.1.0-py3-none-any.whl"]
+# DATA_INSPECTOR_URL (the data-inspector App's URL) is workspace-specific:
+# pass it at deploy time with --env DATA_INSPECTOR_URL=https://<app-url>.
 
 [tool.apx.deploy]
 target = "apps"
