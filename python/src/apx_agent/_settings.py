@@ -62,6 +62,9 @@ def resolve_settings(agent: BaseAgent, toml: AgentConfig | None) -> AgentConfig:
     declared.update({
         f: getattr(agent, attr) for f, attr in _ROOT_ONLY.items()
         if getattr(agent, attr, None) is not None and (toml is None or f not in toml.model_fields_set)
+        # Against a TOML, only an explicit session= fills the session gap; a session the
+        # one-word memory knob invents never beats the TOML's own default (3b-3a).
+        and (f != "session" or toml is None or getattr(agent, "_session_explicit", False))
     })
     name = getattr(agent, "_name", None)
     # Validate against the toml's target: cross-field rules (e.g. sessions) depend on it.

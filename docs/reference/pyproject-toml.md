@@ -61,6 +61,10 @@ agent = SequentialAgent(
 )
 ```
 
+Explicit memory and session backends go on the agent too:
+`memory=MemoryBackendConfig(...)` and `session=SessionBackendConfig(...)`, or the
+same as a dict.
+
 `model` and `identity` are per-agent: an agent uses its own value, else its
 nearest ancestor's, else the app's. Every other field is app-wide: set it on
 the root; a different value on a child fails.
