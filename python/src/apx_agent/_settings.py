@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 PER_AGENT = ("model", "identity")
 APP_WIDE = ("target", "recovery", "gateway", "service_policies", "guardrails", "knowledge",
-            "vector_search_index", "bindings", "url", "registry", "api_prefix")
+            "vector_search_index", "bindings", "url", "registry", "api_prefix", "examples")
 _ROOT_ONLY = {"memory": "memory_config", "session": "session_config"}
 
 
