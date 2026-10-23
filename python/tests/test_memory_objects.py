@@ -58,3 +58,18 @@ def test_the_toml_session_wins_the_gap() -> None:
 def test_data_agent_passes_backends_through() -> None:
     agent = DataAgent("main", "orders", name="d", session=_SESSION)
     assert agent.session_config == SessionBackendConfig(**_SESSION)
+
+
+def test_lakebase_knob_error_points_at_session_and_memory_objects() -> None:
+    with pytest.raises(ValueError, match="session=SessionBackendConfig"):
+        Agent(name="o", tools=[], memory="lakebase")
+
+
+def test_an_auto_attached_managed_session_is_not_a_declaration() -> None:
+    # A durable-by-default TOML gets a managed session filled in; that default must not
+    # beat a session the agent declares (the deploy-only TOML of a migrated project).
+    toml = AgentConfig.model_validate({"name": "o"})
+    assert toml.session is not None and toml.session.type == "managed"
+    assert "session" not in toml.model_fields_set
+    agent = Agent(name="o", tools=[], target="responses_agent", session=_SESSION)
+    assert resolve_settings(agent, toml).session == SessionBackendConfig(**_SESSION)

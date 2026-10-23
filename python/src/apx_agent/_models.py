@@ -545,9 +545,10 @@ def normalize_memory_knob(
     if v == "lakebase":
         raise ValueError(
             "memory='lakebase' needs connection details the one-word knob can't "
-            "carry — add explicit [tool.apx.agent.memory] and "
-            "[tool.apx.agent.session] blocks with type='lakebase' "
-            "(host, database, embedding_model, embedding_dim)."
+            "carry — pass memory=MemoryBackendConfig(type='lakebase', host=..., database=..., "
+            "table_name=..., embedding_model=..., embedding_dim=...) and "
+            "session=SessionBackendConfig(type='lakebase', host=..., database=...) on the agent "
+            "(a dict works too)."
         )
     if v not in _KNOB_TO_TYPE:
         raise ValueError(
@@ -868,6 +869,7 @@ class AgentConfig(BaseModel):
 
     @model_validator(mode="after")
     def _runtime_contract(self) -> "AgentConfig":
+        session_declared = "session" in self.model_fields_set
         if self.recovery and self.target != "durable_agent_server":
             raise ValueError("recovery requires target='durable_agent_server'")
         if self.target == "durable_agent_server":
@@ -895,6 +897,10 @@ class AgentConfig(BaseModel):
             self.memory = self.memory.model_copy(update={"store_name": _managed_store_name(self.name, "memory")})
         if self.session is not None and self.session.type == "managed" and self.session.store_name is None:
             self.session = self.session.model_copy(update={"store_name": _managed_store_name(self.name, "sessions")})
+        if not session_declared:
+            # A filled-in default is not a declaration: resolve_settings must let an agent's own
+            # session= fill this gap (3b-3a). Assigning above marked the field as set.
+            self.__pydantic_fields_set__.discard("session")
         return self
 
 

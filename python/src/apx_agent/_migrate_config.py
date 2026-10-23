@@ -91,10 +91,13 @@ def _deploy_block(table: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _covered(field: str, value: Any, agent: BaseAgent, after: AgentConfig) -> bool:
+def _covered(field: str, value: Any, agent: BaseAgent, after: AgentConfig, target: Any) -> bool:
     from ._settings import resolve_settings
 
-    declared = AgentConfig.model_validate({"name": "x", field: value})
+    # Validate against the project's declared target: cross-field rules depend on it
+    # (a Lakebase session is valid only for responses_agent).
+    base = {"name": "x"} if target is None else {"name": "x", "target": target}
+    declared = AgentConfig.model_validate({**base, field: value})
     if field in _CONSTRUCTOR:
         return getattr(agent, _CONSTRUCTOR[field], None) == getattr(declared, field)
     return getattr(resolve_settings(agent, after), field) == getattr(declared, field)
@@ -133,7 +136,7 @@ def plan_migration(pyproject: Path, agent: BaseAgent) -> Migration:
     after = AgentConfig.model_validate(_fold_deploy_table(deploy_only, {}))
     runtime = {k: v for k, v in raw.items()
                if k in AgentConfig.model_fields and k not in ("name", "host", "deploy")}
-    missing = {k: v for k, v in runtime.items() if not _covered(k, v, agent, after)}
+    missing = {k: v for k, v in runtime.items() if not _covered(k, v, agent, after, raw.get("target"))}
 
     moved = ("name", "host", "deploy", "module", *DEV_KEYS, *REGISTRATION_KEYS)
     remaining = {k: v for k, v in raw.items() if k not in moved}

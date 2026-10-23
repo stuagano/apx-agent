@@ -303,3 +303,26 @@ def test_an_existing_backup_is_never_overwritten(tmp_path: Path, monkeypatch: py
     assert result.exit_code == 0, result.output
     assert (root / ".apx.local.bak").read_text() == "PRECIOUS"
     assert (root / ".apx.local.bak.2").read_text() == '[tool.apx.agent]\nprofile = "dev"\n'
+
+
+def test_a_lakebase_session_table_moves_to_session_kwarg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The Apps scaffold's default: a responses_agent with a Lakebase session (no App Space).
+    text = ('[project]\nname = "inspector"\nversion = "0"\n\n'
+            '[tool.apx.agent]\nname = "inspector"\ntarget = "responses_agent"\n'
+            'model = "system.ai.claude-sonnet-4-6"\ninstructions = "Inspect tables."\n'
+            'examples = ["Show tables", "Count rows"]\n\n'
+            '[tool.apx.agent.session]\ntype = "lakebase"\nhost = "${LAKEBASE_HOST}"\ndatabase = "inspector"\n')
+    root = _repo(tmp_path, _AGENT_PY_FULL)
+    (root / "pyproject.toml").write_text(text)
+    _commit_all(root)
+    first = _run(root, monkeypatch)
+    assert first.exit_code == 0, first.output
+    assert "session={'type': 'lakebase', 'host': '${LAKEBASE_HOST}', 'database': 'inspector'}" in first.output
+    (root / "agent.py").write_text(_AGENT_PY_FULL.replace(
+        "examples=['Show tables', 'Count rows'])",
+        "examples=['Show tables', 'Count rows'], target='responses_agent',\n"
+        "              session={'type': 'lakebase', 'host': '${LAKEBASE_HOST}', 'database': 'inspector'})"))
+    _commit_all(root)
+    second = _run(root, monkeypatch)
+    assert second.exit_code == 0, second.output
+    assert "agent" not in tomllib.loads((root / "pyproject.toml").read_text())["tool"]["apx"]
