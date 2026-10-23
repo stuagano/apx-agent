@@ -552,14 +552,16 @@ class RemoteDatabricksAgent(BaseAgent):
                 )
 
         # A durable peer serves /api/invocations, not MLflow's /invocations. The
-        # user token rides this request, so only a same-origin endpoint is used.
+        # user token rides this request, so only the endpoint's path is used,
+        # joined to the trusted base: a card cannot redirect the token, and a
+        # card built inside the App container (https://localhost:8000) still works.
         endpoint = data.get("invocationsEndpoint")
         if isinstance(endpoint, str) and endpoint:
-            if _same_origin(endpoint, self._base_url):
-                self._durable_url = endpoint
-            else:
-                logger.warning("Ignoring invocationsEndpoint %s for %s: not same-origin as %s",
-                               endpoint, self._card.name, self._base_url)
+            from urllib.parse import urlsplit
+
+            path = urlsplit(endpoint).path
+            if path.startswith("/"):
+                self._durable_url = f"{self._base_url}{path}"
 
         # Try to infer app name if not already set
         if not self._app_name:

@@ -78,7 +78,8 @@ async def test_cross_origin_invocations_endpoint_is_ignored(monkeypatch: pytest.
     monkeypatch.setattr(httpx, "AsyncClient", routed)
     remote = RemoteDatabricksAgent("http://peer.test")
     await remote.init()
-    assert remote._durable_url is None
+    # Only the path is used, joined to the trusted base: the token never goes elsewhere.
+    assert remote._durable_url == "http://peer.test/api/invocations"
 
 
 def test_only_the_durable_host_card_advertises_the_durable_endpoint(durable_peer: Any) -> None:
@@ -139,3 +140,26 @@ async def test_card_behind_apps_oauth_is_fetched_with_the_callers_token(monkeypa
     )
     assert SENTINEL in reply
     assert "/invocations" not in seen
+
+
+async def test_container_local_card_urls_resolve_against_the_trusted_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inside Apps a card built from request.base_url says https://localhost:8000 (seen live)."""
+    card = {"name": "peer", "description": "", "url": "https://localhost:8000",
+            "invocationsEndpoint": "https://localhost:8000/api/invocations"}
+    real_client = httpx.AsyncClient
+
+    def routed(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(lambda request: httpx.Response(200, json=card))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", routed)
+    remote = RemoteDatabricksAgent("https://peer.example.com")
+    await remote.init()
+    assert remote._durable_url == "https://peer.example.com/api/invocations"
+
+
+def test_card_urls_use_the_forwarded_host_behind_the_apps_proxy(durable_peer: Any) -> None:
+    with TestClient(durable_peer) as client:
+        card = client.get("/.well-known/agent.json", headers={"X-Forwarded-Host": "peer.example.com"}).json()
+    assert card["url"] == "https://peer.example.com"
+    assert card["invocationsEndpoint"] == "https://peer.example.com/api/invocations"
