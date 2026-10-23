@@ -212,22 +212,21 @@ def _parse_module_spec(spec: str) -> _ModuleSpec:
 
 
 def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
-    """Read ``[tool.apx.agent]`` from ``pyproject.toml`` in cwd.
+    """CLI view of the project's apx settings as one flat dict.
 
-    Also merges personal overrides from ``.apx.local`` (a gitignored TOML
-    file in the project root). Keys in ``.apx.local`` take precedence —
-    this is where user-specific values like ``profile`` live so they are
-    never committed to version control.
+    Merges, lowest to highest: ``[tool.apx.agent]``; the dev keys from top-level
+    ``[tool.apx]`` and the registration keys from ``[tool.apx.deploy]``
+    (sub-project 3b-1); then ``.apx.local`` (gitignored: ``[tool.apx]`` and its
+    older ``[tool.apx.agent]`` table). A key declared in ``[tool.apx.agent]``
+    and its new home with different values is an error.
 
-    Returns an empty dict if the file is missing, malformed, or doesn't
-    have the section.
+    Returns an empty dict if the files are missing, malformed, or declare nothing.
     """
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover
-        import tomli as tomllib  # type: ignore[no-redef]
+    import tomllib
 
-    def _read_toml_section(path: Path) -> dict[str, Any]:
+    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
+
+    def _apx(path: Path) -> dict[str, Any]:
         if not path.exists():
             return {}
         try:
@@ -235,22 +234,26 @@ def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]
         except Exception:
             return {}
         tool = data.get("tool", {})
-        if not isinstance(tool, dict):
-            return {}
-        apx = tool.get("apx", {})
-        if not isinstance(apx, dict):
-            return {}
-        agent_cfg = apx.get("agent", {})
-        return agent_cfg if isinstance(agent_cfg, dict) else {}
+        apx = tool.get("apx", {}) if isinstance(tool, dict) else {}
+        return apx if isinstance(apx, dict) else {}
 
-    cwd = (pyproject_path.parent if pyproject_path else Path.cwd())
-    committed = _read_toml_section(pyproject_path or cwd / "pyproject.toml")
+    def _table(apx: dict[str, Any], key: str) -> dict[str, Any]:
+        value = apx.get(key, {})
+        return value if isinstance(value, dict) else {}
 
-    # .apx.local uses the same [tool.apx.agent] structure but is gitignored.
-    local_overrides = _read_toml_section(cwd / ".apx.local")
-
-    return {**committed, **local_overrides}
-
+    cwd = pyproject_path.parent if pyproject_path else Path.cwd()
+    committed = _apx(pyproject_path or cwd / "pyproject.toml")
+    legacy = _table(committed, "agent")
+    homes = {k: ("[tool.apx]", committed[k]) for k in DEV_KEYS if k in committed}
+    deploy = _table(committed, "deploy")
+    homes.update({k: ("[tool.apx.deploy]", deploy[k]) for k in REGISTRATION_KEYS if k in deploy})
+    for key, (home, value) in homes.items():
+        if key in legacy and legacy[key] != value:
+            raise click.ClickException(
+                f"{key} is declared in both [tool.apx.agent] and {home} with different values; keep {home}.")
+    local = _apx(cwd / ".apx.local")
+    local_keys = {**_table(local, "agent"), **{k: local[k] for k in DEV_KEYS if k in local}}
+    return {**legacy, **{k: v for k, (_, v) in homes.items()}, **local_keys}
 
 def _load_agent(module_spec: str) -> Any:
     """Import ``module:variable`` and return the agent.
