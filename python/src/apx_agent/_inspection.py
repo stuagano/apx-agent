@@ -224,10 +224,14 @@ def static_agent_setting(agent_py: Path, key: str) -> Any:
     except (OSError, SyntaxError, ValueError):
         return None
     for node in tree.body:
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        if isinstance(node, ast.Assign):
+            targets, call = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets, call = [node.target], node.value
+        else:
+            continue
         if not any(isinstance(t, ast.Name) and t.id == "agent" for t in targets):
             continue
-        call = node.value
         if not isinstance(call, ast.Call):
             return None
         for keyword in call.keywords:

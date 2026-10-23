@@ -223,3 +223,13 @@ def test_durable_discovery_uses_the_compiled_config(tmp_path: Path, monkeypatch:
     _durable_agent.compile_to_durable_agent_server(Agent(name="disc", tools=[]), model="m", service_ws=MagicMock(),
                                                    config=config)
     assert seen and seen[0] == config.model_copy(update={"target": "durable_agent_server"})
+
+
+def test_every_in_repo_example_detects_a_target_without_importing() -> None:
+    from apx_agent.cli import _detect_target
+
+    root = Path(__file__).resolve().parents[1]
+    before = set(sys.modules)
+    for path in sorted(p.parent for p in root.glob("examples/**/pyproject.toml") if ".venv" not in p.parts):
+        _detect_target(path)
+    assert "agent" not in set(sys.modules) - before

@@ -17,10 +17,13 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 from ._doctor import Check, Status
+
+if TYPE_CHECKING:
+    from ._models import AgentConfig
 
 STAGES = ("Config", "Compile", "Startup", "Request", "Deploy")
 SENTINEL = "apx-doctor-sentinel-token"
