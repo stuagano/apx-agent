@@ -4725,14 +4725,15 @@ def test_native_execution_reads_session_back(monkeypatch) -> None:
             assert workspace_client.profile == "fevm"
 
         def get_tuple(self, config: dict[str, Any]) -> Any:
-            expected = cli._native_session_thread("demo", seen["session_id"])
-            assert config == expected
+            # The app-auth (unkeyed) thread is still read when no caller-keyed one exists.
+            if config != cli._native_session_thread("demo", seen["session_id"]):
+                return None
             return SimpleNamespace(checkpoint={
                 "channel_values": {"messages": [Message(type="ai", content="pong")]},
             })
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda *, profile=None: SimpleNamespace(profile=profile))
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda *, profile=None: SimpleNamespace(profile=profile, current_user=SimpleNamespace(me=lambda: SimpleNamespace(id="deployer-id"))))
     monkeypatch.setattr(
         "databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver,
     )
@@ -4743,6 +4744,50 @@ def test_native_execution_reads_session_back(monkeypatch) -> None:
     assert result.completed is True
     assert result.readback is True
     assert "secret-token-value" not in result.detail
+
+
+def test_native_execution_reads_the_user_keyed_thread(monkeypatch) -> None:
+    """Through the Apps proxy the handler keys the thread by the caller (#985)."""
+    import io
+    import urllib.request
+    from types import SimpleNamespace as Message
+
+    from apx_agent import cli
+    from apx_agent._durable_agent import session_thread_config
+
+    _stub_execution_token(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["session_id"] = json.loads(req.data.decode())["session_id"]
+        body = json.dumps({
+            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}]},
+        }).encode()
+        return io.BytesIO(body)
+
+    class _Saver:
+        def __init__(self, store: str, *, workspace_client: Any) -> None:
+            pass
+
+        def get_tuple(self, config: dict[str, Any]) -> Any:
+            # Only the thread the handler wrote: [agent, caller, session].
+            if config != session_thread_config("demo", seen["session_id"], "deployer-id"):
+                return None
+            return SimpleNamespace(checkpoint={
+                "channel_values": {"messages": [Message(type="ai", content="pong")]},
+            })
+
+    def client(*, profile=None):
+        return SimpleNamespace(profile=profile, current_user=SimpleNamespace(me=lambda: SimpleNamespace(id="deployer-id")))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", client)
+    monkeypatch.setattr("databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver)
+    result = cli._check_native_execution(
+        "https://app.example.com", profile="fevm", session_store="apx-demo-sessions", agent_name="demo",
+    )
+    assert result.completed is True, result.detail
+    assert result.readback is True
 
 
 def test_native_execution_fails_when_session_readback_misses(monkeypatch) -> None:
@@ -4768,7 +4813,7 @@ def test_native_execution_fails_when_session_readback_misses(monkeypatch) -> Non
             return None
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda *, profile=None: SimpleNamespace(profile=profile))
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda *, profile=None: SimpleNamespace(profile=profile, current_user=SimpleNamespace(me=lambda: SimpleNamespace(id="deployer-id"))))
     monkeypatch.setattr(
         "databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver,
     )

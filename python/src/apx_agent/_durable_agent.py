@@ -24,6 +24,18 @@ if TYPE_CHECKING:
     from ._models import AgentConfig
 
 
+def session_thread_config(agent_name: str | None, session_id: str, user_id: str | None) -> dict[str, Any]:
+    """The checkpoint thread for one durable session.
+
+    ``[agent, session]`` for app-auth; ``[agent, user, session]`` whenever the
+    request carries a user (the Apps proxy forwards one on every signed-in
+    call). Shared by the handler and the deploy smoke's read-back (#985).
+    """
+    scope = [agent_name, session_id] if user_id is None else [agent_name, user_id, session_id]
+    key = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
+    return {"configurable": {"thread_id": key, "actor_id": key}}
+
+
 def durable_request_headers(auth: Any, *, principal: str, forward: bool) -> Any:
     """Per-request headers for the compiled graph; never carries the token itself.
 
@@ -231,11 +243,8 @@ def compile_durable_handlers(
             session = context.session_id
             if not isinstance(session, str) or not session:
                 raise ValueError("A checkpointed invocation requires a non-empty session_id")
-            scope = [getattr(agent, "_name", None), session]
-            if headers is not None:
-                scope.insert(1, headers.user_id)
-            key = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
-            config = {"configurable": {"thread_id": key, "actor_id": key}}
+            config = session_thread_config(getattr(agent, "_name", None), session,
+                                           headers.user_id if headers is not None else None)
         from langchain_core.messages import HumanMessage
 
         graph = compile_to_langgraph(
@@ -359,6 +368,8 @@ def compile_to_durable_agent_server(
     mount_agentkit_chat(app, model=model, ws=service_ws)
     # Dev UI handlers read the service client here (the MLflow host sets it too).
     app.state.workspace_client = service_ws
+    # The card advertises /api/invocations so peers use the durable contract.
+    app.state.apx_durable_host = True
     app.state.dev_ui_mount_error = None
     if os.environ.get("APX_DEV_UI") != "0":
         try:

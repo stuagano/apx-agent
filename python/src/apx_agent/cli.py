@@ -9086,21 +9086,10 @@ def _native_execution_completed(body: Any) -> str | None:
 
 
 def _native_session_thread(agent_name: str | None, session_id: str, principal: str | None = None) -> Any:
-    """The checkpoint key native execution derives from the agent and session.
+    """The checkpoint key native execution derives from the agent, caller and session."""
+    from ._durable_agent import session_thread_config
 
-    Mirrors the durable handler's scope: ``[agent._name, session_id]`` for
-    app-auth, ``[agent._name, principal, session_id]`` when a request user is
-    resolved. The result is a LangGraph ``RunnableConfig`` so it can be passed
-    to ``DatabricksSessionStoreSaver.get_tuple``.
-    """
-    import hashlib
-
-    from langchain_core.runnables import RunnableConfig
-
-    scope = [agent_name, session_id] if principal is None else [agent_name, principal, session_id]
-    key = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
-    config: RunnableConfig = {"configurable": {"thread_id": key, "actor_id": key}}
-    return config
+    return session_thread_config(agent_name, session_id, principal)
 
 
 def _native_session_has_message(checkpoint: Any, content: str) -> bool:
@@ -9204,9 +9193,15 @@ def _check_native_execution(
 
         ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
         saver = DatabricksSessionStoreSaver(session_store, workspace_client=ws)
-        # A request-user agent scopes the thread by the caller, who is the deployer here.
-        principal = ws.current_user.me().id if user_scoped else None
-        saved = saver.get_tuple(_native_session_thread(agent_name, session_id, principal))
+        # The handler keys the thread by the caller whenever the request carries a
+        # user (the Apps proxy forwards the deployer here); app-auth requests that
+        # reach it without one use the unkeyed thread. A request-user agent is
+        # always caller-keyed (#985).
+        principal = ws.current_user.me().id
+        threads = [_native_session_thread(agent_name, session_id, principal)]
+        if not user_scoped:
+            threads.append(_native_session_thread(agent_name, session_id))
+        saved = next((t for t in map(saver.get_tuple, threads) if _native_session_has_message(t, content)), None)
     except Exception as exc:
         return _NativeExecutionSmoke(
             completed=False,

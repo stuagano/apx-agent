@@ -62,6 +62,29 @@ def _extract_non_stream_text(data: Any) -> str:
     return str(data)
 
 
+def _durable_answer(base: str, messages: list[dict[str, Any]], headers: dict[str, str], timeout: float) -> str:
+    """Ask a DurableAgentServer App, which serves ``/api/invocations`` (#980).
+
+    Called after ``/invocations`` 404s. Same origin as the caller's own URL, so
+    the bearer token goes nowhere new. Durable input takes user text only.
+    """
+    import uuid
+
+    import httpx
+
+    from ._remote import _durable_reply
+
+    turns = [m for m in messages if m.get("role") == "user" and isinstance(m.get("content"), str)]
+    response = httpx.post(
+        f"{base}/api/invocations",
+        json={"id": str(uuid.uuid4()), "session_id": uuid.uuid4().hex, "input": turns},
+        headers=headers, timeout=timeout,
+    )
+    response.raise_for_status()
+    replies = _durable_reply(response.json())["messages"]
+    return replies[-1]["content"] if replies else ""
+
+
 def app_predict_fn(url: str, token: str | None = None) -> Callable[[dict[str, Any]], str]:
     """Return a predict function for mlflow.genai.evaluate().
 
@@ -106,6 +129,8 @@ def app_predict_fn(url: str, token: str | None = None) -> Callable[[dict[str, An
             headers=headers,
             timeout=120.0,
         )
+        if response.status_code == 404:
+            return _durable_answer(base, messages, headers, 120.0)
         response.raise_for_status()
         data = response.json()
         return _extract_non_stream_text(data)
@@ -557,9 +582,20 @@ def endpoint_predict_fn(
     }
 
     def predict(inputs: Any) -> str:
+        import urllib.error
         import urllib.request
 
         question = _extract_question(inputs)
+        try:
+            return _predict_responses(question)
+        except urllib.error.HTTPError as err:
+            if err.code != 404:
+                raise
+            return _durable_answer(base, [{"role": "user", "content": question}], headers, timeout)
+
+    def _predict_responses(question: str) -> str:
+        import urllib.request
+
         # ``/invocations`` (ResponsesAgent) takes the list form of ``input``.
         body = _json.dumps(
             {"input": [{"role": "user", "content": question}], "stream": stream}

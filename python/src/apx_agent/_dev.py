@@ -3799,26 +3799,16 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         if request.headers.get("X-Forwarded-Host"):
             forwarded["X-Forwarded-Host"] = request.headers["X-Forwarded-Host"]
 
-        # POST to the agent's /invocations endpoint
-        url = f"{card.url.rstrip('/')}/invocations"
-        payload = {
-            "input": invoke_req.input,
-        }
+        # Same transport as a declared sub-agent: reads the peer's card and posts
+        # the durable contract to a DurableAgentServer, else /invocations (#980).
+        from ._remote import RemoteDatabricksAgent
 
+        peer = RemoteDatabricksAgent(card.url, headers=forwarded)
         try:
-            async with AsyncClient(timeout=120) as client:
-                resp = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json", **forwarded},
-                )
-                if resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"Agent {card.id} returned {resp.status_code}: {resp.text}"
-                    )
-                return resp.json()
+            await peer.init()
+            return await peer._post_via_http([{"role": "user", "content": invoke_req.input}], forwarded)
         except Exception as exc:
-            logger.error("Failed to invoke agent %s at %s: %s", agent_id, url, exc)
+            logger.error("Failed to invoke agent %s at %s: %s", agent_id, card.url, exc)
             raise HTTPException(
                 status_code=502,
                 detail=f"Failed to invoke agent: {exc}",
