@@ -169,5 +169,11 @@ def test_data_inspector_deploys_via_apps_api_keeping_mcp_name() -> None:
     assert (module / "__main__.py").is_file(), "python -m <entrypoint> must start the host"
     assert "start_host" in (module / "__main__.py").read_text(encoding="utf-8")
     assert all((root / rel).exists() for rel in deploy["include"])
+    # The deployed build fails on a hatch force-include the Apps API stage didn't copy.
+    staged_by_default = {"agent.py", "tools.py"}
+    forced = set(pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"])
+    assert forced <= staged_by_default | set(deploy["include"]), forced
     assert not (root / "app.yml").exists(), "Apps API generates app.yaml and refuses a root manifest"
+    # The declared app_name keeps mcp-; the agent name (data-triage's tool name) stays.
     assert pyproject["tool"]["apx"]["deploy"]["app_name"].startswith("mcp-")
+    assert pyproject["tool"]["apx"]["agent"]["name"] == "data_inspector"
