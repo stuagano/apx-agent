@@ -866,3 +866,18 @@ def test_genie_materialization_failure_still_fails_startup(tmp_path: Path, monke
     checks = _by_name(check_durable_readiness(root))
     assert checks["Startup"].status is Status.FAIL
     assert "genie build broke" in checks["Startup"].detail
+
+
+def test_isolation_owns_agentkits_bound_workspace_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test that patched databricks.sdk.WorkspaceClient while AgentKit's workspace module
+    first imported leaves that module holding the fake by name; doctor must still isolate it."""
+    from types import SimpleNamespace
+
+    import databricks_agentkit.runtime.workspace as agentkit_workspace
+
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    monkeypatch.setattr(agentkit_workspace, "WorkspaceClient", lambda *a, **k: SimpleNamespace())
+    root = _project(tmp_path, "stalebind", DELEGATE_AGENT.format(name="stalebind"))
+    request = _by_name(check_durable_readiness(root))["Request"]
+    assert request.status is Status.OK, request.detail

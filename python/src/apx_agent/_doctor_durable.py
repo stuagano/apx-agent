@@ -213,6 +213,9 @@ def _isolated(project: Path) -> Iterator[_Harness]:
         stack.callback(sys.modules.update, shadowed)  # after the project's own modules are unloaded
         for target, value in (
             ("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient),
+            # AgentKit builds the local request-user client from its own by-name binding, which
+            # may hold whatever WorkspaceClient was live when it first imported; patch it directly.
+            ("databricks_agentkit.runtime.workspace.WorkspaceClient", _FakeWorkspaceClient),
             ("apx_agent._defaults._make_workspace_client", _fake_make_client),
             ("apx_agent._compile._build_chat_databricks", _scripted_model),
             ("apx_agent._remote.RemoteDatabricksAgent._run_with_incoming_headers", _record),
