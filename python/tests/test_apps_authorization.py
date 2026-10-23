@@ -206,6 +206,19 @@ def test_compile_rejects_raw_user_scope_on_service_operation() -> None:
         compile_authorization_plan(Agent(tools=[background_telemetry]), model="model")
 
 
+def test_compile_merges_one_operation_reachable_twice() -> None:
+    """A pipeline that delegates to the same peer from two stages declares one
+    operation twice; identical declarations are the same operation."""
+    from apx_agent import Agent, SequentialAgent
+
+    def lookup(ws: Dependencies.UserClient) -> str:
+        return "ok"
+
+    pipeline = SequentialAgent([Agent(name="first", tools=[lookup]), Agent(name="second", tools=[lookup])])
+    plan = compile_authorization_plan(pipeline, model="model")
+    assert [operation.name for operation in plan.operations].count("lookup") == 1
+
+
 def test_compile_rejects_duplicate_reachable_operation_names() -> None:
     def user_lookup(ws: Dependencies.UserClient) -> str:
         return "ok"
