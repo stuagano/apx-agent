@@ -1554,8 +1554,10 @@ def mount_durable_protocol(
             logger.info("mount_durable_protocol: no agent config \u2014 /mcp will 503")
             return
         from ._ui_root_chat import build_root_chat_router
+        from ._ui_native_chat import native_input_router
 
         app.include_router(build_root_chat_router())
+        app.include_router(native_input_router(agent))
         if os.environ.get("APX_DEV_UI", "0" if os.environ.get("DATABRICKS_APP_NAME") else "1") != "0":
             from fastapi.responses import HTMLResponse
             from ._ui_chat import _render_agent_ui

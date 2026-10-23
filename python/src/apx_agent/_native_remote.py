@@ -74,6 +74,7 @@ def emit_native_step(agent: Any, part: dict[str, Any], input_part: dict[str, Any
         event["input_artifact"] = dict(input_part["metadata"])
     if child is not None:
         event.update(child_invocation_id=child["id"], parent_invocation_id=child["parent_invocation_id"], readback_verified=True)
+        event["child_invocation_url"] = child["child_invocation_url"]
     scope["emit"](event)
 
 
@@ -96,6 +97,7 @@ async def invoke_native_leaf(agent: Any, binding: _RemoteLeafBinding, state: dic
     body = {"id": child_id, "session_id": child_id,
             "input": {"messages": messages, "apx_data_parts": [part], "correlation": correlation}}
     path = f"{binding.card_url.rstrip('/')}/api/invocations"
+    child_url = f"{path}/{child_id}"
 
     async def request() -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=binding.timeout_s, follow_redirects=False) as client:
@@ -129,7 +131,7 @@ async def invoke_native_leaf(agent: Any, binding: _RemoteLeafBinding, state: dic
             if not isinstance(parts, list) or len(parts) != 1 or not isinstance(parts[0], dict):
                 raise ValueError("Native child requires one typed output DataPart")
             native_data_part(agent._output_schema, parts[0].get("data"), parts[0])
-            message.additional_kwargs["apx_native_invocation"] = {"id": child_id, **correlation}
+            message.additional_kwargs["apx_native_invocation"] = {"id": child_id, **correlation, "child_invocation_url": child_url}
             return {"messages": [message]}
 
     try:
@@ -139,5 +141,5 @@ async def invoke_native_leaf(agent: Any, binding: _RemoteLeafBinding, state: dic
 
         if scope["emit"] is not None:
             scope["emit"]({"type": "agent.child.unknown", "id": child_id, "correlation": correlation,
-                           "transport_status": "unknown"})
+                           "transport_status": "unknown", "child_invocation_url": child_url})
         raise StepTimeoutError("Native child invocation deadline exceeded; child may still be running") from None

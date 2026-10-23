@@ -297,6 +297,8 @@ def test_three_leaf_chain_executes_exact_tools_prepares_wrappers_and_reads_both_
     assert all(step["domain_status"] == "not_ready" and step["transport_status"] == "completed" for step in steps)
     assert "child_invocation_id" not in steps[0]
     assert [step["child_invocation_id"] for step in steps[1:]] == [post["id"] for post in posts]
+    assert [step["child_invocation_url"] for step in steps[1:]] == [
+        str(request.url) + "/" + json.loads(request.content)["id"] for request in chain.sent if request.method == "POST"]
     assert all(step["readback_verified"] for step in steps[1:])
     assert all(step["timestamp_source"] == "application_emit" for step in steps)
     assert all(started <= datetime.fromisoformat(step["recorded_at"]) <= datetime.now(timezone.utc) for step in steps)
@@ -347,6 +349,9 @@ def test_skipped_tool_and_failed_or_unknown_readback_never_publish_remote_succes
         assert any(event["type"] == "agent.child.accepted" for event in events)
     if failure == "timeout":
         assert any(event["type"] == "agent.child.unknown" and event["transport_status"] == "unknown" for event in events)
+        unknown = next(event for event in events if event["type"] == "agent.child.unknown")
+        sent = next(request for request in chain.sent if request.method == "POST")
+        assert unknown["child_invocation_url"] == str(sent.url) + "/" + json.loads(sent.content)["id"]
 
 
 def test_remote_valid_custom_id_survives_in_preparation_and_event(chain):

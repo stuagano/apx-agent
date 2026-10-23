@@ -18,6 +18,14 @@ from apx_agent._ui_root_chat import render_root_chat
 from tests.test_native_invocation_contract import native, headers  # noqa: F401
 from tests.test_runtime_targets import execution  # noqa: F401
 from tests.test_dev_ui_routes import _make_ctx
+from pydantic import BaseModel, ConfigDict, ValidationError
+from apx_agent._native_input import native_data_part
+
+
+class BrowserInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    amount: int
+    as_of: str
 
 
 @pytest.fixture(params=["root", "dev"])
@@ -36,7 +44,15 @@ def browser_chat(request):
 
         def route(req):
             url = req.request.url
-            if "/api/invocations" in url:
+            if url.endswith("/api/input-schema"):
+                req.fulfill(content_type="application/json", body=json.dumps(state.get("input_schema")))
+            elif url.endswith("/api/input-validation"):
+                try:
+                    BrowserInput.model_validate_json(req.request.post_data, strict=True)
+                    req.fulfill(json=native_data_part(BrowserInput, req.request.post_data_json))
+                except (ValidationError, ValueError):
+                    req.fulfill(status=422, json={"detail": "Check required amount (integer) and as_of (string)"})
+            elif "/api/invocations" in url:
                 if req.request.method == "POST":
                     posts.append(req.request.post_data_json)
                     req.fulfill(status=202, json={"id": posts[-1]["id"], "status": "active"})
@@ -146,7 +162,32 @@ def test_ambiguous_post_keeps_exact_retry(browser_chat):
     page.unroute("**/api/invocations", lost)
     page.get_by_role("button", name="Retry same request", exact=True).click()
     expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
-    assert len(posts) == 2 and posts[0] == posts[1]
+    assert len(posts) == 1
+    assert any('/api/invocations/' + posts[0]['id'] in url for url in reads)
+
+
+def test_ambiguous_post_retries_exact_request_only_after_same_id_is_absent(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    def lost(route):
+        posts.append(route.request.post_data_json)
+        route.abort("failed")
+    page.route("**/api/invocations", lost)
+    submit(page)
+    expect(page.locator(".native-status")).to_contain_text("Connection uncertain")
+    original = posts[0]
+    page.unroute("**/api/invocations", lost)
+    missing_reads = []
+    def absent_once(route):
+        missing_reads.append(route.request.url)
+        if len(missing_reads) == 1:
+            route.fulfill(status=404, json={"detail": "Not found"})
+        else:
+            route.fallback()
+    page.route("**/api/invocations/*", absent_once)
+    page.get_by_role("button", name="Retry same request", exact=True).click()
+    expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
+    assert missing_reads[0].endswith('/api/invocations/' + original['id'])
+    assert posts == [original, original]
 
 
 def test_native_message_content_blocks(browser_chat):
@@ -157,6 +198,128 @@ def test_native_message_content_blocks(browser_chat):
     ]
     submit(page)
     expect(page.locator(".msg.assistant")).to_have_text("Block answer")
+
+
+def test_native_typed_submission_requires_complete_declared_input(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["input_schema"] = BrowserInput.model_json_schema()
+    page.reload()
+    expect(page.locator(".native-input-schema")).to_contain_text("as_of")
+    submit(page, '{"amount":4}')
+    expect(page.locator(".native-validation")).to_contain_text("as_of")
+    assert posts == []
+    payload = {"amount": 4, "as_of": "2026-10-22"}
+    submit(page, json.dumps(payload))
+    expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
+    assert posts[0]["input"] == {"messages": [], "apx_data_parts": [native_data_part(BrowserInput, payload)]}
+    page.reload()
+    expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
+    assert len(posts) == 1
+
+
+def test_native_execution_card_separates_status_and_provenance(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    event.clear()
+    event.update(type="agent.step.completed", step="calibrate", location="remote", invocation_id="parent-id",
+                 child_invocation_id="child-id", parent_invocation_id="parent-id", transport_sender="fleet",
+                 child_invocation_url="https://calibrate.example/api/invocations/child-id",
+                 logical_predecessor="intelligence", transport_status="completed", domain_status="not_ready",
+                 schema_validated=True, input_schema="CalibrateInput", output_schema="PricingDecision",
+                 input_artifact={"artifact_id": "input-actual", "sha256": "a" * 64},
+                 output_artifact={"artifact_id": "output-actual", "sha256": "b" * 64},
+                 recorded_at="2026-10-22T18:00:00+00:00", timestamp_source="application_emit", readback_verified=True)
+    part = {"kind": "data", "data": {"decision": {"status": "not_ready"}, "proof": '<img src=x onerror="window.injected=1">'},
+            "metadata": {"artifact_id": "output-actual", "sha256": "b" * 64}}
+    state["output"]["messages"][0]["additional_kwargs"] = {"apx_data_parts": [part]}
+    submit(page)
+    card = page.locator(".native-execution-card")
+    expect(card).to_have_count(1)
+    for text in ["remote", "Transport: completed", "Domain: not_ready", "Sender: fleet", "Predecessor: intelligence",
+                 "CalibrateInput", "PricingDecision", "input-actual", "output-actual", "Server event time", "application_emit",
+                 "Child timing: unavailable", "Trace: unavailable", "Model/version: unavailable"]:
+        expect(card).to_contain_text(text)
+    assert card.get_by_role("link", name="child-id", exact=True).get_attribute("href") == "https://calibrate.example/api/invocations/child-id"
+    assert json.loads(page.locator(".native-output").text_content()) == part
+    assert page.evaluate("window.injected") is None
+    assert page.locator("[onerror]").count() == 0
+    page.reload()
+    expect(page.locator(".native-execution-card")).to_have_count(1)
+    assert len(posts) == 1
+
+
+def test_native_unknown_child_is_not_success(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    event.clear()
+    event.update(type="agent.child.unknown", id="actual-child", correlation={"parent_invocation_id": "actual-parent",
+                 "transport_sender": "fleet", "logical_predecessor": "calibrate"}, transport_status="unknown")
+    state.update(status="failed", error="child may still be running")
+    submit(page)
+    expect(page.locator(".native-execution-card")).to_contain_text("Transport: unknown")
+    expect(page.locator(".native-execution-card")).to_contain_text("Server event time: unavailable")
+    expect(page.locator(".native-execution-card")).to_contain_text("actual-child (record link unavailable)")
+    expect(page.locator(".native-status")).to_contain_text("Failed")
+    expect(page.locator(".msg.assistant")).to_have_count(0)
+
+
+@pytest.mark.parametrize("url", ["javascript:alert(1)", "https://user:secret@example.com/api/invocations/child-id",
+                                  "https://example.com/api/invocations/wrong-id"])
+def test_native_child_links_reject_unsafe_or_mismatched_urls(browser_chat, url):
+    page, posts, reads, state, event = browser_chat
+    event.clear()
+    event.update(type="agent.child.unknown", id="child-id", child_invocation_url=url, transport_status="unknown")
+    submit(page)
+    card = page.locator(".native-execution-card")
+    expect(card).to_contain_text("child-id (record link unavailable)")
+    expect(card.locator("a")).to_have_count(0)
+
+
+def test_native_accepted_then_readback_failure_has_no_success_card(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    event.clear()
+    event.update(type="agent.child.accepted", id="accepted-child")
+    state.update(status="failed", error="readback failed")
+    submit(page)
+    expect(page.locator(".native-status")).to_contain_text("Failed: readback failed")
+    expect(page.locator(".native-execution-card")).to_have_count(0)
+    expect(page.locator(".msg.assistant")).to_have_count(0)
+
+
+def test_native_cards_are_bounded_and_replay_identity_is_deduplicated(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    event.clear()
+    event.update(type="agent.step.completed", step='<img src=x onerror="window.injected=1">', location="local",
+                 transport_status="completed", schema_validated=True, domain_status="not_ready")
+    def replay(route):
+        route.fulfill(content_type="text/event-stream", body=''.join(
+            f"id: {i}\ndata: {json.dumps(event)}\n\n" for i in range(1, 71)))
+    page.route("**/events?after=*", replay)
+    submit(page)
+    expect(page.locator(".native-execution-card")).to_have_count(64)
+    expect(page.locator(".native-event")).to_have_count(64)
+    expect(page.locator(".native-execution-card").first).to_contain_text("Step: unavailable")
+    assert page.evaluate("window.injected") is None
+    page.reload()
+    expect(page.locator(".native-execution-card")).to_have_count(64)
+    expect(page.locator(".native-event")).to_have_count(64)
+    assert len(posts) == 1
+
+
+def test_native_oversized_event_is_explicitly_omitted(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    event["message"]["content"] = "x" * 9000
+    submit(page)
+    expect(page.locator(".native-event")).to_have_text(json.dumps(
+        {"type": "event.omitted", "detail": "Event exceeds display limit"}, indent=2))
+    expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
+
+
+def test_native_output_artifact_count_is_bounded_across_messages(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"] = [{"type": "ai", "content": "Typed output", "additional_kwargs": {
+        "apx_data_parts": [{"kind": "data", "data": {"index": index}}]}} for index in range(20)]
+    submit(page)
+    expect(page.locator(".native-output")).to_have_count(16)
+    assert json.loads(page.locator(".native-output").last.text_content())["data"] == {"index": 15}
 
 
 @pytest.mark.parametrize("failure", [401, 403, 404, "network"])

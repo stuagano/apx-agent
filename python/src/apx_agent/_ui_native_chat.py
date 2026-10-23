@@ -1,6 +1,50 @@
 """Shared native invocation client for the two existing chat renderers."""
 
+import json
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import ValidationError
+
+
+def native_input_router(agent: Any) -> APIRouter:
+    """Discover and validate the server declaration without executing a workflow."""
+    from ._native_input import input_leaf, native_data_part
+
+    schema = getattr(input_leaf(agent), "_input_schema", None)
+    router = APIRouter()
+
+    @router.get("/api/input-schema", include_in_schema=False)
+    async def input_schema() -> Any:
+        return schema.model_json_schema() if schema is not None else None
+
+    @router.post("/api/input-validation", include_in_schema=False)
+    async def validate_input(request: Request) -> Any:
+        if schema is None:
+            raise HTTPException(422, "This agent accepts text input")
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 65536:
+                raise HTTPException(413, "Declared input exceeds 64 KiB")
+        try:
+            schema.model_validate_json(body, strict=True)
+            return native_data_part(schema, json.loads(body))
+        except ValidationError as exc:
+            # Locations and messages help correction without reflecting submitted values.
+            detail = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors(include_input=False)[:16])
+            raise HTTPException(422, detail[:2048]) from None
+        except (ValueError, TypeError):
+            raise HTTPException(422, "Provide a JSON object matching the declared schema") from None
+
+    return router
+
 NATIVE_CHAT_SCRIPT = r"""
+<style>
+.native-execution-card {border: 1px solid var(--apx-border); border-radius: 8px; padding: 12px; margin: 8px 0; overflow-wrap: anywhere;}
+.native-event, .native-output, .native-input-schema pre {white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto;}
+.native-validation {color: var(--apx-err);}
+</style>
 <script>
 function apxNativeChat({form, input, send, container, bubble, render}) {
   const key = '_apx_native_chat:' + location.pathname;
@@ -8,11 +52,36 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
   let session = saved ? saved.session : crypto.randomUUID();
   let busy = false;
   let restoring = false;
-  let answer, status, eventLog, controls;
+  let answer, status, eventLog, controls, cards;
+  let schema, ready = false;
+  const validation = document.createElement('div');
+  validation.className = 'native-validation';
+  validation.setAttribute('role', 'alert');
+  form.before(validation);
+  send.disabled = true;
+  checked('/api/input-schema').then(response => response.json()).then(value => {
+    schema = value;
+    if (schema) {
+      const details = document.createElement('details');
+      details.className = 'native-input-schema';
+      const title = document.createElement('summary');
+      title.textContent = 'Required request JSON — declared input schema';
+      const pre = document.createElement('pre');
+      pre.textContent = JSON.stringify(schema, null, 2);
+      details.append(title, pre);
+      form.before(details);
+      input.placeholder = 'Enter a JSON object matching the declared schema';
+      input.setAttribute('aria-label', 'Declared request JSON');
+    }
+    ready = true;
+    send.disabled = busy || Boolean(saved && !saved.terminal);
+  }).catch(() => { validation.textContent = 'Input declaration unavailable. Reload to check before submitting.'; });
   const persist = () => sessionStorage.setItem(key, JSON.stringify(saved));
+  const requestText = () => saved.request.input.apx_data_parts
+    ? JSON.stringify(saved.request.input.apx_data_parts[0].data, null, 2) : saved.request.input.messages[0].content;
   function prepare() {
     document.getElementById('landing')?.remove();
-    if (!restoring) bubble('user', saved.request.input.messages[0].content);
+    if (!restoring) bubble('user', requestText());
     status = document.createElement('div');
     status.className = 'native-status';
     status.setAttribute('role', 'status');
@@ -22,6 +91,9 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     summary.textContent = 'Run events';
     eventLog.appendChild(summary);
     container.appendChild(eventLog);
+    cards = document.createElement('div');
+    cards.className = 'native-execution-cards';
+    container.appendChild(cards);
     if (!restoring) saved.events.forEach(showEvent);
     controls = document.createElement('div');
     for (const [label, post] of [['Reconnect', false], ['Retry same request', true]]) {
@@ -40,10 +112,74 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     row.className = 'native-event';
     row.textContent = JSON.stringify(event, null, 2);
     eventLog.appendChild(row);
+    if (eventLog.querySelectorAll('pre').length > 64) eventLog.querySelector('pre').remove();
+    if (!['agent.step.completed', 'agent.child.unknown'].includes(event.type)) return;
+    const card = document.createElement('article');
+    card.className = 'native-execution-card';
+    const safe = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : 'unavailable';
+    const line = (label, value) => {
+      const row = document.createElement('div');
+      row.textContent = label + ': ' + value;
+      card.appendChild(row);
+    };
+    const link = (label, value, remoteUrl = null) => {
+      const row = document.createElement('div');
+      row.textContent = label + ': ';
+      if (safe(value) === 'unavailable') row.append('unavailable');
+      else {
+        let href = '/api/invocations/' + encodeURIComponent(value);
+        if (label === 'Child invocation') {
+          href = null;
+          try {
+            const url = new URL(remoteUrl);
+            if (typeof remoteUrl === 'string' && remoteUrl.length <= 2048 && ['http:', 'https:'].includes(url.protocol) &&
+                !url.username && !url.password && !url.search && !url.hash &&
+                url.pathname.endsWith('/api/invocations/' + encodeURIComponent(value))) href = url.href;
+          } catch (_) {}
+        }
+        if (!href) { row.append(value + ' (record link unavailable)'); card.appendChild(row); return; }
+        const a = document.createElement('a');
+        a.href = href;
+        a.textContent = value;
+        row.appendChild(a);
+      }
+      card.appendChild(row);
+    };
+    const unknown = event.type === 'agent.child.unknown';
+    const correlation = unknown ? event.correlation || {} : event;
+    line('Step', safe(event.step));
+    line('Location', unknown ? 'remote' : safe(event.location));
+    line('Transport', safe(event.transport_status));
+    line('Domain', safe(event.domain_status));
+    link('Invocation', event.invocation_id);
+    link('Child invocation', unknown ? event.id : event.child_invocation_id, event.child_invocation_url);
+    link('Parent invocation', correlation.parent_invocation_id);
+    line('Sender', safe(correlation.transport_sender));
+    line('Predecessor', safe(correlation.logical_predecessor));
+    line('Schema validated', event.schema_validated === true ? 'true' : 'unavailable');
+    line('Readback verified', event.readback_verified === true ? 'true' : 'unavailable');
+    for (const direction of ['input', 'output']) {
+      line(direction + ' schema', safe(event[direction + '_schema']));
+      const artifact = event[direction + '_artifact'] || {};
+      line(direction + ' artifact', safe(artifact.artifact_id));
+      line(direction + ' SHA256', typeof artifact.sha256 === 'string' && /^[a-f0-9]{64}$/.test(artifact.sha256) ? artifact.sha256 : 'unavailable');
+    }
+    const timestamp = typeof event.recorded_at === 'string' && event.recorded_at.length <= 64 &&
+      /^\d{4}-\d\d-\d\dT[\d:.+-]+Z?$/.test(event.recorded_at) && event.timestamp_source === 'application_emit';
+    line('Server event time', timestamp ? event.recorded_at + ' (application_emit)' : 'unavailable');
+    line('Child timing', 'unavailable');
+    line('Trace', 'unavailable');
+    line('Model/version', 'unavailable');
+    cards.appendChild(card);
+    if (cards.children.length > 64) cards.firstChild.remove();
   }
   async function checked(url, options) {
     const response = await fetch(url, options);
-    if (!response.ok) throw new Error('HTTP ' + response.status);
+    if (!response.ok) {
+      const error = new Error('HTTP ' + response.status);
+      error.status = response.status;
+      throw error;
+    }
     return response;
   }
   async function events(path) {
@@ -64,12 +200,14 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
           const id = Number(lines.find(line => line.startsWith('id:'))?.slice(3));
           const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
           if (!Number.isSafeInteger(id) || id <= saved.cursor || !data) continue;
-          const event = JSON.parse(data);
+          const event = data.length <= 8192 ? JSON.parse(data) : {type: 'event.omitted', detail: 'Event exceeds display limit'};
           saved.events.push(event);
+          saved.events = saved.events.slice(-64);
           saved.cursor = id;
           persist();
           showEvent(event);
         }
+        if (buffer.length > 131072) throw new Error('Event exceeds stream limit');
         if (done) break;
       }
     } finally {
@@ -84,14 +222,25 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     status.textContent = 'Running';
     const path = '/api/invocations/' + saved.request.id;
     try {
-      if (post) await checked('/api/invocations', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(saved.request),
-      });
+      if (post) {
+        let submit = !saved.attempted;
+        if (saved.attempted) {
+          try { await checked(path); }
+          catch (error) { if (error.status === 404) submit = true; else throw error; }
+        }
+        if (submit) {
+          saved.attempted = true;
+          persist();
+          await checked('/api/invocations', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(saved.request),
+          });
+        }
+      }
       else await checked(path); // Reconnect reads existing state; it never submits.
       // Check access before displaying cached content after a reload/account switch.
       if (restoring) {
-        container.insertBefore(bubble('user', saved.request.input.messages[0].content), status);
+        container.insertBefore(bubble('user', requestText()), status);
         saved.events.forEach(showEvent);
         restoring = false;
         controls.querySelectorAll('button').forEach(button => button.disabled = false);
@@ -110,6 +259,15 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
         ).filter(Boolean).join('\n');
         if (!answer) answer = bubble('assistant', '');
         render(answer, text || '(empty response)');
+        answer.querySelectorAll('.native-output').forEach(node => node.remove());
+        const parts = messages.filter(m => m.type === 'ai').flatMap(m => m.additional_kwargs?.apx_data_parts || []);
+        for (const part of parts.slice(0, 16)) {
+          const output = document.createElement('pre');
+          output.className = 'native-output';
+          const encoded = JSON.stringify(part, null, 2);
+          output.textContent = encoded.length <= 131072 ? encoded : 'Output exceeds display limit; retrieve the invocation record.';
+          answer.appendChild(output);
+        }
         status.textContent = 'Completed';
       } else {
         status.textContent = 'Result unavailable. Reconnect to check this run.';
@@ -122,16 +280,35 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       controls.hidden = false;
     } finally {
       busy = false;
-      send.disabled = !saved.terminal;
+      send.disabled = !ready || !saved.terminal;
     }
   }
-  form.addEventListener('submit', event => {
+  form.addEventListener('submit', async event => {
     event.preventDefault();
     event.stopImmediatePropagation();
     const text = input.value.trim();
-    if (!text || busy || (saved && !saved.terminal)) return;
+    if (!text || !ready || busy || (saved && !saved.terminal)) return;
+    validation.textContent = '';
+    let domainInput;
+    if (schema) {
+      busy = true;
+      send.disabled = true;
+      try {
+        JSON.parse(text);
+        const response = await fetch('/api/input-validation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: text});
+        const body = await response.json();
+        if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Check the declared input schema');
+        domainInput = {messages: [], apx_data_parts: [body]};
+      } catch (error) {
+        validation.textContent = 'Request needs correction: ' + error.message;
+        busy = false;
+        send.disabled = false;
+        return;
+      }
+      busy = false;
+    }
     saved = {session, request: {id: crypto.randomUUID(), session_id: session,
-      input: {messages: [{role: 'user', content: text}]}, background: true, stream: true},
+      input: domainInput || {messages: [{role: 'user', content: text}]}, background: true, stream: true},
       cursor: 0, events: [], terminal: false};
     restoring = false;
     persist();
