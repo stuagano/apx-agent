@@ -211,6 +211,35 @@ REGISTRATION_KEYS = ("registered_model", "catalog", "schema", "supervisor_id", "
 """Registration/publishing CLI keys: [tool.apx.deploy]. Sub-project 3b-1."""
 
 
+def static_agent_setting(agent_py: Path, key: str) -> Any:
+    """Literal ``key=`` passed to the constructor assigned to ``agent`` in *agent_py*, or None.
+
+    Never imports: heuristics (target detection, scans across projects, the shell
+    prompt) must not run another project's import-time code. Anything that isn't a
+    literal keyword on ``agent = Something(...)`` is None (sub-project 3b-2)."""
+    import ast
+
+    try:
+        tree = ast.parse(agent_py.read_text())
+    except (OSError, SyntaxError, ValueError):
+        return None
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        if not any(isinstance(t, ast.Name) and t.id == "agent" for t in targets):
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            return None
+        for keyword in call.keywords:
+            if keyword.arg == key:
+                try:
+                    return ast.literal_eval(keyword.value)
+                except ValueError:
+                    return None
+        return None
+    return None
+
+
 def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
     """Merge ``[tool.apx.deploy]`` (name, host, DeployConfig keys) into agent *fields*; other keys stay put."""
     table = data.get("tool", {}).get("apx", {}).get("deploy")

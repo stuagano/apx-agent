@@ -250,6 +250,21 @@ def _isolated(project: Path) -> Iterator[_Harness]:
                     del sys.modules[name]
 
 
+def effective_config_isolated(project: Path) -> "AgentConfig | None":
+    """The project's merged config, importing agent.py under the doctor's isolation (3b-2)."""
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
+    from ._wiring import resolve_agent
+
+    project = project.resolve()
+    toml = _load_agent_config(pyproject_path=project / "pyproject.toml")
+    if not (project / "agent.py").is_file():
+        return toml
+    with _isolated(project):
+        agent = resolve_agent("agent:agent", toml, ws=_FakeWorkspaceClient())
+        return resolve_settings(agent, toml)
+
+
 def _fail(name: str, exc: BaseException) -> Check:
     if isinstance(exc, KeyboardInterrupt):
         raise exc

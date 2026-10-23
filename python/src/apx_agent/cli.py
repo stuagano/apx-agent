@@ -255,6 +255,54 @@ def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]
     local_keys = {**_table(local, "agent"), **{k: local[k] for k in DEV_KEYS if k in local}}
     return {**legacy, **{k: v for k, (_, v) in homes.items()}, **local_keys}
 
+_AGENT_SETTING_KEYS = ("name", "model", "description", "data")
+
+
+def _effective_config(cwd: Path) -> "AgentConfig | None":
+    """The current project's merged config: TOML + the Python agent's settings (3b-2).
+
+    Imports and finalizes agent.py, so use it only for the project the command runs in."""
+    from ._inspection import _load_agent_config
+    from ._settings import resolve_settings
+
+    toml = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    if not (cwd / "agent.py").is_file():
+        return toml
+    try:
+        agent = _load_finalized_agent("agent:agent")
+    except click.ClickException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any import-time failure is the user's agent.py
+        raise click.ClickException(f"could not import agent.py: {type(exc).__name__}: {exc}") from exc
+    config = resolve_settings(agent, toml)
+    # description is a constructor argument, not a merged setting: fill it from the
+    # root agent only where the TOML leaves it unset (no new conflict rule).
+    description = getattr(agent, "_description", None)
+    if description and "description" not in config.model_fields_set:
+        config = config.model_copy(update={"description": description})
+    return config
+
+
+def _with_agent_settings(flat: dict[str, Any], cwd: Path | None = None) -> dict[str, Any]:
+    """*flat* with the agent settings the project declares (TOML or Python) merged in.
+
+    Declared means in the resolved config's ``model_fields_set``; defaults never
+    appear, so "no model declared" still reads as missing. A placeholder name
+    (an unnamed root agent) isn't a declaration."""
+    config = _effective_config(cwd or Path.cwd())
+    if config is None:
+        return flat
+    merged = dict(flat)
+    for key in _AGENT_SETTING_KEYS:
+        if key not in config.model_fields_set:
+            continue
+        value = getattr(config, key)
+        if value is None or (key == "name" and value == "agent" and "name" not in flat):
+            continue
+        merged[key] = value.model_dump() if hasattr(value, "model_dump") else value
+    return merged
+
+
 def _load_agent(module_spec: str) -> Any:
     """Import ``module:variable`` and return the agent.
 
