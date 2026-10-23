@@ -244,7 +244,8 @@ class LlmAgent(BaseAgent):
         output_guardrails: list[OutputGuardrailFn] | None = None,
         context_window_tokens: int | None = None,
         name: str | None = None,
-        memory: str = "off",
+        memory: "str | MemoryBackendConfig | Mapping[str, Any]" = "off",
+        session: "SessionBackendConfig | Mapping[str, Any] | None" = None,
         output_key: str | None = None,
         session_budget: dict[str, int | float] | None = None,
         tool_loading: str = "eager",
@@ -360,12 +361,19 @@ class LlmAgent(BaseAgent):
         self._set_settings(settings)
         self.memory_config: MemoryBackendConfig | None
         self.session_config: SessionBackendConfig | None
-        self.memory_config, self.session_config = normalize_memory_knob(
-            memory,
-            catalog=getattr(self, "catalog", None),
-            schema=getattr(self, "schema", None),
-            name=self._name,
-        )
+        if isinstance(memory, str):
+            memory_config, session_config = normalize_memory_knob(
+                memory,
+                catalog=getattr(self, "catalog", None),
+                schema=getattr(self, "schema", None),
+                name=self._name,
+            )
+        else:
+            # Explicit backend (3b-3a): the models validate it; no session is invented.
+            memory_config, session_config = MemoryBackendConfig.model_validate(memory), None
+        if session is not None:
+            session_config = SessionBackendConfig.model_validate(session)
+        self.memory_config, self.session_config = memory_config, session_config
 
         # Pre-analyze all functions at construction time
         self._analyzed: list[tuple[_ToolFn, dict[str, Any], list[str], type[BaseModel] | None]] = []
