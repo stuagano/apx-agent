@@ -4701,8 +4701,8 @@ def test_native_execution_requires_completed_assistant(monkeypatch) -> None:
     assert "completed assistant message" in result.detail
 
 
-def _smoke_store(monkeypatch, *, sessions: list[dict[str, Any]], stored: dict[str, str]) -> None:
-    """Fake the store: ``sessions`` is the listing; ``stored`` maps a session id to its AI text."""
+def _smoke_store(monkeypatch, *, stored: dict[str, str]) -> None:
+    """Read only the exact opaque checkpoint returned by this invocation."""
     from types import SimpleNamespace as Message
 
     class _Saver:
@@ -4710,17 +4710,15 @@ def _smoke_store(monkeypatch, *, sessions: list[dict[str, Any]], stored: dict[st
             assert store == "apx-demo-sessions"
 
         def get_tuple(self, config: dict[str, Any]) -> Any:
-            text = stored.get(config["configurable"]["thread_id"])
+            key = config["configurable"]["thread_id"]
+            assert key == "a" * 64
+            assert config["configurable"]["actor_id"] == key
+            text = stored.get(key)
             if text is None:
                 return None
-            assert config["configurable"]["actor_id"] == "actor-" + config["configurable"]["thread_id"]
             return SimpleNamespace(checkpoint={"channel_values": {"messages": [Message(type="ai", content=text)]}})
 
-    def client(*, profile=None):
-        api = SimpleNamespace(do=lambda method, path, query=None: {"sessions": sessions})
-        return SimpleNamespace(profile=profile, api_client=api)
-
-    monkeypatch.setattr("databricks.sdk.WorkspaceClient", client)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda **kw: SimpleNamespace())
     monkeypatch.setattr("databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver)
 
 
@@ -4729,25 +4727,20 @@ def _smoke_answer(monkeypatch, text: str) -> None:
     import urllib.request
 
     def fake_urlopen(req, timeout=None):
-        body = json.dumps({"output": {"status": "completed", "messages": [{"type": "ai", "content": text}]}}).encode()
+        body = json.dumps({"output": {"status": "completed", "messages": [{"type": "ai", "content": text}],
+                                      "checkpoint": {"thread_id": "a" * 64}}}).encode()
         return io.BytesIO(body)
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
 
-def _session(sid: str, when: str) -> dict[str, Any]:
-    return {"session_id": sid, "actor_id": "actor-" + sid, "last_activity_time": when}
-
-
 def test_native_execution_reads_session_back(monkeypatch) -> None:
-    """The SDK namespaces session ids by caller, so the smoke finds the session
-    the invocation just wrote among the store's recently active ones (#985)."""
+    """The returned coordinate already contains the SDK identity namespace."""
     from apx_agent import cli
 
     _stub_execution_token(monkeypatch)
     _smoke_answer(monkeypatch, "pong")
-    _smoke_store(monkeypatch, sessions=[_session("other", "2999-01-01T00:00:00Z"), _session("written", "2999-01-01T00:00:01Z")],
-                 stored={"other": "unrelated", "written": "pong"})
+    _smoke_store(monkeypatch, stored={"other": "unrelated", "a" * 64: "pong"})
     result = cli._check_native_execution("https://app.example.com/", profile="fevm", session_store="apx-demo-sessions")
     assert result.completed is True, result.detail
     assert result.readback is True
@@ -4755,12 +4748,12 @@ def test_native_execution_reads_session_back(monkeypatch) -> None:
 
 
 def test_native_execution_ignores_sessions_from_before_the_smoke(monkeypatch) -> None:
-    """An older session with the same answer is not proof this invocation persisted."""
+    """An unrelated session with the same answer is not proof this invocation persisted."""
     from apx_agent import cli
 
     _stub_execution_token(monkeypatch)
     _smoke_answer(monkeypatch, "pong")
-    _smoke_store(monkeypatch, sessions=[_session("stale", "2000-01-01T00:00:00Z")], stored={"stale": "pong"})
+    _smoke_store(monkeypatch, stored={"stale": "pong", "a" * 64: "different answer"})
     result = cli._check_native_execution("https://app.example.com", profile=None, session_store="apx-demo-sessions")
     assert result.completed is False
     assert "did not contain the assistant message" in result.detail
@@ -4772,7 +4765,7 @@ def test_native_execution_fails_when_session_readback_misses(monkeypatch) -> Non
 
     _stub_execution_token(monkeypatch)
     _smoke_answer(monkeypatch, "pong")
-    _smoke_store(monkeypatch, sessions=[_session("written", "2999-01-01T00:00:00Z")], stored={})
+    _smoke_store(monkeypatch, stored={})
     result = cli._check_native_execution("https://app.example.com", profile=None, session_store="apx-demo-sessions")
     assert result.completed is False
     assert "did not contain the assistant message" in result.detail
@@ -10004,17 +9997,40 @@ def test_interactive_resolve_allows_manual_catalog_and_schema(monkeypatch):
 
 
 def test_native_execution_reads_back_a_user_scoped_session(monkeypatch) -> None:
-    """A request-user agent's session id is namespaced by the SDK from the
-    request's host, app and principal, which the deployer cannot rebuild (live:
-    every user-auth deploy failed the gate, #985). The smoke still finds it."""
-    import hashlib
+    """Read the host's opaque key, which includes its SDK session namespace."""
+    import io
+    import urllib.request
+    from types import SimpleNamespace as Message
 
     from apx_agent import cli
 
     _stub_execution_token(monkeypatch)
-    _smoke_answer(monkeypatch, "pong")
-    namespaced = hashlib.sha256(b"host,workspace,app,principal,session,<sid>").hexdigest()
-    _smoke_store(monkeypatch, sessions=[_session(namespaced, "2999-01-01T00:00:00Z")], stored={namespaced: "pong"})
-    result = cli._check_native_execution("https://app.example.com/", profile="fevm", session_store="apx-demo-sessions")
+    seen: dict[str, Any] = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["session_id"] = json.loads(req.data.decode())["session_id"]
+        return io.BytesIO(json.dumps({
+            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}],
+                       "checkpoint": {"thread_id": "b" * 64}},
+        }).encode())
+
+    class _Saver:
+        def __init__(self, store: str, *, workspace_client: Any) -> None:
+            pass
+
+        def get_tuple(self, config: dict[str, Any]) -> Any:
+            assert config["configurable"]["thread_id"] == "b" * 64
+            return SimpleNamespace(checkpoint={
+                "channel_values": {"messages": [Message(type="ai", content="pong")]},
+            })
+
+    me = SimpleNamespace(me=lambda: SimpleNamespace(id="u-123"))
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient",
+                        lambda *, profile=None: SimpleNamespace(profile=profile, current_user=me))
+    monkeypatch.setattr("databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver)
+    result = cli._check_native_execution(
+        "https://app.example.com/", profile="fevm", session_store="apx-demo-sessions",
+    )
     assert result.completed is True, result.detail
     assert result.readback is True

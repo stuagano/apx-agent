@@ -419,7 +419,7 @@ def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None
 
 def _apply_remote_leaf_bindings(
     root: BaseAgent,
-    bindings: dict[str, str],
+    bindings: dict[str, Any],
 ) -> None:
     """Resolve named leaf bindings once without changing the logical graph."""
     if hasattr(root, "_apx_remote_leaf_bindings"):
@@ -465,7 +465,8 @@ def _apply_remote_leaf_bindings(
             return
 
         for child, position in children:
-            _walk(child, position)
+            # A nested sequence must not erase unsupported native control ancestry.
+            _walk(child, position if control_position in {None, "sequence"} else control_position)
 
     _walk(root)
     resolved: dict[str, _RemoteLeafBinding] = {}
@@ -477,7 +478,8 @@ def _apply_remote_leaf_bindings(
                 f"leaf; found {len(matches)}"
             )
 
-        card_url = resolve_env_var(reference).strip()
+        native = not isinstance(reference, str)
+        card_url = resolve_env_var(reference.url if native else reference).strip()
         if not card_url:
             raise ValueError(
                 f"remote binding {logical_name!r} resolved to a blank A2A card URL"
@@ -504,13 +506,17 @@ def _apply_remote_leaf_bindings(
             )
 
         control_position = matches[0]
+        if native and (control_position not in {None, "sequence"} or parsed.path not in {"", "/"}):
+            raise ValueError("Native bindings require a sequential leaf and an App base URL")
         # Loop/handoff peers route via a typed control signal on the reply
         # (ControlSignal → reconstructed sentinel tool_call), so a bound leaf in
         # these positions resolves like a sequential one. A handoff peer may only
         # transfer to a sibling in the local graph (FR-4 allowlist).
         transfer_targets = handoff_siblings.get(logical_name, frozenset())
         resolved[logical_name] = _RemoteLeafBinding(
-            logical_name, card_url, transfer_targets=transfer_targets
+            logical_name, card_url, transfer_targets=transfer_targets,
+            transport="native" if native else "a2a",
+            timeout_s=reference.timeout_s if native else 60,
         )
 
     setattr(root, "_apx_remote_leaf_bindings", MappingProxyType(resolved))
@@ -1542,16 +1548,9 @@ def mount_durable_protocol(
     config: AgentConfig | None = None,
     pyproject_path: str | None = None,
 ) -> None:
-    """Mount ``/mcp``, ``/.well-known/agent.json``, and ``/health`` only.
+    """Mount discovery without legacy invocation handlers or browser routes.
 
-    The MLflow-host path uses :func:`mount_mcp_endpoints`, which also mounts
-    apx's root chat and ``/_apx/*``. A native ``DurableAgentServer`` already
-    serves invocations; its compiler mounts the AgentKit chat and ``/_apx/*``
-    itself at compile time (``compile_to_durable_agent_server``), so they
-    exist even without an agent config. MCP setup still runs inside the host
-    lifespan, the same way :func:`mount_mcp_endpoints` does. :func:`setup_agent`
-    mounts the protocol routes itself, so this does not mount them a second
-    time. ``_apx_protocol_only`` tells that setup to skip the browser UIs.
+    The native compiler owns chat selection; setup only supplies protocol context.
     """
     app.state._apx_protocol_only = True
     _state_key = "_apx_durable_protocol_state"

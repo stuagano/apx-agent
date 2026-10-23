@@ -39,6 +39,16 @@ def test_agent_rejects_invalid_identity() -> None:
         Agent(name="a", tools=[_noop], identity="not-a-mode")
 
 
+def test_python_native_binding_survives_settings_resolution() -> None:
+    from apx_agent._models import NativeBinding
+
+    binding = NativeBinding(transport="native", url="https://child.example.com", timeout_s=45)
+    agent = Agent(name="parent", bindings={"child": binding})
+    config = resolve_settings(agent, None)
+    assert config.bindings["child"] == binding
+    assert config.target == "durable_agent_server"
+
+
 def test_resolve_settings_copies_constructor_settings() -> None:
     agent = Agent(
         name="triage",

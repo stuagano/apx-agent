@@ -24,6 +24,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, StructuredTool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
+from pydantic import create_model
 
 from ._state_proxy import StateProxy
 
@@ -54,6 +55,12 @@ def _make_stateful_langchain_tool(
     the ChatAgent runtime call tools synchronously). The sync bridge delegates
     entirely to the async wrapper — no logic duplication.
     """
+    if not input_model.model_fields:
+        # LangChain skips injection for empty schemas; keep a hidden runtime field.
+        input_model = create_model(
+            input_model.__name__,
+            tool_call_id=(Annotated[str, InjectedToolCallId], ...),
+        )
 
     def _finish(proxy: StateProxy, tool_call_id: str, ret: Any) -> Any:
         if not proxy.dirty:

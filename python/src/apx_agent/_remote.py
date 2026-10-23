@@ -61,6 +61,8 @@ class _RemoteLeafBinding:
     # allowlist). Empty for non-handoff positions; a handoff peer's reconstructed
     # ``transfer_to:<target>`` is rejected when the target is not in this set.
     transfer_targets: frozenset[str] = frozenset()
+    transport: str = "a2a"
+    timeout_s: float = 60
 
 
 @dataclass(frozen=True)

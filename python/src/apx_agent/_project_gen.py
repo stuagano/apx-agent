@@ -172,11 +172,11 @@ def _build_pyproject(config: "AgentConfig") -> str:
     lines.append("")
 
     if config.bindings:
-        _write_toml_section(
-            lines,
-            "tool.apx.agent.bindings",
-            config.bindings,
-        )
+        lines.append("[tool.apx.agent.bindings]")
+        for key, binding in config.bindings.items():
+            value = binding if isinstance(binding, str) else binding.model_dump()
+            lines.append(f"{key} = {_toml_value_nested(value)}")
+        lines.append("")
 
     # [tool.apx.agent.service_policies] — omit the default empty declaration
     # so existing generated projects remain byte-for-byte compatible.
@@ -238,7 +238,7 @@ def _build_pyproject(config: "AgentConfig") -> str:
         _write_toml_section(
             lines,
             "tool.apx.agent.deploy",
-            config.deploy.model_dump(exclude_none=True, exclude={"autoscale"}),
+            config.deploy.model_dump(exclude_none=True, exclude={"autoscale", "resources"}),
         )
         if config.deploy.autoscale is not None:
             _write_toml_section(
@@ -246,6 +246,8 @@ def _build_pyproject(config: "AgentConfig") -> str:
                 "tool.apx.agent.deploy.autoscale",
                 config.deploy.autoscale.model_dump(),
             )
+        for resource in config.deploy.resources:
+            _write_toml_section(lines, "[tool.apx.agent.deploy.resources]", resource.model_dump())
 
     return "\n".join(lines)
 

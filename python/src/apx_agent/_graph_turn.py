@@ -30,6 +30,7 @@ def run_graph_turn(
     emit_message: Callable[[Any], None] | None = None,
     invocation_id: str | None = None,
     recovery: bool = False,
+    domain_input: dict[str, Any] | None = None,
 ) -> GraphTurn:
     """Execute one turn and enforce the existing token and approval contract.
 
@@ -103,6 +104,8 @@ def run_graph_turn(
             graph_input = Command(resume=resume)
         else:
             graph_input = {"messages": messages}
+            if domain_input is not None:
+                graph_input["state"] = domain_input
         if continuing and snapshot is not None and not snapshot.next:
             result = snapshot.values
         elif emit_message is None:

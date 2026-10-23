@@ -47,6 +47,7 @@ def deploy_apps_api(
     readyz_attempts: int,
     pin: Any,
     log: Callable[[str], None],
+    smoke_input: Path | None = None,
 ) -> str:
     """Run the Apps API path. Re-running is safe; nothing is deleted on failure."""
     if config.target != "durable_agent_server" or config.deploy is None or config.deploy.backend != "apps_api":
@@ -63,6 +64,10 @@ def deploy_apps_api(
         raise click.ClickException("Apps API uses the declared app name; --app-name cannot rename it.")
     if family_permissions.can_use_groups or family_permissions.can_manage_groups:
         raise click.ClickException("Apps API deployment cannot reconcile app-family grants; configure access separately.")
+    from .cli import _prepare_native_smoke_input
+
+    native_smoke_input = _prepare_native_smoke_input(agent, smoke_input, readyz_gate=readyz_gate)
+    resources = deployment_resources(config, plan)
 
     from ._runtime_targets import inspect_target
 
@@ -76,7 +81,7 @@ def deploy_apps_api(
     build_dir = _stage(cwd, config, agent, plan, log)
     _ensure_memory_store(workspace, config, log)
     app = _ensure_app(workspace, app_name=app_name, space=space, description=config.description or None, log=log)
-    _apply_grants(workspace, app_name=app_name, space=space, profile=profile, plan=plan, family_permissions=family_permissions, log=log)
+    _apply_grants(workspace, app_name=app_name, space=space, profile=profile, plan=plan, family_permissions=family_permissions, log=log, resources=resources)
     env = _runtime_and_env(workspace, profile=profile, app_name=app_name, space=space, config=config,
                            session_store=report.session_store, bundle_target=bundle_target, auto_experiment=auto_experiment,
                            env_pairs=env_pairs, app=app, log=log)
@@ -89,6 +94,7 @@ def deploy_apps_api(
         register_uc=register_uc, uc_name=uc_name, session_store=report.session_store,
         experiment_id=env.get(EXPERIMENT_ENV),
         extra_version_tags=extra_version_tags, pin=pin, json_output=json_output, log=log,
+        smoke_input=native_smoke_input, smoke_agent=agent,
     )
 
 
@@ -263,9 +269,37 @@ def _wait_compute_active(workspace: Any, app_name: str, log: Callable[[str], Non
         delay = min(delay * 1.5, 15.0)
 
 
+def deployment_resources(config: Any, plan: AuthorizationPlan) -> list[dict[str, Any]]:
+    """Render the complete declared attachment set without reading legacy grants.
+
+    Reject overlaps before staging or workspace mutations. Deployment attachments
+    do not enter the compiled authorization plan or grant user API scopes.
+    """
+    from ._resources import ResourceSpec, _bounded_name, resources_to_databricks_yml
+
+    result = resources_to_databricks_yml(plan.service_resources)
+    keys = {(spec.kind, spec.identifier) for spec in plan.service_resources}
+    names = {entry["name"] for entry in result}
+    for resource in config.deploy.resources:
+        key = (resource.kind, resource.identifier)
+        if resource.kind == "experiment":
+            entry = {"name": _bounded_name(resource.identifier, resource.kind), "experiment": {
+                "experiment_id": resource.identifier, "permission": resource.permission,
+            }}
+        else:
+            entry = resources_to_databricks_yml([ResourceSpec(*key)])[0]
+        if key in keys or entry["name"] in names:
+            raise click.ClickException(f"deploy.resources collides with another attachment: {resource.kind} {resource.identifier}")
+        keys.add(key)
+        names.add(entry["name"])
+        result.append(entry)
+    return result
+
+
 def _apply_grants(
     workspace: Any, *, app_name: str, space: str | None, profile: str | None,
     plan: AuthorizationPlan, family_permissions: AppFamilyPermissions, log: Callable[[str], None],
+    resources: list[dict[str, Any]] | None = None,
 ) -> None:
     if space is not None:
         from ._app_space import validate_space_deployment
@@ -281,10 +315,11 @@ def _apply_grants(
     from databricks.sdk.service.apps import App, AppResource
     from ._resources import resources_to_databricks_yml
 
-    resources = [AppResource.from_dict(entry) for entry in resources_to_databricks_yml(plan.service_resources)]
+    attachments = resources_to_databricks_yml(plan.service_resources) if resources is None else resources
+    app_resources = [AppResource.from_dict(entry) for entry in attachments]
     # The SDK requires name. The mask is what the API applies; name is not in it.
     # Empty lists are the declared sets. Omitting them could leave old grants in place.
-    app = App(name=app_name, user_api_scopes=list(plan.user_api_scopes), resources=resources)
+    app = App(name=app_name, user_api_scopes=list(plan.user_api_scopes), resources=app_resources)
     try:
         workspace.apps.create_update(app_name, GRANT_UPDATE_MASK, app=app).result()
     except Exception as exc:
@@ -386,6 +421,8 @@ def _stage_lock(build_dir: Path, auto_build_wheel: bool, log: Callable[[str], No
 
 
 def _upload_and_rollout(build_dir: Path, *, app_name: str, profile: str, workspace: Any, log: Callable[[str], None]) -> None:
+    from databricks.sdk.service.workspace import ObjectType
+
     from .cli import _run_databricks_cmd
 
     me = workspace.current_user.me()
@@ -393,13 +430,23 @@ def _upload_and_rollout(build_dir: Path, *, app_name: str, profile: str, workspa
     if not isinstance(user, str) or not user or "/" in user:
         raise click.ClickException("Could not resolve the current workspace user for the Apps API source path.")
     destination = f"/Workspace/Users/{user}/apx_deployments/{app_name}"
-    # .build/ is gitignored and sync honors .gitignore; --include "**" uploads it.
-    sync = _run_databricks_cmd(["sync", str(build_dir), destination, "--include", "**", "--exclude", "uv.lock"], profile)
+    # The backend owns this stage; repository ignore rules commonly exclude .build.
+    sync = _run_databricks_cmd(["sync", str(build_dir), destination, "--include", "**",
+                                "--exclude", "uv.lock", "--exclude", ".databricks/**"], profile)
     if sync.returncode != 0:
-        raise click.ClickException(f"`databricks sync` failed (exit {sync.returncode}); source was not replaced and nothing was deleted.")
+        raise click.ClickException(f"`databricks sync` failed (exit {sync.returncode}); App rollout was not attempted.")
+    for filename in ("app.yaml", "agent.toml", "pyproject.toml"):
+        try:
+            uploaded = workspace.workspace.get_status(f"{destination}/{filename}")
+            if uploaded.object_type != ObjectType.FILE:
+                raise ValueError("Expected a workspace file")
+        except Exception:
+            raise click.ClickException(
+                f"Uploaded source verification failed for {filename}; App rollout was not attempted. Inspect {destination} and retry."
+            ) from None
     deploy = _run_databricks_cmd(["apps", "deploy", app_name, "--source-code-path", destination], profile)
     if deploy.returncode != 0:
-        raise click.ClickException(f"`databricks apps deploy` failed (exit {deploy.returncode}); the previous deployment was left in place.")
+        raise click.ClickException(f"`databricks apps deploy` failed (exit {deploy.returncode}); the app may be unavailable. Inspect its deployment status before retrying.")
     log(f"  uploaded {destination} and rolled out {app_name}")
 
 
@@ -408,6 +455,7 @@ def _verify(
     readyz_gate: bool, readyz_attempts: int, poll_timeout_seconds: int, register_uc: bool,
     uc_name: str | None, session_store: str | None, experiment_id: str | None,
     extra_version_tags: dict[str, str] | None, pin: Any, json_output: bool, log: Callable[[str], None],
+    smoke_input: dict[str, Any] | None = None, smoke_agent: Any = None,
 ) -> str:
     import json
 
@@ -428,7 +476,8 @@ def _verify(
         ok = ok and isinstance(checks, dict) and checks.get("durable") is True
         if ok:
             log(f"# execution smoke: POST {app_url}/api/invocations")
-            smoke = _check_native_execution(app_url, profile=profile, session_store=session_store)
+            smoke = _check_native_execution(app_url, profile=profile, session_store=session_store,
+                                            smoke_input=smoke_input, smoke_agent=smoke_agent)
             ok = smoke.completed
             if not ok and isinstance(checks, dict):
                 checks = {**checks, "agent_execution": smoke.detail}

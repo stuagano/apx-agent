@@ -12,6 +12,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
+from fastapi import Request
+
 from ._agents import BaseAgent, LlmAgent
 from ._compile import compile_to_langgraph
 from ._graph_turn import run_graph_turn
@@ -160,7 +162,7 @@ def compile_durable_handlers(
 
     # Declared sub_agents (materialized after compile) or hand-wired delegates:
     # only then does any outbound call need request-user auth resolved.
-    has_delegates = bool(list(_iter_sub_agents(agent))) or any(
+    has_delegates = bool(getattr(agent, "_apx_remote_leaf_bindings", {})) or bool(list(_iter_sub_agents(agent))) or any(
         hasattr(fn, "__apx_sub_agent_url__") for fn in _iter_tool_fns(agent))
     static = dict(platform_tools) if platform_tools else {}
     refs = [ref for _, ref in platform_tool_leaves(agent)]
@@ -201,7 +203,7 @@ def compile_durable_handlers(
             headers = durable_request_headers(auth, principal=principal, forward=forward)
         if isinstance(value, list):
             value = {"messages": value}
-        if not isinstance(value, dict) or set(value) - {"messages", "resume"}:
+        if not isinstance(value, dict) or set(value) - {"messages", "resume", "apx_data_parts", "correlation"}:
             raise ValueError("Native input must contain messages and optional resume; session_id belongs in the top-level invocation envelope")
         messages = value.get("messages", [])
         if not isinstance(messages, list):
@@ -214,6 +216,22 @@ def compile_durable_handlers(
             if message.get("role") != "user" or not isinstance(message.get("content"), str):
                 raise ValueError("Native input accepts user text messages only")
         resume = value.get("resume")
+        from ._native_input import NATIVE_ARTIFACTS_KEY, input_leaf, native_data_part
+        from ._native_remote import validate_correlation
+
+        correlation = validate_correlation(value.get("correlation"))
+        leaf = input_leaf(agent)
+        schema = getattr(leaf, "_input_schema", None)
+        domain_input = {NATIVE_ARTIFACTS_KEY: {}}
+        parts = value.get("apx_data_parts")
+        if parts is not None or schema is not None:
+            if schema is None or not isinstance(parts, list) or len(parts) != 1 or resume is not None or recovery:
+                raise ValueError("Native typed input requires its declared schema and one fresh data artifact")
+            part = parts[0]
+            if not isinstance(part, dict):
+                raise ValueError("Native typed input requires a data artifact")
+            part = native_data_part(schema, part.get("data"), part)
+            domain_input[leaf._input_key] = part["data"]
         if resume is not None and checkpointer is None:
             raise ValueError("Approval resume requires a checkpointed session")
         config = None
@@ -230,16 +248,26 @@ def compile_durable_handlers(
             **({"checkpointer": checkpointer} if checkpointer is not None else {}),
             platform_tools=platform,
         )
+        input_messages = [HumanMessage(content=m["content"]) for m in messages]
+        if parts is not None:
+            input_messages.append(HumanMessage(content="Declared domain input", additional_kwargs={"apx_data_parts": [part]}))
         turn = run_graph_turn(
-            graph, agent, [HumanMessage(content=m["content"]) for m in messages],
+            graph, agent, input_messages,
             config=config, resume=resume, read_interrupt=_pending,
             emit_message=emit_message,
             invocation_id=context.invocation_id if recovery else None,
             recovery=recovering,
+            domain_input=domain_input,
         )
         if turn.approval_required is not None:
             return {"status": "interrupted", "messages": [], "approval_required": turn.approval_required}
-        return {"status": "completed", "messages": [m.model_dump(mode="json") for m in turn.messages]}
+        result = {"status": "completed", "messages": [m.model_dump(mode="json") for m in turn.messages]}
+        if config is not None:
+            # The SDK namespaces sessions before dispatch; callers cannot reconstruct this key.
+            result["checkpoint"] = {"thread_id": config["configurable"]["thread_id"]}
+        if correlation is not None:
+            result["correlation"] = correlation
+        return result
 
     async def invoke(value: Any, context: Any) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
@@ -255,6 +283,18 @@ def compile_durable_handlers(
         auth = request_auth(context)
         # to_thread copies this context, so tools in the turn see the request.
         token = _REQUEST_AUTH.set(auth)
+        from ._native_remote import _NATIVE_INVOCATION
+
+        def emit_native(event: dict[str, Any]) -> None:
+            from datetime import datetime, timezone
+
+            # The SDK persists event payloads but supplies no record/event timestamp.
+            event = {**event, "recorded_at": datetime.now(timezone.utc).isoformat(), "timestamp_source": "application_emit"}
+            asyncio.run_coroutine_threadsafe(context.emit(event), loop).result()
+
+        invocation_token = _NATIVE_INVOCATION.set(
+            {"id": getattr(context, "invocation_id", None), "sender": getattr(agent, "_name", None), "calls": {},
+             "emit": emit_native if can_emit else None})
         try:
             platform = dict(static)
             if project_root is not None and refs:
@@ -268,6 +308,7 @@ def compile_durable_handlers(
             )
         finally:
             _REQUEST_AUTH.reset(token)
+            _NATIVE_INVOCATION.reset(invocation_token)
         if can_emit and report.streaming_buffered and result["status"] == "completed" and result["messages"]:
             # Only publish the final validated answer, never buffered intermediate
             # model/tool messages that the output checks did not approve.
@@ -329,7 +370,8 @@ def compile_to_durable_agent_server(
         app.recover(handlers.invoke)
 
     from ._resources import _iter_sub_agents
-    from ._wiring import mount_durable_protocol
+    from ._wiring import _chain_lifespan, _collect_guardrail_targets, mount_durable_protocol
+    from ._ui_native_chat import native_input_router
 
     # Discovery routes. DurableAgentServer already owns /api/invocations and its
     # auth policy; the browser UIs are mounted just below, not by setup_agent.
@@ -339,17 +381,39 @@ def compile_to_durable_agent_server(
     # validate it at another target; discovery serves this durable host, as before.
     discovery = config.model_copy(update={"target": "durable_agent_server"}) if config is not None else None
     mount_durable_protocol(app, agent, config=discovery)
-    # Browser surfaces. The AgentKit chat registers first so it owns /_apx/chat
-    # (the /_apx/agent shell's Chat tab) ahead of the dev UI's legacy chat page.
-    from ._ui_agentkit_chat import mount_agentkit_chat
+    app.include_router(native_input_router(agent))
+    typed_workflow = any(
+        getattr(leaf, "_input_schema", None) is not None or getattr(leaf, "_output_schema", None) is not None
+        for leaf in _collect_guardrail_targets(agent)
+    )
+    if typed_workflow:
+        from fastapi.responses import HTMLResponse
+        from ._ui_chat import _render_agent_ui
+        from ._ui_root_chat import build_root_chat_router
 
-    mount_agentkit_chat(app, model=model, ws=service_ws)
+        app.state._apx_native_chat = True
+
+        async def _mount_native_chat() -> None:
+            app.include_router(build_root_chat_router())
+            if os.environ.get("APX_DEV_UI", "0" if os.environ.get("DATABRICKS_APP_NAME") else "1") != "0":
+                @app.get("/_apx/chat", include_in_schema=False)
+                async def native_chat(request: Request) -> HTMLResponse:
+                    return HTMLResponse(_render_agent_ui(
+                        getattr(app.state, "agent_context", None),
+                        embed=request.query_params.get("embed") == "1", native=True,
+                    ))
+
+        _chain_lifespan(app, _mount_native_chat)
+    else:
+        from ._ui_agentkit_chat import mount_agentkit_chat
+
+        mount_agentkit_chat(app, model=model, ws=service_ws)
     # Dev UI handlers read the service client here (the MLflow host sets it too).
     app.state.workspace_client = service_ws
     # The card advertises /api/invocations so peers use the durable contract.
     app.state.apx_durable_host = True
     app.state.dev_ui_mount_error = None
-    if os.environ.get("APX_DEV_UI") != "0":
+    if not typed_workflow and os.environ.get("APX_DEV_UI") != "0":
         try:
             from ._dev import build_dev_ui_router
 

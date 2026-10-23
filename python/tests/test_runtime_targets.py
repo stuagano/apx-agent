@@ -616,10 +616,10 @@ def _write_native_pyproject(tmp_path: Path) -> None:
     )
 
 
-def test_native_server_exposes_invoke_readback_and_replay_only(
+def test_native_server_exposes_invoke_readback_replay_and_native_chat(
     execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """The installed SDK has no cancel, disconnect, or reconnect contract."""
+    """Native chat adds no legacy execution or synthetic SDK lifecycle routes."""
     from fastapi.routing import APIRoute
     from fastapi.testclient import TestClient
     from apx_agent import compile_agent
@@ -628,6 +628,7 @@ def test_native_server_exposes_invoke_readback_and_replay_only(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setenv("APX_DEV_UI", "1")
     app = compile_agent(
         execution.agent, target="durable_agent_server", model="test", service_ws=execution.ws,
     )
@@ -658,6 +659,9 @@ def test_native_server_exposes_invoke_readback_and_replay_only(
         assert ("GET", "/health") in started
         assert ("GET", "/") in started
         assert ("GET", "/_apx/chat") in started
+        assert "/_apx/assets/agentkit/app.js" in client.get("/").text
+        assert "/_apx/assets/agentkit/app.js" in client.get("/_apx/chat").text
+        assert ("POST", "/invocations") not in started
         # This agent has no user-scoped tool, so discovery must not invent one.
         assert app.auth_policy.requires_user is False
         assert client.get("/health").status_code == 200

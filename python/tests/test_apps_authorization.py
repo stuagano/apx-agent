@@ -601,3 +601,33 @@ def test_workspace_allowlist_missing_sql_fails_deploy() -> None:
     msg = str(raised.value)
     assert "- sql:" in msg
     assert "- genie:" not in msg
+
+
+@pytest.mark.parametrize("effective", [True, False])
+def test_workspace_allowlist_wildcard_does_not_block(effective: bool) -> None:
+    ws = MagicMock()
+    wildcard = SimpleNamespace(allowed_scopes=["*"])
+    ws.workspace_settings_v2.get_public_workspace_setting.return_value = SimpleNamespace(
+        effective_allowed_apps_user_api_scopes=wildcard if effective else None,
+        allowed_apps_user_api_scopes=SimpleNamespace(allowed_scopes=[]) if effective else wildcard,
+    )
+    read = read_workspace_apps_scope_allowlist(ws)
+    assert read.readable is True
+    assert read.allowed_scopes is None
+    require_workspace_scope_allowlist(ws, _plan_with_scopes("sql", "ai-gateway"))
+
+
+@pytest.mark.parametrize("scopes", [[], ["genie"]])
+def test_workspace_allowlist_effective_restrictions_override_declared_wildcard(
+    scopes: list[str],
+) -> None:
+    ws = MagicMock()
+    ws.workspace_settings_v2.get_public_workspace_setting.return_value = SimpleNamespace(
+        effective_allowed_apps_user_api_scopes=SimpleNamespace(allowed_scopes=scopes),
+        allowed_apps_user_api_scopes=SimpleNamespace(allowed_scopes=["*"]),
+    )
+    read = read_workspace_apps_scope_allowlist(ws)
+    assert read.readable is True
+    assert read.allowed_scopes == frozenset(scopes)
+    with pytest.raises(click.ClickException, match="allowedAppsUserApiScopes"):
+        require_workspace_scope_allowlist(ws, _plan_with_scopes("sql"))

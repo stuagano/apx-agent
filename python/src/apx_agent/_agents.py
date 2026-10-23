@@ -7,7 +7,7 @@ import inspect
 import logging
 import math
 import time
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -28,6 +28,7 @@ from ._models import (
     GuardrailsConfig,
     InputGuardrailFn,
     MemoryBackendConfig,
+    NativeBinding,
     Message,
     OnModelErrorCallback,
     OnToolErrorCallback,
@@ -99,7 +100,7 @@ class AgentSettings(TypedDict, total=False):
     guardrails: GuardrailsConfig
     knowledge: str
     vector_search_index: str
-    bindings: dict[str, str]
+    bindings: dict[str, str | NativeBinding]
     url: str
     registry: str
     api_prefix: str
@@ -122,7 +123,7 @@ class BaseAgent:
     guardrails: GuardrailsConfig | None = None
     knowledge: str | None = None
     vector_search_index: str | None = None
-    bindings: dict[str, str] | None = None
+    bindings: dict[str, str | NativeBinding] | None = None
     url: str | None = None
     registry: str | None = None
     api_prefix: str | None = None
@@ -187,6 +188,16 @@ class LlmAgent(BaseAgent):
     ``SequentialAgent`` or ``ParallelAgent`` composition.
 
     ``output_schema`` declares a Pydantic model for the final JSON answer.
+    ``input_schema`` and ``input_key`` declare a bounded native domain object
+    and its keyed-state slot, available to tools through ``Dependencies.State``.
+    ``input_preparation`` is a trusted Python callable on a bound native leaf;
+    it receives detached keyed state and returns its next input before validation.
+    ``output_tool`` names the one Python tool whose successful execution result
+    must be published instead of the model's final JSON. Skipped/repeated calls fail.
+    ``output_status_path`` selects a nested JSON field for recorded native domain
+    status; the default is the output's top-level ``status`` field.
+    Native outputs retain exact JSON and verified DataParts in the reserved
+    ``apx_native_artifacts`` state map, indexed by output key (or leaf name).
     The compiled producer validates strictly before publishing JSON-compatible
     data to ``output_key`` or calling ``after_agent_callback``. ``run`` still
     returns a string (serialized validated JSON); ``stream`` buffers typed
@@ -238,7 +249,12 @@ class LlmAgent(BaseAgent):
         session_budget: dict[str, int | float] | None = None,
         tool_loading: str = "eager",
         output_schema: type[BaseModel] | None = None,
+        input_schema: type[BaseModel] | None = None,
+        input_key: str | None = None,
+        input_preparation: Callable[[dict[str, Any]], dict[str, Any] | Awaitable[dict[str, Any]]] | None = None,
+        output_tool: str | None = None,
         timeout_s: float | None = None,
+        output_status_path: tuple[str, ...] | None = None,
         **settings: Unpack[AgentSettings],
     ) -> None:
         # tools is optional (#449): an orchestrator whose only capabilities are
@@ -267,6 +283,26 @@ class LlmAgent(BaseAgent):
         ):
             raise TypeError("output_schema must be a Pydantic BaseModel subclass")
         self._output_schema = output_schema
+        from ._native_input import NATIVE_ARTIFACTS_KEY, validate_input_declaration
+
+        validate_input_declaration(input_schema, input_key)
+        if output_key == NATIVE_ARTIFACTS_KEY:
+            raise ValueError("output_key must be a non-reserved domain state slot")
+        if input_preparation is not None and (not callable(input_preparation) or input_schema is None):
+            raise ValueError("input_preparation requires a callable and declared input_schema")
+        if output_tool is not None and (output_schema is None or output_tool not in {fn.__name__ for fn in self._tool_fns}):
+            raise ValueError("output_tool requires an output_schema and a declared Python tool name")
+        if output_status_path is not None and (
+            output_schema is None or not isinstance(output_status_path, tuple) or not 1 <= len(output_status_path) <= 8
+            or any(not isinstance(key, str) or not 1 <= len(key) <= 64 or not key.isascii() or not key.isidentifier()
+                   for key in output_status_path)
+        ):
+            raise ValueError("output_status_path requires an output_schema and 1-8 safe JSON field names of at most 64 characters")
+        self._input_schema = input_schema
+        self._input_key = input_key
+        self._input_preparation = input_preparation
+        self._output_tool = output_tool
+        self._output_status_path = output_status_path
         if timeout_s is not None:
             if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or not math.isfinite(timeout_s) or timeout_s <= 0:
                 raise ValueError("timeout_s must be a positive finite number")

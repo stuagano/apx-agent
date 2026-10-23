@@ -1130,7 +1130,9 @@ def test_native_deploy_hands_rollout_to_agentbricks(
         assert smoke.call_args.args[0] == payload["url"]
         assert smoke.call_args.kwargs["session_store"] == "apx-my-app-sessions"
         # The SDK namespaces session ids by caller, so the smoke takes no key inputs (#985).
-        assert set(smoke.call_args.kwargs) == {"profile", "session_store"}
+        assert set(smoke.call_args.kwargs) == {"profile", "session_store", "smoke_input", "smoke_agent"}
+        assert smoke.call_args.kwargs["smoke_input"] is None
+        assert isinstance(smoke.call_args.kwargs["smoke_agent"], LlmAgent)
     if failure:
         assert result.exit_code != 0, result.output
         if failure == "execution":

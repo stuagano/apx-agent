@@ -1,0 +1,11 @@
+diff --git a/curinos-one-agent/pyproject.toml b/curinos-one-agent/pyproject.toml
+--- a/curinos-one-agent/pyproject.toml
++++ b/curinos-one-agent/pyproject.toml
+@@ -24,7 +24,6 @@
+ [tool.apx.agent]
+ name = "curinos-one"
+ description = "Curinos One decision-intelligence fleet — Calibrate, governed extraction, and shared outcome contracts"
+-model = "databricks-claude-sonnet-4-6"
+ max_iterations = 8
+ module = "agent:agent"
+ target = "durable_agent_server"

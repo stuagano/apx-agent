@@ -117,6 +117,8 @@ class CompileContext:
     across turns. Requires a ``thread_id`` in the invoke config."""
     request: "Request | None" = None
     remote_leaf_bindings: Mapping[str, _RemoteLeafBinding] = field(default_factory=dict)
+    logical_predecessor: str | None = None
+    logical_name: str | None = None
     escalate_failures: bool = False
     step_path: tuple[str, ...] = ()
     fixture_replay: _FixtureReplay | None = None
@@ -377,6 +379,32 @@ def _governance_exception_middleware() -> Any:
     return _GovernanceErrorMiddleware()
 
 
+def _authoritative_output_middleware(tool_name: str) -> Any:
+    """Stop after the current invocation's output-tool batch, before another model call."""
+    from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
+    from langchain_core.messages import AIMessage
+
+    class OutputState(AgentState):
+        _apx_output_start: int
+
+    class _AuthoritativeOutputMiddleware(AgentMiddleware):
+        state_schema = OutputState
+
+        def before_agent(self, state: Any, runtime: Any) -> dict[str, Any]:
+            return {"_apx_output_start": len(state["messages"])}
+
+        @hook_config(can_jump_to=["end"])
+        def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+            # ToolNode has finished the entire batch; the outer wrapper validates it.
+            if any(call["name"] == tool_name
+                   for message in state["messages"][state["_apx_output_start"]:]
+                   if isinstance(message, AIMessage) for call in message.tool_calls):
+                return {"jump_to": "end"}
+            return None
+
+    return _AuthoritativeOutputMiddleware()
+
+
 def _compile_llm_agent(
     agent: LlmAgent,
     ctx: CompileContext,
@@ -428,6 +456,8 @@ def _compile_llm_agent(
         raise ValueError(f"{agent._name}: duplicate tool name(s) {', '.join(map(repr, duplicates))}; "
                          "rename the Python tool or the platform tool.")
     middleware = [_governance_exception_middleware()]
+    if agent._output_tool is not None:
+        middleware.append(_authoritative_output_middleware(agent._output_tool))
     if ctx.escalate_failures:
         from ._step_contract import unavailable_middleware
 
@@ -491,7 +521,8 @@ def _compile_llm_agent(
         # superstep; allow two graph supersteps per requested iteration so a
         # tool-calling turn isn't cut off mid-round, plus a small margin for
         # the terminal answer hop.
-        config["recursion_limit"] = max_iter * 2 + 1
+        # Authoritative completion adds one entry node and one gate per round.
+        config["recursion_limit"] = max_iter * 3 + 3 if agent._output_tool is not None else max_iter * 2 + 1
     if config:
         runnable = runnable.with_config(**config)
     return runnable
@@ -530,9 +561,10 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
     protected = escalate or _has_step_policy(agent) or ctx.fixture_replay is not None
     path = ctx.step_path or (agent._name or "sequence",)
 
-    def _step(sub: BaseAgent, name: str) -> Any:
+    def _step(sub: BaseAgent, name: str, predecessor: str | None) -> Any:
         step_path = (*path, name)
-        child_ctx = replace(ctx, escalate_failures=escalate, step_path=step_path if protected else ctx.step_path)
+        child_ctx = replace(ctx, escalate_failures=escalate, step_path=step_path if protected else ctx.step_path,
+                            logical_predecessor=predecessor, logical_name=name)
         compiled = _compile_any(sub, child_ctx)
         if not agent._instructions and not protected:
             return compiled
@@ -584,7 +616,7 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
         if name in node_names:
             name = f"{name}_{i}"  # disambiguate accidental collisions
         node_names.append(name)
-        graph.add_node(name, _step(sub, name))
+        graph.add_node(name, _step(sub, name, node_names[-2] if i else ctx.logical_predecessor))
 
     if protected and not ctx.step_path:
         # Do not let caller-supplied or prior-turn failure/evidence state affect
@@ -1204,11 +1236,12 @@ def _agent_needs_node_wrap(agent: LlmAgent) -> bool:
         or agent._after_agent_callback is not None
         or getattr(agent, "_output_key", None)
         or agent._output_schema is not None
+        or agent._input_schema is not None
         or _has_template(agent)
     )
 
 
-def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalate_failures: bool = False, step_path: tuple[str, ...] = (), fixture_replay: _FixtureReplay | None = None) -> Any:
+def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalate_failures: bool = False, step_path: tuple[str, ...] = (), fixture_replay: _FixtureReplay | None = None, checkpointer: Any | None = None, native_remote: bool = False, logical_predecessor: str | None = None, logical_name: str | None = None) -> Any:
     """Wrap an ``LlmAgent``'s runnable in a graph node that applies the served
     hooks (G1) and keyed-state surface (G3): ``{key}`` instruction templating
     on the way in, ``output_key`` on the way out.
@@ -1220,15 +1253,26 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
     """
     from copy import deepcopy
 
-    from langchain_core.messages import AIMessage, SystemMessage
+    from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
     from langchain_core.runnables import RunnableLambda
     from langgraph.graph import END, START, StateGraph
     from pydantic import ValidationError
     from ._step_contract import StepTimeoutError
+    from ._native_input import NATIVE_ARTIFACTS_KEY, native_data_part
+    from ._native_remote import _NATIVE_INVOCATION, emit_native_step, native_leaf_input
 
     async def _node(state: dict[str, Any]) -> dict[str, Any]:
         input_msgs = list(state["messages"])
-        keyed = state.get("state") or {}
+        keyed = dict(state.get("state") or {})
+        native = _NATIVE_INVOCATION.get() is not None
+        if agent._input_preparation is not None:
+            if not native or not native_remote:
+                raise ValueError("input_preparation requires a bound native leaf")
+            keyed[agent._input_key] = await agent._call_hook(agent._input_preparation, deepcopy(keyed))
+            state = {**state, "state": keyed}
+        input_part = None
+        if agent._input_schema is not None:
+            input_part = native_leaf_input(agent, state) if native else native_data_part(agent._input_schema, keyed.get(agent._input_key))
 
         await agent._invoke_callback(agent._before_agent_callback, input_msgs)
         rejection = await agent._apply_input_guardrails(input_msgs)
@@ -1267,6 +1311,23 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
         )
         text = _ai_message_text(last_ai) if last_ai is not None else ""
 
+        if agent._output_tool is not None and not native_remote:
+            calls = [call for message in new_msgs if isinstance(message, AIMessage)
+                     for call in message.tool_calls if call["name"] == agent._output_tool]
+            outputs = [message for message in new_msgs if isinstance(message, ToolMessage)
+                       and any(message.tool_call_id == call["id"] for call in calls)]
+            if len(calls) != 1 or len(outputs) != 1 or outputs[0].status != "success" or last_ai is None:
+                raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "required_tool_execution"}])
+            # Only this leaf's executed result can become evidence, never the model's rewrite.
+            tool_text = outputs[0].content
+            if not isinstance(tool_text, str):
+                raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "output_tool_json_text"}])
+            text = tool_text
+            # This is deterministic completion, not another model generation.
+            authoritative = AIMessage(content=text)
+            new_msgs.append(authoritative)
+            last_ai = authoritative
+
         guard_text = text
         if last_ai is not None and agent._output_guardrails:
             from ._a2a_models import data_parts
@@ -1302,13 +1363,14 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
                 check_unavailable(part["data"])
 
         payload: Any = text
+        native_part = None
         if agent._output_schema is not None:
             if last_ai is None or last_ai.tool_calls:
                 raise OutputValidationError(agent._name, agent._output_key, [{"loc": (), "type": "missing_final_answer"}])
             try:
                 from ._a2a_models import data_parts
 
-                parts = data_parts(last_ai.additional_kwargs)
+                parts = last_ai.additional_kwargs.get("apx_data_parts", []) if native else data_parts(last_ai.additional_kwargs)
                 if parts:
                     if len(parts) != 1:
                         raise ValueError("A typed output requires exactly one DataPart")
@@ -1319,6 +1381,14 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
                     )
                 else:
                     validated = await agent._call_hook(agent._output_schema.model_validate_json, text, strict=True)
+                if native and agent._output_schema.model_json_schema().get("type") == "object":
+                    payload = parts[0]["data"] if parts else json.loads(text)
+                    supplied = parts[0] if parts else None
+                    if supplied is not None and not native_remote and set(supplied) == {"kind", "data"}:
+                        if supplied["kind"] != "data":
+                            raise ValueError("Native output requires a data artifact")
+                        supplied = None
+                    native_part = native_data_part(agent._output_schema, payload, supplied)
             except StepTimeoutError:
                 raise
             except ValidationError as exc:
@@ -1334,7 +1404,7 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
                     [{"loc": (), "type": f"validator_{type(exc).__name__}"}],
                 ) from None
             try:
-                payload = await agent._call_hook(validated.model_dump, mode="json", by_alias=True)
+                payload = native_part["data"] if native_part is not None else await agent._call_hook(validated.model_dump, mode="json", by_alias=True)
                 text = json.dumps(payload, ensure_ascii=False, allow_nan=False)
             except (ValueError, TypeError):
                 raise OutputValidationError(
@@ -1348,21 +1418,29 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
             # existing canonical text contract rather than inventing a wrapper.
             extra.pop("apx_data_parts", None)
             if isinstance(payload, dict):
-                extra["apx_data_parts"] = [{**(parts[0] if parts else {}), "kind": "data", "data": payload}]
+                extra["apx_data_parts"] = [native_part if native_part is not None else {**(parts[0] if parts else {}), "kind": "data", "data": payload}]
             new_msgs = [m.model_copy(update={"content": content, "additional_kwargs": extra}) if m is last_ai else m for m in new_msgs]
 
         await agent._invoke_callback(agent._after_agent_callback, text)
         update: dict[str, Any] = {"messages": new_msgs}
         inner_state = result.get("state")          # tool writes from the inner agent
         merged_state: dict[str, Any] = dict(inner_state) if inner_state else {}
+        if native_part is not None:
+            artifacts = deepcopy(keyed.get(NATIVE_ARTIFACTS_KEY, {}))
+            artifacts[agent._output_key or logical_name or agent._name or "agent"] = deepcopy(native_part)
+            merged_state[NATIVE_ARTIFACTS_KEY] = artifacts
         if agent._output_key:
-            merged_state[agent._output_key] = deepcopy(payload) if step_path else payload
+            merged_state[agent._output_key] = deepcopy(payload) if step_path or native_part is not None else payload
         if merged_state:
             update["state"] = merged_state
         if step_path and agent._output_schema is not None:
             update["_apx_step_evidence"] = [*state.get("_apx_step_evidence", []), {"step": list(step_path), "output_key": agent._output_key, "data": deepcopy(payload)}]
         if fixture_replay is not None:
             fixture_replay.record(step_path, payload)
+        if native_part is not None:
+            assert last_ai is not None
+            child = last_ai.additional_kwargs.get("apx_native_invocation") if native_remote else None
+            emit_native_step(agent, native_part, input_part, child, logical_predecessor)
         return update
 
     node = RunnableLambda(lambda state: _invoke_node_sync(_node, state), afunc=_node)
@@ -1379,7 +1457,7 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
     graph.add_node("agent", node)  # type: ignore[arg-type]  # StateNode generic cannot infer state->dict nodes
     graph.add_edge(START, "agent")
     graph.add_edge("agent", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def _invoke_node_sync(node: Any, state: dict[str, Any]) -> dict[str, Any]:
@@ -1446,6 +1524,10 @@ def _compile_bound_remote_leaf(
 
     async def _node(state: dict[str, Any]) -> dict[str, Any]:
         messages: list[Message | dict[str, Any]] = []
+        if binding.transport == "native":
+            from ._native_remote import invoke_native_leaf
+
+            return await invoke_native_leaf(logical_leaf, binding, state, _incoming_headers(), ctx.logical_predecessor)
         for index, message in enumerate(state["messages"]):
             if isinstance(message, ToolMessage) or (
                 isinstance(message, AIMessage) and message.tool_calls
@@ -1513,15 +1595,18 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     if isinstance(agent, LlmAgent):
         leaf_name = agent._name
         binding = None if leaf_name is None else ctx.remote_leaf_bindings.get(leaf_name)
+        if agent._input_preparation is not None and (binding is None or binding.transport != "native"):
+            raise ValueError("input_preparation requires a bound native leaf")
         templated = _has_template(agent)
+        wrapped = _agent_needs_node_wrap(agent) or ctx.escalate_failures or agent._timeout_s is not None or ctx.fixture_replay is not None
         if binding is not None:
             runnable = _compile_bound_remote_leaf(agent, binding, ctx)
         else:
             runnable = _compile_llm_agent(
-                agent, ctx, bake_prompt=not templated and agent._output_schema is None,
+                agent, replace(ctx, checkpointer=None) if wrapped else ctx, bake_prompt=not templated and agent._output_schema is None,
             )
-        if _agent_needs_node_wrap(agent) or ctx.escalate_failures or agent._timeout_s is not None or ctx.fixture_replay is not None:
-            runnable = _wrap_agent_node(agent, runnable, templated=templated, escalate_failures=ctx.escalate_failures, step_path=ctx.step_path, fixture_replay=ctx.fixture_replay)
+        if wrapped:
+            runnable = _wrap_agent_node(agent, runnable, templated=templated, escalate_failures=ctx.escalate_failures, step_path=ctx.step_path, fixture_replay=ctx.fixture_replay, checkpointer=ctx.checkpointer, native_remote=binding is not None and binding.transport == "native", logical_predecessor=ctx.logical_predecessor, logical_name=ctx.logical_name)
         return runnable
     if isinstance(agent, SequentialAgent):
         return _compile_sequential_agent(agent, ctx)

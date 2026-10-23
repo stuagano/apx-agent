@@ -3,6 +3,7 @@ import pytest
 pytest.importorskip("langgraph")
 
 from typing import Any
+from unittest.mock import MagicMock
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
@@ -107,3 +108,37 @@ def test_async_stateful_tool_via_sync_graph_invoke():
     # Tool message still emitted.
     tms = [m for m in out["messages"] if isinstance(m, ToolMessage)]
     assert tms and "done:z" in tms[0].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_tool", [False, True])
+@pytest.mark.parametrize("async_graph", [False, True])
+async def test_dependency_only_stateful_tool_preserves_injection(async_tool, async_graph):
+    user_client = MagicMock()
+    ctx = _ctx()
+    ctx.user_ws = user_client
+
+    def resolve(state: Dependencies.State, ws: Dependencies.UserClient) -> str:
+        assert ws is user_client
+        state["resolved"] = f"resolved:{state['account_id']}"
+        return state["resolved"]
+
+    async def async_resolve(state: Dependencies.State, ws: Dependencies.UserClient) -> str:
+        return resolve(state, ws)
+
+    tool = _make_langchain_tool(async_resolve if async_tool else resolve, ctx)
+    schema = tool.tool_call_schema.model_json_schema()
+    assert schema["properties"] == {}
+    assert not schema.get("required")
+    assert schema.get("additionalProperties") is not True
+    graph = _make_graph(tool)
+    inputs = {
+        "messages": [_tool_call(tool.name, {})],
+        "state": {"account_id": "A1"},
+    }
+    out = await graph.ainvoke(inputs) if async_graph else graph.invoke(inputs)
+    assert out["state"] == {"account_id": "A1", "resolved": "resolved:A1"}
+    messages = [m for m in out["messages"] if isinstance(m, ToolMessage)]
+    assert len(messages) == 1
+    assert messages[0].content == "resolved:A1"
+    assert messages[0].tool_call_id == "c1"

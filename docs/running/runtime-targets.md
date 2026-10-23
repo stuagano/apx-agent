@@ -125,7 +125,7 @@ New Apps projects default to `durable_agent_server`. To create a compatibility
 project with MLflow AgentServer and Bundle deployment, run
 `apx-agent agents scaffold my-agent --runtime responses_agent`.
 
-A `durable_agent_server` App serves the AgentKit chat app at `/` and
+A `durable_agent_server` App with ordinary text agents serves the AgentKit chat app at `/` and
 `/_apx/chat`, and the apx dev UI (Discover, Topology, Edit, Eval, Probe and the
 rest) under `/_apx/*`. Chat turns go to the server's own `/api/invocations`. If
 a project mounts its own UI at `/`, that UI keeps the root and the chat stays at
@@ -138,6 +138,16 @@ another actor's memory entries through the App's grants. This matches the
 upstream AgentKit chat app; see
 [the A2A trust model](../design/a2a-trust-model.md) for the per-hop identity
 model apx uses elsewhere.
+
+If any agent leaf declares `input_schema` or `output_schema`, the host instead
+serves the native workflow chat. It validates declared request JSON and displays
+SDK invocation replay and execution evidence. The root page remains available
+(unless the project supplies its own); `/_apx/chat` is enabled locally and is
+opt-in on Apps with `APX_DEV_UI=1`. Typed hosts do not mount the full developer
+router or its legacy evaluation and replay actions. Input discovery and validation
+remain available at `/api/input-schema` and `/api/input-validation`, including
+for Python-only declarations without discovered project configuration.
+
 `--target model-serving` retains its existing layout and Responses-compatible
 contract; it rejects `--runtime durable_agent_server`.
 
@@ -846,6 +856,77 @@ Saving an artifact does not register or deploy it. Include APX and your tool
 dependencies in the model environment. Cached runtime handlers are rebuilt after
 loading. Explicit checkpointers, stores and tool closures must be serializable;
 use MLflow models-from-code when constructing external runtime resources.
+
+## Exact typed native workflow artifacts
+
+On native invocations, object-valued `output_schema` results are validated as
+strict JSON and bounded to the same limits as native inputs (64 KiB, depth 16,
+256 fields/items per container). Their DataParts carry only `kind`, `data`, and
+`metadata={artifact_id, sha256}`. New local artifacts receive an identity;
+supplied identities are verified. Remote outputs must already carry their
+identity: missing or invalid metadata fails before downstream execution.
+The original JSON form is retained, including omitted defaults and field names;
+Pydantic normalization never changes the content under an existing digest.
+General A2A metadata outside native invocations keeps its existing behavior.
+
+The existing payload-only `output_key` remains available. The framework also
+retains full verified output DataParts in keyed state `apx_native_artifacts`,
+indexed by `output_key`, otherwise the logical leaf name. An unnamed standalone
+leaf uses its compiled node name `agent`; unnamed sequential leaves use their
+compiled `step_N` names. Prefer explicit unique leaf names for workflows.
+The map starts empty for each fresh native request. Domain `input_key` and
+`output_key` cannot claim it; `Dependencies.State` rejects writes/deletes and
+returns detached copies on reads. This is invocation state, not durable
+composite recovery or cross-request artifact storage.
+
+Three optional **Python declaration** arguments use the existing leaf lifecycle:
+
+- `LlmAgent(input_preparation=prepare, input_schema=NextInput, input_key="next_input", ...)`:
+  a bound native leaf calls `prepare(keyed_state)` before input validation.
+  The callable receives a deep copy of keyed state, including the original
+  request slot and verified artifact map, and returns the next JSON object.
+  It may be synchronous or asynchronous. Mutations of the copy do not update
+  graph state. Invalid/null output fails before remote POST. Use this to wrap
+  the predecessor DataPart without introducing another logical step. This
+  callable is trusted server code, not a TOML field or invocation-body field.
+- `LlmAgent(output_tool="build_signal", tools=[build_signal], output_schema=MarketSignal, ...)`:
+  publish the JSON result of that Python tool's actual execution through the
+  normal typed output/guardrail path. The model must execute exactly one call
+  to the named tool during this leaf invocation and return a final answer.
+  Missing, failed, repeated, or stale execution fails. The model's rewritten
+  final JSON cannot replace the tool result. A bound native parent leaf uses
+  the verified child output; declare `output_tool` on the child host to require
+  execution there.
+- `LlmAgent(output_schema=Decision, output_status_path=("result", "status"), ...)`:
+  read the native completion event's `domain_status` from that path in the exact
+  validated output JSON. The path has 1-8 ASCII identifier field names, each at
+  most 64 characters, and requires `output_schema`. Missing/non-object path
+  segments and unsupported status values record null; no fallback or payload
+  mutation occurs. Use emitted JSON keys, including schema aliases when present.
+  This is trusted Python declaration metadata, not invocation input or a TOML
+  field. All three options default to `None`; the status path default reads the
+  top-level `status` field.
+
+The existing SDK event stream now includes `agent.step.completed` only after
+typed validation (and remote record/events readback). Its allowlisted payload
+contains `step`, `location` (`local`/`remote`), `invocation_id`,
+`transport_sender`, `logical_predecessor`, `transport_status="completed"`,
+`schema_validated=true`, `output_schema`, `output_artifact={artifact_id,sha256}`,
+and nullable `domain_status` from the declared path (top-level `status` by default). Declared input
+adds `input_schema` and `input_artifact`. Remote completion also includes the
+actual `child_invocation_id`, `parent_invocation_id`, and `readback_verified=true`.
+Local steps have no child ID. Names/statuses are bounded to 128 safe characters;
+missing or unsupported values are null, never inferred.
+
+Native application events carry persisted `recorded_at` (UTC) and
+`timestamp_source="application_emit"`. The installed SDK does not expose event
+or record timestamps; APX records the server emission time before persistence.
+This is not child execution start/end timing. Replay retains the original
+value. No trace/model/version or task IDs are fabricated. Timeout emits
+`agent.child.unknown` with the actual submitted `id`, `correlation`, and
+`transport_status="unknown"`; retrieve that same ID to resolve its outcome.
+`agent.child.accepted` alone is never validation/completion evidence, and a
+completed transport can still carry a domain status such as `not_ready`.
 
 ## Verification boundaries
 

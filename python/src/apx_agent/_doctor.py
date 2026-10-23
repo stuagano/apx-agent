@@ -847,7 +847,7 @@ def _declared_app_peer_urls(cwd: Path) -> list[str] | None:
     from ._apps_authorization import _is_apps_https_url  # noqa: PLC0415
     from ._env import resolve_env_var  # noqa: PLC0415
 
-    raw_values = [*cfg.sub_agents, *cfg.bindings.values()]
+    raw_values = [*cfg.sub_agents, *(value if isinstance(value, str) else value.url for value in cfg.bindings.values())]
     peers: list[str] = []
     seen: set[str] = set()
     for raw in raw_values:
