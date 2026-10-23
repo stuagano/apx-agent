@@ -576,6 +576,8 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
     """
     if not auth_ok:
         return None
+    if not _is_apx_project(cwd):
+        return None
     settings = _declared_settings(cwd)
     if isinstance(settings, Check):
         return settings

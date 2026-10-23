@@ -258,7 +258,7 @@ def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]
 _AGENT_SETTING_KEYS = ("name", "model", "description", "data")
 
 
-def _effective_config(cwd: Path) -> "AgentConfig | None":
+def _effective_config(cwd: Path, module: str = "agent:agent") -> "AgentConfig | None":
     """The current project's merged config: TOML + the Python agent's settings (3b-2).
 
     Imports and finalizes agent.py, so use it only for the project the command runs in."""
@@ -269,7 +269,7 @@ def _effective_config(cwd: Path) -> "AgentConfig | None":
     if not (cwd / "agent.py").is_file():
         return toml
     try:
-        agent = _load_finalized_agent("agent:agent")
+        agent = _load_finalized_agent(module)
     except click.ClickException:
         raise
     except Exception as exc:  # noqa: BLE001 — any import-time failure is the user's agent.py
@@ -283,13 +283,13 @@ def _effective_config(cwd: Path) -> "AgentConfig | None":
     return config
 
 
-def _with_agent_settings(flat: dict[str, Any], cwd: Path | None = None) -> dict[str, Any]:
+def _with_agent_settings(flat: dict[str, Any], cwd: Path | None = None, *, module: str = "agent:agent") -> dict[str, Any]:
     """*flat* with the agent settings the project declares (TOML or Python) merged in.
 
     Declared means in the resolved config's ``model_fields_set``; defaults never
     appear, so "no model declared" still reads as missing. A placeholder name
     (an unnamed root agent) isn't a declaration."""
-    config = _effective_config(cwd or Path.cwd())
+    config = _effective_config(cwd or Path.cwd(), module)
     if config is None:
         return flat
     merged = dict(flat)
@@ -1254,7 +1254,8 @@ def _project_name(cwd: Path) -> str | None:
     from ._inspection import static_agent_setting
 
     toml = _read_apx_agent_config(cwd / "pyproject.toml")
-    return static_agent_setting(cwd / "agent.py", "name") or toml.get("name")
+    # TOML first, the same precedence as _with_agent_settings (one answer for status and deploy).
+    return toml.get("name") or static_agent_setting(cwd / "agent.py", "name")
 
 
 def _status_prompt_string(cwd: Path) -> str:
@@ -10509,7 +10510,7 @@ def _resolve_project_uc_name(cwd: Path) -> str | None:
     an Apps bundle name (``databricks.yml``) composed via
     ``_resolve_apps_uc_name``, else ``[tool.apx.agent].registered_model``.
     """
-    config = _with_agent_settings(_read_apx_agent_config(cwd / "pyproject.toml"), cwd)
+    config = _read_apx_agent_config(cwd / "pyproject.toml")
     try:
         app_name = _resolve_project_app_name(cwd)
     except Exception:
@@ -10594,6 +10595,10 @@ def _register_apps_manifest_step(
         )
         return None
 
+    if "model" not in config or "name" not in config:
+        # Declared Python settings (3b-2), imported the way the step imports the agent below.
+        with _registration_import_context(load_cwd):
+            config = _with_agent_settings(config, load_cwd or Path.cwd(), module=module)
     model = config.get("model")
     if not model:
         msg = (
@@ -14402,7 +14407,7 @@ def register_agent_cmd(
     """
     with _json_cli_errors(as_json):
         cwd = Path.cwd()
-        config = _with_agent_settings(_read_apx_agent_config(), cwd)
+        config = _with_agent_settings(_read_apx_agent_config(), cwd, module=module)
         profile = profile or config.get("profile")
         if profile:
             # register_apps_manifest logs via ambient mlflow auth — make the
