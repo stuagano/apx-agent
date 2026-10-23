@@ -62,13 +62,17 @@ def emit_native_step(agent: Any, part: dict[str, Any], input_part: dict[str, Any
     def bounded_name(value: Any) -> str | None:
         return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value) else None
 
+    domain_status = part["data"]
+    for key in getattr(agent, "_output_status_path", None) or ("status",):
+        domain_status = domain_status.get(key) if isinstance(domain_status, dict) else None
+
     event = {"type": "agent.step.completed", "step": bounded_name(agent._name),
              "location": "remote" if child is not None else "local",
              "invocation_id": bounded_name(scope["id"]), "transport_sender": bounded_name(scope["sender"]),
              "logical_predecessor": bounded_name(predecessor), "transport_status": "completed",
              "schema_validated": True, "output_schema": bounded_name(agent._output_schema.__name__),
              "output_artifact": dict(part["metadata"]),
-             "domain_status": bounded_name(part["data"].get("status"))}
+             "domain_status": bounded_name(domain_status)}
     if input_part is not None:
         event["input_schema"] = bounded_name(agent._input_schema.__name__)
         event["input_artifact"] = dict(input_part["metadata"])

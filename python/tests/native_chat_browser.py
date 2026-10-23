@@ -28,6 +28,11 @@ class BrowserInput(BaseModel):
     as_of: str
 
 
+class NumericInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    amount: int | float
+
+
 @pytest.fixture(params=["root", "dev"])
 def browser_chat(request):
     with sync_playwright() as p:
@@ -217,6 +222,97 @@ def test_native_typed_submission_requires_complete_declared_input(browser_chat):
     assert len(posts) == 1
 
 
+@pytest.mark.parametrize("number", ["1.0", "9007199254740993"])
+def test_native_typed_numeric_wire_survives_preflight_post_and_saved_retry(browser_chat, number):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from apx_agent import LlmAgent
+    from apx_agent._ui_native_chat import native_input_router
+
+    page, posts, reads, state, event = browser_chat
+    app = FastAPI()
+    app.include_router(native_input_router(LlmAgent(input_schema=NumericInput, input_key="request")))
+    state["input_schema"] = NumericInput.model_json_schema()
+    state["status"] = "active"
+    payload_wire = ' {\n"amount":' + number + '\n} '
+    validation_wires, request_wires, missing_reads = [], [], []
+
+    with TestClient(app) as client:
+        def preflight(route):
+            validation_wires.append(route.request.post_data)
+            response = client.post("/api/input-validation", content=route.request.post_data,
+                                   headers={"Content-Type": "application/json"})
+            route.fulfill(status=response.status_code, content_type="application/json", body=response.content)
+
+        def invoke(route):
+            wire = route.request.post_data
+            request_wires.append(wire)
+            body = json.loads(wire)
+            posts.append(body)
+            part = body["input"]["apx_data_parts"][0]
+            # The actual ingress integrity helper must accept the browser's exact wire.
+            assert part == native_data_part(NumericInput, part["data"], part)
+            assert part["data"] == json.loads(payload_wire)
+            assert type(part["data"]["amount"]) is type(json.loads(payload_wire)["amount"])
+            if len(request_wires) == 1:
+                route.abort("failed")
+            else:
+                state["status"] = "completed"
+                route.fulfill(status=202, json={"id": body["id"], "status": "active"})
+
+        def absent_once(route):
+            missing_reads.append(route.request.url)
+            if len(missing_reads) == 1:
+                route.fulfill(status=404, json={"detail": "Not found"})
+            else:
+                route.fallback()
+
+        page.route("**/api/input-validation", preflight)
+        page.route("**/api/invocations", invoke)
+        page.reload()
+        submit(page, payload_wire)
+        expect(page.locator(".native-status")).to_contain_text("Connection uncertain")
+        assert validation_wires == [payload_wire]
+        cached = json.loads(page.evaluate("sessionStorage.getItem('_apx_native_chat:/')"))
+        assert cached["requestWire"] == request_wires[0]
+        page.reload()
+        expect(page.locator(".native-status")).to_contain_text("Reconnect")
+        expect(page.locator(".msg.user")).to_have_text(payload_wire)
+        assert len(request_wires) == 1
+        page.route("**/api/invocations/*", absent_once)
+        page.get_by_role("button", name="Retry same request", exact=True).click()
+        expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
+        assert request_wires == [cached["requestWire"], cached["requestWire"]]
+        page.reload()
+        expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
+        expect(page.locator(".msg.user")).to_have_text(payload_wire)
+        assert len(request_wires) == 2
+
+
+@pytest.mark.parametrize("number", ["1.0", "9007199254740993"])
+def test_native_recorded_output_preserves_numeric_wire(browser_chat, number):
+    page, posts, reads, state, event = browser_chat
+    part = native_data_part(NumericInput, json.loads('{"amount":' + number + '}'))
+    state["output"]["messages"][0]["additional_kwargs"] = {"apx_data_parts": [part]}
+    event["message"]["additional_kwargs"] = {"apx_data_parts": [part]}
+    response_wire = json.dumps(state)
+    def recorded(route):
+        if "/events" in route.request.url:
+            route.fallback()
+        else:
+            route.fulfill(content_type="application/json", body=response_wire)
+    page.route("**/api/invocations/*", recorded)
+    submit(page)
+    expect(page.locator(".native-output")).to_have_text(response_wire)
+    expect(page.locator(".native-event")).to_have_text(json.dumps(event))
+    expect(page.locator(".native-recorded-output summary")).to_have_text("Recorded invocation response (exact JSON)")
+    assert json.loads(page.locator(".native-output").text_content())["output"]["messages"][0]["additional_kwargs"]["apx_data_parts"] == [part]
+    page.reload()
+    expect(page.locator(".native-output")).to_have_text(response_wire)
+    expect(page.locator(".native-event")).to_have_text(json.dumps(event))
+    assert len(posts) == 1
+
+
 def test_native_execution_card_separates_status_and_provenance(browser_chat):
     page, posts, reads, state, event = browser_chat
     event.clear()
@@ -239,7 +335,7 @@ def test_native_execution_card_separates_status_and_provenance(browser_chat):
                  "Child timing: unavailable", "Trace: unavailable", "Model/version: unavailable"]:
         expect(card).to_contain_text(text)
     assert card.get_by_role("link", name="child-id", exact=True).get_attribute("href") == "https://calibrate.example/api/invocations/child-id"
-    assert json.loads(page.locator(".native-output").text_content()) == part
+    assert json.loads(page.locator(".native-output").text_content())["output"]["messages"][0]["additional_kwargs"]["apx_data_parts"] == [part]
     assert page.evaluate("window.injected") is None
     assert page.locator("[onerror]").count() == 0
     page.reload()
@@ -313,13 +409,22 @@ def test_native_oversized_event_is_explicitly_omitted(browser_chat):
     expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
 
 
-def test_native_output_artifact_count_is_bounded_across_messages(browser_chat):
+def test_native_output_record_is_bounded_without_lossy_part_extraction(browser_chat):
     page, posts, reads, state, event = browser_chat
     state["output"]["messages"] = [{"type": "ai", "content": "Typed output", "additional_kwargs": {
         "apx_data_parts": [{"kind": "data", "data": {"index": index}}]}} for index in range(20)]
     submit(page)
-    expect(page.locator(".native-output")).to_have_count(16)
-    assert json.loads(page.locator(".native-output").last.text_content())["data"] == {"index": 15}
+    expect(page.locator(".native-output")).to_have_count(1)
+    assert json.loads(page.locator(".native-output").text_content())["output"] == state["output"]
+
+
+def test_native_oversized_output_record_has_explicit_limit(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"][0]["additional_kwargs"] = {"apx_data_parts": [
+        {"kind": "data", "data": {"oversized": "x" * 131073}}]}
+    submit(page)
+    expect(page.locator(".native-output")).to_have_count(1)
+    expect(page.locator(".native-output")).to_have_text("Recorded response exceeds display limit; retrieve the invocation record.")
 
 
 @pytest.mark.parametrize("failure", [401, 403, 404, "network"])

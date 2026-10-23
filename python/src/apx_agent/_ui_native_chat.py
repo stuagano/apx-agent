@@ -77,8 +77,8 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     send.disabled = busy || Boolean(saved && !saved.terminal);
   }).catch(() => { validation.textContent = 'Input declaration unavailable. Reload to check before submitting.'; });
   const persist = () => sessionStorage.setItem(key, JSON.stringify(saved));
-  const requestText = () => saved.request.input.apx_data_parts
-    ? JSON.stringify(saved.request.input.apx_data_parts[0].data, null, 2) : saved.request.input.messages[0].content;
+  const requestText = () => saved.userText ?? (saved.request.input.apx_data_parts
+    ? JSON.stringify(saved.request.input.apx_data_parts[0].data, null, 2) : saved.request.input.messages[0].content);
   function prepare() {
     document.getElementById('landing')?.remove();
     if (!restoring) bubble('user', requestText());
@@ -107,10 +107,11 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     container.appendChild(controls);
     answer = null;
   }
-  function showEvent(event) {
+  function showEvent(raw) {
+    const event = typeof raw === 'string' ? JSON.parse(raw) : raw;
     const row = document.createElement('pre');
     row.className = 'native-event';
-    row.textContent = JSON.stringify(event, null, 2);
+    row.textContent = typeof raw === 'string' ? raw : JSON.stringify(event, null, 2);
     eventLog.appendChild(row);
     if (eventLog.querySelectorAll('pre').length > 64) eventLog.querySelector('pre').remove();
     if (!['agent.step.completed', 'agent.child.unknown'].includes(event.type)) return;
@@ -200,7 +201,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
           const id = Number(lines.find(line => line.startsWith('id:'))?.slice(3));
           const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
           if (!Number.isSafeInteger(id) || id <= saved.cursor || !data) continue;
-          const event = data.length <= 8192 ? JSON.parse(data) : {type: 'event.omitted', detail: 'Event exceeds display limit'};
+          const event = data.length <= 8192 ? data : JSON.stringify({type: 'event.omitted', detail: 'Event exceeds display limit'}, null, 2);
           saved.events.push(event);
           saved.events = saved.events.slice(-64);
           saved.cursor = id;
@@ -233,7 +234,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
           persist();
           await checked('/api/invocations', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(saved.request),
+            body: saved.requestWire || JSON.stringify(saved.request),
           });
         }
       }
@@ -246,7 +247,8 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
         controls.querySelectorAll('button').forEach(button => button.disabled = false);
       }
       await events(path);
-      const state = await (await checked(path)).json();
+      const recorded = await (await checked(path)).text();
+      const state = JSON.parse(recorded);
       saved.terminal = state.status === 'completed' || state.status === 'failed';
       if (state.status === 'failed') {
         status.textContent = 'Failed: ' + (typeof state.error === 'string' ? state.error : 'Invocation failed');
@@ -259,14 +261,16 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
         ).filter(Boolean).join('\n');
         if (!answer) answer = bubble('assistant', '');
         render(answer, text || '(empty response)');
-        answer.querySelectorAll('.native-output').forEach(node => node.remove());
-        const parts = messages.filter(m => m.type === 'ai').flatMap(m => m.additional_kwargs?.apx_data_parts || []);
-        for (const part of parts.slice(0, 16)) {
+        if (messages.some(m => m.type === 'ai' && m.additional_kwargs?.apx_data_parts?.length)) {
+          const details = document.createElement('details');
+          details.className = 'native-recorded-output';
+          const summary = document.createElement('summary');
+          summary.textContent = 'Recorded invocation response (exact JSON)';
           const output = document.createElement('pre');
           output.className = 'native-output';
-          const encoded = JSON.stringify(part, null, 2);
-          output.textContent = encoded.length <= 131072 ? encoded : 'Output exceeds display limit; retrieve the invocation record.';
-          answer.appendChild(output);
+          output.textContent = recorded.length <= 131072 ? recorded : 'Recorded response exceeds display limit; retrieve the invocation record.';
+          details.append(summary, output);
+          answer.appendChild(details);
         }
         status.textContent = 'Completed';
       } else {
@@ -286,19 +290,22 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
   form.addEventListener('submit', async event => {
     event.preventDefault();
     event.stopImmediatePropagation();
-    const text = input.value.trim();
-    if (!text || !ready || busy || (saved && !saved.terminal)) return;
+    const text = schema ? input.value : input.value.trim();
+    if (!text.trim() || !ready || busy || (saved && !saved.terminal)) return;
     validation.textContent = '';
-    let domainInput;
+    let inputWire;
     if (schema) {
       busy = true;
       send.disabled = true;
       try {
         JSON.parse(text);
         const response = await fetch('/api/input-validation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: text});
-        const body = await response.json();
-        if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Check the declared input schema');
-        domainInput = {messages: [], apx_data_parts: [body]};
+        const partWire = await response.text();
+        if (!response.ok) {
+          const body = JSON.parse(partWire);
+          throw new Error(typeof body.detail === 'string' ? body.detail : 'Check the declared input schema');
+        }
+        inputWire = '{"messages":[],"apx_data_parts":[' + partWire + ']}';
       } catch (error) {
         validation.textContent = 'Request needs correction: ' + error.message;
         busy = false;
@@ -307,8 +314,11 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       }
       busy = false;
     }
-    saved = {session, request: {id: crypto.randomUUID(), session_id: session,
-      input: domainInput || {messages: [{role: 'user', content: text}]}, background: true, stream: true},
+    const request = {id: crypto.randomUUID(), session_id: session, background: true, stream: true};
+    inputWire = inputWire || JSON.stringify({messages: [{role: 'user', content: text}]});
+    // Preserve the server's numeric JSON beside its digest, including in saved retries.
+    const requestWire = JSON.stringify(request).slice(0, -1) + ',"input":' + inputWire + '}';
+    saved = {session, request, requestWire, userText: text,
       cursor: 0, events: [], terminal: false};
     restoring = false;
     persist();

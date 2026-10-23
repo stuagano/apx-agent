@@ -855,7 +855,7 @@ The map starts empty for each fresh native request. Domain `input_key` and
 returns detached copies on reads. This is invocation state, not durable
 composite recovery or cross-request artifact storage.
 
-Two optional **Python declaration** arguments use the existing leaf lifecycle:
+Three optional **Python declaration** arguments use the existing leaf lifecycle:
 
 - `LlmAgent(input_preparation=prepare, input_schema=NextInput, input_key="next_input", ...)`:
   a bound native leaf calls `prepare(keyed_state)` before input validation.
@@ -872,14 +872,23 @@ Two optional **Python declaration** arguments use the existing leaf lifecycle:
   Missing, failed, repeated, or stale execution fails. The model's rewritten
   final JSON cannot replace the tool result. A bound native parent leaf uses
   the verified child output; declare `output_tool` on the child host to require
-  execution there. Defaults for both options are `None`.
+  execution there.
+- `LlmAgent(output_schema=Decision, output_status_path=("result", "status"), ...)`:
+  read the native completion event's `domain_status` from that path in the exact
+  validated output JSON. The path has 1-8 ASCII identifier field names, each at
+  most 64 characters, and requires `output_schema`. Missing/non-object path
+  segments and unsupported status values record null; no fallback or payload
+  mutation occurs. Use emitted JSON keys, including schema aliases when present.
+  This is trusted Python declaration metadata, not invocation input or a TOML
+  field. All three options default to `None`; the status path default reads the
+  top-level `status` field.
 
 The existing SDK event stream now includes `agent.step.completed` only after
 typed validation (and remote record/events readback). Its allowlisted payload
 contains `step`, `location` (`local`/`remote`), `invocation_id`,
 `transport_sender`, `logical_predecessor`, `transport_status="completed"`,
 `schema_validated=true`, `output_schema`, `output_artifact={artifact_id,sha256}`,
-and nullable `domain_status` from the output's `status` field. Declared input
+and nullable `domain_status` from the declared path (top-level `status` by default). Declared input
 adds `input_schema` and `input_artifact`. Remote completion also includes the
 actual `child_invocation_id`, `parent_invocation_id`, and `readback_verified=true`.
 Local steps have no child ID. Names/statuses are bounded to 128 safe characters;

@@ -160,6 +160,47 @@ class Evidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     amount: int
     status: str
+    result: dict | None = None
+
+
+@pytest.mark.parametrize("location", ["local", "remote"])
+@pytest.mark.parametrize("path,payload,expected", [
+    (None, {"status": "completed", "result": {"status": "not_ready"}}, "completed"),
+    (("result", "status"), {"status": "completed", "result": {"status": "not_ready"}}, "not_ready"),
+    (("decision", "recommendation", "status"), {"decision": {"recommendation": {"status": "evidence_gap"}}}, "evidence_gap"),
+    (("result", "status"), {"status": "completed"}, None),
+    (("result", "status"), {"result": None}, None),
+    (("result", "status"), {"result": {"status": "unsafe status"}}, None),
+])
+def test_declared_nested_domain_status_is_bounded_and_does_not_change_artifact(location, path, payload, expected):
+    from apx_agent._native_remote import emit_native_step
+
+    agent = LlmAgent(name="step", output_schema=Evidence, output_status_path=path)
+    part = {"kind": "data", "data": payload, "metadata": {"artifact_id": "actual", "sha256": "a" * 64}}
+    original = deepcopy(part)
+    events = []
+    child = {"id": "actual-child", "parent_invocation_id": "actual-parent",
+             "child_invocation_url": "https://child.example/api/invocations/actual-child"} if location == "remote" else None
+    token = _NATIVE_INVOCATION.set({"id": "actual-parent", "sender": "fleet", "emit": events.append})
+    try:
+        emit_native_step(agent, part, None, child, "predecessor")
+    finally:
+        _NATIVE_INVOCATION.reset(token)
+    assert events[0]["domain_status"] == expected
+    assert events[0]["location"] == location
+    assert events[0]["transport_status"] == "completed"
+    assert part == original
+
+
+@pytest.mark.parametrize("path", [(), [], ("",), ("unsafe.name",), ("x" * 65,), (1,), ("status",) * 9])
+def test_output_status_path_rejects_invalid_declarations(path):
+    with pytest.raises(ValueError, match="output_status_path"):
+        LlmAgent(output_schema=Evidence, output_status_path=path)
+
+
+def test_output_status_path_requires_typed_output():
+    with pytest.raises(ValueError, match="output_status_path"):
+        LlmAgent(output_status_path=("status",))
 
 
 class HopInput(BaseModel):
@@ -204,7 +245,10 @@ def chain(execution, monkeypatch, tmp_path):  # noqa: F811
             consumed.append((name, deepcopy(packet)))
             principals.append(principal)
             amount = packet["amount"] if name == "intelligence" else packet["predecessor"]["data"]["amount"]
-            return json.dumps({"amount": amount + 1, "status": "not_ready"})
+            payload = {"amount": amount + 1, "status": "not_ready"}
+            if controls.get("nested_status"):
+                payload["result"] = {"status": "evidence_gap"}
+            return json.dumps(payload)
 
         return LlmAgent(name=name, tools=[record], input_schema=schema, input_key=key,
                         output_schema=Evidence, output_key=name, output_tool="record")
@@ -330,6 +374,22 @@ def test_remote_invalid_output_never_publishes_success_or_calls_next_child(chain
     assert [name for name, _ in chain.consumed] == ["intelligence", "calibrate"]
     steps = [event for event in chain_events(chain, body["id"]) if event["type"] == "agent.step.completed"]
     assert [step["step"] for step in steps] == ["intelligence"]
+
+
+def test_three_leaf_chain_reports_declared_nested_status_for_local_and_remote_outputs(chain):
+    chain.controls["nested_status"] = True
+    declaration = LlmAgent(output_schema=Evidence, output_status_path=("result", "status"))
+    for leaf in chain.root._agents:
+        leaf._output_status_path = declaration._output_status_path
+    body = chain_request()
+    response = chain.clients["fleet"].post("/api/invocations", json=body, headers=headers())
+    assert response.status_code == 200, response.text
+    steps = [event for event in chain_events(chain, body["id"]) if event["type"] == "agent.step.completed"]
+    assert [step["location"] for step in steps] == ["local", "remote", "remote"]
+    assert all(step["domain_status"] == "evidence_gap" and step["transport_status"] == "completed" for step in steps)
+    part = response.json()["output"]["messages"][-1]["additional_kwargs"]["apx_data_parts"][0]
+    assert part == native_data_part(Evidence, part["data"], part)
+    assert part["data"]["result"] == {"status": "evidence_gap"}
 
 
 @pytest.mark.parametrize("failure", ["skip", "readback_fail", "timeout"])
