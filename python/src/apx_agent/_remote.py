@@ -375,6 +375,9 @@ class RemoteDatabricksAgent(BaseAgent):
         Maximum continuation rounds before raising. Defaults to 10.
     """
 
+    # The peer's DurableAgentServer endpoint, read from its card (#980).
+    _durable_url: str | None = None
+
     def __init__(
         self,
         card_url: str,
@@ -394,8 +397,6 @@ class RemoteDatabricksAgent(BaseAgent):
         self._max_continuations = max_continuations
         self._card: AgentCard | None = None
         self._last_http_url = f"{self._base_url}/invocations"
-        # The peer's DurableAgentServer endpoint, from its card (#980).
-        self._durable_url: str | None = None
 
     # ------------------------------------------------------------------
     # Factory methods
