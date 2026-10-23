@@ -377,6 +377,23 @@ def test_agents_deploy_routes_all_four_rows(
         assert payload.get("deployment_backend") != "apps_api"
 
 
+def test_apps_api_honors_declared_deploy_app_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """[tool.apx.deploy] app_name wins over the agent name (the agent name is a tool name)."""
+    from apx_agent.cli import _resolve_project_app_name
+
+    root = _doctor_project(
+        tmp_path, "inspector", deploy='\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n',
+        bundle=None, agent=LLM.format(name="inspector"),
+    )
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + '\n[tool.apx.deploy]\napp_name = "mcp-inspector"\n')
+    assert _resolve_project_app_name(root) == "mcp-inspector"
+    monkeypatch.chdir(root)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--dry-run", "--json-output"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["app_name"] == "mcp-inspector"
+
+
 def test_apps_api_name_is_not_agent_bricks_prefixed(tmp_path: Path) -> None:
     from apx_agent.cli import _resolve_project_app_name
 

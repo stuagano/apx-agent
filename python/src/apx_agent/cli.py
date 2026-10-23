@@ -7616,7 +7616,7 @@ def _emit_apps_deploy_plan(
         assert config is not None and config.deploy is not None
         if vars or secret_env_pairs or no_run:
             raise click.ClickException("Apps API deployment does not support Bundle --var, --secret-env, or --no-run.")
-        app_name = config.name
+        app_name = _apps_api_app_name(cwd, config.name)
         bundle_key = config.name
         doc: dict[str, Any] = {}
         placement = f"App Space {config.deploy.space}" if config.deploy.space else "dedicated"
@@ -10291,6 +10291,16 @@ def _resolve_project_uc_name(cwd: Path) -> str | None:
     return None
 
 
+def _apps_api_app_name(cwd: Path, agent_name: str) -> str:
+    """The Apps API App name: ``[tool.apx.deploy] app_name`` when declared, else the
+    agent name. The agent name is also a peer's tool name, so it can stay snake_case
+    while the App keeps an ``mcp-`` name for External MCP discovery."""
+    import tomllib
+
+    deploy = tomllib.loads((cwd / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("deploy", {})
+    return deploy["app_name"] if "app_name" in deploy else agent_name
+
+
 def _resolve_project_app_name(
     cwd: Path, *, bundle_target: str | None = None, profile: str | None = None,
 ) -> str:
@@ -10301,7 +10311,7 @@ def _resolve_project_app_name(
         config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
         # Apps API keeps the declared name. Only the Agent Bricks path adds its prefix.
         if config is not None and config.deploy is not None and config.deploy.backend == "apps_api":
-            return config.name
+            return _apps_api_app_name(cwd, config.name)
         if config is not None and config.target == "durable_agent_server" and (config.deploy is None or config.deploy.space is None):
             return compile_native_app(config)["name"]
     if bundle_target is not None:
@@ -10609,7 +10619,7 @@ def _deploy_apps_impl(
         assert effective_config is not None and effective_config.deploy is not None
         _preflight_databricks_cli()
         _preflight_apps(cwd, native=True, durable=True)
-        app_name = app_name_override or effective_config.name
+        app_name = app_name_override or _apps_api_app_name(cwd, effective_config.name)
         from ._apps_authorization import compile_authorization_plan, read_app_family_permissions, require_workspace_scope_allowlist
         from ._agents import LlmAgent
 
