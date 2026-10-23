@@ -1,6 +1,6 @@
 # Design: `agent.toml` is the platform's source of truth
 
-**Status:** sub-projects 1–2 implemented (#984); 3a proposed · **Date:** 2026-10-19
+**Status:** sub-projects 1–2 (#984) and 3a (#990) implemented; 3b-1 proposed · **Date:** 2026-10-19
 
 ## Intent
 
@@ -35,7 +35,8 @@ Success means:
 3. **Remove `[tool.apx.agent]`**, in four PRs:
    - **3a.** Homes for the last fields (`[tool.apx.deploy]`, `examples=`) and
      `apx-agent agents migrate-config`.
-   - **3b.** Every reader and the scaffold/YAML generator use the new homes.
+   - **3b.** Readers and generators use the new homes, in three PRs: 3b-1 CLI
+     metadata, 3b-2 agent-setting readers, 3b-3 scaffold and YAML generation.
    - **3c.** Migrate the in-repo projects with `migrate-config`.
    - **3d.** `[tool.apx.agent]` is an error naming `migrate-config`, as #944
      did for `[[tool.apx.tools]]`. `template =` and `module =` are removed.
@@ -334,6 +335,91 @@ These are errors:
   - A forced read-back mismatch restores the file.
 - **Gate:** `make check` and pre-commit on the changed files. The existing
   suite passes unchanged.
+
+## Sub-project 3b-1: homes for CLI metadata
+
+`_read_apx_agent_config` (cli.py) returns `[tool.apx.agent]` as a flat dict,
+merged with the gitignored `.apx.local`. About 30 call sites read keys from it
+that aren't `AgentConfig` fields:
+
+- `profile` and `experiment`, used by the dev loop;
+- `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`
+  and `tools_table`, used by UC registration, supervisor and publishing.
+
+These run before `agent.py` is imported, so they get tables rather than agent
+settings.
+
+### Homes
+
+| Key | Home |
+|---|---|
+| `profile`, `experiment` | top-level `[tool.apx]` (and `.apx.local` `[tool.apx]`) |
+| `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`, `tools_table` | `[tool.apx.deploy]` |
+| every other key | unchanged here; agent-setting readers move in 3b-2 |
+
+### The reader
+
+- **Same name and result.** `_read_apx_agent_config` keeps its name and its
+  flat-dict result, so its call sites don't change.
+- **Allow-lists.** It reads only the keys above from each new table. The older
+  `[tool.apx.deploy]` keys (`target = "apps"`, `bundle_name`, `app_name`) are
+  never read. In particular `target` must not land in the dict's `target`
+  key, which `_detect_target` reads as the runtime.
+- **Precedence**, lowest to highest:
+  1. `[tool.apx.agent]`;
+  2. the new tables;
+  3. `.apx.local`, both `[tool.apx]` and, until 3d, its old `[tool.apx.agent]`
+     table.
+- **Conflicts.** A key set in both `[tool.apx.agent]` and its new home with
+  different values fails:
+  `{key} is declared in both [tool.apx.agent] and {home} with different values; keep {home}.`
+
+### Writers
+
+`_save_to_pyproject` currently replaces `key = …` with a regex across the whole
+file, so it can rewrite a same-named key in another table. The replacement
+edits only inside its target section, and creates the section if it's missing:
+
+- the profile picker writes `profile` to `.apx.local` `[tool.apx]`;
+- supervisor-create writes `supervisor_id` to `[tool.apx.deploy]`.
+
+### `migrate-config`
+
+The keys above stop being "remove by hand":
+
+- the registration keys move to `[tool.apx.deploy]`;
+- `profile` and `experiment` move to `[tool.apx]`.
+
+The read-back now also requires `_read_apx_agent_config`'s dict to be equal
+before and after.
+
+An old `.apx.local` `[tool.apx.agent] profile` is rewritten as `[tool.apx]
+profile`. The file is gitignored, so the command copies it to
+`.apx.local.bak` first.
+
+### Testing
+
+- **Reader:**
+  - each key resolves from its new home, its old home and `.apx.local`;
+  - the precedence order holds;
+  - a conflict fails with the message above;
+  - the old deploy table's `target = "apps"` never reaches `target`;
+  - unknown keys in the new tables are ignored.
+- **Writer:**
+  - the profile picker writes `.apx.local` `[tool.apx]`, creating it if
+    needed;
+  - `supervisor_id` lands in `[tool.apx.deploy]`;
+  - a same-named key in another table is untouched (regression for the
+    whole-file regex).
+- **`migrate-config`:**
+  - `data-triage`'s real `registered_model` moves and the table can be
+    removed;
+  - `profile` and `experiment` move to `[tool.apx]`;
+  - `.apx.local` is migrated and backed up;
+  - the read-back covers the metadata dict.
+- **Real projects:** for every in-repo example, `_read_apx_agent_config`
+  returns the same dict before and after this change.
+- **Gate:** `make check` and pre-commit on the changed files.
 
 ## Out of scope
 
