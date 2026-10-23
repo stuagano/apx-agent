@@ -570,48 +570,50 @@ def _databrickscfg_profiles() -> list[str]:
     return names
 
 
+def _set_toml_key(path: Path, section: str, key: str, value: str) -> None:
+    """Set ``key = "<value>"`` inside ``[section]`` only, creating the section/file if missing."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    line = f'{key} = "{escaped}"\n'
+    lines = path.read_text().splitlines(keepends=True) if path.exists() else []
+    header = f"[{section}]"
+    start = next((i for i, text in enumerate(lines) if text.strip() == header), None)
+    if start is None:
+        prefix = "" if not lines or lines[-1].endswith("\n") else "\n"
+        path.write_text("".join(lines) + prefix + ("\n" if lines else "") + header + "\n" + line)
+        return
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    for i in range(start + 1, end):
+        if pattern.match(lines[i]):
+            lines[i] = line
+            break
+    else:
+        lines.insert(start + 1, line)
+    path.write_text("".join(lines))
+
+
 def _save_to_pyproject(key: str, value: str, *, local: bool = False) -> bool:
-    """Write ``key = "<value>"`` into ``[tool.apx.agent]``.
+    """Write ``key = "<value>"`` into the key's home table (sub-project 3b-1).
 
-    When ``local=True``, writes to ``.apx.local`` (gitignored) instead of
-    ``pyproject.toml``. Use ``local=True`` for personal settings like
-    ``profile`` that should not be committed to version control.
-
-    Returns True on success.
+    ``local=True`` writes ``.apx.local`` ``[tool.apx]`` (gitignored, personal
+    settings like ``profile``). Registration keys go to ``[tool.apx.deploy]``.
+    Anything else still goes to an existing ``[tool.apx.agent]``. Returns True on success.
     """
+    from ._inspection import REGISTRATION_KEYS
+
     if local:
-        target = Path.cwd() / ".apx.local"
-        if not target.exists():
-            # Bootstrap a minimal .apx.local with the required section.
-            target.write_text("[tool.apx.agent]\n")
-        content = target.read_text()
-        if "[tool.apx.agent]" not in content:
-            content += "\n[tool.apx.agent]\n"
-    else:
-        target = Path.cwd() / "pyproject.toml"
-        if not target.exists():
-            return False
-        content = target.read_text()
-        if "[tool.apx.agent]" not in content:
-            return False
-
-    escaped = value.replace('"', '\\"')
-    if re.search(rf'^\s*{re.escape(key)}\s*=', content, re.MULTILINE):
-        content = re.sub(
-            rf'^\s*{re.escape(key)}\s*=.*$',
-            f'{key} = "{escaped}"',
-            content,
-            flags=re.MULTILINE,
-        )
-    else:
-        content = re.sub(
-            r'(\[tool\.apx\.agent\])',
-            f'[tool.apx.agent]\n{key} = "{escaped}"',
-            content,
-        )
-    target.write_text(content)
+        _set_toml_key(Path.cwd() / ".apx.local", "tool.apx", key, value)
+        return True
+    target = Path.cwd() / "pyproject.toml"
+    if not target.exists():
+        return False
+    if key in REGISTRATION_KEYS:
+        _set_toml_key(target, "tool.apx.deploy", key, value)
+        return True
+    if "[tool.apx.agent]" not in target.read_text():
+        return False
+    _set_toml_key(target, "tool.apx.agent", key, value)
     return True
-
 
 def _save_profile_to_pyproject(profile: str) -> bool:
     return _save_to_pyproject("profile", profile, local=True)
@@ -11937,7 +11939,7 @@ def _do_create_supervisor(
             click.echo("  apx-agent agents advertise")
         else:
             click.echo("\nAdd this to your shared pyproject.toml so every agent can advertise with zero args:")
-            click.echo("\n  [tool.apx.agent]")
+            click.echo("\n  [tool.apx.deploy]")
             click.echo(f'  supervisor_id = "{supervisor_id}"')
 
 

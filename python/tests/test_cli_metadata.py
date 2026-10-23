@@ -63,3 +63,42 @@ def test_every_in_repo_example_reads_the_same_as_its_agent_table() -> None:
     for path in sorted(p for p in root.glob("examples/**/pyproject.toml") if ".venv" not in p.parts):
         legacy = tomllib.loads(path.read_text()).get("tool", {}).get("apx", {}).get("agent", {})
         assert _read_apx_agent_config(path) == legacy, path
+
+
+def test_profile_picker_writes_apx_local_tool_apx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent.cli import _save_profile_to_pyproject
+
+    _write(tmp_path, "")
+    monkeypatch.chdir(tmp_path)
+    assert _save_profile_to_pyproject('dev "quoted"') is True
+    local = tomllib.loads((tmp_path / ".apx.local").read_text())
+    assert local == {"tool": {"apx": {"profile": 'dev "quoted"'}}}
+
+
+def test_supervisor_id_lands_in_tool_apx_deploy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent.cli import _save_to_pyproject
+
+    _write(tmp_path, '[tool.apx.deploy]\napp_name = "mcp-x"\n')
+    monkeypatch.chdir(tmp_path)
+    assert _save_to_pyproject("supervisor_id", "sup-1") is True
+    data = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+    assert data["tool"]["apx"]["deploy"] == {"app_name": "mcp-x", "supervisor_id": "sup-1"}
+
+
+def test_writer_never_touches_a_same_named_key_in_another_table(tmp_path: Path) -> None:
+    from apx_agent.cli import _set_toml_key
+
+    path = _write(tmp_path, '[tool.apx]\nprofile = "old"\n\n[tool.apx.metadata]\nprofile = "keep"\n\n[tool.other]\nprofile = "keep"\n')
+    _set_toml_key(path, "tool.apx", "profile", "new")
+    data = tomllib.loads(path.read_text())
+    assert data["tool"]["apx"]["profile"] == "new"
+    assert data["tool"]["apx"]["metadata"] == {"profile": "keep"}
+    assert data["tool"]["other"] == {"profile": "keep"}
+
+
+def test_writer_adds_to_an_existing_section_with_other_keys(tmp_path: Path) -> None:
+    from apx_agent.cli import _set_toml_key
+
+    path = _write(tmp_path, '[tool.apx]\nexperiment = "/e"\n')
+    _set_toml_key(path, "tool.apx", "profile", "dev")
+    assert tomllib.loads(path.read_text())["tool"]["apx"] == {"experiment": "/e", "profile": "dev"}
