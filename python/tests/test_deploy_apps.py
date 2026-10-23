@@ -1151,6 +1151,31 @@ def test_native_deploy_hands_rollout_to_agentbricks(
         assert any(call[:3] == ["apps", "get", "agent-bricks-my-app"] for call in calls)
 
 
+def test_deploy_table_prerequisites_block_before_import(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[tool.apx.deploy] is read with the config, still before agent.py is imported (3a)."""
+    from apx_agent import AgentConfig, LlmAgent
+    from apx_agent._project_gen import generate_project
+    from databricks.sdk.errors import DatabricksError
+
+    (scaffold / "databricks.yml").unlink()
+    generate_project(AgentConfig(name="my-app", target="durable_agent_server",
+                                 memory={"type": "managed", "store_name": "agent-memory"}), scaffold)
+    with open(scaffold / "pyproject.toml", "a") as f:
+        f.write('\n[tool.apx.deploy]\nhost = "apps"\n')
+    calls = _install_subprocess_mock(monkeypatch)
+    ws = MagicMock()
+    ws.api_client.do.side_effect = DatabricksError("hidden backend detail", error_code="FEATURE_DISABLED")
+    monkeypatch.setattr("apx_agent.cli._make_scaffold_workspace_client", lambda profile: ws)
+    loaded = MagicMock(return_value=LlmAgent(name="my-app"))
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", loaded)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--profile", "chosen"])
+    assert result.exit_code != 0
+    loaded.assert_not_called()
+    assert not any(call[:2] in (["bundle", "deploy"], ["bundle", "run"]) for call in calls)
+
+
 @pytest.mark.parametrize("failure", ["feature", "image"])
 def test_agent_prerequisites_block_deployment_before_upload(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch, failure: str,

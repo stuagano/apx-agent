@@ -250,8 +250,8 @@ pyproject sets them, and the generator compiles them to Python.
 [tool.apx.deploy]
 name = "orders-agent"     # optional; defaults to [project].name
 host = "apps"             # apps | model_serving
-space = "shared-space"
-instances = 2             # or [tool.apx.deploy.autoscale] min/max, 1-5
+space = "shared-space"    # an App Space picks compute; without one:
+# instances = 2           #   fixed count, or [tool.apx.deploy.autoscale] min/max, 1-5
 backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
 ```
 

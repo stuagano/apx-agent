@@ -204,8 +204,38 @@ def _patch_handler_signature(
 # ---------------------------------------------------------------------------
 
 
+_AGENT_SECTION = ("tool", "apx", "agent")
+
+
+def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """Merge ``[tool.apx.deploy]`` (name, host, DeployConfig keys) into agent *fields*."""
+    table = data.get("tool", {}).get("apx", {}).get("deploy")
+    if not table:
+        return fields
+    merged = dict(fields)
+    deploy = dict(merged.get("deploy", {}))
+    for key, value in table.items():
+        if key in ("name", "host"):
+            target, label, suffix = merged, key, ""
+        else:
+            target, label, suffix = deploy, f"deploy.{key}", ".deploy"
+        if key in target and target[key] != value:
+            raise ValueError(f"{label} is declared in both [tool.apx.agent{suffix}] and [tool.apx.deploy] "
+                             "with different values; keep [tool.apx.deploy].")
+        target[key] = value
+    if deploy:
+        merged["deploy"] = deploy
+    if "name" not in merged:
+        name = data.get("project", {}).get("name")
+        if name:
+            merged["name"] = name
+    return merged
+
+
 def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str, Any] | None:
-    """AgentConfig fields declared at ``section_path`` in *path*, or None."""
+    """AgentConfig fields declared at ``section_path`` in *path*, or None.
+
+    For the APX section, ``[tool.apx.deploy]`` is folded in (sub-project 3a)."""
     import tomllib
 
     with open(path, "rb") as f:
@@ -214,8 +244,10 @@ def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str,
     for key in section_path:
         section = section.get(key, {})
         if not section:
-            return None
-    fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields}
+            break
+    fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields} if section else {}
+    if section_path == _AGENT_SECTION:
+        fields = _fold_deploy_table(data, fields)
     # Deploy-envelope keys alone do not declare an agent config.
     return fields if fields else None
 

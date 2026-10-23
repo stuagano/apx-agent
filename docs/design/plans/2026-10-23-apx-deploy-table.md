@@ -83,11 +83,11 @@ def _project(tmp_path: Path, body: str) -> Path:
 
 
 def test_deploy_table_alone_builds_a_config(tmp_path: Path) -> None:
-    path = _project(tmp_path, '[tool.apx.deploy]\nhost = "apps"\nspace = "shared"\ninstances = 2\n')
+    path = _project(tmp_path, '[tool.apx.deploy]\nhost = "apps"\ninstances = 2\n')
     config = _load_agent_config(pyproject_path=path)
     assert config is not None
     assert (config.name, config.host) == ("orders-agent", "apps")
-    assert config.deploy is not None and (config.deploy.space, config.deploy.instances) == ("shared", 2)
+    assert config.deploy is not None and config.deploy.instances == 2
 
 
 def test_deploy_table_name_wins_over_project_name(tmp_path: Path) -> None:
@@ -805,8 +805,8 @@ Deploy settings live in their own table, which deploy reads without importing
 [tool.apx.deploy]
 name = "orders-agent"     # optional; defaults to [project].name
 host = "apps"             # apps | model_serving
-space = "shared-space"
-instances = 2             # or [tool.apx.deploy.autoscale] min/max, 1-5
+space = "shared-space"    # an App Space picks compute; without one:
+# instances = 2           #   fixed count, or [tool.apx.deploy.autoscale] min/max, 1-5
 backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
 ```
 

@@ -265,7 +265,8 @@ def _stage_config(project: Path) -> _Loaded | Check:
         data = tomllib.loads((project / "pyproject.toml").read_text())
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return _fail("Config", exc)
-    declared = data.get("tool", {}).get("apx", {}).get("agent")
+    apx = data.get("tool", {}).get("apx", {})
+    declared = apx.get("agent") or apx.get("deploy")
     python_only = declared is None and (project / "agent.py").is_file()
     if declared is None and not python_only:
         return Check("Config", Status.SKIP, "not an apx agent project (no [tool.apx.agent])")
