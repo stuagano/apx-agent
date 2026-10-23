@@ -156,3 +156,18 @@ def test_unused_session_write_routes_are_not_mounted(chat_client: TestClient) ->
     assert chat_client.post("/_apx/api/demo/session/items", params={"session_id": "s"},
                             json={"items": [{"role": "user", "content": "x"}]}).status_code in (404, 405)
     assert chat_client.get("/_apx/api/demo/session", params={"session_id": "s"}).status_code == 404
+
+
+def test_data_inspector_deploys_via_apps_api_keeping_mcp_name() -> None:
+    import tomllib
+
+    root = SRC.parents[1] / "examples" / "data-inspector"
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    deploy = pyproject["tool"]["apx"]["agent"]["deploy"]
+    assert deploy["backend"] == "apps_api"  # Agent Bricks would require an agent-bricks- name
+    module = root / deploy["entrypoint"].replace(".", "/")
+    assert (module / "__main__.py").is_file(), "python -m <entrypoint> must start the host"
+    assert "start_host" in (module / "__main__.py").read_text(encoding="utf-8")
+    assert all((root / rel).exists() for rel in deploy["include"])
+    assert not (root / "app.yml").exists(), "Apps API generates app.yaml and refuses a root manifest"
+    assert pyproject["tool"]["apx"]["deploy"]["app_name"].startswith("mcp-")
