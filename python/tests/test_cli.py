@@ -4701,126 +4701,79 @@ def test_native_execution_requires_completed_assistant(monkeypatch) -> None:
     assert "completed assistant message" in result.detail
 
 
-def test_native_execution_reads_session_back(monkeypatch) -> None:
-    """A completed assistant message must be present in the managed checkpoint."""
-    import io
-    import urllib.request
+def _smoke_store(monkeypatch, *, sessions: list[dict[str, Any]], stored: dict[str, str]) -> None:
+    """Fake the store: ``sessions`` is the listing; ``stored`` maps a session id to its AI text."""
     from types import SimpleNamespace as Message
-
-    from apx_agent import cli
-
-    _stub_execution_token(monkeypatch)
-    seen: dict[str, Any] = {}
-
-    def fake_urlopen(req, timeout=None):
-        seen["session_id"] = json.loads(req.data.decode())["session_id"]
-        body = json.dumps({
-            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}]},
-        }).encode()
-        return io.BytesIO(body)
 
     class _Saver:
         def __init__(self, store: str, *, workspace_client: Any) -> None:
             assert store == "apx-demo-sessions"
-            assert workspace_client.profile == "fevm"
 
         def get_tuple(self, config: dict[str, Any]) -> Any:
-            # The app-auth (unkeyed) thread is still read when no caller-keyed one exists.
-            if config != cli._native_session_thread("demo", seen["session_id"]):
+            text = stored.get(config["configurable"]["thread_id"])
+            if text is None:
                 return None
-            return SimpleNamespace(checkpoint={
-                "channel_values": {"messages": [Message(type="ai", content="pong")]},
-            })
+            assert config["configurable"]["actor_id"] == "actor-" + config["configurable"]["thread_id"]
+            return SimpleNamespace(checkpoint={"channel_values": {"messages": [Message(type="ai", content=text)]}})
+
+    def client(*, profile=None):
+        api = SimpleNamespace(do=lambda method, path, query=None: {"sessions": sessions})
+        return SimpleNamespace(profile=profile, api_client=api)
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", client)
+    monkeypatch.setattr("databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver)
+
+
+def _smoke_answer(monkeypatch, text: str) -> None:
+    import io
+    import urllib.request
+
+    def fake_urlopen(req, timeout=None):
+        body = json.dumps({"output": {"status": "completed", "messages": [{"type": "ai", "content": text}]}}).encode()
+        return io.BytesIO(body)
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda *, profile=None: SimpleNamespace(profile=profile, current_user=SimpleNamespace(me=lambda: SimpleNamespace(id="deployer-id"))))
-    monkeypatch.setattr(
-        "databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver,
-    )
-    result = cli._check_native_execution(
-        "https://app.example.com/", profile="fevm", session_store="apx-demo-sessions",
-        agent_name="demo",
-    )
-    assert result.completed is True
+
+
+def _session(sid: str, when: str) -> dict[str, Any]:
+    return {"session_id": sid, "actor_id": "actor-" + sid, "last_activity_time": when}
+
+
+def test_native_execution_reads_session_back(monkeypatch) -> None:
+    """The SDK namespaces session ids by caller, so the smoke finds the session
+    the invocation just wrote among the store's recently active ones (#985)."""
+    from apx_agent import cli
+
+    _stub_execution_token(monkeypatch)
+    _smoke_answer(monkeypatch, "pong")
+    _smoke_store(monkeypatch, sessions=[_session("other", "2999-01-01T00:00:00Z"), _session("written", "2999-01-01T00:00:01Z")],
+                 stored={"other": "unrelated", "written": "pong"})
+    result = cli._check_native_execution("https://app.example.com/", profile="fevm", session_store="apx-demo-sessions")
+    assert result.completed is True, result.detail
     assert result.readback is True
     assert "secret-token-value" not in result.detail
 
 
-def test_native_execution_reads_the_user_keyed_thread(monkeypatch) -> None:
-    """Through the Apps proxy the handler keys the thread by the caller (#985)."""
-    import io
-    import urllib.request
-    from types import SimpleNamespace as Message
-
+def test_native_execution_ignores_sessions_from_before_the_smoke(monkeypatch) -> None:
+    """An older session with the same answer is not proof this invocation persisted."""
     from apx_agent import cli
-    from apx_agent._durable_agent import session_thread_config
 
     _stub_execution_token(monkeypatch)
-    seen: dict[str, Any] = {}
-
-    def fake_urlopen(req, timeout=None):
-        seen["session_id"] = json.loads(req.data.decode())["session_id"]
-        body = json.dumps({
-            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}]},
-        }).encode()
-        return io.BytesIO(body)
-
-    class _Saver:
-        def __init__(self, store: str, *, workspace_client: Any) -> None:
-            pass
-
-        def get_tuple(self, config: dict[str, Any]) -> Any:
-            # Only the thread the handler wrote: [agent, caller, session].
-            if config != session_thread_config("demo", seen["session_id"], "deployer-id"):
-                return None
-            return SimpleNamespace(checkpoint={
-                "channel_values": {"messages": [Message(type="ai", content="pong")]},
-            })
-
-    def client(*, profile=None):
-        return SimpleNamespace(profile=profile, current_user=SimpleNamespace(me=lambda: SimpleNamespace(id="deployer-id")))
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr("databricks.sdk.WorkspaceClient", client)
-    monkeypatch.setattr("databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver)
-    result = cli._check_native_execution(
-        "https://app.example.com", profile="fevm", session_store="apx-demo-sessions", agent_name="demo",
-    )
-    assert result.completed is True, result.detail
-    assert result.readback is True
+    _smoke_answer(monkeypatch, "pong")
+    _smoke_store(monkeypatch, sessions=[_session("stale", "2000-01-01T00:00:00Z")], stored={"stale": "pong"})
+    result = cli._check_native_execution("https://app.example.com", profile=None, session_store="apx-demo-sessions")
+    assert result.completed is False
+    assert "did not contain the assistant message" in result.detail
 
 
 def test_native_execution_fails_when_session_readback_misses(monkeypatch) -> None:
     """Answering without a readable checkpoint is not an execution proof."""
-    import io
-    import urllib.request
-
     from apx_agent import cli
 
     _stub_execution_token(monkeypatch)
-
-    def fake_urlopen(req, timeout=None):
-        body = json.dumps({
-            "output": {"status": "completed", "messages": [{"role": "assistant", "content": "pong"}]},
-        }).encode()
-        return io.BytesIO(body)
-
-    class _Saver:
-        def __init__(self, store: str, *, workspace_client: Any) -> None:
-            assert workspace_client.profile is None
-
-        def get_tuple(self, config: dict[str, Any]) -> None:
-            return None
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda *, profile=None: SimpleNamespace(profile=profile, current_user=SimpleNamespace(me=lambda: SimpleNamespace(id="deployer-id"))))
-    monkeypatch.setattr(
-        "databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver,
-    )
-    result = cli._check_native_execution(
-        "https://app.example.com", profile=None, session_store="apx-demo-sessions",
-        agent_name="demo",
-    )
+    _smoke_answer(monkeypatch, "pong")
+    _smoke_store(monkeypatch, sessions=[_session("written", "2999-01-01T00:00:00Z")], stored={})
+    result = cli._check_native_execution("https://app.example.com", profile=None, session_store="apx-demo-sessions")
     assert result.completed is False
     assert "did not contain the assistant message" in result.detail
 
@@ -10051,44 +10004,17 @@ def test_interactive_resolve_allows_manual_catalog_and_schema(monkeypatch):
 
 
 def test_native_execution_reads_back_a_user_scoped_session(monkeypatch) -> None:
-    """A request-user agent keys its checkpoint by [agent, user id, session] (the
-    durable handler's scope). The smoke runs as the deployer, so it must read that
-    key, not the unscoped one (live: every user-auth deploy failed the gate)."""
+    """A request-user agent's session id is namespaced by the SDK from the
+    request's host, app and principal, which the deployer cannot rebuild (live:
+    every user-auth deploy failed the gate, #985). The smoke still finds it."""
     import hashlib
-    import io
-    import urllib.request
-    from types import SimpleNamespace as Message
 
     from apx_agent import cli
 
     _stub_execution_token(monkeypatch)
-    seen: dict[str, Any] = {}
-
-    def fake_urlopen(req, timeout=None):
-        seen["session_id"] = json.loads(req.data.decode())["session_id"]
-        return io.BytesIO(json.dumps({
-            "output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}]},
-        }).encode())
-
-    class _Saver:
-        def __init__(self, store: str, *, workspace_client: Any) -> None:
-            pass
-
-        def get_tuple(self, config: dict[str, Any]) -> Any:
-            scoped = hashlib.sha256(json.dumps(["demo", "u-123", seen["session_id"]]).encode()).hexdigest()
-            assert config["configurable"]["thread_id"] == scoped
-            return SimpleNamespace(checkpoint={
-                "channel_values": {"messages": [Message(type="ai", content="pong")]},
-            })
-
-    me = SimpleNamespace(me=lambda: SimpleNamespace(id="u-123"))
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr("databricks.sdk.WorkspaceClient",
-                        lambda *, profile=None: SimpleNamespace(profile=profile, current_user=me))
-    monkeypatch.setattr("databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver", _Saver)
-    result = cli._check_native_execution(
-        "https://app.example.com/", profile="fevm", session_store="apx-demo-sessions",
-        agent_name="demo", user_scoped=True,
-    )
+    _smoke_answer(monkeypatch, "pong")
+    namespaced = hashlib.sha256(b"host,workspace,app,principal,session,<sid>").hexdigest()
+    _smoke_store(monkeypatch, sessions=[_session(namespaced, "2999-01-01T00:00:00Z")], stored={namespaced: "pong"})
+    result = cli._check_native_execution("https://app.example.com/", profile="fevm", session_store="apx-demo-sessions")
     assert result.completed is True, result.detail
     assert result.readback is True
