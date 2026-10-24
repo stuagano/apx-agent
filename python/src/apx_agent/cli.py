@@ -4271,9 +4271,9 @@ def _scaffold_apps(
         "tests/test_agent_imports.py": _sub(_SCAFFOLD_APPS_TEST_IMPORT),
     }
     if runtime != "durable_agent_server":
-        # The TOML's generic instructions used to overlay the data/coworker grounding (3b-3c).
-        if template != "base" and not instructions_arg:
-            files["agent.py"] += '\nagent.overlay_instructions("You are a helpful assistant.")\n'
+        # The TOML's generic instructions used to overlay every Apps agent at finalize; keep that
+        # final prompt exactly (3b-3c is a no-behavior-change move).
+        files["agent.py"] += '\nagent.overlay_instructions("You are a helpful assistant.")\n'
         if catalog and schema:
             files["agent.py"] += _sub(_SCAFFOLD_MEMORY_HINT)
     if runtime == "durable_agent_server":

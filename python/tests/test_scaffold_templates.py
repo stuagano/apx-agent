@@ -188,3 +188,26 @@ def test_force_rescaffold_preserves_the_responses_runtime(tmp_path: Path, monkey
     assert CliRunner().invoke(cli.main, args + ["--runtime", "responses_agent"]).exit_code == 0
     assert CliRunner().invoke(cli.main, args + ["--force"]).exit_code == 0
     assert static_agent_setting(tmp_path / "orders" / "agent.py", "target") == "responses_agent"
+
+
+@pytest.mark.parametrize("template", ["base", "data", "coworker"])
+@pytest.mark.parametrize("instructions", [None, "Be terse."])
+def test_final_prompt_after_finalize_matches_main(tmp_path: Path, monkeypatch, template: str,
+                                                   instructions) -> None:
+    # main overlaid the TOML's "You are a helpful assistant." above every Apps agent at finalize
+    # (measured on main: base default doubled; wizard instructions got the preamble above them).
+    from apx_agent._wiring import finalize_agent
+
+    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
+    root = tmp_path / "orders"
+    cli._scaffold_apps(root, "orders", False, "main" if template != "base" else "", "sales" if template != "base" else "",
+                       template=template, instructions=instructions, lakebase=False, runtime="responses_agent")
+    monkeypatch.chdir(root)
+    agent, config = _effective(root)
+    finalize_agent(agent, config, pyproject_path=str(root / "pyproject.toml"))
+    preamble = "You are a helpful assistant.\n\n---\n\n"
+    assert agent._instructions.startswith(preamble)
+    if instructions is not None:
+        assert agent._instructions == preamble + instructions
+    elif template == "base":
+        assert agent._instructions == preamble + "You are a helpful assistant."
