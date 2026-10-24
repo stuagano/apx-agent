@@ -26,7 +26,6 @@ apx-agent = { path = "..", editable = true }
 name = "payroll-coworker"
 description = "Payroll coworker — knows employee compensation, pay runs, and workforce data."
 model = "databricks-claude-sonnet-4-6"
-instructions = "You are a payroll analyst who knows employee compensation, pay runs, and workforce data deeply."
 # ADK-style layout: the user's agent definition lives at top-level
 # ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
 # that imports + wraps it for the Databricks Apps runtime.
@@ -44,11 +43,3 @@ examples = [
 # Declare tools with Python factories in tools/ and import them in agent.py.
 # Pass them to tools=[...] (or extra_tools=[...] for DataAgent).
 # See docs/tools/overview.md. AgentKit's agent.toml is generated at build time.
-
-[tool.apx.agent.memory]
-type = "delta"
-table_name = "serverless_stable_qh44kx_catalog.payroll_demo.apx_payroll_coworker_memory"
-
-[tool.apx.agent.session]
-type = "delta"
-table_name = "serverless_stable_qh44kx_catalog.payroll_demo.apx_payroll_coworker_sessions"
