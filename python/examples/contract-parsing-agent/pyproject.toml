@@ -46,18 +46,6 @@ app-slug = "contract_parsing_agent"
 app-entrypoint = "app:app"
 api-prefix = "/api"
 
-[tool.apx.agent]
-target = "durable_agent_server"
-name = "contract_parsing_agent"
-description = "Extract structured data from contracts — identifies pricing terms, service periods, SLAs, and regulatory clauses from uploaded PDF or text documents"
-model = "databricks-claude-sonnet-4-6"
-module = "agent:agent"
-[tool.apx.agent.deploy]
-space = "your-space"
-
-[tool.apx.agent.session]
-type = "managed"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -67,3 +55,7 @@ build-backend = "hatchling.build"
 # tools/ is a real package.
 packages = ["tools"]
 force-include = { "agent.py" = "agent.py", "app.py" = "app.py", "api.py" = "api.py", "config.py" = "config.py", "extraction.py" = "extraction.py", "models.py" = "models.py", "agent.config.yaml" = "agent.config.yaml" }
+
+[tool.apx.deploy]
+name = "contract_parsing_agent"
+space = "your-space"

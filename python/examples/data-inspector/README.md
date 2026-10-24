@@ -136,13 +136,13 @@ DATABRICKS_CONFIG_PROFILE=my-workspace uv run uvicorn app:app --port 9000 --relo
 
 ### Step 1: Review the deploy declaration
 
-The App runs as a `DurableAgentServer`. `[tool.apx.agent.deploy]` in
+The App runs as a `DurableAgentServer`. `[tool.apx.deploy]` in
 `pyproject.toml` selects the Apps API backend, which keeps the `mcp-` app name
 that External MCP discovery needs. Deploy generates `app.yaml`
 (`python -m agent_server`), so the project has no root manifest:
 
 ```toml
-[tool.apx.agent.deploy]
+[tool.apx.deploy]
 backend = "apps_api"
 entrypoint = "agent_server"
 include = ["databricks_tools_core-0.1.0-py3-none-any.whl"]
