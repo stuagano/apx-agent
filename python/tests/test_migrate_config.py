@@ -334,3 +334,19 @@ def test_a_managed_memory_table_converges(tmp_path: Path) -> None:
                   examples=["Show tables", "Count rows"], memory="managed")
     migration = plan_migration(_write(tmp_path, text), agent)
     assert "memory" not in migration.missing, migration.missing
+
+
+_PERSONA = '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\ninstructions = "You are a helpful assistant."\n'
+
+
+def test_an_instructions_overlay_counts_as_declared(tmp_path: Path) -> None:
+    agent = Agent(name="p", tools=[], instructions="Grounded in main.sales.")
+    agent.overlay_instructions("You are a helpful assistant.")
+    migration = plan_migration(_write(tmp_path, _PERSONA), agent)
+    assert migration.removed_agent_table, migration.missing
+
+
+def test_a_different_overlay_is_still_missing(tmp_path: Path) -> None:
+    agent = Agent(name="p", tools=[], instructions="Grounded.")
+    agent.overlay_instructions("Be terse.")
+    assert plan_migration(_write(tmp_path, _PERSONA), agent).missing == {"instructions": "You are a helpful assistant."}

@@ -510,6 +510,8 @@ class LlmAgent(BaseAgent):
         if overlay.strip() and not getattr(self, "_persona_overlaid", False):
             self._instructions = compose_instructions(base=self._instructions, overlay=overlay)
             self._persona_overlaid = True
+            self._persona_overlay = overlay
+
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""
         from fastapi import Depends  # noqa: PLC0415

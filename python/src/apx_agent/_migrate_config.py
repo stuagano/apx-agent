@@ -99,6 +99,8 @@ def _covered(field: str, value: Any, agent: BaseAgent, after: AgentConfig, targe
     # The project's real name: managed stores derive their store_name from it.
     base = {"name": name} if target is None else {"name": name, "target": target}
     declared = AgentConfig.model_validate({**base, field: value})
+    if field == "instructions" and getattr(agent, "_persona_overlay", None) == value:
+        return True  # overlay_instructions(...) is how agent.py declares a TOML persona (#996)
     if field in _CONSTRUCTOR:
         return getattr(agent, _CONSTRUCTOR[field], None) == getattr(declared, field)
     return getattr(resolve_settings(agent, after), field) == getattr(declared, field)
