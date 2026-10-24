@@ -58,11 +58,16 @@ def test_malformed_apx_local_reads_as_empty(tmp_path: Path) -> None:
     assert _read_apx_agent_config(path)["profile"] == "dev"
 
 
-def test_every_in_repo_example_reads_the_same_as_its_agent_table() -> None:
+def test_every_in_repo_example_reads_its_metadata_from_the_new_homes() -> None:
+    from apx_agent._inspection import DEV_KEYS, REGISTRATION_KEYS
+
     root = Path(__file__).resolve().parents[1]
     for path in sorted(p for p in root.glob("examples/**/pyproject.toml") if ".venv" not in p.parts):
-        legacy = tomllib.loads(path.read_text()).get("tool", {}).get("apx", {}).get("agent", {})
-        assert _read_apx_agent_config(path) == legacy, path
+        apx = tomllib.loads(path.read_text()).get("tool", {}).get("apx", {})
+        deploy = apx.get("deploy", {})
+        expected = {**{k: apx[k] for k in DEV_KEYS if k in apx},
+                    **{k: deploy[k] for k in REGISTRATION_KEYS if k in deploy}}
+        assert _read_apx_agent_config(path) == expected, path
 
 
 def test_profile_picker_writes_apx_local_tool_apx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

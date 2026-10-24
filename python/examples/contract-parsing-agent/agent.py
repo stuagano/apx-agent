@@ -35,4 +35,6 @@ agent = Agent(
         extract_new_contract,
     ],
     sub_agents=_resolve_sub_agents(),
+    description="Extract structured data from contracts — identifies pricing terms, service periods, SLAs, and regulatory clauses from uploaded PDF or text documents",
+    model="databricks-claude-sonnet-4-6",
 )

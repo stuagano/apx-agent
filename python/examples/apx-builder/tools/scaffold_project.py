@@ -113,6 +113,9 @@ from apx_agent import Agent, create_app, {imports_str}
 from chainlit.utils import mount_chainlit
 
 agent = Agent(
+    name="{app_name}",
+    description="{use_case}",
+    model="databricks-claude-sonnet-4-6",
     tools=[
 {tools_str}
     ],
@@ -164,11 +167,8 @@ dependencies = [
     "apx-agent @ git+https://github.com/stuagano/apx-agent.git#subdirectory=python",
 ]
 
-[tool.apx.agent]
+[tool.apx.deploy]
 name = "{app_name}"
-description = "{use_case}"
-model = "databricks-claude-sonnet-4-6"
-url = ""
 
 [build-system]
 requires = ["hatchling"]

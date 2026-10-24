@@ -90,3 +90,4 @@ def _agent_for_import() -> SequentialAgent:
 
 
 agent = _agent_for_import()
+agent.configure(description="Research a 10-K question against a Knowledge Assistant, then write a cited investor brief")

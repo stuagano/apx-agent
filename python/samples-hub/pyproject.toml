@@ -30,28 +30,5 @@ dev = [
 # to reference it (since the App container can't resolve "..").
 apx-agent = { path = "..", editable = true }
 
-[tool.apx.agent]
+[tool.apx.deploy]
 name = "samples-hub"
-description = "Hub that routes to per-schema sample DataAgent Apps (A2A peers)."
-model = "databricks-claude-sonnet-4-6"
-instructions = "Route sample-data questions to the matching specialist sub-agent."
-# ADK-style layout: the user's agent definition lives at top-level
-# ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
-# that imports + wraps it for the Databricks Apps runtime.
-module = "agent:agent"
-
-# Starter prompts shown on the agent's landing page (clickable; fill the chat
-# box so you can edit before sending). Tailor these to your agent's data/tools.
-examples = [
-    "Show me a few sample rows from the data you can access",
-    "What questions can you answer?",
-]
-
-# Declare tools with Python factories in tools/ and import them in agent.py.
-# Pass them to tools=[...] (or extra_tools=[...] for DataAgent).
-# See docs/tools/overview.md. AgentKit's agent.toml is generated at build time.
-
-[tool.apx.agent.session]
-type = "lakebase"
-host = "${LAKEBASE_HOST}"
-database = "samples_hub"

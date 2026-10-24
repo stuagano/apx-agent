@@ -24,34 +24,6 @@ monthly-summary = "scripts.monthly_summary:main"
 # [project].dependencies above is the install source. Bump the @ref
 # in that URL to upgrade; switch to a PyPI pin once apx-agent ships there.
 
-[tool.apx.agent]
-name = "hubspot-complaints-agent"
-description = "Summarizes HubSpot support-ticket complaints by month."
-model = "databricks-claude-sonnet-4-6"
-instructions = "You are a helpful assistant."
-# ADK-style layout: the user's agent definition lives at top-level
-# ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
-# that imports + wraps it for the Databricks Apps runtime.
-module = "agent:agent"
-
-# Starter prompts shown on the agent's landing page (clickable; fill the chat
-# box so you can edit before sending). Tailor these to your agent's data/tools.
-examples = [
-    "Summarize complaints for June 2026",
-    "How does last month's complaint count compare to the month before?",
-    "What are the top complaint themes this quarter?",
-]
-
-# Declare tools with Python factories in tools/ and import them in agent.py.
-# Pass them to tools=[...] (or extra_tools=[...] for DataAgent).
-# See docs/tools/overview.md. AgentKit's agent.toml is generated at build time.
-
-# Uncomment to enable persistent memory (Delta tables auto-created by `uv run quickstart`).
-# Re-run quickstart after changing these table names.
-# [tool.apx.agent.memory]
-# type = "delta"
-# table_name = "placeholder_catalog.placeholder_schema.apx_hubspot_complaints_agent_memory"
-
 [dependency-groups]
 dev = [
     "pytest>=8.0",
@@ -59,3 +31,6 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.apx.deploy]
+name = "hubspot-complaints-agent"

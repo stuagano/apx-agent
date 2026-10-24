@@ -177,3 +177,4 @@ def create_support_agent(*, smoke: bool = False) -> Agent:
 
 
 agent = create_support_agent(smoke=SMOKE_MODE)
+agent.configure(description="Customer-support agent: latest policy + reviews SQL + product-docs search, as the caller")

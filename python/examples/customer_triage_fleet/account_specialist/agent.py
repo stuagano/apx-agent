@@ -8,11 +8,15 @@ APX_SMOKE_MODE=1 swaps workspace-dependent tools for in-process stubs.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import os
 
 from apx_agent import Agent, InMemoryMemoryStore, make_memory_tools, tool
 
-SMOKE_MODE = os.environ.get("APX_SMOKE_MODE", "0") == "1"
+SMOKE_MODE = os.environ.get("APX_SMOKE_MODE") == "1"
+# Placeholder so the agent imports without ACCOUNT_GENIE_SPACE_ID set; the Genie tool fails until it is.
+_GENIE_SPACE_PLACEHOLDER = "$ACCOUNT_GENIE_SPACE_ID"
 
 
 if SMOKE_MODE:
@@ -36,7 +40,7 @@ else:
 
     account_extra_tools = [
         genie_tool(
-            os.environ.get("ACCOUNT_GENIE_SPACE_ID", "$ACCOUNT_GENIE_SPACE_ID"),
+            os.environ.get("ACCOUNT_GENIE_SPACE_ID", _GENIE_SPACE_PLACEHOLDER),
             name="ask_account_data",
             description="Ask a natural-language question about a customer's account.",
         ),
@@ -47,7 +51,7 @@ else:
 
 account_memory_store = InMemoryMemoryStore()
 
-_SEED_MEMORIES: dict[str, list[dict[str, object]]] = {
+_SEED_MEMORIES: dict[str, list[dict[str, Any]]] = {
     "user:alice": [
         {"content": "Prefers email over SMS for account notifications.",
          "tags": ("preference", "channel")},
@@ -89,10 +93,7 @@ account_memory_tools = make_memory_tools(
 agent = Agent(
     name="account_specialist",
     description=(
-        "Handles account access: password resets, email changes, and login "
-        "issues, personalized from remembered user preferences. Call for "
-        "questions about accessing or changing account settings. Returns account "
-        "guidance and live account-record lookups."
+        "Handles account access, password resets, email changes, and user preferences. Has semantic memory."
     ),
     instructions=(
         "You're an account specialist. Help with password resets, email changes, "
@@ -109,4 +110,5 @@ agent = Agent(
         "Use ask_account_data for live account-record lookups via the Genie space."
     ),
     tools=[*account_memory_tools, *account_extra_tools],
+    model="databricks-claude-sonnet-4-6",
 )

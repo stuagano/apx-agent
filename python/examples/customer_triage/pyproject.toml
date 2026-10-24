@@ -22,21 +22,6 @@ quickstart = "scripts.quickstart:main"
 [tool.uv.sources]
 apx-agent = { path = "../..", editable = true }
 
-[tool.apx.agent]
-name = "customer_triage"
-description = "Customer support triage — classifies queries and hands off to specialists."
-model = "databricks-claude-sonnet-4-6"
-max_iterations = 8
-# Module path to the apx-agent Agent — used by `apx-agent deploy` and friends.
-# ADK-style layout: ``agent`` is exported by top-level ``agent.py``.
-module = "agent:agent"
-
-[tool.apx.deploy]
-# Apps-target metadata. `apx-agent deploy --target apps` reads this block.
-target = "apps"
-bundle_name = "customer-triage"
-app_name = "customer-triage"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -48,3 +33,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent_server", "scripts"]
+
+[tool.apx.deploy]
+target = "apps"
+bundle_name = "customer-triage"
+app_name = "customer-triage"
+name = "customer_triage"

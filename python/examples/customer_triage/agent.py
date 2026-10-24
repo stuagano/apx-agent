@@ -10,6 +10,8 @@ workspaces without the prerequisite UC / Genie / Vector Search resources.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import os
 
 from apx_agent import (
@@ -20,7 +22,9 @@ from apx_agent import (
     tool,
 )
 
-SMOKE_MODE = os.environ.get("APX_SMOKE_MODE", "0") == "1"
+SMOKE_MODE = os.environ.get("APX_SMOKE_MODE") == "1"
+# Placeholder so the agent imports without ACCOUNT_GENIE_SPACE_ID set; the Genie tool fails until it is.
+_GENIE_SPACE_PLACEHOLDER = "$ACCOUNT_GENIE_SPACE_ID"
 
 
 if SMOKE_MODE:
@@ -141,7 +145,7 @@ else:
     ]
     account_extra_tools = [
         genie_tool(
-            os.environ.get("ACCOUNT_GENIE_SPACE_ID", "$ACCOUNT_GENIE_SPACE_ID"),
+            os.environ.get("ACCOUNT_GENIE_SPACE_ID", _GENIE_SPACE_PLACEHOLDER),
             name="ask_account_data",
             description="Ask a natural-language question about a customer's account.",
         ),
@@ -151,7 +155,7 @@ else:
 account_memory_store = InMemoryMemoryStore()
 
 
-_SEED_MEMORIES: dict[str, list[dict[str, object]]] = {
+_SEED_MEMORIES: dict[str, list[dict[str, Any]]] = {
     "user:alice": [
         {"content": "Prefers email over SMS for account notifications.",
          "tags": ("preference", "channel")},
@@ -269,4 +273,6 @@ agent = RouterAgent(
         "account_specialist for password, login, email, and preferences; "
         "other for greetings or anything outside those topics."
     ),
+    description="Customer support triage — classifies queries and hands off to specialists.",
+    model="databricks-claude-sonnet-4-6",
 )

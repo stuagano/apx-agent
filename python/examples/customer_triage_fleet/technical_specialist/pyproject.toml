@@ -18,20 +18,15 @@ quickstart = "scripts.quickstart:main"
 [tool.uv.sources]
 apx-agent = { path = "../../..", editable = true }
 
-[tool.apx.agent]
-name = "technical_specialist"
-description = "Handles technical support, error messages, outages, and integration issues."
-model = "databricks-claude-sonnet-4-6"
-module = "agent:agent"
-
-[tool.apx.deploy]
-target = "apps"
-bundle_name = "technical-specialist"
-app_name = "technical-specialist"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent_server"]
+
+[tool.apx.deploy]
+target = "apps"
+bundle_name = "technical-specialist"
+app_name = "technical-specialist"
+name = "technical_specialist"

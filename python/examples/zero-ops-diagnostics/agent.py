@@ -213,4 +213,7 @@ agent = RouterAgent(
         "naming compute type, prefer cost (spend rollup) — they can drill into "
         "dbsql or jobs from there."
     ),
+    description="Self-serve expensive workload triage: DBSQL, Jobs/Spark, and billing cost.",
+    model="databricks-claude-sonnet-4-6",
 )
+agent.overlay_instructions("You are a helpful assistant.")

@@ -43,38 +43,6 @@ app-slug = "data_triage_agent"
 app-entrypoint = "app:app"
 api-prefix = "/api"
 
-[tool.apx.agent]
-name = "data_triage_agent"
-description = "Investigate why data is missing from Databricks tables or APIs — traces lineage, checks job failures, and inspects source code"
-model = "system.ai.claude-sonnet-4-6"
-module = "agent:agent"
-target = "durable_agent_server"
-url = ""
-registry = ""
-registered_model = "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"
-
-# No managed session store: the agent is a KeywordRouter (not an LlmAgent, which
-# a managed store currently requires) and the investigation pipeline is
-# stateless per request. Durable provides native /invocations with invocation
-# events persisted in the runtime store; request-user invocations are not
-# recovered in the background (no background recovery).
-
-[tool.apx.agent.deploy]
-# Apps API keeps the mcp- app name (External MCP discovery) on a dedicated App;
-# the Agent Bricks backend requires an agent-bricks- name.
-backend = "apps_api"
-entrypoint = "app"
-include = ["app.py", "api.py", "prompts.py", "integrations", "databricks_tools_core-0.1.0-py3-none-any.whl"]
-# DATA_INSPECTOR_URL (the data-inspector App's URL) is workspace-specific:
-# pass it at deploy time with --env DATA_INSPECTOR_URL=https://<app-url>.
-
-[tool.apx.deploy]
-target = "apps"
-# App name MUST start with 'mcp-' for Databricks External MCP discovery to
-# pick up /mcp on the deployed Apps URL.
-bundle_name = "mcp-data-triage-agent"
-app_name = "mcp-data-triage-agent"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -89,3 +57,13 @@ force-include = { "agent.py" = "agent.py", "tools.py" = "tools.py", "app.py" = "
 [tool.pytest.ini_options]
 testpaths = ["tests", "integrations/jira/tests"]
 pythonpath = ["."]
+
+[tool.apx.deploy]
+target = "apps"
+bundle_name = "mcp-data-triage-agent"
+app_name = "mcp-data-triage-agent"
+name = "data_triage_agent"
+backend = "apps_api"
+entrypoint = "app"
+include = ["app.py", "api.py", "prompts.py", "integrations", "databricks_tools_core-0.1.0-py3-none-any.whl"]
+registered_model = "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"

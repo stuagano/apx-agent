@@ -34,14 +34,6 @@ app-slug = "shortage_intelligence_agent"
 app-entrypoint = "app:app"
 api-prefix = "/api"
 
-[tool.apx.agent]
-name = "shortage_intelligence_agent"
-description = "Detects shortage signals in demand data, validates against market reports, checks live vendor pricing, and delivers actionable reports to sourcing and sales teams"
-model = "databricks-claude-opus-4-7"
-module = "agent:agent"
-url = ""
-registry = ""
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -55,3 +47,6 @@ force-include = { "agent.py" = "agent.py", "tools.py" = "tools.py", "app.py" = "
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.apx.deploy]
+name = "shortage_intelligence_agent"

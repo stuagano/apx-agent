@@ -10,7 +10,8 @@ load_default_skills()
 
 agent = Agent(
     name="discovery",
-    description="Discover a nonprofit's current systems and recommend a governed technology blueprint.",
+    description="Discover a nonprofit's current systems and recommend a governed technology blueprint",
     instructions=build_system_prompt(),
     tools=active_tools(),
+    model="databricks-claude-sonnet-4-6",
 )

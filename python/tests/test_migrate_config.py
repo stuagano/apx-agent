@@ -334,3 +334,43 @@ def test_a_managed_memory_table_converges(tmp_path: Path) -> None:
                   examples=["Show tables", "Count rows"], memory="managed")
     migration = plan_migration(_write(tmp_path, text), agent)
     assert "memory" not in migration.missing, migration.missing
+
+
+_PERSONA = '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\ninstructions = "You are a helpful assistant."\n'
+
+
+def test_an_instructions_overlay_counts_as_declared(tmp_path: Path) -> None:
+    agent = Agent(name="p", tools=[], instructions="Grounded in main.sales.")
+    agent.overlay_instructions("You are a helpful assistant.")
+    migration = plan_migration(_write(tmp_path, _PERSONA), agent)
+    assert migration.removed_agent_table, migration.missing
+
+
+def test_a_different_overlay_is_still_missing(tmp_path: Path) -> None:
+    agent = Agent(name="p", tools=[], instructions="Grounded.")
+    agent.overlay_instructions("Be terse.")
+    assert plan_migration(_write(tmp_path, _PERSONA), agent).missing == {"instructions": "You are a helpful assistant."}
+
+
+def test_a_router_root_takes_an_overlay_like_finalize_did(tmp_path: Path) -> None:
+    from apx_agent import RouterAgent
+
+    router = RouterAgent(agents=[Agent(name="leaf", tools=[], description="d")], instructions="Route.")
+    router.overlay_instructions("You are a helpful assistant.")
+    assert router._instructions == "You are a helpful assistant.\n\n---\n\nRoute."
+    assert plan_migration(_write(tmp_path, _PERSONA), router).removed_agent_table
+
+
+def test_an_overlay_on_an_agent_without_instructions_is_an_error() -> None:
+    from apx_agent import LoopAgent
+
+    with pytest.raises(TypeError, match="LoopAgent has no instructions to overlay"):
+        LoopAgent(agent=Agent(name="leaf", tools=[])).overlay_instructions("Be terse.")
+
+
+def test_a_target_declared_on_the_agent_validates_its_session(tmp_path: Path) -> None:
+    session = {"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "p"}
+    text = ('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\n\n[tool.apx.agent.session]\n'
+            'type = "lakebase"\nhost = "${LAKEBASE_HOST}"\ndatabase = "p"\n')
+    agent = Agent(name="p", tools=[], target="responses_agent", session=session)
+    assert plan_migration(_write(tmp_path, text), agent).removed_agent_table

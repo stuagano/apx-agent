@@ -163,7 +163,7 @@ def test_data_inspector_deploys_via_apps_api_keeping_mcp_name() -> None:
 
     root = SRC.parents[1] / "examples" / "data-inspector"
     pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    deploy = pyproject["tool"]["apx"]["agent"]["deploy"]
+    deploy = pyproject["tool"]["apx"]["deploy"]
     assert deploy["backend"] == "apps_api"  # Agent Bricks would require an agent-bricks- name
     module = root / deploy["entrypoint"].replace(".", "/")
     assert (module / "__main__.py").is_file(), "python -m <entrypoint> must start the host"
@@ -175,5 +175,5 @@ def test_data_inspector_deploys_via_apps_api_keeping_mcp_name() -> None:
     assert forced <= staged_by_default | set(deploy["include"]), forced
     assert not (root / "app.yml").exists(), "Apps API generates app.yaml and refuses a root manifest"
     # The declared app_name keeps mcp-; the agent name (data-triage's tool name) stays.
-    assert pyproject["tool"]["apx"]["deploy"]["app_name"].startswith("mcp-")
-    assert pyproject["tool"]["apx"]["agent"]["name"] == "data_inspector"
+    assert deploy["app_name"].startswith("mcp-")
+    assert deploy["name"] == "data_inspector"

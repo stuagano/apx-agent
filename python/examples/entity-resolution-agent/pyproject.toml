@@ -37,20 +37,6 @@ app-slug = "entity_resolution_agent"
 app-entrypoint = "app:app"
 api-prefix = "/api"
 
-[tool.apx.agent]
-name = "entity_resolution_agent"
-description = "Resolve and deduplicate customer/account entities across utility data systems — fuzzy-matches records, identifies duplicates, and links accounts to canonical identities"
-model = "databricks-claude-sonnet-4-6"
-module = "agent:agent"
-url = "$ENTITY_RESOLUTION_AGENT_URL"
-registry = "$AGENT_HUB_URL"
-
-[tool.apx.deploy]
-# App name MUST start with 'mcp-' for Databricks External MCP discovery.
-target = "apps"
-bundle_name = "mcp-entity-resolution-agent"
-app_name = "mcp-entity-resolution-agent"
-
 [project.scripts]
 quickstart = "scripts.quickstart:main"
 
@@ -67,3 +53,9 @@ force-include = { "agent.py" = "agent.py", "app.py" = "app.py", "api.py" = "api.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.apx.deploy]
+target = "apps"
+bundle_name = "mcp-entity-resolution-agent"
+app_name = "mcp-entity-resolution-agent"
+name = "entity_resolution_agent"

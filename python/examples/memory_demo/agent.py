@@ -104,4 +104,6 @@ agent = Agent(
     name=AGENT_ID,
     instructions=SYSTEM_PROMPT,
     tools=memory_tools,
+    description="Travel concierge with seeded memories + few-shot examples.",
+    model="databricks-claude-sonnet-4-6",
 )

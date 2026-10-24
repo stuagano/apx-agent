@@ -52,4 +52,5 @@ agent = Agent(
         get_rate_schedule,
         compare_months,
     ],
+    description="Answer customer energy billing questions — looks up account profiles, AMI smart meter readings, billing history, rate schedules, and compares usage across months",
 )

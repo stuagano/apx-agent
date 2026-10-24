@@ -149,6 +149,20 @@ class BaseAgent:
     _overrides: Mapping[str, Any] = MappingProxyType({})
     """Per-agent values that differ from the app's; written by resolve_settings."""
 
+    def overlay_instructions(self, overlay: str) -> None:
+        """Compose *overlay* above this agent's own (e.g. schema-grounded) instructions, once.
+
+        The same composition [tool.apx.agent] instructions always got at finalize (persona
+        above grounding); generated agent.py uses it for template-built agents (3b-3b)."""
+        from ._prompt_assembly import compose_instructions
+
+        if not hasattr(self, "_instructions"):
+            raise TypeError(f"{type(self).__name__} has no instructions to overlay")
+        if overlay.strip() and not getattr(self, "_persona_overlaid", False):
+            setattr(self, "_instructions", compose_instructions(base=getattr(self, "_instructions"), overlay=overlay))
+            self._persona_overlaid = True
+            self._persona_overlay = overlay
+
     def configure(self, **settings: Any) -> None:
         """Declare apx runtime settings after construction (same keys as the constructor's).
 
@@ -500,16 +514,6 @@ class LlmAgent(BaseAgent):
         await self._invoke_callback(self._after_agent_callback, full_text)
 
 
-    def overlay_instructions(self, overlay: str) -> None:
-        """Compose *overlay* above this agent's own (e.g. schema-grounded) instructions, once.
-
-        The same composition [tool.apx.agent] instructions always got (persona above
-        grounding); generated agent.py uses it for template-built agents (3b-3b)."""
-        from ._prompt_assembly import compose_instructions
-
-        if overlay.strip() and not getattr(self, "_persona_overlaid", False):
-            self._instructions = compose_instructions(base=self._instructions, overlay=overlay)
-            self._persona_overlaid = True
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""
         from fastapi import Depends  # noqa: PLC0415

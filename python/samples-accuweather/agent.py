@@ -54,4 +54,16 @@ agent = DataAgent(
     os.environ.get("APX_CATALOG", _CATALOG),
     os.environ.get("APX_SCHEMA", _SCHEMA), extra_tools=[sample_forecast_daily_calendar_imperial],
     name="samples-accuweather", knowledge="./.apx/okf",
+    target="responses_agent",
+    description="An apx-agent on Databricks Apps.",
+    model="databricks-claude-sonnet-4-6",
+    examples=["Show me a few sample rows from the data you can access", "What questions can you answer?"],
+    session={"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "samples_accuweather"},
 )
+agent.overlay_instructions("You are a helpful assistant.")
+
+# Uncomment to enable persistent memory on Lakebase (set LAKEBASE_HOST; tables auto-create),
+# passing it as an argument to the agent constructor above:
+# memory={"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "samples_accuweather",
+#         "table_name": "samples.accuweather.apx_samples_accuweather_memory",
+#         "embedding_model": "databricks-bge-large-en", "embedding_dim": 1024}
