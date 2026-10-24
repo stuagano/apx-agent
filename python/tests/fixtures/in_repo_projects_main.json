@@ -1,0 +1,363 @@
+{
+ "python/examples/bakehouse-agent": {
+  "description": "An apx-agent on Databricks Apps.",
+  "examples": [],
+  "instructions_sha256": "64141bb9010756749d19c982c7c46a83aa2b73948716e565b091670724879f8d",
+  "knowledge": null,
+  "max_iterations": null,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "bakehouse-agent",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-bakehouse-agent-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/customer_triage": {
+  "description": "Customer support triage \u2014 classifies queries and hands off to specialists.",
+  "examples": [],
+  "instructions_sha256": "b9d12c0c0434923448c11a2cacf0c3a273d97fcda3da2d741235ce78c42b1a51",
+  "knowledge": null,
+  "max_iterations": null,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "customer_triage",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-customer-triage-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/customer_triage_fleet/account_specialist": {
+  "description": "Handles account access, password resets, email changes, and user preferences. Has semantic memory.",
+  "examples": [],
+  "instructions_sha256": "91aaa743799f5af52826e1e468044ddd400633f3d2277317788cb7459c5d766c",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "account_specialist",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-account-specialist-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/customer_triage_fleet/billing_specialist": {
+  "description": "Handles billing inquiries, invoice lookups, and payment issues.",
+  "examples": [],
+  "instructions_sha256": "a4590c19d06a233a2d24c98f6cdc2268348a0a2827a6813dd9cc0ea9363703bd",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "billing_specialist",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-billing-specialist-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/customer_triage_fleet/orchestrator": {
+  "description": "Customer support triage \u2014 classifies queries and routes to billing, technical, or account specialists over A2A.",
+  "examples": [],
+  "instructions_sha256": "27f412f8b125226e6637050429771894b1ba38b7e91e80c09625c2624e2543f5",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "customer_triage",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-customer-triage-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/customer_triage_fleet/technical_specialist": {
+  "description": "Handles technical support, error messages, outages, and integration issues.",
+  "examples": [],
+  "instructions_sha256": "d01a29e07357ef1ec2e95c75d9d3c69464405262b30c6b72c25b717ac0104154",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "technical_specialist",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-technical-specialist-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/eligibility-agent": {
+  "description": "Assess program eligibility from application documents \u2014 income, residency, and criteria verification.",
+  "examples": [],
+  "instructions_sha256": "efe751b70296483bf8308798eb68b84d93bb9c97af10c1a75f6548a7cc2e03d4",
+  "knowledge": null,
+  "max_iterations": 8,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "eligibility-agent",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-eligibility-agent-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/explain-my-bill-agent": {
+  "description": "Answer customer energy billing questions \u2014 looks up account profiles, AMI smart meter readings, billing history, rate schedules, and compares usage across months",
+  "examples": [],
+  "instructions_sha256": "e7cdbfa86c75525d1a2c41da384fbf1a4feaabd94f66b71271e36022c6d4026c",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-meta-llama-3-3-70b-instruct",
+  "name": "explain_my_bill_agent",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-explain-my-bill-agent-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/hubspot-complaints-agent": {
+  "description": "Summarizes HubSpot support-ticket complaints by month.",
+  "examples": [
+   "Summarize complaints for June 2026",
+   "How does last month's complaint count compare to the month before?",
+   "What are the top complaint themes this quarter?"
+  ],
+  "instructions_sha256": "f3c6adb69cc4b10903e8f8e35f8cc83429d8b8c4f2a378ddfabd4324d670afcf",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "hubspot-complaints-agent",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-hubspot-complaints-agent-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/memory_demo": {
+  "description": "Travel concierge with seeded memories + few-shot examples.",
+  "examples": [],
+  "instructions_sha256": "2ead236543705342a2f6423b25b864dc3faeb6f69c44570e770400c7ed6816e4",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "memory_demo",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-memory-demo-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/pe55-support-agent": {
+  "description": "Customer-support agent: latest policy + reviews SQL + product-docs search, as the caller",
+  "examples": [],
+  "instructions_sha256": "7c8ccb56629d96ae1feea2d810bd9f10cf3222045d927ef456c989b8ddcc75dd",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-meta-llama-3-3-70b-instruct",
+  "name": "pe55_support_agent",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-pe55-support-agent-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/plg-discovery": {
+  "description": "Discover a nonprofit's current systems and recommend a governed technology blueprint",
+  "examples": [],
+  "instructions_sha256": "876d7859eb3ebb0e6fc32fd2a45af75ee39c0940347f9fd7c54e7e3e4258a80e",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "discovery",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-discovery-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/sec-10k-agent": {
+  "description": "Research a 10-K question against a Knowledge Assistant, then write a cited investor brief",
+  "examples": [],
+  "instructions_sha256": "af5fe3bca071f2be9d9a9001ebd0f58e8c03dcf62aa89cf2e5330a378365cb7a",
+  "knowledge": null,
+  "max_iterations": null,
+  "memory": null,
+  "model": "databricks-meta-llama-3-3-70b-instruct",
+  "name": "sec_10k_agent",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-sec-10k-agent-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/shortage-intelligence-agent": {
+  "description": "Detects shortage signals in demand data, validates against market reports, checks live vendor pricing, and delivers actionable reports to sourcing and sales teams",
+  "examples": [],
+  "instructions_sha256": "f5cefa02b6a775523faf81ef23c3cf89c924586c208a25f3838207dd8bcd7b0b",
+  "knowledge": null,
+  "max_iterations": null,
+  "memory": null,
+  "model": "databricks-claude-opus-4-7",
+  "name": "shortage_intelligence_agent",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-shortage-intelligence-agent-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/slack-agent": {
+  "description": "Slack bot connected to Databricks via OAuth \u2014 illustrates OBO token forwarding",
+  "examples": [],
+  "instructions_sha256": "9e27e7ee7054fa5e627dc4837563af71ba6c7cf308b87839cbae3500c7b391a5",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "slack-agent",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-slack-agent-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/examples/zero-ops-diagnostics": {
+  "description": "Self-serve expensive workload triage: DBSQL, Jobs/Spark, and billing cost.",
+  "examples": [],
+  "instructions_sha256": "c698a7312fdac8586b361af3b4d1b152faa4229430ddca217a49f9b11159613f",
+  "knowledge": null,
+  "max_iterations": null,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "zero-ops-diagnostics",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-zero-ops-diagnostics-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ },
+ "python/hello-world": {
+  "description": "An apx-agent on Databricks Apps.",
+  "examples": [],
+  "instructions_sha256": "a01b5bc2ca178e171955ce342ce4cd3a53bb3c736ce76ae0dfb879b58d6956d1",
+  "knowledge": "./.apx/okf",
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "hello-world",
+  "session": {
+   "auto_create": false,
+   "database": null,
+   "host": null,
+   "store_name": "apx-hello-world-sessions",
+   "table_name": null,
+   "type": "managed",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "durable_agent_server"
+ }
+}
