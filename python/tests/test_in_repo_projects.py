@@ -39,6 +39,14 @@ _MIGRATED: dict[str, str] = {  # project dir -> its deploy name
     "python/examples/data-inspector": "data_inspector",
     "python/examples/data-triage-agent": "data_triage_agent",
     "python/examples/entity-resolution-agent": "entity_resolution_agent",
+    "python/samples-accuweather": "samples-accuweather",
+    "python/samples-bakehouse": "samples-bakehouse",
+    "python/samples-healthverity": "samples-healthverity",
+    "python/samples-hub": "samples-hub",
+    "python/samples-tpcds-sf1": "samples-tpcds-sf1",
+    "python/samples-tpcds-sf1000": "samples-tpcds-sf1000",
+    "python/samples-tpch": "samples-tpch",
+    "python/samples-wanderbricks": "samples-wanderbricks",
 }
 
 # Import and finalize one project in a fresh interpreter (its tools/ and config.py never

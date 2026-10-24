@@ -35,7 +35,6 @@ name = "samples-wanderbricks"
 description = "An apx-agent on Databricks Apps."
 model = "databricks-claude-sonnet-4-6"
 instructions = "You are a helpful assistant."
-knowledge = "./.apx/okf"
 # ADK-style layout: the user's agent definition lives at top-level
 # ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
 # that imports + wraps it for the Databricks Apps runtime.

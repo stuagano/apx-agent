@@ -45,4 +45,10 @@ agent = LlmAgent(
     sub_agents=_PEERS,
     instructions=_INSTRUCTIONS,
     name="samples-hub",
+    target="responses_agent",
+    description="Hub that routes to per-schema sample DataAgent Apps (A2A peers).",
+    model="databricks-claude-sonnet-4-6",
+    examples=["Show me a few sample rows from the data you can access", "What questions can you answer?"],
+    session={"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "samples_hub"},
 )
+agent.overlay_instructions("Route sample-data questions to the matching specialist sub-agent.")
