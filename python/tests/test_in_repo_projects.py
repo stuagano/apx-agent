@@ -108,3 +108,15 @@ def test_migrated_project_loads_with_its_name(project: str) -> None:
 def test_project_serves_what_main_served(project: str) -> None:
     served = _served(_REPO / project)
     assert {k: served[k] for k in _MAIN[project]} == _MAIN[project]  # memory_demo's prompt isn't deterministic
+
+
+def test_apx_builder_settings_reach_the_cli() -> None:
+    # apx-builder serves app.py; the CLI reads settings through agent.py (agent:agent).
+    root = _REPO / "python" / "examples" / "apx-builder"
+    script = ("import sys; sys.path.insert(0, '.'); from pathlib import Path; from apx_agent.cli import _effective_config; "
+              "c = _effective_config(Path('.')); print(c.model, '|', c.description)")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DATABRICKS_")}
+    out = subprocess.run([sys.executable, "-c", script], cwd=root, env=env, capture_output=True, text=True, check=False)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.strip().splitlines()[-1] == (
+        "databricks-claude-sonnet-4-6 | Natural language agent builder — describe your agent and I'll build and deploy it")
