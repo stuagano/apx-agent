@@ -637,7 +637,8 @@ def test_scaffold_creates_expected_files(tmp_path: Path) -> None:
         assert (base / filename).exists(), f"missing {filename}"
     pyproject = (base / "pyproject.toml").read_text()
     assert 'name = "my_agent"' in pyproject
-    assert "[tool.apx.agent]" in pyproject
+    assert "[tool.apx.agent" not in pyproject  # 3b-3c: settings live on agent.py's DataAgent
+    assert 'name="my_agent"' in (base / "agent.py").read_text()
 
 
 def test_scaffold_refuses_overwrite_without_force(tmp_path: Path) -> None:

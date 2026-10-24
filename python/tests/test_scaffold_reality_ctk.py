@@ -41,6 +41,8 @@ def test_scaffold_outputs_are_real_not_just_present(tmp_path: Path) -> None:
     verify(
         Artifact(str(base / "agent.py"), min_bytes=40, must_contain="DataAgent"),
         Artifact(str(base / "app.py"), min_bytes=20, must_contain="create_app"),
-        Artifact(str(base / "pyproject.toml"), min_bytes=40, must_contain="[tool.apx.agent]"),
+        Artifact(str(base / "pyproject.toml"), min_bytes=40, must_contain='name = "my_agent"'),
+        # 3b-3c: the runtime settings are wired on agent.py's DataAgent.
+        Artifact(str(base / "agent.py"), min_bytes=40, must_contain='model="databricks-claude-sonnet-4-6"'),
         Artifact(str(base / "README.md"), min_bytes=20),
     )

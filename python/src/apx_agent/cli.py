@@ -1400,12 +1400,7 @@ dependencies = ["apx-agent"]
 # and change dependencies to `"apx-agent==<version>"` once published to PyPI.
 apx-agent = {{ path = "..", editable = true }}
 
-[tool.apx.agent]
-name = "{name}"
-description = "An apx-agent."
-model = "databricks-claude-sonnet-4-6"
-instructions = "You are a helpful assistant."
-{knowledge_line}
+# Runtime settings (model, instructions, ...) live on the agent in agent.py.
 # Declare tools with Python factories in tools/ and import them in agent.py.
 # Pass them to tools=[...] (or extra_tools=[...] for DataAgent).
 # See docs/tools/overview.md. AgentKit's agent.toml is generated at build time.
@@ -1421,7 +1416,9 @@ from apx_agent import DataAgent
 # A governed data agent over ``{catalog}.{schema}`` (schema baked at scaffold
 # time — no runtime discovery needed). To switch catalogs or refresh the
 # baked schema: ``apx-agent agents scaffold <name> --catalog <cat> --schema <sch>``.
-agent = DataAgent("{catalog}", "{schema}"{extra_tools}{knowledge_arg})
+agent = DataAgent("{catalog}", "{schema}", name="{name}", description="An apx-agent.",
+                  model="databricks-claude-sonnet-4-6"{extra_tools}{knowledge_arg})
+agent.overlay_instructions("You are a helpful assistant.")
 '''
 
 
@@ -4061,10 +4058,9 @@ def _scaffold_model_serving(
     prelude, extra_tools = _example_tool_block(catalog, schema, table)
 
     manifest = _schema_manifest_for_scaffold(catalog, schema, profile)
-    knowledge_line = 'knowledge = "./.apx/okf"\n' if manifest is not None else ""
     knowledge_arg = ', knowledge="./.apx/okf"' if manifest is not None else ""
     files = {
-        "pyproject.toml": _SCAFFOLD_PYPROJECT.format(name=name, knowledge_line=knowledge_line),
+        "pyproject.toml": _SCAFFOLD_PYPROJECT.format(name=name),
         "agent.py": _SCAFFOLD_AGENT.format(
             name=name, catalog=catalog, schema=schema,
             example_tool=prelude, extra_tools=extra_tools,
