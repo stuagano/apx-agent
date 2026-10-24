@@ -35,6 +35,10 @@ _MIGRATED: dict[str, str] = {  # project dir -> its deploy name
     "python/examples/slack-agent": "slack-agent",
     "python/examples/zero-ops-diagnostics": "zero-ops-diagnostics",
     "python/hello-world": "hello-world",
+    "python/examples/contract-parsing-agent": "contract_parsing_agent",
+    "python/examples/data-inspector": "data_inspector",
+    "python/examples/data-triage-agent": "data_triage_agent",
+    "python/examples/entity-resolution-agent": "entity_resolution_agent",
 }
 
 # Import and finalize one project in a fresh interpreter (its tools/ and config.py never

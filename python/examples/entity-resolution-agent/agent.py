@@ -21,4 +21,8 @@ agent = HandoffAgent(
     },
     start="supervisor",
     max_handoffs=4,
+    description="Resolve and deduplicate customer/account entities across utility data systems — fuzzy-matches records, identifies duplicates, and links accounts to canonical identities",
+    model="databricks-claude-sonnet-4-6",
+    url="$ENTITY_RESOLUTION_AGENT_URL",
+    registry="$AGENT_HUB_URL",
 )

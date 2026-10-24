@@ -49,8 +49,6 @@ description = "Investigate why data is missing from Databricks tables or APIs â€
 model = "system.ai.claude-sonnet-4-6"
 module = "agent:agent"
 target = "durable_agent_server"
-url = ""
-registry = ""
 registered_model = "serverless_stable_7def3z_catalog.apx.mcp_data_triage_agent"
 
 # No managed session store: the agent is a KeywordRouter (not an LlmAgent, which

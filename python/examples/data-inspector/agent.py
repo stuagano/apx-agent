@@ -88,4 +88,6 @@ agent = Agent(
         version_diff,
         audit_lookup,
     ],
+    description="Inspect and forensically analyze Delta tables — check data presence, binary search version history, diff versions, and audit who changed what",
+    model="system.ai.claude-sonnet-4-6",
 )

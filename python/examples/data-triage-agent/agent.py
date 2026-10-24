@@ -127,3 +127,4 @@ INVESTIGATION_KEYWORDS = [
 _LOCAL_DATA_INSPECTOR_URL = "http://localhost:9000"
 DATA_INSPECTOR_URL = os.environ.get("DATA_INSPECTOR_URL", _LOCAL_DATA_INSPECTOR_URL)
 agent = create_investigation_pipeline(DATA_INSPECTOR_URL)
+agent.configure(description="Investigate why data is missing from Databricks tables or APIs — traces lineage, checks job failures, and inspects source code", model="system.ai.claude-sonnet-4-6")

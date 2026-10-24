@@ -44,9 +44,6 @@ description = "Inspect and forensically analyze Delta tables — check data pres
 model = "system.ai.claude-sonnet-4-6"
 module = "agent:agent"
 profile = "fe-stable"
-url = ""
-registry = ""
-
 [tool.apx.agent.deploy]
 # Apps API keeps the mcp- app name (External MCP discovery); the Agent Bricks
 # backend requires an agent-bricks- name.

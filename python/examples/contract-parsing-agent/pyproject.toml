@@ -52,9 +52,6 @@ name = "contract_parsing_agent"
 description = "Extract structured data from contracts — identifies pricing terms, service periods, SLAs, and regulatory clauses from uploaded PDF or text documents"
 model = "databricks-claude-sonnet-4-6"
 module = "agent:agent"
-url = ""
-registry = ""
-
 [tool.apx.agent.deploy]
 space = "your-space"
 
