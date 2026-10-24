@@ -38,9 +38,5 @@ pythonpath = ["."]
 app-name = "apx-builder"
 app-entrypoint = "app:app"
 
-[tool.apx.agent]
+[tool.apx.deploy]
 name = "apx_builder"
-description = "Natural language agent builder — describe your agent and I'll build and deploy it"
-model = "databricks-claude-sonnet-4-6"
-module = "app:agent"
-url = ""

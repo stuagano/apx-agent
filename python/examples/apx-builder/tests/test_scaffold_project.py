@@ -137,3 +137,13 @@ def test_generate_files_rejects_unsafe_use_case():
 def test_generate_files_rejects_unsafe_table():
     with pytest.raises(ValueError, match="table"):
         _generate_files("ok", ['main.sales.orders";pass#'], [], "mcp-sales")
+
+
+def test_generated_project_declares_settings_on_the_agent():
+    import tomllib
+
+    files = _generate_files("answer sales questions", ["main.sales.orders"], [], "mcp-sales")
+    apx = tomllib.loads(files["pyproject.toml"])["tool"]["apx"]
+    assert "agent" not in apx and apx["deploy"]["name"] == "mcp-sales"
+    assert 'name="mcp-sales"' in files["app.py"] and 'model="databricks-claude-sonnet-4-6"' in files["app.py"]
+    assert 'description="answer sales questions"' in files["app.py"]

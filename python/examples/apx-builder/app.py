@@ -50,6 +50,9 @@ _write_gate = PolicyGate([
 
 
 agent = Agent(
+    name="apx_builder",
+    description="Natural language agent builder — describe your agent and I'll build and deploy it",
+    model="databricks-claude-sonnet-4-6",
     instructions=SYSTEM_PROMPT,
     tools=[
         search_tables,
