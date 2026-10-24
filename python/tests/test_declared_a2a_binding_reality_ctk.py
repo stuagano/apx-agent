@@ -384,7 +384,18 @@ def test_generated_declared_binding_runs_one_logical_graph_across_protocols(
         root={"type": "sequential", "agents": ["review", "pricing"]},
     )
     generate_project(config, generated_dir)
-    loaded = _load_agent_config(pyproject_path=generated_dir / "pyproject.toml")
+    import runpy
+    import sys as _sys
+
+    from apx_agent._settings import resolve_settings
+
+    _sys.path.insert(0, str(generated_dir))
+    try:
+        generated_agent = runpy.run_path(str(generated_dir / "agent.py"))["agent"]
+    finally:
+        _sys.path.remove(str(generated_dir))
+    # 3b-3b: the model lives in the generated agent.py; read the effective config.
+    loaded = resolve_settings(generated_agent, _load_agent_config(pyproject_path=generated_dir / "pyproject.toml"))
     assert loaded is not None
 
     direct = DataAgent(

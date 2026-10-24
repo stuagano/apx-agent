@@ -212,40 +212,50 @@ REGISTRATION_KEYS = ("registered_model", "catalog", "schema", "supervisor_id", "
 
 
 def static_agent_setting(agent_py: Path, key: str) -> Any:
-    """Literal ``key=`` passed to the constructor assigned to ``agent`` in *agent_py*, or None.
+    """Literal ``key=`` declared for ``agent`` in *agent_py*, or None.
 
-    Never imports: heuristics (target detection, scans across projects, the shell
-    prompt) must not run another project's import-time code. Anything that isn't a
-    literal keyword on ``agent = Something(...)`` is None (sub-project 3b-2)."""
+    Reads the constructor assigned to ``agent`` and any later top-level
+    ``agent.configure(...)`` call (the later literal wins). Never imports: heuristics
+    (target detection, scans across projects, the shell prompt, deploy's pre-import
+    config) must not run another project's import-time code. Anything that isn't a
+    literal keyword there is None (sub-project 3b-2/3b-3b)."""
     import ast
 
     try:
         tree = ast.parse(agent_py.read_text())
     except (OSError, SyntaxError, ValueError):
         return None
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            targets, call = node.targets, node.value
-        elif isinstance(node, ast.AnnAssign):
-            targets, call = [node.target], node.value
-        else:
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "agent" for t in targets):
-            continue
-        if not isinstance(call, ast.Call):
-            return None
+
+    def _literal(call: ast.Call) -> Any:
         for keyword in call.keywords:
             if keyword.arg == key:
                 try:
                     return ast.literal_eval(keyword.value)
-                except ValueError:
+                except (ValueError, TypeError, SyntaxError):
                     return None
         return None
-    return None
+
+    found: Any = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets, value = [node.target], node.value
+        elif (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+              and isinstance(node.value.func, ast.Attribute) and node.value.func.attr == "configure"
+              and isinstance(node.value.func.value, ast.Name) and node.value.func.value.id == "agent"):
+            literal = _literal(node.value)
+            found = literal if literal is not None else found
+            continue
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "agent" for t in targets):
+            found = _literal(value) if isinstance(value, ast.Call) else None
+    return found
 
 
 def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
-    """Merge ``[tool.apx.deploy]`` (name, host, DeployConfig keys) into agent *fields*; other keys stay put."""
+    """Merge ``[tool.apx.deploy]`` (name, host, bindings, DeployConfig keys) into agent *fields*; other keys stay put."""
     table = data.get("tool", {}).get("apx", {}).get("deploy")
     if not table:
         return fields
@@ -255,9 +265,9 @@ def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str
     deploy = dict(merged.get("deploy", {}))
     for key, value in table.items():
         # Only 3a's keys fold in; Apps-target metadata (target, bundle_name, app_name) has its own readers.
-        if key not in ("name", "host") and key not in DeployConfig.model_fields:
+        if key not in ("name", "host", "bindings") and key not in DeployConfig.model_fields:
             continue
-        if key in ("name", "host"):
+        if key in ("name", "host", "bindings"):
             target, label, suffix = merged, key, ""
         else:
             target, label, suffix = deploy, f"deploy.{key}", ".deploy"
@@ -290,6 +300,18 @@ def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str,
     fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields} if section else {}
     if section_path == _AGENT_SECTION:
         fields = _fold_deploy_table(data, fields)
+        if fields:
+            # Deploy routes on target, and checks/provisions stores, before importing agent.py;
+            # read literal declarations statically when the TOML has none (3b-3b). A non-literal
+            # Python value (e.g. MemoryBackendConfig(...)) is left to the post-import merge.
+            agent_py = path.parent / "agent.py"
+            target = static_agent_setting(agent_py, "target") if "target" not in fields else None
+            if isinstance(target, str):
+                fields["target"] = target
+            for key in ("memory", "session"):
+                value = static_agent_setting(agent_py, key) if key not in fields else None
+                if isinstance(value, dict):
+                    fields[key] = value
     # Deploy-envelope keys alone do not declare an agent config.
     return fields if fields else None
 

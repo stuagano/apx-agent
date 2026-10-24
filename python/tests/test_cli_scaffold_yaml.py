@@ -178,13 +178,11 @@ class TestScaffoldEmitsOKF:
         # Bundle must exist
         assert (target / ".apx" / "okf" / "datasets" / "s.md").is_file()
 
-        # pyproject must declare the knob
-        with open(target / "pyproject.toml", "rb") as f:
-            data = tomllib.load(f)
-        agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
-        assert agent_section.get("knowledge") == "./.apx/okf", (
-            f"knowledge= missing from apps pyproject; agent section: {agent_section!r}"
-        )
+        # The agent must declare the knob (3b-3b: on agent.py's root constructor)
+        from apx_agent._inspection import static_agent_setting
+
+        knowledge = static_agent_setting(target / "agent.py", "knowledge")
+        assert knowledge == "./.apx/okf", f"knowledge= missing from the apps agent.py: {knowledge!r}"
 
     def test_apps_pyproject_no_knowledge_when_no_bundle(self, tmp_path):
         """Apps scaffold: when manifest is None (no tables), neither knowledge= nor bundle."""

@@ -25,6 +25,9 @@ from ._models import (
     BeforeModelHook,
     BeforeToolHook,
     GatewayConfig,
+    DataConfig,
+    ExampleBackendConfig,
+    ExampleWorkflow,
     GuardrailsConfig,
     InputGuardrailFn,
     MemoryBackendConfig,
@@ -105,6 +108,16 @@ class AgentSettings(TypedDict, total=False):
     registry: str
     api_prefix: str
     examples: list[str]
+    workflows: list[ExampleWorkflow]
+    data: DataConfig
+    executor: str
+    example: ExampleBackendConfig
+
+
+class CompositeSettings(AgentSettings, total=False):
+    """AgentSettings plus ``description``, which LlmAgent takes as its own argument."""
+
+    description: str
 
 
 class BaseAgent:
@@ -128,11 +141,24 @@ class BaseAgent:
     registry: str | None = None
     api_prefix: str | None = None
     examples: list[str] | None = None
+    workflows: list[ExampleWorkflow] | None = None
+    data: DataConfig | None = None
+    executor: str | None = None
+    example: ExampleBackendConfig | None = None
+    _description: str | None = None
     _overrides: Mapping[str, Any] = MappingProxyType({})
     """Per-agent values that differ from the app's; written by resolve_settings."""
 
-    def _set_settings(self, settings: AgentSettings) -> None:
-        unknown = sorted(set(settings) - set(AgentSettings.__annotations__))
+    def configure(self, **settings: Any) -> None:
+        """Declare apx runtime settings after construction (same keys as the constructor's).
+
+        Generated agent.py uses it for agents built by a third-party template, whose
+        build() takes no settings. Literal keywords here are read statically, like the
+        constructor's, so deploy sees target/memory/session before importing agent.py."""
+        self._set_settings(settings)
+
+    def _set_settings(self, settings: Mapping[str, Any]) -> None:
+        unknown = sorted(set(settings) - set(CompositeSettings.__annotations__))
         if unknown:
             raise TypeError(f"unknown agent setting(s): {', '.join(unknown)}")
         identity = settings.get("identity")
@@ -145,8 +171,18 @@ class BaseAgent:
                 raise ValueError(f"identity: {exc}") from exc
         if settings.get("recovery") and settings.get("target") == "responses_agent":
             raise ValueError("recovery requires target='durable_agent_server'")
+        from pydantic import TypeAdapter
+
+        from ._models import AgentConfig
+
+        description = settings.get("description")
+        if isinstance(description, str):
+            self._description = description  # the attribute LlmAgent uses for its own description
         for key, value in settings.items():
-            setattr(self, key, value)
+            if key == "description" or value is None:  # None means "not declared here"
+                continue
+            # Generated agent.py passes dicts; validate into the AgentConfig field's type (3b-3b).
+            setattr(self, key, TypeAdapter(AgentConfig.model_fields[key].annotation).validate_python(value))
 
     async def run(self, messages: list[Message], request: Request) -> str:
         """Run and return the final text response."""
@@ -463,6 +499,17 @@ class LlmAgent(BaseAgent):
             yield f"\n\n---\n**[Content filtered]** {replacement}"
         await self._invoke_callback(self._after_agent_callback, full_text)
 
+
+    def overlay_instructions(self, overlay: str) -> None:
+        """Compose *overlay* above this agent's own (e.g. schema-grounded) instructions, once.
+
+        The same composition [tool.apx.agent] instructions always got (persona above
+        grounding); generated agent.py uses it for template-built agents (3b-3b)."""
+        from ._prompt_assembly import compose_instructions
+
+        if overlay.strip() and not getattr(self, "_persona_overlaid", False):
+            self._instructions = compose_instructions(base=self._instructions, overlay=overlay)
+            self._persona_overlaid = True
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""
         from fastapi import Depends  # noqa: PLC0415
@@ -793,7 +840,7 @@ class LoopAgent(BaseAgent):
 
     FINISH_TOOL = "finish_loop"
 
-    def __init__(self, agent: LlmAgent, max_iterations: int = 5, **settings: Unpack[AgentSettings]) -> None:
+    def __init__(self, agent: LlmAgent, max_iterations: int = 5, **settings: Unpack[CompositeSettings]) -> None:
         self._set_settings(settings)
         self._inner = agent
         self._max_iterations = max_iterations
@@ -890,7 +937,7 @@ class SequentialAgent(BaseAgent):
         instructions: str = "",
         name: str | None = None,
         on_failure: Literal["raise", "escalate"] = "raise",
-        **settings: Unpack[AgentSettings],
+        **settings: Unpack[CompositeSettings],
     ) -> None:
         self._set_settings(settings)
         if not agents:
@@ -981,7 +1028,7 @@ class SequentialAgent(BaseAgent):
 class ParallelAgent(BaseAgent):
     """Runs all agents concurrently with the same input and merges their responses."""
 
-    def __init__(self, agents: list[BaseAgent], instructions: str = "", **settings: Unpack[AgentSettings]) -> None:
+    def __init__(self, agents: list[BaseAgent], instructions: str = "", **settings: Unpack[CompositeSettings]) -> None:
         self._set_settings(settings)
         if not agents:
             raise ValueError("ParallelAgent requires at least one agent")
@@ -1093,7 +1140,7 @@ class RouterAgent(BaseAgent):
         self,
         agents: list[tuple[str, str, BaseAgent]] | list[BaseAgent],
         instructions: str = "",
-        **settings: Unpack[AgentSettings],
+        **settings: Unpack[CompositeSettings],
     ) -> None:
         self._set_settings(settings)
         self._routes = _normalize_router_agents(agents)
@@ -1242,7 +1289,7 @@ class HandoffAgent(BaseAgent):
         agents: dict[str, LlmAgent] | list[LlmAgent],
         start: str | None = None,
         max_handoffs: int = 5,
-        **settings: Unpack[AgentSettings],
+        **settings: Unpack[CompositeSettings],
     ) -> None:
         self._set_settings(settings)
         agents_dict = _normalize_handoff_agents(agents)
@@ -1360,7 +1407,7 @@ class KeywordRouter(BaseAgent):
         self,
         branches: list[tuple[str, BaseAgent, list[str]]],
         default: BaseAgent,
-        **settings: Unpack[AgentSettings],
+        **settings: Unpack[CompositeSettings],
     ) -> None:
         self._set_settings(settings)
         if not branches:

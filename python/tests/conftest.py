@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated, Any
@@ -176,3 +177,13 @@ def make_tool_call(name: str, arguments: dict | None = None, call_id: str = "cal
             "arguments": json.dumps(arguments or {}),
         },
     }
+
+
+@pytest.fixture(autouse=True)
+def _isolate_project_agent_module():
+    """A project's agent.py is imported as the top-level module ``agent``; never let one
+    test's agent leak into the next (3b-3b: generated agents declare target/model, so a
+    stale one now conflicts with the next project's TOML)."""
+    sys.modules.pop("agent", None)
+    yield
+    sys.modules.pop("agent", None)

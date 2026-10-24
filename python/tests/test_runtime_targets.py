@@ -964,9 +964,10 @@ def test_local_run_uses_declared_native_target(execution: Any, monkeypatch: pyte
     assert uvicorn.run.call_args.kwargs["reload"] is True
     assert uvicorn.run.call_args.kwargs["app_dir"] == str(tmp_path)
     assert not (tmp_path / "agent_server").exists()
-    from apx_agent._inspection import _load_agent_config
+    from apx_agent._inspection import static_agent_setting
 
-    assert _load_agent_config(pyproject_path=tmp_path / "pyproject.toml").session.store_name == "remote-sessions"
+    # 3b-3b: the declared session lives on agent.py's root constructor.
+    assert static_agent_setting(tmp_path / "agent.py", "session")["store_name"] == "remote-sessions"
 
 
 @pytest.mark.parametrize("target,entrypoint", [
@@ -1065,7 +1066,9 @@ def test_packaged_launcher_preserves_remote_session_binding(execution: Any, monk
                          session={"type": "managed", "store_name": "remote-sessions"})
     generate_project(config, tmp_path)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(agent=execution.agent))
+    # 3b-3b: the declared model/session live in the generated agent.py; launch it as-is.
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "agent", raising=False)
     monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
     monkeypatch.setenv("APX_MODEL", "bound-model")
     monkeypatch.setenv("AGENT_SESSION_STORE", "remote-sessions")
@@ -1074,9 +1077,11 @@ def test_packaged_launcher_preserves_remote_session_binding(execution: Any, monk
     monkeypatch.setattr("apx_agent._runtime_targets.compile_agent", compiler)
     assert create_app() is native_app
     assert native_app.state.workspace_client is execution.ws
-    compiler.assert_called_once_with(execution.agent, config=config, model="bound-model",
-                                    service_ws=execution.ws, session_store="remote-sessions",
-                                    project_root=Path.cwd())
+    kwargs = compiler.call_args.kwargs
+    assert kwargs["config"].model_dump() == config.model_dump()
+    assert (kwargs["model"], kwargs["service_ws"], kwargs["session_store"], kwargs["project_root"]) == (
+        "bound-model", execution.ws, "remote-sessions", Path.cwd())
+    sys.modules.pop("agent", None)  # the generated agent.py was imported as `agent`; don't leak it
 
 
 def test_packaged_launcher_rejects_other_runtime_before_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

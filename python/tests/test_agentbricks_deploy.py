@@ -196,7 +196,18 @@ def test_optional_yaml_native_input_can_be_rematerialized(tmp_path: Path, monkey
     project = cli_mod._materialize_yaml_project(spec, config, None)
     updated = config.model_copy(update={"model": "updated-model"})
     assert cli_mod._materialize_yaml_project(spec, updated, None) == project
-    assert _load_agent_config(pyproject_path=project / "pyproject.toml") == updated
+    import runpy
+    import sys
+
+    from apx_agent._settings import resolve_settings
+
+    sys.path.insert(0, str(project))
+    try:
+        agent = runpy.run_path(str(project / "agent.py"))["agent"]
+    finally:
+        sys.path.remove(str(project))
+    effective = resolve_settings(agent, _load_agent_config(pyproject_path=project / "pyproject.toml"))
+    assert effective.model_dump() == updated.model_dump()  # 3b-3b: settings live in agent.py
     assert not (project / "databricks.yml").exists()
 
 

@@ -68,8 +68,11 @@ def test_service_policies_use_the_shared_config_seam() -> None:
 
 def test_generated_pyproject_round_trips_service_policy_config() -> None:
     config = _config()
-    parsed = tomllib.loads(_build_pyproject(config))
-    raw = parsed["tool"]["apx"]["agent"]["service_policies"]
+    from apx_agent._project_gen import _settings_kwargs
+
+    # 3b-3b: service_policies is emitted as an agent.py kwarg, not a TOML table.
+    assert "service_policies" not in tomllib.loads(_build_pyproject(config))["tool"]["apx"].get("agent", {})
+    raw = _settings_kwargs(config, llm_root=True)["service_policies"]
     round_tripped = ServicePoliciesConfig.model_validate(raw)
 
     assert round_tripped.model_dump(mode="json") == config.service_policies.model_dump(mode="json")

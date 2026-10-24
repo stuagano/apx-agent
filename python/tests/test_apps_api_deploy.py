@@ -95,7 +95,9 @@ def test_deploy_resources_roundtrip_and_placement_guards() -> None:
 
     resource = {"kind": "experiment", "identifier": "123", "permission": "CAN_MANAGE"}
     config = _config(resources=[resource])
-    loaded = AgentConfig.model_validate(tomllib.loads(_build_pyproject(config))["tool"]["apx"]["agent"])
+    from apx_agent._inspection import _fold_deploy_table
+
+    loaded = AgentConfig.model_validate(_fold_deploy_table(tomllib.loads(_build_pyproject(config)), {}))
     assert loaded.deploy.resources == config.deploy.resources
     for changes in ({"space": "space"}, {"backend": "agentbricks", "entrypoint": None}):
         with pytest.raises(ValueError, match="dedicated"):

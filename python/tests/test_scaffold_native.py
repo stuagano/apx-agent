@@ -27,8 +27,8 @@ def test_new_apps_scaffold_defaults_to_native(tmp_path, template, monkeypatch, e
                                         "--template", template, "--no-interactive"])
     assert result.exit_code == 0, result.output
     root = tmp_path / "orders"
-    verify(Artifact(str(root / "pyproject.toml"), must_contain="durable_agent_server"),
-           Artifact(str(root / "agent.py"), min_bytes=40))
+    # 3b-3b: runtime settings are literal kwargs on agent.py's root constructor.
+    verify(Artifact(str(root / "agent.py"), min_bytes=40, must_contain="target='durable_agent_server'"))
     project = tomllib.loads((root / "pyproject.toml").read_text())
     assert any(dep.startswith("apx-agent[eval,agentbricks]") for dep in project["project"]["dependencies"])
     from packaging.requirements import Requirement
@@ -39,16 +39,20 @@ def test_new_apps_scaffold_defaults_to_native(tmp_path, template, monkeypatch, e
     else:
         assert dependency.url.startswith("git+https://github.com/stuagano/apx-agent.git@")
     assert not any((root / name).exists() for name in ("databricks.yml", "agent_server", "scripts/quickstart.py", ".github"))
-    assert project["tool"]["apx"]["agent"]["session"] == {
-        "type": "managed", "store_name": "apx-orders-sessions",
-        "auto_create": False, "validate_at_boot": True,
-    }
-    assert "memory" not in project["tool"]["apx"]["agent"]
+    assert "agent" not in project["tool"]["apx"]
     monkeypatch.chdir(root)
     agent = runpy.run_path(str(root / "agent.py"))["agent"]
     assert agent._name == "orders"
     from apx_agent._inspection import _load_agent_config
-    assert _load_agent_config(pyproject_path=root / "pyproject.toml").target == "durable_agent_server"
+    from apx_agent._settings import resolve_settings
+    toml = _load_agent_config(pyproject_path=root / "pyproject.toml")
+    assert toml.target == "durable_agent_server"  # read statically from agent.py, before any import
+    effective = resolve_settings(agent, toml)
+    assert effective.session is not None and effective.session.model_dump(exclude_none=True) == {
+        "type": "managed", "store_name": "apx-orders-sessions",
+        "auto_create": False, "validate_at_boot": True,
+    }
+    assert effective.memory is None
 
 
 @pytest.mark.parametrize("runtime", ["responses_agent", "durable_agent_server"])
@@ -140,7 +144,9 @@ def test_native_scaffold_writes_the_picked_model(tmp_path, monkeypatch, profile)
             "--no-interactive"] + (["--profile", profile] if profile else [])
     result = CliRunner().invoke(cli.main, args)
     assert result.exit_code == 0, result.output
-    model = tomllib.loads((tmp_path / "orders" / "pyproject.toml").read_text())["tool"]["apx"]["agent"]["model"]
+    from apx_agent._inspection import static_agent_setting
+
+    model = static_agent_setting(tmp_path / "orders" / "agent.py", "model")
     if profile:
         assert (picked, model) == (["p"], "system.ai.claude-opus-4-7")
     else:

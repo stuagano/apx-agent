@@ -1053,10 +1053,10 @@ def check_project_layout(cwd: Path) -> Check:
             f"{cwd} is not an apx project",
             "Run `apx-agent scaffold my-agent` to create one, then cd into it.",
         )
-    from apx_agent.cli import _detect_target, _read_apx_agent_config
+    from apx_agent.cli import _declares_durable, _detect_target
 
     target = _detect_target(cwd).target
-    native = _read_apx_agent_config(cwd / "pyproject.toml").get("target") == "durable_agent_server"
+    native = _declares_durable(cwd)
     marker = "agent_server/" if target == "apps" and not native else "agent.py"
     if target == "apps" and not native:
         ok = (cwd / "agent_server").is_dir()
@@ -1079,7 +1079,10 @@ def check_target(cwd: Path) -> Check:
 
     # _detect_target only ever returns "apps" or "model-serving"; no failure mode to surface.
     detected = _detect_target(cwd)
-    runtime = _read_apx_agent_config(cwd / "pyproject.toml").get("target")
+    from ._inspection import static_agent_setting
+
+    runtime = static_agent_setting(cwd / "agent.py", "target") or _read_apx_agent_config(
+        cwd / "pyproject.toml").get("target")
     if isinstance(runtime, str) and runtime:
         detail = (
             f"{detected.target} destination ({detected.reason}); "
@@ -1093,10 +1096,10 @@ def check_target(cwd: Path) -> Check:
 def check_extras(cwd: Path) -> Check:
     if not _is_apx_project(cwd):
         return Check("Required extra", Status.SKIP, "not in an apx project", None)
-    from apx_agent.cli import _detect_target, _read_apx_agent_config
+    from apx_agent.cli import _declares_durable, _detect_target
 
     target = _detect_target(cwd).target
-    if _read_apx_agent_config(cwd / "pyproject.toml").get("target") == "durable_agent_server":
+    if _declares_durable(cwd):
         module, label, fix = (
             "databricks_agentkit.runtime.app", "AgentKit native runtime",
             "uv add 'apx-agent[agentbricks]'",

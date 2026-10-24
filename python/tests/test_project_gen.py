@@ -73,7 +73,7 @@ def test_managed_memory_generated_dependency(tmp_path: Path, target: str) -> Non
     generate_project(config, tmp_path)
     project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
     assert "apx-agent[eval,agentbricks]" in project["project"]["dependencies"]
-    assert project["tool"]["apx"]["agent"]["memory"]["store_name"] == "agent-memory"
+    assert _effective(tmp_path).memory.store_name == "agent-memory"
 
 
 def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> None:
@@ -93,8 +93,7 @@ def test_native_project_roundtrip_needs_no_bundle_cleanup(tmp_path: Path) -> Non
     verify(Artifact(str(tmp_path / "databricks.yml"), must_contain="shared-space"))
     verify(Artifact(str(tmp_path / "agent_server" / "start_server.py"), min_bytes=200,
                     must_contain="resolve_settings(agent, _load_agent_config())"))
-    loaded = _load_agent_config(pyproject_path=tmp_path / "pyproject.toml")
-    assert loaded == config
+    assert _effective(tmp_path).model_dump() == config.model_dump()
     namespace: dict[str, Any] = {}
     exec((tmp_path / "agent.py").read_text(), namespace)
     assert namespace["agent"]._name == config.name
@@ -135,8 +134,8 @@ def test_automatic_store_names_survive_project_and_native_manifest_roundtrip(tmp
     config = AgentConfig(name="orders", target="durable_agent_server",
                          memory={"type": "managed"}, session={"type": "managed"})
     generate_project(config, tmp_path)
-    verify(Artifact(str(tmp_path / "pyproject.toml"), must_contain="apx-orders-sessions"))
-    loaded = _load_agent_config(pyproject_path=tmp_path / "pyproject.toml")
+    verify(Artifact(str(tmp_path / "agent.py"), must_contain="apx-orders-sessions"))  # 3b-3b: on the agent
+    loaded = _effective(tmp_path)
     assert loaded.memory.store_name == "apx-orders-memory"
     assert loaded.session.store_name == "apx-orders-sessions"
     agent = LlmAgent(name="orders")
@@ -193,6 +192,22 @@ def minimal_config() -> AgentConfig:
 def _tool_names(agent: BaseAgent) -> list[str]:
     """Stable list of an agent's tool names, regardless of construction path."""
     return sorted(t.name for t in agent.collect_tools())
+
+
+def _effective(root: Path) -> AgentConfig:
+    """The generated project's effective config: its agent.py settings merged with its TOML (3b-3b)."""
+    import runpy
+
+    from apx_agent._inspection import _load_agent_config
+    from apx_agent._settings import resolve_settings
+
+    sys.path.insert(0, str(root))
+    try:
+        agent = runpy.run_path(str(root / "agent.py"))["agent"]
+    finally:
+        sys.path.remove(str(root))
+    toml = _load_agent_config(pyproject_path=root / "pyproject.toml")
+    return resolve_settings(agent, toml)
 
 
 def _exec_agent_py(src: str) -> dict[str, Any]:
@@ -294,11 +309,8 @@ def test_generate_project_graph_writes_agent_py_not_root_sub_agents(tmp_path: Pa
     generate_project(cfg, tmp_path)
     ns = _exec_agent_py((tmp_path / "agent.py").read_text())
 
-    with open(tmp_path / "pyproject.toml", "rb") as f:
-        data = tomllib.load(f)
-
-    agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
-    assert "sub_agents" not in agent_section
+    assert "$ROOT_REMOTE_IGNORED" not in (tmp_path / "agent.py").read_text()
+    assert "$ROOT_REMOTE_IGNORED" not in (tmp_path / "pyproject.toml").read_text()
     assert ns["sales"]._sub_agent_urls == ["$SALES_INSPECTOR_URL"]
 
 
@@ -500,24 +512,17 @@ def test_memory_section_present(tmp_path: Path, coworker_config: AgentConfig) ->
     """[tool.apx.agent.memory] section appears when config.memory is set."""
     generate_project(coworker_config, tmp_path)
 
-    with open(tmp_path / "pyproject.toml", "rb") as f:
-        data = tomllib.load(f)
-
-    memory_section = data.get("tool", {}).get("apx", {}).get("agent", {}).get("memory")
-    assert memory_section is not None, "[tool.apx.agent.memory] section missing"
-    assert memory_section.get("type") == "lakebase"
-    assert memory_section.get("table_name") == "main.payroll.apx_memory"
+    memory = _effective(tmp_path).memory
+    assert memory is not None, "memory missing from the generated project"
+    assert memory.type == "lakebase"
+    assert memory.table_name == "main.payroll.apx_memory"
 
 
 def test_memory_section_absent_when_not_configured(tmp_path: Path, minimal_config: AgentConfig) -> None:
     """[tool.apx.agent.memory] does NOT appear when config.memory is None."""
     generate_project(minimal_config, tmp_path)
 
-    with open(tmp_path / "pyproject.toml", "rb") as f:
-        data = tomllib.load(f)
-
-    memory_section = data.get("tool", {}).get("apx", {}).get("agent", {}).get("memory")
-    assert memory_section is None, "[tool.apx.agent.memory] should not be present"
+    assert _effective(tmp_path).memory is None, "memory should not be declared"
 
 
 def test_workflows_section_present_when_configured(tmp_path: Path) -> None:
@@ -536,13 +541,10 @@ def test_workflows_section_present_when_configured(tmp_path: Path) -> None:
     )
     generate_project(config, tmp_path)
 
-    with open(tmp_path / "pyproject.toml", "rb") as f:
-        data = tomllib.load(f)
-
-    workflows = data["tool"]["apx"]["agent"]["workflows"]
-    assert workflows[0]["id"] == "pricing-review"
-    assert workflows[0]["route"] == ["intelligence", "calibrate"]
-    assert workflows[0]["handoffs"] == []
+    workflows = _effective(tmp_path).workflows
+    assert workflows[0].id == "pricing-review"
+    assert workflows[0].route == ["intelligence", "calibrate"]
+    assert workflows[0].handoffs == []
 
 
 def test_workflows_toml_escapes_control_characters(tmp_path: Path) -> None:
@@ -560,19 +562,13 @@ def test_workflows_toml_escapes_control_characters(tmp_path: Path) -> None:
     )
     generate_project(config, tmp_path)
 
-    with open(tmp_path / "pyproject.toml", "rb") as f:
-        data = tomllib.load(f)
-
-    assert data["tool"]["apx"]["agent"]["workflows"][0]["title"] == "First\rSecond\x01"
+    assert _effective(tmp_path).workflows[0].title == "First\rSecond\x01"
 
 
 def test_workflows_section_absent_when_empty(tmp_path: Path, minimal_config: AgentConfig) -> None:
     generate_project(minimal_config, tmp_path)
 
-    with open(tmp_path / "pyproject.toml", "rb") as f:
-        data = tomllib.load(f)
-
-    assert "workflows" not in data["tool"]["apx"]["agent"]
+    assert _effective(tmp_path).workflows == []
 
 
 # ---------------------------------------------------------------------------
@@ -618,22 +614,18 @@ def test_databricks_yml_contains_agent_name(tmp_path: Path, coworker_config: Age
 # ---------------------------------------------------------------------------
 
 
-def test_module_line_present_when_template_set(tmp_path: Path, coworker_config: AgentConfig) -> None:
-    """module = \"agent:agent\" IS written when a template is set (it codegens agent.py)."""
+def test_no_agent_table_or_module_line_when_template_set(tmp_path: Path, coworker_config: AgentConfig) -> None:
+    """3b-3b: the template codegens agent.py, so pyproject carries no [tool.apx.agent] or module line."""
     generate_project(coworker_config, tmp_path)
     content = (tmp_path / "pyproject.toml").read_text()
-    assert 'module = "agent:agent"' in content, (
-        "module = 'agent:agent' should be present — the template codegens agent.py"
-    )
+    assert "[tool.apx.agent" not in content and "module =" not in content
 
 
-def test_module_line_present_when_no_template(tmp_path: Path, minimal_config: AgentConfig) -> None:
-    """module = \"agent:agent\" IS written when no template is set."""
+def test_no_agent_table_or_module_line_when_no_template(tmp_path: Path, minimal_config: AgentConfig) -> None:
+    """3b-3b: agent.py is the agent; pyproject carries no [tool.apx.agent] or module line."""
     generate_project(minimal_config, tmp_path)
     content = (tmp_path / "pyproject.toml").read_text()
-    assert 'module = "agent:agent"' in content, (
-        "module = 'agent:agent' should be present when no template is set"
-    )
+    assert "[tool.apx.agent" not in content and "module =" not in content
 
 
 # ---------------------------------------------------------------------------
@@ -797,13 +789,8 @@ def test_explicit_knowledge_is_emitted_by_generate_project(tmp_path: Path) -> No
     config = AgentConfig(name="my-agent", knowledge="./.apx/okf")
     generate_project(config, tmp_path)
 
-    with open(tmp_path / "pyproject.toml", "rb") as f:
-        data = tomllib.load(f)
-
-    agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
-    assert agent_section.get("knowledge") == "./.apx/okf", (
-        f"Explicit config.knowledge must be emitted, got: {agent_section.get('knowledge')!r}"
-    )
+    knowledge = _effective(tmp_path).knowledge
+    assert knowledge == "./.apx/okf", f"Explicit config.knowledge must be emitted, got: {knowledge!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +825,7 @@ def test_generate_project_emits_declared_binding_without_transport_in_agent_py(
 
     with open(tmp_path / "pyproject.toml", "rb") as f:
         generated = tomllib.load(f)
-    assert generated["tool"]["apx"]["agent"]["bindings"] == {
+    assert generated["tool"]["apx"]["deploy"]["bindings"] == {
         "pricing": "$PRICING_APP_URL"
     }
 
