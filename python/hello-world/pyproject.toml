@@ -30,4 +30,3 @@ instructions = "You are a helpful assistant."
 # that imports + wraps it for the Databricks Apps runtime.
 module = "agent:agent"
 # OKF grounding substrate — Grounding tab + DataAgent instructions.
-knowledge = "./.apx/okf"

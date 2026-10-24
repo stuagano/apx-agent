@@ -342,7 +342,7 @@
   "description": "An apx-agent on Databricks Apps.",
   "examples": [],
   "instructions_sha256": "a01b5bc2ca178e171955ce342ce4cd3a53bb3c736ce76ae0dfb879b58d6956d1",
-  "knowledge": "./.apx/okf",
+  "knowledge": null,
   "max_iterations": 10,
   "memory": null,
   "model": "databricks-claude-sonnet-4-6",
