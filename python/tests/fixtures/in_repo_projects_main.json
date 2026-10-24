@@ -358,5 +358,197 @@
    "warehouse_id": null
   },
   "target": "durable_agent_server"
+ },
+ "python/samples-accuweather": {
+  "description": "An apx-agent on Databricks Apps.",
+  "examples": [
+   "Show me a few sample rows from the data you can access",
+   "What questions can you answer?"
+  ],
+  "instructions_sha256": "01dc05499efc3a1fd11c5985b8f350d6bfa5b919e42c962076840f01bdee86fc",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "samples-accuweather",
+  "session": {
+   "auto_create": true,
+   "database": "samples_accuweather",
+   "host": "${LAKEBASE_HOST}",
+   "store_name": null,
+   "table_name": null,
+   "type": "lakebase",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "responses_agent"
+ },
+ "python/samples-bakehouse": {
+  "description": "An apx-agent on Databricks Apps.",
+  "examples": [
+   "Show me a few sample rows from the data you can access",
+   "What questions can you answer?"
+  ],
+  "instructions_sha256": "454215b78c9b41c276670ed1c40e905b9b001581b288239720cde7b0d2a2a88f",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "samples-bakehouse",
+  "session": {
+   "auto_create": true,
+   "database": "samples_bakehouse",
+   "host": "${LAKEBASE_HOST}",
+   "store_name": null,
+   "table_name": null,
+   "type": "lakebase",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "responses_agent"
+ },
+ "python/samples-healthverity": {
+  "description": "An apx-agent on Databricks Apps.",
+  "examples": [
+   "Show me a few sample rows from the data you can access",
+   "What questions can you answer?"
+  ],
+  "instructions_sha256": "ee428e62b7486df9b9febd6b1fb88243ca0b280273e290296aea3f641f16e4b0",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "samples-healthverity",
+  "session": {
+   "auto_create": true,
+   "database": "samples_healthverity",
+   "host": "${LAKEBASE_HOST}",
+   "store_name": null,
+   "table_name": null,
+   "type": "lakebase",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "responses_agent"
+ },
+ "python/samples-hub": {
+  "description": "Hub that routes to per-schema sample DataAgent Apps (A2A peers).",
+  "examples": [
+   "Show me a few sample rows from the data you can access",
+   "What questions can you answer?"
+  ],
+  "instructions_sha256": "2f630a9f0c4f6fe00b5ee2416b3d6fa6bde5927227a167ac85e83f38ae7af1a6",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "samples-hub",
+  "session": {
+   "auto_create": true,
+   "database": "samples_hub",
+   "host": "${LAKEBASE_HOST}",
+   "store_name": null,
+   "table_name": null,
+   "type": "lakebase",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "responses_agent"
+ },
+ "python/samples-tpcds-sf1": {
+  "description": "An apx-agent on Databricks Apps.",
+  "examples": [
+   "Show me a few sample rows from the data you can access",
+   "What questions can you answer?"
+  ],
+  "instructions_sha256": "72976b01f77b809c50d48f6c4040202f11333d71476d7e3b3c7275b9123f11ed",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "samples-tpcds-sf1",
+  "session": {
+   "auto_create": true,
+   "database": "samples_tpcds_sf1",
+   "host": "${LAKEBASE_HOST}",
+   "store_name": null,
+   "table_name": null,
+   "type": "lakebase",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "responses_agent"
+ },
+ "python/samples-tpcds-sf1000": {
+  "description": "An apx-agent on Databricks Apps.",
+  "examples": [
+   "Show me a few sample rows from the data you can access",
+   "What questions can you answer?"
+  ],
+  "instructions_sha256": "bc6108780d420a214b708561c081f48b8ab03bdc110b693b1cfa31d665010526",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "samples-tpcds-sf1000",
+  "session": {
+   "auto_create": true,
+   "database": "samples_tpcds_sf1000",
+   "host": "${LAKEBASE_HOST}",
+   "store_name": null,
+   "table_name": null,
+   "type": "lakebase",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "responses_agent"
+ },
+ "python/samples-tpch": {
+  "description": "An apx-agent on Databricks Apps.",
+  "examples": [
+   "Show me a few sample rows from the data you can access",
+   "What questions can you answer?"
+  ],
+  "instructions_sha256": "098c4797dc3677b111270296588281e4414a57ff6208511d9c75afc39d6262f3",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "samples-tpch",
+  "session": {
+   "auto_create": true,
+   "database": "samples_tpch",
+   "host": "${LAKEBASE_HOST}",
+   "store_name": null,
+   "table_name": null,
+   "type": "lakebase",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "responses_agent"
+ },
+ "python/samples-wanderbricks": {
+  "description": "An apx-agent on Databricks Apps.",
+  "examples": [
+   "Show me a few sample rows from the data you can access",
+   "What questions can you answer?"
+  ],
+  "instructions_sha256": "6b8c378daa84f00f22718a0fb2899ca9b5c49091650fca3929c5cdfda195de52",
+  "knowledge": null,
+  "max_iterations": 10,
+  "memory": null,
+  "model": "databricks-claude-sonnet-4-6",
+  "name": "samples-wanderbricks",
+  "session": {
+   "auto_create": true,
+   "database": "samples_wanderbricks",
+   "host": "${LAKEBASE_HOST}",
+   "store_name": null,
+   "table_name": null,
+   "type": "lakebase",
+   "validate_at_boot": true,
+   "warehouse_id": null
+  },
+  "target": "responses_agent"
  }
 }
