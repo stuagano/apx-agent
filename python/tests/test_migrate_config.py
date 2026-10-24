@@ -366,3 +366,11 @@ def test_an_overlay_on_an_agent_without_instructions_is_an_error() -> None:
 
     with pytest.raises(TypeError, match="LoopAgent has no instructions to overlay"):
         LoopAgent(agent=Agent(name="leaf", tools=[])).overlay_instructions("Be terse.")
+
+
+def test_a_target_declared_on_the_agent_validates_its_session(tmp_path: Path) -> None:
+    session = {"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "p"}
+    text = ('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\n\n[tool.apx.agent.session]\n'
+            'type = "lakebase"\nhost = "${LAKEBASE_HOST}"\ndatabase = "p"\n')
+    agent = Agent(name="p", tools=[], target="responses_agent", session=session)
+    assert plan_migration(_write(tmp_path, text), agent).removed_agent_table

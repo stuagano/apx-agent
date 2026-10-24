@@ -139,7 +139,8 @@ def plan_migration(pyproject: Path, agent: BaseAgent) -> Migration:
     after = AgentConfig.model_validate(_fold_deploy_table(deploy_only, {}))
     runtime = {k: v for k, v in raw.items()
                if k in AgentConfig.model_fields and k not in ("name", "host", "deploy")}
-    missing = {k: v for k, v in runtime.items() if not _covered(k, v, agent, after, raw.get("target"), after.name)}
+    target = raw.get("target", agent.target)  # the effective target: TOML first, else the agent's
+    missing = {k: v for k, v in runtime.items() if not _covered(k, v, agent, after, target, after.name)}
 
     moved = ("name", "host", "deploy", "module", *DEV_KEYS, *REGISTRATION_KEYS)
     remaining = {k: v for k, v in raw.items() if k not in moved}
