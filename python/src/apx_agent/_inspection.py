@@ -290,6 +290,11 @@ def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str,
     fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields} if section else {}
     if section_path == _AGENT_SECTION:
         fields = _fold_deploy_table(data, fields)
+        if fields and "target" not in fields:
+            # Deploy routes on target before importing agent.py; read a literal one statically (3b-3b).
+            target = static_agent_setting(path.parent / "agent.py", "target")
+            if target is not None:
+                fields["target"] = target
     # Deploy-envelope keys alone do not declare an agent config.
     return fields if fields else None
 

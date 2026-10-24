@@ -36,3 +36,11 @@ def test_description_toml_wins_without_conflict() -> None:
 
 def test_an_empty_description_is_not_a_declaration() -> None:
     assert "description" not in resolve_settings(Agent(name="a", tools=[]), None).model_fields_set
+
+
+def test_loader_takes_target_from_agent_py_when_toml_omits_it(tmp_path) -> None:
+    from apx_agent._inspection import _load_agent_config
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nhost = "apps"\n')
+    (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', target='responses_agent', tools=[])\n")
+    assert _load_agent_config(pyproject_path=tmp_path / "pyproject.toml").target == "responses_agent"
