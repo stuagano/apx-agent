@@ -1498,26 +1498,7 @@ dev = [
 ]
 
 <APX_AGENT_SOURCE>
-[tool.apx.agent]
-name = "<APP_NAME>"
-# Omitted target means durable_agent_server. This compatibility layout still
-# runs MLflow AgentServer, so the contract is written explicitly.
-target = "responses_agent"
-description = "An apx-agent on Databricks Apps."
-model = "databricks-claude-sonnet-4-6"
-<CATALOG_SCHEMA_CONFIG_BLOCK><REGISTERED_MODEL_CONFIG_BLOCK>instructions = "You are a helpful assistant."
-<KNOWLEDGE_LINE># ADK-style layout: the user's agent definition lives at top-level
-# ``agent.py``. ``agent_server/start_server.py`` is framework boilerplate
-# that imports + wraps it for the Databricks Apps runtime.
-module = "agent:agent"
-
-# Starter prompts shown on the agent's landing page (clickable; fill the chat
-# box so you can edit before sending). Tailor these to your agent's data/tools.
-examples = [
-    "Show me a few sample rows from the data you can access",
-    "What questions can you answer?",
-]
-
+<DEPLOY_BLOCK># Runtime settings (model, target, session, ...) live on the agent in agent.py.
 # Declare tools with Python factories in tools/ and import them in agent.py.
 # Pass them to tools=[...] (or extra_tools=[...] for DataAgent).
 # See docs/tools/overview.md. AgentKit's agent.toml is generated at build time.
@@ -1579,7 +1560,7 @@ _SCHEMA = "<SCHEMA>"
 agent = DataAgent(
     os.environ.get("APX_CATALOG", _CATALOG),
     os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS>,
-    name="<APP_NAME>"<INSTRUCTIONS_ARG><KNOWLEDGE_ARG>,
+    name="<APP_NAME>"<INSTRUCTIONS_ARG><KNOWLEDGE_ARG><SETTINGS_ARG>,
 )
 '''
 
@@ -1610,7 +1591,7 @@ from apx_agent import LlmAgent
 agent = LlmAgent(
     tools=[],
     instructions=<INSTRUCTIONS_VALUE>,
-    name="<APP_NAME>",
+    name="<APP_NAME>"<SETTINGS_ARG>,
 )
 '''
 
@@ -1633,7 +1614,7 @@ _SCHEMA = "<SCHEMA>"
 agent = CoworkerAgent(
     os.environ.get("APX_CATALOG", _CATALOG),
     os.environ.get("APX_SCHEMA", _SCHEMA)<EXTRA_TOOLS><PERSONA_ARG><JOIN_KEY_ARG><OBJECTIVE_ARG>,
-    name="<APP_NAME>"<INSTRUCTIONS_ARG><KNOWLEDGE_ARG>,
+    name="<APP_NAME>"<INSTRUCTIONS_ARG><KNOWLEDGE_ARG><SETTINGS_ARG>,
 )
 '''
 
@@ -1759,29 +1740,12 @@ if __name__ == "__main__":
 '''
 
 
-_SCAFFOLD_MEMORY_BLOCK = '''
-# Uncomment to enable persistent memory on Lakebase. Set the LAKEBASE_HOST env
-# var to point at an existing Lakebase database (tables auto-create on first use).
-# [tool.apx.agent.memory]
-# type = "lakebase"
-# host = "${LAKEBASE_HOST}"
-# database = "<APP_NAME_SLUG>"
-# table_name = "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_memory"
-# embedding_model = "databricks-bge-large-en"
-# embedding_dim = 1024
-'''
-
-# Default session backend: durable history + keyed state on Databricks Lakebase.
-# `host` is the Lakebase endpoint DNS (a project endpoint or instance DNS); set the
-# LAKEBASE_HOST env var in your app to point at an existing Lakebase database. Until
-# it's set, sessions fall back to non-durable in-memory. The per-agent tables
-# auto-create on first use. Pass --no-lakebase at scaffold time (or delete this
-# block) to opt out.
-_SCAFFOLD_SESSION_LAKEBASE_BLOCK = '''
-[tool.apx.agent.session]
-type = "lakebase"
-host = "${LAKEBASE_HOST}"
-database = "<APP_NAME_SLUG>"
+_SCAFFOLD_MEMORY_HINT = '''
+# Uncomment to enable persistent memory on Lakebase (set LAKEBASE_HOST; tables auto-create),
+# passing it as an argument to the agent constructor above:
+# memory={"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "<APP_NAME_SLUG>",
+#         "table_name": "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_memory",
+#         "embedding_model": "databricks-bge-large-en", "embedding_dim": 1024}
 '''
 
 # Spliced into databricks.yml's `variables:`/`config.env:` blocks only when
@@ -4238,6 +4202,18 @@ def _scaffold_apps(
         if (catalog and schema) else ""
     )
 
+    # Runtime settings live on the agent (3b-3c): literal kwargs on the root constructor, so
+    # deploy's static pre-import read sees target/session. The native runtime injects its own.
+    settings_arg = "" if runtime == "durable_agent_server" else (
+        ', target="responses_agent", model="databricks-claude-sonnet-4-6", '
+        'description="An apx-agent on Databricks Apps.", '
+        'examples=["Show me a few sample rows from the data you can access", "What questions can you answer?"]'
+        + (f', session={{"type": "lakebase", "host": "${{LAKEBASE_HOST}}", "database": "{name_slug}"}}'
+           if lakebase else "")
+    )
+    registration = catalog_schema_config_block + registered_model_config_block
+    deploy_block = f"[tool.apx.deploy]\n{registration}\n" if registration else ""
+
     def _sub(template: str) -> str:
         return (
             template.replace("<CATALOG_SCHEMA_VARS_BLOCK>\n", catalog_schema_vars_block)
@@ -4263,15 +4239,15 @@ def _scaffold_apps(
             .replace("<APX_AGENT_SOURCE>", apx_source)
             .replace("<KNOWLEDGE_LINE>", knowledge_line)
             .replace("<KNOWLEDGE_ARG>", knowledge_arg)
+            .replace("<SETTINGS_ARG>", settings_arg)
+            .replace("<DEPLOY_BLOCK>", deploy_block)
         )
 
     # Enable a durable Lakebase session store by default (--no-lakebase opts out to
     # non-durable in-memory sessions). Session persistence needs only an instance +
     # database, so it's emitted regardless of whether a UC catalog/schema resolved.
     # The commented memory block is added only when a UC catalog/schema is known.
-    session_block = _SCAFFOLD_SESSION_LAKEBASE_BLOCK if lakebase else ""
-    memory_block = _SCAFFOLD_MEMORY_BLOCK if (catalog and schema) else ""
-    pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT + session_block + memory_block)
+    pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT)
 
     from ._project_gen import _START_HOST_CONTENT, _START_SERVER_CONTENT
 
@@ -4294,6 +4270,12 @@ def _scaffold_apps(
         "scripts/quickstart.py": _sub(_SCAFFOLD_APPS_QUICKSTART),
         "tests/test_agent_imports.py": _sub(_SCAFFOLD_APPS_TEST_IMPORT),
     }
+    if runtime != "durable_agent_server":
+        # The TOML's generic instructions used to overlay the data/coworker grounding (3b-3c).
+        if template != "base" and not instructions_arg:
+            files["agent.py"] += '\nagent.overlay_instructions("You are a helpful assistant.")\n'
+        if catalog and schema:
+            files["agent.py"] += _sub(_SCAFFOLD_MEMORY_HINT)
     if runtime == "durable_agent_server":
         from ._models import AgentConfig
         from ._project_gen import _build_pyproject

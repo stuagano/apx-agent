@@ -5519,9 +5519,15 @@ def test_describe_spec_empty_instructions_hints(
     assert "empty" in res.output.lower()
 
 
-def test_scaffold_apps_pyproject_ships_examples() -> None:
-    from apx_agent.cli import _SCAFFOLD_APPS_PYPROJECT
-    assert "examples = [" in _SCAFFOLD_APPS_PYPROJECT
+def test_scaffold_apps_ships_examples(tmp_path) -> None:
+    """3b-3c: starter prompts are an agent setting, declared on the scaffolded agent."""
+    from apx_agent._inspection import static_agent_setting
+    from apx_agent.cli import main as _main
+
+    args = ["agents", "scaffold", "orders", "--target", "apps", "--template", "base", "--runtime",
+            "responses_agent", "--dir", str(tmp_path), "--no-interactive"]
+    assert CliRunner().invoke(_main, args).exit_code == 0
+    assert static_agent_setting(tmp_path / "orders" / "agent.py", "examples")
 
 
 class TestScaffoldSchemaManifest:

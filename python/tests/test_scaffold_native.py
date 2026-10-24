@@ -62,8 +62,8 @@ def test_force_scaffold_preserves_existing_runtime(tmp_path: Path, runtime):
     assert first.exit_code == 0, first.output
     repeated = CliRunner().invoke(cli.main, args + ["--force"])
     assert repeated.exit_code == 0, repeated.output
-    from apx_agent._inspection import _load_agent_config
-    assert _load_agent_config(pyproject_path=tmp_path / "orders" / "pyproject.toml").target == runtime
+    from apx_agent._inspection import static_agent_setting
+    assert static_agent_setting(tmp_path / "orders" / "agent.py", "target") == runtime  # 3b-3c
     before = (tmp_path / "orders" / "pyproject.toml").read_bytes()
     other = "responses_agent" if runtime == "durable_agent_server" else "durable_agent_server"
     rejected = CliRunner().invoke(cli.main, args + ["--force", "--runtime", other])
@@ -90,8 +90,8 @@ def test_force_preserves_legacy_project_without_runtime_config(tmp_path):
     result = CliRunner().invoke(cli.main, ["agents", "scaffold", "orders", "--here", "--dir", str(tmp_path),
                                         "--template", "base", "--no-interactive", "--force"])
     assert result.exit_code == 0, result.output
-    from apx_agent._inspection import _load_agent_config
-    assert _load_agent_config(pyproject_path=root / "pyproject.toml").target == "responses_agent"
+    from apx_agent._inspection import static_agent_setting
+    assert static_agent_setting(root / "agent.py", "target") == "responses_agent"  # 3b-3c
 
 
 @pytest.mark.parametrize("options", [["--lakebase"], ["--ci", "github"], ["--target", "model-serving", "--runtime", "durable_agent_server"]])

@@ -280,7 +280,7 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
     assert apx.extras == {"eval", "lakebase"}
     assert not any(dep.name == "mlflow" for dep in requirements)
 
-    agent_cfg = parsed["tool"]["apx"]["agent"]
+    agent_cfg = parsed["tool"]["apx"]["deploy"]  # 3b-3c: registration keys live in [tool.apx.deploy]
     assert agent_cfg["catalog"] == "samples"
     assert agent_cfg["schema"] == "tpch"
     assert agent_cfg["registered_model"] == "samples.tpch.my_agent"
@@ -318,7 +318,7 @@ def test_scaffold_apps_base_omits_uc_registration_config(tmp_path: Path) -> None
     assert result.exit_code == 0, result.output
 
     parsed = tomllib.loads((tmp_path / "my_agent" / "pyproject.toml").read_text())
-    agent_cfg = parsed["tool"]["apx"]["agent"]
+    agent_cfg = parsed.get("tool", {}).get("apx", {}).get("deploy", {})  # 3b-3c
     assert "catalog" not in agent_cfg
     assert "schema" not in agent_cfg
     assert "registered_model" not in agent_cfg
@@ -356,7 +356,9 @@ def test_scaffold_apps_defaults_to_lakebase_session(tmp_path: Path) -> None:
 
     content = (tmp_path / "my_agent" / "pyproject.toml").read_text()
     parsed = tomllib.loads(content)
-    session = parsed["tool"]["apx"]["agent"]["session"]
+    from apx_agent._inspection import static_agent_setting
+
+    session = static_agent_setting(tmp_path / "my_agent" / "agent.py", "session")  # 3b-3c: on the agent
     assert session["type"] == "lakebase"
     assert session["host"] == "${LAKEBASE_HOST}"  # endpoint from env
     assert session["database"] == "my_agent"  # per-agent database (name slug)
