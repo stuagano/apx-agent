@@ -16,7 +16,6 @@ from apx_agent._inspection import _load_agent_config
 
 _REPO = Path(__file__).resolve().parents[2]
 _MAIN = json.loads((Path(__file__).parent / "fixtures" / "in_repo_projects_main.json").read_text())
-_NOT_A_PROJECT = {"examples/graph_spec"}  # a YAML graph spec fed to generate_project (sub-project 4)
 _MIGRATED: dict[str, str] = {  # project dir -> its deploy name
     "python/examples/bakehouse-agent": "bakehouse-agent",
     "python/examples/customer_triage": "customer_triage",
@@ -91,8 +90,8 @@ def _tracked_projects() -> list[str]:
 
 def test_no_project_declares_the_agent_table() -> None:
     offenders = sorted(
-        d for d in _tracked_projects() if d not in _NOT_A_PROJECT
-        and "agent" in tomllib.loads((_REPO / d / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}))
+        d for d in _tracked_projects()
+        if "agent" in tomllib.loads((_REPO / d / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}))
     assert offenders == [], "run `apx-agent agents migrate-config` in: " + ", ".join(offenders)
 
 

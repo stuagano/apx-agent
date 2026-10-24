@@ -948,11 +948,11 @@ def test_configuration_doc_covers_all_graph_kinds() -> None:
 
 def test_example_graph_spec_compiles(tmp_path: Path) -> None:
     """AC-7: the committed example graph spec compiles and execs to its declared root."""
-    from apx_agent._inspection import _load_agent_config
+    from apx_agent._yaml_spec import load_spec
 
-    example = _REPO_ROOT / "examples" / "graph_spec" / "pyproject.toml"
-    config = _load_agent_config(pyproject_path=example)
-    assert config is not None
+    config = load_spec(_REPO_ROOT / "python" / "examples" / "graph_spec.yaml")
+    assert (config.name, config.model) == ("graph-spec-example", "databricks-claude-sonnet-4-6")
+    assert sorted(config.agents) == ["sales", "support"] and config.root is not None
 
     generate_project(config, tmp_path)
     ns = _exec_agent_py((tmp_path / "agent.py").read_text())

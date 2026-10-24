@@ -1,0 +1,23 @@
+# A YAML graph spec: leaves under `agents`, the composition under `root`.
+# `apx-agent agents run python/examples/graph_spec.yaml` (or deploy) materializes a
+# sibling graph_spec/ project whose agent.py builds the RouterAgent tree in code.
+# See docs/reference/configuration.md ("YAML graph specs").
+name: graph-spec-example
+model: databricks-claude-sonnet-4-6
+
+agents:
+  sales:
+    type: data
+    catalog: main
+    schema: sales
+    description: Answers sales and revenue questions.
+
+  support:
+    type: agent
+    instructions: Answer customer support questions.
+    description: Handles support tickets.
+
+root:
+  type: router
+  agents: [sales, support]
+  instructions: Route to the right specialist.
