@@ -350,3 +350,19 @@ def test_a_different_overlay_is_still_missing(tmp_path: Path) -> None:
     agent = Agent(name="p", tools=[], instructions="Grounded.")
     agent.overlay_instructions("Be terse.")
     assert plan_migration(_write(tmp_path, _PERSONA), agent).missing == {"instructions": "You are a helpful assistant."}
+
+
+def test_a_router_root_takes_an_overlay_like_finalize_did(tmp_path: Path) -> None:
+    from apx_agent import RouterAgent
+
+    router = RouterAgent(agents=[Agent(name="leaf", tools=[], description="d")], instructions="Route.")
+    router.overlay_instructions("You are a helpful assistant.")
+    assert router._instructions == "You are a helpful assistant.\n\n---\n\nRoute."
+    assert plan_migration(_write(tmp_path, _PERSONA), router).removed_agent_table
+
+
+def test_an_overlay_on_an_agent_without_instructions_is_an_error() -> None:
+    from apx_agent import LoopAgent
+
+    with pytest.raises(TypeError, match="LoopAgent has no instructions to overlay"):
+        LoopAgent(agent=Agent(name="leaf", tools=[])).overlay_instructions("Be terse.")
