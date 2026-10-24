@@ -573,6 +573,9 @@ def finalize_agent(
     if config is None:
         config = _load_agent_config(pyproject_path=pyproject_path)
     if config is not None:
+        from ._settings import resolve_settings  # noqa: PLC0415
+
+        config = resolve_settings(agent, config)  # settings declared on the agent apply on every launcher
         apply_config_knobs(agent, config)
         apply_config_service_policies(agent, config)
         _apply_remote_leaf_bindings(agent, config.bindings)

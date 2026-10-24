@@ -1432,3 +1432,33 @@ class TestSetupMcpMountError:
         assert app.state.mcp_mount_error is None
         assert app.state.mcp_server is None
         assert hasattr(result, "__enter__")
+
+
+_DEPLOY_ONLY = '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nname = "p"\n'
+
+
+def test_finalize_applies_guardrails_declared_on_the_agent(tmp_path) -> None:
+    # The Apps responses launcher calls finalize_agent(agent, _load_agent_config()): TOML only.
+    from apx_agent import Agent
+    from apx_agent._inspection import _load_agent_config
+    from apx_agent._wiring import finalize_agent
+
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text(_DEPLOY_ONLY)
+    agent = Agent(name="p", tools=[], guardrails={"injection_detection": True})
+    finalize_agent(agent, _load_agent_config(pyproject_path=pp), pyproject_path=str(pp))
+    assert len(agent._input_guardrails) == 1
+
+
+def test_finalize_on_an_already_resolved_config_is_not_a_conflict(tmp_path) -> None:
+    from apx_agent import Agent
+    from apx_agent._inspection import _load_agent_config
+    from apx_agent._settings import resolve_settings
+    from apx_agent._wiring import finalize_agent
+
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text(_DEPLOY_ONLY)
+    agent = Agent(name="p", tools=[], model="m", guardrails={"injection_detection": True})
+    config = resolve_settings(agent, _load_agent_config(pyproject_path=pp))
+    finalize_agent(agent, config, pyproject_path=str(pp))
+    assert len(agent._input_guardrails) == 1
