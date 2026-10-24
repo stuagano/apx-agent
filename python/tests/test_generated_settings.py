@@ -105,3 +105,36 @@ def test_graph_root_rejects_llm_only_fields(tmp_path: Path) -> None:
     })
     with pytest.raises(ValueError, match="instructions can't go on a graph root; set it on a leaf in agents:"):
         generate_project(spec, tmp_path)
+
+
+def test_template_instructions_overlay_the_grounding(tmp_path: Path, monkeypatch) -> None:
+    spec = AgentConfig.model_validate({"name": "hr", "model": "m", "instructions": "Speak like a pirate.",
+                                       "template": {"name": "data", "catalog": "main", "schema": "hr",
+                                                    "tables": {"emp": ["id", "name"]}}})
+    generate_project(spec, tmp_path)
+    agent = _load_generated(tmp_path, monkeypatch)
+    assert "Speak like a pirate." in agent._instructions
+    assert "main.hr" in agent._instructions  # the schema grounding is kept, not replaced
+
+
+def test_third_party_template_target_is_visible_before_import(tmp_path: Path) -> None:
+    from apx_agent._inspection import _load_agent_config
+
+    spec = AgentConfig.model_validate({"name": "tp", "model": "m", "target": "responses_agent",
+                                       "template": {"name": "acme-custom", "x": 1}})
+    generate_project(spec, tmp_path)
+    assert "agent._set_settings" not in (tmp_path / "agent.py").read_text()
+    assert _load_agent_config(pyproject_path=tmp_path / "pyproject.toml").target == "responses_agent"
+
+
+def test_none_settings_are_undeclared() -> None:
+    agent = Agent(name="a", tools=[], model=None, target=None)
+    assert agent.model is None and agent.target is None
+
+
+def test_third_party_template_routes_llm_only_fields_into_its_spec(tmp_path: Path) -> None:
+    spec = AgentConfig.model_validate({"name": "tp2", "model": "m", "temperature": 0.2,
+                                       "template": {"name": "acme-custom"}})
+    source = __import__("apx_agent._project_gen", fromlist=["render_agent_py"]).render_agent_py(spec)
+    assert "'temperature': 0.2" in source  # in the build spec
+    assert "agent.configure(model='m')" in source  # settings only

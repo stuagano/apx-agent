@@ -149,6 +149,14 @@ class BaseAgent:
     _overrides: Mapping[str, Any] = MappingProxyType({})
     """Per-agent values that differ from the app's; written by resolve_settings."""
 
+    def configure(self, **settings: Any) -> None:
+        """Declare apx runtime settings after construction (same keys as the constructor's).
+
+        Generated agent.py uses it for agents built by a third-party template, whose
+        build() takes no settings. Literal keywords here are read statically, like the
+        constructor's, so deploy sees target/memory/session before importing agent.py."""
+        self._set_settings(settings)
+
     def _set_settings(self, settings: Mapping[str, Any]) -> None:
         unknown = sorted(set(settings) - set(CompositeSettings.__annotations__))
         if unknown:
@@ -171,7 +179,7 @@ class BaseAgent:
         if isinstance(description, str):
             self._description = description  # the attribute LlmAgent uses for its own description
         for key, value in settings.items():
-            if key == "description":
+            if key == "description" or value is None:  # None means "not declared here"
                 continue
             # Generated agent.py passes dicts; validate into the AgentConfig field's type (3b-3b).
             setattr(self, key, TypeAdapter(AgentConfig.model_fields[key].annotation).validate_python(value))
@@ -491,6 +499,17 @@ class LlmAgent(BaseAgent):
             yield f"\n\n---\n**[Content filtered]** {replacement}"
         await self._invoke_callback(self._after_agent_callback, full_text)
 
+
+    def overlay_instructions(self, overlay: str) -> None:
+        """Compose *overlay* above this agent's own (e.g. schema-grounded) instructions, once.
+
+        The same composition [tool.apx.agent] instructions always got (persona above
+        grounding); generated agent.py uses it for template-built agents (3b-3b)."""
+        from ._prompt_assembly import compose_instructions
+
+        if overlay.strip() and not getattr(self, "_persona_overlaid", False):
+            self._instructions = compose_instructions(base=self._instructions, overlay=overlay)
+            self._persona_overlaid = True
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""
         from fastapi import Depends  # noqa: PLC0415

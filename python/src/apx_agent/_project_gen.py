@@ -620,11 +620,15 @@ def render_agent_py(
     if config.knowledge is not None and "knowledge" not in spec:
         spec["knowledge"] = config.knowledge
     target = _TEMPLATE_TARGETS.get(name or "")
+    declared = _settings_kwargs(config, llm_root=True)
+    # Top-level instructions overlay a template's grounding (they always composed, never
+    # replaced); the other declared fields are constructor/configure kwargs (3b-3b).
+    overlay = declared.pop("instructions", None)
     if target is None:
-        # LlmAgent-only fields reach a third-party template through its build spec (3b-3b).
-        for key, value in _settings_kwargs(config, llm_root=True).items():
-            if key in _LLM_ONLY:
-                spec.setdefault(key, value)
+        # LlmAgent-only fields reach a third-party template through its build spec;
+        # settings go through configure() after build (3b-3b).
+        for key in [k for k in declared if k in _LLM_ONLY]:
+            spec.setdefault(key, declared.pop(key))
         # Preserve third-party template construction; tools are already callables.
         blocks.insert(0, "from apx_agent._template import template_registry")
         values = ", ".join(
@@ -632,16 +636,14 @@ def render_agent_py(
             for key, value in spec.items()
         )
         blocks.append(f"agent = template_registry.build({name!r}, {{{values}}})")
-        declared = _settings_kwargs(config, llm_root=True)
-        settings = {k: v for k, v in declared.items() if k not in _LLM_ONLY}
-        if settings:
-            # build() takes no settings; apply them the way agent constructors do (3b-3b).
-            blocks.append(f"agent._set_settings({settings!r})")
+        if declared:
+            # build() takes no settings; configure() takes the same keys, read statically.
+            blocks.append(f"agent.configure({_ctor_kwargs(declared)})")
     else:
         module, cls = target
         # Declared top-level settings beat the template spec's own keys: they used to live in
         # [tool.apx.agent], which won over the template's knobs (3b-3b keeps that precedence).
-        spec.update(_settings_kwargs(config, llm_root=True))
+        spec.update(declared)
         catalog = spec.pop("catalog", None)
         schema = spec.pop("schema", None)
         spec.setdefault("name", config.name)
@@ -649,6 +651,8 @@ def render_agent_py(
         args = ", ".join([*pos, _ctor_kwargs(spec)]).rstrip(", ")
         blocks.insert(0, f"from {module} import {cls}")
         blocks.append(f"agent = {cls}({args})")
+    if overlay:
+        blocks.append(f"agent.overlay_instructions({overlay!r})")
     return "\n\n".join(blocks) + "\n"
 
 
