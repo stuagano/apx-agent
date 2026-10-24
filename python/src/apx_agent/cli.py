@@ -275,11 +275,6 @@ def _effective_config(cwd: Path, module: str = "agent:agent") -> "AgentConfig | 
     except Exception as exc:  # noqa: BLE001 — any import-time failure is the user's agent.py
         raise click.ClickException(f"could not import agent.py: {type(exc).__name__}: {exc}") from exc
     config = resolve_settings(agent, toml)
-    # description is a constructor argument, not a merged setting: fill it from the
-    # root agent only where the TOML leaves it unset (no new conflict rule).
-    description = getattr(agent, "_description", None)
-    if description and "description" not in config.model_fields_set:
-        config = config.model_copy(update={"description": description})
     return config
 
 
