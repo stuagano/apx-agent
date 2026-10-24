@@ -162,12 +162,12 @@ class TestScaffoldEmitsOKF:
         # Bundle must exist
         assert (target / ".apx" / "okf" / "datasets" / "s.md").is_file()
 
-        # pyproject must declare the knob
-        with open(target / "pyproject.toml", "rb") as f:
-            data = tomllib.load(f)
-        agent_section = data.get("tool", {}).get("apx", {}).get("agent", {})
-        assert agent_section.get("knowledge") == "./.apx/okf", (
-            f"knowledge= missing from model-serving pyproject; agent section: {agent_section!r}"
+        # The agent must declare the knob (3b-3c: on agent.py's DataAgent)
+        from apx_agent._inspection import static_agent_setting
+
+        knowledge = static_agent_setting(target / "agent.py", "knowledge")
+        assert knowledge == "./.apx/okf", (
+            f"knowledge= missing from the model-serving agent.py: {knowledge!r}"
         )
 
     def test_apps_pyproject_has_knowledge_when_bundle_written(self, tmp_path):

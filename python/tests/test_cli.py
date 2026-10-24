@@ -637,7 +637,8 @@ def test_scaffold_creates_expected_files(tmp_path: Path) -> None:
         assert (base / filename).exists(), f"missing {filename}"
     pyproject = (base / "pyproject.toml").read_text()
     assert 'name = "my_agent"' in pyproject
-    assert "[tool.apx.agent]" in pyproject
+    assert "[tool.apx.agent" not in pyproject  # 3b-3c: settings live on agent.py's DataAgent
+    assert 'name="my_agent"' in (base / "agent.py").read_text()
 
 
 def test_scaffold_refuses_overwrite_without_force(tmp_path: Path) -> None:
@@ -5518,9 +5519,15 @@ def test_describe_spec_empty_instructions_hints(
     assert "empty" in res.output.lower()
 
 
-def test_scaffold_apps_pyproject_ships_examples() -> None:
-    from apx_agent.cli import _SCAFFOLD_APPS_PYPROJECT
-    assert "examples = [" in _SCAFFOLD_APPS_PYPROJECT
+def test_scaffold_apps_ships_examples(tmp_path) -> None:
+    """3b-3c: starter prompts are an agent setting, declared on the scaffolded agent."""
+    from apx_agent._inspection import static_agent_setting
+    from apx_agent.cli import main as _main
+
+    args = ["agents", "scaffold", "orders", "--target", "apps", "--template", "base", "--runtime",
+            "responses_agent", "--dir", str(tmp_path), "--no-interactive"]
+    assert CliRunner().invoke(_main, args).exit_code == 0
+    assert static_agent_setting(tmp_path / "orders" / "agent.py", "examples")
 
 
 class TestScaffoldSchemaManifest:
