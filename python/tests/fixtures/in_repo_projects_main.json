@@ -195,7 +195,6 @@
  "python/examples/memory_demo": {
   "description": "Travel concierge with seeded memories + few-shot examples.",
   "examples": [],
-  "instructions_sha256": "2ead236543705342a2f6423b25b864dc3faeb6f69c44570e770400c7ed6816e4",
   "knowledge": null,
   "max_iterations": 10,
   "memory": null,

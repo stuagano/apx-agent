@@ -28,4 +28,7 @@ agent = Agent(
         assess_eligibility,
         build_reasoning_trail,
     ],
+    description="Assess program eligibility from application documents — income, residency, and criteria verification.",
+    model="databricks-claude-sonnet-4-6",
+    max_iterations=8,
 )

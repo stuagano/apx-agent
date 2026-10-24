@@ -26,7 +26,6 @@ apx-agent = { path = "../..", editable = true }
 name = "customer_triage"
 description = "Customer support triage — classifies queries and hands off to specialists."
 model = "databricks-claude-sonnet-4-6"
-max_iterations = 8
 # Module path to the apx-agent Agent — used by `apx-agent deploy` and friends.
 # ADK-style layout: ``agent`` is exported by top-level ``agent.py``.
 module = "agent:agent"

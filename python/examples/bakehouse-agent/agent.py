@@ -86,4 +86,7 @@ agent = RouterAgent(
         ("reviews", "Customer feedback, reviews, sentiment, what people say", reviews_agent),
     ],
     instructions="Route data/metrics questions to sales; opinion/feedback questions to reviews.",
+    description="An apx-agent on Databricks Apps.",
+    model="databricks-claude-sonnet-4-6",
 )
+agent.overlay_instructions("You are a helpful assistant.")

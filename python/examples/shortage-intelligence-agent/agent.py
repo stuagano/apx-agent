@@ -228,3 +228,4 @@ def create_shortage_pipeline() -> SequentialAgent:
 
 
 agent = create_shortage_pipeline()
+agent.configure(description="Detects shortage signals in demand data, validates against market reports, checks live vendor pricing, and delivers actionable reports to sourcing and sales teams", model="databricks-claude-opus-4-7")

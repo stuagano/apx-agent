@@ -29,4 +29,6 @@ agent = Agent(
     instructions="You are a helpful assistant connected to Databricks. "
                  "When asked who the user is or what account they are using, call who_am_i.",
     tools=[who_am_i],
+    description="Slack bot connected to Databricks via OAuth — illustrates OBO token forwarding",
+    model="databricks-claude-sonnet-4-6",
 )

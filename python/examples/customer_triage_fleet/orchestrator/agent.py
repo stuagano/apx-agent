@@ -15,7 +15,7 @@ import os
 
 from apx_agent import Agent, tool
 
-SMOKE_MODE = os.environ.get("APX_SMOKE_MODE", "0") == "1"
+SMOKE_MODE = os.environ.get("APX_SMOKE_MODE") == "1"
 
 
 if SMOKE_MODE:
@@ -75,4 +75,6 @@ agent = Agent(
         "$TECHNICAL_SPECIALIST_URL",
         "$ACCOUNT_SPECIALIST_URL",
     ],
+    description="Customer support triage — classifies queries and routes to billing, technical, or account specialists over A2A.",
+    model="databricks-claude-sonnet-4-6",
 )

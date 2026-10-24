@@ -34,4 +34,7 @@ agent = DataAgent(
         "$APX_PEER_MCP_DATA_INSPECTOR_URL",
         "$APX_PEER_MCP_DATA_TRIAGE_AGENT_URL",
     ],
+    description="An apx-agent on Databricks Apps.",
+    model="databricks-claude-sonnet-4-6",
 )
+agent.overlay_instructions("You are a helpful assistant.")

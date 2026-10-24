@@ -10,7 +10,7 @@ import os
 
 from apx_agent import Agent, tool
 
-SMOKE_MODE = os.environ.get("APX_SMOKE_MODE", "0") == "1"
+SMOKE_MODE = os.environ.get("APX_SMOKE_MODE") == "1"
 
 
 if SMOKE_MODE:
@@ -50,10 +50,7 @@ else:
 agent = Agent(
     name="technical_specialist",
     description=(
-        "Handles technical support: product errors, outages, and integration "
-        "issues. Call when the user reports something broken, an error message, "
-        "or a configuration problem. Returns troubleshooting guidance backed by "
-        "the docs index."
+        "Handles technical support, error messages, outages, and integration issues."
     ),
     instructions=(
         "You're a technical specialist. Answer questions about product errors, "
@@ -61,4 +58,5 @@ agent = Agent(
         "relevant troubleshooting articles before answering."
     ),
     tools=technical_tools,
+    model="databricks-claude-sonnet-4-6",
 )

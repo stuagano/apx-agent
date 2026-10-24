@@ -44,4 +44,8 @@ agent = DataAgent(
         "versus the prior month.\n"
         "Base every number on the SQL tool's results — never estimate."
     ),
+    description="Summarizes HubSpot support-ticket complaints by month.",
+    model="databricks-claude-sonnet-4-6",
+    examples=["Summarize complaints for June 2026", "How does last month's complaint count compare to the month before?", "What are the top complaint themes this quarter?"],
 )
+agent.overlay_instructions("You are a helpful assistant.")

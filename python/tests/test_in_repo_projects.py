@@ -17,7 +17,25 @@ from apx_agent._inspection import _load_agent_config
 _REPO = Path(__file__).resolve().parents[2]
 _MAIN = json.loads((Path(__file__).parent / "fixtures" / "in_repo_projects_main.json").read_text())
 _NOT_A_PROJECT = {"examples/graph_spec"}  # a YAML graph spec fed to generate_project (sub-project 4)
-_MIGRATED: dict[str, str] = {}
+_MIGRATED: dict[str, str] = {  # project dir -> its deploy name
+    "python/examples/bakehouse-agent": "bakehouse-agent",
+    "python/examples/customer_triage": "customer_triage",
+    "python/examples/customer_triage_fleet/account_specialist": "account_specialist",
+    "python/examples/customer_triage_fleet/billing_specialist": "billing_specialist",
+    "python/examples/customer_triage_fleet/orchestrator": "customer_triage",
+    "python/examples/customer_triage_fleet/technical_specialist": "technical_specialist",
+    "python/examples/eligibility-agent": "eligibility-agent",
+    "python/examples/explain-my-bill-agent": "explain_my_bill_agent",
+    "python/examples/hubspot-complaints-agent": "hubspot-complaints-agent",
+    "python/examples/memory_demo": "memory_demo",
+    "python/examples/pe55-support-agent": "pe55_support_agent",
+    "python/examples/plg-discovery": "discovery",
+    "python/examples/sec-10k-agent": "sec_10k_agent",
+    "python/examples/shortage-intelligence-agent": "shortage_intelligence_agent",
+    "python/examples/slack-agent": "slack-agent",
+    "python/examples/zero-ops-diagnostics": "zero-ops-diagnostics",
+    "python/hello-world": "hello-world",
+}
 
 # Import and finalize one project in a fresh interpreter (its tools/ and config.py never
 # shadow another project's) and print what it would serve.
@@ -74,4 +92,5 @@ def test_migrated_project_loads_with_its_name(project: str) -> None:
 
 @pytest.mark.parametrize("project", sorted(_MAIN))
 def test_project_serves_what_main_served(project: str) -> None:
-    assert _served(_REPO / project) == _MAIN[project]
+    served = _served(_REPO / project)
+    assert {k: served[k] for k in _MAIN[project]} == _MAIN[project]  # memory_demo's prompt isn't deterministic

@@ -10,7 +10,7 @@ import os
 
 from apx_agent import Agent, tool
 
-SMOKE_MODE = os.environ.get("APX_SMOKE_MODE", "0") == "1"
+SMOKE_MODE = os.environ.get("APX_SMOKE_MODE") == "1"
 
 
 if SMOKE_MODE:
@@ -60,9 +60,7 @@ else:
 agent = Agent(
     name="billing_specialist",
     description=(
-        "Handles billing inquiries: invoices, charges, refunds, payment methods, "
-        "and order-history lookups. Call for any question about what a customer "
-        "was charged or how they pay. Returns billing explanations and order data."
+        "Handles billing inquiries, invoice lookups, and payment issues."
     ),
     instructions=(
         "You're a billing specialist. Answer questions about invoices, charges, "
@@ -70,4 +68,5 @@ agent = Agent(
         "customer's order history when relevant."
     ),
     tools=billing_tools,
+    model="databricks-claude-sonnet-4-6",
 )
