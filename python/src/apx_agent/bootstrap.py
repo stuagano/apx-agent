@@ -253,7 +253,7 @@ def provision_memory_backends(
     auto-create on first use. Create the Lakebase database in the workspace
     and point ``host`` at it.
 
-    Reads both ``[tool.apx.agent.memory]`` and ``[tool.apx.agent.session]`` —
+    Reads both ``memory=`` and ``session=`` —
     either block alone is enough to trigger the status line. Returns a list of
     status lines for printing.  No-ops silently when neither block is present.
     """

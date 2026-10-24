@@ -82,7 +82,7 @@ async def _check_model(ctx: AgentContext | None) -> dict[str, Any]:
             "name": "model",
             "status": "skip",
             "message": "No model configured",
-            "hint": "Set `model` in pyproject.toml under [tool.apx.agent].",
+            "hint": "Set `model=` on the agent in agent.py.",
         }
 
     model = ctx.config.model
@@ -239,7 +239,7 @@ async def _gather_sub_agent_checks(ctx: AgentContext | None) -> list[dict[str, A
 
 
 def _pyproject_experiment() -> str:
-    """Return ``[tool.apx.agent].experiment`` from pyproject.toml, or ``""``."""
+    """Return ``experiment`` from ``[tool.apx]`` in pyproject.toml, or ``""``."""
     try:
         from .cli import _read_apx_agent_config  # noqa: PLC0415
         return _read_apx_agent_config().get("experiment") or ""
@@ -252,7 +252,7 @@ async def _check_mlflow_config() -> dict[str, Any]:
 
     Accepts two equivalent ways to declare the experiment:
       - ``MLFLOW_EXPERIMENT_ID`` env var (Apps/deploy convention)
-      - ``[tool.apx.agent].experiment`` in pyproject.toml (``apx-agent run`` sets
+      - ``experiment`` in ``[tool.apx]`` in pyproject.toml (``apx-agent run`` sets
         this via ``mlflow.set_experiment()`` before serving starts)
     """
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", _UNSET_ENV)
@@ -282,7 +282,7 @@ async def _check_mlflow_config() -> dict[str, Any]:
             "message": "Experiment not configured — traces land in the default experiment",
             "hint": (
                 "Set MLFLOW_EXPERIMENT_ID in app.yaml, or set `experiment` in "
-                "[tool.apx.agent] in pyproject.toml."
+                "[tool.apx] in pyproject.toml."
             ),
         }
 
@@ -333,7 +333,7 @@ async def _check_mlflow_config() -> dict[str, Any]:
             "name": "mlflow_config",
             "status": "fail",
             "message": f"Experiment {exp_label!r} not found: {str(exc)[:160]}",
-            "hint": "Verify MLFLOW_EXPERIMENT_ID or [tool.apx.agent].experiment matches an experiment in this workspace.",
+            "hint": "Verify MLFLOW_EXPERIMENT_ID or [tool.apx] experiment matches an experiment in this workspace.",
         }
 
 
@@ -734,7 +734,7 @@ async def _check_mlflow_read() -> dict[str, Any]:
             "status": "skip",
             "message": "Experiment not configured — read path not exercised",
             "hint": (
-                "Set MLFLOW_EXPERIMENT_ID or `experiment` in [tool.apx.agent] "
+                "Set MLFLOW_EXPERIMENT_ID or `experiment` in [tool.apx] "
                 "to verify trace reads work."
             ),
         }

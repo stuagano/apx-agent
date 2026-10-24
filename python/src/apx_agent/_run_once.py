@@ -50,8 +50,8 @@ def run_once(
         prompt: User prompt string. For richer inputs (system + user, or
             a multi-turn history) call ``compile_to_chat_agent(agent)``
             directly and pass a custom ``messages`` list to ``predict``.
-        model: LLM endpoint. Defaults to ``[tool.apx.agent].model`` in
-            ``pyproject.toml`` (resolved via ``_load_agent_config``).
+        model: LLM endpoint. Defaults to the agent's ``model=`` in
+            ``agent.py`` (resolved via ``_load_agent_config``).
         session_id: Optional session ID — when the agent's ChatAgent has a
             session store configured, loads + persists multi-turn history.
         custom_inputs: Additional fields forwarded to ``predict()``.
@@ -64,7 +64,7 @@ def run_once(
 
     Raises:
         ValueError: when ``model`` is unset and pyproject.toml doesn't
-            configure ``[tool.apx.agent].model``.
+            configure ``model=`` on the agent.
 
     Example::
 
@@ -91,7 +91,7 @@ def run_once(
     if not effective_model:
         raise ValueError(
             "run_once requires a model. Pass model= explicitly or set "
-            "[tool.apx.agent].model in pyproject.toml."
+            "model= on the agent in agent.py."
         )
 
     chat_agent = compile_to_chat_agent(agent, model=effective_model)

@@ -735,7 +735,7 @@ class TestCheckModelEndpoint:
         assert c is not None
         assert c.status is Status.FAIL
         assert "not found" in c.detail
-        assert "pyproject.toml" in c.fix
+        assert "agent.py" in c.fix
 
     def test_model_service_other_error_returns_warn(self, tmp_path: Path):
         self._make_pyproject(tmp_path, "system.ai.claude-sonnet-4-6")

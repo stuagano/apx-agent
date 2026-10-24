@@ -3,7 +3,7 @@
 A Template turns a small typed spec into a configured leaf agent: it wires
 governed tools and produces *grounded* instructions for a role. ``DataAgent``
 is the reference implementation. Persona (model, instruction tone, generation
-knobs) is NOT a template's job — it stays in the ``[tool.apx.agent]`` envelope
+knobs) is NOT a template's job — it stays in the agent's settings
 and is layered on afterward via ``apply_config_knobs`` (``_wiring.py``).
 
 Built-in templates register via the ``@template`` decorator at import time.

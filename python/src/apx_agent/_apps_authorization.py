@@ -173,7 +173,7 @@ def _agent_principal_lines(identity: str | None) -> list[str]:
     apx does not have.
     """
     if identity is None:
-        return ["app service principal (no [tool.apx.agent] identity declared)"]
+        return ["app service principal (no identity= declared on the agent)"]
     if identity == "obo":
         return ["the calling user, on-behalf-of (every undeclared tool)"]
     if identity == "sp":

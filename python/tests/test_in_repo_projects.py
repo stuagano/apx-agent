@@ -125,3 +125,38 @@ def test_payroll_coworker_keeps_history_without_a_declared_session() -> None:
     # Its Delta session was dropped (3c); like samples-*, fall back to an in-process store.
     server = (_REPO / "python" / "payroll-coworker" / "agent_server" / "start_server.py").read_text()
     assert "if _conversation_store is None:" in server and "InMemoryConversationStore()" in server
+
+
+# Code that still reads or migrates [tool.apx.agent] may name it; 3d's PR C removes the readers.
+_TABLE_TEXT_ALLOWED = {
+    "_migrate_config.py": None,  # the whole module migrates the table
+    "_tool_config.py": None,
+    "cli.py": {"migrate_config", "migrate_agent_toml", "_read_apx_agent_config", "_save_to_pyproject"},
+    "_inspection.py": {"_fold_deploy_table", "_agent_config_fields"},
+    "_doctor.py": {"check_uc_data_source", "_is_apx_project"},  # the template fallback and table sniff go in PR C
+}
+
+
+def _allowed_lines(path: Path) -> set[int] | None:
+    import ast
+
+    names = _TABLE_TEXT_ALLOWED.get(path.name, set())
+    if names is None:
+        return None
+    lines: set[int] = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return lines
+
+
+def test_no_user_facing_text_tells_users_to_write_the_agent_table() -> None:
+    hits: list[str] = []
+    for path in sorted((_REPO / "python" / "src" / "apx_agent").rglob("*.py")):
+        allowed = _allowed_lines(path)
+        if allowed is None:
+            continue
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if "tool.apx.agent" in line and not line.lstrip().startswith("#") and i not in allowed:
+                hits.append(f"{path.relative_to(_REPO)}:{i}")
+    assert hits == [], f"{len(hits)} hits: " + ", ".join(hits)

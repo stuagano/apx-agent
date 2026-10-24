@@ -74,7 +74,7 @@ Return ``None`` to pass through, or a non-empty string to replace the output."""
 class GuardrailsConfig(BaseModel):
     """Data-only declaration of built-in guards.
 
-    Maps to ``[tool.apx.agent.guardrails]`` in pyproject.toml.  All guards
+    Declared as ``guardrails=`` on the agent in agent.py.  All guards
     produced here are *additive* over code-defined guards — code hooks run
     first, then config gates.  See ``_guards.build_config_guards``.
 
@@ -151,7 +151,7 @@ class _BackendConfig(BaseModel):
     def _drop_obsolete_instance_name(cls, data: Any) -> Any:
         if isinstance(data, dict) and "instance_name" in data:
             logger.warning(
-                "'instance_name' in a [tool.apx.agent.*] backend block is obsolete "
+                "'instance_name' in a memory=/session=/example= backend is obsolete "
                 "since #349 (Lakebase connects via host + OAuth token, not the "
                 "instance name) — ignoring it. Remove the key to silence this."
             )
@@ -182,7 +182,7 @@ class MemoryExtractionPolicy(BaseModel):
 
 
 class MemoryBackendConfig(_BackendConfig):
-    """Declarative memory backend — maps to ``[tool.apx.agent.memory]``."""
+    """Declarative memory backend — maps to ``memory=``."""
 
     type: StoreType = "inmemory"
     embedding_model: str | None = None
@@ -217,7 +217,7 @@ class MemoryBackendConfig(_BackendConfig):
 
 
 class ExampleBackendConfig(_BackendConfig):
-    """Declarative example backend — maps to ``[tool.apx.agent.example]``."""
+    """Declarative example backend — maps to ``example=``."""
 
     type: StoreType = "inmemory"
     embedding_model: str | None = None
@@ -236,7 +236,7 @@ class ExampleBackendConfig(_BackendConfig):
 
 
 class SessionBackendConfig(_BackendConfig):
-    """Declarative session backend — maps to ``[tool.apx.agent.session]``."""
+    """Declarative session backend — maps to ``session=``."""
 
     type: StoreType = "inmemory"
     table_name: str | None = None
@@ -265,7 +265,7 @@ class SessionBackendConfig(_BackendConfig):
 
 class DataTagConfig(BaseModel):
     """One governed tag to apply to agent-owned tables — maps to entries in
-    ``[tool.apx.agent.data.governed_tags]``."""
+    ``data= governed_tags``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -277,19 +277,19 @@ class DataTagConfig(BaseModel):
     @model_validator(mode="after")
     def _non_empty(self) -> "DataTagConfig":
         if not self.name.strip():
-            raise ValueError("[tool.apx.agent.data.governed_tags] name must be non-empty")
+            raise ValueError("data= governed_tags name must be non-empty")
         if self.values is not None:
             for v in self.values:
                 if not v.strip():
                     raise ValueError(
-                        f"[tool.apx.agent.data.governed_tags] {self.name!r} has an empty value"
+                        f"data= governed_tags {self.name!r} has an empty value"
                     )
         return self
 
 
 class DataPolicyConfig(BaseModel):
     """One row-filter or column-mask policy on a table — maps to entries in
-    ``[tool.apx.agent.data.tables[].policies]``."""
+    ``data= tables[].policies``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -313,11 +313,11 @@ class DataPolicyConfig(BaseModel):
             val = getattr(self, field_name)
             if not val.strip():
                 raise ValueError(
-                    f"[tool.apx.agent.data.tables[].policies] {field_name} must be non-empty"
+                    f"data= tables[].policies {field_name} must be non-empty"
                 )
         if self.type == "column_mask" and self.match_columns is None and self.using_columns is None:
             raise ValueError(
-                f"[tool.apx.agent.data.tables[].policies] {self.name!r}: "
+                f"data= tables[].policies {self.name!r}: "
                 "column_mask requires match_columns or using_columns"
             )
         return self
@@ -325,7 +325,7 @@ class DataPolicyConfig(BaseModel):
 
 class DataTableConfig(BaseModel):
     """One agent-owned table to tag + optionally policy-protect — maps to
-    entries in ``[tool.apx.agent.data.tables]``."""
+    entries in ``data= tables``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -339,27 +339,27 @@ class DataTableConfig(BaseModel):
     @model_validator(mode="after")
     def _non_empty(self) -> "DataTableConfig":
         if not self.name.strip():
-            raise ValueError("[tool.apx.agent.data.tables] name must be non-empty")
+            raise ValueError("data= tables name must be non-empty")
         parts = self.name.split(".")
         if len(parts) != 3 or not all(p.strip() for p in parts):
             raise ValueError(
-                f"[tool.apx.agent.data.tables] {self.name!r} must be a "
+                f"data= tables {self.name!r} must be a "
                 "three-part UC name (catalog.schema.table)"
             )
         if not self.tags:
             raise ValueError(
-                f"[tool.apx.agent.data.tables] {self.name!r} must have at least one tag"
+                f"data= tables {self.name!r} must have at least one tag"
             )
         for k, v in self.tags.items():
             if not k.strip() or not v.strip():
                 raise ValueError(
-                    f"[tool.apx.agent.data.tables] {self.name!r} has an empty tag key or value"
+                    f"data= tables {self.name!r} has an empty tag key or value"
                 )
         return self
 
 
 class DataConfig(BaseModel):
-    """Declared data governance — maps to ``[tool.apx.agent.data]``.
+    """Declared data governance — maps to ``data=``.
 
     Compiles to UC ABAC DDL at deploy time: governed tags, table tags, and
     row-filter / column-mask policies."""
@@ -373,7 +373,7 @@ class DataConfig(BaseModel):
 
 
 class AutoscaleConfig(BaseModel):
-    """Databricks Apps autoscale bounds — maps to ``[tool.apx.agent.deploy.autoscale]``."""
+    """Databricks Apps autoscale bounds — maps to ``[tool.apx.deploy] autoscale``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -383,7 +383,7 @@ class AutoscaleConfig(BaseModel):
     @model_validator(mode="after")
     def _min_le_max(self) -> "AutoscaleConfig":
         if self.min > self.max:
-            raise ValueError("[tool.apx.agent.deploy.autoscale] min must be <= max")
+            raise ValueError("[tool.apx.deploy] autoscale min must be <= max")
         return self
 
 
@@ -412,7 +412,7 @@ class DeployResourceConfig(BaseModel):
 
 
 class DeployConfig(_BackendConfig):
-    """Declared Apps horizontal scaling — maps to ``[tool.apx.agent.deploy]``.
+    """Declared Apps horizontal scaling — maps to ``[tool.apx.deploy]``.
 
     ``instances`` (fixed count) XOR ``autoscale`` (min/max); each in 1-5. Drives
     the compile/runtime scaled-in-memory guard, the emitted ``APX_DECLARED_INSTANCES``
@@ -488,7 +488,7 @@ class DeployConfig(_BackendConfig):
                 raise ValueError("App Space selects compute; omit deploy.instances and deploy.autoscale")
         if self.instances is not None and self.autoscale is not None:
             raise ValueError(
-                "[tool.apx.agent.deploy] set at most one of 'instances' or 'autoscale', not both"
+                "[tool.apx.deploy] set at most one of 'instances' or 'autoscale', not both"
             )
         if self.backend == "apps_api":
             if self.entrypoint is None:
@@ -554,7 +554,7 @@ def normalize_memory_knob(
         raise ValueError(
             f"memory={value!r} is not a valid tier; use one of: off, inmemory "
             "(alias local), persistent, managed, or an explicit "
-            "[tool.apx.agent.memory] block for lakebase."
+            "memory= block for lakebase."
         )
     tier = _KNOB_TO_TYPE[v]
     if tier is None:
@@ -691,7 +691,7 @@ class NativeBinding(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    """Agent configuration — loaded from [tool.apx.agent] in pyproject.toml or constructed directly."""
+    """Agent configuration — declared as agent constructor arguments in agent.py or constructed directly."""
 
     name: str
     target: RuntimeTarget = "durable_agent_server"
@@ -724,7 +724,7 @@ class AgentConfig(BaseModel):
             _validate_identity(value)
         except ValueError as exc:
             raise ValueError(
-                f"[tool.apx.agent] identity: {exc}"
+                f"identity: {exc}"
             ) from exc
         return value
     recovery: bool = False
@@ -752,7 +752,7 @@ class AgentConfig(BaseModel):
     registry: str | None = None  # URL of an agent registry to auto-register with on startup (supports $ENV_VAR)
     api_prefix: str = "/api"  # route prefix for tool endpoints
     examples: list[str] = []
-    """Starter prompts shown on the dev-UI landing page (``[tool.apx.agent] examples``).
+    """Starter prompts shown on the dev-UI landing page (the ``examples=`` agent keyword).
 
     UI-only metadata: surfaced to the chat landing as clickable starter chips;
     does not affect runtime agent behavior. Distinct from ``example`` (the
@@ -766,7 +766,7 @@ class AgentConfig(BaseModel):
         return normalize_workflows(value)
 
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
-    """Built-in guard configuration — see ``[tool.apx.agent.guardrails]``."""
+    """Built-in guard configuration — see ``guardrails=``."""
     gateway: GatewayConfig | None = None
     """Legacy external-endpoint settings; not applied to the chat model.
     Configure chat providers and policies on the AI Gateway model service."""
@@ -779,7 +779,7 @@ class AgentConfig(BaseModel):
     via ``template_registry.build(name, spec, ws=ws)`` rather than importing a
     Python module. The ``name`` key selects the template; all other keys become
     the spec dict passed to the template's ``Spec.model_validate``. The
-    ``[tool.apx.agent]`` envelope (instructions, model, knobs) is layered on top
+    agent settings (instructions, model, knobs) is layered on top
     afterward via ``finalize_agent`` as usual — template builds the leaf, persona
     overlays.
     """
@@ -802,18 +802,18 @@ class AgentConfig(BaseModel):
     knowledge: str | None = None
     """Path to an OKF bundle directory used to ground this agent.
 
-    ``[tool.apx.agent] knowledge = "./.apx/okf"``. When set, grounding loads
+    Declared with ``knowledge="./.apx/okf"`` on the agent. When set, grounding loads
     directly from this bundle (highest-priority baked source) instead of the
     cwd upward-walk. Relative to the project root."""
 
     memory: MemoryBackendConfig | None = None
-    """Declarative memory backend — see ``[tool.apx.agent.memory]``."""
+    """Declarative memory backend — see ``memory=``."""
 
     example: ExampleBackendConfig | None = None
-    """Declarative example backend — see ``[tool.apx.agent.example]``."""
+    """Declarative example backend — see ``example=``."""
 
     session: SessionBackendConfig | None = None
-    """Declarative session backend — see ``[tool.apx.agent.session]``.
+    """Declarative session backend — see ``session=``.
 
     Native durable agents receive a managed Session Store when this is omitted.
     Declare ``store_name`` only to override that derived binding. Long-term
@@ -821,10 +821,10 @@ class AgentConfig(BaseModel):
     """
 
     deploy: DeployConfig | None = None
-    """Declared Apps horizontal scaling — see ``[tool.apx.agent.deploy]``."""
+    """Declared Apps horizontal scaling — see ``[tool.apx.deploy]``."""
 
     data: DataConfig | None = None
-    """Declared data governance (ABAC tags + policies) — see ``[tool.apx.agent.data]``."""
+    """Declared data governance (ABAC tags + policies) — see ``data=``."""
 
     tools: list[dict[str, Any]] = []
     """Tool declarations from a YAML spec ``tools:`` block.

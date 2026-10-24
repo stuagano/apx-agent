@@ -287,7 +287,7 @@ def _stage_config(project: Path) -> _Loaded | Check:
     declared = apx.get("agent") or apx.get("deploy")
     python_only = declared is None and (project / "agent.py").is_file()
     if declared is None and not python_only:
-        return Check("Config", Status.SKIP, "not an apx agent project (no [tool.apx.agent])")
+        return Check("Config", Status.SKIP, "not an apx agent project (no agent.py or [tool.apx.deploy])")
     try:
         import databricks_agentkit.runtime.app  # noqa: F401 — presence check
     except ImportError:
@@ -305,7 +305,7 @@ def _stage_config(project: Path) -> _Loaded | Check:
             # target first rejects durable-only settings (e.g. deploy.space) mid-migration.
             fields = _agent_config_fields(project / "pyproject.toml", ("tool", "apx", "agent"))
             if fields is None:
-                return Check("Config", Status.FAIL, "could not load [tool.apx.agent]")
+                return Check("Config", Status.FAIL, "could not load the agent settings")
             config = AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
             # The native host imports `agent:agent` (as _serve.create_app does); the
             # pyproject `module =` key is not read by the durable runtime.
@@ -596,7 +596,7 @@ def _stage_deploy(loaded: _Loaded) -> Check:
             from ._app_space import validate_space_bundle
 
             if validate_space_bundle(doc, bundle_key=bundle_key) != declared_space:
-                return Check("Deploy", Status.FAIL, "databricks.yml space disagrees with [tool.apx.agent.deploy] space")
+                return Check("Deploy", Status.FAIL, "databricks.yml space disagrees with [tool.apx.deploy] space")
             return Check("Deploy", Status.OK, f"App Space deploy preflight passes for {app_name} (space {declared_space}; "
                          "inherited scopes and resources are checked online at deploy)")
         # Row 1. The real deploy needs --profile and runs the app; this checks the bundle.

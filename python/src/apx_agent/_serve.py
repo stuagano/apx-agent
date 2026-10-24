@@ -8,7 +8,7 @@ from typing import Any
 
 
 _NOT_DURABLE = (
-    "The native launcher requires target='durable_agent_server' on the root agent or in [tool.apx.agent]")
+    "The native launcher requires target='durable_agent_server' on the root agent or in the project's settings")
 
 
 def create_app() -> Any:

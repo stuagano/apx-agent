@@ -577,7 +577,7 @@ def render_agent_py(
     """Codegen a top-level ``agent.py`` that builds the template agent in code.
 
     The YAML/config deploy path used to ship a config-only project (the runtime
-    rebuilt the agent from ``[tool.apx.agent.template]`` via the registry). This
+    rebuilt the agent from the agent's template via the registry). This
     emits an ADK-style ``agent = CoworkerAgent("cat", "sch", persona=...)`` instead
     so the agent has a single Python definition — editable, debuggable, and visible
     in the dev-UI Edit page. The template's ``build()`` is a pure spec->kwargs

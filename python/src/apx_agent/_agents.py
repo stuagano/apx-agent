@@ -152,7 +152,7 @@ class BaseAgent:
     def overlay_instructions(self, overlay: str) -> None:
         """Compose *overlay* above this agent's own (e.g. schema-grounded) instructions, once.
 
-        The same composition [tool.apx.agent] instructions always got at finalize (persona
+        The same composition the agent's settings instructions always got at finalize (persona
         above grounding); generated agent.py uses it for template-built agents (3b-3b)."""
         from ._prompt_assembly import compose_instructions
 
@@ -233,8 +233,7 @@ class LlmAgent(BaseAgent):
     remote ``sub_agents`` (constructor or config-declared) has no local tools.
 
     ``instructions`` sets a system prompt prepended to every conversation.
-    When omitted, falls back to ``instructions`` in ``[tool.apx.agent]`` in
-    pyproject.toml. Use the constructor param to override per-agent within a
+    When omitted, falls back to the project's declared ``instructions`` setting. Use the constructor param to override per-agent within a
     ``SequentialAgent`` or ``ParallelAgent`` composition.
 
     ``output_schema`` declares a Pydantic model for the final JSON answer.

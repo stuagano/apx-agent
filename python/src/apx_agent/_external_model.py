@@ -105,7 +105,7 @@ def _resolve_credential(gateway: "GatewayConfig | None") -> dict[str, str]:
         # secret-ref fields; live wiring is the manual AC-13 runbook.
         return {"secret_scope": gateway.secret_scope, "secret_key": gateway.secret_key}
     raise ValueError(
-        "External-model endpoint requires a credential: set [tool.apx.agent.gateway] "
+        "External-model endpoint requires a credential: set gateway= "
         "credential (a UC service credential name) or a secret_scope/secret_key pair. "
         "Refusing to provision an endpoint with no credential (fail-closed)."
     )

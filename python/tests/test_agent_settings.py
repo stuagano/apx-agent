@@ -225,7 +225,7 @@ def test_launcher_rejects_python_only_responses_target(monkeypatch: pytest.Monke
     monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(
         agent=Agent(name="p", tools=[_noop], model="m", target="responses_agent")))
     monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda **k: MagicMock())
-    with pytest.raises(ValueError, match="on the root agent or in \\[tool.apx.agent\\]"):
+    with pytest.raises(ValueError, match="on the root agent or in the project's settings"):
         create_app()
 
 

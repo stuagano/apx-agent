@@ -5,8 +5,7 @@ principal the platform injects (``DATABRICKS_CLIENT_ID`` /
 ``DATABRICKS_CLIENT_SECRET``) and the calling user, carried per request as an
 OBO token. An agent declares which of those its tools default to, in one place:
 
-    [tool.apx.agent]
-    identity = "named-sp:reader"   # or "sp" (app SP), or "obo" (the user)
+    Agent(..., identity="named-sp:reader")   # or "sp" (app SP), or "obo" (the user)
 
 Tools that declare no identity of their own inherit it. A tool's own
 ``identity`` still wins, which is how one agent mixes machine steps and

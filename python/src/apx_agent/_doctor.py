@@ -530,7 +530,7 @@ def _ai_gateway_model_service_name(model: str) -> str | None:
 
 
 def _declared_settings(cwd: Path) -> "dict[str, Any] | Check":
-    """Doctor's view of the agent settings: the raw ``[tool.apx.agent]`` table, with declared
+    """Doctor's view of the agent settings: the raw agent settings, with declared
     Python settings filling its gaps (3b-2). A FAIL check if agent.py won't import.
 
     The raw table is read as before (never validated here; the agent-config check reports a
@@ -614,7 +614,7 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
             return Check(
                 label, Status.FAIL,
                 f"model service not found: {service_name}",
-                "Update `model` in pyproject.toml [tool.apx.agent] to a "
+                "Update `model=` on the agent in agent.py to a "
                 "Unity Catalog AI Gateway model service (catalog.schema.id).",
             )
         return Check(
@@ -714,7 +714,7 @@ def _data_source_from_agent_py(cwd: Path) -> "tuple[str, str] | None":
 
 
 def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
-    """Verify the UC catalog.schema declared in [tool.apx.agent.template] exists.
+    """Verify the UC catalog.schema declared by the agent's template exists.
 
     DataAgent / CoworkerAgent projects declare their data source as:
         [tool.apx.agent.template]
@@ -769,7 +769,7 @@ def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
                 label, Status.FAIL,
                 f"schema not found: {fqn}",
                 f"Confirm `{fqn}` exists in Unity Catalog and your principal has USE SCHEMA. "
-                "Update catalog/schema in pyproject.toml [tool.apx.agent.template] to match.",
+                "Update catalog/schema in the agent's template to match.",
             )
         if "403" in msg or "permission" in msg.lower() or "denied" in msg.lower():
             return Check(
@@ -820,7 +820,7 @@ def check_sub_agents(cwd: Path) -> Check | None:
         Status.WARN,
         f"{len(unreachable)}/{len(probes)} unreachable — {reasons}",
         "Verify each URL serves /.well-known/agent.json (peer deployed and "
-        "running, no typo in pyproject.toml [tool.apx.agent].sub_agents); "
+        "running, no typo in sub_agents= on the agent); "
         "for $VAR refs, export the variable.",
     )
 
@@ -1315,7 +1315,7 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
                 f"type=lakebase but host/database resolve to empty "
                 f"(host={mem.host!r} database={mem.database!r}) — memory will "
                 "degrade to in-process at runtime",
-                "Set host + database in [tool.apx.agent.memory]; if either is a "
+                "Set host + database in memory= on the agent; if either is a "
                 "${ENV_VAR}, make sure the variable is exported.",
             )
         # Live reachability probe: build the same OAuth-token engine the
@@ -1350,7 +1350,7 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
 
 
 def check_abac_compute_floor(cwd: Path, *, auth_ok: bool) -> Check | None:
-    """ABAC runtime-floor check: when [tool.apx.agent.data] declares governed
+    """ABAC runtime-floor check: when data= on the agent declares governed
     tags or policies, the SQL compute that will apply + evaluate them must be
     serverless or track a current DBR (>= 16.4). Protected tables fail closed
     on older runtimes — better surfaced here than mid-conversation.
@@ -1396,7 +1396,7 @@ def check_abac_compute_floor(cwd: Path, *, auth_ok: bool) -> Check | None:
             f"compute floor ({str(exc)[:120]})",
             "ABAC needs serverless or DBR 16.4+. Create/select a serverless "
             "warehouse (`apx-agent doctor` again after), or set warehouse_id "
-            "in [tool.apx.agent.session].",
+            "in session= on the agent.",
         )
 
     if getattr(wh, "enable_serverless_compute", False):
