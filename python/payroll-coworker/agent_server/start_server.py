@@ -47,7 +47,12 @@ _ws = _make_workspace_client()
 # not just when served via create_app().
 _agent_config = _load_agent_config()
 finalize_agent(agent, _agent_config, ws=_ws)
+# Conversation store: the declared session when there is one; otherwise an in-process
+# store so multi-turn threading and the dev UI History panel work (resets on restart).
 _conversation_store = resolve_conversation_store(_agent_config, _ws, agent=agent)
+if _conversation_store is None:
+    from apx_agent import InMemoryConversationStore
+    _conversation_store = InMemoryConversationStore()
 _invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL, conversation_store=_conversation_store)
 
 

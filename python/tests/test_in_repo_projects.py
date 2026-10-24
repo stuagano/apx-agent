@@ -120,3 +120,9 @@ def test_apx_builder_settings_reach_the_cli() -> None:
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().splitlines()[-1] == (
         "databricks-claude-sonnet-4-6 | Natural language agent builder — describe your agent and I'll build and deploy it")
+
+
+def test_payroll_coworker_keeps_history_without_a_declared_session() -> None:
+    # Its Delta session was dropped (3c); like samples-*, fall back to an in-process store.
+    server = (_REPO / "python" / "payroll-coworker" / "agent_server" / "start_server.py").read_text()
+    assert "if _conversation_store is None:" in server and "InMemoryConversationStore()" in server
