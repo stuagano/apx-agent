@@ -1,6 +1,6 @@
 # Design: `agent.toml` is the platform's source of truth
 
-**Status:** sub-projects 1–2 (#984) 3a (#990), 3b-1 (#992) and 3b-2 (#994) implemented; 3b-3a proposed · **Date:** 2026-10-19
+**Status:** sub-projects 1–2 (#984) 3a (#990), 3b-1 (#992) and 3b-2 (#994) and 3b-3a (#995) implemented; 3b-3b proposed · **Date:** 2026-10-19
 
 ## Intent
 
@@ -574,11 +574,26 @@ agent = Agent(
   for template roots (`CoworkerAgent(...)`, `DataAgent(...)`) and graph roots
   (`SequentialAgent(...)` and the others).
 - `_build_pyproject` writes only the two tables above.
-- `workflows`, `data` and `executor` become app-wide agent settings, like
-  `examples` (one line each in `AgentSettings` and `APP_WIDE`), because the dev
-  UI, deploy and the runtime read them.
+- `workflows`, `data`, `executor` and `example` become app-wide agent settings,
+  like `examples` (one line each in `AgentSettings` and `APP_WIDE`), because the
+  dev UI, deploy and the runtime read them.
+- `description` becomes a setting that every agent class accepts, because it's
+  card and registry metadata. It merges like `memory`/`session`: the TOML wins and
+  the root agent fills the gap, so no new conflict appears for projects that set
+  it in both places.
+- On a YAML graph root (a composite), the `LlmAgent`-only fields
+  (`instructions`, `temperature`, `max_tokens`, `max_iterations`, `sub_agents`,
+  `memory`, `session`) fail at generate time: `{field} can't go on a graph root;
+  set it on a leaf in agents:`.
+- Settings that arrive as dicts in generated code are validated into their models
+  in `_set_settings`, using `AgentConfig`'s field types.
+- Deploy reads `target` before importing `agent.py`. When the TOML doesn't
+  declare it, `_agent_config_fields` fills it from a static read of `agent.py`, so
+  routing stays right without an import.
+- The `scaffold` templates move in a separate PR, 3b-3c, to keep each PR
+  reviewable.
 
-### `scaffold` templates
+### `scaffold` templates (3b-3c)
 
 - **Model-serving, Apps base, Apps coworker and native.** `agent.py` gets
   `model=`, `name=`, `description=` and `target=` (and `knowledge=` where it's
