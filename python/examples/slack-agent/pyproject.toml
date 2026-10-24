@@ -32,21 +32,15 @@ force-include = { "agent.py" = "agent.py", "webhook.py" = "webhook.py", "config.
 [project.scripts]
 quickstart = "scripts.quickstart:main"
 
-[tool.apx.agent]
-name = "slack-agent"
-description = "Slack bot connected to Databricks via OAuth — illustrates OBO token forwarding"
-model = "databricks-claude-sonnet-4-6"
-module = "agent:agent"
-
-[tool.apx.deploy]
-# App name MUST start with 'mcp-' for Databricks External MCP discovery.
-target = "apps"
-bundle_name = "mcp-slack-agent"
-app_name = "mcp-slack-agent"
-
 [tool.uv.sources]
 apx-agent = { path = "../..", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.apx.deploy]
+target = "apps"
+bundle_name = "mcp-slack-agent"
+app_name = "mcp-slack-agent"
+name = "slack-agent"

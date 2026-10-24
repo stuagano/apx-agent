@@ -24,13 +24,6 @@ build-backend = "hatchling.build"
 packages = ["tools"]
 force-include = { "agent.py" = "agent.py", "app.py" = "app.py", "prompts.py" = "prompts.py", "config.py" = "config.py", "schemas/paystub.json" = "schemas/paystub.json", "schemas/w2.json" = "schemas/w2.json", "schemas/residency.json" = "schemas/residency.json", "schemas/enrollment_letter.json" = "schemas/enrollment_letter.json" }
 
-[tool.apx.agent]
-name = "eligibility-agent"
-description = "Assess program eligibility from application documents — income, residency, and criteria verification."
-model = "databricks-claude-sonnet-4-6"
-module = "agent:agent"
-max_iterations = 8
-
 [tool.uv.sources]
 apx-agent = { path = "../..", editable = true }
 
@@ -38,3 +31,6 @@ apx-agent = { path = "../..", editable = true }
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+
+[tool.apx.deploy]
+name = "eligibility-agent"

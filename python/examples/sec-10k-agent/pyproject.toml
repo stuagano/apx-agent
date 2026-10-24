@@ -23,12 +23,6 @@ app-slug = "sec_10k_agent"
 app-entrypoint = "app:app"
 api-prefix = "/api"
 
-[tool.apx.agent]
-name = "sec_10k_agent"
-description = "Research a 10-K question against a Knowledge Assistant, then write a cited investor brief"
-model = "databricks-meta-llama-3-3-70b-instruct"
-module = "agent:agent"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -37,3 +31,6 @@ build-backend = "hatchling.build"
 # Flat shape: top-level modules shipped via forced-includes.
 bypass-selection = true
 force-include = { "agent.py" = "agent.py", "app.py" = "app.py" }
+
+[tool.apx.deploy]
+name = "sec_10k_agent"

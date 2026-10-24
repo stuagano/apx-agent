@@ -25,9 +25,5 @@ app-slug = "zero_ops_diagnostics"
 app-entrypoint = "app:app"
 api-prefix = "/api"
 
-[tool.apx.agent]
+[tool.apx.deploy]
 name = "zero-ops-diagnostics"
-description = "Self-serve expensive workload triage: DBSQL, Jobs/Spark, and billing cost."
-model = "databricks-claude-sonnet-4-6"
-instructions = "You are a helpful assistant."
-module = "agent:agent"

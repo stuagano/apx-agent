@@ -23,12 +23,6 @@ app-slug = "explain_my_bill_agent"
 app-entrypoint = "app:app"
 api-prefix = "/api"
 
-[tool.apx.agent]
-name = "explain_my_bill_agent"
-description = "Answer customer energy billing questions — looks up account profiles, AMI smart meter readings, billing history, rate schedules, and compares usage across months"
-model = "databricks-meta-llama-3-3-70b-instruct"
-module = "agent:agent"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -37,3 +31,6 @@ build-backend = "hatchling.build"
 # Flat shape: top-level modules shipped via forced-includes.
 bypass-selection = true
 force-include = { "agent.py" = "agent.py", "app.py" = "app.py", "tools.py" = "tools.py" }
+
+[tool.apx.deploy]
+name = "explain_my_bill_agent"

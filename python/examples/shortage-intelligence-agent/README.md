@@ -429,7 +429,7 @@ By default `apx-agent agents deploy` runs the full canonical flow in one command
 3. `databricks.agents.deploy(...)` — promote the registered version to a Model Serving endpoint.
 4. `set_uc_tags_for_agent(...)` — write `apx.agent.*` UC tags so the agent shows up in `apx-agent agents list`, `apx-agent uc topology`, and governance's crawler.
 
-Toggle individual stages with `--no-publish-tools`, `--no-deploy`, or `--no-set-uc-tags`. Model / experiment / agent-name defaults live in `[tool.apx.agent]` in `pyproject.toml`, so once configured you can just run `apx-agent agents deploy --name main.agents.shortage_intelligence`.
+Toggle individual stages with `--no-publish-tools`, `--no-deploy`, or `--no-set-uc-tags`. The model lives on the agent in `agent.py`, an optional `experiment` in `[tool.apx]`, and the deploy name in `[tool.apx.deploy]` of `pyproject.toml`, so once configured you can just run `apx-agent agents deploy --name main.agents.shortage_intelligence`.
 
 ### Operate via the apx-agent CLI
 

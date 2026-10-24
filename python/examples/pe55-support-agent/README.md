@@ -24,7 +24,7 @@ this repo does not automate the two-user ABAC walk (`#755`).
 | 2. Deploy and share a UI | 15 min | Part 3 |
 | 3. Switch to the end user's identity | 30 min | **Deleted.** `sql_tool` / `vector_search_tool` / `Dependencies.UserClient` already run as the caller. Coworker clicks are still people |
 | 4. Reason across reviews + docs + policy | 15 min | Same agent, multi-source questions |
-| 5. Stretch: Lakebase memory | 30 min | README note only — `[tool.apx.agent.session] type = "lakebase"` is a store swap |
+| 5. Stretch: Lakebase memory | 30 min | README note only — `agent.configure(session={"type": "lakebase", ...})` is a store swap |
 
 Net vs the CUJ: the identity rewrite and most of the stitching are gone.
 What remains custom is "read this volume file every turn."
@@ -152,9 +152,10 @@ must be a `@tool`. See [docs/tools/custom-tools.md](../../../docs/tools/custom-t
 Not implemented. To persist chat across sessions, add a store swap — same
 agent object:
 
-```toml
-[tool.apx.agent.session]
-type = "lakebase"
+```python
+# A Lakebase session runs on the responses_agent runtime.
+agent.configure(target="responses_agent",
+                session={"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "pe55"})
 ```
 
 See [docs/running/sessions-and-memory.md](../../../docs/running/sessions-and-memory.md).

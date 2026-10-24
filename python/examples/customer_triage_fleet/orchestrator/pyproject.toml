@@ -18,20 +18,15 @@ quickstart = "scripts.quickstart:main"
 [tool.uv.sources]
 apx-agent = { path = "../../..", editable = true }
 
-[tool.apx.agent]
-name = "customer_triage"
-description = "Customer support triage — classifies queries and routes to billing, technical, or account specialists over A2A."
-model = "databricks-claude-sonnet-4-6"
-module = "agent:agent"
-
-[tool.apx.deploy]
-target = "apps"
-bundle_name = "customer-triage-orchestrator"
-app_name = "customer-triage-orchestrator"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent_server"]
+
+[tool.apx.deploy]
+target = "apps"
+bundle_name = "customer-triage-orchestrator"
+app_name = "customer-triage-orchestrator"
+name = "customer_triage"
