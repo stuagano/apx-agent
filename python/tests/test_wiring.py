@@ -1462,3 +1462,16 @@ def test_finalize_on_an_already_resolved_config_is_not_a_conflict(tmp_path) -> N
     config = resolve_settings(agent, _load_agent_config(pyproject_path=pp))
     finalize_agent(agent, config, pyproject_path=str(pp))
     assert len(agent._input_guardrails) == 1
+
+
+def test_finalize_applies_agent_settings_when_the_pyproject_declares_nothing(tmp_path) -> None:
+    from apx_agent import Agent
+    from apx_agent._inspection import _load_agent_config
+    from apx_agent._wiring import finalize_agent
+
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text('[project]\nname = "p"\nversion = "0"\n')
+    assert _load_agent_config(pyproject_path=pp) is None  # no apx tables: the launcher passes None
+    agent = Agent(name="p", tools=[], guardrails={"injection_detection": True})
+    finalize_agent(agent, None, pyproject_path=str(pp))
+    assert len(agent._input_guardrails) == 1

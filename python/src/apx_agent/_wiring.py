@@ -572,10 +572,11 @@ def finalize_agent(
     reject_legacy_tool_config(pyproject_path)
     if config is None:
         config = _load_agent_config(pyproject_path=pyproject_path)
-    if config is not None:
-        from ._settings import resolve_settings  # noqa: PLC0415
+    from ._settings import resolve_settings  # noqa: PLC0415
 
-        config = resolve_settings(agent, config)  # settings declared on the agent apply on every launcher
+    # Settings declared on the agent apply on every launcher, with or without apx TOML.
+    config = resolve_settings(agent, config)
+    if config is not None:
         apply_config_knobs(agent, config)
         apply_config_service_policies(agent, config)
         _apply_remote_leaf_bindings(agent, config.bindings)
