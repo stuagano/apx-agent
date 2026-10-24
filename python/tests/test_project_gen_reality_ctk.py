@@ -57,7 +57,13 @@ def test_generated_project_files_are_real_not_just_present(tmp_path: Path) -> No
         Artifact(
             str(tmp_path / "pyproject.toml"),
             min_bytes=40,
-            must_contain="[tool.apx.agent]",
+            must_contain="[tool.apx.deploy]",
+        ),
+        # 3b-3b: runtime settings are wired on agent.py's root constructor.
+        Artifact(
+            str(tmp_path / "agent.py"),
+            min_bytes=40,
+            must_contain="main.payroll.apx_memory",
         ),
         Artifact(
             str(tmp_path / "agent_server" / "start_server.py"),

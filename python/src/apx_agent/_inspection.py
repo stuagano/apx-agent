@@ -245,7 +245,7 @@ def static_agent_setting(agent_py: Path, key: str) -> Any:
 
 
 def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
-    """Merge ``[tool.apx.deploy]`` (name, host, DeployConfig keys) into agent *fields*; other keys stay put."""
+    """Merge ``[tool.apx.deploy]`` (name, host, bindings, DeployConfig keys) into agent *fields*; other keys stay put."""
     table = data.get("tool", {}).get("apx", {}).get("deploy")
     if not table:
         return fields
@@ -255,9 +255,9 @@ def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str
     deploy = dict(merged.get("deploy", {}))
     for key, value in table.items():
         # Only 3a's keys fold in; Apps-target metadata (target, bundle_name, app_name) has its own readers.
-        if key not in ("name", "host") and key not in DeployConfig.model_fields:
+        if key not in ("name", "host", "bindings") and key not in DeployConfig.model_fields:
             continue
-        if key in ("name", "host"):
+        if key in ("name", "host", "bindings"):
             target, label, suffix = merged, key, ""
         else:
             target, label, suffix = deploy, f"deploy.{key}", ".deploy"
@@ -290,11 +290,18 @@ def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str,
     fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields} if section else {}
     if section_path == _AGENT_SECTION:
         fields = _fold_deploy_table(data, fields)
-        if fields and "target" not in fields:
-            # Deploy routes on target before importing agent.py; read a literal one statically (3b-3b).
-            target = static_agent_setting(path.parent / "agent.py", "target")
-            if target is not None:
+        if fields:
+            # Deploy routes on target, and checks/provisions stores, before importing agent.py;
+            # read literal declarations statically when the TOML has none (3b-3b). A non-literal
+            # Python value (e.g. MemoryBackendConfig(...)) is left to the post-import merge.
+            agent_py = path.parent / "agent.py"
+            target = static_agent_setting(agent_py, "target") if "target" not in fields else None
+            if isinstance(target, str):
                 fields["target"] = target
+            for key in ("memory", "session"):
+                value = static_agent_setting(agent_py, key) if key not in fields else None
+                if isinstance(value, dict):
+                    fields[key] = value
     # Deploy-envelope keys alone do not declare an agent config.
     return fields if fields else None
 

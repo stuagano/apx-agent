@@ -331,8 +331,8 @@ def test_native_binding_roundtrips_generated_configuration(tmp_path):
         "transport": "native", "url": "$SPECIALIST_URL", "timeout_s": 12,
     }})
     generate_project(config, tmp_path)
-    generated = tomllib.loads((tmp_path / "pyproject.toml").read_text())["tool"]["apx"]["agent"]
-    assert AgentConfig.model_validate(generated).bindings == config.bindings
+    generated = tomllib.loads((tmp_path / "pyproject.toml").read_text())["tool"]["apx"]["deploy"]
+    assert AgentConfig.model_validate({"name": "parent", "bindings": generated["bindings"]}).bindings == config.bindings
 
 
 def test_native_input_bounds_and_undeclared_input(two_hosts):

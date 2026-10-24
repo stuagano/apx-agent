@@ -161,8 +161,9 @@ def test_recovery_compatibility_and_registration(
     app = compile_agent(execution.agent, config=config, service_ws=execution.ws)
     assert app._recovery_hook is not None
     generate_project(config, tmp_path / "generated")
-    project = tomllib.loads((tmp_path / "generated" / "pyproject.toml").read_text())
-    assert project["tool"]["apx"]["agent"]["recovery"] is True
+    from apx_agent._inspection import static_agent_setting
+
+    assert static_agent_setting(tmp_path / "generated" / "agent.py", "recovery") is True  # 3b-3b
 
 
 def test_uncertain_tool_write_uses_the_tools_idempotency_contract(

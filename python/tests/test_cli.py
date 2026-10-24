@@ -5752,7 +5752,7 @@ def test_coworker_gallery_pick_materializes_full_project(tmp_path: Path) -> None
         "gallery pick must no longer write a standalone .yaml"
     )
     pyproject = (base / "pyproject.toml").read_text()
-    assert "[tool.apx.agent]" in pyproject
+    assert "[tool.apx.deploy]" in pyproject and "[tool.apx.agent" not in pyproject  # 3b-3b
     assert "## Governance receipt" in result.output
 
     # Prove agent.py actually imports cleanly, not just that it exists —

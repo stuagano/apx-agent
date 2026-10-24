@@ -133,122 +133,25 @@ def _build_pyproject(config: "AgentConfig") -> str:
     lines.append("]")
     lines.append("")
 
-    # [tool.apx.agent]
-    lines.append("[tool.apx.agent]")
-    lines.append(f'name = "{config.name}"')
-    # Always written. An omitted key now loads as durable_agent_server, so a
-    # compatibility project that hid responses_agent would change contract.
-    lines.append(f"target = {_toml_value(config.target)}")
-    if config.recovery:
-        lines.append("recovery = true")
-    if config.description:
-        lines.append(f"description = {_toml_value(config.description)}")
-    lines.append(f"model = {_toml_value(config.model)}")
-    if config.instructions:
-        lines.append(f"instructions = {_toml_value(config.instructions)}")
-    # sub_agents — without this the runtime envelope merge never sees the
-    # spec's sub-agent URLs and the deployed app silently has no A2A tools.
-    if config.sub_agents and not config.agents:
-        lines.append(f"sub_agents = {_toml_value(config.sub_agents)}")
-
-    # knowledge — emit only when the caller explicitly set it in the AgentConfig.
-    # The auto-default "./.apx/okf" was removed: generate_project writes no .apx/
-    # artifact, so auto-emitting a knob pointing at a non-existent bundle would be
-    # incoherent. The bundle-writing path (apx-agent scaffold) emits the knob there
-    # instead, gated on manifest-is-not-None, so knob ⟺ bundle is always satisfied.
-    if config.knowledge is not None:
-        lines.append(f"knowledge = {_toml_value(config.knowledge)}")
-
-    # Python-canonical: the agent always has a top-level agent.py (generated from
-    # the template by render_agent_py), so the module spec is always written and
-    # the [tool.apx.agent.template] section is no longer emitted.
-    lines.append('module = "agent:agent"')
-
-    if config.examples:
-        lines.append(f"examples = {_toml_value(config.examples)}")
-    if config.workflows:
-        workflows = [workflow.model_dump() for workflow in config.workflows]
-        lines.append(f"workflows = {_toml_value_nested(workflows)}")
-    lines.append("")
-
+    # [tool.apx.deploy] — runtime settings live on the agent in agent.py (3b-3b).
+    deploy_table: dict[str, Any] = {"name": config.name}
+    if config.host is not None:
+        deploy_table["host"] = config.host
+    if config.deploy is not None:
+        deploy_table.update(config.deploy.model_dump(
+            exclude_none=True, exclude_unset=True, exclude={"autoscale", "resources"}))
+    _write_toml_section(lines, "tool.apx.deploy", deploy_table)
     if config.bindings:
-        lines.append("[tool.apx.agent.bindings]")
+        lines.append("[tool.apx.deploy.bindings]")
         for key, binding in config.bindings.items():
             value = binding if isinstance(binding, str) else binding.model_dump()
             lines.append(f"{key} = {_toml_value_nested(value)}")
         lines.append("")
-
-    # [tool.apx.agent.service_policies] — omit the default empty declaration
-    # so existing generated projects remain byte-for-byte compatible.
-    service_policies = config.service_policies
-    if (
-        service_policies.attachments
-        or service_policies.abac is not None
-        or service_policies.native_mode.value != "off"
-        or service_policies.local_mode.value != "mirror"
-    ):
-        lines.append("[tool.apx.agent.service_policies]")
-        lines.append(f"local_mode = {_toml_value(service_policies.local_mode.value)}")
-        lines.append(f"native_mode = {_toml_value(service_policies.native_mode.value)}")
-        lines.append("")
-        if service_policies.abac is not None:
-            lines.append("[tool.apx.agent.service_policies.abac]")
-            lines.append(
-                f"tags = {_toml_value_nested(dict(service_policies.abac.tags))}"
-            )
-            lines.append("")
-        for attachment in service_policies.attachments:
-            lines.append("[[tool.apx.agent.service_policies.attachments]]")
-            lines.append(f"name = {_toml_value(attachment.name)}")
-            lines.append(f"target_type = {_toml_value(attachment.target_type.value)}")
-            lines.append(f"target = {_toml_value(attachment.target)}")
-            lines.append(f"mode = {_toml_value(attachment.mode.value)}")
-            lines.append("")
-            for policy in attachment.policies:
-                lines.append("[[tool.apx.agent.service_policies.attachments.policies]]")
-                lines.append(f"name = {_toml_value(policy.name)}")
-                lines.append(f"kind = {_toml_value(policy.kind.value)}")
-                if policy.builtin is not None:
-                    lines.append(f"builtin = {_toml_value(policy.builtin.value)}")
-                if policy.classifier is not None:
-                    lines.append(f"classifier = {_toml_value(policy.classifier)}")
-                if policy.prompt is not None:
-                    lines.append(f"prompt = {_toml_value(policy.prompt)}")
-                if policy.function is not None:
-                    lines.append(f"function = {_toml_value(policy.function)}")
-                lines.append(f"phase = {_toml_value(policy.phase.value)}")
-                lines.append(f"rank = {policy.rank}")
-                lines.append("")
-
-    # [tool.apx.agent.memory]
-    if config.memory is not None:
-        _write_toml_section(
-            lines, "tool.apx.agent.memory", config.memory.model_dump(exclude_none=True)
-        )
-
-    # [tool.apx.agent.session]
-    if config.session is not None:
-        _write_toml_section(
-            lines,
-            "tool.apx.agent.session",
-            config.session.model_dump(exclude_none=True),
-        )
-
     if config.deploy is not None:
-        _write_toml_section(
-            lines,
-            "tool.apx.agent.deploy",
-            config.deploy.model_dump(exclude_none=True, exclude={"autoscale", "resources"}),
-        )
         if config.deploy.autoscale is not None:
-            _write_toml_section(
-                lines,
-                "tool.apx.agent.deploy.autoscale",
-                config.deploy.autoscale.model_dump(),
-            )
+            _write_toml_section(lines, "tool.apx.deploy.autoscale", config.deploy.autoscale.model_dump())
         for resource in config.deploy.resources:
-            _write_toml_section(lines, "[tool.apx.agent.deploy.resources]", resource.model_dump())
-
+            _write_toml_section(lines, "[tool.apx.deploy.resources]", resource.model_dump())
     return "\n".join(lines)
 
 
@@ -322,6 +225,40 @@ def _ctor_kwargs(spec: dict[str, Any]) -> str:
         for k, v in spec.items()
         if v is not None
     )
+
+
+# bindings are deploy-time wiring: generated agent.py stays transport-agnostic, so they go to
+# [tool.apx.deploy.bindings] (3b-3b).
+_SPEC_ONLY = frozenset({"tools", "skills", "agents", "root", "template", "deploy", "host", "name", "bindings"})
+_LLM_ONLY = ("instructions", "temperature", "max_tokens", "max_iterations", "sub_agents", "memory", "session")
+
+
+def _jsonable(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, list):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    return value
+
+
+def _settings_kwargs(config: "AgentConfig", *, llm_root: bool) -> dict[str, Any]:
+    """Declared runtime fields of *config*, as constructor kwargs for the root agent (3b-3b).
+
+    For a graph root (a composite), top-level ``sub_agents`` is dropped as it always was
+    (the graph's leaves carry their own); the other LlmAgent-only fields are an error."""
+    out: dict[str, Any] = {}
+    for field in sorted(config.model_fields_set - _SPEC_ONLY):
+        value = getattr(config, field)
+        if value is None:
+            continue
+        if field in _LLM_ONLY and not llm_root:
+            if field == "sub_agents":
+                continue
+            raise ValueError(f"{field} can't go on a graph root; set it on a leaf in agents:")
+        out[field] = _jsonable(value)
+    return out
 
 
 def _render_leaf_tools(
@@ -625,6 +562,9 @@ def _render_graph_agent_py(
         in {"remote", "remote_databricks"}
     }
     root = _render_root(config.root, set(config.agents), imports, remote_names)
+    extra = _settings_kwargs(config, llm_root=False)
+    if extra:
+        root = root[:-1] + ", " + _ctor_kwargs(extra) + ")"
     blocks = ["from apx_agent import " + ", ".join(sorted(imports)), *tool_blocks]
     blocks.extend(leaves)
     blocks.append(root)
@@ -670,7 +610,8 @@ def render_agent_py(
     tools = render_tool_group(raw_tools, "declared", blocks, tool_modules)
     if config.template is None:
         blocks.insert(0, "from apx_agent import LlmAgent")
-        blocks.append(f"agent = LlmAgent(name={config.name!r}, tools={tools})")
+        settings = _ctor_kwargs(_settings_kwargs(config, llm_root=True))
+        blocks.append(f"agent = LlmAgent(name={config.name!r}, tools={tools}" + (f", {settings})" if settings else ")"))
         return "\n\n".join(blocks) + "\n"
 
     name = config.template.get("name")
@@ -680,6 +621,10 @@ def render_agent_py(
         spec["knowledge"] = config.knowledge
     target = _TEMPLATE_TARGETS.get(name or "")
     if target is None:
+        # LlmAgent-only fields reach a third-party template through its build spec (3b-3b).
+        for key, value in _settings_kwargs(config, llm_root=True).items():
+            if key in _LLM_ONLY:
+                spec.setdefault(key, value)
         # Preserve third-party template construction; tools are already callables.
         blocks.insert(0, "from apx_agent._template import template_registry")
         values = ", ".join(
@@ -687,8 +632,16 @@ def render_agent_py(
             for key, value in spec.items()
         )
         blocks.append(f"agent = template_registry.build({name!r}, {{{values}}})")
+        declared = _settings_kwargs(config, llm_root=True)
+        settings = {k: v for k, v in declared.items() if k not in _LLM_ONLY}
+        if settings:
+            # build() takes no settings; apply them the way agent constructors do (3b-3b).
+            blocks.append(f"agent._set_settings({settings!r})")
     else:
         module, cls = target
+        # Declared top-level settings beat the template spec's own keys: they used to live in
+        # [tool.apx.agent], which won over the template's knobs (3b-3b keeps that precedence).
+        spec.update(_settings_kwargs(config, llm_root=True))
         catalog = spec.pop("catalog", None)
         schema = spec.pop("schema", None)
         spec.setdefault("name", config.name)

@@ -573,10 +573,10 @@ def test_scaffold_default_target_is_apps(tmp_path: Path) -> None:
 
     assert not (base / "databricks.yml").exists()
     assert not (base / "agent_server").exists()
+    from apx_agent._inspection import static_agent_setting
+
     assert (
-        tomllib.loads((base / "pyproject.toml").read_text())["tool"]["apx"]["agent"][
-            "target"
-        ]
+        static_agent_setting(base / "agent.py", "target")  # 3b-3b: on agent.py's root constructor
         == "durable_agent_server"
     )
 

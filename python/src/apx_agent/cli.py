@@ -388,11 +388,14 @@ def _merged_config(agent, config):
         raise click.ClickException(str(exc)) from exc
 
 
-def _recheck_prerequisites(config, ws) -> None:
-    """Prerequisites ran on [tool.apx.agent] before the agent loaded; re-run them on the merged config."""
+def _recheck_prerequisites(config, ws, *, provision_stores: bool = False) -> None:
+    """Prerequisites ran on [tool.apx.agent] before the agent loaded; re-run them on the merged config.
+
+    ``provision_stores`` matches the pre-import check it repeats: stores declared only in
+    Python (a generated agent.py, 3b-3b) are provisioned here."""
     probe = config.model_copy(update={"session": None}) if config.session is not None else config
     for online in (False, True) if ws is not None else (False,):
-        kwargs = {"ws": ws, "provision_stores": False} if online else {}
+        kwargs = {"ws": ws, "provision_stores": provision_stores} if online else {}
         for check in _doctor_mod.check_agent_prerequisites(probe, online=online, **kwargs):
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
@@ -4310,6 +4313,12 @@ def _scaffold_apps(
             '"apx-agent[eval,agentbricks]",', native_dep,
         ) + "\n" + apx_source
         agent_source = files["agent.py"]
+        # Runtime settings live on the agent (3b-3b): literal kwargs on the root constructor,
+        # so deploy's static target read finds them without importing agent.py.
+        name_kwarg = f'    name="{name}"'
+        if name_kwarg in agent_source:
+            agent_source = agent_source.replace(
+                name_kwarg, f"{name_kwarg}, model={config.model!r}, target={runtime!r}", 1)
         if agent_source.startswith('"""'):
             agent_source = agent_source.split('"""', 2)[2]
         else:
@@ -4763,8 +4772,12 @@ def scaffold(
             "(model-serving deploy stays a separate `agents deploy` step)."
         )
 
+    from ._inspection import static_agent_setting
+
     existing = _read_apx_agent_config(target / "pyproject.toml")
-    existing_runtime = existing.get("target", "responses_agent") if existing else None
+    # A literal target= on agent.py's root constructor is the declaration (3b-3b); the TOML is the fallback.
+    existing_runtime = static_agent_setting(target / "agent.py", "target") or (
+        existing.get("target", "responses_agent") if existing else None)
     if existing_runtime is None and any((target / path).exists() for path in ("databricks.yml", "agent.py")):
         existing_runtime = "responses_agent"
     if runtime is not None and existing_runtime is not None and runtime != existing_runtime:
@@ -11091,7 +11104,7 @@ def _deploy_apps_impl(
     if effective_config is not None:
         merged = _merged_config(agent, effective_config)
         if merged != effective_config:
-            _recheck_prerequisites(merged, workspace)
+            _recheck_prerequisites(merged, workspace, provision_stores=native_cli)
             if native_direct:
                 _sync_native_app(app, merged)
         effective_config = merged

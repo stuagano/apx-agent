@@ -1003,6 +1003,17 @@ def test_provider_chat_model_fails_before_deploy_side_effects(
     assert not (scaffold / ".build").exists()
 
 
+
+def _project_agent(root: Path):
+    """The project's real agent.py agent (generated projects declare their settings there)."""
+    import runpy
+
+    sys.path.insert(0, str(root))
+    try:
+        return runpy.run_path(str(root / "agent.py"))["agent"]
+    finally:
+        sys.path.remove(str(root))
+
 @pytest.mark.parametrize("failure,hosting", [
     (None, {}),
     (None, {"space": "platform-selected", "compute_size": "LIQUID"}),
@@ -1055,7 +1066,8 @@ def test_native_deploy_hands_rollout_to_agentbricks(
 
     monkeypatch.setattr(cli_mod, "_run_databricks_cmd", databricks)
     monkeypatch.setattr(cli_mod, "_ensure_apx_wheel", lambda cwd: None)
-    monkeypatch.setattr(cli_mod, "_load_finalized_agent", lambda _: LlmAgent(name="native"))
+    # 3b-3b: settings live in the generated agent.py; deploy loads that agent, not a bare stub.
+    monkeypatch.setattr(cli_mod, "_load_finalized_agent", lambda _: _project_agent(scaffold))
     ws = MagicMock()
     ws.apps.get_space.side_effect = AssertionError("Placement belongs to Agent Bricks")
     from databricks.sdk.errors import NotFound
@@ -1351,7 +1363,8 @@ def test_app_space_deploy_binds_sdk_owned_store(
                                     session={"type": "managed", "store_name": "remote-sessions"}), scaffold)
     original_bundle = (scaffold / "databricks.yml").read_text()
     calls = _install_subprocess_mock(monkeypatch)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda _: LlmAgent(name="native"))
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent",
+                        lambda _: _project_agent(scaffold) if generated else LlmAgent(name="native"))
     monkeypatch.setattr("apx_agent.cli._check_readyz", lambda *a, **k: (True, {"durable": True, "runtime_store": "ok"}))
     smoke = MagicMock(side_effect=AssertionError("App Space deploys must not use the native CLI execution smoke"))
     monkeypatch.setattr("apx_agent.cli._check_native_execution", smoke)
