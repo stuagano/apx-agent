@@ -104,7 +104,7 @@ experiment = "/Users/you@example.com/orders"   # MLflow experiment for run/eval/
 
 ## Removed: `[tool.apx.agent]`
 
-The `[tool.apx.agent]` table is deprecated and is being removed. To move an existing
+The `[tool.apx.agent]` table is no longer supported. To move an existing
 project, commit your work and run `apx-agent agents migrate-config`. It moves
 runtime settings onto the agent, deploy and registration keys to
 `[tool.apx.deploy]`, and `profile` / `experiment` to `[tool.apx]`. It prints the
