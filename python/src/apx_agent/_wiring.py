@@ -773,7 +773,9 @@ async def setup_agent(
                 type(agent).__name__,
             )
         sub_agent_urls: list[str] = getattr(agent, "_sub_agent_urls", [])
-        existing = set(sub_agent_urls)
+        # Compare resolved URLs: the agent may hold the raw ${ENV} form of the same peer
+        # (resolve_settings fills config.sub_agents from the agent's own list).
+        existing = set(sub_agent_urls) | {_resolve_env_var(u) for u in sub_agent_urls}
         for raw_url in config.sub_agents:
             resolved = _resolve_env_var(raw_url)
             if not resolved:

@@ -117,7 +117,7 @@ to remove the old table. Nested tables map onto dicts: `guardrails` with
 | `model`, `identity`, `target`, `recovery`, `gateway`, `service_policies`, `guardrails`, `knowledge`, `vector_search_index`, `bindings`, `url`, `registry`, `api_prefix`, `examples`, `workflows`, `data`, `executor`, `example`, `description` | keyword argument on the root agent in `agent.py` (`Agent(..., guardrails={...})`), or `agent.configure(...)` for an agent built by a factory |
 | `instructions`, `temperature`, `max_tokens`, `max_iterations`, `sub_agents`, `memory`, `session` | agent constructor arguments; `session=` takes a dict such as `{"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "x"}`; a Lakebase `memory=` dict also needs `embedding_model` and `embedding_dim` |
 | `name`, `host`, deploy fields (space, instances, backend, entrypoint, include, autoscale, ...), `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`, `tools_table` | `[tool.apx.deploy]` in `pyproject.toml` |
-| `profile`, `experiment` | `[tool.apx]` in `pyproject.toml` (`profile` usually in the gitignored `.apx.local`) |
+| `profile`, `experiment`, `memory_store`, `example_store`, `summarize_fn` | `[tool.apx]` in `pyproject.toml` (`profile` usually in the gitignored `.apx.local`) |
 | graph declarations (`agents` leaves + `root`), `template` | a YAML spec file (`my_agent.yaml`); `apx-agent agents run my_agent.yaml` materializes it |
 | `module = "agent:agent"` | gone: the agent is always the `agent` variable in `agent.py` |
 

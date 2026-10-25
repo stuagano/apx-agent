@@ -5071,13 +5071,22 @@ def migrate_config() -> None:
         n = 2
         while backup.exists():
             backup, n = cwd / f".apx.local.bak.{n}", n + 1
-        before_flat = _read_apx_agent_config(pyproject, allow_agent_table=True)
+        from ._inspection import DEV_KEYS
+
+        def _dev(flat: dict[str, Any]) -> dict[str, Any]:  # the keys .apx.local still carries
+            return {k: flat[k] for k in DEV_KEYS if k in flat}
+
+        before_flat = _dev(_read_apx_agent_config(pyproject, allow_agent_table=True))
         backup.write_text(local_text)
         local_path.write_text(local_new)
-        if _read_apx_agent_config(pyproject, allow_agent_table=True) != before_flat:
+        if _dev(_read_apx_agent_config(pyproject, allow_agent_table=True)) != before_flat:
             local_path.write_text(local_text)
             raise click.ClickException("migrating .apx.local changed the effective settings; restored it.")
         click.echo(f"migrated .apx.local to [tool.apx] (backup: {backup.name})")
+        dropped = _migrate_config.local_dropped_keys(local_text)
+        if dropped:
+            click.echo("  dropped from .apx.local (no longer read there): " + ", ".join(dropped)
+                       + (" — pass --model per command, or set model= on the agent" if "model" in dropped else ""))
 
     if "agent" not in tomllib.loads(pyproject.read_text()).get("tool", {}).get("apx", {}):
         _apply_local()
@@ -14174,9 +14183,9 @@ def _probe_local_sub_agents(cwd: Path) -> list[_doctor_mod.SubAgentProbe]:
     pyproject is unreadable.
     """
     try:
-        from ._inspection import _load_agent_config
+        from ._doctor_durable import effective_config_isolated
 
-        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        cfg = effective_config_isolated(cwd)  # sub_agents are declared on the agent (3d)
     except Exception:
         return []
     if cfg is None or not cfg.sub_agents:
@@ -17109,8 +17118,8 @@ def governance_status(
 # against a user-supplied store. The store comes from one of two places:
 #
 #   1. --store-module MODULE:VAR              (explicit flag)
-#   2. memory_store in [tool.apx.agent] /         (pyproject fallback)
-#      example_store in [tool.apx.agent]
+#   2. memory_store in [tool.apx] /         (pyproject fallback)
+#      example_store in [tool.apx]
 #
 # The referenced variable must be an importable :class:`MemoryStore` or
 # :class:`ExampleStore` instance. The CLI is store-shape-agnostic — anything
@@ -17129,7 +17138,7 @@ def _load_store(
 
     Resolution order:
       1. ``module_spec`` argument (the --store-module flag value).
-      2. ``{store_kind}_store`` in ``[tool.apx.agent]``.
+      2. ``{store_kind}_store`` in ``[tool.apx]``.
 
     Raises ``click.UsageError`` if no spec is configured anywhere, and
     ``click.ClickException`` on a load failure.
@@ -17141,7 +17150,7 @@ def _load_store(
     if not spec:
         raise click.UsageError(
             f"Pass --store-module MODULE:VAR or set "
-            f"{store_kind}_store in [tool.apx.agent]. "
+            f"{store_kind}_store in [tool.apx]. "
             f"The variable must be a {store_kind.title()}Store instance."
         )
 
@@ -17226,7 +17235,7 @@ def memory() -> None:
     """Operate on a MemoryStore — recall, remember, forget, list.
 
     Configure the store via ``--store-module MODULE:VAR`` on each command,
-    or set ``memory_store = "module:variable"`` in [tool.apx.agent] (``pyproject.toml``) to share one default across calls.
+    or set ``memory_store = "module:variable"`` in [tool.apx] (``pyproject.toml``) to share one default across calls.
 
     The referenced variable must be an instance of
     :class:`apx_agent.MemoryStore` — typically
@@ -17271,7 +17280,7 @@ def memory_provision_cmd(
 @click.option("-k", "top_k", default=5, type=int, help="Top-k. Default 5.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to memory_store in [tool.apx.agent].")
+                   "Falls back to memory_store in [tool.apx].")
 @click.option("--format", "fmt", type=click.Choice(["json", "text"]),
               default="json", help="Output format. Default: json.")
 def memory_recall_cmd(
@@ -17427,7 +17436,7 @@ def memory_list_cmd(
               help="Max memories to export. Default 10000.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to memory_store in [tool.apx.agent].")
+                   "Falls back to memory_store in [tool.apx].")
 def memory_export_cmd(
     principal_id: str,
     output_file: str,
@@ -17476,7 +17485,7 @@ def examples() -> None:
     """Operate on an ExampleStore — find, save, remove, list.
 
     Configure the store via ``--store-module MODULE:VAR`` on each command,
-    or set ``example_store = "module:variable"`` in [tool.apx.agent] (``pyproject.toml``) to share one default across calls.
+    or set ``example_store = "module:variable"`` in [tool.apx] (``pyproject.toml``) to share one default across calls.
 
     The referenced variable must be an instance of
     :class:`apx_agent.ExampleStore` — typically
@@ -17650,7 +17659,7 @@ def examples_list_cmd(
 @click.option("--agent-id", required=True, help="Agent ID to assign to each imported example.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at an ExampleStore instance. "
-                   "Falls back to example_store in [tool.apx.agent].")
+                   "Falls back to example_store in [tool.apx].")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Parse and count rows without writing to the store.")
 @click.option(
@@ -17876,10 +17885,9 @@ def memory_extract_cmd(
     """
     from databricks.sdk import WorkspaceClient  # noqa: PLC0415
 
-    from ._inspection import _load_agent_config  # noqa: PLC0415
     from ._memory_extract import extraction_payload, extract_declared_session  # noqa: PLC0415
 
-    config = _load_agent_config()
+    config = _effective_config(Path.cwd())  # memory= is declared on the agent (3d)
     if config is None or config.memory is None or config.memory.extraction is None:
         raise click.ClickException(
             "Session extraction is off. Enable extraction in the agent's memory= setting "
@@ -17907,12 +17915,12 @@ def memory_extract_cmd(
 @memory.command("consolidate")
 @click.option("--store", "store_spec", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to memory_store in [tool.apx.agent].")
+                   "Falls back to memory_store in [tool.apx].")
 @click.option("--principal-id", required=True,
               help="Scope consolidation to a single principal.")
 @click.option("--summarize-fn", "summarize_fn_spec", default=None,
               help="MODULE:VAR of a Sequence[Memory] -> str summarizer. "
-                   "Falls back to summarize_fn in [tool.apx.agent].")
+                   "Falls back to summarize_fn in [tool.apx].")
 @click.option("--namespace", default=None,
               help="Optional namespace filter for the candidate pool.")
 @click.option("--max-age-seconds", default=None, type=float,

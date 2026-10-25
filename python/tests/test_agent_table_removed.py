@@ -105,3 +105,56 @@ def test_a_gallery_yaml_with_a_template_still_generates(tmp_path: Path) -> None:
     spec = Path(cli.__file__).parent / "coworker_gallery" / "payroll.yaml"
     generate_project(load_spec(spec, strict=False), tmp_path)
     assert "CoworkerAgent(" in (tmp_path / "agent.py").read_text()
+
+
+# --- final-review fix pass -------------------------------------------------
+
+
+def test_status_probes_sub_agents_declared_on_the_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nname = "p"\n')
+    (tmp_path / "agent.py").write_text(
+        "from apx_agent import LlmAgent\nagent = LlmAgent(name='p', tools=[], sub_agents=['https://peer.example.com'])\n")
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli._doctor_mod, "probe_sub_agents", lambda urls: seen.append(list(urls)) or [])
+    cli._probe_local_sub_agents(tmp_path)
+    assert seen == [["https://peer.example.com"]]
+
+
+def test_an_env_ref_sub_agent_is_not_added_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from fastapi import FastAPI
+
+    from apx_agent import Agent
+    from apx_agent._settings import resolve_settings
+    from apx_agent._wiring import setup_agent
+
+    monkeypatch.setenv("PEER_URL", "https://peer.example.com")
+    agent = Agent(name="p", tools=[], sub_agents=["${PEER_URL}"])
+    fetched: list[str] = []
+    monkeypatch.setattr("apx_agent._wiring._fetch_sub_agent_card", lambda url, **_: fetched.append(url), raising=False)
+    try:
+        asyncio.run(setup_agent(FastAPI(), agent, resolve_settings(agent, None)))
+    except Exception:  # noqa: BLE001 — card fetch / tool build may fail offline; only the URL list matters
+        pass
+    assert len(agent._sub_agent_urls) == 1, agent._sub_agent_urls
+
+
+def test_a_non_dev_key_in_legacy_apx_local_is_dropped_by_migrate_config(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nname = "p"\n')
+    (tmp_path / ".apx.local").write_text('[tool.apx.agent]\nmodel = "databricks-gpt-5"\nprofile = "dev"\n')
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli.main, ["agents", "migrate-config"])
+    assert result.exit_code == 0, result.output
+    assert "model" in result.output and "--model" in result.output  # says what was dropped and what replaces it
+    assert "[tool.apx.agent]" not in (tmp_path / ".apx.local").read_text()
+    assert cli._read_apx_agent_config(tmp_path / "pyproject.toml")["profile"] == "dev"  # no more dead end
+
+
+def test_store_help_points_at_tool_apx() -> None:
+    import re
+
+    text = (Path(cli.__file__)).read_text()
+    stale = re.findall(r"(?:memory_store|example_store|summarize_fn|_store)\b[^\n]{0,40}\[tool\.apx\.agent\]", text)
+    assert stale == [], stale
