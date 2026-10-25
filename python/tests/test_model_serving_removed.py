@@ -56,3 +56,37 @@ def test_canary_defaults_to_apps_without_serving_options(sub: str) -> None:
 def test_hot_swap_has_no_serving_options() -> None:
     names = {opt for p in cli.agents.commands["hot-swap"].params for opt in p.opts}
     assert not names & {"--endpoint", "--no-wait"}, names
+
+
+_REMOVED_DEPLOY_FLAGS = ["--no-deploy", "--no-publish-tools", "--no-set-uc-tags", "--agent-name", "--capture-env-vars",
+                         "--allow-env-var", "--scale-to-zero", "--workload-size", "--env-suffix", "--version", "--hot-swap",
+                         "--model", "--name", "--experiment"]
+
+
+@pytest.mark.parametrize("flag", _REMOVED_DEPLOY_FLAGS)
+def test_removed_deploy_flag_is_an_unknown_option(flag: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli.main, ["agents", "deploy", flag, "x"])
+    assert result.exit_code == 2 and "No such option" in result.output, result.output
+
+
+def test_an_old_serving_layout_detects_apps(tmp_path: Path) -> None:
+    # The flat agent.py + app.py layout without databricks.yml used to auto-detect Model Serving.
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
+    (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', tools=[])\n")
+    (tmp_path / "app.py").write_text("from apx_agent import create_app\nfrom agent import agent\napp = create_app(agent)\n")
+    assert cli._detect_target(tmp_path).target == "apps"
+
+
+def test_scaffold_target_choice_is_apps_only_in_help() -> None:
+    target = next(p for p in cli.agents.commands["scaffold"].params if p.name == "scaffold_target")
+    assert target.help is not None and "model-serving" not in target.help
+
+
+def test_run_serves_a_flat_app_py_project_from_app_py(tmp_path: Path) -> None:
+    # `agents run` picks the module by layout; dropping Model Serving detection must not change it.
+    (tmp_path / "app.py").write_text("app = None\n")
+    assert cli._run_module_for_layout(tmp_path) == "app:app"
+    (tmp_path / "agent_server").mkdir()
+    (tmp_path / "agent_server" / "start_server.py").write_text("app = None\n")
+    assert cli._run_module_for_layout(tmp_path) == "agent_server.start_server:app"

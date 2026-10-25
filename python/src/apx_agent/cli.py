@@ -489,10 +489,12 @@ def _registration_import_context(cwd: Path | None) -> Iterator[None]:
 
 
 # ASGI app module spec served by `apx-agent agents run`, per scaffold layout.
-_RUN_MODULE_BY_TARGET = {
-    "model-serving": "app:app",
-    "apps": "agent_server.start_server:app",
-}
+def _run_module_for_layout(cwd: Path) -> str:
+    """The ASGI app `agents run` serves: a flat ``app.py`` project serves it directly;
+    anything else serves the Apps launcher (``agent_server/start_server.py``)."""
+    flat = ((cwd / "app.py").exists() and not (cwd / "databricks.yml").exists()
+            and not (cwd / "agent_server" / "start_server.py").exists())
+    return "app:app" if flat else "agent_server.start_server:app"
 
 # Default foundation model for the Apps runtime when APX_MODEL is unset. Matches
 # the value baked into the scaffold's app.yaml; override via the APX_MODEL env var.
@@ -514,22 +516,17 @@ def _declares_durable(project: Path) -> bool:
 
 
 def _detect_target(cwd: Path | None = None) -> _DetectedTarget:
-    """Infer the project's target (model-serving vs apps) from its layout.
+    """The project's deploy target: always apps (Model Serving was removed).
 
-    Rules, in order: apps for a declared native durable runtime;
-    otherwise apps when ``agent_server/start_server.py`` exists;
-    model-serving when a top-level ``app.py`` exists without ``databricks.yml``;
-    otherwise apps — the catch-all default (covers ``databricks.yml``-only and
-    bare layouts). ``reason`` names the marker that decided, so callers can
-    echo why a target was auto-detected. Pass ``--target`` to override.
+    ``reason`` names the layout marker that was seen, so callers can echo why:
+    a declared native durable runtime, ``agent_server/start_server.py``,
+    ``databricks.yml``, or none (apps is the default).
     """
     cwd = cwd or Path.cwd()
     if _declares_durable(cwd):
         return _DetectedTarget("apps", "declared durable_agent_server runtime")
     if (cwd / "agent_server" / "start_server.py").exists():
         return _DetectedTarget("apps", "agent_server/start_server.py present")
-    if (cwd / "app.py").exists() and not (cwd / "databricks.yml").exists():
-        return _DetectedTarget("model-serving", "app.py present without databricks.yml")
     if (cwd / "databricks.yml").exists():
         return _DetectedTarget("apps", "databricks.yml present")
     return _DetectedTarget("apps", "no layout markers; apps is the default")
@@ -4555,11 +4552,8 @@ def _echo_scaffold_next_steps(
     callback=_reject_model_serving("agents scaffold"),
     default=None,
     help=(
-        "Deployment destination. 'apps' (default) generates a native Agent Bricks project. "
-        "Use --runtime responses_agent for the compatibility Bundle and dev UI. "
-        "'model-serving' generates the flat "
-        "agent.py + app.py layout for a Mosaic AI ChatAgent serving endpoint. "
-        "Prompted interactively when omitted in a TTY."
+        "Deployment destination: 'apps' generates a native Agent Bricks project. "
+        "Use --runtime responses_agent for the compatibility Bundle and dev UI."
     ),
 )
 @click.option("--runtime", type=click.Choice(["durable_agent_server", "responses_agent"]), default=None,
@@ -6098,20 +6092,15 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
 
     factory = False
     if module is None:
-        detected = _detect_target()
-        module = _RUN_MODULE_BY_TARGET[detected.target]
+        module = _run_module_for_layout(Path.cwd())
         from ._inspection import _load_agent_config
 
         runtime_config = _load_agent_config(pyproject_path=Path.cwd() / "pyproject.toml")
         if runtime_config is not None and runtime_config.target == "durable_agent_server":
             module = "apx_agent._serve:create_app"
             factory = True
-        click.echo(
-            f"target: {detected.target} (auto-detected: {detected.reason}) "
-            f"→ serving {module}",
-            err=True,
-        )
-        if detected.target == "apps":
+        click.echo(f"serving {module} (from the project layout)", err=True)
+        if module != "app:app":  # the Apps launcher reads APX_MODEL
             model = os.environ.get("APX_MODEL", runtime_config.model if runtime_config is not None else _APPS_DEFAULT_MODEL)
             click.echo(
                 f"# apps runtime uses APX_MODEL={model} (export APX_MODEL to override)",
@@ -6933,31 +6922,7 @@ def _deploy_from_yaml(
         os.chdir(orig)
 
 
-# deploy options only the model-serving branch consumes (issue #413):
-# param name → flag spelling, echoed in the "ignored with --target apps"
-# warning when the caller passed one explicitly. --experiment is handled
-# separately with a pointer at the apps-flow equivalent.
-_MODEL_SERVING_ONLY_DEPLOY_FLAGS = (
-    ("publish_tools", "--publish-tools/--no-publish-tools"),
-    ("set_uc_tags", "--set-uc-tags/--no-set-uc-tags"),
-    ("agent_name", "--agent-name"),
-    ("no_deploy", "--no-deploy"),
-    ("capture_env_vars", "--capture-env-vars/--no-capture-env-vars"),
-    ("allow_env_vars", "--allow-env-var"),
-    ("scale_to_zero", "--scale-to-zero/--no-scale-to-zero"),
-    ("workload_size", "--workload-size"),
-    ("env_suffix", "--env-suffix"),
-    ("version", "--version"),
-)
 
-# deploy options only the apps branch consumes (issue #415): the mirror of
-# _MODEL_SERVING_ONLY_DEPLOY_FLAGS above — echoed in the "ignored with
-# --target model-serving" warning when the caller passed one explicitly.
-_APPS_ONLY_DEPLOY_FLAGS = (
-    ("env_pairs", "--env"),
-    ("secret_env_pairs", "--secret-env"),
-    ("readyz_retries", "--readyz-retries"),
-)
 
 
 @agents.command()
@@ -6973,16 +6938,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
          "from the project when omitted. Distinct from the agent runtime in "
          "the agent's target. Apps hosts native durable_agent_server "
          "projects with Agent Bricks; existing Bundle projects keep their "
-         "databricks.yml flow. Model Serving logs an MLflow model and deploys "
-         "a serving endpoint.",
-)
-@click.option("--model", default=None, help="AI Gateway chat model binding. "
-              "Used by --target model-serving; Apps reads the model declaration.")
-@click.option(
-    "--name", "registered_model_name", default=None,
-    help="UC three-part name to register the model under (catalog.schema.model). "
-         "Falls back to registered_model in [tool.apx.deploy] in pyproject.toml; "
-         "required when --target model-serving and neither is set.",
+         "databricks.yml flow.",
 )
 @click.option(
     "--profile", default=None,
@@ -7086,74 +7042,6 @@ _APPS_ONLY_DEPLOY_FLAGS = (
     help="Emit a single JSON object on stdout summarising the run. "
          "Progress logs are routed to stderr.",
 )
-@click.option("--no-deploy", is_flag=True,
-              help="Log + register only, skip databricks.agents.deploy. "
-                   "Only used by --target model-serving.")
-@click.option(
-    "--experiment", default=None,
-    help="MLflow experiment name/path. Falls back to experiment in [tool.apx] "
-         "in pyproject.toml; falls back to MLflow's default when neither is set. "
-         "Only used by --target model-serving.",
-)
-@click.option(
-    "--publish-tools/--no-publish-tools", default=True,
-    help="Publish @tool(uc=...) decorated tools to Unity Catalog before logging. "
-         "On by default; pass --no-publish-tools to skip. "
-         "Only used by --target model-serving.",
-)
-@click.option(
-    "--set-uc-tags/--no-set-uc-tags", default=True,
-    help="Write apx.agent.* UC tags on the registered model after deploy so "
-         "the agent shows up in apx-agent agents list / uc topology / governance-monitoring crawls. "
-         "On by default. Only used by --target model-serving.",
-)
-@click.option(
-    "--agent-name", default=None,
-    help="Friendly agent name used for the apx.agent.name UC tag. Falls back to "
-         "name in [tool.apx.deploy] in pyproject.toml; falls back to the short part "
-         "of --name. Only used by --target model-serving.",
-)
-@click.option(
-    "--capture-env-vars/--no-capture-env-vars", default=False,
-    help="Allow MLflow to record env vars referenced in the agent's dependency "
-         "chain into the logged model artifact. OFF by default to prevent "
-         "developer-shell secrets (ATLASSIAN_API_KEY, GEMINI_API_KEY, etc.) "
-         "from being baked into the deployed image. Sets "
-         "MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING=false for the duration of "
-         "log_agent and restores the caller's environment afterward. "
-         "Only used by --target model-serving.",
-)
-@click.option(
-    "--allow-env-var", "allow_env_vars", multiple=True, metavar="NAME",
-    help="Explicitly allow a specific env var to be recorded. Repeatable: "
-         "--allow-env-var DATABRICKS_HOST --allow-env-var DATABRICKS_TOKEN. "
-         "Note: MLflow's MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING is all-or-nothing; "
-         "passing any --allow-env-var flips capture back on for everything and "
-         "prints a warning listing what you asked to allow vs the full capture "
-         "set you'll actually get. Only used by --target model-serving.",
-)
-@click.option(
-    "--scale-to-zero/--no-scale-to-zero", "scale_to_zero", default=None,
-    help="Scale the serving endpoint to zero when idle. When neither flag is "
-         "passed, databricks.agents.deploy's own default applies — the flag "
-         "is only forwarded when set explicitly. "
-         "Only used by --target model-serving.",
-)
-@click.option(
-    "--workload-size", default=None,
-    type=click.Choice(["Small", "Medium", "Large"]),
-    help="Serving endpoint workload size. When omitted, "
-         "databricks.agents.deploy's own default applies — the value is only "
-         "forwarded when set explicitly. Only used by --target model-serving.",
-)
-@click.option(
-    "--env-suffix", default=None, metavar="SUFFIX",
-    help="Append '-SUFFIX' to the UC model short name, so --env-suffix "
-         "staging registers catalog.schema.model-staging (and the serving "
-         "endpoint name derived from it follows). This is naming-convention "
-         "support for dev/staging/prod, NOT per-environment config "
-         "management. Only used by --target model-serving.",
-)
 @click.option(
     "--dry-run", is_flag=True, default=False,
     help="Print the deploy plan and exit 0 WITHOUT changing anything: no "
@@ -7177,27 +7065,13 @@ _APPS_ONLY_DEPLOY_FLAGS = (
          "it is declared unreachable. Only used by --target apps.",
 )
 @click.option(
-    "--version", "version", default=None, type=int, metavar="N",
-    help="Deploy an ALREADY-LOGGED model version N instead of logging a new "
-         "one: skips publish_tools + log_agent (ledger: skipped) and goes "
-         "straight to databricks.agents.deploy(name, N) + health gate + UC "
-         "tags. Incompatible with --no-deploy. Only used by "
-         "--target model-serving.",
-)
-@click.option(
     "--yes", "-y", "assume_yes", is_flag=True,
     help="Skip the secret-scan confirmation prompt. Use in CI / scripts.",
-)
-@click.option(
-    "--hot-swap", "hot_swap", is_flag=True, default=False,
-    help="Swap the model on the already-deployed serving endpoint instead of redeploying.",
 )
 def deploy(
     spec: str | None,
     module: str | None,
     target: str | None,
-    model: str | None,
-    registered_model_name: str | None,
     profile: str | None,
     bundle_target: str,
     no_run: bool,
@@ -7211,22 +7085,10 @@ def deploy(
     env_pairs: tuple[str, ...],
     secret_env_pairs: tuple[str, ...],
     json_output: bool,
-    no_deploy: bool,
-    experiment: str | None,
-    publish_tools: bool,
-    set_uc_tags: bool,
-    agent_name: str | None,
-    capture_env_vars: bool,
-    allow_env_vars: tuple[str, ...],
-    scale_to_zero: bool | None,
-    workload_size: str | None,
-    env_suffix: str | None,
     dry_run: bool,
     timeout_seconds: int,
     readyz_retries: int,
-    version: int | None,
     assume_yes: bool,
-    hot_swap: bool,
     smoke_input: Path | None = None,
 ) -> None:
     """Deploy a declared agent to Databricks Apps or Model Serving.
@@ -7239,20 +7101,8 @@ def deploy(
     prerequisites, stages the image inputs, hands off rollout, and checks
     runtime readiness. No authored Bundle is required for this flow.
 
-    ``--target`` selects the deployment destination; the runtime comes from
-    the agent's ``target``. The destination is auto-detected when omitted.
-
-    With ``--target model-serving`` runs the canonical flow:
-
-      1. publish_tools_to_uc(agent)    — register any @tool(uc=...) tools
-      2. log_agent(agent, ...)         — log to MLflow + register in UC
-      3. databricks.agents.deploy(...) — promote to a serving endpoint
-      4. health gate                   — poll the endpoint to READY + one
-         smoke invocation; FAIL the deploy if the agent doesn't answer
-      5. set_uc_tags_for_agent(...)    — write apx.agent.* tags
-
-    Toggle individual stages with --no-publish-tools, --no-deploy,
-    --no-readyz-gate, or --no-set-uc-tags.
+    Agents deploy to Databricks Apps (Model Serving was removed); the runtime
+    comes from the agent's ``target``.
 
     Existing Apps Bundle projects retain their build and configuration.
     Native durable projects without a named space still use Agent Bricks
@@ -7305,32 +7155,7 @@ def deploy(
     else:
         target_reason = "explicit --target"
 
-    if smoke_input is not None and target != "apps":
-        raise click.UsageError("--smoke-input is only supported for native Apps deployments.")
     if target == "apps":
-        # Flag hygiene (issue #413): the apps branch never reads the
-        # model-serving-only options — warn instead of silently dropping them.
-        # Warn (not error) so one script can be shared across targets.
-        if experiment is not None:
-            click.echo(
-                "# WARNING: --experiment is ignored with --target apps — it is "
-                "only used by --target model-serving. For apps, pass "
-                "--var mlflow_experiment_id=<id> or rely on --auto-experiment "
-                "(on by default).",
-                err=True,
-            )
-        ctx = click.get_current_context()
-        ignored = [
-            flag for param, flag in _MODEL_SERVING_ONLY_DEPLOY_FLAGS
-            if ctx.get_parameter_source(param)
-            == click.core.ParameterSource.COMMANDLINE
-        ]
-        if ignored:
-            click.echo(
-                "# WARNING: ignored with --target apps (only used by "
-                f"--target model-serving): {', '.join(ignored)}",
-                err=True,
-            )
         if dry_run:
             if smoke_input is not None:
                 config, agent = _config_from_project_or_agent(Path.cwd(), module or "agent:agent")
@@ -7381,455 +7206,6 @@ def deploy(
     # never reads the apps-only runtime-env options — warn instead of
     # silently dropping them. Warn (not error) so one script can be shared
     # across targets.
-    ms_ctx = click.get_current_context()
-    ignored_apps_flags = [
-        flag for param, flag in _APPS_ONLY_DEPLOY_FLAGS
-        if ms_ctx.get_parameter_source(param)
-        == click.core.ParameterSource.COMMANDLINE
-    ]
-    if ignored_apps_flags:
-        click.echo(
-            "# WARNING: ignored with --target model-serving (only used by "
-            f"--target apps): {', '.join(ignored_apps_flags)}",
-            err=True,
-        )
-    # --version redeploys an existing logged version; --no-deploy skips the
-    # deploy step. Combining them would be a no-op, so it's an error (#414).
-    if version is not None and no_deploy:
-        raise click.UsageError(
-            "--version deploys an ALREADY-LOGGED version, but --no-deploy "
-            "skips the deploy step — combined, nothing would happen. Drop "
-            "one of the two."
-        )
-    config = _with_agent_settings(_read_apx_agent_config())
-    if model is None:
-        raise click.UsageError(
-            "--model is required when --target model-serving. "
-            "Pass --target apps to use the Databricks Apps flow instead."
-        )
-    if registered_model_name is None:
-        configured = config.get("registered_model")
-        if isinstance(configured, str) and configured.strip():
-            registered_model_name = configured.strip()
-        else:
-            raise click.UsageError(
-                "--name is required when --target model-serving (or set "
-                "registered_model in [tool.apx.deploy] in pyproject.toml). "
-                "Pass --target apps to use the Databricks Apps flow instead."
-            )
-    if env_suffix:
-        # Environment story (#407): a naming convention, not config
-        # management — the suffixed UC short name flows through to the
-        # endpoint/agent naming derived from it.
-        registered_model_name = f"{registered_model_name}-{env_suffix}"
-    effective_module = module or "agent:agent"
-
-    if dry_run:
-        # Parse data= on the agent for the dry-run plan (fail-closed on
-        # invalid declaration — same as the real deploy path).
-        data_config = None
-        if "data" in config:
-            from ._models import DataConfig
-            data_config = DataConfig.model_validate(config["data"])
-        _emit_serving_deploy_plan(
-            uc_name=registered_model_name,
-            model=model,
-            module=effective_module,
-            target_reason=target_reason,
-            experiment=experiment or config.get("experiment"),
-            publish_tools=publish_tools,
-            no_deploy=no_deploy,
-            readyz_gate=readyz_gate,
-            set_uc_tags=set_uc_tags,
-            version=version,
-            scale_to_zero=scale_to_zero,
-            workload_size=workload_size,
-            json_output=json_output,
-            timeout_seconds=timeout_seconds,
-            data_config=data_config,
-        )
-        return
-
-    import mlflow
-
-    from apx_agent import log_agent
-
-    # Resolve effective env-var-capture policy.
-    #
-    #   --no-capture-env-vars (default) + no --allow-env-var → capture OFF.
-    #   --capture-env-vars                                   → capture ON.
-    #   --allow-env-var X (with --no-capture-env-vars)       → BadParameter.
-    #   --allow-env-var X (with --capture-env-vars)          → capture ON,
-    #     warn that MLflow capture is all-or-nothing.
-    if allow_env_vars and not capture_env_vars:
-        raise click.BadParameter(
-            "--allow-env-var implies env-var capture is enabled, but "
-            "--no-capture-env-vars (the default) is set. Either drop "
-            "--allow-env-var, or pass --capture-env-vars explicitly.",
-            param_hint="--allow-env-var",
-        )
-    effective_capture = capture_env_vars
-    if allow_env_vars:
-        click.echo(
-            "# WARNING: MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING is "
-            "all-or-nothing in MLflow today. You asked to allow only "
-            f"{list(allow_env_vars)}, but capture will record EVERY env var "
-            "MLflow detects in the dependency chain.",
-            err=True,
-        )
-
-    def _say(msg: str) -> None:
-        """Progress log: stdout normally, stderr under --json-output."""
-        click.echo(msg, err=json_output)
-
-    # Pre-flight: mode banner + secret scan. Both are logging concerns, so a
-    # --version redeploy (nothing gets logged) skips them (#414).
-    if version is None:
-        _say(
-            f"Logging with: env-var-capture="
-            f"{'on' if effective_capture else 'off'}, secrets-scan=on",
-        )
-    suspicious = _run_secret_scan(Path.cwd()) if version is None else []
-    if suspicious and effective_capture:
-        click.echo(
-            "# WARNING: env-var capture is ON and the following names "
-            "look like secrets referenced in this project:",
-            err=True,
-        )
-        for name in suspicious:
-            click.echo(f"#   - {name}", err=True)
-        if not assume_yes:
-            click.confirm(
-                "Continue with capture enabled?",
-                default=False, abort=True,
-            )
-    elif suspicious:
-        # Capture is off, but still surface what we noticed so the user
-        # has a record of what would have leaked under the old behavior.
-        click.echo(
-            "# Note: secret-looking env vars detected in project sources "
-            "(capture is OFF so these will NOT be baked into the model):",
-            err=True,
-        )
-        for name in suspicious:
-            click.echo(f"#   - {name}", err=True)
-
-    # E3a: resolve_agent handles both template-only and module-defined agents.
-    # Model-serving deploy still defers finalization to log_agent.
-    from ._wiring import resolve_agent as _resolve_agent, _ws_for_template as _deploy_ws
-    from ._inspection import _load_agent_config as _load_cfg
-    _deploy_config = _load_cfg(pyproject_path=None)
-    agent = _resolve_agent(effective_module, _deploy_config, ws=_deploy_ws(_deploy_config))
-    effective_experiment = experiment or config.get("experiment")
-    effective_agent_name = (
-        agent_name
-        or config.get("name")
-        or registered_model_name.rsplit(".", 1)[-1]
-    )
-    resolved_experiment_id: str | None = None
-    if effective_experiment:
-        click.echo(f"# experiment: {effective_experiment}", err=True)
-
-    # Sub-step ledger (#402/#405): every step lands in ok/failed/skipped, a
-    # best-effort step failure is collected instead of swallowed, and the
-    # command exits non-zero (with the failures named) if any step failed —
-    # mirroring delete's best-effort-then-aggregate pattern.
-    step_outcomes: dict[str, str] = {
-        "publish_tools": "skipped",
-        "data_governance": "skipped",
-        "log": "skipped",
-        "deploy": "skipped",
-        "gate": "skipped",
-        "set_uc_tags": "skipped",
-    }
-    step_failures: list[str] = []
-    published_tools: list[str] = []
-    registered_version: str | None = None
-    endpoint_name: str | None = None
-    # uv.lock restore state (#416): set when _sanitize_uv_lock rewrites the
-    # project's own lock in place, so a failed deploy puts the original back.
-    lock_path = Path.cwd() / "uv.lock"
-    original_lock: bytes | None = None
-
-    def _orphans() -> str:
-        """Name already-created resources so the operator knows what's left behind."""
-        parts: list[str] = []
-        if published_tools:
-            parts.append(f"published UC tools: {', '.join(published_tools)}")
-        if registered_version is not None:
-            parts.append(
-                f"registered model version: {registered_model_name} "
-                f"v{registered_version}"
-            )
-        if not parts:
-            return ""
-        return (
-            " Already-created resources (NOT rolled back — clean up manually "
-            "if needed): " + "; ".join(parts) + "."
-        )
-
-    def _emit_failure(msg: str) -> NoReturn:
-        # The deploy failed after sanitizing the project's own uv.lock in
-        # place — put the original bytes back so the working tree isn't left
-        # silently mutated (#416).
-        if original_lock is not None:
-            lock_path.write_bytes(original_lock)
-            click.echo(
-                "# restored original uv.lock (deploy failed after it was "
-                "sanitized in place)",
-                err=True,
-            )
-        if json_output:
-            click.echo(json.dumps({
-                "ok": False,
-                "error": msg,
-                "uc_name": registered_model_name,
-                "version": registered_version,
-                "endpoint": endpoint_name,
-                "steps": step_outcomes,
-            }))
-            raise click.exceptions.Exit(1)
-        raise click.ClickException(msg)
-
-    def _fail(step: str, msg: str) -> NoReturn:
-        step_outcomes[step] = "failed"
-        _emit_failure(msg + _orphans())
-
-    # 1. Publish @tool(uc=...) tools first so they exist in UC by the
-    # time log_agent's resource collector picks them up. A --version
-    # redeploy skips this: the version being promoted was logged (and its
-    # tools published) by an earlier deploy (#414).
-    if publish_tools and version is None:
-        try:
-            from apx_agent import publish_tools_to_uc
-            results = publish_tools_to_uc(agent)
-            step_outcomes["publish_tools"] = "ok"
-            published_tools = [r.uc_name for r in results]
-            if results:
-                for r in results:
-                    grants = ", ".join(r.grants_applied) or "none"
-                    _say(f"  published {r.uc_name} (grants: {grants})")
-            else:
-                _say("  (no @tool(uc=...) decorated tools to publish)")
-        except Exception as e:
-            # Best-effort by design (log + deploy can still succeed without
-            # the tools), but the failure is collected and fails the exit
-            # code at the end instead of vanishing (#402).
-            step_outcomes["publish_tools"] = "failed"
-            step_failures.append(f"publish-tools: {e}")
-            click.echo(f"# publish-tools failed: {e}", err=True)
-            click.echo(
-                "# continuing with log + deploy — this failure will still "
-                "fail the command's exit code",
-                err=True,
-            )
-
-    # 1b. Data governance — compile data= on the agent to ABAC DDL and apply.
-    # Runs after publish_tools so any UC tables the agent owns exist to tag.
-    # Fails closed: invalid declaration or DDL failure aborts the deploy.
-    if version is None and _deploy_config is not None and _deploy_config.data is not None:
-        try:
-            from ._data_governance import (
-                apply_data_governance,
-                compile_data_governance_plan,
-            )
-            plan = compile_data_governance_plan(_deploy_config.data)
-            executed = apply_data_governance(plan, ws=_deploy_ws(_deploy_config))
-            step_outcomes["data_governance"] = "ok"
-            _say(f"  data governance: {len(executed)} DDL statements applied")
-        except Exception as e:
-            _fail("data_governance", f"data governance failed: {e}")
-
-    # MLflow captures the project's uv.lock into the logged model. Re-point its
-    # internal Databricks PyPI proxy at public PyPI so the deployed serving
-    # endpoint can install deps (it can't reach the dev proxy). This rewrites
-    # the project's OWN uv.lock in place: kept on success (public-PyPI locks
-    # are repo policy), restored by _emit_failure if the deploy fails (#416).
-    if version is None:
-        pre_sanitize_lock = lock_path.read_bytes() if lock_path.exists() else None
-        if _sanitize_uv_lock(lock_path):
-            original_lock = pre_sanitize_lock
-            click.echo(
-                "# rewrote uv.lock in place → public PyPI for the logged model "
-                "(kept on success; restored if the deploy fails)",
-                err=True,
-            )
-        _warn_unknown_lock_mirrors(lock_path)
-
-    # 2. Log + register
-    #
-    # (Config knobs + persona overlay + declared tools are applied inside
-    # log_agent via finalize_agent — no separate call needed here.)
-
-    if version is not None:
-        # --version redeploy (#414): the version already exists in UC with
-        # its own provenance tags — go straight to the deploy step below.
-        registered_version = str(version)
-        _say(
-            f"Redeploying already-logged {registered_model_name} version "
-            f"{registered_version} (--version: publish_tools + log skipped)"
-        )
-    else:
-        try:
-            if effective_experiment:
-                _exp = mlflow.set_experiment(effective_experiment)
-                resolved_experiment_id = _exp.experiment_id
-            with _EnvVarGuard(capture=effective_capture), mlflow.start_run():
-                info = log_agent(
-                    agent,
-                    model=model,
-                    registered_model_name=registered_model_name,
-                    experiment=effective_experiment,
-                )
-        except Exception as e:
-            _fail("log", f"log_agent failed: {e}.")
-        step_outcomes["log"] = "ok"
-        registered_version = info.registered_model_version
-        _say(f"Logged {registered_model_name} version {registered_version}")
-
-        # 2b. Provenance (issue #403): stamp git SHA / dirty flag / uv.lock hash on
-        # the registered version — same tags the Apps manifest gets — so `apx-agent
-        # doctor` can detect drift between what's deployed and the local tree.
-        # Best-effort: a provenance write failure never turns a green deploy red.
-        provenance_tags = _provenance_version_tags(Path.cwd())
-        if provenance_tags:
-            try:
-                from mlflow.tracking import MlflowClient
-                _prov_client = MlflowClient()
-                for _prov_key, _prov_value in provenance_tags.items():
-                    _prov_client.set_model_version_tag(
-                        registered_model_name, str(registered_version),
-                        _prov_key, _prov_value,
-                    )
-                _say(
-                    f"  provenance: {len(provenance_tags)} tags written on "
-                    f"version {registered_version}"
-                )
-            except Exception as e:
-                click.echo(f"# provenance tags failed (non-fatal): {e}", err=True)
-
-    # 3. Deploy to Model Serving
-    if not no_deploy:
-        try:
-            from databricks import agents  # type: ignore[attr-defined]
-        except ImportError as e:
-            _fail(
-                "deploy",
-                "databricks-agents is required for deployment. "
-                f"Install with: uv add databricks-agents ({e}).",
-            )
-        # Scale passthrough (#407): forwarded ONLY when set explicitly so
-        # databricks.agents.deploy's own defaults stay in charge otherwise.
-        deploy_kwargs: dict[str, Any] = {}
-        if scale_to_zero is not None:
-            deploy_kwargs["scale_to_zero"] = scale_to_zero
-        if workload_size is not None:
-            deploy_kwargs["workload_size"] = workload_size
-        try:
-            deployment = agents.deploy(
-                registered_model_name, model_version=int(registered_version) if registered_version else 0,
-                **deploy_kwargs,
-            )
-        except Exception as e:
-            _fail("deploy", f"databricks.agents.deploy failed: {e}.")
-        step_outcomes["deploy"] = "ok"
-        endpoint_name = getattr(deployment, "endpoint_name", None) or registered_model_name.rsplit(".", 1)[-1]
-        _say(
-            f"Deployed {registered_model_name} version "
-            f"{registered_version} as a serving endpoint."
-        )
-        _say(f"  Endpoint: {endpoint_name}")
-        _say("  View in workspace: Serving → Endpoints")
-
-        # 3b. Health gate (#406): a green deploy must mean "the agent
-        # answers", not "endpoint update accepted". Poll the endpoint to
-        # READY, then send one smoke invocation — the model-serving mirror
-        # of the apps /readyz gate, behind the same flag.
-        if readyz_gate:
-            assert endpoint_name is not None  # set just above from the deploy
-            gate_error = _serving_health_gate(
-                endpoint_name, log=_say, timeout_seconds=timeout_seconds,
-            )
-            if gate_error is None:
-                step_outcomes["gate"] = "ok"
-                _say("  health gate: endpoint READY + smoke invocation answered")
-            else:
-                _fail(
-                    "gate",
-                    f"health gate failed — {registered_model_name} version "
-                    f"{registered_version} deployed to endpoint "
-                    f"{endpoint_name!r} but did not answer: {gate_error} "
-                    f"The endpoint update WAS accepted, so version "
-                    f"{registered_version} is live-but-unverified — roll "
-                    "forward with a new deploy or roll the endpoint back to "
-                    "the previous version. Re-run with --no-readyz-gate to "
-                    "accept the deploy without the health check.",
-                )
-        else:
-            _say(
-                "# --no-readyz-gate: skipping endpoint readiness poll + "
-                "smoke invocation"
-            )
-
-        # 3c. Record local deploy history (redeploy convenience) —
-        # best-effort, like every other provenance step in this function.
-        # Only reached when an actual deploy happened (inside
-        # `if not no_deploy:`), never on a --no-deploy run.
-        _record_deploy_history(
-            Path.cwd(), registered_model_name, "model-serving",
-            _provenance_version_tags(Path.cwd()),
-        )
-    else:
-        _say("Skipping deploy (--no-deploy).")
-
-    # 4. Set UC tags so the agent shows up in apx-agent agents list / uc topology / governance
-    if set_uc_tags:
-        try:
-            from apx_agent import set_uc_tags_for_agent
-            written = set_uc_tags_for_agent(
-                agent,
-                registered_model_name=registered_model_name,
-                model=model,
-                name=effective_agent_name,
-                experiment_id=resolved_experiment_id,   # lets `apx-agent label` resolve traces without --experiment
-            )
-            step_outcomes["set_uc_tags"] = "ok"
-            if written:
-                _say(f"  {len(written)} apx.agent.* tags written on {registered_model_name} "
-                     f"(agent_name={effective_agent_name})")
-            else:
-                click.echo(
-                    f"# set-uc-tags: 0 tags written on {registered_model_name} "
-                    f"— check UC permissions on the registered model (see warnings)",
-                    err=True,
-                )
-        except Exception as e:
-            # Collected, not swallowed: an untagged agent silently never
-            # shows up in list / topology / governance (#402).
-            step_outcomes["set_uc_tags"] = "failed"
-            step_failures.append(f"set-uc-tags: {e}")
-            click.echo(f"# set-uc-tags failed: {e}", err=True)
-
-    # 5. Aggregate: a "green" deploy must not hide failed sub-steps (#402).
-    if step_failures:
-        _emit_failure(
-            f"deploy completed with {len(step_failures)} failed sub-step(s): "
-            + "; ".join(step_failures) + "." + _orphans()
-        )
-    if json_output:
-        summary: dict[str, Any] = {
-            "ok": True,
-            "uc_name": registered_model_name,
-            "version": registered_version,
-            "endpoint": endpoint_name,
-            "steps": step_outcomes,
-        }
-        # Present only when set explicitly — mirrors what was forwarded.
-        if scale_to_zero is not None:
-            summary["scale_to_zero"] = scale_to_zero
-        if workload_size is not None:
-            summary["workload_size"] = workload_size
-        click.echo(json.dumps(summary))
 
 
 def _emit_apps_deploy_plan(
