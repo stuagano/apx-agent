@@ -41,8 +41,8 @@ Success means:
    - **3c.** Migrate the in-repo projects with `migrate-config`.
    - **3d.** `[tool.apx.agent]` is an error naming `migrate-config`, as #944
      did for `[[tool.apx.tools]]`. `template =` and `module =` are removed.
-4. **The rest.** A home for Model Serving deploy settings (`responses_agent`),
-   and the YAML spec path (#152).
+4. **The rest.** The YAML spec path (#152) is done. Model Serving is removed
+   rather than given a home: see [`remove-model-serving.md`](remove-model-serving.md).
 
 Sub-projects 1 and 2 ship while `[tool.apx.agent]` still works. Nothing breaks
 until 3.
