@@ -647,34 +647,22 @@ def _set_toml_key(path: Path, section: str, key: str, value: str) -> None:
 def _save_to_pyproject(key: str, value: str, *, local: bool = False) -> bool:
     """Write ``key = "<value>"`` into the key's home table (sub-project 3b-1).
 
-    ``local=True`` writes ``.apx.local`` ``[tool.apx]`` (gitignored, personal
-    settings like ``profile``). Registration keys go to ``[tool.apx.deploy]``.
-    Anything else still goes to an existing ``[tool.apx.agent]``. Returns True on success.
+    ``local=True`` writes ``.apx.local`` ``[tool.apx]`` (gitignored, personal settings
+    like ``profile``). Registration keys go to ``[tool.apx.deploy]``, dev keys to
+    ``[tool.apx]``. A key with no TOML home returns False, as does a missing pyproject.
     """
-    import tomllib
-
-    from ._inspection import REGISTRATION_KEYS
-
-    def _in_legacy(path: Path) -> bool:
-        # A key still in [tool.apx.agent] is updated there, so the file never declares it twice.
-        try:
-            return key in tomllib.loads(path.read_text()).get("tool", {}).get("apx", {}).get("agent", {})
-        except (OSError, tomllib.TOMLDecodeError):
-            return False
+    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
 
     if local:
-        target = Path.cwd() / ".apx.local"
-        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx", key, value)
+        _set_toml_key(Path.cwd() / ".apx.local", "tool.apx", key, value)
         return True
     target = Path.cwd() / "pyproject.toml"
     if not target.exists():
         return False
-    if key in REGISTRATION_KEYS:
-        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx.deploy", key, value)
-        return True
-    if "[tool.apx.agent]" not in target.read_text():
+    home = "tool.apx.deploy" if key in REGISTRATION_KEYS else "tool.apx" if key in DEV_KEYS else None
+    if home is None:
         return False
-    _set_toml_key(target, "tool.apx.agent", key, value)
+    _set_toml_key(target, home, key, value)
     return True
 
 def _save_profile_to_pyproject(profile: str) -> bool:

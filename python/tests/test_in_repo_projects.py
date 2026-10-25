@@ -137,7 +137,7 @@ _TABLE_TEXT_ALLOWED = {
                "_load_store", "memory", "memory_recall_cmd", "memory_export_cmd",
                "examples", "examples_import_cmd", "memory_consolidate_cmd"},
     "_inspection.py": {"_fold_deploy_table", "_agent_config_fields"},
-    "_doctor.py": {"check_uc_data_source", "_is_apx_project"},  # the template fallback and table sniff go in PR C
+    "_doctor.py": {"check_uc_data_source"},  # the template fallback goes in Task 7
 }
 
 

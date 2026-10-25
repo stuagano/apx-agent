@@ -530,21 +530,13 @@ def _ai_gateway_model_service_name(model: str) -> str | None:
 
 
 def _declared_settings(cwd: Path) -> "dict[str, Any] | Check":
-    """Doctor's view of the agent settings: the raw agent settings, with declared
-    Python settings filling its gaps (3b-2). A FAIL check if agent.py won't import.
-
-    The raw table is read as before (never validated here; the agent-config check reports a
-    malformed one). Python settings come from an isolated import, and only when the TOML is valid."""
-    import tomllib
-
+    """Doctor's view of the agent settings declared in agent.py (3b-2, 3d), from an isolated
+    import and only when the TOML is valid (the agent-config check reports an invalid one).
+    A FAIL check if agent.py won't import."""
     from ._doctor_durable import effective_config_isolated
     from ._inspection import _load_agent_config
 
-    try:
-        raw = tomllib.loads((cwd / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("agent", {})
-    except (OSError, tomllib.TOMLDecodeError):
-        raw = {}
-    settings = dict(raw) if isinstance(raw, dict) else {}
+    settings: dict[str, Any] = {}
     try:
         _load_agent_config(pyproject_path=cwd / "pyproject.toml")
     except Exception:  # noqa: BLE001 — an invalid TOML config is the agent-config check's to report
@@ -1038,7 +1030,7 @@ def _is_apx_project(cwd: Path) -> bool:
     pyproject, agent_py = cwd / "pyproject.toml", cwd / "agent.py"
     try:
         text = pyproject.read_text() if pyproject.exists() else ""
-        if "[tool.apx.agent]" in text or "[tool.apx.deploy]" in text:
+        if "[tool.apx]" in text or "[tool.apx.deploy]" in text:
             return True
         return agent_py.is_file() and "apx_agent" in agent_py.read_text()
     except OSError:
