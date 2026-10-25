@@ -903,7 +903,6 @@ _MOVED_COMMANDS: dict[str, str] = {
     "apps":             "apx-agent agents apps",
     "info":             "apx-agent agents describe",
     "logs":             "apx-agent agents logs",
-    "cost":             "apx-agent agents cost",
     "hot-swap":         "apx-agent agents hot-swap",
     "refresh-schema":   "apx-agent agents refresh-schema",
     "create-supervisor":"apx-agent agents create-supervisor",
@@ -11941,84 +11940,43 @@ def _resolve_served_model_name(ws: Any, endpoint_name: str) -> str:
 
 
 @agents.command()
-@click.option("--endpoint", default=None, help="Model Serving endpoint name.")
-@click.option("--served-model", default=None,
-              help="Specific served model on the endpoint. Auto-discovered when omitted.")
-@click.option("--build", "build", is_flag=True,
-              help="Fetch build logs instead of runtime/service logs.")
 @click.option("--app", "app_name", default=None,
-              help="Databricks Apps name (alternative to --endpoint). Uses the databricks CLI.")
+              help="Databricks Apps name. Defaults to the current native project's App.")
 @click.option("--profile", default=None,
-              help="Databricks CLI profile (only used with --app).")
-def logs(
-    endpoint: str | None,
-    served_model: str | None,
-    build: bool,
-    app_name: str | None,
-    profile: str | None,
-) -> None:
-    """Fetch logs from a deployed agent.
-
-    Two modes:
+              help="Databricks CLI profile.")
+def logs(app_name: str | None, profile: str | None) -> None:
+    """Fetch logs from an agent deployed as a Databricks App.
 
     \b
-      apx-agent agents logs --profile P                 Logs for the current native project
-      apx-agent agents logs --endpoint NAME              Runtime logs from a Model Serving endpoint
-      apx-agent agents logs --endpoint NAME --build      Build-time logs from the endpoint's build
-      apx-agent agents logs --app NAME [--profile P]     Logs from an apx-agent hosted as a Databricks App
-
-    For the --endpoint path, ``served_model`` is auto-discovered from the
-    endpoint's current config when not supplied explicitly.
+      apx-agent agents logs --profile P             Logs for the current native project
+      apx-agent agents logs --app NAME [--profile P]  Logs for a named App
     """
-    if not endpoint and not app_name:
+    if not app_name:
         from ._inspection import _load_agent_config
 
         config = _load_agent_config(pyproject_path=Path.cwd() / "pyproject.toml")
         if config is not None and config.target == "durable_agent_server":
             app_name = _resolve_project_app_name(Path.cwd(), bundle_target="dev", profile=profile)
         else:
-            raise click.UsageError("Pass either --endpoint NAME or --app NAME.")
-    if endpoint and app_name:
-        raise click.UsageError("--endpoint and --app are mutually exclusive.")
+            raise click.UsageError("Pass --app NAME.")
 
-    if app_name:
-        # Apps logs aren't on the Python SDK; shell out to the databricks CLI.
-        import subprocess
-        cmd = ["databricks", "apps", "logs", app_name]
-        if profile:
-            cmd.extend(["--profile", profile])
-        try:
-            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
-        except FileNotFoundError as e:
-            raise click.ClickException(
-                "The 'databricks' CLI is required for --app logs. "
-                "Install: https://docs.databricks.com/dev-tools/cli/install"
-            ) from e
-        if result.returncode != 0:
-            raise click.ClickException(
-                f"databricks apps logs failed (exit {result.returncode}):\n{result.stderr.strip()}"
-            )
-        click.echo(result.stdout)
-        return
-
-    # Endpoint path.
-    ws, _ = _connect_workspace(profile)
-
-    if served_model is None:
-        assert endpoint is not None
-        served_model = _resolve_served_model_name(ws, endpoint)
-        click.echo(f"# served_model auto-discovered: {served_model}", err=True)
-
-    method = ws.serving_endpoints.build_logs if build else ws.serving_endpoints.logs
-    label = "build" if build else "runtime"
+    # Apps logs aren't on the Python SDK; shell out to the databricks CLI.
+    import subprocess
+    cmd = ["databricks", "apps", "logs", app_name]
+    if profile:
+        cmd.extend(["--profile", profile])
     try:
-        response = method(name=endpoint, served_model_name=served_model)
-    except Exception as e:
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    except FileNotFoundError as e:
         raise click.ClickException(
-            f"Failed to fetch {label} logs for {endpoint}/{served_model}: {e}"
+            "The 'databricks' CLI is required for --app logs. "
+            "Install: https://docs.databricks.com/dev-tools/cli/install"
         ) from e
-    body = getattr(response, "logs", None) or str(response)
-    click.echo(body)
+    if result.returncode != 0:
+        raise click.ClickException(
+            f"databricks apps logs failed (exit {result.returncode}):\n{result.stderr.strip()}"
+        )
+    click.echo(result.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -13916,10 +13874,6 @@ def _registry_row_age(updated_at: Any) -> str:
     help="Three-part UC name of the registered model (catalog.schema.model).",
 )
 @click.option(
-    "--endpoint", "endpoint_name", default=None,
-    help="Model Serving endpoint name. Auto-detected from UC tags when omitted.",
-)
-@click.option(
     "--app", "app_name", default=None,
     help="Databricks App name to delete. Auto-detected from UC tags when omitted.",
 )
@@ -13948,7 +13902,6 @@ def _registry_row_age(updated_at: Any) -> str:
                    "(ok/deleted/errors) instead of progress text.")
 def delete_agent_cmd(
     uc_name: str,
-    endpoint_name: str | None,
     app_name: str | None,
     assume_yes: bool,
     purge: bool,
@@ -13957,15 +13910,14 @@ def delete_agent_cmd(
     profile: str | None,
     as_json: bool,
 ) -> None:
-    """Delete a deployed agent — UC model registration, serving endpoint, and app.
+    """Delete a deployed agent — UC model registration and app.
 
     Removes:
 
     \b
-      1. The Model Serving endpoint (--endpoint or auto-detected from UC tags)
-      2. The registered model in Unity Catalog (--uc-name)
-      3. The Databricks App (--app or auto-detected from UC tags)
-      4. The agent's advertise-registry rows (agent registry + tools registry
+      1. The registered model in Unity Catalog (--uc-name)
+      2. The Databricks App (--app or auto-detected from UC tags)
+      3. The agent's advertise-registry rows (agent registry + tools registry
          tables), when those tables exist — so discovery stops advertising
          a deleted agent
 
@@ -13978,10 +13930,10 @@ def delete_agent_cmd(
     conventions (best-effort, aggregated errors):
 
     \b
-      5. The auto-created MLflow experiment — the apx.mlflow.experiment_id
+      4. The auto-created MLflow experiment — the apx.mlflow.experiment_id
          tag when recorded, else /Users/<you>/<app>-<target>
-      6. Any soaking canary App (<app>-canary-<version>)
-      7. The DAB deploy root in the workspace (~/.bundle/<app>/<target>)
+      5. Any soaking canary App (<app>-canary-<version>)
+      6. The DAB deploy root in the workspace (~/.bundle/<app>/<target>)
 
     Lakebase session-store tables are never dropped automatically — the
     command prints the tables to DROP instead. Anything --purge cannot
@@ -13996,20 +13948,17 @@ def delete_agent_cmd(
 
     ws, ws_cfg = _connect_workspace(profile)
 
-    # Resolve endpoint and app from UC tags when not explicitly given.
+    # Resolve the app from UC tags when not explicitly given.
     # --purge always needs the tags (bundle_target, experiment id).
-    resolved_endpoint = endpoint_name
     resolved_app = app_name
     uc_tags: dict[str, str] = {}
-    if purge or not resolved_endpoint or not resolved_app:
+    if purge or not resolved_app:
         try:
             model = ws.registered_models.get(uc_name)
             uc_tags = {t.key: t.value for t in (getattr(model, "tags", None) or [])}
         except Exception:
             pass
     from ._apps_registry import tag_value
-    if not resolved_endpoint:
-        resolved_endpoint = tag_value(uc_tags, "apx.agent.model")
     if not resolved_app:
         resolved_app = tag_value(uc_tags, "apx.apps.app_name")
 
@@ -14029,7 +13978,7 @@ def delete_agent_cmd(
     host_short = host.replace("https://", "").split(".")[0] if isinstance(host, str) else ""
     victim_agent_ids = list(dict.fromkeys(
         _slug(f"{name}_{host_short}")
-        for name in (resolved_endpoint, resolved_app) if name
+        for name in (resolved_app,) if name
     ))
 
     registry_ready = False
@@ -14061,7 +14010,7 @@ def delete_agent_cmd(
         try:
             dependents = find_registry_dependents(
                 agent_ids=victim_agent_ids,
-                references=[n for n in (uc_name, resolved_endpoint, resolved_app) if n],
+                references=[n for n in (uc_name, resolved_app) if n],
                 registry_table=registry_table, tools_table=tools_table, ws=ws,
             )
         except Exception as exc:
@@ -14169,8 +14118,6 @@ def delete_agent_cmd(
 
     # Build a summary of what will be deleted for the confirmation prompt.
     to_delete: list[str] = [f"  • UC registered model: {uc_name}"]
-    if resolved_endpoint:
-        to_delete.append(f"  • Model Serving endpoint: {resolved_endpoint}")
     if resolved_app:
         to_delete.append(f"  • Databricks App: {resolved_app} (including its owned native Runtime Store)")
     if experiment_label:
@@ -14234,17 +14181,7 @@ def delete_agent_cmd(
                 raise click.exceptions.Exit(1)
             raise click.ClickException(message) from None
 
-    # 1. Delete the serving endpoint first (it holds the model version lock).
-    if resolved_endpoint:
-        try:
-            ws.serving_endpoints.delete(resolved_endpoint)
-            deleted.append(f"endpoint:{resolved_endpoint}")
-            _out(f"Deleted endpoint: {resolved_endpoint}")
-        except Exception as exc:
-            errors.append(f"endpoint {resolved_endpoint!r}: {exc}")
-            click.echo(f"Warning: could not delete endpoint {resolved_endpoint!r}: {exc}", err=True)
-
-    # 2. Delete the registered model (all versions).
+    # 1. Delete the registered model (all versions).
     try:
         ws.registered_models.delete(uc_name)
         deleted.append(f"uc_model:{uc_name}")
@@ -14253,7 +14190,7 @@ def delete_agent_cmd(
         errors.append(f"UC model {uc_name!r}: {exc}")
         click.echo(f"Warning: could not delete UC model {uc_name!r}: {exc}", err=True)
 
-    # 4. Remove the advertise-registry rows (best-effort, aggregated) so
+    # 2. Remove the advertise-registry rows (best-effort, aggregated) so
     # discovery stops advertising the deleted agent (#446).
     if registry_ready:
         for victim_id in victim_agent_ids:
@@ -14271,7 +14208,7 @@ def delete_agent_cmd(
                     err=True,
                 )
 
-    # 5. --purge extras (lists/ids are only populated when --purge was passed).
+    # 3. --purge extras (lists/ids are only populated when --purge was passed).
     if experiment_id:
         try:
             ws.experiments.delete_experiment(experiment_id)
@@ -14536,89 +14473,6 @@ def uc_validate_cmd(catalog: str, schema: str, fmt: str, profile: str | None) ->
             err=True,
         )
         raise SystemExit(1)
-
-
-# ---------------------------------------------------------------------------
-# cost — DBU / $ per agent or endpoint over a lookback window
-# ---------------------------------------------------------------------------
-
-
-@agents.command()
-@click.option("--agent", "agent_name", default=None,
-              help="Agent name. Resolves to the serving endpoint of the same name.")
-@click.option("--endpoint", default=None,
-              help="Serving endpoint name. Use this when the endpoint name differs from the agent name.")
-@click.option("--hours", default=24, type=int,
-              help="Lookback window in hours. Default 24.")
-@click.option("--warehouse-id", default=None,
-              help="SQL warehouse to run the system-tables query on.")
-@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
-              help="Databricks CLI profile (~/.databrickscfg).")
-@click.option(
-    "--format", "fmt", type=click.Choice(["text", "json"]),
-    default="text", help="Output format.",
-)
-def cost(
-    agent_name: str | None,
-    endpoint: str | None,
-    hours: int,
-    warehouse_id: str | None,
-    profile: str | None,
-    fmt: str,
-) -> None:
-    """Report DBU + $ for an agent or serving endpoint over the lookback window.
-
-    Queries ``system.billing.usage`` joined to
-    ``system.billing.list_prices`` (best-effort) scoped to the serving
-    endpoint name. Requires the system billing share to be enabled in
-    the workspace.
-    """
-    if not agent_name and not endpoint:
-        raise click.UsageError("Pass --agent NAME or --endpoint NAME.")
-    if agent_name and endpoint:
-        raise click.UsageError("--agent and --endpoint are mutually exclusive.")
-
-    from apx_agent import cost_for_agent
-
-    ws, _ = _connect_workspace(profile)
-    breakdown = cost_for_agent(
-        agent_name=agent_name,
-        endpoint=endpoint,
-        ws=ws,
-        lookback_hours=hours,
-        warehouse_id=warehouse_id,
-    )
-
-    if fmt == "json":
-        click.echo(json.dumps({
-            "endpoint": breakdown.endpoint,
-            "lookback_hours": breakdown.lookback_hours,
-            "total_dbus": breakdown.total_dbus,
-            "total_usd": breakdown.total_usd,
-            "rows": breakdown.rows,
-        }, indent=2, default=str))
-        return
-
-    click.echo(f"# cost for {breakdown.endpoint} (last {breakdown.lookback_hours}h)")
-    if not breakdown.rows:
-        click.echo("No usage rows. Either no traffic in the window or "
-                   "system.billing.usage isn't enabled in this workspace.")
-        return
-    click.echo(f"{'SKU':<42}  {'UNIT':<10}  {'DBUs':>12}  {'USD':>10}")
-    for r in breakdown.rows:
-        usd = r.get("usd")
-        usd_str = f"${usd:,.2f}" if isinstance(usd, (int, float)) else "-"
-        click.echo(
-            f"{(r.get('sku_name') or '-'):<42}  "
-            f"{(r.get('usage_unit') or '-'):<10}  "
-            f"{r.get('dbus') or 0:>12,.2f}  "
-            f"{usd_str:>10}"
-        )
-    click.echo(f"\nTotal DBUs: {breakdown.total_dbus:,.2f}")
-    if breakdown.total_usd is not None:
-        click.echo(f"Total USD:  ${breakdown.total_usd:,.2f}")
-    else:
-        click.echo("Total USD:  - (pricing data not joinable)")
 
 
 # ---------------------------------------------------------------------------
@@ -15234,7 +15088,7 @@ def _do_fleet_repoint(
             if latest is None:
                 outcomes.append(_fleet.AgentOutcome(
                     a.uc_name, "skipped",
-                    "no prod-tagged versions (model-serving or never prod-deployed)"))
+                    "no prod-tagged versions (never prod-deployed)"))
                 continue
             if latest == current:
                 outcomes.append(_fleet.AgentOutcome(
@@ -15283,8 +15137,8 @@ def fleet_repoint_cmd(
     "Latest" means the highest version carrying a prod manifest tag — never a
     canary. Mirrors the single-agent prod-promote path (see
     _apps_registry.get_latest_prod_version). Applies only to apps-target
-    agents with prod-tagged versions; model-serving agents and agents never
-    prod-deployed are reported as skipped with the reason.
+    agents with prod-tagged versions; agents never prod-deployed are
+    reported as skipped with the reason.
     """
     _do_fleet_repoint(
         catalog=catalog, schema=schema, name_glob=name_glob,
@@ -17467,30 +17321,10 @@ def mcp_doctor() -> None:
     click.echo(f"mcp doctor: {warnings} warning(s)")
 
 
-@main.group(name="endpoints", cls=_ApxGroup)
-def endpoints() -> None:
-    """Inspect Model Serving endpoints."""
 
 
-@endpoints.command("list")
-@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
-              help="Databricks config profile.")
-def endpoints_list(profile: str | None) -> None:
-    """List serving endpoint names in the configured workspace."""
-    ws = _require_sdk(profile)
-    for ep in ws.serving_endpoints.list():
-        click.echo(getattr(ep, "name", ""))
 
 
-@endpoints.command("url")
-@click.argument("name")
-def endpoints_url(name: str) -> None:
-    """Print the invocations URL for a serving endpoint. No network call."""
-    ws, cfg = _connect_workspace(None)
-    host = getattr(cfg, "host", None) or getattr(ws, "config", None) and ws.config.host
-    if not host:
-        raise click.ClickException("workspace host is not configured")
-    click.echo(f"{host}/serving-endpoints/{name}/invocations")
 
 
 @main.group(name="resources", cls=_ApxGroup)

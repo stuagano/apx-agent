@@ -907,8 +907,7 @@ def check_apps_enabled(*, auth_ok: bool) -> Check | None:
                 "Databricks Apps",
                 Status.WARN,
                 "Apps may not be enabled in this workspace",
-                "Ask your workspace admin to enable Databricks Apps, or deploy with "
-                "`uv run apx-agent deploy --target model-serving` instead.",
+                "Ask your workspace admin to enable Databricks Apps: apx deploys agents to Apps.",
             )
         # Any other error (network, auth) — don't fail the check hard
         return None
@@ -1041,7 +1040,7 @@ def check_target(cwd: Path) -> Check:
         return Check("Target", Status.SKIP, "not in an apx project", None)
     from apx_agent.cli import _detect_target, _read_apx_agent_config
 
-    # _detect_target only ever returns "apps" or "model-serving"; no failure mode to surface.
+    # _detect_target always returns "apps" (Model Serving was removed); no failure mode to surface.
     detected = _detect_target(cwd)
     from ._inspection import static_agent_setting
 
@@ -1113,8 +1112,7 @@ def check_databricks_yml(cwd: Path) -> Check:
         "databricks.yml",
         Status.WARN,
         "missing — `apx-agent deploy --target apps` needs it",
-        "Re-run `apx-agent scaffold <name> --target apps`, or `apx-agent deploy` "
-        "for model-serving (no bundle required).",
+        "Re-run `apx-agent scaffold <name> --target apps`.",
     )
 
 

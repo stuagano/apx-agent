@@ -90,3 +90,22 @@ def test_run_serves_a_flat_app_py_project_from_app_py(tmp_path: Path) -> None:
     (tmp_path / "agent_server").mkdir()
     (tmp_path / "agent_server" / "start_server.py").write_text("app = None\n")
     assert cli._run_module_for_layout(tmp_path) == "agent_server.start_server:app"
+
+
+def test_serving_only_commands_are_gone() -> None:
+    assert "cost" not in cli.agents.commands
+    assert "endpoints" not in cli.main.commands
+
+
+@pytest.mark.parametrize(("sub", "gone"), [("logs", {"--endpoint", "--served-model", "--build"}),
+                                           ("delete", {"--endpoint"})])
+def test_serving_only_options_are_gone(sub: str, gone: set[str]) -> None:
+    names = {opt for p in cli.agents.commands[sub].params for opt in p.opts}
+    assert not names & gone, names
+    assert "--app" in names
+
+
+def test_advertise_still_registers_a_serving_endpoint_peer() -> None:
+    # Kept by the spec: advertising an existing serving endpoint is not hosting one.
+    opt = next(p for p in cli.agents.commands["advertise"].params if p.name == "endpoint_type")
+    assert "model-serving" in opt.type.choices
