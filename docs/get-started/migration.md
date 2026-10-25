@@ -13,7 +13,7 @@ apx-agent is structurally aligned with both Google ADK and the OpenAI Agents SDK
 | System prompt | `instruction=` | `instructions=` | `instructions=` (also accepts `instruction=`) |
 | Tool decorator | `@FunctionTool` / `tool_function` | `@function_tool` | `@tool` |
 | Tool list | `tools=[...]` | `tools=[...]` | `tools=[...]` |
-| LLM model | `model=` in `LlmAgent` | `model=` in `Agent` | `[tool.apx.agent].model` in TOML (or `model=` on `run_once` / `compile_to_chat_agent`) |
+| LLM model | `model=` in `LlmAgent` | `model=` in `Agent` | `model=` keyword on the root agent (or `model=` on `run_once` / `compile_to_chat_agent`) |
 | Callbacks — before tool | `before_tool_callback` | `@tool_input_guardrail` | `before_tool` / `before_tool_callback` |
 | Callbacks — after tool | `after_tool_callback` | _(output guardrail)_ | `after_tool` / `after_tool_callback` |
 | Callbacks — before model | `before_model_callback` | `@input_guardrail` | `before_model` / `before_model_callback` |
@@ -266,7 +266,7 @@ See [data-agent.md](../agents/data-agent.md), [coworker.md](../agents/coworker.m
 | ADK / OpenAI param | apx-agent param | Notes |
 |--------------------|-----------------|-------|
 | `instruction` (ADK) | `instructions` | Both spellings accepted |
-| `model` | `[tool.apx.agent].model` (or `model=` on `run_once` / `compile_to_chat_agent`) | Databricks serving endpoint name; not an `Agent` constructor arg |
+| `model` | `model=` keyword on the root agent (or `model=` on `run_once` / `compile_to_chat_agent`) | Databricks serving endpoint name |
 | `tools` | `tools` | `@tool` functions, governed primitives, or `agent_tool(agent)` wrappers |
 | `before_tool_callback` (ADK) | `before_tool_callback` or `before_tool` | Both accepted; ADK form takes precedence |
 | `after_tool_callback` (ADK) | `after_tool_callback` or `after_tool` | Both accepted |
@@ -276,3 +276,14 @@ See [data-agent.md](../agents/data-agent.md), [coworker.md](../agents/coworker.m
 | `handoffs` (OpenAI) | `agents` on `HandoffAgent` | |
 | `max_turns` (OpenAI) | `max_iterations` | Default 10 |
 | `description` | `description` | Used in routing context and A2A discovery |
+
+---
+
+## Moving off `[tool.apx.agent]`
+
+The `[tool.apx.agent]` table in `pyproject.toml` is deprecated and is being removed. Run
+`apx-agent agents migrate-config` to move an existing project: runtime settings
+go onto the root agent in `agent.py`, deploy and registration keys to
+`[tool.apx.deploy]`, and `profile` / `experiment` to `[tool.apx]`. See the
+[settings map](../reference/pyproject-toml.md#removed-toolapxagent) for where
+each setting lives now.

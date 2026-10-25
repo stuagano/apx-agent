@@ -37,7 +37,7 @@ agent = Agent(
 )
 ```
 
-The model is not a constructor argument — set it via `[tool.apx.agent]` in `pyproject.toml` (e.g. `model = "databricks-meta-llama-3-3-70b-instruct"`).
+The model is an apx runtime setting — pass it as a keyword argument on the root agent (e.g. `model="databricks-meta-llama-3-3-70b-instruct"`).
 
 `DataAgent` is the recommended starting point when the agent needs to query Databricks data:
 

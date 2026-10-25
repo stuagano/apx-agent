@@ -34,7 +34,7 @@ See [Agent composition](../agents/composition.md) for the API and examples.
 
 | Edge | Same application | Separate application |
 |---|---|---|
-| Declared graph edge | Compose the logical leaf directly | Bind the named logical leaf under `[tool.apx.agent.bindings]` |
+| Declared graph edge | Compose the logical leaf directly | Bind the named logical leaf with `bindings=` on the root agent |
 | Model-directed delegation | `agent_tool(local_leaf)` | Existing URL-based sub-agent declarations remain available for compatibility |
 
 Keep leaves together when they version, scale, and operate together. Put a
@@ -44,11 +44,8 @@ distinct governed resource boundary.
 Named bindings are the default deterministic cross-app path:
 
 ```toml
-[tool.apx.agent]
+[tool.apx]
 experiment = "/Shared/research-assistant"
-
-[tool.apx.agent.bindings]
-pricing = "$PRICING_APP_URL"
 ```
 
 ```python
@@ -57,7 +54,10 @@ from apx_agent import Agent, RouterAgent, SequentialAgent
 data = Agent(name="data", description="Looks up governed account facts.")
 pricing = Agent(name="pricing", description="Produces an approved price.")
 review = SequentialAgent([data, pricing], name="review")
-root = RouterAgent(agents=[data, review])
+root = RouterAgent(
+    agents=[data, review],
+    bindings={"pricing": "$PRICING_APP_URL"},
+)
 ```
 
 APX resolves the binding at application startup. The environment reference,
@@ -159,4 +159,4 @@ from named A2A binding and does not add remote loop or handoff semantics.
 | Bounded local refinement | `LoopAgent` |
 | Local peer transfer | `HandoffAgent` |
 | Discretionary delegation with parent control | `agent_tool` |
-| Deterministic leaf in another app | Named `[tool.apx.agent.bindings]` entry |
+| Deterministic leaf in another app | Named `bindings=` entry on the root agent |

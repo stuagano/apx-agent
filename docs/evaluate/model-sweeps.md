@@ -85,7 +85,7 @@ DATABRICKS_CONFIG_PROFILE="your-profile" apx-agent eval sweep fixtures.json \
 ```
 
 `--user-token` preserves the existing OBO path in live evaluation. Python also
-accepts `workspace_host`. Live CLI runs honor `[tool.apx.agent].experiment` when
+accepts `workspace_host`. Live CLI runs honor the `experiment` in `[tool.apx]` when
 `--experiment` is omitted; fixture runs do not inherit that setting.
 
 ## Interpret the measurements

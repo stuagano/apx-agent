@@ -84,23 +84,22 @@ Databricks provides the runtime and permission enforcement. APX connects Unity C
 
 Use APX to avoid assembling and maintaining those connections separately in each agent. Composition and policy compilation build on that integration. If a native Agent Bricks template already covers all your connections and behavior, APX is optional.
 
-```toml
-[tool.apx.agent]
-name = "payroll-coworker"
-model = "databricks/claude-3-7-sonnet"
-instructions = "You are a payroll analyst..."
-
-[tool.apx.agent.memory]
-type = "lakebase"
-host = "${LAKEBASE_HOST}"
-database = "payroll"
-table_name = "main.payroll.agent_memory"
-embedding_model = "databricks-bge-large-en"
-embedding_dim = 1024
-
-[tool.apx.agent.data]
-catalog = "main"
-schema = "payroll"
+```python
+# agent.py
+agent = DataAgent(
+    "main", "payroll",
+    name="payroll-coworker",
+    model="databricks/claude-3-7-sonnet",
+    instructions="You are a payroll analyst...",
+    memory={
+        "type": "lakebase",
+        "host": "${LAKEBASE_HOST}",
+        "database": "payroll",
+        "table_name": "main.payroll.agent_memory",
+        "embedding_model": "databricks-bge-large-en",
+        "embedding_dim": 1024,
+    },
+)
 ```
 
 That declaration becomes: an agent grounded in its schema before the first question, durable memory that persists across sessions, a dev UI that surfaces tool calls and conversation correctly regardless of which underlying API format produced them, and a deployment target that can enforce Unity Catalog grants per caller when user authorization is configured.
@@ -116,7 +115,7 @@ That declaration becomes: an agent grounded in its schema before the first quest
 | **Governance** | Identity passthrough, UC grants, and audit logging wired from the declaration |
 | **Multi-agent** | `sub_agents=[url]` + A2A — agents call each other across apps; supported tool/data calls can forward caller identity per hop |
 
-You write a Python object or a TOML block. The normalization work is apx-agent's job.
+You write a Python object. The normalization work is apx-agent's job.
 
 ### What the compiler preserves
 
@@ -181,7 +180,7 @@ target:  apps
 ```bash
 apx_ps1() {
   local p="${DATABRICKS_CONFIG_PROFILE:-DEFAULT}"
-  [ -f pyproject.toml ] && grep -q '\[tool.apx.agent\]' pyproject.toml && printf 'apx ▸ %s ' "$p"
+  [ -f pyproject.toml ] && grep -q '\[tool.apx' pyproject.toml && printf 'apx ▸ %s ' "$p"
 }
 setopt PROMPT_SUBST 2>/dev/null; PROMPT='$(apx_ps1)'"$PROMPT"
 ```
@@ -392,7 +391,7 @@ See [docs/get-started/cli.md](docs/get-started/cli.md) for the full surface.
 | Scaffolded Apps CI/CD | [docs/deploy-cicd.md](docs/deploy-cicd.md) |
 | Upgrade apx-agent pins safely | [docs/upgrade.md](docs/upgrade.md) |
 | Evaluation | [docs/evaluate/overview.md](docs/evaluate/overview.md) |
-| Configuration (`pyproject.toml`) | [docs/reference/configuration.md](docs/reference/configuration.md) |
+| Configuration (`agent.py` and `pyproject.toml`) | [docs/reference/configuration.md](docs/reference/configuration.md) |
 | Coming from ADK or OpenAI Agents SDK | [docs/get-started/migration.md](docs/get-started/migration.md) |
 
 ---
@@ -403,7 +402,7 @@ See [docs/get-started/migration.md](docs/get-started/migration.md) for a concept
 
 | ADK / OpenAI | apx-agent |
 |---|---|
-| `Agent(name, instructions, model)` | `LlmAgent(name, instructions)` or `Agent(...)` — set the model via the `[tool.apx.agent]` `model` field in `pyproject.toml` |
+| `Agent(name, instructions, model)` | `LlmAgent(name, instructions)` or `Agent(...)` — set the model with the `model=` keyword on the root agent |
 | `Runner.run()` | `run_once(agent, "prompt")` |
 | `@function_tool` / `@tool` | `@tool` |
 | `input_guardrails=[fn]` | `input_guardrails=[fn]` (same param name) |

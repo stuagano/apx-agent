@@ -275,16 +275,16 @@ A few things that bite in practice:
   do not rely on instance-local state. Declare the replica count once:
 
   ```toml
-  [tool.apx.agent.deploy]
+  [tool.apx.deploy]
   instances = 3            # fixed 1–5
   # or, instead of instances:
-  # [tool.apx.agent.deploy.autoscale]
+  # [tool.apx.deploy.autoscale]
   # min = 2
   # max = 5
   ```
 
   apx then refuses to compile or boot a scaled app whose session state is
-  in-memory, naming the fix `[tool.apx.agent.session] type='lakebase'`. apx also
+  in-memory, naming the fix `session={"type": "lakebase", ...}` on the agent. apx also
   emits native Apps `compute_min_instances` / `compute_max_instances` fields in
   `databricks.yml`, plus `APX_DECLARED_INSTANCES` for the runtime guard's
   read-back. This needs a Databricks CLI/bundle schema new enough to accept

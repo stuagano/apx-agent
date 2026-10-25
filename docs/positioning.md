@@ -28,7 +28,7 @@ Use apx-agent when you want a **production data agent**:
 - **Deployed to Databricks.** Targets Databricks Apps and model serving, with sessions,
   semantic memory, and MLflow tracing wired from the declaration.
 - **Declared, not wired — for one agent and for many.** One Python object or a
-  `[tool.apx.agent]` TOML block becomes a working, observable, governed agent; apx-agent
+  YAML spec becomes a working, observable, governed agent; apx-agent
   normalizes the LLM API formats, memory backends, conversation history, and trace schemas
   underneath. The same declaration scales to a **fleet**: `sub_agents=[url]` and A2A let agents
   call each other across apps, with the caller's identity passed through per hop so downstream

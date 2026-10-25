@@ -74,7 +74,7 @@
 
 ## Reference
 
-- [reference/configuration.md](reference/configuration.md) — full `[tool.apx.agent]` field reference
+- [reference/configuration.md](reference/configuration.md) — full agent settings reference
 - [reference/service-policies.md](reference/service-policies.md) — portable local/native Service Policy declaration
 - [reference/pyproject-toml.md](reference/pyproject-toml.md) — `pyproject.toml` shape
 - [reference/cost-tracking.md](reference/cost-tracking.md) — `cost_for_agent`, `apx-agent agents cost` CLI

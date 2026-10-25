@@ -25,7 +25,7 @@ memory knob on top of `DataAgent`:
    the framework's finalize/serve path does the wiring, so construction needs
    no `ws`. Typing `memory="lakebase"` literally deliberately raises — that's
    for fully custom pgvector connection details via explicit
-   `[tool.apx.agent.memory]` / `[tool.apx.agent.session]` blocks, distinct
+   `memory={...}` / `session={...}` dicts, distinct
    from `"persistent"`'s generated defaults.
 
 ```python
@@ -38,8 +38,7 @@ agent = CoworkerAgent(
 )
 ```
 
-The declarative surface is **TOML, not YAML**: `[tool.apx.agent]` in
-`pyproject.toml`. Two ways to get a coworker:
+The declarative surface is the agent in `agent.py`, or a YAML spec. Two ways to get a coworker:
 
 - **Code-first** — `apx-agent agents scaffold my-coworker --template coworker`
   generates a `my-coworker/` project with an `agent.py` holding the one-liner
@@ -72,28 +71,26 @@ lakehouse already made physically possible.
 
 So every use case below is **the same outline, different colors**:
 
-```toml
+```python
 # Payroll coworker — Kronos × Workday
-[tool.apx.agent]
-template   = "coworker"
-catalog    = "main"
-schema     = "payroll"        # Kronos + Workday landed tables
-persona    = "a payroll operations analyst"
-join_key   = "employee ID"
-objective  = "surface mismatches between hours worked and paychecks issued"
-memory     = "persistent"
+agent = CoworkerAgent(
+    "main", "payroll",        # Kronos + Workday landed tables
+    persona="a payroll operations analyst",
+    join_key="employee ID",
+    objective="surface mismatches between hours worked and paychecks issued",
+    memory="persistent",
+)
 ```
 
-```toml
-# Quote-to-Cash coworker — Salesforce × NetSuite: SAME template
-[tool.apx.agent]
-template   = "coworker"
-catalog    = "main"
-schema     = "revops"         # Salesforce + NetSuite landed tables
-persona    = "a revenue operations analyst"
-join_key   = "opportunity ID"
-objective  = "identify revenue leakage between closed deals and invoiced amounts"
-memory     = "persistent"
+```python
+# Quote-to-Cash coworker — Salesforce × NetSuite: SAME class
+agent = CoworkerAgent(
+    "main", "revops",         # Salesforce + NetSuite landed tables
+    persona="a revenue operations analyst",
+    join_key="opportunity ID",
+    objective="identify revenue leakage between closed deals and invoiced amounts",
+    memory="persistent",
+)
 ```
 
 Nothing else changes. One template, seven coworkers — the Spec fields are the

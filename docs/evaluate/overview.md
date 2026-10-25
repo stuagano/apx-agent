@@ -9,7 +9,7 @@ Use the same entry point as you add cases, inspect typed steps, or compare model
 | Which step went wrong? | `apx-agent eval run chain-cases.json --fixtures` |
 | Which model works best? | `apx-agent eval sweep cases.json --model endpoint-a --model endpoint-b --judge-model databricks` |
 
-The first two commands use `[tool.apx.agent].model` from your project, unless you
+The first two commands use the `model=` declared on your agent, unless you
 pass `--model`. A sweep names its candidates explicitly. Commands load
 `agent:agent` by default; use `--module module:variable` for another declaration.
 Model defaults follow the same project discovery as agent loading, including
@@ -27,19 +27,23 @@ uv add 'apx-agent[eval]'
 For a minimal example, use this declaration in `agent.py`. If you already have
 an agent, keep its declaration and write a case relevant to its job instead.
 
+Declare your chosen model on the agent (or pass `--model` when running):
+
 ```python
 from apx_agent import Agent
 
-agent = Agent(instructions="Answer arithmetic questions concisely.")
+agent = Agent(
+    name="arithmetic",
+    instructions="Answer arithmetic questions concisely.",
+    model="your-model-endpoint",
+)
 ```
 
-Set your chosen model in the existing `[tool.apx.agent]` section of
-`pyproject.toml` (or pass `--model` when running):
+`pyproject.toml` only needs the project's deploy name:
 
 ```toml
-[tool.apx.agent]
+[tool.apx.deploy]
 name = "arithmetic"
-model = "your-model-endpoint"
 ```
 
 Save one case as `cases.json`:
@@ -67,7 +71,7 @@ Model and judge calls may incur cost. The command prints the MLflow result;
 a successful exit means evaluation completed, not that a quality threshold
 was met. Set your acceptance criteria from the scores.
 
-To save runs in a particular experiment, set `[tool.apx.agent].experiment` or
+To save runs in a particular experiment, set `experiment` under `[tool.apx]` in `pyproject.toml` or
 pass `--experiment`. Otherwise MLflow uses its active/default experiment.
 See [experiment setup](advanced.md#mlflow-experiments) when you need to organize
 or share results.

@@ -4,13 +4,14 @@
 
 A lightweight registry for Apps-deployed agents. Agents self-register on startup. Provides a browseable index and powers cross-agent discovery in Apps deployments. UC + Mosaic AI's agent registry serves the same role for Model Serving deployments.
 
-```toml
-# python/pyproject.toml
-[tool.apx.agent]
-name = "data_triage_agent"
-description = "Investigate missing data"
-model = "databricks-claude-sonnet-4-6"
-registry = "$AGENT_HUB_URL"
+```python
+# python/agent.py
+agent = Agent(
+    name="data_triage_agent",
+    description="Investigate missing data",
+    model="databricks-claude-sonnet-4-6",
+    registry="$AGENT_HUB_URL",
+)
 ```
 
 A worked example lives at [`python/examples/agent-hub/`](../python/examples/agent-hub/).

@@ -6,14 +6,11 @@ construct the HTTP transport.
 
 ## Declare a logical binding
 
-Name the leaf normally in the graph and bind that name in `pyproject.toml`:
+Name the leaf normally in the graph and bind that name with `bindings=` on the root agent (the experiment lives in `[tool.apx]`):
 
 ```toml
-[tool.apx.agent]
+[tool.apx]
 experiment = "/Shared/research-assistant"
-
-[tool.apx.agent.bindings]
-pricing = "$PRICING_APP_URL"
 ```
 
 ```python
@@ -22,7 +19,10 @@ from apx_agent import Agent, RouterAgent, SequentialAgent
 data = Agent(name="data", description="Looks up governed account facts.")
 pricing = Agent(name="pricing", description="Produces an approved price.")
 review = SequentialAgent([data, pricing], name="review")
-root = RouterAgent(agents=[data, review])
+root = RouterAgent(
+    agents=[data, review],
+    bindings={"pricing": "$PRICING_APP_URL"},
+)
 ```
 
 The environment variable resolves to the peer's HTTP(S) A2A card location.

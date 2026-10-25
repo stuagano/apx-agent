@@ -1,7 +1,7 @@
 # Evaluate chains with recorded tool results
 
 From your agent project, run `apx-agent eval run chain-eval.json --fixtures`.
-It uses `[tool.apx.agent].model` unless you pass `--model`, prints each case's
+It uses the `model=` declared on your agent unless you pass `--model`, prints each case's
 outcome and failing step paths, and exits 1 if any case is `wrong`. Expected
 escalations with evidence pass. Choose your authentication explicitly through
 the process environment. Fixture mode rejects live-evaluation options and

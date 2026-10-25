@@ -160,3 +160,13 @@ def test_no_user_facing_text_tells_users_to_write_the_agent_table() -> None:
             if "tool.apx.agent" in line and not line.lstrip().startswith("#") and i not in allowed:
                 hits.append(f"{path.relative_to(_REPO)}:{i}")
     assert hits == [], f"{len(hits)} hits: " + ", ".join(hits)
+
+
+def test_user_docs_show_the_new_homes() -> None:
+    # Design history records what was true then; user docs show today's homes, or the migration.
+    history = ("docs/design/", "docs/superpowers/", "docs/specs/", "docs/engine-scope/")
+    docs = [p for p in [*(_REPO / "docs").rglob("*.md"), _REPO / "README.md"]
+            if not str(p.relative_to(_REPO)).startswith(history)]
+    hits = sorted(str(p.relative_to(_REPO)) for p in docs
+                  if "tool.apx.agent" in p.read_text() and "migrate-config" not in p.read_text())
+    assert hits == [], f"{len(hits)} docs: " + ", ".join(hits)

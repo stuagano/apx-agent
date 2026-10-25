@@ -285,7 +285,7 @@ So:
   The Runtime Store's Lakebase project is auto-provisioned at deploy — the call
   is literally `get_or_create_backend` (`_app_space.py`), create-on-demand. The
   only time you pre-create a Lakebase project yourself is the BYO path
-  (`[tool.apx.agent.memory] type="lakebase"` pointing at your own project), not
+  (`memory={"type": "lakebase", ...}` on the agent, pointing at your own project), not
   the managed/durable path.
 - **Each managed store is its own Lakebase project**, i.e. separate
   branches/endpoints — not one database shared across stores. That means separate
@@ -382,8 +382,8 @@ Everything above is the Agent Bricks product. APX does not replace it — it
 **declares** the agent so you write intent instead of wiring, and compiles that
 declaration into the inputs the product consumes.
 
-- **One declarative envelope.** A single `[tool.apx.agent]` block in
-  `pyproject.toml` carries name, model, instructions, tools, composition
+- **One declarative envelope.** The agent declaration in
+  `agent.py` (plus `[tool.apx.deploy]` in `pyproject.toml`) carries name, model, instructions, tools, composition
   (`sub_agents`), memory/session choice, and deploy/scaling — instead of
   hand-maintaining `agent.toml`, store bindings, and bundle files separately.
   Generated manifests are compiler output, not config you keep in sync. See

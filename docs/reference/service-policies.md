@@ -2,7 +2,7 @@
 
 Service Policies provide one declaration for governance that can be mirrored
 locally and projected into Databricks native policy attachments. The declaration
-lives under AgentConfig, so YAML, pyproject.toml, generated Apps projects, and
+is a `service_policies=` argument on the root agent, so YAML specs, generated Apps projects, and
 runtime wiring use the same validated contract.
 
 The native concepts follow the [Databricks Service Policy Beta contract](https://docs.databricks.com/aws/en/data-governance/unity-catalog/service-policies/create-service-policy):
@@ -11,44 +11,50 @@ ordering, and evaluation stops at the first DENY.
 
 ## Minimal configuration
 
-~~~toml
-[tool.apx.agent.service_policies]
-local_mode = "mirror"       # mirror | off
-native_mode = "plan"        # off | plan | apply | required
-
-[[tool.apx.agent.service_policies.attachments]]
-name = "github-guardrails"
-target_type = "mcp_service"
-target = "main.tools.github"
-mode = "enforce"            # enforce | dry_run
-
-[[tool.apx.agent.service_policies.attachments.policies]]
-name = "jailbreak-defense"
-kind = "builtin"
-builtin = "jailbreak"
-phase = "on_call"
-rank = 100
-
-[[tool.apx.agent.service_policies.attachments.policies]]
-name = "external-write-review"
-kind = "llm_judge"
-classifier = "databricks-claude-haiku-4-5"
-prompt = "Require approval for destructive external writes."
-phase = "on_call"
-rank = 200
-
-[[tool.apx.agent.service_policies.attachments.policies]]
-name = "sql-policy"
-kind = "sql"
-function = "main.governance.check_event"
-phase = "on_result"
-rank = 300
-
-[tool.apx.agent.service_policies.abac]
-tags = { service_class = "customer-facing" }
+~~~python
+agent = Agent(
+    name="customer-agent",
+    service_policies={
+        "local_mode": "mirror",       # mirror | off
+        "native_mode": "plan",        # off | plan | apply | required
+        "attachments": [
+            {
+                "name": "github-guardrails",
+                "target_type": "mcp_service",
+                "target": "main.tools.github",
+                "mode": "enforce",    # enforce | dry_run
+                "policies": [
+                    {
+                        "name": "jailbreak-defense",
+                        "kind": "builtin",
+                        "builtin": "jailbreak",
+                        "phase": "on_call",
+                        "rank": 100,
+                    },
+                    {
+                        "name": "external-write-review",
+                        "kind": "llm_judge",
+                        "classifier": "databricks-claude-haiku-4-5",
+                        "prompt": "Require approval for destructive external writes.",
+                        "phase": "on_call",
+                        "rank": 200,
+                    },
+                    {
+                        "name": "sql-policy",
+                        "kind": "sql",
+                        "function": "main.governance.check_event",
+                        "phase": "on_result",
+                        "rank": 300,
+                    },
+                ],
+            }
+        ],
+        "abac": {"tags": {"service_class": "customer-facing"}},
+    },
+)
 ~~~
 
-The same shape is accepted in YAML:
+The same shape is accepted in a YAML spec:
 
 ~~~yaml
 name: customer-agent
@@ -169,9 +175,8 @@ available.
 
 ABAC tags are accepted and serialized as desired state:
 
-~~~toml
-[tool.apx.agent.service_policies.abac]
-tags = { service_class = "customer-facing" }
+~~~python
+service_policies={"abac": {"tags": {"service_class": "customer-facing"}}}
 ~~~
 
 Current Service Policy Beta attachments remain service-specific. Tag-based
@@ -191,7 +196,7 @@ tokens, and credentials are not logged or included in native plans.
 
 ## Migration from existing guards
 
-Existing [tool.apx.agent.guardrails], code-defined hooks, PolicyGate, and
+Existing `guardrails=` settings, code-defined hooks, PolicyGate, and
 GovernanceGuard remain supported. Service Policy hooks are additive and are
 attached through the same finalize_agent seam used by Apps and model-serving
 paths. Code-defined hooks run first; the declarative local mirror runs after

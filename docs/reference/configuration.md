@@ -3,27 +3,39 @@
 For declarative Service Policies, including local mirror and native plan/apply/
 verify behavior, see [service-policies.md](service-policies.md).
 
-**Python** — `[tool.apx.agent]` in `pyproject.toml`:
+**Python** — declared on the root agent in `agent.py`; deploy settings in
+`[tool.apx.deploy]` in `pyproject.toml`:
 
-```toml
-[tool.apx.agent]
-name = "data_triage"
-description = "Investigate missing data"
-model = "databricks-claude-sonnet-4-6"
-instructions = "System prompt for the agent"
-max_iterations = 10
-sub_agents = ["endpoints/sql-explainer"]   # Model Serving target
-# sub_agents = ["$SQL_EXPLAINER_URL"]      # Apps target
+```python
+agent = Agent(
+    name="data_triage",
+    description="Investigate missing data",
+    model="databricks-claude-sonnet-4-6",
+    instructions="System prompt for the agent",
+    max_iterations=10,
+    sub_agents=["endpoints/sql-explainer"],   # Model Serving target
+    # sub_agents=["$SQL_EXPLAINER_URL"],      # Apps target
+)
 ```
+
+Runtime settings (`model`, `identity`, `target`, `recovery`, `gateway`,
+`service_policies`, `guardrails`, `knowledge`, `vector_search_index`, `bindings`,
+`url`, `registry`, `api_prefix`, `examples`, `workflows`, `data`, `executor`,
+`example`, `description`) are keyword arguments on the root agent, or
+`agent.configure(...)` for an agent built by a factory. `instructions`,
+`temperature`, `max_tokens`, `max_iterations`, `sub_agents`, `memory` and
+`session` are agent constructor arguments. Deploy fields and registration keys
+(`name`, `host`, `space`, `instances`, `backend`, `registered_model`, `catalog`,
+`schema`, ...) live in `[tool.apx.deploy]`; `profile` and `experiment` in
+`[tool.apx]`. See [pyproject-toml.md](pyproject-toml.md) for the full map.
 
 `identity` (optional) is the agent's own principal, inherited by every tool
 that declares no identity of its own. A tool's own `identity` always wins.
 `"sp"` is the App's service principal, `"obo"` runs those tools as the calling
 user, and `"named-sp:<name>"` names the service principal they run as:
 
-```toml
-[tool.apx.agent]
-identity = "named-sp:reader"
+```python
+agent = Agent(name="reader-agent", identity="named-sp:reader")
 ```
 
 A Databricks App holds one service-principal credential — the one the platform
@@ -45,7 +57,7 @@ Environment variable references (`$VAR` or `${VAR}`) are resolved at startup.
 
 ### Runtime identity for Apps
 
-`APX_AGENT_NAME` overrides `[tool.apx.agent].name` for the running process.
+`APX_AGENT_NAME` overrides the agent's `name` for the running process.
 Generated Databricks Apps configurations set this variable so one source tree
 can serve multiple Apps with distinct identities. The runtime name is used
 consistently for discovery, A2A metadata, conversation history, tracing, and UI
@@ -92,8 +104,8 @@ for Genie, Vector Search, SQL, and `build_tool(scope=ToolScope(...))` governance
 
 Legacy `[[tool.apx.tools]]` entries are rejected, not merged with Python tools.
 Remove them after migrating their arguments and governance to Python. There is
-no per-tool TOML schema or directory loader. Non-tool `[tool.apx.agent]` and
-deployment settings remain supported; `.build/agent.toml` is still generated as
+no per-tool TOML schema or directory loader. Non-tool agent and
+deployment settings are unaffected; `.build/agent.toml` is still generated as
 the native runtime contract and is not hand-authored.
 
 Python factories attach resource metadata just as before. A toolkit returns a
@@ -176,21 +188,22 @@ Import `update_comments` in `agent.py` and include it in the tool list.
 
 **OKF tie-in.** An OKF-grounded agent can use `uc_comment_writer` to push curated table and column descriptions back to Unity Catalog under full UC governance — closing the loop from read-time grounding to write-time curation.
 
-## Declarative guardrails — `[tool.apx.agent.guardrails]`
+## Declarative guardrails — `guardrails=`
 
-> Python only. Guardrails declared here are additive over code-defined guards — code hooks run first, then config gates. All four built-in guard types are data-configurable.
+> Python only. Guardrails declared this way are additive over code-defined guards — code hooks run first, then config gates. All four built-in guard types are data-configurable.
 
-```toml
-[tool.apx.agent]
-name = "customer_triage"
-model = "databricks-claude-sonnet-4-6"
-
-[tool.apx.agent.guardrails]
-blocked_tools       = ["delete_account", "issue_refund"]
-allowed_tools       = ["classify_intent", "get_recent_orders"]
-rate_limit          = 60          # calls/min (global bucket)
-rate_limit_burst    = 10          # burst cap; defaults to rate_limit
-injection_detection = true        # prompt_injection_heuristic()
+```python
+agent = Agent(
+    name="customer_triage",
+    model="databricks-claude-sonnet-4-6",
+    guardrails={
+        "blocked_tools": ["delete_account", "issue_refund"],
+        "allowed_tools": ["classify_intent", "get_recent_orders"],
+        "rate_limit": 60,            # calls/min (global bucket)
+        "rate_limit_burst": 10,      # burst cap; defaults to rate_limit
+        "injection_detection": True, # prompt_injection_heuristic()
+    },
+)
 ```
 
 | Key | Type | Default | Effect |
@@ -207,24 +220,27 @@ injection_detection = true        # prompt_injection_heuristic()
 
 **Not config-expressible (code only):** `FeatureFlagGuard`, per-user rate limiting (`principal_key`), custom injection patterns (`patterns`), `GovernanceGuard`.
 
-## Template-as-config — `template = { name = "...", ... }`
+## Template-as-config
 
-> Python only. Declare the entire agent as data — no `agent.py` required.
+> Python only. A data or coworker agent is declared in code or in a YAML spec; there is no `pyproject.toml` form.
 
-```toml
-[tool.apx.agent]
-name = "sales-coworker"
-model = "databricks-claude-sonnet-4-6"
-instructions = "Be concise and warm."        # persona overlay (E1)
-template = { name = "data", catalog = "main", schema = "sales" }
+Declare the agent in `agent.py` with `DataAgent("main", "sales", ...)` or
+`CoworkerAgent("main", "sales", ...)`, or as a `type: data` / `type: coworker`
+leaf in a YAML spec (see below). Persona and model settings are ordinary agent
+arguments, layered over the grounded instructions the data agent sets for its
+role.
+
+A YAML spec can also select a registered template with a top-level block, as
+the coworker gallery specs do; `apx-agent agents run <spec>.yaml` renders it
+into `agent.py`:
+
+```yaml
+template:
+  name: coworker
+  catalog: main
+  schema: payroll
+  persona: a payroll operations analyst
 ```
-
-The `template` inline-table selects a registered template by `name` and passes the remaining keys as the spec. The template wires the governed tools and sets grounded instructions (the **role**). The `[tool.apx.agent]` envelope (`model`, `instructions`, generation knobs) is the **persona** — layered on top afterward via the existing `compose_instructions` seam.
-
-| Key | Purpose |
-|---|---|
-| `name` | Template registry key (e.g. `"data"`) |
-| other keys | Template `Spec` fields (validated by the template's Pydantic `Spec`) |
 
 **Built-in templates:**
 
@@ -234,16 +250,12 @@ The `template` inline-table selects a registered template by `name` and passes t
 | `coworker` | `CoworkerTemplate` | `catalog`, `schema`, `persona?`, `join_key?`, `objective?`, `memory?`, `warehouse_id?`, `genie_space?`, `vector_index?`, `include_functions?` |
 
 **Additional tools:** Compose custom tools explicitly in Python with `tools=[...]`
-or a template-built data agent's `extra_tools=[...]`. Legacy `[[tool.apx.tools]]`
-entries are rejected before finalization rather than added to the agent.
+or a data agent's `extra_tools=[...]`. Legacy `[[tool.apx.tools]]` entries are
+rejected before finalization rather than added to the agent.
 
-**Interaction with `[tool.apx.agent.guardrails]`:** Finalization applies persona
-and model settings, attaches declared memory/Vector Search tools, applies the
-agent identity, and installs guards over the resulting Python tools.
-
-**No `agent.py` required (for introspection and deploy):** With a `template` configured, the introspection and deploy runtimes — `apx-agent agents describe`, `apx-agent eval lint`, `apx-agent eval`, and `apx-agent agents deploy` — build the agent from TOML alone; the `module` key is optional for them. **`apx-agent agents run` is the exception:** it serves an ASGI app module (`app:app`), so a template-only project still needs a minimal `app.py` that calls `create_app()` without importing a code agent — e.g. `create_app(agent=None)`, which resolves the template at startup. Generating that `app.py` automatically for template-only projects is a planned scaffold follow-up.
-
-**Precedence when both `template` and a code agent are present:** on the CLI and deploy paths (`apx-agent agents describe`, `apx-agent eval lint`, `apx-agent eval`, `apx-agent agents deploy`), `template` wins — `resolve_agent` checks `config.template` before falling through to the module import. On the serve path, an explicit `create_app(agent=...)` wins because `resolve_agent` is skipped entirely when a pre-built agent is supplied. The practical consequence: a project with both a `template` field and an `agent.py` will get the template agent from `apx-agent agents deploy`/`apx-agent agents describe` but the code agent from `apx-agent agents run` (if `app.py` imports it) — a silent divergence. For a clean setup, use *either* a `template` *or* a code `agent.py`, not both.
+**Finalization:** applies persona and model settings, attaches declared
+memory/Vector Search tools, applies the agent identity, and installs guards
+over the resulting Python tools.
 
 **Cross-repo templates:** Third-party templates register via the `apx_agent.templates` Python entry-point group — they appear in the registry after `pip install`. See the E1 spec and the `Template` protocol for authoring a template.
 
@@ -371,11 +383,13 @@ For `type: data` and `type: coworker`, leaf tools are passed as
 
 > Python only. Pins the agent to a specific OKF bundle directory instead of relying on the upward directory walk.
 
-```toml
-[tool.apx.agent]
-name = "sales-coworker"
-model = "databricks-claude-sonnet-4-6"
-knowledge = "./.apx/okf"   # relative to project root
+```python
+agent = DataAgent(
+    "main", "sales",
+    name="sales-coworker",
+    model="databricks-claude-sonnet-4-6",
+    knowledge="./.apx/okf",   # relative to project root
+)
 ```
 
 | Key | Type | Default | Description |
@@ -388,28 +402,26 @@ knowledge = "./.apx/okf"   # relative to project root
 
 **Graceful degradation:** If the path does not exist at startup (e.g. a freshly-cloned project before `apx-agent okf pull` has been run), grounding falls back silently to the cwd walk. The agent still starts.
 
-**Project generation:** `apx-agent agents scaffold` emits an `.apx/okf/` pack **by default** whenever catalog.schema introspection succeeds, and writes both `knowledge = "./.apx/okf"` in `pyproject.toml` and `knowledge="./.apx/okf"` on the generated `DataAgent` / `CoworkerAgent`. If introspection fails (no grants / empty schema), neither the knob nor the bundle is written — ungrounded is the escape hatch. On a running App with no pack yet, Grounding's empty state offers **Generate pack from `catalog.schema`** (`POST /_apx/grounding/generate`). Deploying a hand-authored `.yaml` spec (`apx-agent agents deploy <spec>.yaml`) now materializes and retains a sibling project with its baked `schema.json`; set `knowledge:` explicitly in your YAML spec if you ship your own OKF bundle, then run `refresh-schema` from the materialized project for day-two updates.
+**Project generation:** `apx-agent agents scaffold` emits an `.apx/okf/` pack **by default** whenever catalog.schema introspection succeeds, and writes `knowledge="./.apx/okf"` on the generated `DataAgent` / `CoworkerAgent`. If introspection fails (no grants / empty schema), neither the argument nor the bundle is written — ungrounded is the escape hatch. On a running App with no pack yet, Grounding's empty state offers **Generate pack from `catalog.schema`** (`POST /_apx/grounding/generate`). Deploying a hand-authored `.yaml` spec (`apx-agent agents deploy <spec>.yaml`) now materializes and retains a sibling project with its baked `schema.json`; set `knowledge:` explicitly in your YAML spec if you ship your own OKF bundle, then run `refresh-schema` from the materialized project for day-two updates.
 
-## Declarative memory — `[tool.apx.agent.memory]`
+## Declarative memory — `memory=`
 
 > Python only. Declares a memory backend auto-attached on all runtimes (serve, log/deploy, `apx-agent agents describe`). Memory tools are additive over code-wired tools; code-wired tools win on name collision.
 
-```toml
-[tool.apx.agent]
-name = "sales-coworker"
-model = "databricks-claude-sonnet-4-6"
-
-# in-memory (dev / tests)
-[tool.apx.agent.memory]
-type = "inmemory"
-
-# or Lakebase (production):
-# [tool.apx.agent.memory]
-# type = "lakebase"
-# host = "coworker-lakebase.db.databricks.com"
-# database = "agentdb"
-# embedding_model = "databricks-bge-large-en"
-# embedding_dim = 1024
+```python
+agent = Agent(
+    name="sales-coworker",
+    model="databricks-claude-sonnet-4-6",
+    memory={"type": "inmemory"},   # in-memory (dev / tests)
+    # or Lakebase (production):
+    # memory={
+    #     "type": "lakebase",
+    #     "host": "coworker-lakebase.db.databricks.com",
+    #     "database": "agentdb",
+    #     "embedding_model": "databricks-bge-large-en",
+    #     "embedding_dim": 1024,
+    # },
+)
 ```
 
 | Key | Type | Default | Description |
@@ -437,14 +449,13 @@ type = "inmemory"
 
 **Credential API:** Lakebase uses `ws.database.generate_database_credential` (the `DatabaseAPI`, not `PostgresAPI`).
 
-An `[tool.apx.agent.example]` table (same fields, plus `agent_id`) declares a coworker-scoped few-shot example store — isolated by `agent_id` (defaults to the agent `name`), not per-user.
+An `example=` argument (same fields, plus `agent_id`) declares a coworker-scoped few-shot example store — isolated by `agent_id` (defaults to the agent `name`), not per-user.
 
-## Declarative session — `[tool.apx.agent.session]`
+## Declarative session — `session=`
 
-```toml
-[tool.apx.agent.session]
-type = "inmemory"
-# or lakebase: type="lakebase", host="...", database="..."
+```python
+session={"type": "inmemory"}
+# or lakebase: session={"type": "lakebase", "host": "...", "database": "..."}
 ```
 
 **Precedence:** An explicit `create_app(conversation_store=X)` arg wins over config session (code is more specific intent). Config session is the fallback (e.g. template-only projects). `LakebaseConversationStore` takes a `table_name` prefix (used as the base for the `_conversations` and `_conversation_items` tables); the wiring maps it through automatically.

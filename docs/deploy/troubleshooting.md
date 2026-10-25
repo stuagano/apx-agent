@@ -63,7 +63,7 @@ mlflow experiments create --experiment-name /Users/you@databricks.com/apx-smoke
 Or set the default in `pyproject.toml` so the CLI picks it up:
 
 ```toml
-[tool.apx.agent]
+[tool.apx]
 experiment = "/Users/you@databricks.com/apx-smoke"
 ```
 
@@ -158,11 +158,10 @@ databricks ai-gateway get-model-service \
   model-services/system.ai.claude-sonnet-4-6 --profile <profile>
 ```
 
-For an Apps project, set the model in `pyproject.toml`:
+For an Apps project, set the model on the agent in `agent.py`:
 
-```toml
-[tool.apx.agent]
-model = "system.ai.claude-sonnet-4-6"
+```python
+agent = Agent(..., model="system.ai.claude-sonnet-4-6")
 ```
 
 Then validate the deployment plan locally:
@@ -176,8 +175,8 @@ If you need to swap the model on a deployed agent without re-logging, use `apx-a
 ### Apps vs Model Serving — which one am I deploying?
 
 `apx-agent agents deploy --target apps --profile <profile>` deploys an App.
-New native projects declare `target = "durable_agent_server"` in
-`[tool.apx.agent]`; APX compiles that declaration and delegates rollout to Agent
+New native projects declare `target="durable_agent_server"` on the
+agent in `agent.py`; APX compiles that declaration and delegates rollout to Agent
 Bricks. The normal native flow does not require an authored Bundle. Existing
 Bundle projects retain their build and configuration; native durable projects
 without a named space still delegate rollout to Agent Bricks.
@@ -187,7 +186,7 @@ without a named space still delegate rollout to Agent Bricks.
 when you need Model Serving packaging and deployment.
 
 The command's `--target` selects the **deployment destination**. The declaration's
-`[tool.apx.agent].target` selects the **runtime contract**. Run
+`target=` on the agent selects the **runtime contract**. Run
 `apx-agent agents deploy --dry-run` to inspect the detected destination and plan.
 MLflow tracing and evaluation also apply to Apps; they do not require deploying a
 serving endpoint. Native Apps `/readyz` verifies durable runtime initialization;
