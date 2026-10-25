@@ -304,40 +304,5 @@ def test_cli_hot_swap_apps_json_failure(
     assert "hot-swap --target apps failed" in payload["error"]
 
 
-def test_cli_hot_swap_default_target_still_model_serving(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No --target flag → model-serving path unchanged."""
-    captured: dict[str, Any] = {}
-
-    def fake_hot_swap(endpoint: str, model: str, wait: bool = True) -> Any:
-        captured["endpoint"] = endpoint
-        captured["model"] = model
-        return SimpleNamespace(
-            endpoint_name=endpoint,
-            new_model=model,
-            previous_model="prev-model",
-            served_entities_updated=1,
-        )
-
-    monkeypatch.setattr("apx_agent._hot_swap.hot_swap_model", fake_hot_swap)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["agents", "hot-swap", "--endpoint", "ep", "--model", "new-model"],
-    )
-    assert result.exit_code == 0, result.output
-    assert captured == {"endpoint": "ep", "model": "new-model"}
 
 
-def test_cli_hot_swap_model_serving_requires_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["agents", "hot-swap", "--target", "model-serving", "--model", "x"],
-    )
-    assert result.exit_code != 0
-    assert "--endpoint" in result.output

@@ -13564,40 +13564,29 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
               callback=_reject_model_serving("agents hot-swap"),
-              default="model-serving",
-              help="Deploy target. 'model-serving' rewrites env_vars on the served "
-                   "entity (existing behavior). 'apps' re-deploys the Apps bundle "
-                   "with a different --var. See docs/apps-canary-hotswap-design.md.")
-@click.option("--endpoint", default=None,
-              help="Serving endpoint hosting the agent (model-serving only).")
+              default="apps",
+              help="Deploy target: 'apps' re-deploys the Apps bundle with a different --var. "
+                   "See docs/apps-canary-hotswap-design.md.")
 @click.option("--model", "llm_arg", default=None,
-              help="New model serving endpoint (e.g. databricks-claude-opus-4-7). "
-                   "Required for --target model-serving.")
+              help="New LLM endpoint name (synonymous with --llm-endpoint).")
 @click.option("--llm-endpoint", "llm_endpoint", default=None,
-              help="New LLM endpoint name. Required for --target apps. "
-                   "Synonymous with --model for the Apps target.")
-@click.option("--no-wait", is_flag=True,
-              help="Don't block until the config update completes "
-                   "(model-serving only).")
+              help="New LLM endpoint name (e.g. databricks-claude-opus-4-7).")
 @click.option("--profile", default=None,
-              help="Databricks CLI profile (apps target only).")
+              help="Databricks CLI profile.")
 @click.option("--bundle-target", default="prod",
-              help="DAB target to redeploy (apps target only). Default 'prod'.")
+              help="DAB target to redeploy. Default 'prod'.")
 @click.option("--var-name", default=None,
-              help="Bundle variable name to override (apps target only). "
-                   "Default 'llm_endpoint_name'.")
+              help="Bundle variable name to override. Default 'llm_endpoint_name'.")
 @click.option("--app-name", default=None,
-              help="Workspace App name for the apps result record. "
+              help="Workspace App name for the result record. "
                    "Defaults to the resolved app name from databricks.yml.")
 @click.option("--json", "as_json", is_flag=True,
               help="Emit a single JSON result object on stdout "
                    "(ok:false + error on failure).")
 def hot_swap_cmd(
     deploy_target: str,
-    endpoint: str | None,
     llm_arg: str | None,
     llm_endpoint: str | None,
-    no_wait: bool,
     profile: str | None,
     bundle_target: str,
     var_name: str | None,
@@ -13606,41 +13595,14 @@ def hot_swap_cmd(
 ) -> None:
     """Hot-swap a deployed agent's LLM endpoint.
 
-    For --target model-serving (default): updates the
-    APX_AGENT_MODEL_OVERRIDE env var on the serving endpoint so the
-    next replica picks up the new model. The agent artifact is NOT
-    re-logged — same model version, different LLM.
-
-    For --target apps: re-deploys the bundle with a different
-    `--var llm_endpoint_name=NEW`. The App restarts off the new env.
-    See docs/apps-canary-hotswap-design.md for the rationale.
-
-    For full artifact-version A/B with traffic split (model-serving)
-    or canary soak environments (apps), use `apx-agent canary` instead.
+    Re-deploys the Apps bundle with a different `--var llm_endpoint_name=NEW`;
+    the App restarts off the new env. See docs/apps-canary-hotswap-design.md.
+    For canary soak environments, use `apx-agent canary` instead.
     """
     with _json_cli_errors(as_json):
-        if deploy_target == "model-serving":
-            if not endpoint:
-                raise click.UsageError(
-                    "--endpoint is required for --target model-serving."
-                )
-            model_value = llm_arg or llm_endpoint
-            if not model_value:
-                raise click.UsageError(
-                    "--model is required for --target model-serving."
-                )
-            _hot_swap_model_serving(
-                endpoint=endpoint, model=model_value, no_wait=no_wait,
-                as_json=as_json,
-            )
-            return
-
-        # --target apps
         new_value = llm_endpoint or llm_arg
         if not new_value:
-            raise click.UsageError(
-                "--llm-endpoint is required for --target apps."
-            )
+            raise click.UsageError("--llm-endpoint is required.")
         _hot_swap_apps_cli(
             new_value=new_value,
             profile=profile,
@@ -16176,60 +16138,22 @@ def canary() -> None:
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
               callback=_reject_model_serving("canary status"),
-              default="model-serving",
+              default="apps",
               help="Deploy target. See docs/apps-canary-hotswap-design.md.")
-@click.option("--endpoint", default=None,
-              help="Model Serving endpoint name (model-serving target only).")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
 @click.option("--json", "as_json", is_flag=True,
               help="Emit a single JSON result object on stdout "
                    "(ok:false + error on failure).")
-def canary_status(
-    deploy_target: str, endpoint: str | None, profile: str | None, as_json: bool,
-) -> None:
-    """Show the live canary/prod state — served entities + traffic split
-    (model-serving), or the @prod alias + latest canary version with their
-    commits (apps)."""
+def canary_status(deploy_target: str, profile: str | None, as_json: bool) -> None:
+    """Show the live canary/prod state: the @prod alias and the latest canary
+    version, with their commits."""
     with _json_cli_errors(as_json):
-        _canary_status_impl(
-            deploy_target=deploy_target, endpoint=endpoint,
-            profile=profile, as_json=as_json,
-        )
+        _canary_status_impl(deploy_target=deploy_target, profile=profile, as_json=as_json)
 
 
-def _canary_status_impl(
-    *, deploy_target: str, endpoint: str | None, profile: str | None, as_json: bool,
-) -> None:
+def _canary_status_impl(*, deploy_target: str, profile: str | None, as_json: bool) -> None:
     """Body of ``canary status`` — see the command docstring."""
-    if deploy_target == "model-serving":
-        if not endpoint:
-            raise click.UsageError("--endpoint is required for --target model-serving.")
-        from apx_agent import get_canary_config
-
-        ws, _ = _connect_workspace(profile)
-        cfg = get_canary_config(endpoint, ws=ws)
-        if as_json:
-            click.echo(json.dumps({
-                "ok": True,
-                "target": "model-serving",
-                "endpoint": cfg.endpoint,
-                "served_entities": [
-                    {"name": name, "entity": entity, "version": version,
-                     "traffic_pct": cfg.traffic_split.get(name, 0)}
-                    for name, entity, version in cfg.served_entities
-                ],
-            }))
-            return
-        click.echo(f"# canary status: {cfg.endpoint}")
-        if not cfg.served_entities:
-            click.echo("  (no served entities)")
-            return
-        click.echo(f"{'ENTITY':<40}  {'MODEL':<32}  {'VERSION':<10}  {'TRAFFIC %':>9}")
-        for name, entity, version in cfg.served_entities:
-            pct = cfg.traffic_split.get(name, 0)
-            click.echo(f"{name:<40}  {entity:<32}  {version:<10}  {pct:>9}")
-        return
 
     # --target apps — read the UC ledger: which version is @prod, which is the
     # latest canary, and the commit each shipped.
@@ -16289,25 +16213,9 @@ def _canary_status_impl(
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
               callback=_reject_model_serving("canary deploy"),
-              default="model-serving",
-              help="Deploy target. 'model-serving' adds a new served entity "
-                   "to an existing endpoint (existing behavior). 'apps' writes "
-                   "a canary DAB target and deploys a second App. See "
-                   "docs/apps-canary-hotswap-design.md.")
-# Model Serving args
-@click.option("--endpoint", default=None,
-              help="Model Serving endpoint to add the canary to "
-                   "(model-serving target only).")
-@click.option("--model", "registered_model_name", default=None,
-              help="Three-part UC name of the registered model "
-                   "(model-serving target only).")
-@click.option("--version", default=None,
-              help="Model version to canary (model-serving target only).")
-@click.option("--workload-size", default="Small",
-              help="Workload size for the new served entity (model-serving only).")
-@click.option("--no-scale-to-zero", is_flag=True,
-              help="Disable scale-to-zero on the new served entity (model-serving only).")
-# Apps args
+              default="apps",
+              help="Deploy target: 'apps' writes a canary DAB target and deploys a "
+                   "second App. See docs/apps-canary-hotswap-design.md.")
 @click.option("--canary-version", default=None,
               help="Version label for the canary App (apps target only). "
                    "Sanitized into the DAB target name canary-<sanitized>.")
@@ -16316,84 +16224,19 @@ def _canary_status_impl(
               help="Base DAB target to inherit from (apps target only). Default 'prod'.")
 # Shared
 @click.option("--traffic", "traffic_pct", default=10, type=int,
-              help="For model-serving: percentage of traffic to route to "
-                   "the new version. For apps: recorded as a hint only — "
-                   "Apps has no platform-level traffic split. Default 10.")
+              help="Recorded as a hint only: Apps has no platform-level "
+                   "traffic split. Default 10.")
 @click.option("--json", "as_json", is_flag=True,
               help="Emit a single JSON result object on stdout "
                    "(ok:false + error on failure; progress → stderr).")
-def canary_deploy(
-    deploy_target: str,
-    endpoint: str | None,
-    registered_model_name: str | None,
-    version: str | None,
-    traffic_pct: int,
-    workload_size: str,
-    no_scale_to_zero: bool,
-    canary_version: str | None,
-    profile: str | None,
-    base_target: str,
-    as_json: bool,
-) -> None:
+def canary_deploy(deploy_target: str, traffic_pct: int, canary_version: str | None, profile: str | None, base_target: str, as_json: bool) -> None:
     """Add a new model version (or App) as a canary."""
     with _json_cli_errors(as_json):
-        _canary_deploy_impl(
-            deploy_target=deploy_target, endpoint=endpoint,
-            registered_model_name=registered_model_name, version=version,
-            traffic_pct=traffic_pct, workload_size=workload_size,
-            no_scale_to_zero=no_scale_to_zero, canary_version=canary_version,
-            profile=profile, base_target=base_target, as_json=as_json,
-        )
+        _canary_deploy_impl(deploy_target=deploy_target, traffic_pct=traffic_pct, canary_version=canary_version, profile=profile, base_target=base_target, as_json=as_json)
 
 
-def _canary_deploy_impl(
-    *,
-    deploy_target: str,
-    endpoint: str | None,
-    registered_model_name: str | None,
-    version: str | None,
-    traffic_pct: int,
-    workload_size: str,
-    no_scale_to_zero: bool,
-    canary_version: str | None,
-    profile: str | None,
-    base_target: str,
-    as_json: bool,
-) -> None:
+def _canary_deploy_impl(*, deploy_target: str, traffic_pct: int, canary_version: str | None, profile: str | None, base_target: str, as_json: bool) -> None:
     """Body of ``canary deploy`` — see the command docstring."""
-    if deploy_target == "model-serving":
-        if not endpoint:
-            raise click.UsageError("--endpoint is required for --target model-serving.")
-        if not registered_model_name:
-            raise click.UsageError("--model is required for --target model-serving.")
-        if not version:
-            raise click.UsageError("--version is required for --target model-serving.")
-        from apx_agent import deploy_canary
-
-        ws, _ = _connect_workspace(profile)
-        cfg = deploy_canary(
-            endpoint=endpoint,
-            registered_model_name=registered_model_name,
-            new_version=version,
-            canary_traffic_pct=traffic_pct,
-            ws=ws,
-            scale_to_zero_enabled=not no_scale_to_zero,
-            workload_size=workload_size,
-        )
-        if as_json:
-            click.echo(json.dumps({
-                "ok": True,
-                "target": "model-serving",
-                "endpoint": endpoint,
-                "model": registered_model_name,
-                "version": version,
-                "traffic_pct": traffic_pct,
-                "traffic_split": cfg.traffic_split,
-            }))
-            return
-        click.echo(f"Deployed {registered_model_name} v{version} at {traffic_pct}% on {endpoint}.")
-        click.echo(f"New split: {cfg.traffic_split}")
-        return
 
     # --target apps
     if not canary_version:
@@ -16483,14 +16326,8 @@ def _canary_deploy_impl(
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
               callback=_reject_model_serving("canary promote"),
-              default="model-serving",
+              default="apps",
               help="Deploy target. See docs/apps-canary-hotswap-design.md.")
-@click.option("--endpoint", default=None,
-              help="Model Serving endpoint (model-serving target only).")
-@click.option("--model", "registered_model_name", default=None,
-              help="Three-part UC name of the registered model (model-serving only).")
-@click.option("--version", default=None,
-              help="Version to send 100% of traffic to (model-serving only).")
 @click.option("--canary-version", default=None,
               help="Canary version to promote (apps target only).")
 @click.option("--profile", default=None, help="Databricks CLI profile (apps target only).")
@@ -16501,70 +16338,14 @@ def _canary_deploy_impl(
 @click.option("--json", "as_json", is_flag=True,
               help="Emit a single JSON result object on stdout "
                    "(ok:false + error on failure; progress → stderr).")
-def canary_promote(
-    deploy_target: str,
-    endpoint: str | None,
-    registered_model_name: str | None,
-    version: str | None,
-    canary_version: str | None,
-    profile: str | None,
-    prod_target: str,
-    keep_canary: bool,
-    as_json: bool,
-) -> None:
-    """Send 100% of traffic to a version (model-serving) or re-deploy prod
-    off the canary tree (apps).
-    """
+def canary_promote(deploy_target: str, canary_version: str | None, profile: str | None, prod_target: str, keep_canary: bool, as_json: bool) -> None:
+    """Re-deploy prod off the canary tree."""
     with _json_cli_errors(as_json):
-        _canary_promote_impl(
-            deploy_target=deploy_target, endpoint=endpoint,
-            registered_model_name=registered_model_name, version=version,
-            canary_version=canary_version, profile=profile,
-            prod_target=prod_target, keep_canary=keep_canary, as_json=as_json,
-        )
+        _canary_promote_impl(deploy_target=deploy_target, canary_version=canary_version, profile=profile, prod_target=prod_target, keep_canary=keep_canary, as_json=as_json)
 
 
-def _canary_promote_impl(
-    *,
-    deploy_target: str,
-    endpoint: str | None,
-    registered_model_name: str | None,
-    version: str | None,
-    canary_version: str | None,
-    profile: str | None,
-    prod_target: str,
-    keep_canary: bool,
-    as_json: bool,
-) -> None:
+def _canary_promote_impl(*, deploy_target: str, canary_version: str | None, profile: str | None, prod_target: str, keep_canary: bool, as_json: bool) -> None:
     """Body of ``canary promote`` — see the command docstring."""
-    if deploy_target == "model-serving":
-        if not endpoint or not registered_model_name or not version:
-            raise click.UsageError(
-                "--endpoint, --model, and --version are required for "
-                "--target model-serving."
-            )
-        from apx_agent import promote_canary
-
-        ws, _ = _connect_workspace(profile)
-        cfg = promote_canary(
-            endpoint=endpoint,
-            registered_model_name=registered_model_name,
-            version=version,
-            ws=ws,
-        )
-        if as_json:
-            click.echo(json.dumps({
-                "ok": True,
-                "target": "model-serving",
-                "endpoint": endpoint,
-                "model": registered_model_name,
-                "version": version,
-                "traffic_split": cfg.traffic_split,
-            }))
-            return
-        click.echo(f"Promoted {registered_model_name} v{version} to 100% on {endpoint}.")
-        click.echo(f"Split: {cfg.traffic_split}")
-        return
 
     # --target apps — gate-don't-mutate promote (see
     # docs/engine-scope/apps-canary-hotswap-design.md, Section 3a).
@@ -16647,14 +16428,8 @@ def _canary_promote_impl(
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
               callback=_reject_model_serving("canary rollback"),
-              default="model-serving",
+              default="apps",
               help="Deploy target. See docs/apps-canary-hotswap-design.md.")
-@click.option("--endpoint", default=None,
-              help="Model Serving endpoint (model-serving target only).")
-@click.option("--model", "registered_model_name", default=None,
-              help="Three-part UC name of the registered model (model-serving only).")
-@click.option("--version", default=None,
-              help="Version to roll back to (model-serving only).")
 @click.option("--to-version", "to_version", default=None,
               help="UC manifest version to restore prod to (apps target only). "
                    "Its recorded apx.apps.git_sha is the commit prod will ship.")
@@ -16664,67 +16439,15 @@ def _canary_promote_impl(
 @click.option("--json", "as_json", is_flag=True,
               help="Emit a single JSON result object on stdout "
                    "(ok:false + error on failure; progress → stderr).")
-def canary_rollback(
-    deploy_target: str,
-    endpoint: str | None,
-    registered_model_name: str | None,
-    version: str | None,
-    to_version: str | None,
-    profile: str | None,
-    prod_target: str,
-    as_json: bool,
-) -> None:
+def canary_rollback(deploy_target: str, to_version: str | None, profile: str | None, prod_target: str, as_json: bool) -> None:
     """Roll back to a prior version. Gate-don't-mutate for apps (verifies your
     tree is at the target version's commit before re-deploying prod)."""
     with _json_cli_errors(as_json):
-        _canary_rollback_impl(
-            deploy_target=deploy_target, endpoint=endpoint,
-            registered_model_name=registered_model_name, version=version,
-            to_version=to_version, profile=profile, prod_target=prod_target,
-            as_json=as_json,
-        )
+        _canary_rollback_impl(deploy_target=deploy_target, to_version=to_version, profile=profile, prod_target=prod_target, as_json=as_json)
 
 
-def _canary_rollback_impl(
-    *,
-    deploy_target: str,
-    endpoint: str | None,
-    registered_model_name: str | None,
-    version: str | None,
-    to_version: str | None,
-    profile: str | None,
-    prod_target: str,
-    as_json: bool,
-) -> None:
+def _canary_rollback_impl(*, deploy_target: str, to_version: str | None, profile: str | None, prod_target: str, as_json: bool) -> None:
     """Body of ``canary rollback`` — see the command docstring."""
-    if deploy_target == "model-serving":
-        if not endpoint or not registered_model_name or not version:
-            raise click.UsageError(
-                "--endpoint, --model, and --version are required for "
-                "--target model-serving."
-            )
-        from apx_agent import rollback_canary
-
-        ws, _ = _connect_workspace(profile)
-        cfg = rollback_canary(
-            endpoint=endpoint,
-            registered_model_name=registered_model_name,
-            version=version,
-            ws=ws,
-        )
-        if as_json:
-            click.echo(json.dumps({
-                "ok": True,
-                "target": "model-serving",
-                "endpoint": endpoint,
-                "model": registered_model_name,
-                "version": version,
-                "traffic_split": cfg.traffic_split,
-            }))
-            return
-        click.echo(f"Rolled back to {registered_model_name} v{version} on {endpoint}.")
-        click.echo(f"Split: {cfg.traffic_split}")
-        return
 
     # --target apps — gate-don't-mutate rollback: re-deploy prod from the commit
     # a recorded UC version shipped. Same safety as promote; no canary involved.
@@ -16787,10 +16510,8 @@ def _canary_rollback_impl(
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
               callback=_reject_model_serving("canary analyze"),
-              default="model-serving",
+              default="apps",
               help="Deploy target. See docs/apps-canary-hotswap-design.md.")
-@click.option("--endpoint", default=None,
-              help="Model Serving endpoint (model-serving target only).")
 @click.option("--canary-version", default=None,
               help="Canary version to compare against prod (apps target only). "
                    "Used to derive the canary App name.")
@@ -16806,7 +16527,6 @@ def _canary_rollback_impl(
 )
 def canary_analyze(
     deploy_target: str,
-    endpoint: str | None,
     canary_version: str | None,
     experiment: str | None,
     hours: int,
@@ -16819,60 +16539,6 @@ def canary_analyze(
         raise click.UsageError(
             "Pass --experiment NAME or set experiment in [tool.apx] in pyproject.toml."
         )
-
-    if deploy_target == "model-serving":
-        if not endpoint:
-            raise click.UsageError("--endpoint is required for --target model-serving.")
-        from apx_agent import analyze_canary
-
-        ws, _ = _connect_workspace(profile)
-        report = analyze_canary(
-            endpoint=endpoint,
-            experiment=effective_experiment,
-            ws=ws,
-            lookback_hours=hours,
-        )
-
-        if fmt == "json":
-            click.echo(json.dumps({
-                "endpoint": report.endpoint,
-                "lookback_hours": report.lookback_hours,
-                "versions": [
-                    {
-                        "version": v.version,
-                        "requests": v.requests,
-                        "errors": v.errors,
-                        "error_rate": v.error_rate,
-                        "latency_p50_ms": v.latency_p50_ms,
-                        "latency_p95_ms": v.latency_p95_ms,
-                        "latency_avg_ms": v.latency_avg_ms,
-                    }
-                    for v in report.versions
-                ],
-            }, indent=2, default=str))
-            return
-
-        click.echo(f"# canary analysis: {report.endpoint} (last {report.lookback_hours}h)")
-        if not report.versions:
-            click.echo("No traces matched. Either no traffic in the window or "
-                       "the served-entity attribute isn't on the traces.")
-            return
-        click.echo(f"{'VERSION':<12}  {'REQUESTS':>9}  {'ERRORS':>7}  "
-                   f"{'ERR %':>6}  {'P50 ms':>7}  {'P95 ms':>7}  {'AVG ms':>7}")
-        for v in report.versions:
-            err_pct = f"{v.error_rate * 100:.1f}" if v.requests else "-"
-            avg = f"{v.latency_avg_ms:.0f}" if v.latency_avg_ms is not None else "-"
-            p50 = str(v.latency_p50_ms) if v.latency_p50_ms is not None else "-"
-            p95 = str(v.latency_p95_ms) if v.latency_p95_ms is not None else "-"
-            click.echo(f"{v.version:<12}  {v.requests:>9}  {v.errors:>7}  "
-                       f"{err_pct:>6}  {p50:>7}  {p95:>7}  {avg:>7}")
-        best_latency = report.best_by_latency()
-        best_errors = report.best_by_error_rate()
-        if best_latency is not None:
-            click.echo(f"\nBest P95 latency: v{best_latency.version} ({best_latency.latency_p95_ms} ms)")
-        if best_errors is not None:
-            click.echo(f"Best error rate: v{best_errors.version} ({best_errors.error_rate * 100:.2f}%)")
-        return
 
     # --target apps
     if not canary_version:
