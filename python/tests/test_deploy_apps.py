@@ -868,6 +868,13 @@ def _ready_payload(url: str = "https://my-app.example.databricksapps.com") -> st
     })
 
 
+def _stage_agent_source(cwd: Path) -> None:
+    """The artifacts step stages agent.py into .build/, where registration reads its declared settings."""
+    build = Path(cwd) / ".build"
+    build.mkdir(exist_ok=True)
+    (build / "agent.py").write_text((Path(cwd) / "agent.py").read_text())
+
+
 def _install_subprocess_mock(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -930,7 +937,7 @@ def _install_subprocess_mock(
     )
     monkeypatch.setattr(
         "apx_agent.cli._run_bundle_artifacts",
-        lambda cwd: (Path(cwd) / ".build").mkdir(exist_ok=True),
+        _stage_agent_source,
     )
     # The Databricks-CLI presence preflight (`shutil.which("databricks")`) is
     # exercised separately in test_deploy_blocks_when_cli_missing; here we
@@ -982,8 +989,12 @@ def test_provider_chat_model_fails_before_deploy_side_effects(
     from apx_agent import cli as cli_mod
 
     (scaffold / "pyproject.toml").write_text(
-        '[tool.apx.agent]\nname = "test"\n'
-        f'target = "{target}"\nmodel = "bedrock:anthropic.claude"\n'
+        '[project]\nname = "test-app"\ndependencies = ["apx-agent[agentbricks]"]\n'
+        '[tool.apx.deploy]\nname = "test"\n'
+    )
+    (scaffold / "agent.py").write_text(
+        "from apx_agent import LlmAgent\n"
+        f"agent = LlmAgent(name='test', model='bedrock:anthropic.claude', target='{target}')\n"
     )
     if target == "durable_agent_server":
         (scaffold / "databricks.yml").unlink()
@@ -997,7 +1008,7 @@ def test_provider_chat_model_fails_before_deploy_side_effects(
         args.append("--dry-run")
     result = CliRunner().invoke(main, args)
     assert result.exit_code != 0
-    assert "Set model to an existing AI Gateway model service" in result.output
+    assert "Set model to an existing AI Gateway model service" in result.output  # a clean Error: line
     workspace.assert_not_called()
     command.assert_not_called()
     assert not (scaffold / ".build").exists()
@@ -1756,6 +1767,9 @@ def test_apps_deploy_reconciles_named_binding_as_can_use_app_resource(
                     ),
                 ],
                 name="root",
+                model="model",
+                target="responses_agent",
+                bindings={"pricing": "$PRICING_APP_URL"},
             )
             """)
     )
@@ -1764,14 +1778,8 @@ def test_apps_deploy_reconciles_named_binding_as_can_use_app_resource(
             [project]
             name = "test-app"
 
-            [tool.apx.agent]
+            [tool.apx.deploy]
             name = "root"
-            target = "responses_agent"
-            model = "model"
-            module = "agent:agent"
-
-            [tool.apx.agent.bindings]
-            pricing = "$PRICING_APP_URL"
             """)
     )
     sys.modules.pop("agent", None)
@@ -2133,6 +2141,8 @@ def test_json_output_enriched_with_uc_version_provenance_readyz(
     import hashlib
 
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     (scaffold / "uv.lock").write_text("version = 1\n")
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
@@ -2141,7 +2151,7 @@ def test_json_output_enriched_with_uc_version_provenance_readyz(
         return AppsManifestResult(uc_name=uc_name, version="3", app_name=app_name)
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: "a" * 40)
     monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: False)
     _install_subprocess_mock(monkeypatch)
@@ -2524,7 +2534,7 @@ def test_deploy_blocks_when_cli_missing(tmp_path, monkeypatch):
 
     # apps-looking project
     (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
-    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname='x'\n")
     (tmp_path / "agent_server").mkdir()
     monkeypatch.chdir(tmp_path)
 
@@ -2543,11 +2553,21 @@ def test_deploy_blocks_when_cli_missing(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+_AGENT_WITH_MODEL_PY = (
+    "from apx_agent import LlmAgent\n"
+    "agent = LlmAgent(name='my-app', model='databricks-claude-sonnet-4-6', target='responses_agent')\n"
+)
+
+def _declared_agent(_module: str) -> Any:
+    """What finalizing agent.py yields: an agent that declares its own model and target."""
+    from apx_agent import LlmAgent
+
+    return LlmAgent(name="my-app", model="databricks-claude-sonnet-4-6", target="responses_agent")
+
+
 _PYPROJECT_WITH_AGENT = (
     '[project]\nname = "test-app"\n\n'
-    '[tool.apx.agent]\n'
-    'target = "responses_agent"\n'
-    'model = "databricks-claude-sonnet-4-6"\n'
+    '[tool.apx.deploy]\n'
     'name = "My App"\n'
 )
 
@@ -2576,6 +2596,7 @@ def test_register_uc_runs_once_when_configured(
     """With a model in config + an explicit --uc-name, the registrar runs once,
     with the resolved name + model, and serving is never promoted."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     calls: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
@@ -2589,7 +2610,7 @@ def test_register_uc_runs_once_when_configured(
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
     # Avoid importing/finalizing the stub agent — out of scope for this test.
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
 
     calls_log = _install_subprocess_mock(monkeypatch)
     result = CliRunner().invoke(main, [
@@ -2612,7 +2633,8 @@ def test_successful_apps_deploy_records_local_history(
     """A successful --target apps deploy records a deploy-history entry
     keyed by the resolved UC name, pointing at the local scaffold dir."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
 
     from apx_agent._apps_registry import AppsManifestResult
     monkeypatch.setattr(
@@ -2676,12 +2698,13 @@ def test_register_uc_failure_is_fatal_when_configured(
 ) -> None:
     """With a resolved UC name, registrar failure makes deploy incomplete."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
 
     def _boom(*_a: Any, **_k: Any) -> Any:
         raise RuntimeError("UC write denied")
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _boom)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
 
     _install_subprocess_mock(monkeypatch)
     result = CliRunner().invoke(main, [
@@ -2700,19 +2723,18 @@ def test_register_uc_failure_is_fatal_when_inferred_from_catalog_schema(
     """Data-backed Apps default to a required inferred UC ledger."""
     (scaffold / "pyproject.toml").write_text(
         '[project]\nname = "test-app"\n\n'
-        '[tool.apx.agent]\n'
+        '[tool.apx.deploy]\n'
         'name = "my-app"\n'
-        'target = "responses_agent"\n'
-        'model = "databricks-claude-sonnet-4-6"\n'
         'catalog = "main"\n'
         'schema = "agents"\n'
     )
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
 
     def _boom(*_a: Any, **_k: Any) -> Any:
         raise RuntimeError("UC write denied")
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _boom)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
 
     _install_subprocess_mock(monkeypatch)
     result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps"])
@@ -2726,6 +2748,7 @@ def test_no_register_uc_skips_the_step(
 ) -> None:
     """--no-register-uc elides registration entirely, even when configured."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     called: list[Any] = []
     monkeypatch.setattr(
         "apx_agent._apps_registry.register_apps_manifest",
@@ -2767,6 +2790,7 @@ def test_register_uc_forwards_extra_version_tags(
 ) -> None:
     """extra_version_tags passed to _deploy_apps_impl reach register_apps_manifest."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
@@ -2776,7 +2800,7 @@ def test_register_uc_forwards_extra_version_tags(
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     _install_subprocess_mock(monkeypatch)
 
     from apx_agent import cli as cli_mod
@@ -2799,12 +2823,13 @@ def test_register_uc_failure_notice_names_register_repair(
     exact single-agent repair command — `apx-agent agents register` with the
     deploy's --uc-name/--profile — not just 'register manually' (issue #418)."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
 
     def _boom(*_a: Any, **_k: Any) -> Any:
         raise RuntimeError("UC write denied")
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _boom)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
 
     _install_subprocess_mock(monkeypatch)
     result = CliRunner().invoke(main, [
@@ -2823,6 +2848,7 @@ def test_register_uc_ensures_uc_parent_before_logging(
 ) -> None:
     """Apps manifest registration creates the UC catalog/schema parent first."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     calls: list[str] = []
 
     class _Catalogs:
@@ -2848,7 +2874,7 @@ def test_register_uc_ensures_uc_parent_before_logging(
     monkeypatch.setattr(
         "apx_agent.cli._connect_workspace", lambda profile: (_WS(), None),
     )
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda module: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
 
     def _fake_registrar(agent: Any, **kwargs: Any) -> Any:
         from apx_agent._apps_registry import AppsManifestResult
@@ -2945,6 +2971,7 @@ def test_agents_register_backfills_manifest(
     """Happy path: verifies the app exists, registers via the same registrar
     the deploy uses (with fresh provenance tags), and echoes the version."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     calls: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
@@ -2958,7 +2985,7 @@ def test_agents_register_backfills_manifest(
         return AppsManifestResult(uc_name=uc_name, version="5", app_name=app_name)
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     monkeypatch.setattr(
         "apx_agent.cli._provenance_version_tags",
         lambda cwd: {"apx.apps.git_sha": "abc123"},
@@ -2985,6 +3012,7 @@ def test_agents_register_json_output(
     """--json emits a single result object on stdout, per the mutation-command
     convention (issue #417); --bundle-target lands on the record."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
                         agent_name=None, extra_version_tags=None, experiment_id=None, profile=None):
@@ -2992,7 +3020,7 @@ def test_agents_register_json_output(
         return AppsManifestResult(uc_name=uc_name, version="9", app_name=app_name)
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     _install_workspace_mock(monkeypatch)
 
     result = CliRunner().invoke(main, [
@@ -3015,6 +3043,7 @@ def test_agents_register_refuses_missing_app(
     """When the app doesn't exist in the workspace, register exits non-zero
     and never touches the registrar — no ledger entry for a nonexistent app."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     called: list[Any] = []
     monkeypatch.setattr(
         "apx_agent._apps_registry.register_apps_manifest",
@@ -3037,12 +3066,13 @@ def test_agents_register_failure_is_fatal(
     """A registrar failure here exits non-zero and exercises the confirmation
     prompt (no -y)."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
 
     def _boom(*_a: Any, **_k: Any) -> Any:
         raise RuntimeError("UC write denied")
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _boom)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     _install_workspace_mock(monkeypatch)
 
     result = CliRunner().invoke(main, [
@@ -3073,6 +3103,7 @@ def test_readyz_failure_registers_manifest_with_failed_tag(
     registered, tagged apx.apps.readyz=failed, and the deploy exits non-zero
     naming the live URL (issue #401)."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
@@ -3082,7 +3113,7 @@ def test_readyz_failure_registers_manifest_with_failed_tag(
         return AppsManifestResult(uc_name=uc_name, version="7", app_name=app_name)
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     # No prior @prod version — keep the recovery hint on the generic path.
     monkeypatch.setattr(
         "apx_agent._apps_registry.get_prod_alias_version", lambda uc, **k: None,
@@ -3197,9 +3228,7 @@ def test_canary_deploy_apps_uses_full_path(
 
 _PYPROJECT_WITH_UC = (
     '[project]\nname = "test-app"\n\n'
-    '[tool.apx.agent]\n'
-    'target = "responses_agent"\n'
-    'model = "databricks-claude-sonnet-4-6"\n'
+    '[tool.apx.deploy]\n'
     'name = "My App"\n'
     'registered_model = "main.agents.my_app"\n'
 )
@@ -3214,6 +3243,7 @@ def test_canary_deploy_apps_registers_role_tag_end_to_end(
     _deploy_apps_impl -> _register_apps_manifest_step -> register_apps_manifest),
     not just hop-by-hop."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
@@ -3224,7 +3254,7 @@ def test_canary_deploy_apps_registers_role_tag_end_to_end(
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     _install_subprocess_mock(monkeypatch)
 
     result = CliRunner().invoke(main, [
@@ -3245,6 +3275,7 @@ def test_canary_deploy_apps_stamps_git_sha_end_to_end(
     """P1 end-to-end: the captured git SHA reaches the registrar as
     apx.apps.git_sha through the whole canary-deploy CLI path."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
@@ -3254,7 +3285,7 @@ def test_canary_deploy_apps_stamps_git_sha_end_to_end(
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: "deadbeefcafe1234")
     _install_subprocess_mock(monkeypatch)
 
@@ -3274,6 +3305,7 @@ def test_canary_deploy_apps_no_git_sha_still_succeeds(
     """P1: no git SHA available (not a repo) -> deploy still succeeds, only the
     role tag is sent (no git_sha tag), and a notice is logged."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     seen: dict[str, Any] = {}
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
@@ -3283,7 +3315,7 @@ def test_canary_deploy_apps_no_git_sha_still_succeeds(
         return AppsManifestResult(uc_name=uc_name, version="1", app_name=app_name)
 
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: None)
     _install_subprocess_mock(monkeypatch)
 
@@ -3309,6 +3341,8 @@ def _setup_promote_mocks(
     from apx_agent._apps_registry import CanaryManifest
 
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     captured: dict[str, Any] = {"alias": None, "teardown": 0, "registered": None}
 
     cm = CanaryManifest(version="4", git_sha=canary_sha) if canary_exists else None
@@ -3334,7 +3368,7 @@ def _setup_promote_mocks(
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="5", app_name=app_name)
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     _install_subprocess_mock(monkeypatch)
     return captured
 
@@ -3463,6 +3497,7 @@ def _setup_rollback_mocks(
     version_sha: str | None, head_sha: str | None,
 ) -> dict[str, Any]:
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     captured: dict[str, Any] = {"alias": None, "registered": None}
 
     monkeypatch.setattr("apx_agent.get_version_git_sha", lambda uc, v, **k: version_sha)
@@ -3482,7 +3517,7 @@ def _setup_rollback_mocks(
         from apx_agent._apps_registry import AppsManifestResult
         return AppsManifestResult(uc_name=uc_name, version="8", app_name=app_name)
     monkeypatch.setattr("apx_agent._apps_registry.register_apps_manifest", _fake_registrar)
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     _install_subprocess_mock(monkeypatch)
     return captured
 
@@ -3538,6 +3573,8 @@ def test_status_apps_shows_prod_and_canary(
     from apx_agent._apps_registry import CanaryManifest
 
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     monkeypatch.setattr("apx_agent.get_prod_alias_version", lambda uc, **k: "5")
     monkeypatch.setattr("apx_agent.get_version_git_sha", lambda uc, v, **k: "prodsha12345")
     monkeypatch.setattr(
@@ -3559,6 +3596,8 @@ def test_status_apps_json(
     from apx_agent._apps_registry import CanaryManifest
 
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_UC)
+
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     monkeypatch.setattr("apx_agent.get_prod_alias_version", lambda uc, **k: "5")
     monkeypatch.setattr("apx_agent.get_version_git_sha", lambda uc, v, **k: "prodsha12345")
     monkeypatch.setattr(
@@ -3639,6 +3678,8 @@ def test_plain_deploy_threads_provenance_to_registrar(
     import hashlib
 
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     (scaffold / "uv.lock").write_text("version = 1\n")
     seen: dict[str, Any] = {}
 
@@ -3651,7 +3692,7 @@ def test_plain_deploy_threads_provenance_to_registrar(
     monkeypatch.setattr(
         "apx_agent._apps_registry.register_apps_manifest", _fake_registrar,
     )
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     monkeypatch.setattr("apx_agent.cli._git_head_sha", lambda cwd: "a" * 40)
     monkeypatch.setattr("apx_agent.cli._git_is_dirty", lambda cwd: True)
     _install_subprocess_mock(monkeypatch)
@@ -3735,6 +3776,7 @@ def test_no_run_skips_readiness_poll_and_still_registers_manifest(
     never started), but the UC manifest registration still runs — it records
     intent/version and doesn't need the app up."""
     (scaffold / "pyproject.toml").write_text(_PYPROJECT_WITH_AGENT)
+    (scaffold / "agent.py").write_text(_AGENT_WITH_MODEL_PY)
     registered: list[dict[str, Any]] = []
 
     def _fake_registrar(agent, *, uc_name, model, app_name, bundle_target,
@@ -3746,7 +3788,7 @@ def test_no_run_skips_readiness_poll_and_still_registers_manifest(
     monkeypatch.setattr(
         "apx_agent._apps_registry.register_apps_manifest", _fake_registrar,
     )
-    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", lambda m: object())
+    monkeypatch.setattr("apx_agent.cli._load_finalized_agent", _declared_agent)
     _install_subprocess_mock(monkeypatch)
 
     with patch("apx_agent.cli._poll_app_ready") as poll, \

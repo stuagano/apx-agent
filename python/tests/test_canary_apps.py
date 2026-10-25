@@ -627,7 +627,7 @@ def test_cli_canary_analyze_apps_uses_experiment_from_pyproject(
         [project]
         name = "test-app"
 
-        [tool.apx.agent]
+        [tool.apx]
         experiment = "/Workspace/Users/me/exp"
     """))
 
@@ -655,7 +655,7 @@ def test_cli_canary_analyze_apps_json_output(
         [project]
         name = "test-app"
 
-        [tool.apx.agent]
+        [tool.apx]
         experiment = "/exp"
     """))
 

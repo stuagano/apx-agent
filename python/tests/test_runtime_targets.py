@@ -612,7 +612,7 @@ def test_real_durable_server_http_and_readback(execution: Any, monkeypatch: pyte
 
 def _write_native_pyproject(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        "[tool.apx.agent]\nname = \"proof\"\ntarget = \"durable_agent_server\"\n"
+        "[tool.apx.deploy]\nname = \"proof\"\n"
     )
 
 
@@ -1101,7 +1101,7 @@ def test_packaged_launcher_rejects_other_runtime_before_auth(monkeypatch: pytest
 def test_packaged_launcher_compiles_python_only_agent(
     execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """#954: missing [tool.apx.agent] still compiles the Python agent as durable."""
+    """#954: missing [tool.apx.deploy] still compiles the Python agent as durable."""
     import sys
     from apx_agent._serve import create_app
 

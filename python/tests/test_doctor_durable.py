@@ -17,10 +17,8 @@ PYPROJECT = """\
 name = "{name}"
 version = "0.1.0"
 
-[tool.apx.agent]
+[tool.apx.deploy]
 name = "{name}"
-model = "databricks-claude-sonnet-4-6"
-module = "agent:agent"
 """
 
 
@@ -425,7 +423,7 @@ SPACE_APP = (
 def _space_project(tmp_path: Path, name: str, app: str, extra: str) -> Path:
     root = _bundle_project(tmp_path, name, app, extra)
     pyproject = root / "pyproject.toml"
-    pyproject.write_text(pyproject.read_text() + '\n[tool.apx.agent.deploy]\nspace = "app-space"\n')
+    pyproject.write_text(pyproject.read_text() + 'space = "app-space"\n')
     return root
 
 
@@ -498,8 +496,8 @@ def test_custom_surface_warns_remount(tmp_path: Path) -> None:
 def test_non_managed_session_warns_history(tmp_path: Path) -> None:
     from apx_agent._doctor_durable import check_durable_readiness
 
-    root = _project(tmp_path, "hist", LLM_AGENT.format(name="hist"))
-    (root / "pyproject.toml").write_text(PYPROJECT.format(name="hist") + '\n[tool.apx.agent.memory]\ntype = "inmemory"\n')
+    agent_py = "from apx_agent import LlmAgent\nagent = LlmAgent(name='hist', tools=[], memory={'type': 'inmemory'})\n"
+    root = _project(tmp_path, "hist", agent_py)
     checks = _by_name(check_durable_readiness(root))
     assert checks["History"].status is Status.WARN
     assert "inmemory" in checks["History"].detail

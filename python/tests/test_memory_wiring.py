@@ -366,17 +366,15 @@ class TestEndToEndIsolation:
 
     @pytest.fixture
     def agent_with_memory(self, tmp_path):
-        (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-            [tool.apx.agent]
-            name = "isolation-test"
-            model = "databricks-meta-llama-3-3-70b-instruct"
-            [tool.apx.agent.memory]
-            type = "inmemory"
-        """))
-        from apx_agent import Agent
+        from apx_agent import Agent, AgentConfig
         from apx_agent._wiring import finalize_agent
+        cfg = AgentConfig.model_validate({
+            "name": "isolation-test",
+            "model": "databricks-meta-llama-3-3-70b-instruct",
+            "memory": {"type": "inmemory"},
+        })
         agent = Agent(tools=[])
-        finalize_agent(agent, pyproject_path=str(tmp_path / "pyproject.toml"), ws=None)
+        finalize_agent(agent, cfg, ws=None)
         names = {fn.__name__ for fn in agent._tool_fns}
         assert "recall" in names and "remember" in names
         return agent
@@ -464,15 +462,12 @@ class TestPredictSeamPrincipalThreading:
         PASSES-AFTER the fix (captured_headers.user_id == 'alice').
         """
         from mlflow.types.agent import ChatAgentMessage
-        from apx_agent import Agent, chat_agent_for
+        from apx_agent import Agent, AgentConfig, chat_agent_for
         from apx_agent._wiring import finalize_agent
 
-        (tmp_path / "pyproject.toml").write_text(
-            "[tool.apx.agent]\nname = 'seam-test'\nmodel = 'ep'\n"
-            "[tool.apx.agent.memory]\ntype = 'inmemory'\n"
-        )
+        cfg = AgentConfig.model_validate({"name": "seam-test", "model": "ep", "memory": {"type": "inmemory"}})
         agent = Agent(tools=[])
-        finalize_agent(agent, pyproject_path=str(tmp_path / "pyproject.toml"), ws=None)
+        finalize_agent(agent, cfg, ws=None)
         wrapped = chat_agent_for(agent, model="ep")
         fake_graph = self._make_fake_graph()
 
@@ -514,15 +509,12 @@ class TestPredictSeamPrincipalThreading:
     def test_predict_stream_threads_user_id_as_headers_into_compile(self, tmp_path):
         """Same seam guard for predict_stream."""
         from mlflow.types.agent import ChatAgentMessage
-        from apx_agent import Agent, chat_agent_for
+        from apx_agent import Agent, AgentConfig, chat_agent_for
         from apx_agent._wiring import finalize_agent
 
-        (tmp_path / "pyproject.toml").write_text(
-            "[tool.apx.agent]\nname = 'seam-test-stream'\nmodel = 'ep'\n"
-            "[tool.apx.agent.memory]\ntype = 'inmemory'\n"
-        )
+        cfg = AgentConfig.model_validate({"name": "seam-test-stream", "model": "ep", "memory": {"type": "inmemory"}})
         agent = Agent(tools=[])
-        finalize_agent(agent, pyproject_path=str(tmp_path / "pyproject.toml"), ws=None)
+        finalize_agent(agent, cfg, ws=None)
         wrapped = chat_agent_for(agent, model="ep")
         fake_graph = self._make_fake_graph()
 
@@ -564,14 +556,12 @@ class TestPredictSeamPrincipalThreading:
         """When custom_inputs has no user_id, headers= must be None (not an all-None
         DatabricksAppsHeaders that would change existing tools' None check)."""
         from mlflow.types.agent import ChatAgentMessage
-        from apx_agent import Agent, chat_agent_for
+        from apx_agent import Agent, AgentConfig, chat_agent_for
         from apx_agent._wiring import finalize_agent
 
-        (tmp_path / "pyproject.toml").write_text(
-            "[tool.apx.agent]\nname = 'no-uid'\nmodel = 'ep'\n"
-        )
+        cfg = AgentConfig(name="no-uid", model="ep")
         agent = Agent(tools=[])
-        finalize_agent(agent, pyproject_path=str(tmp_path / "pyproject.toml"), ws=None)
+        finalize_agent(agent, cfg, ws=None)
         wrapped = chat_agent_for(agent, model="ep")
         fake_graph = self._make_fake_graph()
 

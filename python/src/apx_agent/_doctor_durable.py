@@ -284,7 +284,14 @@ def _stage_config(project: Path) -> _Loaded | Check:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return _fail("Config", exc)
     apx = data.get("tool", {}).get("apx", {})
-    declared = apx.get("agent") or apx.get("deploy")
+    if "agent" in apx:
+        from ._tool_config import ToolConfigError, reject_legacy_tool_config
+
+        try:
+            reject_legacy_tool_config(str(project / "pyproject.toml"))
+        except ToolConfigError as exc:
+            return Check("Config", Status.FAIL, str(exc), "Run `apx-agent agents migrate-config`, then commit.")
+    declared = apx.get("deploy")
     python_only = declared is None and (project / "agent.py").is_file()
     if declared is None and not python_only:
         return Check("Config", Status.SKIP, "not an apx agent project (no agent.py or [tool.apx.deploy])")

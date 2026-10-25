@@ -50,7 +50,7 @@ def test_config_loading_rejects_legacy_tools_before_agent_import(tmp_path: Path)
 
 def test_no_legacy_tools_keeps_python_tool_and_is_idempotent(tmp_path: Path) -> None:
     project = tmp_path / "pyproject.toml"
-    project.write_text('[tool.apx.agent]\nname = "test"\n')
+    project.write_text('[tool.apx.deploy]\nname = "test"\n')
 
     def echo(text: str) -> str:
         """Return the input."""

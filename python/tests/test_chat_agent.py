@@ -333,27 +333,21 @@ def test_chat_msg_to_new_items_no_empty_message_without_text() -> None:
 # --- T6: finalize_agent wired into log_agent (GOVERNANCE) ---
 
 
-def test_finalized_agent_contributes_genie_space_resource(tmp_path):
-    pp = tmp_path / "pyproject.toml"
-    pp.write_text('[tool.apx.agent]\nname="t"\n')
+def test_finalized_agent_contributes_genie_space_resource():
     space_id = "01ef0000000000000000000000000000"
     agent = Agent(tools=[genie_tool(space_id, name="ask_sales")])
-    finalize_agent(agent, pyproject_path=str(pp))
+    finalize_agent(agent, AgentConfig(name="t"))
     resources = collect_resource_specs(agent, model="m")
     assert ("genie_space", space_id) in {(s.kind, s.identifier) for s in resources}
 
 
 def test_log_agent_finalizes_before_resource_derivation(tmp_path, monkeypatch):
     # GOVERNANCE: finalization must precede resource derivation. Python tools
-    # exist at construction, so observe a config-only knob at that seam as well
+    # exist at construction, so observe a setting declared on the agent at that seam as well
     # as the actual Genie resource; mere tool presence cannot prove ordering.
     monkeypatch.chdir(tmp_path)
     pp = tmp_path / "pyproject.toml"
-    pp.write_text(textwrap.dedent("""
-        [tool.apx.agent]
-        name = "t"
-        temperature = 0.3
-    """))
+    pp.write_text('[tool.apx.deploy]\nname = "t"\n')
     monkeypatch.setenv("APX_PYPROJECT", str(pp))
     import sys
     import types
@@ -364,7 +358,7 @@ def test_log_agent_finalizes_before_resource_derivation(tmp_path, monkeypatch):
     def spy_resources(agent, **kw):
         # State of the agent AT the resource-derivation call site.
         seen["tools"] = [t.name for t in agent.collect_tools()]
-        seen["temperature"] = agent._temperature
+        seen["guarded"] = agent._before_tool is not None
         seen["resources"] = collect_resource_specs(agent, model=kw["model"])
         return []
     # log_agent does a LOCAL `from ._resources import ... mlflow_resources_for`,
@@ -380,10 +374,13 @@ def test_log_agent_finalizes_before_resource_derivation(tmp_path, monkeypatch):
 
     from apx_agent._chat_agent import log_agent
     space_id = "01ef0000000000000000000000000000"
-    agent = Agent(tools=[genie_tool(space_id, name="ask_sales")])
-    assert agent._temperature is None
+    agent = Agent(
+        tools=[genie_tool(space_id, name="ask_sales")],
+        guardrails={"blocked_tools": ["delete_record"]},
+    )
+    assert agent._before_tool is None
     log_agent(agent, model="m")
-    assert seen["temperature"] == 0.3  # finalize ran BEFORE resource derivation
+    assert seen["guarded"]  # finalize ran BEFORE resource derivation
     assert seen["tools"] == ["ask_sales"]
     assert ("genie_space", space_id) in {
         (s.kind, s.identifier) for s in seen["resources"]

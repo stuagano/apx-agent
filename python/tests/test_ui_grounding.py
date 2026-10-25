@@ -182,7 +182,7 @@ async def test_grounding_routes_published_to_openapi(tmp_path, monkeypatch):
 
 def test_generate_okf_pack_writes_bundle_and_wires_knowledge(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "t"\nversion = "0.1.0"\n\n[tool.apx.agent]\nname = "t"\n'
+        '[project]\nname = "t"\nversion = "0.1.0"\n\n[tool.apx.deploy]\nname = "t"\n'
     )
     (tmp_path / "agent.py").write_text(
         'from apx_agent import DataAgent\n\nagent = DataAgent("samples", "nyctaxi", name="t")\n'
@@ -201,7 +201,7 @@ def test_generate_okf_pack_writes_bundle_and_wires_knowledge(tmp_path):
 
 def test_generate_okf_pack_refuses_existing_without_force(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "t"\nversion = "0.1.0"\n\n[tool.apx.agent]\nname = "t"\n'
+        '[project]\nname = "t"\nversion = "0.1.0"\n\n[tool.apx.deploy]\nname = "t"\n'
     )
     ws = _FakeWs({"trips": {"id": ""}})
     generate_okf_pack(ws, "samples", "nyctaxi", project_root=tmp_path)
@@ -217,7 +217,7 @@ def test_grounding_columns_payload_empty_with_source():
 @pytest.mark.asyncio
 async def test_generate_route_creates_pack(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "t"\nversion = "0.1.0"\n\n[tool.apx.agent]\nname = "t"\n'
+        '[project]\nname = "t"\nversion = "0.1.0"\n\n[tool.apx.deploy]\nname = "t"\n'
     )
     monkeypatch.setattr("apx_agent._ui_grounding.resolve_okf_root", lambda start=None: None)
     monkeypatch.setattr(

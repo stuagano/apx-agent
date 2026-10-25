@@ -83,10 +83,10 @@ agent = Agent(tools=[lookup])
 
 
 def _project(tmp_path: Path) -> Path:
-    # The [tool.apx.agent] marker is what _is_apx_project() keys on (used by
+    # The [tool.apx.deploy] marker is what _is_apx_project() keys on (used by
     # `status`); _discover_local_agents only needs the pyproject + agent.py.
     (tmp_path / "pyproject.toml").write_text(
-        "[project]\nname='demo'\n\n[tool.apx.agent]\nname='demo'\n"
+        "[project]\nname='demo'\n\n[tool.apx.deploy]\nname='demo'\n"
     )
     (tmp_path / "agent.py").write_text(_AGENT_PY)
     return tmp_path

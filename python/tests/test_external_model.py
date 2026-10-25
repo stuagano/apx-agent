@@ -15,7 +15,7 @@ from apx_agent._external_model import (
     parse_model_scheme,
     reconcile_external_model_endpoint,
 )
-from apx_agent._inspection import _load_agent_config
+from apx_agent import AgentConfig
 from apx_agent._models import GatewayConfig
 from apx_agent._resources import ResourceSpec, resources_to_databricks_yml
 
@@ -57,17 +57,12 @@ def test_provider_registry_is_data(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --- AC-5 ---
-def test_gateway_config_governance_on_defaults(tmp_path) -> None:
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(
-        "[tool.apx.agent]\n"
-        'name = "x"\n'
-        'model = "main.ai.bedrock_chat"\n'
-        "[tool.apx.agent.gateway]\n"
-        'credential = "my_cred"\n'
-    )
-    config = _load_agent_config(pyproject_path=pyproject)
-    assert config is not None
+def test_gateway_config_governance_on_defaults() -> None:
+    config = AgentConfig.model_validate({
+        "name": "x",
+        "model": "main.ai.bedrock_chat",
+        "gateway": {"credential": "my_cred"},
+    })
     assert config.gateway is not None
     assert config.gateway.usage_tracking is True
     assert config.gateway.guardrails is True

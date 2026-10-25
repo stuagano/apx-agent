@@ -798,9 +798,9 @@ def check_sub_agents(cwd: Path) -> Check | None:
     if not _is_apx_project(cwd):
         return None
     try:
-        from ._inspection import _load_agent_config  # noqa: PLC0415
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
 
-        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        cfg = effective_config_isolated(cwd)  # settings declared on the agent count (3d)
     except Exception:
         return None
     if cfg is None or not cfg.sub_agents:
@@ -837,9 +837,9 @@ def _declared_app_peer_urls(cwd: Path) -> list[str] | None:
     if not _is_apx_project(cwd):
         return None
     try:
-        from ._inspection import _load_agent_config  # noqa: PLC0415
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
 
-        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        cfg = effective_config_isolated(cwd)  # settings declared on the agent count (3d)
     except Exception:
         return None
     if cfg is None:
@@ -1284,8 +1284,9 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
     if not _is_apx_project(cwd):
         return None
     try:
-        from ._inspection import _load_agent_config  # noqa: PLC0415
-        cfg = _load_agent_config()
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
+
+        cfg = effective_config_isolated(cwd)  # settings declared on the agent count (3d)
     except Exception:
         return None
     if cfg is None or cfg.memory is None:
@@ -1361,8 +1362,9 @@ def check_abac_compute_floor(cwd: Path, *, auth_ok: bool) -> Check | None:
     if not _is_apx_project(cwd):
         return None
     try:
-        from ._inspection import _load_agent_config  # noqa: PLC0415
-        cfg = _load_agent_config()
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
+
+        cfg = effective_config_isolated(cwd)  # settings declared on the agent count (3d)
     except Exception:
         return None
     if cfg is None or cfg.data is None:

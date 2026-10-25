@@ -974,7 +974,7 @@ class _ApxGroup(click.Group):
 
         try:
             return super().invoke(ctx)
-        except ToolConfigError as exc:  # removed TOML ([tool.apx.agent], [[tool.apx.tools]]): an Error: line
+        except ToolConfigError as exc:  # removed TOML tables surface as an Error: line
             raise click.ClickException(str(exc)) from exc
 
     def resolve_command(self, ctx, args):

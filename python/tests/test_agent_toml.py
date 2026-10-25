@@ -165,9 +165,10 @@ def test_doctor_project_group_reports_agent_toml(tmp_path: Path, monkeypatch) ->
     from apx_agent._doctor import run_checks
 
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "p"\nversion = "0"\n[tool.apx.agent]\nname = "p"\nmodel = "m"\ntarget = "durable_agent_server"\n')
+        '[project]\nname = "p"\nversion = "0"\n[tool.apx.deploy]\nname = "p"\n')
     (tmp_path / "agent.py").write_text(
-        "from apx_agent import Agent, platform_tools\nagent = Agent(name='p', tools=[*platform_tools('nope')])\n")
+        "from apx_agent import Agent, platform_tools\n"
+        "agent = Agent(name='p', target='durable_agent_server', tools=[*platform_tools('nope')])\n")
     (tmp_path / "agent.toml").write_text(BASE)
     monkeypatch.chdir(tmp_path)
     groups = dict(run_checks(tmp_path, online=False))
@@ -179,7 +180,7 @@ def test_doctor_durable_reports_agent_toml_without_hiding_stages(tmp_path: Path)
     from apx_agent._doctor_durable import check_durable_readiness
 
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "p"\nversion = "0"\n[tool.apx.agent]\nname = "p"\nmodel = "m"\nmodule = "agent:agent"\n')
+        '[project]\nname = "p"\nversion = "0"\n[tool.apx.deploy]\nname = "p"\n')
     (tmp_path / "agent.py").write_text(
         "from apx_agent import Agent, platform_tools\nagent = Agent(name='p', tools=[*platform_tools('nope')])\n")
     (tmp_path / "agent.toml").write_text(BASE)
@@ -258,7 +259,7 @@ from typing import Any  # noqa: E402
 import click  # noqa: E402
 
 
-@pytest.mark.parametrize("deploy", ["", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n'],
+@pytest.mark.parametrize("deploy", ["", 'backend = "apps_api"\nentrypoint = "app"\n'],
                          ids=["agentbricks-cli", "apps-api"])
 def test_mismatched_agent_toml_stops_deploy_before_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deploy: str,
@@ -266,8 +267,9 @@ def test_mismatched_agent_toml_stops_deploy_before_staging(
     from apx_agent import cli
 
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "p"\nversion = "0"\n[tool.apx.agent]\nname = "p"\nmodel = "m"\n'
-        f'module = "agent:agent"\ntarget = "durable_agent_server"\n{deploy}')
+        f'[project]\nname = "p"\nversion = "0"\n[tool.apx.deploy]\nname = "p"\n{deploy}')
+    (tmp_path / "agent.py").write_text(
+        "from apx_agent import Agent\nagent = Agent(name='p', target='durable_agent_server', tools=[])\n")
     (tmp_path / "agent.toml").write_text(BARE.replace("langgraph", "openai"))
 
     def reached(*a: Any, **k: Any) -> Any:
@@ -290,8 +292,8 @@ def test_mismatched_agent_toml_stops_deploy_before_staging(
 
 
 # --- I1 / I5: doctor and migrate load the agent like deploy; never crash ---------------
-_DURABLE_PYPROJECT = ('[project]\nname = "p"\nversion = "0"\n[tool.apx.agent]\nname = "p"\nmodel = "m"\n'
-                      'target = "durable_agent_server"\n')
+_DURABLE_PYPROJECT = '[project]\nname = "p"\nversion = "0"\n[tool.apx.deploy]\nname = "p"\n'
+_DURABLE_AGENT = "from apx_agent import Agent\nagent = Agent(name='p', target='durable_agent_server', tools=[])\n"
 
 
 @pytest.fixture(autouse=True)
@@ -321,7 +323,7 @@ def test_doctor_without_agentbricks_extra_skips_agent_toml(tmp_path: Path, monke
     import sys
 
     (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
-    (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', tools=[])\n")
+    (tmp_path / "agent.py").write_text(_DURABLE_AGENT)
     (tmp_path / "agent.toml").write_text(BARE)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setitem(sys.modules, "databricks_agentbricks", None)
@@ -332,7 +334,7 @@ def test_doctor_without_agentbricks_extra_skips_agent_toml(tmp_path: Path, monke
 
 def test_doctor_agent_toml_value_error_is_one_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
-    (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', tools=[])\n")
+    (tmp_path / "agent.py").write_text(_DURABLE_AGENT)
     monkeypatch.chdir(tmp_path)
 
     def bad_plan(*a: Any, **k: Any) -> Any:
@@ -345,7 +347,8 @@ def test_doctor_agent_toml_value_error_is_one_fail(tmp_path: Path, monkeypatch: 
 def test_doctor_loads_a_non_default_agent_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
     (tmp_path / "app.py").write_text(
-        "from apx_agent import Agent, platform_tools\nagent = Agent(name='p', tools=[*platform_tools('nope')])\n")
+        "from apx_agent import Agent, platform_tools\n"
+        "agent = Agent(name='p', target='durable_agent_server', tools=[*platform_tools('nope')])\n")
     (tmp_path / "agent.toml").write_text(BASE)
     monkeypatch.chdir(tmp_path)
     rows = _agent_toml_doctor_rows(tmp_path)
@@ -359,7 +362,8 @@ def test_migrate_uses_the_deploy_loader_and_plan_inputs(tmp_path: Path, monkeypa
     from apx_agent.cli import main
 
     (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
-    (tmp_path / "bot.py").write_text("from apx_agent import Agent\nassistant = Agent(name='p', tools=[])\n")
+    (tmp_path / "bot.py").write_text(
+        "from apx_agent import Agent\nassistant = Agent(name='p', target='durable_agent_server', tools=[])\n")
     monkeypatch.chdir(tmp_path)
     seen: list[dict[str, Any]] = []
     real = _apps_authorization.compile_authorization_plan
@@ -381,7 +385,7 @@ def test_migrate_load_failure_is_a_click_error(tmp_path: Path, monkeypatch: pyte
     from apx_agent.cli import main
 
     (tmp_path / "pyproject.toml").write_text(_DURABLE_PYPROJECT)
-    (tmp_path / "agent.py").write_text("import not_a_real_module_xyz\n")
+    (tmp_path / "agent.py").write_text("import not_a_real_module_xyz\nagent = Agent(target='durable_agent_server')\n")
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(main, ["agents", "migrate-agent-toml"])
     assert result.exit_code == 1 and isinstance(result.exception, SystemExit), result.exception
@@ -440,7 +444,7 @@ def test_native_manifest_binds_python_only_memory() -> None:
 def test_mismatched_agent_toml_stops_deploy_without_agent_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#954: require_agent_toml_ok still runs when pyproject has no [tool.apx.agent]."""
+    """#954: require_agent_toml_ok still runs when pyproject has no apx settings."""
     from apx_agent import cli
 
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
@@ -470,7 +474,7 @@ def test_mismatched_agent_toml_stops_deploy_without_agent_config(
 
 
 def test_doctor_python_only_reports_agent_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """#954: doctor still checks agent.toml when there is no [tool.apx.agent]."""
+    """#954: doctor still checks agent.toml when there is no apx settings."""
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
     (tmp_path / "agent.py").write_text(
         "from apx_agent import Agent, platform_tools\nagent = Agent(name='p', tools=[*platform_tools('nope')])\n")

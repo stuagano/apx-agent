@@ -181,7 +181,7 @@ def test_composite_rejects_invalid_identity_and_recovery_on_responses() -> None:
         SequentialAgent([_leaf()], recovery=True, target="responses_agent")
 
 
-def test_launcher_fails_on_conflict_with_toml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_launcher_rejects_the_agent_table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     import sys
     from apx_agent._serve import create_app
 
@@ -193,7 +193,7 @@ def test_launcher_fails_on_conflict_with_toml(monkeypatch: pytest.MonkeyPatch, t
     monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(agent=Agent(name="p", tools=[_noop], model="py-model")))
     monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda **k: MagicMock())
     monkeypatch.setattr("apx_agent._runtime_targets.compile_agent", MagicMock())
-    with pytest.raises(ValueError, match="Set it in one place"):
+    with pytest.raises(ValueError, match="migrate-config"):
         create_app()
 
 
@@ -229,7 +229,7 @@ def test_launcher_rejects_python_only_responses_target(monkeypatch: pytest.Monke
         create_app()
 
 
-def test_durable_doctor_reports_a_conflict_as_config_fail(tmp_path: Path) -> None:
+def test_durable_doctor_reports_the_agent_table_as_config_fail(tmp_path: Path) -> None:
     from apx_agent._doctor import Status
     from apx_agent._doctor_durable import check_durable_readiness
 
@@ -241,7 +241,7 @@ def test_durable_doctor_reports_a_conflict_as_config_fail(tmp_path: Path) -> Non
         "from apx_agent import LlmAgent\nagent = LlmAgent(name='p', tools=[], model='py-model')\n")
     checks = {c.name: c for c in check_durable_readiness(root)}
     assert checks["Config"].status is Status.FAIL
-    assert "Set it in one place" in checks["Config"].detail
+    assert "migrate-config" in checks["Config"].detail
 
 
 def test_durable_doctor_loads_a_composite_python_only_root(tmp_path: Path) -> None:
@@ -259,27 +259,37 @@ def test_durable_doctor_loads_a_composite_python_only_root(tmp_path: Path) -> No
     assert "SequentialAgent" in checks["Config"].detail
 
 
-def test_deploy_config_merges_agent_and_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deploy_config_merges_agent_and_deploy_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apx_agent import cli
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nname = "p"\n')
+    (tmp_path / "agent.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+    toml, preloaded = cli._config_from_project_or_agent(tmp_path, "agent:agent")
+    assert preloaded is None  # the agent loads after the deploy prerequisite checks
+    config = cli._merged_config(Agent(name="p", tools=[_noop], model="py-model", identity="obo"), toml)
+    assert (config.name, config.model, config.identity) == ("p", "py-model", "obo")
+
+
+def test_deploy_config_rejects_the_agent_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent import cli
+    from apx_agent._tool_config import ToolConfigError
 
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\nmodel = "toml-model"\n')
     (tmp_path / "agent.py").write_text("")
     monkeypatch.chdir(tmp_path)
-    toml, preloaded = cli._config_from_project_or_agent(tmp_path, "agent:agent")
-    assert preloaded is None  # the agent loads after the deploy prerequisite checks
-    with pytest.raises(click.ClickException, match="Set it in one place"):
-        cli._merged_config(Agent(name="p", tools=[_noop], model="py-model"), toml)
-    config = cli._merged_config(Agent(name="p", tools=[_noop], identity="obo"), toml)
-    assert (config.model, config.identity) == ("toml-model", "obo")
+    with pytest.raises(ToolConfigError, match="migrate-config"):
+        cli._config_from_project_or_agent(tmp_path, "agent:agent")
 
 
 def test_mixed_native_deploy_pins_the_merged_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apx_agent import cli
 
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\ntarget = "durable_agent_server"\n')
-    (tmp_path / "agent.py").write_text("")
+        '[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nname = "p"\n')
+    (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(target='durable_agent_server')\n")
     (tmp_path / "agent.toml").write_text(
         'schema_version = 1\n\n[agent]\nframework = "openai"\nserver = "agentbricks"\n')
     apps: list[Any] = []

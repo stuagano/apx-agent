@@ -306,9 +306,10 @@ def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str,
             # read literal declarations statically when the TOML has none (3b-3b). A non-literal
             # Python value (e.g. MemoryBackendConfig(...)) is left to the post-import merge.
             agent_py = path.parent / "agent.py"
-            target = static_agent_setting(agent_py, "target") if "target" not in fields else None
-            if isinstance(target, str):
-                fields["target"] = target
+            for key in ("target", "model"):  # model too, so a bad one fails before deploy side effects
+                value = static_agent_setting(agent_py, key) if key not in fields else None
+                if isinstance(value, str):
+                    fields[key] = value
             for key in ("memory", "session"):
                 value = static_agent_setting(agent_py, key) if key not in fields else None
                 if isinstance(value, dict):

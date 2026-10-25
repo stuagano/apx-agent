@@ -167,7 +167,7 @@ def test_toml_tools_require_python_migration(tmp_path, tool_body):
 
 
 def test_no_tools_section_is_noop(tmp_path):
-    pp = _write_pyproject(tmp_path, '[tool.apx.agent]\nname = "t"\n')
+    pp = _write_pyproject(tmp_path, '[tool.apx.deploy]\nname = "t"\n')
     reject_legacy_tool_config(pp)
 
 
