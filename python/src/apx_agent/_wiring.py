@@ -659,52 +659,24 @@ def resolve_agent(
     *,
     ws: Any | None = None,
 ) -> "BaseAgent":
-    """Resolve a ``BaseAgent`` from either a template config or a module import.
+    """Resolve the ``BaseAgent`` named by *module_spec* (``module:variable``).
 
-    Runs BEFORE ``finalize_agent`` (which then layers knobs/persona/tools/guards).
+    Runs BEFORE ``finalize_agent`` (which then layers knobs/persona/tools/guards). The
+    agent always comes from Python: a pyproject ``template = {...}`` no longer builds one
+    (3d); a YAML spec's ``template:`` is rendered into agent.py by ``generate_project``.
+    Imports via ``importlib`` (NOT ``cli._load_agent`` — that would create a
+    ``cli → _wiring`` cycle). *config* and *ws* are accepted for callers' symmetry.
 
-    **Resolution order (precedence):** ``config.template`` is checked FIRST — when
-    both a ``template`` field and a ``module_spec`` are present, the template wins
-    and the module import is never attempted.
-
-    1. ``config.template`` set → ``template_registry.build(name, spec, ws=ws)``.
-       ``name`` key selects the template; other keys form the spec dict.
-    2. else → import ``module_spec`` (``module:variable``) via ``importlib``
-       (NOT ``cli._load_agent`` — that would create a ``cli → _wiring`` cycle).
-    3. neither → ``TemplateConfigError`` with a clear message.
-
-    Note: this function is only called on the CLI/deploy paths.  On the serve path
-    (``create_app``), an explicit ``agent=`` argument passed by the caller skips
-    ``resolve_agent`` entirely (see the ``if agent is None`` guard), so a
-    ``create_app(agent=my_agent)`` call always wins over any template config.
+    On the serve path (``create_app``), an explicit ``agent=`` skips this entirely.
     """
     import importlib
     import sys as _sys
     from pathlib import Path as _Path
 
-    from ._template import template_registry
-
-    template_dict: dict[str, Any] | None = None
-    if config is not None and config.template is not None:
-        template_dict = config.template
-
-    if template_dict is not None:
-        tname = template_dict.get("name")
-        if not tname:
-            raise TemplateConfigError(
-                "AgentConfig.template must include a 'name' key to select the template. "
-                f"Got: {template_dict!r}"
-            )
-        spec = {k: v for k, v in template_dict.items() if k != "name"}
-        if config is not None and config.knowledge is not None and "knowledge" not in spec:
-            spec["knowledge"] = config.knowledge
-        return template_registry.build(tname, spec, ws=ws)
-
     if not module_spec:
         raise TemplateConfigError(
-            "No agent to resolve: config has no 'template' field and no module_spec "
-            "was provided. Either define `agent` in agent.py "
-            "or pass a 'module:variable' module_spec."
+            "No agent to resolve: define `agent` in agent.py (a YAML spec with `template:` "
+            "generates one: apx-agent agents run <spec>.yaml)."
         )
     if ":" not in module_spec:
         raise TemplateConfigError(

@@ -706,45 +706,17 @@ def _data_source_from_agent_py(cwd: Path) -> "tuple[str, str] | None":
 
 
 def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
-    """Verify the UC catalog.schema declared by the agent's template exists.
+    """Verify the UC catalog.schema a DataAgent / CoworkerAgent reads exists.
 
-    DataAgent / CoworkerAgent projects declare their data source as:
-        [tool.apx.agent.template]
-        name = "data"
-        catalog = "main"
-        schema  = "sales"
-
-    A missing or inaccessible schema is the most common silent failure: the
-    agent starts fine, every SQL query 403s, and the user sees "I can't find
-    any data" with no clear diagnosis. Returns None when not in an apx project
-    or no template catalog/schema is declared.
+    The data source is the agent's constructor in agent.py
+    (``DataAgent("main", "sales")`` / ``CoworkerAgent(...)``). A missing or
+    inaccessible schema is the most common silent failure: the agent starts fine,
+    every SQL query 403s, and the user sees "I can't find any data" with no clear
+    diagnosis. Returns None without auth or when no data source is declared.
     """
     if not auth_ok:
         return None
-    pyproject = cwd / "pyproject.toml"
-    if not pyproject.exists():
-        return None
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover
-        try:
-            import tomli as tomllib  # type: ignore[no-redef]
-        except ImportError:
-            return None
-    try:
-        data = tomllib.loads(pyproject.read_text())
-    except Exception:
-        return None
-    tmpl: dict = (
-        data.get("tool", {}).get("apx", {}).get("agent", {}).get("template") or {}
-    )
-    catalog = tmpl.get("catalog", "")
-    schema = tmpl.get("schema", "")
-    if not catalog or not schema:
-        # Python-canonical projects declare the data source in agent.py
-        # (DataAgent("cat", "sch") / CoworkerAgent(...)) rather than a
-        # [tool.apx.agent.template] section. Fall back to reading it there.
-        catalog, schema = _data_source_from_agent_py(cwd) or (catalog, schema)
+    catalog, schema = _data_source_from_agent_py(cwd) or ("", "")
     if not catalog or not schema:
         return None
     fqn = f"{catalog}.{schema}"
@@ -761,7 +733,7 @@ def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
                 label, Status.FAIL,
                 f"schema not found: {fqn}",
                 f"Confirm `{fqn}` exists in Unity Catalog and your principal has USE SCHEMA. "
-                "Update catalog/schema in [tool.apx.agent.template] to match.",
+                "Update the catalog/schema in agent.py to match.",
             )
         if "403" in msg or "permission" in msg.lower() or "denied" in msg.lower():
             return Check(

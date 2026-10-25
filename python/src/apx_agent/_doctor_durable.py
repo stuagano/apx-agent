@@ -29,9 +29,8 @@ STAGES = ("Config", "Compile", "Startup", "Request", "Deploy")
 SENTINEL = "apx-doctor-sentinel-token"
 PEER_URL = "https://apx-doctor-peer.invalid"
 SDK_FIX = 'uv run --with "databricks-agentbricks>=0.5.0,<0.6" apx-agent doctor --durable --offline'
-AGENT_MODULE_FIX = ("The native durable runtime imports `agent:agent` (as _serve.create_app does); "
-                    "the pyproject `module =` key is not used by the durable host. "
-                    "Expose the agent as `agent` in agent.py at the project root.")
+AGENT_MODULE_FIX = ("The native durable runtime imports `agent:agent` (as _serve.create_app does): "
+                    "expose the agent as `agent` in agent.py at the project root.")
 
 
 class _FakeWorkspaceClient:
@@ -314,8 +313,7 @@ def _stage_config(project: Path) -> _Loaded | Check:
             if fields is None:
                 return Check("Config", Status.FAIL, "could not load the agent settings")
             config = AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
-            # The native host imports `agent:agent` (as _serve.create_app does); the
-            # pyproject `module =` key is not read by the durable runtime.
+            # The native host imports `agent:agent` (as _serve.create_app does).
             agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
             config = resolve_settings(agent, config)
         origin = getattr(sys.modules.get("agent"), "__file__", None)

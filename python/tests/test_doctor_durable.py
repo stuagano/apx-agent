@@ -759,7 +759,7 @@ def test_missing_agent_module_has_native_import_hint(tmp_path: Path) -> None:
     assert config.status is Status.FAIL
     assert config.fix is not None
     assert "agent:agent" in config.fix
-    assert "module =" in config.fix
+    assert "agent.py" in config.fix
 
 
 def test_project_without_agent_never_uses_a_stale_agent_module(

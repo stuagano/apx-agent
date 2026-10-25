@@ -10519,10 +10519,8 @@ def _resolve_apps_uc_name(
     if isinstance(registered, str) and registered.strip():
         return registered.strip()
 
-    _tmpl = config.get("template")
-    template: dict[str, Any] = _tmpl if isinstance(_tmpl, dict) else {}
-    catalog = config.get("catalog") or template.get("catalog")
-    schema = config.get("schema") or template.get("schema")
+    catalog = config.get("catalog")
+    schema = config.get("schema")
     if (
         isinstance(catalog, str) and catalog and not catalog.startswith("$")
         and isinstance(schema, str) and schema and not schema.startswith("$")

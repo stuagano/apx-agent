@@ -841,25 +841,7 @@ class TestTemplateField:
         assert cfg.template["schema"] == "sales"
 
 class TestResolveAgent:
-    def test_template_config_builds_data_agent(self):
-        from apx_agent import AgentConfig
-        from apx_agent._wiring import resolve_agent
-        from apx_agent.data_agent import DataAgent
-        config = AgentConfig(name="t", template={"name": "data", "catalog": "main", "schema": "sales"})
-        agent = resolve_agent(None, config, ws=None)
-        assert isinstance(agent, DataAgent)
-        tool_names = [fn.__name__ for fn in agent._tool_fns]
-        assert "run_sql" in tool_names
 
-    def test_template_spec_validation_error_propagates(self):
-        # template_registry.build validates the spec via DataTemplate.Spec.model_validate;
-        # a missing required field (catalog) must raise, not silently build a broken agent.
-        from pydantic import ValidationError
-        from apx_agent import AgentConfig
-        from apx_agent._wiring import resolve_agent
-        config = AgentConfig(name="t", template={"name": "data"})  # missing required catalog/schema
-        with pytest.raises(ValidationError, match="catalog"):
-            resolve_agent(None, config, ws=None)
 
     def test_no_template_with_module_spec_imports_agent(self, tmp_path, monkeypatch):
         from apx_agent import AgentConfig, LlmAgent
@@ -880,19 +862,7 @@ class TestResolveAgent:
         with pytest.raises(TemplateConfigError, match="[Nn]o agent"):
             resolve_agent(None, config, ws=None)
 
-    def test_unknown_template_name_raises_listing_available(self):
-        from apx_agent import AgentConfig
-        from apx_agent._wiring import resolve_agent
-        config = AgentConfig(name="t", template={"name": "does_not_exist", "catalog": "c"})
-        with pytest.raises(ValueError, match="does_not_exist"):
-            resolve_agent(None, config, ws=None)
 
-    def test_missing_name_key_in_template_raises_clearly(self):
-        from apx_agent import AgentConfig
-        from apx_agent._wiring import resolve_agent, TemplateConfigError
-        config = AgentConfig(name="t", template={"catalog": "main", "schema": "sales"})
-        with pytest.raises(TemplateConfigError, match="name"):
-            resolve_agent(None, config, ws=None)
 
     def test_no_template_no_module_none_config_raises(self):
         from apx_agent._wiring import resolve_agent, TemplateConfigError
@@ -900,56 +870,6 @@ class TestResolveAgent:
             resolve_agent(None, None, ws=None)
 
 
-class TestPersonaOverTemplate:
-    def test_resolve_then_finalize_composes_persona_over_grounding(self):
-        """Grounded instructions from template + persona from config → both present."""
-        from apx_agent import AgentConfig
-        from apx_agent._wiring import finalize_agent, resolve_agent
-        from apx_agent.data_agent import DataAgent
-        config = AgentConfig(
-            name="t",
-            instructions="Be concise and professional.",
-            template={"name": "data", "catalog": "main", "schema": "sales"},
-        )
-        agent = resolve_agent(None, config, ws=None)
-        assert isinstance(agent, DataAgent)
-        grounding_before = agent._instructions
-        finalize_agent(agent, config)
-        composed = agent._instructions
-        assert "Be concise and professional." in composed
-        assert len(composed) >= len(grounding_before)
-
-    def test_persona_compose_is_idempotent(self):
-        """Second finalize_agent call must not double-compose the persona."""
-        from apx_agent import AgentConfig
-        from apx_agent._wiring import finalize_agent, resolve_agent
-        from apx_agent.data_agent import DataAgent
-        config = AgentConfig(
-            name="t",
-            instructions="Be concise.",
-            template={"name": "data", "catalog": "main", "schema": "sales"},
-        )
-        agent = resolve_agent(None, config, ws=None)
-        assert isinstance(agent, DataAgent)
-        finalize_agent(agent, config)
-        instructions_after_first = agent._instructions
-        finalize_agent(agent, config)  # idempotent
-        assert agent._instructions == instructions_after_first
-
-    def test_template_only_no_persona_uses_grounding_verbatim(self):
-        """No envelope instructions → template grounding used unchanged."""
-        from apx_agent import AgentConfig
-        from apx_agent._wiring import finalize_agent, resolve_agent
-        from apx_agent.data_agent import DataAgent
-        config = AgentConfig(
-            name="t",
-            template={"name": "data", "catalog": "main", "schema": "sales"},
-        )
-        agent = resolve_agent(None, config, ws=None)
-        assert isinstance(agent, DataAgent)
-        grounding = agent._instructions
-        finalize_agent(agent, config)
-        assert agent._instructions == grounding
 
 
 # ---------------------------------------------------------------------------
@@ -1147,58 +1067,6 @@ def test_public_exports_memory_config_models():
 # ---------------------------------------------------------------------------
 
 
-class TestResolveAgentThreadsKnowledge:
-    def test_knowledge_injected_into_template_spec(self, monkeypatch):
-        from apx_agent import _wiring
-        from apx_agent._models import AgentConfig
-        from apx_agent import _template
-
-        captured: dict = {}
-
-        def fake_build(name, spec, *, ws=None):
-            captured["name"] = name
-            captured["spec"] = spec
-            return object()
-
-        monkeypatch.setattr(_template.template_registry, "build", fake_build)
-
-        cfg = AgentConfig(name="x", template={"name": "data", "catalog": "c", "schema": "s"}, knowledge="./.apx/okf")
-        _wiring.resolve_agent(None, cfg, ws=None)
-        assert captured["name"] == "data"
-        assert captured["spec"].get("knowledge") == "./.apx/okf"
-        assert "name" not in captured["spec"]  # name is stripped as before
-
-    def test_explicit_template_knowledge_not_overwritten(self, monkeypatch):
-        from apx_agent import _wiring, _template
-        from apx_agent._models import AgentConfig
-
-        captured: dict = {}
-        monkeypatch.setattr(
-            _template.template_registry,
-            "build",
-            lambda name, spec, *, ws=None: captured.update(spec=spec) or object(),
-        )
-        cfg = AgentConfig(
-            name="x",
-            template={"name": "data", "catalog": "c", "schema": "s", "knowledge": "./explicit"},
-            knowledge="./envelope",
-        )
-        _wiring.resolve_agent(None, cfg, ws=None)
-        assert captured["spec"]["knowledge"] == "./explicit"  # template value wins
-
-    def test_no_knowledge_leaves_spec_clean(self, monkeypatch):
-        from apx_agent import _wiring, _template
-        from apx_agent._models import AgentConfig
-
-        captured: dict = {}
-        monkeypatch.setattr(
-            _template.template_registry,
-            "build",
-            lambda name, spec, *, ws=None: captured.update(spec=spec) or object(),
-        )
-        cfg = AgentConfig(name="x", template={"name": "data", "catalog": "c", "schema": "s"})
-        _wiring.resolve_agent(None, cfg, ws=None)
-        assert "knowledge" not in captured["spec"]
 
 
 # ---------------------------------------------------------------------------

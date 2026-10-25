@@ -87,3 +87,21 @@ def test_cli_commands_report_the_table_error_cleanly(tmp_path: Path, monkeypatch
     result = CliRunner().invoke(cli.main, args)
     assert result.exit_code == 1 and "migrate-config" in result.output, (result.exit_code, result.output)
     assert not isinstance(result.exception, ToolConfigError)  # a clean Error: line, not a traceback
+
+
+def test_resolve_agent_needs_an_agent_not_a_template() -> None:
+    from apx_agent._models import AgentConfig
+    from apx_agent._wiring import TemplateConfigError, resolve_agent
+
+    config = AgentConfig.model_validate({"name": "p", "template": {"name": "data", "catalog": "c", "schema": "s"}})
+    with pytest.raises(TemplateConfigError, match="agent.py"):
+        resolve_agent(None, config)
+
+
+def test_a_gallery_yaml_with_a_template_still_generates(tmp_path: Path) -> None:
+    from apx_agent._project_gen import generate_project
+    from apx_agent._yaml_spec import load_spec
+
+    spec = Path(cli.__file__).parent / "coworker_gallery" / "payroll.yaml"
+    generate_project(load_spec(spec, strict=False), tmp_path)
+    assert "CoworkerAgent(" in (tmp_path / "agent.py").read_text()
