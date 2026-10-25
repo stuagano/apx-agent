@@ -273,6 +273,16 @@ def _fail(name: str, exc: BaseException) -> Check:
     return Check(name, Status.FAIL, f"{type(exc).__name__}: {exc}")
 
 
+def _outside_project(project: Path) -> Check | None:
+    """A FAIL when the imported `agent` came from outside *project* (another project on sys.path).
+
+    Checked before its settings are merged, so a stray agent's own conflict can't hide the cause."""
+    origin = getattr(sys.modules.get("agent"), "__file__", None)
+    if origin is None or not Path(origin).resolve().is_relative_to(project):
+        return Check("Config", Status.FAIL, f"`agent` resolved outside the project ({origin})", AGENT_MODULE_FIX)
+    return None
+
+
 def _stage_config(project: Path) -> _Loaded | Check:
     import tomllib
 
@@ -305,6 +315,8 @@ def _stage_config(project: Path) -> _Loaded | Check:
 
         if python_only:
             agent = resolve_agent("agent:agent", None, ws=_FakeWorkspaceClient())
+            if (outside := _outside_project(project)) is not None:
+                return outside
             config = resolve_settings(agent, None)
         else:
             # Validate the declared fields once, as durable: validating the current
@@ -315,11 +327,9 @@ def _stage_config(project: Path) -> _Loaded | Check:
             config = AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
             # The native host imports `agent:agent` (as _serve.create_app does).
             agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
+            if (outside := _outside_project(project)) is not None:
+                return outside
             config = resolve_settings(agent, config)
-        origin = getattr(sys.modules.get("agent"), "__file__", None)
-        if origin is None or not Path(origin).resolve().is_relative_to(project):
-            return Check("Config", Status.FAIL, f"`agent` resolved outside the project ({origin})",
-                         AGENT_MODULE_FIX)
     except BaseException as exc:
         check = _fail("Config", exc)
         missing = exc.__cause__ if isinstance(exc.__cause__, ModuleNotFoundError) else exc

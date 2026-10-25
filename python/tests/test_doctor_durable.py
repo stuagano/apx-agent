@@ -879,3 +879,20 @@ def test_isolation_owns_agentkits_bound_workspace_client(tmp_path: Path, monkeyp
     root = _project(tmp_path, "stalebind", DELEGATE_AGENT.format(name="stalebind"))
     request = _by_name(check_durable_readiness(root))["Request"]
     assert request.status is Status.OK, request.detail
+
+
+def test_another_projects_agent_on_sys_path_never_stands_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A directory left on sys.path (another project, a leaked test path) must not satisfy `import agent`.
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    (stray / "agent.py").write_text(  # its own target conflicts, which used to fail before the origin check
+        "from apx_agent import LlmAgent\nagent = LlmAgent(name='stray', tools=[], target='responses_agent')\n")
+    monkeypatch.syspath_prepend(str(stray))
+    root = _project(tmp_path, "nomodule", "")
+    (root / "agent.py").unlink()
+    (root / "my_agent.py").write_text(LLM_AGENT.format(name="nomodule"))
+    config = _by_name(check_durable_readiness(root))["Config"]
+    assert config.status is Status.FAIL
+    assert config.fix is not None and "agent.py" in config.fix, config
