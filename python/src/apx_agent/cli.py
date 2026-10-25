@@ -211,14 +211,14 @@ def _parse_module_spec(spec: str) -> _ModuleSpec:
     return _ModuleSpec(module_path=module_path, variable=variable)
 
 
-def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
+def _read_apx_agent_config(pyproject_path: Path | None = None, *, allow_agent_table: bool = False) -> dict[str, Any]:
     """CLI view of the project's apx settings as one flat dict.
 
-    Merges, lowest to highest: ``[tool.apx.agent]``; the dev keys from top-level
-    ``[tool.apx]`` and the registration keys from ``[tool.apx.deploy]``
-    (sub-project 3b-1); then ``.apx.local`` (gitignored: ``[tool.apx]`` and its
-    older ``[tool.apx.agent]`` table). A key declared in ``[tool.apx.agent]``
-    and its new home with different values is an error.
+    Merges, lowest to highest: the dev keys from top-level ``[tool.apx]`` and the
+    registration keys from ``[tool.apx.deploy]``; then ``.apx.local``'s ``[tool.apx]``
+    (gitignored). A ``[tool.apx.agent]`` table in either file is an error naming
+    migrate-config, which alone passes *allow_agent_table* to read it (lowest
+    precedence; a key in both it and its new home with different values is an error).
 
     Returns an empty dict if the files are missing, malformed, or declare nothing.
     """
@@ -252,6 +252,12 @@ def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]
             raise click.ClickException(
                 f"{key} is declared in both [tool.apx.agent] and {home} with different values; keep {home}.")
     local = _apx(cwd / ".apx.local")
+    if not allow_agent_table:
+        for where, apx in (("pyproject.toml", committed), (".apx.local", local)):
+            if "agent" in apx:
+                raise click.ClickException(
+                    f"{where}: [tool.apx.agent] is no longer supported. Run `apx-agent agents migrate-config` "
+                    f"in {cwd} to move its settings to [tool.apx], [tool.apx.deploy] and the agent in agent.py.")
     local_keys = {**_table(local, "agent"), **{k: local[k] for k in DEV_KEYS if k in local}}
     return {**legacy, **{k: v for k, (_, v) in homes.items()}, **local_keys}
 
@@ -962,6 +968,14 @@ class _ApxGroup(click.Group):
 
     # Every leaf command in an apx group gets the --json alias (see _ApxCommand).
     command_class = _ApxCommand
+
+    def invoke(self, ctx):
+        from ._tool_config import ToolConfigError
+
+        try:
+            return super().invoke(ctx)
+        except ToolConfigError as exc:  # removed TOML ([tool.apx.agent], [[tool.apx.tools]]): an Error: line
+            raise click.ClickException(str(exc)) from exc
 
     def resolve_command(self, ctx, args):
         try:
@@ -5021,12 +5035,14 @@ def migrate_agent_toml(module: str) -> None:
     from ._inspection import _load_agent_config
 
     cwd = Path.cwd()
+    if not (cwd / "pyproject.toml").is_file():
+        raise click.ClickException("No pyproject.toml here.")
     try:
-        config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        config = _effective_config(cwd, module)  # the agent's own settings, merged with the TOML
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     if config is None:
-        raise click.ClickException("No [tool.apx.agent] to migrate.")
+        raise click.ClickException("No agent settings to write: define `agent` in agent.py.")
     # The same loader and plan inputs as `agents deploy`.
     agent = _load_finalized_agent(module)
     try:
@@ -5067,10 +5083,10 @@ def migrate_config() -> None:
         n = 2
         while backup.exists():
             backup, n = cwd / f".apx.local.bak.{n}", n + 1
-        before_flat = _read_apx_agent_config(pyproject)
+        before_flat = _read_apx_agent_config(pyproject, allow_agent_table=True)
         backup.write_text(local_text)
         local_path.write_text(local_new)
-        if _read_apx_agent_config(pyproject) != before_flat:
+        if _read_apx_agent_config(pyproject, allow_agent_table=True) != before_flat:
             local_path.write_text(local_text)
             raise click.ClickException("migrating .apx.local changed the effective settings; restored it.")
         click.echo(f"migrated .apx.local to [tool.apx] (backup: {backup.name})")
@@ -5105,12 +5121,12 @@ def migrate_config() -> None:
     from ._inspection import DEV_KEYS, REGISTRATION_KEYS
 
     def _meta() -> dict[str, Any]:
-        flat = _read_apx_agent_config(pyproject)
+        flat = _read_apx_agent_config(pyproject, allow_agent_table=True)
         return {k: flat[k] for k in (*DEV_KEYS, *REGISTRATION_KEYS) if k in flat}
 
     before_meta = _meta()
     try:
-        before = _load_agent_config(pyproject_path=pyproject)
+        before = _load_agent_config(pyproject_path=pyproject, allow_agent_table=True)
         migration = _migrate_config.plan_migration(pyproject, agent)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -5120,7 +5136,7 @@ def migrate_config() -> None:
         return
     pyproject.write_text(migration.text)
     try:
-        after = _load_agent_config(pyproject_path=pyproject)
+        after = _load_agent_config(pyproject_path=pyproject, allow_agent_table=True)
         # Constructor fields were checked against the agent by plan_migration; once the
         # table is gone they fall back to defaults in the config, so they're excluded here.
         skip = set(_migrate_config._CONSTRUCTOR)

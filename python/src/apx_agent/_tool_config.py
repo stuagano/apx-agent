@@ -213,8 +213,8 @@ def _find_pyproject_upward(start: Path) -> Path | None:
     return None
 
 
-def reject_legacy_tool_config(pyproject_path: str | None = None) -> None:
-    """Reject removed TOML tool declarations before any factory can run."""
+def reject_legacy_tool_config(pyproject_path: str | None = None, *, allow_agent_table: bool = False) -> None:
+    """Reject removed TOML declarations ([[tool.apx.tools]], [tool.apx.agent]) before any factory can run."""
     import tomllib
 
     explicit = pyproject_path or os.environ.get("APX_PYPROJECT")
@@ -232,6 +232,12 @@ def reject_legacy_tool_config(pyproject_path: str | None = None) -> None:
             "Declare tools with Python factories in tools/ and import them in agent.py; "
             "pass them to the agent's tools (or extra_tools) argument, then remove "
             "the TOML tool declarations."
+        )
+    if "agent" in apx and not allow_agent_table:
+        raise ToolConfigError(
+            f"{path}: [tool.apx.agent] is no longer supported. Run `apx-agent agents migrate-config` "
+            f"in {path.parent} to move its settings onto the agent in agent.py and into "
+            "[tool.apx.deploy] / [tool.apx], then commit the result."
         )
 
 
