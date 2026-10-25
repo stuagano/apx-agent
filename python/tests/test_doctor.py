@@ -653,7 +653,9 @@ class TestCheckDeclaredTools:
 
     def test_invalid_config_is_a_failure_not_no_tools(self, tmp_path):
         self._project(tmp_path, kwargs=", identity='not-an-identity'")
-        checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        # A fake client, so the check reaches the agent import (identity is validated there) without real auth.
+        with patch("apx_agent._defaults._make_workspace_client", return_value=MagicMock()):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
         assert len(checks) == 1
         assert checks[0].status is Status.FAIL
         assert "identity" in checks[0].detail
