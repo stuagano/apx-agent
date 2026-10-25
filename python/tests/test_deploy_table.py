@@ -1,4 +1,4 @@
-"""[tool.apx.deploy]: deploy settings outside [tool.apx.agent] (sub-project 3a)."""
+"""[tool.apx.deploy]: deploy settings outside the retired [tool.apx.agent] table (sub-project 3a)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from apx_agent._inspection import _load_agent_config
+from apx_agent._tool_config import ToolConfigError
 
 
 def _project(tmp_path: Path, body: str) -> Path:
@@ -28,38 +29,20 @@ def test_deploy_table_name_wins_over_project_name(tmp_path: Path) -> None:
     assert _load_agent_config(pyproject_path=path).name == "custom"
 
 
-def test_agent_table_name_is_not_overridden_by_the_default(tmp_path: Path) -> None:
-    path = _project(tmp_path, '[tool.apx.agent]\nname = "legacy"\n\n[tool.apx.deploy]\nspace = "s"\n')
-    config = _load_agent_config(pyproject_path=path)
-    assert (config.name, config.deploy.space) == ("legacy", "s")
-
-
-def test_equal_values_in_both_tables_pass(tmp_path: Path) -> None:
-    path = _project(tmp_path, '[tool.apx.agent]\nname = "a"\n\n[tool.apx.agent.deploy]\nspace = "s"\n\n'
-                              '[tool.apx.deploy]\nname = "a"\nspace = "s"\n')
-    config = _load_agent_config(pyproject_path=path)
-    assert (config.name, config.deploy.space) == ("a", "s")
-
-
-@pytest.mark.parametrize(("body", "message"), [
-    ('[tool.apx.agent]\nname = "a"\n\n[tool.apx.deploy]\nname = "b"\n',
-     r"name is declared in both \[tool.apx.agent\] and \[tool.apx.deploy\] with different values; keep \[tool.apx.deploy\]."),
-    ('[tool.apx.agent]\nname = "a"\n\n[tool.apx.agent.deploy]\nspace = "x"\n\n[tool.apx.deploy]\nspace = "y"\n',
-     r"deploy.space is declared in both \[tool.apx.agent.deploy\] and \[tool.apx.deploy\] with different values; keep \[tool.apx.deploy\]."),
+@pytest.mark.parametrize("body", [
+    '[tool.apx.agent]\nname = "legacy"\n\n[tool.apx.deploy]\nspace = "s"\n',
+    '[tool.apx.agent]\nname = "a"\n\n[tool.apx.agent.deploy]\nspace = "s"\n\n[tool.apx.deploy]\nname = "a"\nspace = "s"\n',
+    '[tool.apx.agent]\nname = "a"\n\n[tool.apx.deploy]\nname = "b"\n',
+    '[tool.apx.agent]\nname = "a"\n\n[tool.apx.agent.deploy]\nspace = "x"\n\n[tool.apx.deploy]\nspace = "y"\n',
+    '[tool.apx.agent]\n\n[tool.apx.deploy]\nspace = "s"\n',
 ])
-def test_different_values_fail(tmp_path: Path, body: str, message: str) -> None:
-    with pytest.raises(ValueError, match=message):
+def test_the_agent_table_is_rejected_alongside_the_deploy_table(tmp_path: Path, body: str) -> None:
+    with pytest.raises(ToolConfigError, match="migrate-config"):
         _load_agent_config(pyproject_path=_project(tmp_path, body))
 
 
 def test_neither_table_is_none(tmp_path: Path) -> None:
     assert _load_agent_config(pyproject_path=_project(tmp_path, "")) is None
-
-
-def test_empty_agent_table_with_deploy_table_is_deploy_only(tmp_path: Path) -> None:
-    path = _project(tmp_path, '[tool.apx.agent]\n\n[tool.apx.deploy]\nspace = "s"\n')
-    config = _load_agent_config(pyproject_path=path)
-    assert (config.name, config.deploy.space) == ("orders-agent", "s")
 
 
 def test_deploy_validation_fires_from_the_new_table(tmp_path: Path) -> None:
@@ -95,7 +78,7 @@ def test_app_name_is_left_to_its_own_reader(tmp_path: Path) -> None:
 
 def test_existing_apps_target_metadata_is_left_alone(tmp_path: Path) -> None:
     # Pre-3a [tool.apx.deploy] carries Apps-target metadata (target, bundle_name) read elsewhere.
-    path = _project(tmp_path, '[tool.apx.agent]\nname = "a"\n\n[tool.apx.deploy]\ntarget = "apps"\n'
+    path = _project(tmp_path, '[tool.apx.deploy]\nname = "a"\ntarget = "apps"\n'
                               'bundle_name = "mcp-a"\napp_name = "mcp-a"\n')
     config = _load_agent_config(pyproject_path=path)
     assert config.name == "a" and config.deploy is None

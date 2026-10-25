@@ -211,14 +211,14 @@ def _parse_module_spec(spec: str) -> _ModuleSpec:
     return _ModuleSpec(module_path=module_path, variable=variable)
 
 
-def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
+def _read_apx_agent_config(pyproject_path: Path | None = None, *, allow_agent_table: bool = False) -> dict[str, Any]:
     """CLI view of the project's apx settings as one flat dict.
 
-    Merges, lowest to highest: ``[tool.apx.agent]``; the dev keys from top-level
-    ``[tool.apx]`` and the registration keys from ``[tool.apx.deploy]``
-    (sub-project 3b-1); then ``.apx.local`` (gitignored: ``[tool.apx]`` and its
-    older ``[tool.apx.agent]`` table). A key declared in ``[tool.apx.agent]``
-    and its new home with different values is an error.
+    Merges, lowest to highest: the dev keys from top-level ``[tool.apx]`` and the
+    registration keys from ``[tool.apx.deploy]``; then ``.apx.local``'s ``[tool.apx]``
+    (gitignored). A ``[tool.apx.agent]`` table in either file is an error naming
+    migrate-config, which alone passes *allow_agent_table* to read it (lowest
+    precedence; a key in both it and its new home with different values is an error).
 
     Returns an empty dict if the files are missing, malformed, or declare nothing.
     """
@@ -252,6 +252,12 @@ def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]
             raise click.ClickException(
                 f"{key} is declared in both [tool.apx.agent] and {home} with different values; keep {home}.")
     local = _apx(cwd / ".apx.local")
+    if not allow_agent_table:
+        for where, apx in (("pyproject.toml", committed), (".apx.local", local)):
+            if "agent" in apx:
+                raise click.ClickException(
+                    f"{where}: [tool.apx.agent] is no longer supported. Run `apx-agent agents migrate-config` "
+                    f"in {cwd} to move its settings to [tool.apx], [tool.apx.deploy] and the agent in agent.py.")
     local_keys = {**_table(local, "agent"), **{k: local[k] for k in DEV_KEYS if k in local}}
     return {**legacy, **{k: v for k, (_, v) in homes.items()}, **local_keys}
 
@@ -641,34 +647,22 @@ def _set_toml_key(path: Path, section: str, key: str, value: str) -> None:
 def _save_to_pyproject(key: str, value: str, *, local: bool = False) -> bool:
     """Write ``key = "<value>"`` into the key's home table (sub-project 3b-1).
 
-    ``local=True`` writes ``.apx.local`` ``[tool.apx]`` (gitignored, personal
-    settings like ``profile``). Registration keys go to ``[tool.apx.deploy]``.
-    Anything else still goes to an existing ``[tool.apx.agent]``. Returns True on success.
+    ``local=True`` writes ``.apx.local`` ``[tool.apx]`` (gitignored, personal settings
+    like ``profile``). Registration keys go to ``[tool.apx.deploy]``, dev keys to
+    ``[tool.apx]``. A key with no TOML home returns False, as does a missing pyproject.
     """
-    import tomllib
-
-    from ._inspection import REGISTRATION_KEYS
-
-    def _in_legacy(path: Path) -> bool:
-        # A key still in [tool.apx.agent] is updated there, so the file never declares it twice.
-        try:
-            return key in tomllib.loads(path.read_text()).get("tool", {}).get("apx", {}).get("agent", {})
-        except (OSError, tomllib.TOMLDecodeError):
-            return False
+    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
 
     if local:
-        target = Path.cwd() / ".apx.local"
-        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx", key, value)
+        _set_toml_key(Path.cwd() / ".apx.local", "tool.apx", key, value)
         return True
     target = Path.cwd() / "pyproject.toml"
     if not target.exists():
         return False
-    if key in REGISTRATION_KEYS:
-        _set_toml_key(target, "tool.apx.agent" if _in_legacy(target) else "tool.apx.deploy", key, value)
-        return True
-    if "[tool.apx.agent]" not in target.read_text():
+    home = "tool.apx.deploy" if key in REGISTRATION_KEYS else "tool.apx" if key in DEV_KEYS else None
+    if home is None:
         return False
-    _set_toml_key(target, "tool.apx.agent", key, value)
+    _set_toml_key(target, home, key, value)
     return True
 
 def _save_profile_to_pyproject(profile: str) -> bool:
@@ -962,6 +956,14 @@ class _ApxGroup(click.Group):
 
     # Every leaf command in an apx group gets the --json alias (see _ApxCommand).
     command_class = _ApxCommand
+
+    def invoke(self, ctx):
+        from ._tool_config import ToolConfigError
+
+        try:
+            return super().invoke(ctx)
+        except ToolConfigError as exc:  # removed TOML tables surface as an Error: line
+            raise click.ClickException(str(exc)) from exc
 
     def resolve_command(self, ctx, args):
         try:
@@ -5021,12 +5023,14 @@ def migrate_agent_toml(module: str) -> None:
     from ._inspection import _load_agent_config
 
     cwd = Path.cwd()
+    if not (cwd / "pyproject.toml").is_file():
+        raise click.ClickException("No pyproject.toml here.")
     try:
-        config = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        config = _effective_config(cwd, module)  # the agent's own settings, merged with the TOML
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     if config is None:
-        raise click.ClickException("No [tool.apx.agent] to migrate.")
+        raise click.ClickException("No agent settings to write: define `agent` in agent.py.")
     # The same loader and plan inputs as `agents deploy`.
     agent = _load_finalized_agent(module)
     try:
@@ -5067,13 +5071,22 @@ def migrate_config() -> None:
         n = 2
         while backup.exists():
             backup, n = cwd / f".apx.local.bak.{n}", n + 1
-        before_flat = _read_apx_agent_config(pyproject)
+        from ._inspection import DEV_KEYS
+
+        def _dev(flat: dict[str, Any]) -> dict[str, Any]:  # the keys .apx.local still carries
+            return {k: flat[k] for k in DEV_KEYS if k in flat}
+
+        before_flat = _dev(_read_apx_agent_config(pyproject, allow_agent_table=True))
         backup.write_text(local_text)
         local_path.write_text(local_new)
-        if _read_apx_agent_config(pyproject) != before_flat:
+        if _dev(_read_apx_agent_config(pyproject, allow_agent_table=True)) != before_flat:
             local_path.write_text(local_text)
             raise click.ClickException("migrating .apx.local changed the effective settings; restored it.")
         click.echo(f"migrated .apx.local to [tool.apx] (backup: {backup.name})")
+        dropped = _migrate_config.local_dropped_keys(local_text)
+        if dropped:
+            click.echo("  dropped from .apx.local (no longer read there): " + ", ".join(dropped)
+                       + (" — pass --model per command, or set model= on the agent" if "model" in dropped else ""))
 
     if "agent" not in tomllib.loads(pyproject.read_text()).get("tool", {}).get("apx", {}):
         _apply_local()
@@ -5105,12 +5118,12 @@ def migrate_config() -> None:
     from ._inspection import DEV_KEYS, REGISTRATION_KEYS
 
     def _meta() -> dict[str, Any]:
-        flat = _read_apx_agent_config(pyproject)
+        flat = _read_apx_agent_config(pyproject, allow_agent_table=True)
         return {k: flat[k] for k in (*DEV_KEYS, *REGISTRATION_KEYS) if k in flat}
 
     before_meta = _meta()
     try:
-        before = _load_agent_config(pyproject_path=pyproject)
+        before = _load_agent_config(pyproject_path=pyproject, allow_agent_table=True)
         migration = _migrate_config.plan_migration(pyproject, agent)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -5120,7 +5133,7 @@ def migrate_config() -> None:
         return
     pyproject.write_text(migration.text)
     try:
-        after = _load_agent_config(pyproject_path=pyproject)
+        after = _load_agent_config(pyproject_path=pyproject, allow_agent_table=True)
         # Constructor fields were checked against the agent by plan_migration; once the
         # table is gone they fall back to defaults in the config, so they're excluded here.
         skip = set(_migrate_config._CONSTRUCTOR)
@@ -10515,10 +10528,8 @@ def _resolve_apps_uc_name(
     if isinstance(registered, str) and registered.strip():
         return registered.strip()
 
-    _tmpl = config.get("template")
-    template: dict[str, Any] = _tmpl if isinstance(_tmpl, dict) else {}
-    catalog = config.get("catalog") or template.get("catalog")
-    schema = config.get("schema") or template.get("schema")
+    catalog = config.get("catalog")
+    schema = config.get("schema")
     if (
         isinstance(catalog, str) and catalog and not catalog.startswith("$")
         and isinstance(schema, str) and schema and not schema.startswith("$")
@@ -14172,9 +14183,9 @@ def _probe_local_sub_agents(cwd: Path) -> list[_doctor_mod.SubAgentProbe]:
     pyproject is unreadable.
     """
     try:
-        from ._inspection import _load_agent_config
+        from ._doctor_durable import effective_config_isolated
 
-        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        cfg = effective_config_isolated(cwd)  # sub_agents are declared on the agent (3d)
     except Exception:
         return []
     if cfg is None or not cfg.sub_agents:
@@ -17107,8 +17118,8 @@ def governance_status(
 # against a user-supplied store. The store comes from one of two places:
 #
 #   1. --store-module MODULE:VAR              (explicit flag)
-#   2. memory_store in [tool.apx.agent] /         (pyproject fallback)
-#      example_store in [tool.apx.agent]
+#   2. memory_store in [tool.apx] /         (pyproject fallback)
+#      example_store in [tool.apx]
 #
 # The referenced variable must be an importable :class:`MemoryStore` or
 # :class:`ExampleStore` instance. The CLI is store-shape-agnostic — anything
@@ -17127,7 +17138,7 @@ def _load_store(
 
     Resolution order:
       1. ``module_spec`` argument (the --store-module flag value).
-      2. ``{store_kind}_store`` in ``[tool.apx.agent]``.
+      2. ``{store_kind}_store`` in ``[tool.apx]``.
 
     Raises ``click.UsageError`` if no spec is configured anywhere, and
     ``click.ClickException`` on a load failure.
@@ -17139,7 +17150,7 @@ def _load_store(
     if not spec:
         raise click.UsageError(
             f"Pass --store-module MODULE:VAR or set "
-            f"{store_kind}_store in [tool.apx.agent]. "
+            f"{store_kind}_store in [tool.apx]. "
             f"The variable must be a {store_kind.title()}Store instance."
         )
 
@@ -17224,7 +17235,7 @@ def memory() -> None:
     """Operate on a MemoryStore — recall, remember, forget, list.
 
     Configure the store via ``--store-module MODULE:VAR`` on each command,
-    or set ``memory_store = "module:variable"`` in [tool.apx.agent] (``pyproject.toml``) to share one default across calls.
+    or set ``memory_store = "module:variable"`` in [tool.apx] (``pyproject.toml``) to share one default across calls.
 
     The referenced variable must be an instance of
     :class:`apx_agent.MemoryStore` — typically
@@ -17269,7 +17280,7 @@ def memory_provision_cmd(
 @click.option("-k", "top_k", default=5, type=int, help="Top-k. Default 5.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to memory_store in [tool.apx.agent].")
+                   "Falls back to memory_store in [tool.apx].")
 @click.option("--format", "fmt", type=click.Choice(["json", "text"]),
               default="json", help="Output format. Default: json.")
 def memory_recall_cmd(
@@ -17425,7 +17436,7 @@ def memory_list_cmd(
               help="Max memories to export. Default 10000.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to memory_store in [tool.apx.agent].")
+                   "Falls back to memory_store in [tool.apx].")
 def memory_export_cmd(
     principal_id: str,
     output_file: str,
@@ -17474,7 +17485,7 @@ def examples() -> None:
     """Operate on an ExampleStore — find, save, remove, list.
 
     Configure the store via ``--store-module MODULE:VAR`` on each command,
-    or set ``example_store = "module:variable"`` in [tool.apx.agent] (``pyproject.toml``) to share one default across calls.
+    or set ``example_store = "module:variable"`` in [tool.apx] (``pyproject.toml``) to share one default across calls.
 
     The referenced variable must be an instance of
     :class:`apx_agent.ExampleStore` — typically
@@ -17648,7 +17659,7 @@ def examples_list_cmd(
 @click.option("--agent-id", required=True, help="Agent ID to assign to each imported example.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at an ExampleStore instance. "
-                   "Falls back to example_store in [tool.apx.agent].")
+                   "Falls back to example_store in [tool.apx].")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Parse and count rows without writing to the store.")
 @click.option(
@@ -17874,10 +17885,9 @@ def memory_extract_cmd(
     """
     from databricks.sdk import WorkspaceClient  # noqa: PLC0415
 
-    from ._inspection import _load_agent_config  # noqa: PLC0415
     from ._memory_extract import extraction_payload, extract_declared_session  # noqa: PLC0415
 
-    config = _load_agent_config()
+    config = _effective_config(Path.cwd())  # memory= is declared on the agent (3d)
     if config is None or config.memory is None or config.memory.extraction is None:
         raise click.ClickException(
             "Session extraction is off. Enable extraction in the agent's memory= setting "
@@ -17905,12 +17915,12 @@ def memory_extract_cmd(
 @memory.command("consolidate")
 @click.option("--store", "store_spec", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to memory_store in [tool.apx.agent].")
+                   "Falls back to memory_store in [tool.apx].")
 @click.option("--principal-id", required=True,
               help="Scope consolidation to a single principal.")
 @click.option("--summarize-fn", "summarize_fn_spec", default=None,
               help="MODULE:VAR of a Sequence[Memory] -> str summarizer. "
-                   "Falls back to summarize_fn in [tool.apx.agent].")
+                   "Falls back to summarize_fn in [tool.apx].")
 @click.option("--namespace", default=None,
               help="Optional namespace filter for the candidate pool.")
 @click.option("--max-age-seconds", default=None, type=float,

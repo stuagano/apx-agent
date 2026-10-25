@@ -318,9 +318,10 @@ other than hyphens with hyphens, and truncates to fit the store-name limit. Use
 explicit store names if two agent names normalize to the same resource name.
 
 Renaming the agent changes an automatic session binding and any omitted memory
-binding; pin the old `store_name` values to retain existing state. Generated
-projects write the resolved names into `pyproject.toml`, making those bindings
-explicit and stable through later project renames. APX never migrates or deletes
+binding; pin the old `store_name` values on the agent to retain existing state, e.g.
+`memory={"type": "managed", "store_name": "apx-orders-memory"}` and
+`session={"type": "managed", "store_name": "apx-orders-sessions"}`. The resolved
+names also appear in the build-time `agent.toml`. APX never migrates or deletes
 stores as part of name resolution.
 
 ```sh

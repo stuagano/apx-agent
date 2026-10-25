@@ -530,21 +530,13 @@ def _ai_gateway_model_service_name(model: str) -> str | None:
 
 
 def _declared_settings(cwd: Path) -> "dict[str, Any] | Check":
-    """Doctor's view of the agent settings: the raw agent settings, with declared
-    Python settings filling its gaps (3b-2). A FAIL check if agent.py won't import.
-
-    The raw table is read as before (never validated here; the agent-config check reports a
-    malformed one). Python settings come from an isolated import, and only when the TOML is valid."""
-    import tomllib
-
+    """Doctor's view of the agent settings declared in agent.py (3b-2, 3d), from an isolated
+    import and only when the TOML is valid (the agent-config check reports an invalid one).
+    A FAIL check if agent.py won't import."""
     from ._doctor_durable import effective_config_isolated
     from ._inspection import _load_agent_config
 
-    try:
-        raw = tomllib.loads((cwd / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("agent", {})
-    except (OSError, tomllib.TOMLDecodeError):
-        raw = {}
-    settings = dict(raw) if isinstance(raw, dict) else {}
+    settings: dict[str, Any] = {}
     try:
         _load_agent_config(pyproject_path=cwd / "pyproject.toml")
     except Exception:  # noqa: BLE001 — an invalid TOML config is the agent-config check's to report
@@ -714,45 +706,17 @@ def _data_source_from_agent_py(cwd: Path) -> "tuple[str, str] | None":
 
 
 def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
-    """Verify the UC catalog.schema declared by the agent's template exists.
+    """Verify the UC catalog.schema a DataAgent / CoworkerAgent reads exists.
 
-    DataAgent / CoworkerAgent projects declare their data source as:
-        [tool.apx.agent.template]
-        name = "data"
-        catalog = "main"
-        schema  = "sales"
-
-    A missing or inaccessible schema is the most common silent failure: the
-    agent starts fine, every SQL query 403s, and the user sees "I can't find
-    any data" with no clear diagnosis. Returns None when not in an apx project
-    or no template catalog/schema is declared.
+    The data source is the agent's constructor in agent.py
+    (``DataAgent("main", "sales")`` / ``CoworkerAgent(...)``). A missing or
+    inaccessible schema is the most common silent failure: the agent starts fine,
+    every SQL query 403s, and the user sees "I can't find any data" with no clear
+    diagnosis. Returns None without auth or when no data source is declared.
     """
     if not auth_ok:
         return None
-    pyproject = cwd / "pyproject.toml"
-    if not pyproject.exists():
-        return None
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover
-        try:
-            import tomli as tomllib  # type: ignore[no-redef]
-        except ImportError:
-            return None
-    try:
-        data = tomllib.loads(pyproject.read_text())
-    except Exception:
-        return None
-    tmpl: dict = (
-        data.get("tool", {}).get("apx", {}).get("agent", {}).get("template") or {}
-    )
-    catalog = tmpl.get("catalog", "")
-    schema = tmpl.get("schema", "")
-    if not catalog or not schema:
-        # Python-canonical projects declare the data source in agent.py
-        # (DataAgent("cat", "sch") / CoworkerAgent(...)) rather than a
-        # [tool.apx.agent.template] section. Fall back to reading it there.
-        catalog, schema = _data_source_from_agent_py(cwd) or (catalog, schema)
+    catalog, schema = _data_source_from_agent_py(cwd) or ("", "")
     if not catalog or not schema:
         return None
     fqn = f"{catalog}.{schema}"
@@ -769,7 +733,7 @@ def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
                 label, Status.FAIL,
                 f"schema not found: {fqn}",
                 f"Confirm `{fqn}` exists in Unity Catalog and your principal has USE SCHEMA. "
-                "Update catalog/schema in [tool.apx.agent.template] to match.",
+                "Update the catalog/schema in agent.py to match.",
             )
         if "403" in msg or "permission" in msg.lower() or "denied" in msg.lower():
             return Check(
@@ -798,9 +762,9 @@ def check_sub_agents(cwd: Path) -> Check | None:
     if not _is_apx_project(cwd):
         return None
     try:
-        from ._inspection import _load_agent_config  # noqa: PLC0415
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
 
-        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        cfg = effective_config_isolated(cwd)  # settings declared on the agent count (3d)
     except Exception:
         return None
     if cfg is None or not cfg.sub_agents:
@@ -837,9 +801,9 @@ def _declared_app_peer_urls(cwd: Path) -> list[str] | None:
     if not _is_apx_project(cwd):
         return None
     try:
-        from ._inspection import _load_agent_config  # noqa: PLC0415
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
 
-        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+        cfg = effective_config_isolated(cwd)  # settings declared on the agent count (3d)
     except Exception:
         return None
     if cfg is None:
@@ -1038,7 +1002,7 @@ def _is_apx_project(cwd: Path) -> bool:
     pyproject, agent_py = cwd / "pyproject.toml", cwd / "agent.py"
     try:
         text = pyproject.read_text() if pyproject.exists() else ""
-        if "[tool.apx.agent]" in text or "[tool.apx.deploy]" in text:
+        if "[tool.apx]" in text or "[tool.apx.deploy]" in text:
             return True
         return agent_py.is_file() and "apx_agent" in agent_py.read_text()
     except OSError:
@@ -1284,8 +1248,9 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
     if not _is_apx_project(cwd):
         return None
     try:
-        from ._inspection import _load_agent_config  # noqa: PLC0415
-        cfg = _load_agent_config()
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
+
+        cfg = effective_config_isolated(cwd)  # settings declared on the agent count (3d)
     except Exception:
         return None
     if cfg is None or cfg.memory is None:
@@ -1361,8 +1326,9 @@ def check_abac_compute_floor(cwd: Path, *, auth_ok: bool) -> Check | None:
     if not _is_apx_project(cwd):
         return None
     try:
-        from ._inspection import _load_agent_config  # noqa: PLC0415
-        cfg = _load_agent_config()
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
+
+        cfg = effective_config_isolated(cwd)  # settings declared on the agent count (3d)
     except Exception:
         return None
     if cfg is None or cfg.data is None:

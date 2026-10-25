@@ -554,8 +554,9 @@ def test_status_prompt_in_project_with_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\nname = "demo"\n'
+        '[tool.apx.deploy]\nname = "demo"\n'
     )
+    (tmp_path / "agent.py").write_text('from apx_agent import Agent\nagent = Agent(name="demo")\n')
     (tmp_path / "agent_server").mkdir()  # apps-layout marker for _detect_target
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "fe-stable")
@@ -948,9 +949,10 @@ def test_deploy_falls_back_to_pyproject_experiment(
 ) -> None:
     _write_agent_module(tmp_path)
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\n'
-        'name = "x"\n'
+        '[tool.apx]\n'
         'experiment = "/Users/me/agents/x"\n'
+        '[tool.apx.deploy]\n'
+        'name = "x"\n'
     )
     monkeypatch.chdir(tmp_path)
 
@@ -983,9 +985,10 @@ def test_deploy_cli_flag_wins_over_pyproject(
 ) -> None:
     _write_agent_module(tmp_path)
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\n'
-        'name = "test-agent"\n'
+        '[tool.apx]\n'
         'experiment = "/Users/me/agents/from-pyproject"\n'
+        '[tool.apx.deploy]\n'
+        'name = "test-agent"\n'
     )
     monkeypatch.chdir(tmp_path)
 
@@ -1695,11 +1698,11 @@ def test_deploy_env_suffix_suffixes_uc_name_end_to_end(
 def test_deploy_name_falls_back_to_configured_registered_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#407: --name is optional when [tool.apx.agent].registered_model is set
+    """#407: --name is optional when [tool.apx.deploy].registered_model is set
     in pyproject.toml — the configured UC name is used end-to-end."""
     _write_agent_module(tmp_path)
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\nregistered_model = "main.agents.from_cfg"\n'
+        '[tool.apx.deploy]\nregistered_model = "main.agents.from_cfg"\n'
     )
     monkeypatch.chdir(tmp_path)
 
@@ -1797,10 +1800,10 @@ def test_deploy_serving_dry_run_json_plan_with_config_fallback_and_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """#414: --dry-run --json-output emits {plan: true, ...} with the UC name
-    resolved from [tool.apx.agent].registered_model and the --version
+    resolved from [tool.apx.deploy].registered_model and the --version
     redeploy step list (publish_tools + log skipped)."""
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\nregistered_model = "main.agents.from_cfg"\n'
+        '[tool.apx.deploy]\nregistered_model = "main.agents.from_cfg"\n'
     )
     monkeypatch.chdir(tmp_path)
 
@@ -2252,7 +2255,7 @@ def test_trace_falls_back_to_pyproject_experiment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\nexperiment = "/Users/me/agents/triage"\n'
+        '[tool.apx]\nexperiment = "/Users/me/agents/triage"\n'
     )
     monkeypatch.chdir(tmp_path)
 
@@ -2428,8 +2431,11 @@ def test_test_default_prompt_when_none_supplied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_agent_module(tmp_path)
+    module = tmp_path / "tmp_test_agent.py"
+    module.write_text(module.read_text().replace(
+        "agent = Agent(", 'agent = Agent(\n    model="databricks-claude-sonnet-4-6",'))
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\nname = "test-agent"\nmodel = "databricks-claude-sonnet-4-6"\n'
+        '[tool.apx.deploy]\nname = "test-agent"\n'
     )
     monkeypatch.chdir(tmp_path)
 
@@ -2909,7 +2915,7 @@ def test_memory_pyproject_fallback(
 ) -> None:
     _write_store_module(tmp_path)
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\n'
+        '[tool.apx]\n'
         f'memory_store = "{_STORE_MODULE_NAME}:mem_store"\n'
     )
     monkeypatch.chdir(tmp_path)
@@ -3213,7 +3219,7 @@ def test_memory_consolidate_pyproject_fallback(
 ) -> None:
     _write_consolidate_fixture(tmp_path, n=6)
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\n'
+        '[tool.apx]\n'
         f'memory_store = "{_CONS_FIXTURE_NAME}:mem_store"\n'
         f'summarize_fn = "{_CONS_FIXTURE_NAME}:summarize_fn"\n'
     )
@@ -3749,7 +3755,7 @@ def test_preflight_apps_durable_bundle_needs_agent_py_not_agent_server(tmp_path:
     from apx_agent.cli import _preflight_apps
 
     (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
-    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname = 'x'\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname = 'x'\n")
     with pytest.raises(click.ClickException) as excinfo:
         _preflight_apps(tmp_path, durable=True)
     assert "agent.py" in excinfo.value.message
@@ -3766,7 +3772,7 @@ def test_preflight_apps_suggests_model_serving_for_adk_layout(tmp_path: Path) ->
 
     (tmp_path / "agent.py").write_text("agent = None\n")
     (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
-    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname = 'x'\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname = 'x'\n")
     with pytest.raises(click.ClickException) as excinfo:
         _preflight_apps(tmp_path)
     assert "--target model-serving" in excinfo.value.message
@@ -4354,7 +4360,7 @@ def test_scaffold_prints_next_steps(tmp_path: Path, monkeypatch):
 def test_run_probe_reports_broken_agent(tmp_path: Path, monkeypatch):
     # A scaffolded-looking apps project whose agent module raises on import.
     (tmp_path / "pyproject.toml").write_text(
-        "[tool.apx.agent]\nname='x'\ntarget='responses_agent'\n"
+        "[project]\nname = 'x'\n"
     )
     agent_server = tmp_path / "agent_server"
     agent_server.mkdir()
@@ -4923,7 +4929,7 @@ def test_apx_info_lists_python_tools(
         agent = Agent(tools=[ask_sales])
     """))
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.apx.agent]
+        [tool.apx.deploy]
         name = "t"
     """))
     monkeypatch.chdir(tmp_path)
@@ -4944,14 +4950,12 @@ def test_cli_rejects_legacy_tool_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: list[str]
 ) -> None:
     """Inspection and lint must reject TOML tools, not silently omit them."""
-    from apx_agent._tool_config import ToolConfigError
-
     (tmp_path / "legacy_tools_agent.py").write_text(
         'from apx_agent import Agent\nagent = Agent(tools=[])\n'
     )
     pp = tmp_path / "pyproject.toml"
     pp.write_text(textwrap.dedent("""
-        [tool.apx.agent]
+        [tool.apx.deploy]
         name = "t"
         [[tool.apx.tools]]
         type = "genie"
@@ -4965,11 +4969,20 @@ def test_cli_rejects_legacy_tool_config(
     sys.modules.pop("legacy_tools_agent", None)
 
     assert result.exit_code != 0
-    assert isinstance(result.exception, ToolConfigError)
-    message = str(result.exception)
+    message = result.output  # the CLI surfaces the removed table as an "Error:" line
     assert "[[tool.apx.tools]]" in message
     assert "tools/" in message
     assert "agent.py" in message
+
+
+def test_cli_rejects_the_agent_table_naming_migrate_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "t"\n')
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["traces", "list"])
+    assert result.exit_code != 0
+    assert "migrate-config" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -5355,9 +5368,8 @@ def test_apps_deploy_python_genie_tool_reaches_resource_derivation(
         agent = Agent(tools=[genie_tool("python-space-xyz", name="ask_data")])
     """))
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.apx.agent]
+        [project]
         name = "t"
-        target = "responses_agent"
     """))
     # Minimal databricks.yml so _read_databricks_yml and _resolve_app_name work.
     (tmp_path / "databricks.yml").write_text(textwrap.dedent("""
@@ -5442,7 +5454,7 @@ def test_lint_sees_imported_python_tools(
         agent = Agent(instructions="I help with data.", tools=[python_tool_no_doc])
     """))
     (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.apx.agent]
+        [tool.apx.deploy]
         name = "lint-test"
     """))
     monkeypatch.chdir(tmp_path)
@@ -5457,35 +5469,6 @@ def test_lint_sees_imported_python_tools(
     findings = json.loads(result.output)
     l002_locations = [f["location"] for f in findings if f["code"] == "L002"]
     assert "tool:python_tool_no_doc" in l002_locations, findings
-
-
-# ---------------------------------------------------------------------------
-# E3a Task 4 — template config flows through CLI (_load_finalized_agent)
-# ---------------------------------------------------------------------------
-
-
-def test_apx_info_with_template_config(tmp_path, monkeypatch):
-    from click.testing import CliRunner
-    from apx_agent.cli import main
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
-        [tool.apx.agent]
-        name = "sales-coworker"
-        model = "databricks-claude-sonnet-4-6"
-        template = { name = "data", catalog = "main", schema = "sales" }
-    """))
-    # _load_agent_config discovers pyproject.toml from __main__.__file__ first.
-    # In pytest, __main__.__file__ is the pytest runner (inside python/.venv/),
-    # so _find_pyproject walks up to the repo's own pyproject.toml instead of
-    # tmp_path. Patch __main__.__file__ to a sentinel in tmp_path so the walk
-    # starts from there and finds the test's pyproject.toml.
-    import sys
-    main_mod = sys.modules.get("__main__")
-    sentinel = str(tmp_path / "fake_entrypoint.py")
-    monkeypatch.setattr(main_mod, "__file__", sentinel, raising=False)
-    res = CliRunner().invoke(main, ["agents", "describe", "--module", "nonexistent:agent"])
-    assert res.exit_code == 0, res.output
-    assert "run_sql" in res.output
 
 
 def test_describe_reads_instructions_from_spec(
@@ -6430,7 +6413,7 @@ class TestTracesListFilters:
     def test_error_only_filters_out_ok_traces(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+            '[tool.apx]\nexperiment = "/exp/test"\n'
         )
         rows = [
             {"trace_id": "t1", "tags": {"apx.agent.name": "a"}, "status": "OK", "execution_time_ms": 100},
@@ -6451,7 +6434,7 @@ class TestTracesListFilters:
     def test_min_latency_filters_fast_traces(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+            '[tool.apx]\nexperiment = "/exp/test"\n'
         )
         rows = [
             {"trace_id": "fast", "tags": {}, "status": "OK", "execution_time_ms": 50},
@@ -6472,7 +6455,7 @@ class TestTracesListFilters:
     def test_tag_filter_requires_key_val(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+            '[tool.apx]\nexperiment = "/exp/test"\n'
         )
         import mlflow as _mlflow
         with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", self._make_fake_search_traces([])):
@@ -7505,7 +7488,7 @@ class TestEvalReport:
     def test_no_runs_shows_helpful_message(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+            '[tool.apx]\nexperiment = "/exp/test"\n'
         )
         fake_exp = SimpleNamespace(experiment_id="exp-1")
 
@@ -7524,7 +7507,7 @@ class TestEvalReport:
     def test_happy_path_text(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+            '[tool.apx]\nexperiment = "/exp/test"\n'
         )
         fake_exp = SimpleNamespace(experiment_id="exp-1")
         runs = [
@@ -7561,7 +7544,7 @@ class TestEvalReport:
     def test_json_format(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "t"\nexperiment = "/exp/test"\n'
+            '[tool.apx]\nexperiment = "/exp/test"\n'
         )
         fake_exp = SimpleNamespace(experiment_id="exp-1")
         runs = [{"run_id": "r1", "start_time": "2026-06-10", "metrics.pass_rate": 1.0}]
@@ -9209,7 +9192,7 @@ def test_agents_status_resolves_uc_name_from_project(tmp_path: Path) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         Path("pyproject.toml").write_text(
-            '[tool.apx.agent]\nregistered_model = "main.agents.x"\n'
+            '[tool.apx.deploy]\nregistered_model = "main.agents.x"\n'
         )
         client = MagicMock()
         client.search_model_versions.return_value = []

@@ -165,26 +165,29 @@ def plan_migration(pyproject: Path, agent: BaseAgent) -> Migration:
 def migrate_local(text: str) -> str | None:
     """``.apx.local``: move dev keys from its old ``[tool.apx.agent]`` to ``[tool.apx]``; None if nothing to do.
 
-    A key already in ``[tool.apx]`` is newer (the profile picker writes it) and wins."""
+    A key already in ``[tool.apx]`` is newer (the profile picker writes it) and wins. The
+    table's other keys have no ``.apx.local`` home and are dropped (the caller keeps a backup
+    and names them); see :func:`local_dropped_keys`."""
     from ._inspection import DEV_KEYS
-    from ._project_gen import _write_toml_section
 
     data = tomllib.loads(text)
     apx = data.get("tool", {}).get("apx", {})
-    legacy = apx.get("agent", {})
-    move = [k for k in DEV_KEYS if k in legacy]
-    if not move:
+    legacy = apx.get("agent")
+    if not isinstance(legacy, dict):
         return None
-    rest = {k: v for k, v in legacy.items() if k not in move}
     out = cut_sections(text, "tool.apx.agent")
-    for key in move:
-        if key not in apx:
+    for key in DEV_KEYS:
+        if key in legacy and key not in apx:
             out = set_key_text(out, "tool.apx", key, str(legacy[key]))
-    if rest:
-        lines: list[str] = []
-        _write_toml_section(lines, "tool.apx.agent", rest)
-        out = out.rstrip("\n") + "\n\n" + "\n".join(lines)
     return out.rstrip("\n") + "\n"
+
+
+def local_dropped_keys(text: str) -> list[str]:
+    """The ``.apx.local`` ``[tool.apx.agent]`` keys :func:`migrate_local` drops (no home there)."""
+    from ._inspection import DEV_KEYS
+
+    legacy = tomllib.loads(text).get("tool", {}).get("apx", {}).get("agent", {})
+    return sorted(k for k in legacy if k not in DEV_KEYS) if isinstance(legacy, dict) else []
 
 
 def snippet(missing: dict[str, Any]) -> str:

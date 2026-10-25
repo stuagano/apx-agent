@@ -24,33 +24,41 @@ def _write(tmp_path: Path, body: str, local: str | None = None) -> Path:
     ('[tool.apx]\nexperiment = "/Users/x/exp"\n', "experiment", "/Users/x/exp"),
     ('[tool.apx.deploy]\nregistered_model = "c.s.m"\n', "registered_model", "c.s.m"),
     ('[tool.apx.deploy]\nsupervisor_id = "sup-1"\n', "supervisor_id", "sup-1"),
-    ('[tool.apx.agent]\nregistered_model = "c.s.m"\n', "registered_model", "c.s.m"),
 ])
-def test_each_key_resolves_from_its_new_or_old_home(tmp_path: Path, body: str, key: str, value: str) -> None:
+def test_each_key_resolves_from_its_home(tmp_path: Path, body: str, key: str, value: str) -> None:
     assert _read_apx_agent_config(_write(tmp_path, body))[key] == value
 
 
-def test_apx_local_wins_and_is_read_from_both_layouts(tmp_path: Path) -> None:
+def test_the_legacy_table_is_rejected_unless_migrate_config_reads_it(tmp_path: Path) -> None:
+    path = _write(tmp_path, '[tool.apx.agent]\nregistered_model = "c.s.m"\n')
+    with pytest.raises(click.ClickException, match="migrate-config"):
+        _read_apx_agent_config(path)
+    assert _read_apx_agent_config(path, allow_agent_table=True)["registered_model"] == "c.s.m"
+
+
+def test_apx_local_wins_and_a_legacy_local_table_is_rejected(tmp_path: Path) -> None:
     path = _write(tmp_path, '[tool.apx]\nprofile = "committed"\n', local='[tool.apx]\nprofile = "mine"\n')
     assert _read_apx_agent_config(path)["profile"] == "mine"
     (tmp_path / ".apx.local").write_text('[tool.apx.agent]\nprofile = "legacy-local"\n')
-    assert _read_apx_agent_config(path)["profile"] == "legacy-local"
+    with pytest.raises(click.ClickException, match="migrate-config"):
+        _read_apx_agent_config(path)
+    assert _read_apx_agent_config(path, allow_agent_table=True)["profile"] == "legacy-local"
 
 
-def test_new_home_overrides_the_old_table_only_when_equal(tmp_path: Path) -> None:
+def test_migrate_config_reads_the_old_table_and_rejects_a_conflict_with_the_new_home(tmp_path: Path) -> None:
     path = _write(tmp_path, '[tool.apx.agent]\nprofile = "a"\n\n[tool.apx]\nprofile = "a"\n')
-    assert _read_apx_agent_config(path)["profile"] == "a"
+    assert _read_apx_agent_config(path, allow_agent_table=True)["profile"] == "a"
+    with pytest.raises(click.ClickException, match="migrate-config"):
+        _read_apx_agent_config(path)
     path = _write(tmp_path, '[tool.apx.agent]\nprofile = "a"\n\n[tool.apx]\nprofile = "b"\n')
     with pytest.raises(click.ClickException,
                        match=r"profile is declared in both \[tool.apx.agent\] and \[tool.apx\] with different values; keep \[tool.apx\]."):
-        _read_apx_agent_config(path)
+        _read_apx_agent_config(path, allow_agent_table=True)
 
 
 def test_older_deploy_keys_never_reach_the_dict(tmp_path: Path) -> None:
-    path = _write(tmp_path, '[tool.apx.agent]\ntarget = "durable_agent_server"\n\n'
-                            '[tool.apx.deploy]\ntarget = "apps"\nbundle_name = "b"\napp_name = "a"\nunknown = 1\n')
-    config = _read_apx_agent_config(path)
-    assert config == {"target": "durable_agent_server"}
+    path = _write(tmp_path, '[tool.apx.deploy]\ntarget = "apps"\nbundle_name = "b"\napp_name = "a"\nunknown = 1\n')
+    assert _read_apx_agent_config(path) == {}
 
 
 def test_malformed_apx_local_reads_as_empty(tmp_path: Path) -> None:
@@ -107,16 +115,6 @@ def test_writer_adds_to_an_existing_section_with_other_keys(tmp_path: Path) -> N
     path = _write(tmp_path, '[tool.apx]\nexperiment = "/e"\n')
     _set_toml_key(path, "tool.apx", "profile", "dev")
     assert tomllib.loads(path.read_text())["tool"]["apx"] == {"experiment": "/e", "profile": "dev"}
-
-
-def test_saving_a_key_still_in_the_legacy_table_updates_it_there(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from apx_agent.cli import _save_profile_to_pyproject, _save_to_pyproject
-
-    _write(tmp_path, '[tool.apx.agent]\nsupervisor_id = "old"\n', local='[tool.apx.agent]\nprofile = "old"\n')
-    monkeypatch.chdir(tmp_path)
-    assert _save_to_pyproject("supervisor_id", "new") and _save_profile_to_pyproject("new")
-    flat = _read_apx_agent_config(tmp_path / "pyproject.toml")  # no conflict
-    assert (flat["supervisor_id"], flat["profile"]) == ("new", "new")
 
 
 @pytest.mark.parametrize("header", ["[tool.apx.deploy]  # deploy", "[ tool.apx.deploy ]"])

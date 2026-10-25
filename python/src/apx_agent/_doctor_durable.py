@@ -29,9 +29,8 @@ STAGES = ("Config", "Compile", "Startup", "Request", "Deploy")
 SENTINEL = "apx-doctor-sentinel-token"
 PEER_URL = "https://apx-doctor-peer.invalid"
 SDK_FIX = 'uv run --with "databricks-agentbricks>=0.5.0,<0.6" apx-agent doctor --durable --offline'
-AGENT_MODULE_FIX = ("The native durable runtime imports `agent:agent` (as _serve.create_app does); "
-                    "the pyproject `module =` key is not used by the durable host. "
-                    "Expose the agent as `agent` in agent.py at the project root.")
+AGENT_MODULE_FIX = ("The native durable runtime imports `agent:agent` (as _serve.create_app does): "
+                    "expose the agent as `agent` in agent.py at the project root.")
 
 
 class _FakeWorkspaceClient:
@@ -274,6 +273,16 @@ def _fail(name: str, exc: BaseException) -> Check:
     return Check(name, Status.FAIL, f"{type(exc).__name__}: {exc}")
 
 
+def _outside_project(project: Path) -> Check | None:
+    """A FAIL when the imported `agent` came from outside *project* (another project on sys.path).
+
+    Checked before its settings are merged, so a stray agent's own conflict can't hide the cause."""
+    origin = getattr(sys.modules.get("agent"), "__file__", None)
+    if origin is None or not Path(origin).resolve().is_relative_to(project):
+        return Check("Config", Status.FAIL, f"`agent` resolved outside the project ({origin})", AGENT_MODULE_FIX)
+    return None
+
+
 def _stage_config(project: Path) -> _Loaded | Check:
     import tomllib
 
@@ -284,7 +293,14 @@ def _stage_config(project: Path) -> _Loaded | Check:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return _fail("Config", exc)
     apx = data.get("tool", {}).get("apx", {})
-    declared = apx.get("agent") or apx.get("deploy")
+    if "agent" in apx:
+        from ._tool_config import ToolConfigError, reject_legacy_tool_config
+
+        try:
+            reject_legacy_tool_config(str(project / "pyproject.toml"))
+        except ToolConfigError as exc:
+            return Check("Config", Status.FAIL, str(exc), "Run `apx-agent agents migrate-config`, then commit.")
+    declared = apx.get("deploy")
     python_only = declared is None and (project / "agent.py").is_file()
     if declared is None and not python_only:
         return Check("Config", Status.SKIP, "not an apx agent project (no agent.py or [tool.apx.deploy])")
@@ -299,6 +315,8 @@ def _stage_config(project: Path) -> _Loaded | Check:
 
         if python_only:
             agent = resolve_agent("agent:agent", None, ws=_FakeWorkspaceClient())
+            if (outside := _outside_project(project)) is not None:
+                return outside
             config = resolve_settings(agent, None)
         else:
             # Validate the declared fields once, as durable: validating the current
@@ -307,14 +325,11 @@ def _stage_config(project: Path) -> _Loaded | Check:
             if fields is None:
                 return Check("Config", Status.FAIL, "could not load the agent settings")
             config = AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
-            # The native host imports `agent:agent` (as _serve.create_app does); the
-            # pyproject `module =` key is not read by the durable runtime.
+            # The native host imports `agent:agent` (as _serve.create_app does).
             agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
+            if (outside := _outside_project(project)) is not None:
+                return outside
             config = resolve_settings(agent, config)
-        origin = getattr(sys.modules.get("agent"), "__file__", None)
-        if origin is None or not Path(origin).resolve().is_relative_to(project):
-            return Check("Config", Status.FAIL, f"`agent` resolved outside the project ({origin})",
-                         AGENT_MODULE_FIX)
     except BaseException as exc:
         check = _fail("Config", exc)
         missing = exc.__cause__ if isinstance(exc.__cause__, ModuleNotFoundError) else exc

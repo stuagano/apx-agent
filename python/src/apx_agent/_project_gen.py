@@ -10,9 +10,9 @@ Given an ``AgentConfig`` and a target directory, ``generate_project`` writes:
 
 Native projects compile deployment manifests during ``apx-agent agents deploy``;
 they use APX's packaged launcher and require no generated server package or Bundle.
-The agent always has a single Python definition: when ``config.template`` is set,
+The agent always has a single Python definition: when the YAML spec sets ``template:``,
 ``render_agent_py`` codegens a top-level ``agent.py`` that constructs the template
-agent in code (ADK-style), and ``module = "agent:agent"`` is always written.
+agent in code (ADK-style); the agent is always ``agent`` in ``agent.py``.
 """
 
 from __future__ import annotations

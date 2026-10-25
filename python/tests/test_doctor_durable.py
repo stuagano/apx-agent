@@ -17,10 +17,8 @@ PYPROJECT = """\
 name = "{name}"
 version = "0.1.0"
 
-[tool.apx.agent]
+[tool.apx.deploy]
 name = "{name}"
-model = "databricks-claude-sonnet-4-6"
-module = "agent:agent"
 """
 
 
@@ -425,7 +423,7 @@ SPACE_APP = (
 def _space_project(tmp_path: Path, name: str, app: str, extra: str) -> Path:
     root = _bundle_project(tmp_path, name, app, extra)
     pyproject = root / "pyproject.toml"
-    pyproject.write_text(pyproject.read_text() + '\n[tool.apx.agent.deploy]\nspace = "app-space"\n')
+    pyproject.write_text(pyproject.read_text() + 'space = "app-space"\n')
     return root
 
 
@@ -498,8 +496,8 @@ def test_custom_surface_warns_remount(tmp_path: Path) -> None:
 def test_non_managed_session_warns_history(tmp_path: Path) -> None:
     from apx_agent._doctor_durable import check_durable_readiness
 
-    root = _project(tmp_path, "hist", LLM_AGENT.format(name="hist"))
-    (root / "pyproject.toml").write_text(PYPROJECT.format(name="hist") + '\n[tool.apx.agent.memory]\ntype = "inmemory"\n')
+    agent_py = "from apx_agent import LlmAgent\nagent = LlmAgent(name='hist', tools=[], memory={'type': 'inmemory'})\n"
+    root = _project(tmp_path, "hist", agent_py)
     checks = _by_name(check_durable_readiness(root))
     assert checks["History"].status is Status.WARN
     assert "inmemory" in checks["History"].detail
@@ -761,7 +759,7 @@ def test_missing_agent_module_has_native_import_hint(tmp_path: Path) -> None:
     assert config.status is Status.FAIL
     assert config.fix is not None
     assert "agent:agent" in config.fix
-    assert "module =" in config.fix
+    assert "agent.py" in config.fix
 
 
 def test_project_without_agent_never_uses_a_stale_agent_module(
@@ -881,3 +879,20 @@ def test_isolation_owns_agentkits_bound_workspace_client(tmp_path: Path, monkeyp
     root = _project(tmp_path, "stalebind", DELEGATE_AGENT.format(name="stalebind"))
     request = _by_name(check_durable_readiness(root))["Request"]
     assert request.status is Status.OK, request.detail
+
+
+def test_another_projects_agent_on_sys_path_never_stands_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A directory left on sys.path (another project, a leaked test path) must not satisfy `import agent`.
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    (stray / "agent.py").write_text(  # its own target conflicts, which used to fail before the origin check
+        "from apx_agent import LlmAgent\nagent = LlmAgent(name='stray', tools=[], target='responses_agent')\n")
+    monkeypatch.syspath_prepend(str(stray))
+    root = _project(tmp_path, "nomodule", "")
+    (root / "agent.py").unlink()
+    (root / "my_agent.py").write_text(LLM_AGENT.format(name="nomodule"))
+    config = _by_name(check_durable_readiness(root))["Config"]
+    assert config.status is Status.FAIL
+    assert config.fix is not None and "agent.py" in config.fix, config

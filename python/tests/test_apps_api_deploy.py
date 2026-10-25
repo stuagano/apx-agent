@@ -24,11 +24,8 @@ PYPROJECT = """\
 name = "{name}"
 version = "0.1.0"
 
-[tool.apx.agent]
+[tool.apx.deploy]
 name = "{name}"
-model = "databricks-claude-sonnet-4-6"
-module = "agent:agent"
-target = "durable_agent_server"
 {deploy}
 """
 
@@ -455,7 +452,10 @@ def _doctor_project(tmp_path: Path, name: str, *, deploy: str, bundle: str | Non
     return root
 
 
-LLM = "from apx_agent import LlmAgent\nagent = LlmAgent(name='{name}', tools=[])\n"
+LLM = (
+    "from apx_agent import LlmAgent\n"
+    "agent = LlmAgent(name='{name}', tools=[], model='databricks-claude-sonnet-4-6', target='durable_agent_server')\n"
+)
 BUNDLE = """\
 bundle:
   name: {app}
@@ -477,9 +477,9 @@ SPACE = """\
 
 @pytest.mark.parametrize(("deploy", "bundle", "needle"), [
     ("", BUNDLE.format(app="agent-bricks-row1", extra=""), "native deploy preflight"),
-    ('\n[tool.apx.agent.deploy]\nspace = "app-space"\n', BUNDLE.format(app="mcp-row2", extra=SPACE), "App Space deploy preflight"),
-    ('\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\nspace = "app-space"\n', None, "Apps API space app-space"),
-    ('\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n', None, "Apps API dedicated"),
+    ('space = "app-space"\n', BUNDLE.format(app="mcp-row2", extra=SPACE), "App Space deploy preflight"),
+    ('backend = "apps_api"\nentrypoint = "app"\nspace = "app-space"\n', None, "Apps API space app-space"),
+    ('backend = "apps_api"\nentrypoint = "app"\n', None, "Apps API dedicated"),
 ])
 def test_doctor_routes_all_four_rows(tmp_path: Path, deploy: str, bundle: str | None, needle: str) -> None:
     from apx_agent._doctor import Status
@@ -521,11 +521,11 @@ def test_uv_lock_unsets_frozen_only_for_that_call(tmp_path: Path, monkeypatch: p
 
 @pytest.mark.parametrize(("name", "deploy", "bundle", "backend", "app_name"), [
     ("row1", "", BUNDLE.format(app="agent-bricks-row1", extra=""), None, "agent-bricks-row1"),
-    ("row2", '\n[tool.apx.agent.deploy]\nspace = "app-space"\n', BUNDLE.format(app="mcp-row2", extra=SPACE), None, "mcp-row2"),
-    ("row3", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\nspace = "app-space"\n', None, "apps_api", "row3"),
-    ("row4", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "row4"),
+    ("row2", 'space = "app-space"\n', BUNDLE.format(app="mcp-row2", extra=SPACE), None, "mcp-row2"),
+    ("row3", 'backend = "apps_api"\nentrypoint = "app"\nspace = "app-space"\n', None, "apps_api", "row3"),
+    ("row4", 'backend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "row4"),
     # #909: an mcp- name keeps MCP discovery without an App Space.
-    ("mcp-row4", '\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "mcp-row4"),
+    ("mcp-row4", 'backend = "apps_api"\nentrypoint = "app"\n', None, "apps_api", "mcp-row4"),
 ])
 def test_agents_deploy_routes_all_four_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, deploy: str, bundle: str | None,
@@ -549,11 +549,9 @@ def test_apps_api_honors_declared_deploy_app_name(tmp_path: Path, monkeypatch: p
     from apx_agent.cli import _resolve_project_app_name
 
     root = _doctor_project(
-        tmp_path, "inspector", deploy='\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n',
+        tmp_path, "inspector", deploy='backend = "apps_api"\nentrypoint = "app"\napp_name = "mcp-inspector"\n',
         bundle=None, agent=LLM.format(name="inspector"),
     )
-    pyproject = root / "pyproject.toml"
-    pyproject.write_text(pyproject.read_text() + '\n[tool.apx.deploy]\napp_name = "mcp-inspector"\n')
     assert _resolve_project_app_name(root) == "mcp-inspector"
     monkeypatch.chdir(root)
     result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--dry-run", "--json-output"])
@@ -565,7 +563,7 @@ def test_apps_api_name_is_not_agent_bricks_prefixed(tmp_path: Path) -> None:
     from apx_agent.cli import _resolve_project_app_name
 
     root = _doctor_project(
-        tmp_path, "named", deploy='\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\n',
+        tmp_path, "named", deploy='backend = "apps_api"\nentrypoint = "app"\n',
         bundle=None, agent=LLM.format(name="named"),
     )
     assert _resolve_project_app_name(root) == "named"
@@ -574,7 +572,7 @@ def test_apps_api_name_is_not_agent_bricks_prefixed(tmp_path: Path) -> None:
 def test_plan_routes_apps_api_without_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _doctor_project(
         tmp_path, "planned",
-        deploy='\n[tool.apx.agent.deploy]\nbackend = "apps_api"\nentrypoint = "app"\nspace = "app-space"\n',
+        deploy='backend = "apps_api"\nentrypoint = "app"\nspace = "app-space"\n',
         bundle=None, agent=LLM.format(name="planned"),
     )
     monkeypatch.chdir(root)

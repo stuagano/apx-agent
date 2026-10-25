@@ -16,7 +16,8 @@ PER_AGENT = ("model", "identity")
 APP_WIDE = ("target", "recovery", "gateway", "service_policies", "guardrails", "knowledge",
             "vector_search_index", "bindings", "url", "registry", "api_prefix", "examples",
             "workflows", "data", "executor", "example")
-_ROOT_ONLY = {"memory": "memory_config", "session": "session_config", "description": "_description"}
+_ROOT_ONLY = {"memory": "memory_config", "session": "session_config", "description": "_description",
+              "sub_agents": "_sub_agent_urls"}  # remote peers the root declares (doctor, cards)
 
 
 class SettingsConflict(ValueError):
@@ -62,7 +63,7 @@ def resolve_settings(agent: BaseAgent, toml: AgentConfig | None) -> AgentConfig:
     # memory/session only fill gaps: finalize_agent binds the toml's onto the agent, so no conflict check.
     declared.update({
         f: getattr(agent, attr) for f, attr in _ROOT_ONLY.items()
-        if getattr(agent, attr, None) not in (None, "") and (toml is None or f not in toml.model_fields_set)
+        if getattr(agent, attr, None) not in (None, "", []) and (toml is None or f not in toml.model_fields_set)
         # Against a TOML, only an explicit session= fills the session gap; a session the
         # one-word memory knob invents never beats the TOML's own default (3b-3a).
         and (f != "session" or toml is None or getattr(agent, "_session_explicit", False))

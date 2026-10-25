@@ -371,7 +371,7 @@ def test_workspace_forbidden():
 
 def _make_apps_project(tmp_path: Path) -> Path:
     (tmp_path / "pyproject.toml").write_text(
-        "[tool.apx.agent]\nname='x'\n"
+        "[tool.apx.deploy]\nname='x'\n"
     )
     (tmp_path / "agent_server").mkdir()
     (tmp_path / "agent_server" / "start_server.py").write_text("# app\n")
@@ -401,9 +401,9 @@ def test_target_apps(tmp_path: Path):
 
 def test_target_reports_declared_runtime(tmp_path: Path):
     (tmp_path / "pyproject.toml").write_text(
-        "[tool.apx.agent]\nname='x'\ntarget='durable_agent_server'\n"
+        "[tool.apx.deploy]\nname='x'\n"
     )
-    (tmp_path / "agent.py").write_text("agent = None\n")
+    (tmp_path / "agent.py").write_text("agent = Agent(name='x', target='durable_agent_server')\n")
     c = doctor.check_target(tmp_path)
     assert c.status is doctor.Status.OK
     assert "apps destination" in c.detail
@@ -418,8 +418,8 @@ def test_databricks_yml_present(tmp_path: Path):
 
 def test_databricks_yml_missing_in_project(tmp_path: Path):
     # A Bundle project; an omitted target is native and skips this check.
-    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\ntarget='responses_agent'\n")
-    (tmp_path / "agent.py").write_text("# agent\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname='x'\n")
+    (tmp_path / "agent.py").write_text("agent = Agent(name='x', target='responses_agent')\n")
     c = doctor.check_databricks_yml(tmp_path)
     assert c.status is doctor.Status.WARN
     assert c.fix is not None
@@ -448,7 +448,7 @@ def test_native_project_doctor_does_not_require_a_bundle(tmp_path: Path, monkeyp
 
 
 def _make_langgraph_project(tmp_path):
-    (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\nname='x'\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname='x'\n")
     # app.py without databricks.yml → model-serving layout
     (tmp_path / "app.py").write_text("# model-serving entry point\n")
     return tmp_path
@@ -518,10 +518,8 @@ class TestCheckDeclaredTools:
         yield
         sys.modules.pop("agent", None)
 
-    def _project(self, tmp_path: Path, tools: str = "", *, config: str = "") -> Path:
-        (tmp_path / "pyproject.toml").write_text(
-            f"[tool.apx.agent]\nname='x'\ntarget='responses_agent'\n{config}"
-        )
+    def _project(self, tmp_path: Path, tools: str = "", *, config: str = "", kwargs: str = "") -> Path:
+        (tmp_path / "pyproject.toml").write_text(f"[tool.apx.deploy]\nname='x'\n{config}")
         (tmp_path / "agent.py").write_text(
             "from apx_agent import LlmAgent\n"
             "from apx_agent.genie import genie_tool\n"
@@ -529,7 +527,7 @@ class TestCheckDeclaredTools:
             "from apx_agent.sql_tools import sql_tool\n"
             "from apx_agent.catalog import uc_function_tool, uc_function_toolkit\n"
             "from apx_agent.document_extract import document_extract_tool\n"
-            f"agent = LlmAgent(name='x', tools=[{tools}])\n"
+            f"agent = LlmAgent(name='x', target='responses_agent', tools=[{tools}]{kwargs})\n"
         )
         return tmp_path
 
@@ -553,8 +551,8 @@ class TestCheckDeclaredTools:
         make_ws.assert_not_called()
 
     def test_auth_unavailable_skips_import_and_session_probe(self, tmp_path):
-        self._project(tmp_path, "genie_tool('space-1')", config=(
-            "\n[tool.apx.agent.session]\ntype='lakebase'\nwarehouse_id='session-wh'\n"
+        self._project(tmp_path, "genie_tool('space-1')", kwargs=(
+            ", session={'type': 'lakebase', 'warehouse_id': 'session-wh'}"
         ))
         with patch("apx_agent._wiring.resolve_agent") as resolve, \
                 patch("apx_agent._defaults._make_workspace_client") as make_ws:
@@ -629,8 +627,8 @@ class TestCheckDeclaredTools:
         assert "OBO token cannot leave the app workspace" in checks[0].detail
 
     def test_session_warehouse_is_still_probed(self, tmp_path):
-        self._project(tmp_path, config=(
-            "\n[tool.apx.agent.session]\ntype='lakebase'\nwarehouse_id='session-wh'\n"
+        self._project(tmp_path, kwargs=(
+            ", session={'type': 'lakebase', 'warehouse_id': 'session-wh'}"
         ))
         ws = MagicMock()
         with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
@@ -654,8 +652,10 @@ class TestCheckDeclaredTools:
         assert "missing_factory" in checks[0].detail
 
     def test_invalid_config_is_a_failure_not_no_tools(self, tmp_path):
-        self._project(tmp_path, config="identity='not-an-identity'\n")
-        checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
+        self._project(tmp_path, kwargs=", identity='not-an-identity'")
+        # A fake client, so the check reaches the agent import (identity is validated there) without real auth.
+        with patch("apx_agent._defaults._make_workspace_client", return_value=MagicMock()):
+            checks = doctor.check_declared_tools(tmp_path, auth_ok=True)
         assert len(checks) == 1
         assert checks[0].status is Status.FAIL
         assert "identity" in checks[0].detail
@@ -687,8 +687,9 @@ def test_auth_sdk_not_importable(monkeypatch):
 
 class TestCheckModelEndpoint:
     def _make_pyproject(self, tmp_path: Path, model: str) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            f'[tool.apx.agent]\nmodel = "{model}"\n'
+        (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname = 'x'\n")
+        (tmp_path / "agent.py").write_text(
+            f"from apx_agent import LlmAgent\nagent = LlmAgent(name='x', model={model!r})\n"
         )
 
     def test_no_pyproject_returns_none(self, tmp_path: Path):
@@ -699,7 +700,8 @@ class TestCheckModelEndpoint:
         assert doctor.check_model_endpoint(tmp_path, auth_ok=False) is None
 
     def test_no_model_key_returns_none(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\n")
+        (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname = 'x'\n")
+        (tmp_path / "agent.py").write_text("from apx_agent import LlmAgent\nagent = LlmAgent(name='x')\n")
         assert doctor.check_model_endpoint(tmp_path, auth_ok=True) is None
 
     def test_foundation_model_name_abstains_without_serving_lookup(self, tmp_path: Path):
@@ -748,9 +750,11 @@ class TestCheckModelEndpoint:
 
 
 class TestCheckGatewayGuardrails:
-    def _make_apps_project(self, tmp_path: Path, model: str) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            f'[tool.apx.agent]\nmodel = "{model}"\n'
+    def _make_apps_project(self, tmp_path: Path, model: str, extra_kwargs: str = "") -> None:
+        (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname = 'x'\n")
+        (tmp_path / "agent.py").write_text(
+            "from apx_agent import LlmAgent\n"
+            f"agent = LlmAgent(name='x', model={model!r}{extra_kwargs})\n"
         )
         (tmp_path / "agent_server").mkdir()
         (tmp_path / "agent_server" / "start_server.py").write_text("app = None\n")
@@ -763,7 +767,8 @@ class TestCheckGatewayGuardrails:
         assert doctor.check_gateway_guardrails(tmp_path, auth_ok=False) is None
 
     def test_no_model_key_returns_none(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text("[tool.apx.agent]\n")
+        (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname = 'x'\n")
+        (tmp_path / "agent.py").write_text("from apx_agent import LlmAgent\nagent = LlmAgent(name='x')\n")
         (tmp_path / "agent_server").mkdir()
         (tmp_path / "agent_server" / "start_server.py").write_text("app = None\n")
         assert doctor.check_gateway_guardrails(tmp_path, auth_ok=True) is None
@@ -801,16 +806,14 @@ class TestCheckGatewayGuardrails:
 
     def test_lists_declared_attachment_targets(self, tmp_path: Path):
         """Every declared attachment target is named for the UI check, once."""
-        self._make_apps_project(tmp_path, "system.ai.claude-sonnet-4-6")
-        with (tmp_path / "pyproject.toml").open("a") as f:
-            f.write(
-                "[[tool.apx.agent.service_policies.attachments]]\n"
-                'name = "tools"\ntarget_type = "mcp_service"\n'
-                'target = "mcp-services/main.tools.search"\n'
-                "[[tool.apx.agent.service_policies.attachments]]\n"
-                'name = "tools-again"\ntarget_type = "mcp_service"\n'
-                'target = "mcp-services/main.tools.search"\n'
-            )
+        attachments = [
+            {"name": "tools", "target_type": "mcp_service", "target": "mcp-services/main.tools.search"},
+            {"name": "tools-again", "target_type": "mcp_service", "target": "mcp-services/main.tools.search"},
+        ]
+        self._make_apps_project(
+            tmp_path, "system.ai.claude-sonnet-4-6",
+            f", service_policies={{'attachments': {attachments!r}}}",
+        )
         c = doctor.check_gateway_guardrails(tmp_path, auth_ok=True)
         assert c is not None
         assert c.status is Status.WARN
@@ -822,10 +825,10 @@ class TestCheckGatewayGuardrails:
 
 class TestCheckUcDataSource:
     def _project(self, tmp_path: Path, catalog: str, schema: str) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            f'[tool.apx.agent]\nname = "x"\n'
-            f'[tool.apx.agent.template]\nname = "data"\n'
-            f'catalog = "{catalog}"\nschema = "{schema}"\n'
+        (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname = 'x'\n")
+        (tmp_path / "agent.py").write_text(
+            "from apx_agent import DataAgent\n"
+            f"agent = DataAgent({catalog!r}, {schema!r}, name='x')\n"
         )
 
     def test_no_pyproject_returns_none(self, tmp_path: Path):
@@ -836,7 +839,7 @@ class TestCheckUcDataSource:
         assert doctor.check_uc_data_source(tmp_path, auth_ok=False) is None
 
     def test_no_template_catalog_returns_none(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "x"\n')
         assert doctor.check_uc_data_source(tmp_path, auth_ok=True) is None
 
     def test_schema_found_returns_ok(self, tmp_path: Path):
@@ -913,7 +916,7 @@ class TestCheckDeployProvenance:
 
     def _project(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nregistered_model = "main.agents.x"\n'
+            '[tool.apx.deploy]\nregistered_model = "main.agents.x"\n'
         )
 
     def _mv(self, version: str, tags: dict):
@@ -943,7 +946,7 @@ class TestCheckDeployProvenance:
         assert doctor.check_deploy_provenance(tmp_path, auth_ok=False) is None
 
     def test_none_when_no_uc_name_resolves(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "x"\n')
         assert doctor.check_deploy_provenance(tmp_path, auth_ok=True) is None
 
     def test_skip_when_not_a_git_repo(self, tmp_path: Path, monkeypatch):
@@ -1029,15 +1032,17 @@ class TestCheckSubAgents:
     URLS = '["https://a.example.com", "https://b.example.com"]'
 
     def _project(self, tmp_path: Path, sub_agents: str) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            f'[tool.apx.agent]\nname = "orchestrator"\nsub_agents = {sub_agents}\n'
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "orchestrator"\n')
+        (tmp_path / "agent.py").write_text(
+            "from apx_agent import LlmAgent\n"
+            f"agent = LlmAgent(name='orchestrator', sub_agents={sub_agents})\n"
         )
 
     def test_none_outside_apx_project(self, tmp_path: Path):
         assert doctor.check_sub_agents(tmp_path) is None
 
     def test_none_when_no_sub_agents_declared(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "x"\n')
         assert doctor.check_sub_agents(tmp_path) is None
 
     def test_ok_when_all_reachable(self, tmp_path: Path):
@@ -1083,7 +1088,7 @@ class TestCheckSubAgents:
         assert sub is not None and sub.status is Status.OK
 
     def test_run_checks_skips_cleanly_when_undeclared(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "x"\n')
         groups = run_checks(tmp_path, online=False)
         project = dict(groups)["Project"]
         assert all(c.name != "Sub-agents" for c in project)
@@ -1097,16 +1102,18 @@ class TestCheckSubAgents:
 class TestCheckA2ATrust:
     """App-peer declarations WARN that trust rides on OBO, not SP-to-SP CAN_USE."""
 
-    def _project(self, tmp_path: Path, extra: str) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "orchestrator"\n' + extra
+    def _project(self, tmp_path: Path, kwargs: str) -> None:
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "orchestrator"\n')
+        (tmp_path / "agent.py").write_text(
+            "from apx_agent import LlmAgent\n"
+            f"agent = LlmAgent(name='orchestrator'{kwargs})\n"
         )
 
     def test_none_outside_apx_project(self, tmp_path: Path):
         assert doctor.check_a2a_trust(tmp_path) is None
 
     def test_none_when_no_app_peers(self, tmp_path: Path):
-        self._project(tmp_path, 'sub_agents = ["https://example.com/agent"]\n')
+        self._project(tmp_path, ', sub_agents=["https://example.com/agent"]')
         assert doctor.check_a2a_trust(tmp_path) is None
 
     def test_none_when_nothing_declared(self, tmp_path: Path):
@@ -1116,7 +1123,7 @@ class TestCheckA2ATrust:
     def test_warn_on_sub_agent_app_peer(self, tmp_path: Path):
         self._project(
             tmp_path,
-            'sub_agents = ["https://peer.cloud.databricksapps.com"]\n',
+            ', sub_agents=["https://peer.cloud.databricksapps.com"]',
         )
         c = doctor.check_a2a_trust(tmp_path)
         assert c is not None and c.status is Status.WARN
@@ -1130,8 +1137,7 @@ class TestCheckA2ATrust:
     def test_warn_on_named_binding_app_peer(self, tmp_path: Path):
         self._project(
             tmp_path,
-            "[tool.apx.agent.bindings]\n"
-            'pricing = "https://pricing.cloud.databricksapps.com/.well-known/agent.json"\n',
+            ', bindings={"pricing": "https://pricing.cloud.databricksapps.com/.well-known/agent.json"}',
         )
         c = doctor.check_a2a_trust(tmp_path)
         assert c is not None and c.status is Status.WARN
@@ -1142,7 +1148,7 @@ class TestCheckA2ATrust:
         monkeypatch.setenv("PRICING_APP_URL", "https://pricing.cloud.databricksapps.com")
         self._project(
             tmp_path,
-            '[tool.apx.agent.bindings]\npricing = "$PRICING_APP_URL"\n',
+            ', bindings={"pricing": "$PRICING_APP_URL"}',
         )
         c = doctor.check_a2a_trust(tmp_path)
         assert c is not None and c.status is Status.WARN
@@ -1152,14 +1158,14 @@ class TestCheckA2ATrust:
         monkeypatch.delenv("PRICING_APP_URL", raising=False)
         self._project(
             tmp_path,
-            '[tool.apx.agent.bindings]\npricing = "$PRICING_APP_URL"\n',
+            ', bindings={"pricing": "$PRICING_APP_URL"}',
         )
         assert doctor.check_a2a_trust(tmp_path) is None
 
     def test_run_checks_includes_a2a_trust_when_declared(self, tmp_path: Path):
         self._project(
             tmp_path,
-            'sub_agents = ["https://peer.cloud.databricksapps.com"]\n',
+            ', sub_agents=["https://peer.cloud.databricksapps.com"]',
         )
         groups = run_checks(tmp_path, online=False)
         project = dict(groups)["Project"]
@@ -1179,17 +1185,18 @@ class TestCheckA2ATrust:
 
 
 class TestCheckAbacComputeFloor:
-    def _project(self, tmp_path: Path, extra: str = "") -> Path:
-        (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "x"\n' + extra
+    def _project(self, tmp_path: Path, kwargs: str = "") -> Path:
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "x"\n')
+        (tmp_path / "agent.py").write_text(
+            "from apx_agent import LlmAgent\n"
+            f"agent = LlmAgent(name='x'{kwargs})\n"
         )
         return tmp_path
 
     def _data_block(self) -> str:
         return (
-            '\n[tool.apx.agent.data]\n'
-            'governed_tags = [{name = "env", values = ["dev"]}]\n'
-            'tables = [{name = "c.s.t", tags = {env = "dev"}}]\n'
+            ", data={'governed_tags': [{'name': 'env', 'values': ['dev']}], "
+            "'tables': [{'name': 'c.s.t', 'tags': {'env': 'dev'}}]}"
         )
 
     def test_none_outside_apx_project(self, tmp_path: Path):
@@ -1269,8 +1276,8 @@ class TestCheckAbacComputeFloor:
     def test_session_warehouse_takes_precedence(self, tmp_path: Path, monkeypatch):
         self._project(
             tmp_path,
-            'target = "responses_agent"\n'  # Lakebase session = compatibility contract
-            '\n[tool.apx.agent.session]\ntype = "lakebase"\nwarehouse_id = "sess-wh"\n'
+            ", target='responses_agent'"  # Lakebase session = compatibility contract
+            ", session={'type': 'lakebase', 'warehouse_id': 'sess-wh'}"
             + self._data_block(),
         )
         monkeypatch.chdir(tmp_path)
@@ -1305,7 +1312,7 @@ class TestCheckAbacComputeFloor:
         assert abac is not None and abac.status is Status.SKIP
 
     def test_run_checks_excludes_abac_when_undeclared(self, tmp_path: Path, monkeypatch):
-        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "x"\n')
         monkeypatch.chdir(tmp_path)
         groups = run_checks(tmp_path, online=False)
         project = dict(groups)["Project"]

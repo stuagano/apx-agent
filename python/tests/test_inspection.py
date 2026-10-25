@@ -8,6 +8,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from apx_agent import AgentConfig
+
 from apx_agent._inspection import (
     _tool_dependency_callables,
     _inspect_tool_fn,
@@ -205,17 +207,16 @@ class TestLoadAgentConfig:
     def test_loads_from_cwd_pyproject(self, tmp_path, monkeypatch):
         """Default resolution finds the project pyproject in cwd."""
         (tmp_path / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "cwd-project"\nmodel = "some-model"\n'
+            '[tool.apx.deploy]\nname = "cwd-project"\n'
         )
         monkeypatch.chdir(tmp_path)
         config = _load_agent_config()
         assert config is not None
         assert config.name == "cwd-project"
-        assert config.model == "some-model"
 
     def test_runtime_agent_name_overrides_committed_name(self, tmp_path, monkeypatch):
         toml = tmp_path / "pyproject.toml"
-        toml.write_text('[tool.apx.agent]\nname = "shared-agent"\n')
+        toml.write_text('[tool.apx.deploy]\nname = "shared-agent"\n')
         monkeypatch.setenv("APX_AGENT_NAME", "pricing-agent")
 
         config = _load_agent_config(pyproject_path=toml)
@@ -225,21 +226,21 @@ class TestLoadAgentConfig:
 
     def test_blank_runtime_agent_name_is_rejected(self, tmp_path, monkeypatch):
         toml = tmp_path / "pyproject.toml"
-        toml.write_text('[tool.apx.agent]\nname = "shared-agent"\n')
+        toml.write_text('[tool.apx.deploy]\nname = "shared-agent"\n')
         monkeypatch.setenv("APX_AGENT_NAME", "  ")
 
         with pytest.raises(ValueError, match="APX_AGENT_NAME must not be blank"):
             _load_agent_config(pyproject_path=toml)
 
     def test_returns_none_for_missing_section(self, tmp_path, monkeypatch):
-        (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "x"\n')
+        (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "x"\n')
         monkeypatch.chdir(tmp_path)
         config = _load_agent_config(section_path=("tool", "nonexistent", "section"))
         assert config is None
 
     def test_cwd_project_wins_over_main_heuristic(self, tmp_path, monkeypatch):
         """#437: serving from the project directory must load the project's
-        [tool.apx.agent], not one reachable from __main__ (the apx-agent
+        [tool.apx.deploy] name, not one reachable from __main__ (the apx-agent
         console script lives in the framework venv — its walk-up used to find
         the framework repo's pyproject and silently shadow the project's)."""
         import sys
@@ -247,13 +248,13 @@ class TestLoadAgentConfig:
         framework = tmp_path / "framework"
         framework.mkdir()
         (framework / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "framework"\ndescription = "Example agent"\n'
+            '[tool.apx.deploy]\nname = "framework"\n'
         )
         (framework / "bin.py").write_text("")
         project = tmp_path / "project"
         project.mkdir()
         (project / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "agent-b"\n'
+            '[tool.apx.deploy]\nname = "agent-b"\n'
         )
         monkeypatch.setattr(
             sys.modules["__main__"], "__file__", str(framework / "bin.py"), raising=False
@@ -264,7 +265,7 @@ class TestLoadAgentConfig:
         assert config.name == "agent-b"
 
     def test_cwd_without_agent_config_falls_through_to_main(self, tmp_path, monkeypatch):
-        """A cwd pyproject with no [tool.apx.agent] (or deploy-only keys) does
+        """A cwd pyproject with no agent name (or registration-only keys) does
         not claim resolution — the __main__ walk-up still serves the
         run-from-elsewhere cases it was built for."""
         import sys
@@ -272,13 +273,13 @@ class TestLoadAgentConfig:
         entry_dir = tmp_path / "entry"
         entry_dir.mkdir()
         (entry_dir / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nname = "from-main"\n'
+            '[tool.apx.deploy]\nname = "from-main"\n'
         )
         (entry_dir / "app.py").write_text("")
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         (elsewhere / "pyproject.toml").write_text(
-            '[tool.apx.agent]\nregistered_model = "main.agents.x"\n'
+            '[tool.apx.deploy]\nregistered_model = "main.agents.x"\n'
         )
         monkeypatch.setattr(
             sys.modules["__main__"], "__file__", str(entry_dir / "app.py"), raising=False
@@ -294,7 +295,7 @@ class TestLoadAgentConfig:
         import logging
 
         toml = tmp_path / "pyproject.toml"
-        toml.write_text('[tool.apx.agent]\nname = "agent-b"\n')
+        toml.write_text('[tool.apx.deploy]\nname = "agent-b"\n')
         monkeypatch.chdir(tmp_path)
         with caplog.at_level(logging.INFO, logger="apx_agent._inspection"):
             config = _load_agent_config()
@@ -308,7 +309,7 @@ class TestLoadAgentConfig:
         """Explicit pyproject_path overrides all heuristics."""
         toml = tmp_path / "pyproject.toml"
         toml.write_text(
-            '[tool.apx.agent]\nname = "explicit-test"\ndescription = "from path"\n'
+            '[tool.apx.deploy]\nname = "explicit-test"\n'
         )
         config = _load_agent_config(pyproject_path=toml)
         assert config is not None
@@ -327,10 +328,10 @@ class TestLoadAgentConfig:
         """
         toml = tmp_path / "env" / "pyproject.toml"
         toml.parent.mkdir()
-        toml.write_text('[tool.apx.agent]\nname = "from-env"\n')
+        toml.write_text('[tool.apx.deploy]\nname = "from-env"\n')
         cwd_project = tmp_path / "cwd"
         cwd_project.mkdir()
-        (cwd_project / "pyproject.toml").write_text('[tool.apx.agent]\nname = "from-cwd"\n')
+        (cwd_project / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "from-cwd"\n')
         monkeypatch.chdir(cwd_project)
         monkeypatch.setenv("APX_PYPROJECT", str(toml))
         config = _load_agent_config()
@@ -341,59 +342,60 @@ class TestLoadAgentConfig:
         """An explicit pyproject_path still beats APX_PYPROJECT."""
         env_toml = tmp_path / "env" / "pyproject.toml"
         env_toml.parent.mkdir()
-        env_toml.write_text('[tool.apx.agent]\nname = "from-env"\n')
+        env_toml.write_text('[tool.apx.deploy]\nname = "from-env"\n')
         arg_toml = tmp_path / "arg" / "pyproject.toml"
         arg_toml.parent.mkdir()
-        arg_toml.write_text('[tool.apx.agent]\nname = "from-arg"\n')
+        arg_toml.write_text('[tool.apx.deploy]\nname = "from-arg"\n')
         monkeypatch.setenv("APX_PYPROJECT", str(env_toml))
         config = _load_agent_config(pyproject_path=arg_toml)
         assert config is not None
         assert config.name == "from-arg"
 
 
-def test_load_agent_config_parses_examples(tmp_path):
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(
-        '[tool.apx.agent]\n'
-        'name = "demo"\n'
-        'examples = ["Show me sample customers", "Top 5 by balance"]\n'
+def test_agent_config_parses_examples():
+    cfg = AgentConfig.model_validate(
+        {"name": "demo", "examples": ["Show me sample customers", "Top 5 by balance"]}
     )
-    cfg = _load_agent_config(pyproject_path=str(pyproject))
-    assert cfg is not None
     assert cfg.examples == ["Show me sample customers", "Top 5 by balance"]
 
 
 def test_load_agent_config_examples_defaults_empty(tmp_path):
     pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text('[tool.apx.agent]\nname = "demo"\n')
+    pyproject.write_text('[tool.apx.deploy]\nname = "demo"\n')
     cfg = _load_agent_config(pyproject_path=str(pyproject))
     assert cfg is not None
     assert cfg.examples == []
 
 
-def test_load_agent_config_parses_workflows(tmp_path):
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(
-        '[tool.apx.agent]\n'
-        'name = "demo"\n'
-        'workflows = [{ id = "pricing-review", title = "Pricing review", '
-        'question = "Show me the pricing evidence", purpose = "Move from signal to decision.", '
-        'route = ["intelligence", "calibrate"], outcome = "Reviewable pricing packet" }]\n'
+def test_agent_config_parses_workflows():
+    cfg = AgentConfig.model_validate(
+        {
+            "name": "demo",
+            "workflows": [
+                {
+                    "id": "pricing-review",
+                    "title": "Pricing review",
+                    "question": "Show me the pricing evidence",
+                    "purpose": "Move from signal to decision.",
+                    "route": ["intelligence", "calibrate"],
+                    "outcome": "Reviewable pricing packet",
+                }
+            ],
+        }
     )
-    cfg = _load_agent_config(pyproject_path=str(pyproject))
-    assert cfg is not None
     assert cfg.workflows[0].id == "pricing-review"
     assert cfg.workflows[0].route == ["intelligence", "calibrate"]
 
 
 def test_load_agent_config_deploy_only_section_returns_none(tmp_path):
-    """#407/#434 CI regression: a [tool.apx.agent] holding only deploy-envelope
+    """#407/#434 CI regression: a project holding only deploy-envelope
     keys (registered_model, experiment) declares no agent config — the loader
     must return None, not crash AgentConfig validation on an empty field set."""
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
-        '[tool.apx.agent]\n'
-        'registered_model = "main.agents.from_cfg"\n'
+        '[tool.apx]\n'
         'experiment = "/Users/me/exp"\n'
+        '[tool.apx.deploy]\n'
+        'registered_model = "main.agents.from_cfg"\n'
     )
     assert _load_agent_config(pyproject_path=str(pyproject)) is None

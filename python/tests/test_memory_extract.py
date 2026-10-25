@@ -211,8 +211,9 @@ def test_cli_extract_is_off_until_declared(tmp_path, monkeypatch: pytest.MonkeyP
 
     from apx_agent.cli import main
 
-    (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.agent]\nname = "orders"\n\n[tool.apx.agent.memory]\ntype = "inmemory"\n',
+    (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "orders"\n', encoding="utf-8")
+    (tmp_path / "agent.py").write_text(
+        'from apx_agent import Agent\nagent = Agent(name="orders", memory={"type": "inmemory"})\n',
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -226,24 +227,22 @@ def test_cli_extract_dry_run_uses_declared_policy(tmp_path, monkeypatch: pytest.
 
     from apx_agent.cli import main
 
-    (tmp_path / "pyproject.toml").write_text(
+    (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "orders"\n', encoding="utf-8")
+    (tmp_path / "agent.py").write_text(
         """
-        [tool.apx.agent]
-        name = "orders"
-        target = "durable_agent_server"
+from apx_agent import Agent
 
-        [tool.apx.agent.memory]
-        type = "managed"
-        store_name = "agent-memory"
-
-        [tool.apx.agent.memory.extraction]
-        enabled = true
-        instructions = "Keep account facts."
-
-        [tool.apx.agent.session]
-        type = "managed"
-        store_name = "agent-sessions"
-        """,
+agent = Agent(
+    name="orders",
+    target="durable_agent_server",
+    memory={
+        "type": "managed",
+        "store_name": "agent-memory",
+        "extraction": {"enabled": True, "instructions": "Keep account facts."},
+    },
+    session={"type": "managed", "store_name": "agent-sessions"},
+)
+""",
         encoding="utf-8",
     )
     api = ExtractionApi()

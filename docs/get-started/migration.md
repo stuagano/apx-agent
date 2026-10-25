@@ -281,7 +281,7 @@ See [data-agent.md](../agents/data-agent.md), [coworker.md](../agents/coworker.m
 
 ## Moving off `[tool.apx.agent]`
 
-The `[tool.apx.agent]` table in `pyproject.toml` is deprecated and is being removed. Run
+The `[tool.apx.agent]` table in `pyproject.toml` is no longer supported. Run
 `apx-agent agents migrate-config` to move an existing project: runtime settings
 go onto the root agent in `agent.py`, deploy and registration keys to
 `[tool.apx.deploy]`, and `profile` / `experiment` to `[tool.apx]`. See the

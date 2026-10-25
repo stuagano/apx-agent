@@ -131,25 +131,25 @@ def test_documented_first_run_loads_the_real_project(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("discovery", ["parent", "explicit-project"])
-@pytest.mark.parametrize("override", [None, "local", "explicit"])
+@pytest.mark.parametrize("override", [None, "explicit"])
 def test_run_model_follows_agent_project_discovery(monkeypatch, tmp_path, discovery, override):
     project = tmp_path / "project"
     project.mkdir()
-    (project / "pyproject.toml").write_text('[tool.apx.agent]\nname = "project-agent"\nmodel = "project-model"\n')
+    (project / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "project-agent"\n')
+    (project / "agent.py").write_text('from apx_agent import Agent\nagent = Agent(model="project-model")\n')
     (project / "review_agent.py").write_text('from apx_agent import Agent\nagent = Agent(instructions="Use the selected project.")\n')
     (project / "cases.json").write_text('[{"inputs": {"question": "hello"}}]')
-    if override:
-        (project / ".apx.local").write_text('[tool.apx.agent]\nmodel = "local-model"\n')
     cwd = project / "nested" if discovery == "parent" else tmp_path / "elsewhere"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
     monkeypatch.delenv("APX_PYPROJECT", raising=False)
     if discovery == "explicit-project":
-        (cwd / "pyproject.toml").write_text('[tool.apx.agent]\nname = "other"\nmodel = "wrong-model"\n')
+        (cwd / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "other"\n')
         monkeypatch.setenv("APX_PYPROJECT", str(project / "pyproject.toml"))
     monkeypatch.syspath_prepend(str(project))
     monkeypatch.setitem(sys.modules, "review_agent", None)
     monkeypatch.delitem(sys.modules, "review_agent")
+    monkeypatch.delitem(sys.modules, "agent", raising=False)
     calls = []
 
     def evaluate(agent, **kwargs):
@@ -163,7 +163,7 @@ def test_run_model_follows_agent_project_discovery(monkeypatch, tmp_path, discov
         args.extend(["--model", "explicit-model"])
     result = CliRunner().invoke(main, args)
     assert result.exit_code == 0, result.output
-    assert calls[0]["model"] == (f"{override}-model" if override else "project-model")
+    assert calls[0]["model"] == ("explicit-model" if override else "project-model")
 
 
 def test_expected_escalation_passes_fixture_cli(monkeypatch, tmp_path):

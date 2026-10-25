@@ -70,19 +70,13 @@ def test_defaults_and_placeholder_names_are_not_overlaid(tmp_path: Path, in_proj
     assert _with_agent_settings({}, root) == {}
 
 
-def test_toml_only_project_is_unchanged(tmp_path: Path, in_project) -> None:
-    from apx_agent.cli import _with_agent_settings
-
-    root = in_project(_project(tmp_path, None, '[tool.apx.agent]\nname = "t"\nmodel = "tm"\n'))
-    assert _with_agent_settings({"name": "t", "model": "tm"}, root) == {"name": "t", "model": "tm"}
-
-
-def test_mixed_conflict_is_a_clean_error(tmp_path: Path, in_project) -> None:
+def test_agent_table_is_rejected(tmp_path: Path, in_project) -> None:
+    from apx_agent._tool_config import ToolConfigError
     from apx_agent.cli import _effective_config
 
-    root = in_project(_project(tmp_path, "from apx_agent import Agent\nagent = Agent(name='t', model='py', tools=[])\n",
+    root = in_project(_project(tmp_path, "from apx_agent import Agent\nagent = Agent(name='t', tools=[])\n",
                                '[tool.apx.agent]\nname = "t"\nmodel = "toml"\n'))
-    with pytest.raises(click.ClickException, match="Set it in one place"):
+    with pytest.raises(ToolConfigError, match="migrate-config"):
         _effective_config(root)
 
 
@@ -170,7 +164,7 @@ def test_runnable_scan_finds_a_python_only_durable_project(tmp_path: Path) -> No
 def test_status_name_comes_from_agent_py_statically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apx_agent.cli import _status_prompt_string
 
-    root = _project(tmp_path, _DURABLE_PY, "[tool.apx.agent]\n")
+    root = _project(tmp_path, _DURABLE_PY)
     monkeypatch.chdir(root)
     assert "durable-d" in _status_prompt_string(root)
 
@@ -239,7 +233,7 @@ def test_every_in_repo_example_detects_a_target_without_importing() -> None:
 def test_doctor_run_checks_survives_a_broken_agent_py(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apx_agent import _doctor
 
-    root = _project(tmp_path, "raise RuntimeError('boom')\n", '[tool.apx.agent]\nname = "b"\nmodel = "cat.sch.m"\n')
+    root = _project(tmp_path, "raise RuntimeError('boom')\n", '[tool.apx.deploy]\nname = "b"\n')
     monkeypatch.chdir(root)
     monkeypatch.setattr(_doctor, "check_databricks_auth", lambda: _doctor.Check("Auth", _doctor.Status.OK, "ok"))
     groups = _doctor.run_checks(root, online=False)  # must not raise
@@ -290,6 +284,5 @@ def test_manifest_step_takes_model_and_name_from_the_python_agent(tmp_path: Path
 def test_status_and_deploy_agree_on_the_name(tmp_path: Path, in_project) -> None:
     from apx_agent.cli import _project_name, _with_agent_settings
 
-    root = in_project(_project(tmp_path, "from apx_agent import Agent\nagent = Agent(name='pyname', tools=[])\n",
-                               '[tool.apx.agent]\nname = "tomlname"\n'))
-    assert _project_name(root) == _with_agent_settings({"name": "tomlname"}, root)["name"] == "tomlname"
+    root = in_project(_project(tmp_path, "from apx_agent import Agent\nagent = Agent(name='pyname', tools=[])\n"))
+    assert _project_name(root) == _with_agent_settings({}, root)["name"] == "pyname"

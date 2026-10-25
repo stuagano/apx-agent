@@ -88,6 +88,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Fixed
 
+- **Doctor and deploy read settings declared on the agent.** `apx-agent doctor`'s sub-agent reachability, A2A trust, memory-backend and ABAC compute checks used to skip settings declared in `agent.py`; `sub_agents=` on the agent now reaches the resolved config; and a provider-prefixed `model=` on the agent fails deploy preflight (including `--dry-run`) before any side effect, as a TOML one did.
 - **Settings declared on the agent apply on the Apps `responses_agent` launcher.** `finalize_agent` now merges the agent's own settings, so `guardrails=`, `service_policies=`, `bindings=` and `vector_search_index=` on the agent in `agent.py` take effect in scaffolded `agent_server/start_server.py` apps; before, only the TOML's applied there.
 - **Databricks Apps auth gaps (#965–#973).** `ai-functions` is a known OBO scope; Lakebase and app resources derive `postgres` / `apps`. Doctor and deploy read workspace `allowedAppsUserApiScopes`. Host-bound resource misses say the OBO token cannot leave the app workspace. Scope-denial re-authorize hints cover SQL, Genie, and model-serving. Doctor prints the dedicated app SP application id, warns when the App ACL is all CAN MANAGE, and warns that M2M federation without a client secret is unsupported. `apps_inbound_oauth_headers` is the inbound U2M/M2M path; PAT is rejected.
 - **Apx settings on the agent (sub-project 2).** `LlmAgent` takes `model`, `target`, `identity`, `recovery`, `gateway`, and `service_policies`. Native deploy, doctor `--durable`, and the packaged launcher synthesize `AgentConfig` from that object when `[tool.apx.agent]` is absent, so a Python-only project stays on the native durable path.
@@ -116,6 +117,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Removed
 
+- **`[tool.apx.agent]` is an error.** A `[tool.apx.agent]` table in `pyproject.toml` or `.apx.local` now fails, at load, at boot and in every CLI command, with a message naming `apx-agent agents migrate-config`, which still migrates it: runtime settings move onto the agent in `agent.py`, deploy and registration keys to `[tool.apx.deploy]`, `profile`/`experiment` and the `memory_store`/`example_store`/`summarize_fn` CLI defaults to `[tool.apx]`. A pyproject `template = {...}` no longer builds an agent (a YAML spec's `template:` still generates `agent.py`), and `module =` is gone: the agent is `agent` in `agent.py`. A legacy `.apx.local` `[tool.apx.agent]` keeps its `profile`/`experiment`/store keys (moved to `[tool.apx]`); its other keys, such as a per-developer `model` override, are no longer read there, and `migrate-config` names what it dropped (pass `--model` instead).
 - The old Discover list/wire UI and its routes: `/_apx/workspace-agents`,
   `/_apx/workspace-functions`, `/_apx/workspace-apis`, and
   `/_apx/discover/{tables,sample,targets,wire-agent,unwire-agent,wire-tool,unwire-tool}`.

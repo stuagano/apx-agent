@@ -205,8 +205,9 @@ def _patch_handler_signature(
 
 
 _AGENT_SECTION = ("tool", "apx", "agent")
-DEV_KEYS = ("profile", "experiment")
-"""Dev-loop CLI keys: top-level [tool.apx] (and .apx.local [tool.apx]). Sub-project 3b-1."""
+DEV_KEYS = ("profile", "experiment", "memory_store", "example_store", "summarize_fn")
+"""Dev-loop CLI keys: top-level [tool.apx] (and .apx.local [tool.apx]). Sub-project 3b-1; the
+memory/example store defaults joined in 3d."""
 REGISTRATION_KEYS = ("registered_model", "catalog", "schema", "supervisor_id", "registry_table", "tools_table")
 """Registration/publishing CLI keys: [tool.apx.deploy]. Sub-project 3b-1."""
 
@@ -305,9 +306,10 @@ def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str,
             # read literal declarations statically when the TOML has none (3b-3b). A non-literal
             # Python value (e.g. MemoryBackendConfig(...)) is left to the post-import merge.
             agent_py = path.parent / "agent.py"
-            target = static_agent_setting(agent_py, "target") if "target" not in fields else None
-            if isinstance(target, str):
-                fields["target"] = target
+            for key in ("target", "model"):  # model too, so a bad one fails before deploy side effects
+                value = static_agent_setting(agent_py, key) if key not in fields else None
+                if isinstance(value, str):
+                    fields[key] = value
             for key in ("memory", "session"):
                 value = static_agent_setting(agent_py, key) if key not in fields else None
                 if isinstance(value, dict):
@@ -381,6 +383,8 @@ def _resolve_agent_pyproject(
 def _load_agent_config(
     section_path: tuple[str, ...] = ("tool", "apx", "agent"),
     pyproject_path: Path | str | None = None,
+    *,
+    allow_agent_table: bool = False,
 ) -> AgentConfig | None:
     """Read config from the resolved agent project. Returns None if absent."""
     import logging
@@ -392,7 +396,7 @@ def _load_agent_config(
 
     from ._tool_config import reject_legacy_tool_config
 
-    reject_legacy_tool_config(str(resolved))
+    reject_legacy_tool_config(str(resolved), allow_agent_table=allow_agent_table)  # only migrate-config allows it
     fields = _agent_config_fields(resolved, section_path)
     if fields is None:
         return None

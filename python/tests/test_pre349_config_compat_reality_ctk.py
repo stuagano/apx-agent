@@ -59,48 +59,18 @@ def test_real_typos_still_rejected(cls) -> None:
 
 
 @pytest.mark.unit
-def test_pre349_pyproject_loads_without_raising(tmp_path) -> None:
+@pytest.mark.parametrize("target", ['target = "responses_agent"\n', ""], ids=["with-target", "without-target"])
+def test_pre349_pyproject_is_rejected_with_the_migrate_config_fix(tmp_path, target) -> None:
+    """A pre-#349 `[tool.apx.agent]` project no longer loads; the error names migrate-config."""
     from apx_agent._inspection import _load_agent_config
+    from apx_agent._tool_config import ToolConfigError
 
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
-        "\n".join(
-            [
-                "[tool.apx.agent]",
-                'name = "legacy-agent"',
-                # Omitted target means durable_agent_server (#938), which only
-                # takes managed sessions; a Lakebase project pins the old contract.
-                'target = "responses_agent"',
-                'model = "databricks-claude-sonnet-4-6"',
-                "",
-                "[tool.apx.agent.session]",
-                'type = "lakebase"',
-                'instance_name = "apx-agent"',  # the pre-#349 scaffold default
-                'host = "${LAKEBASE_HOST}"',
-                'database = "databricks_postgres"',
-            ]
-        )
-    )
-    cfg = _load_agent_config(pyproject_path=pyproject)
-    assert cfg is not None
-    assert cfg.name == "legacy-agent"
-    assert cfg.session is not None and cfg.session.type == "lakebase"
-    assert not hasattr(cfg.session, "instance_name")
-
-
-@pytest.mark.unit
-def test_pre349_pyproject_without_target_names_the_fix(tmp_path) -> None:
-    """The same project without ``target`` is a hard break that says how to fix it."""
-    from pydantic import ValidationError
-
-    from apx_agent._inspection import _load_agent_config
-
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(
-        '[tool.apx.agent]\nname = "legacy-agent"\n\n'
+        '[tool.apx.agent]\nname = "legacy-agent"\n' + target + "\n"
         '[tool.apx.agent.session]\ntype = "lakebase"\ninstance_name = "apx-agent"\n'
     )
-    with pytest.raises(ValidationError, match='add target = "responses_agent"'):
+    with pytest.raises(ToolConfigError, match="migrate-config"):
         _load_agent_config(pyproject_path=pyproject)
 
 

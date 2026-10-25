@@ -361,7 +361,7 @@ def test_read_app_family_permissions_reads_only_group_policy(tmp_path: Path) -> 
 [project]
 name = "kept"
 
-[tool.apx.agent]
+[tool.apx.deploy]
 model = "kept-model"
 
 [tool.apx.apps.permissions]
@@ -383,7 +383,7 @@ can_manage_groups = ["operators", "operators"]
     "content",
     [
         "[project]\nname = 'no-apx'\n",
-        "[tool.apx.agent]\nname = 'no-apps-policy'\n",
+        "[tool.apx.deploy]\nname = 'no-apps-policy'\n",
         "[tool.apx.apps]\nname = 'no-permissions'\n",
     ],
 )

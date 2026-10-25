@@ -42,7 +42,7 @@ class _FixedModel(BaseChatModel):
 def durable_peer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     monkeypatch.setattr("apx_agent._compile._build_chat_databricks", lambda *a, **k: _FixedModel())
     monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda **k: MagicMock())
-    (tmp_path / "pyproject.toml").write_text('[tool.apx.agent]\nname = "peer"\ntarget = "durable_agent_server"\n')
+    (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "peer"\n')
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
