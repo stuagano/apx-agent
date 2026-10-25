@@ -9,7 +9,7 @@
 > documented canonically in [`databricks/databricks-ai-bridge` ›
 > `integrations/agentbricks`](https://github.com/databricks/databricks-ai-bridge/tree/main/integrations/agentbricks).
 > This page tracks that contract (store semantics, `actor_id` scoping, BM25
-> retrieval, forking) and adds the APX `[tool.apx.agent]` declaration, the
+> retrieval, forking) and adds the APX agent declaration (`memory=` / `session=` on the agent), the
 > `ConversationStore` / `MemoryStore` seams, and the local/Lakebase backends.
 > The operation-by-operation map — including what the managed Session Store
 > does **not** cover (transcript search, `session_state`, approval resume) —
@@ -132,17 +132,17 @@ approval.
 Declare the replica count once:
 
 ```toml
-[tool.apx.agent.deploy]
+[tool.apx.deploy]
 instances = 3            # fixed 1–5
 # or, instead of instances:
-# [tool.apx.agent.deploy.autoscale]
+# [tool.apx.deploy.autoscale]
 # min = 2
 # max = 5
 ```
 
 When you declare more than one replica, apx **refuses** to compile the bundle or
 boot in production unless session state is durable — the error names the fix,
-`[tool.apx.agent.session] type='lakebase'` (see the Lakebase session store
+`session={"type": "lakebase", ...}` on the agent (see the Lakebase session store
 above). Local single-process dev only warns. Scaled + Lakebase boots clean.
 
 apx emits native Apps horizontal-scaling bounds into `databricks.yml` as
@@ -264,7 +264,7 @@ def build_instructions(user_id: str, query: str) -> str:
 ### Session extraction
 
 A finished managed session becomes managed memory only when
-`[tool.apx.agent.memory.extraction]` sets `enabled = true` and the session
+`memory={"type": "managed", "extraction": {"enabled": True}}` is declared on the agent and the session
 store is managed too. After the turn, distill that one session:
 
 ```bash
@@ -374,7 +374,9 @@ apx-agent examples find   --agent-id triage --query "why is my bill high?" -k 5
 apx-agent examples save   --agent-id triage --input "..." --output "..." --score 0.9
 ```
 
-Store loaded via `--store-module MODULE:VAR` or `[tool.apx.agent].memory_store` / `example_store` in `pyproject.toml`.
+Store loaded via `--store-module MODULE:VAR`, or a `memory_store` / `example_store` default (`"module:variable"`).
+Those two CLI defaults are still read from the legacy `[tool.apx.agent]` table, and `apx-agent agents migrate-config`
+leaves them there for now; pass `--store-module` to avoid depending on it.
 
 A worked example lives in [`python/examples/memory_demo/`](../python/examples/memory_demo/) — seeded memories, recall/remember tools wired in, prompt assembly building the system prompt at every turn.
 

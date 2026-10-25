@@ -7,7 +7,7 @@
 - **`instructions`** is the system prompt, prepended to every conversation turn.
 - **`tools`** is a list of Python functions, tool objects, or `agent_tool(...)` wrappers. The LLM calls them in a loop until it produces a final answer.
 - **`description`** is the one-line summary used in routing context (RouterAgent/HandoffAgent) and A2A discovery cards. Write it like tool documentation — when to invoke this agent, what it knows.
-- **`model`** names the LLM endpoint in your Databricks workspace. It is not a constructor argument — set it via `[tool.apx.agent]` in `pyproject.toml`. Swap the endpoint to change the underlying model without changing anything else.
+- **`model`** names the LLM endpoint in your Databricks workspace. It is an apx runtime setting — pass it as a keyword argument on the root agent. Swap the endpoint to change the underlying model without changing anything else.
 - **`max_iterations`** is a safety cap on tool-calling loops. It defaults to `None`, in which case LangGraph's own recursion limit applies (apx adds no cap of its own); set an integer (including `0`) to bound the loop explicitly. `0` is a real cap (`recursion_limit=1`), not “unlimited.”
 
 ## Minimal example
@@ -22,11 +22,15 @@ agent = Agent(
 )
 ```
 
-The model is set via `[tool.apx.agent]` in `pyproject.toml`, not on the constructor:
+The model is declared as a keyword argument on the root agent:
 
-```toml
-[tool.apx.agent]
-model = "databricks-meta-llama-3-3-70b-instruct"
+```python
+agent = Agent(
+    name="my_agent",
+    instructions="You are a helpful assistant.",
+    tools=[my_tool],
+    model="databricks-meta-llama-3-3-70b-instruct",
+)
 ```
 
 ## Parameters
@@ -172,7 +176,7 @@ agent = Agent(
 )
 ```
 
-The declarative `GuardrailsConfig` (with `allowed_tools`, `rate_limit`, `injection_detection`) is applied via `[tool.apx.agent]` config, not passed to the constructor. See [../reference/configuration.md](../reference/configuration.md).
+The declarative `GuardrailsConfig` (with `allowed_tools`, `rate_limit`, `injection_detection`) is declared with `guardrails=` on the root agent (or `agent.configure(guardrails=...)`). See [../reference/configuration.md](../reference/configuration.md).
 
 ## Remote sub-agents
 

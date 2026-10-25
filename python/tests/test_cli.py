@@ -1750,7 +1750,7 @@ def test_deploy_name_missing_and_unconfigured_errors(
 
     assert result.exit_code != 0
     assert "--name is required" in result.output
-    assert "[tool.apx.agent].registered_model" in result.output
+    assert "registered_model in [tool.apx.deploy]" in result.output
 
 
 # ---------------------------------------------------------------------------

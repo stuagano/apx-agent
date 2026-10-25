@@ -327,7 +327,7 @@ def _load_agent(module_spec: str) -> Any:
 def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
     """Resolve + finalize an agent for CLI commands.
 
-    Loads [tool.apx.agent] config first, then resolve_agent so template-only
+    Loads the project's settings first, then resolve_agent so template-only
     projects (no agent.py) work via apx-agent agents describe / eval lint /
     eval run / agents run. Falls back to module-import for code-defined agents.
     """
@@ -362,7 +362,7 @@ def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
 
 
 def _config_from_project_or_agent(cwd: Path, module: str):
-    """``[tool.apx.agent]`` when present (merged later); otherwise the Python agent's settings."""
+    """The legacy pyproject table when present (merged later); otherwise the Python agent's settings."""
     from ._inspection import _load_agent_config
     from ._settings import resolve_settings
 
@@ -379,7 +379,7 @@ def _config_from_project_or_agent(cwd: Path, module: str):
 
 
 def _merged_config(agent, config):
-    """``[tool.apx.agent]`` merged with the agent's settings; a conflict is a CLI error."""
+    """The legacy pyproject table merged with the agent's settings; a conflict is a CLI error."""
     from ._settings import SettingsConflict, resolve_settings
 
     try:
@@ -389,7 +389,7 @@ def _merged_config(agent, config):
 
 
 def _recheck_prerequisites(config, ws, *, provision_stores: bool = False) -> None:
-    """Prerequisites ran on [tool.apx.agent] before the agent loaded; re-run them on the merged config.
+    """Prerequisites ran on the pyproject settings before the agent loaded; re-run them on the merged config.
 
     ``provision_stores`` matches the pre-import check it repeats: stores declared only in
     Python (a generated agent.py, 3b-3b) are provisioned here."""
@@ -402,7 +402,7 @@ def _recheck_prerequisites(config, ws, *, provision_stores: bool = False) -> Non
 
 
 def _sync_native_app(app, config) -> None:
-    """Refresh env a native app compiled from [tool.apx.agent] before the agent loaded (APX_MODEL)."""
+    """Refresh env a native app compiled from the pyproject settings before the agent loaded (APX_MODEL)."""
     from ._agentbricks_deploy import compile_native_app
 
     fresh = {e["name"]: e["value"] for e in compile_native_app(config)["config"]["env"]}
@@ -704,7 +704,7 @@ def _interactive_pick_profile() -> str | None:
 def _preflight_databricks_auth() -> None:
     """Fail `apx-agent agents run`/`deploy` with dev-time guidance when auth is unresolved.
 
-    Reads ``profile`` from ``[tool.apx.agent]`` in the local pyproject.toml
+    Reads ``profile`` from ``[tool.apx]`` in the local pyproject.toml
     and applies it before the auth check so saved preferences are honoured
     automatically. When running in a TTY and auth still fails, shows a profile
     picker and offers to save the choice back to pyproject.toml.
@@ -1662,12 +1662,12 @@ from agent import agent
 MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
 
 _ws = _make_workspace_client()
-# Load pyproject.toml config and fully finalize the agent so [tool.apx.agent]
-# blocks (memory, session, tools, guardrails) are honoured on Apps deploy —
+# Load pyproject.toml config and fully finalize the agent so its declared
+# settings (memory, session, tools, guardrails) are honoured on Apps deploy —
 # not just when served via create_app().
 _agent_config = _load_agent_config()
 finalize_agent(agent, _agent_config, ws=_ws)
-# Conversation store: config-driven (Lakebase via [tool.apx.agent].session)
+# Conversation store: config-driven (Lakebase via session in the project's settings)
 # when declared; otherwise an in-process store so multi-turn threading and the
 # dev UI History panel work out of the box. In-memory state resets on restart —
 # declare a session block for durable history.
@@ -1676,7 +1676,7 @@ if _conversation_store is None:
     from apx_agent import InMemoryConversationStore
     _conversation_store = InMemoryConversationStore()
 # agent_id must match the name the dev-UI History panel filters by
-# (the pyproject [tool.apx.agent].name) or conversations stay invisible.
+# (the pyproject name in [tool.apx.deploy]) or conversations stay invisible.
 _invoke_fn, _stream_fn = compile_to_responses_agent(
     agent,
     model=MODEL,
@@ -6625,7 +6625,7 @@ def _warn_empty_predictions(result: Any) -> None:
 )
 @click.option(
     "--model", default=None,
-    help="Databricks serving endpoint for the LLM. Defaults to [tool.apx.agent].model. "
+    help="Databricks serving endpoint for the LLM. Defaults to model= on the agent. "
          "Mutually exclusive with --endpoint-url.",
 )
 @click.option(
@@ -6657,7 +6657,7 @@ def _warn_empty_predictions(result: Any) -> None:
 )
 @click.option(
     "--experiment", default=None,
-    help="MLflow experiment name/path. Falls back to [tool.apx.agent].experiment "
+    help="MLflow experiment name/path. Falls back to experiment in [tool.apx] "
          "in pyproject.toml; falls back to MLflow's default when neither is set.",
 )
 @click.option(
@@ -6757,7 +6757,7 @@ def eval_cmd(
     effective_model = model if model is not None else config.get("model")
     if not effective_model:
         raise click.UsageError(
-            "--model is required when [tool.apx.agent].model is not configured. "
+            "--model is required when model= on the agent is not configured. "
             "Pass --endpoint-url to evaluate a deployed App instead."
         )
     effective_module = module or "agent:agent"
@@ -6940,7 +6940,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
     type=click.Choice(["model-serving", "apps"]),
     help="Deployment destination (where the agent is hosted), auto-detected "
          "from the project when omitted. Distinct from the agent runtime in "
-         "[tool.apx.agent].target. Apps hosts native durable_agent_server "
+         "the agent's target. Apps hosts native durable_agent_server "
          "projects with Agent Bricks; existing Bundle projects keep their "
          "databricks.yml flow. Model Serving logs an MLflow model and deploys "
          "a serving endpoint.",
@@ -6950,7 +6950,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--name", "registered_model_name", default=None,
     help="UC three-part name to register the model under (catalog.schema.model). "
-         "Falls back to [tool.apx.agent].registered_model in pyproject.toml; "
+         "Falls back to registered_model in [tool.apx.deploy] in pyproject.toml; "
          "required when --target model-serving and neither is set.",
 )
 @click.option(
@@ -6963,7 +6963,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
     help="Deployment environment. Native Agent Bricks projects accept dev or "
          "prod. Existing Bundle projects use this as the databricks.yml target "
          "name. Default: dev. This is not the agent runtime "
-         "([tool.apx.agent].target).",
+         "(the agent's target).",
 )
 @click.option(
     "--no-run", is_flag=True,
@@ -7019,7 +7019,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--uc-name", default=None,
     help="UC three-part name (catalog.schema.model) to register the Apps "
-         "version manifest under. Overrides [tool.apx.agent].registered_model "
+         "version manifest under. Overrides registered_model in [tool.apx.deploy] "
          "and the catalog/schema-composed default. Only used by --target apps.",
 )
 @click.option(
@@ -7060,7 +7060,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
                    "Only used by --target model-serving.")
 @click.option(
     "--experiment", default=None,
-    help="MLflow experiment name/path. Falls back to [tool.apx.agent].experiment "
+    help="MLflow experiment name/path. Falls back to experiment in [tool.apx] "
          "in pyproject.toml; falls back to MLflow's default when neither is set. "
          "Only used by --target model-serving.",
 )
@@ -7079,7 +7079,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--agent-name", default=None,
     help="Friendly agent name used for the apx.agent.name UC tag. Falls back to "
-         "[tool.apx.agent].name in pyproject.toml; falls back to the short part "
+         "name in [tool.apx.deploy] in pyproject.toml; falls back to the short part "
          "of --name. Only used by --target model-serving.",
 )
 @click.option(
@@ -7209,7 +7209,7 @@ def deploy(
     runtime readiness. No authored Bundle is required for this flow.
 
     ``--target`` selects the deployment destination; the runtime comes from
-    ``[tool.apx.agent].target``. The destination is auto-detected when omitted.
+    the agent's ``target``. The destination is auto-detected when omitted.
 
     With ``--target model-serving`` runs the canonical flow:
 
@@ -7383,7 +7383,7 @@ def deploy(
         else:
             raise click.UsageError(
                 "--name is required when --target model-serving (or set "
-                "[tool.apx.agent].registered_model in pyproject.toml). "
+                "registered_model in [tool.apx.deploy] in pyproject.toml). "
                 "Pass --target apps to use the Databricks Apps flow instead."
             )
     if env_suffix:
@@ -7394,7 +7394,7 @@ def deploy(
     effective_module = module or "agent:agent"
 
     if dry_run:
-        # Parse [tool.apx.agent.data] for the dry-run plan (fail-closed on
+        # Parse data= on the agent for the dry-run plan (fail-closed on
         # invalid declaration — same as the real deploy path).
         data_config = None
         if "data" in config:
@@ -7593,7 +7593,7 @@ def deploy(
                 err=True,
             )
 
-    # 1b. Data governance — compile [tool.apx.agent.data] to ABAC DDL and apply.
+    # 1b. Data governance — compile data= on the agent to ABAC DDL and apply.
     # Runs after publish_tools so any UC tables the agent owns exist to tag.
     # Fails closed: invalid declaration or DDL failure aborts the deploy.
     if version is None and _deploy_config is not None and _deploy_config.data is not None:
@@ -8042,7 +8042,7 @@ def _emit_serving_deploy_plan(
         "data_governance": (
             "skipped (--version redeploy)" if redeploy
             else "run" if data_config is not None
-            else "skipped (no [tool.apx.agent.data])"
+            else "skipped (no data= on the agent)"
         ),
         "log": "skipped (--version redeploy)" if redeploy else "run",
         "deploy": "skipped (--no-deploy)" if no_deploy else "run",
@@ -10497,7 +10497,7 @@ def _resolve_apps_uc_name(
     Resolution order, first hit wins:
 
       1. ``override`` — the ``--uc-name`` flag.
-      2. ``[tool.apx.agent].registered_model`` in pyproject.
+      2. ``registered_model`` in ``[tool.apx.deploy]`` in pyproject.
       3. ``<catalog>.<schema>.<app_name>`` composed from the config's catalog +
          schema (top-level or under ``template``), with the App name sanitized
          into a UC-legal identifier (hyphens → underscores).
@@ -10534,7 +10534,7 @@ def _resolve_project_uc_name(cwd: Path) -> str | None:
     Shared by ``agents status`` and doctor's deploy-provenance check so both
     answer "which registered model is THIS project's deploy?" identically:
     an Apps bundle name (``databricks.yml``) composed via
-    ``_resolve_apps_uc_name``, else ``[tool.apx.agent].registered_model``.
+    ``_resolve_apps_uc_name``, else ``registered_model`` in ``[tool.apx.deploy]``.
     """
     config = _read_apx_agent_config(cwd / "pyproject.toml")
     try:
@@ -10614,7 +10614,7 @@ def _register_apps_manifest_step(
     if uc_name is None:
         log(
             "# UC registration skipped: no UC model name resolved. Set "
-            "[tool.apx.agent].registered_model (or a non-placeholder "
+            "registered_model in [tool.apx.deploy] (or a non-placeholder "
             "catalog + schema), or pass --uc-name, to enable the Apps version "
             "ledger (discovery in `apx agents list` / topology / governance). "
             "Pass --no-register-uc to silence this."
@@ -10629,7 +10629,7 @@ def _register_apps_manifest_step(
     if not model:
         msg = (
             "UC registration incomplete: no LLM model in "
-            f"[tool.apx.agent].model to log {uc_name} with. Set a model, or "
+            f"model= on the agent to log {uc_name} with. Set a model, or "
             "pass --no-register-uc to intentionally skip the Apps ledger."
         )
         if required:
@@ -11939,7 +11939,7 @@ def _show_deploy_state_status(
 @click.option("--module", default="agent:agent", help='Agent module spec.')
 @click.option("--dry-run", is_flag=True, help="Report what would publish without writing.")
 @click.option("--tools-table", default=None,
-              help="UC Delta tools registry table. Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
+              help="UC Delta tools registry table. Defaults to tools_table in [tool.apx.deploy] or main.apx.agent_tools.")
 @click.option("--no-registry", is_flag=True, help="Skip the tools registry write (UC publish only).")
 @click.option("--profile", default=None, help="Databricks CLI profile.")
 @click.option("--json-output", "json_output", is_flag=True,
@@ -12215,16 +12215,16 @@ def _do_supervisor_add(
 
 
 @agents.command("advertise")
-@click.option("--endpoint", default=None, help="Serving endpoint / app name. Defaults to [tool.apx.agent].name.")
-@click.option("--description", default=None, help="Routing description. Defaults to [tool.apx.agent].description.")
-@click.option("--display-name", default=None, help="Human-readable name. Defaults to [tool.apx.agent].name.")
+@click.option("--endpoint", default=None, help="Serving endpoint / app name. Defaults to name in [tool.apx.deploy].")
+@click.option("--description", default=None, help="Routing description. Defaults to the agent's description.")
+@click.option("--display-name", default=None, help="Human-readable name. Defaults to name in [tool.apx.deploy].")
 @click.option("--endpoint-url", default=None, help="Full URL of the deployed agent (stored in registry table).")
 @click.option("--endpoint-type", default="apps", type=click.Choice(["apps", "model-serving"]),
               help="Deployment type stored in registry. Default: apps.")
 @click.option("--registry-table", default=None,
-              help="UC Delta agent registry table. Defaults to [tool.apx.agent].registry_table or main.apx.agent_registry.")
+              help="UC Delta agent registry table. Defaults to registry_table in [tool.apx.deploy] or main.apx.agent_registry.")
 @click.option("--tools-table", default=None,
-              help="UC Delta tools table. Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
+              help="UC Delta tools table. Defaults to tools_table in [tool.apx.deploy] or main.apx.agent_tools.")
 @click.option("--no-registry", is_flag=True, help="Skip the agent registry write.")
 @click.option("--no-tools", is_flag=True, help="Skip the tools registry write.")
 @click.option("--module", default=None, help="Agent module spec (e.g. agent:agent). Used to enumerate tools.")
@@ -12287,7 +12287,7 @@ def supervisor_create(
 
 @supervisor.command("add")
 @click.option("--endpoint", default=None,
-              help="Model Serving endpoint name. Defaults to [tool.apx.agent].name. "
+              help="Model Serving endpoint name. Defaults to name in [tool.apx.deploy]. "
                    "Mutually exclusive with --app.")
 @click.option("--app", default=None,
               help="Databricks App name hosting the agent (apps-deployed apx agents). "
@@ -12295,9 +12295,9 @@ def supervisor_create(
                    "its apx.apps.app_name tag. Mutually exclusive with --endpoint. "
                    "Requires databricks-sdk >= 0.120.")
 @click.option("--supervisor", "supervisor_id", default=None,
-              help="Supervisor Agent ID. Reads [tool.apx.agent].supervisor_id if set.")
-@click.option("--description", default=None, help="Routing description. Defaults to [tool.apx.agent].description.")
-@click.option("--display-name", default=None, help="Human-readable name. Defaults to [tool.apx.agent].name.")
+              help="Supervisor Agent ID. Reads supervisor_id in [tool.apx.deploy] if set.")
+@click.option("--description", default=None, help="Routing description. Defaults to the agent's description.")
+@click.option("--display-name", default=None, help="Human-readable name. Defaults to name in [tool.apx.deploy].")
 @click.option("--tool-id", default=None, help="Stable tool_id for idempotent re-add.")
 @click.option("--profile", default=None, help="Databricks CLI profile.")
 def supervisor_add(
@@ -12328,7 +12328,7 @@ def supervisor_add(
     supervisor_id = supervisor_id or cfg.get("supervisor_id")
     if not supervisor_id:
         raise click.UsageError(
-            "--supervisor is required (or set [tool.apx.agent].supervisor_id). "
+            "--supervisor is required (or set supervisor_id in [tool.apx.deploy]). "
             "Create one with `apx-agent supervisor create`."
         )
     if not endpoint and not app:
@@ -12397,20 +12397,20 @@ def create_supervisor(
 
 
 @agents.command("publish")
-@click.option("--endpoint", default=None, help="Serving endpoint / app name. Defaults to [tool.apx.agent].name.")
+@click.option("--endpoint", default=None, help="Serving endpoint / app name. Defaults to name in [tool.apx.deploy].")
 @click.option("--supervisor", "supervisor_id", default=None,
-              help="Supervisor Agent ID. Reads [tool.apx.agent].supervisor_id if set; skipped when absent.")
+              help="Supervisor Agent ID. Reads supervisor_id in [tool.apx.deploy] if set; skipped when absent.")
 @click.option("--description", default=None,
-              help="Routing description. Defaults to [tool.apx.agent].description.")
-@click.option("--display-name", default=None, help="Human-readable name. Defaults to [tool.apx.agent].name.")
+              help="Routing description. Defaults to the agent's description.")
+@click.option("--display-name", default=None, help="Human-readable name. Defaults to name in [tool.apx.deploy].")
 @click.option("--tool-id", default=None, help="Stable tool_id for idempotent Supervisor re-publish.")
 @click.option("--endpoint-url", default=None, help="Full URL of the deployed agent (stored in registry table).")
 @click.option("--endpoint-type", default="apps", type=click.Choice(["apps", "model-serving"]),
               help="Deployment type stored in registry. Default: apps.")
 @click.option("--registry-table", default=None,
-              help="UC Delta registry table. Defaults to [tool.apx.agent].registry_table or main.apx.agent_registry.")
+              help="UC Delta registry table. Defaults to registry_table in [tool.apx.deploy] or main.apx.agent_registry.")
 @click.option("--tools-table", default=None,
-              help="UC Delta tools table. Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
+              help="UC Delta tools table. Defaults to tools_table in [tool.apx.deploy] or main.apx.agent_tools.")
 @click.option("--no-registry", is_flag=True, help="Skip the Delta registry write.")
 @click.option("--no-tools", is_flag=True, help="Skip the tools registry write.")
 @click.option("--module", default=None, help="Agent module spec (e.g. agent:agent). Used to enumerate tools for the tools registry.")
@@ -12989,7 +12989,7 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
 @traces.command("list")
 @click.option("--experiment", default=None,
               help="MLflow experiment name/id. Falls back to "
-                   "[tool.apx.agent].experiment in pyproject.toml.")
+                   "experiment in [tool.apx] in pyproject.toml.")
 @click.option("--agent", "agent_name", default=None,
               help="Filter to traces where apx.agent.name matches.")
 @click.option("--operation", default=None,
@@ -13033,7 +13033,7 @@ def trace(
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
     if not effective_experiment:
         raise click.UsageError(
-            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+            "Pass --experiment NAME or set experiment in [tool.apx] in pyproject.toml."
         )
 
     # Parse --tag KEY=VAL filters now; validate before hitting the API.
@@ -13088,7 +13088,7 @@ def trace(
         click.echo("Possible causes:")
         click.echo("  • The agent hasn't handled any requests yet — send a message via the Chat UI or API.")
         click.echo("  • Tracing isn't enabled — set MLFLOW_TRACKING_URI or configure an experiment.")
-        click.echo("  • Wrong experiment name — check [tool.apx.agent].experiment in pyproject.toml.")
+        click.echo("  • Wrong experiment name — check experiment in [tool.apx] in pyproject.toml.")
         return
     click.echo(f"{'TRACE_ID':<36}  {'AGENT':<20}  {'OPERATION':<14}  {'STATUS':<8}  {'DURATION_MS':>10}")
     for r in rows:
@@ -13367,7 +13367,7 @@ def traces_feedback_view_cmd(trace_id: str, fmt: str) -> None:
 @click.option("--trace-id", "trace_ids", multiple=True,
               help="Specific trace IDs to delete (repeatable).")
 @click.option("--experiment", default=None,
-              help="MLflow experiment name. Falls back to [tool.apx.agent].experiment. "
+              help="MLflow experiment name. Falls back to experiment in [tool.apx]. "
                    "Required when using --hours instead of --trace-id.")
 @click.option("--hours", default=None, type=int,
               help="Delete traces older than HOURS hours. "
@@ -13436,7 +13436,7 @@ def traces_delete_cmd(
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
     if not effective_experiment:
         raise click.UsageError(
-            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+            "Pass --experiment NAME or set experiment in [tool.apx] in pyproject.toml."
         )
     import time as _time
     assert hours is not None
@@ -13774,7 +13774,7 @@ def redeploy_cmd(uc_name: str, extra_args: tuple[str, ...]) -> None:
               type=click.Path(exists=True, dir_okay=False),
               help="Newline-separated file of prompts (one per line).")
 @click.option("--model", default=None,
-              help="LLM endpoint. Defaults to [tool.apx.agent].model in pyproject.toml.")
+              help="LLM endpoint. Defaults to model= on the agent.")
 def test_cmd(
     module: str,
     prompts: tuple[str, ...],
@@ -13796,7 +13796,7 @@ def test_cmd(
     effective_model = model or (declared.model if "model" in declared.model_fields_set else None)
     if not effective_model:
         raise click.UsageError(
-            "Pass --model NAME or set [tool.apx.agent].model in pyproject.toml."
+            "Pass --model NAME or set model= on the agent in agent.py."
         )
 
     prompt_list: list[str] = list(prompts)
@@ -14226,7 +14226,7 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
         raise click.ClickException(
             "No agent to check: pass a three-part UC name "
             "(apx-agent agents status catalog.schema.model), or run inside an "
-            "apx project with [tool.apx.agent].registered_model (or a "
+            "apx project with registered_model in [tool.apx.deploy] (or a "
             "databricks.yml Apps bundle + non-placeholder catalog/schema)."
         )
 
@@ -14405,7 +14405,7 @@ def agents_status_cmd(uc_name: str | None, fmt: str, profile: str | None) -> Non
 @click.option(
     "--uc-name", default=None,
     help="UC three-part name (catalog.schema.model) to register the manifest "
-         "under. Overrides [tool.apx.agent].registered_model and the "
+         "under. Overrides registered_model in [tool.apx.deploy] and the "
          "catalog/schema-composed default.",
 )
 @click.option(
@@ -14457,13 +14457,13 @@ def register_agent_cmd(
         if resolved_uc is None:
             raise click.ClickException(
                 "no UC model name resolved. Set "
-                "[tool.apx.agent].registered_model (or a non-placeholder "
+                "registered_model in [tool.apx.deploy] (or a non-placeholder "
                 "catalog + schema) in pyproject.toml, or pass --uc-name."
             )
         model = config.get("model")
         if not model:
             raise click.ClickException(
-                "no LLM model in [tool.apx.agent].model to log "
+                "no LLM model (model= on the agent) to log "
                 f"{resolved_uc} with. Set a model first."
             )
 
@@ -14569,10 +14569,10 @@ def _registry_row_age(updated_at: Any) -> str:
 )
 @click.option("--registry-table", default=None,
               help="UC Delta agent registry table for the advertise-row cleanup. "
-                   "Defaults to [tool.apx.agent].registry_table or main.apx.agent_registry.")
+                   "Defaults to registry_table in [tool.apx.deploy] or main.apx.agent_registry.")
 @click.option("--tools-table", default=None,
               help="UC Delta tools registry table for the advertise-row cleanup. "
-                   "Defaults to [tool.apx.agent].tools_table or main.apx.agent_tools.")
+                   "Defaults to tools_table in [tool.apx.deploy] or main.apx.agent_tools.")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
 @click.option("--json", "as_json", is_flag=True,
@@ -15260,7 +15260,7 @@ def cost(
 
 @traces.command("export")
 @click.option("--experiment", default=None,
-              help="MLflow experiment. Falls back to [tool.apx.agent].experiment.")
+              help="MLflow experiment. Falls back to experiment in [tool.apx].")
 @click.option("--table", "target_table", required=True,
               help="Three-part UC name (catalog.schema.table) for the destination Delta table.")
 @click.option("--hours", default=24, type=int, help="Lookback window in hours.")
@@ -15280,7 +15280,7 @@ def export_traces_cmd(
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
     if not effective_experiment:
         raise click.UsageError(
-            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+            "Pass --experiment NAME or set experiment in [tool.apx] in pyproject.toml."
         )
 
     from apx_agent import export_traces
@@ -15427,7 +15427,7 @@ def eval_chain_cmd(
 
 @eval_group.command("report")
 @click.option("--experiment", default=None,
-              help="MLflow experiment name. Falls back to [tool.apx.agent].experiment.")
+              help="MLflow experiment name. Falls back to experiment in [tool.apx].")
 @click.option("--versions", "n_versions", default=5, type=int,
               help="Number of most-recent eval runs to compare. Default 5.")
 @click.option(
@@ -15458,7 +15458,7 @@ def eval_report_cmd(
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
     if not effective_experiment:
         raise click.UsageError(
-            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+            "Pass --experiment NAME or set experiment in [tool.apx] in pyproject.toml."
         )
 
     try:
@@ -16216,7 +16216,7 @@ def _canary_status_impl(
     if uc_name is None:
         raise click.UsageError(
             "status --target apps needs a UC model name; set "
-            "[tool.apx.agent].registered_model (or a non-placeholder "
+            "registered_model in [tool.apx.deploy] (or a non-placeholder "
             "catalog + schema)."
         )
 
@@ -16551,7 +16551,7 @@ def _canary_promote_impl(
     if uc_name is None:
         raise click.UsageError(
             "promote needs the canary's UC manifest, but no UC model name "
-            "resolves. Set [tool.apx.agent].registered_model (or a "
+            "resolves. Set registered_model in [tool.apx.deploy] (or a "
             "non-placeholder catalog + schema)."
         )
 
@@ -16710,7 +16710,7 @@ def _canary_rollback_impl(
     if uc_name is None:
         raise click.UsageError(
             "rollback needs the UC manifest, but no UC model name resolves. "
-            "Set [tool.apx.agent].registered_model (or a non-placeholder "
+            "Set registered_model in [tool.apx.deploy] (or a non-placeholder "
             "catalog + schema)."
         )
 
@@ -16761,7 +16761,7 @@ def _canary_rollback_impl(
                    "Used to derive the canary App name.")
 @click.option("--experiment", default=None,
               help="MLflow experiment to read traces from. Falls back to "
-                   "[tool.apx.agent].experiment in pyproject.toml.")
+                   "experiment in [tool.apx] in pyproject.toml.")
 @click.option("--hours", default=24, type=int, help="Lookback window. Default 24h.")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
@@ -16782,7 +16782,7 @@ def canary_analyze(
     effective_experiment = experiment or _read_apx_agent_config().get("experiment")
     if not effective_experiment:
         raise click.UsageError(
-            "Pass --experiment NAME or set [tool.apx.agent].experiment in pyproject.toml."
+            "Pass --experiment NAME or set experiment in [tool.apx] in pyproject.toml."
         )
 
     if deploy_target == "model-serving":
@@ -17107,8 +17107,8 @@ def governance_status(
 # against a user-supplied store. The store comes from one of two places:
 #
 #   1. --store-module MODULE:VAR              (explicit flag)
-#   2. [tool.apx.agent].memory_store /         (pyproject fallback)
-#      [tool.apx.agent].example_store
+#   2. memory_store in [tool.apx.agent] /         (pyproject fallback)
+#      example_store in [tool.apx.agent]
 #
 # The referenced variable must be an importable :class:`MemoryStore` or
 # :class:`ExampleStore` instance. The CLI is store-shape-agnostic — anything
@@ -17127,7 +17127,7 @@ def _load_store(
 
     Resolution order:
       1. ``module_spec`` argument (the --store-module flag value).
-      2. ``[tool.apx.agent].{store_kind}_store`` in pyproject.toml.
+      2. ``{store_kind}_store`` in ``[tool.apx.agent]``.
 
     Raises ``click.UsageError`` if no spec is configured anywhere, and
     ``click.ClickException`` on a load failure.
@@ -17139,7 +17139,7 @@ def _load_store(
     if not spec:
         raise click.UsageError(
             f"Pass --store-module MODULE:VAR or set "
-            f"[tool.apx.agent].{store_kind}_store in pyproject.toml. "
+            f"{store_kind}_store in [tool.apx.agent]. "
             f"The variable must be a {store_kind.title()}Store instance."
         )
 
@@ -17224,8 +17224,7 @@ def memory() -> None:
     """Operate on a MemoryStore — recall, remember, forget, list.
 
     Configure the store via ``--store-module MODULE:VAR`` on each command,
-    or set ``[tool.apx.agent].memory_store = "module:variable"`` in
-    ``pyproject.toml`` to share one default across calls.
+    or set ``memory_store = "module:variable"`` in [tool.apx.agent] (``pyproject.toml``) to share one default across calls.
 
     The referenced variable must be an instance of
     :class:`apx_agent.MemoryStore` — typically
@@ -17249,7 +17248,7 @@ def memory_provision_cmd(
     """Create a workspace-scoped Databricks Managed Agent Memory store.
 
     Run once (per store) before deploying an agent configured with
-    ``memory='managed'`` or ``[tool.apx.agent.memory] type='managed'``. The
+    ``memory='managed'`` or ``memory={"type": "managed", ...}`` on the agent. The
     served app principal cannot create the store itself, so this is an
     admin / deploy-time step. Idempotent — safe to re-run.
     """
@@ -17270,7 +17269,7 @@ def memory_provision_cmd(
 @click.option("-k", "top_k", default=5, type=int, help="Top-k. Default 5.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to [tool.apx.agent].memory_store.")
+                   "Falls back to memory_store in [tool.apx.agent].")
 @click.option("--format", "fmt", type=click.Choice(["json", "text"]),
               default="json", help="Output format. Default: json.")
 def memory_recall_cmd(
@@ -17426,7 +17425,7 @@ def memory_list_cmd(
               help="Max memories to export. Default 10000.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to [tool.apx.agent].memory_store.")
+                   "Falls back to memory_store in [tool.apx.agent].")
 def memory_export_cmd(
     principal_id: str,
     output_file: str,
@@ -17475,8 +17474,7 @@ def examples() -> None:
     """Operate on an ExampleStore — find, save, remove, list.
 
     Configure the store via ``--store-module MODULE:VAR`` on each command,
-    or set ``[tool.apx.agent].example_store = "module:variable"`` in
-    ``pyproject.toml`` to share one default across calls.
+    or set ``example_store = "module:variable"`` in [tool.apx.agent] (``pyproject.toml``) to share one default across calls.
 
     The referenced variable must be an instance of
     :class:`apx_agent.ExampleStore` — typically
@@ -17650,7 +17648,7 @@ def examples_list_cmd(
 @click.option("--agent-id", required=True, help="Agent ID to assign to each imported example.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at an ExampleStore instance. "
-                   "Falls back to [tool.apx.agent].example_store.")
+                   "Falls back to example_store in [tool.apx.agent].")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Parse and count rows without writing to the store.")
 @click.option(
@@ -17755,7 +17753,7 @@ def examples_import_cmd(
 # memory consolidate — wrap consolidate_memories with injectable stores/callables
 # ---------------------------------------------------------------------------
 #
-# Pyproject fallback keys (under ``[tool.apx.agent]``):
+# Pyproject fallback keys (in the project's settings):
 #
 #   * ``memory_store``    — memory consolidate, --store (shared w/ memory list/...)
 #   * ``summarize_fn``    — memory consolidate, --summarize-fn
@@ -17783,7 +17781,7 @@ def _load_callable(
         if required:
             raise click.UsageError(
                 f"Pass the {label} MODULE:VAR flag or set "
-                f"[tool.apx.agent].{pyproject_key} in pyproject.toml."
+                f"{pyproject_key} in the project's settings."
             )
         return None
 
@@ -17825,7 +17823,7 @@ def _load_store_spec(
     if not spec:
         raise click.UsageError(
             f"Pass the {label} MODULE:VAR flag or set "
-            f"[tool.apx.agent].{pyproject_key} in pyproject.toml."
+            f"{pyproject_key} in the project's settings."
         )
 
     module_path, variable = _parse_module_spec(spec)
@@ -17869,8 +17867,8 @@ def memory_extract_cmd(
 ) -> None:
     """Distill one completed managed session into declared managed memory.
 
-    Requires ``[tool.apx.agent.memory] type='managed'`` with
-    ``[tool.apx.agent.memory.extraction] enabled=true``, and a managed session
+    Requires ``memory={"type": "managed", ...}`` on the agent with
+    extraction enabled in that ``memory`` setting, and a managed session
     store. The session is not deleted or rewritten. A service failure exits
     non-zero and does not report the extraction as written.
     """
@@ -17882,7 +17880,7 @@ def memory_extract_cmd(
     config = _load_agent_config()
     if config is None or config.memory is None or config.memory.extraction is None:
         raise click.ClickException(
-            "Session extraction is off. Add [tool.apx.agent.memory.extraction] "
+            "Session extraction is off. Enable extraction in the agent's memory= setting "
             "enabled=true under a type='managed' memory store."
         )
     if instructions is not None:
@@ -17907,12 +17905,12 @@ def memory_extract_cmd(
 @memory.command("consolidate")
 @click.option("--store", "store_spec", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to [tool.apx.agent].memory_store.")
+                   "Falls back to memory_store in [tool.apx.agent].")
 @click.option("--principal-id", required=True,
               help="Scope consolidation to a single principal.")
 @click.option("--summarize-fn", "summarize_fn_spec", default=None,
               help="MODULE:VAR of a Sequence[Memory] -> str summarizer. "
-                   "Falls back to [tool.apx.agent].summarize_fn.")
+                   "Falls back to summarize_fn in [tool.apx.agent].")
 @click.option("--namespace", default=None,
               help="Optional namespace filter for the candidate pool.")
 @click.option("--max-age-seconds", default=None, type=float,

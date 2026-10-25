@@ -1,10 +1,12 @@
-# pyproject.toml — [tool.apx.agent]
+# pyproject.toml and agent.py — where settings live
 
 Service Policy declarations are documented in [service-policies.md](service-policies.md).
 
-Every apx-agent app has a `pyproject.toml` with a `[tool.apx.agent]` block.
-This is the **app envelope**: it declares name, model, instructions, and where
-to find the agent code. It is not the agent itself — that lives in `agent.py`.
+An apx-agent app splits its configuration across two places. The agent itself,
+including its model, instructions, guardrails, memory and session backends,
+lives in `agent.py`: the agent is always the variable named `agent`. Deploy and
+dev-loop settings live in `pyproject.toml`, under `[tool.apx.deploy]` and
+`[tool.apx]`.
 
 > This is the quick reference. For exhaustive field documentation see
 > [`docs/reference/configuration.md`](configuration.md).
@@ -13,47 +15,51 @@ to find the agent code. It is not the agent itself — that lives in `agent.py`.
 
 ## Minimal example
 
-```toml
-[tool.apx.agent]
-name        = "my-agent"
-description = "What this agent does."
-model       = "databricks-claude-sonnet-4-6"
-module      = "agent:agent"
+```python
+# agent.py
+from apx_agent import DataAgent
+
+agent = DataAgent(
+    "main", "sales",
+    name="my-agent",
+    description="What this agent does.",
+    model="databricks-claude-sonnet-4-6",
+)
 ```
 
-`module = "agent:agent"` means: import the variable `agent` from the file
-`agent.py`. That variable is your `DataAgent`, `CoworkerAgent`, or any other
-`LlmAgent`.
+```toml
+# pyproject.toml
+[tool.apx.deploy]
+name = "my-agent"
+```
 
 ---
 
-## All top-level fields
+## Agent fields (in `agent.py`)
 
 | Field | Type | Default | What it does |
 |---|---|---|---|
-| `name` | string | required | Agent name; used in traces, the dev UI, and MLflow |
+| `name` | string | required | Agent name; used in traces, the dev UI, and MLflow (deploy name: `[tool.apx.deploy]`) |
 | `description` | string | `""` | Shown in the dev UI and `/.well-known/agent.json` |
 | `model` | string | `"databricks-meta-llama-3-3-70b-instruct"` | Model serving endpoint name |
 | `instructions` | string | `""` | System prompt prepended to every conversation |
-| `module` | string | — | `"file:variable"` pointing at your agent (e.g. `"agent:agent"`) |
 | `temperature` | float | model default | Generation temperature |
 | `max_tokens` | int | model default | Max output tokens |
 | `max_iterations` | int | `10` | Safety cap on the tool-calling loop |
 | `examples` | list[string] | `[]` | Starter prompts shown as chips on the chat landing page |
 | `sub_agents` | list[string] | `[]` | URLs of remote agents to attach as tools |
 
-### Setting these in Python
+### Declaring runtime settings
 
-Any agent accepts the runtime fields as keyword arguments. A field set both in
-Python and in `[tool.apx.agent]` must have the same value.
+`instructions`, `temperature`, `max_tokens`, `max_iterations`, `sub_agents`,
+`memory` and `session` are agent constructor arguments. The runtime settings
+(`model`, `identity`, `target`, `recovery`, `gateway`, `service_policies`,
+`guardrails`, `knowledge`, `vector_search_index`, `bindings`, `url`, `registry`,
+`api_prefix`, `examples`, `workflows`, `data`, `executor`, `example`,
+`description`) are keyword arguments on the root agent, or
+`agent.configure(...)` for an agent built by a factory.
 
 ```python
-# before: pyproject.toml
-# [tool.apx.agent]
-# model = "system.ai.claude-sonnet-4-6"
-# target = "durable_agent_server"
-
-# after: agent.py
 agent = SequentialAgent(
     [researcher, Agent(name="writer", tools=[draft], model="system.ai.claude-opus-4-7")],
     model="system.ai.claude-sonnet-4-6",
@@ -84,9 +90,6 @@ space = "shared-space"    # an App Space picks compute; without one:
 backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
 ```
 
-A field set both here and in `[tool.apx.agent]` (or `[tool.apx.agent.deploy]`)
-must have the same value.
-
 `[tool.apx.deploy]` also holds the registration and publishing keys:
 `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table` and
 `tools_table`. Dev-loop keys live in top-level `[tool.apx]`:
@@ -97,21 +100,39 @@ experiment = "/Users/you@example.com/orders"   # MLflow experiment for run/eval/
 # profile lives in the gitignored .apx.local, under [tool.apx]
 ```
 
-To move a project off `[tool.apx.agent]`:
+---
 
-1. Commit your work.
-2. Run `apx-agent agents migrate-config`. It moves the deploy settings here
-   and prints the keyword arguments to add to your root agent.
-3. Add those arguments, commit, and run it again. It removes
-   `[tool.apx.agent]` once every field is declared in Python.
+## Removed: `[tool.apx.agent]`
+
+The `[tool.apx.agent]` table is deprecated and is being removed. To move an existing
+project, commit your work and run `apx-agent agents migrate-config`. It moves
+runtime settings onto the agent, deploy and registration keys to
+`[tool.apx.deploy]`, and `profile` / `experiment` to `[tool.apx]`. It prints the
+keyword arguments to add to your root agent; add them, commit, and run it again
+to remove the old table. Nested tables map onto dicts: `guardrails` with
+`injection_detection = true` becomes `guardrails={"injection_detection": True}`.
+
+| Setting | Where it lives now |
+|---|---|
+| `model`, `identity`, `target`, `recovery`, `gateway`, `service_policies`, `guardrails`, `knowledge`, `vector_search_index`, `bindings`, `url`, `registry`, `api_prefix`, `examples`, `workflows`, `data`, `executor`, `example`, `description` | keyword argument on the root agent in `agent.py` (`Agent(..., guardrails={...})`), or `agent.configure(...)` for an agent built by a factory |
+| `instructions`, `temperature`, `max_tokens`, `max_iterations`, `sub_agents`, `memory`, `session` | agent constructor arguments; `session=` takes a dict such as `{"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "x"}`; a Lakebase `memory=` dict also needs `embedding_model` and `embedding_dim` |
+| `name`, `host`, deploy fields (space, instances, backend, entrypoint, include, autoscale, ...), `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`, `tools_table` | `[tool.apx.deploy]` in `pyproject.toml` |
+| `profile`, `experiment` | `[tool.apx]` in `pyproject.toml` (`profile` usually in the gitignored `.apx.local`) |
+| graph declarations (`agents` leaves + `root`), `template` | a YAML spec file (`my_agent.yaml`); `apx-agent agents run my_agent.yaml` materializes it |
+| `module = "agent:agent"` | gone: the agent is always the `agent` variable in `agent.py` |
+
+---
 
 ### `examples` — starter prompts
 
-```toml
-examples = [
-    "Show me the top accounts by revenue this quarter",
-    "Which deals closed last month?",
-]
+```python
+agent = DataAgent(
+    "main", "sales",
+    examples=[
+        "Show me the top accounts by revenue this quarter",
+        "Which deals closed last month?",
+    ],
+)
 ```
 
 Clickable chips on the chat landing page. UI-only — no effect on agent
@@ -121,28 +142,26 @@ behavior.
 
 ## Sub-sections
 
-### `[tool.apx.agent.memory]` — facts memory
+### `memory=` — facts memory
 
 Persistent cross-session recall. Stores facts the agent should remember
 across conversations.
 
-```toml
+```python
 # Development: in-process, forgets on restart
-[tool.apx.agent.memory]
-type = "inmemory"
+memory={"type": "inmemory"}
 
 # Production: pgvector on Lakebase (semantic similarity)
-[tool.apx.agent.memory]
-type           = "lakebase"
-host           = "my-lakebase.db.databricks.com"
-database       = "agentdb"
-embedding_model = "databricks-bge-large-en"
-embedding_dim  = 1024
+memory={
+    "type": "lakebase",
+    "host": "my-lakebase.db.databricks.com",
+    "database": "agentdb",
+    "embedding_model": "databricks-bge-large-en",
+    "embedding_dim": 1024,
+}
 
 # Beta: workspace managed memory via AgentKit (requires apx-agent[agentbricks])
-[tool.apx.agent.memory]
-type       = "managed"
-store_name = "agent-memory"
+memory={"type": "managed", "store_name": "agent-memory"}
 ```
 
 Memory tools scope operations to the trusted calling user. Managed-memory actor
@@ -150,7 +169,7 @@ IDs partition data; store permissions are the access-control boundary. Requests 
 without writing.
 
 **A managed memory store is a shared, independently-owned resource — by design.**
-One completed session is distilled only when `[tool.apx.agent.memory.extraction]`
+One completed session is distilled only when `memory={"extraction": {...}}`
 sets `enabled = true`. `apx memory extract --session-id <id> --actor-id <caller>`
 sends that session to the bound memory store. `--dry-run` returns the entries
 without writing them. The session is not deleted, and this does not consolidate
@@ -177,7 +196,7 @@ provisioned at deploy).
 | `host` | lakebase | Lakebase endpoint DNS; supports `$ENV_VAR` |
 | `table_name` | lakebase | UC table path (`catalog.schema.table`) |
 | `store_name` | managed | Workspace memory store display name |
-| `extraction` | — | Opt-in distillation of one completed managed session into this store. Absent means off. Requires `type = "managed"` and `[tool.apx.agent.session] type = "managed"`. |
+| `extraction` | — | Opt-in distillation of one completed managed session into this store. Absent means off. Requires `type = "managed"` and `session={"type": "managed"}`. |
 | `extraction.enabled` | — | Must be true before `apx memory extract` calls the service. Defaults to false. |
 | `extraction.instructions` | — | Approved distillation instructions sent with every extraction. |
 | `auto_create` | no | Create table on first use (default `true`) |
@@ -185,32 +204,33 @@ provisioned at deploy).
 | `tool_prefix` | no | Prefix for tool names (e.g. `"mem_"`) |
 | `include` | no | Subset of tools: `["recall"]`, `["recall","remember"]` |
 
-### `[tool.apx.agent.session]` — session continuity
+### `session=` — session continuity
 
 Ties conversation turns together by `session_id`. History is loaded at the
 start of each turn.
 
-```toml
+```python
 # Development
-[tool.apx.agent.session]
-type = "inmemory"
+session={"type": "inmemory"}
 
 # Durable (survives restart), low-latency chat-style history
-[tool.apx.agent.session]
-type          = "lakebase"
-host          = "my-lakebase.db.databricks.com"
-database      = "agentdb"
+session={
+    "type": "lakebase",
+    "host": "my-lakebase.db.databricks.com",
+    "database": "agentdb",
+}
 ```
 
-### `[tool.apx.agent.guardrails]` — built-in guards
+### `guardrails=` — built-in guards
 
-```toml
-[tool.apx.agent.guardrails]
-blocked_tools        = ["dangerous_tool"]   # raises PermissionError at call time
-allowed_tools        = ["sql", "recall"]    # only these tools are permitted
-rate_limit           = 60                   # calls/minute
-rate_limit_burst     = 10
-injection_detection  = true                 # scan input for common injection patterns
+```python
+guardrails={
+    "blocked_tools": ["dangerous_tool"],   # raises PermissionError at call time
+    "allowed_tools": ["sql", "recall"],    # only these tools are permitted
+    "rate_limit": 60,                      # calls/minute
+    "rate_limit_burst": 10,
+    "injection_detection": True,           # scan input for common injection patterns
+}
 ```
 
 Guard order within `before_tool` (first raise wins): denylist → allowlist →
@@ -248,71 +268,65 @@ scope via `build_tool(scope=ToolScope(...))`.
 
 ## Complete annotated example
 
-```toml
-[tool.apx.agent]
-name        = "payroll-coworker"
-description = "Payroll analyst across Kronos and Workday data."
-model       = "databricks-claude-sonnet-4-6"
-module      = "agent:agent"           # imports `agent` from agent.py
-instructions = ""                     # CoworkerAgent sets its own grounded instructions
-max_iterations = 15
-
-examples = [
-    "Why doesn't this paycheck match the hours worked?",
-    "Show me all employees with a discrepancy this pay period",
-    "What pay rules applied to employee 4821 last week?",
-]
-
-[tool.apx.agent.memory]
-type            = "lakebase"           # persists across sessions
-host            = "${LAKEBASE_HOST}"
-database        = "payroll_coworker"
-embedding_model = "databricks-bge-large-en"
-embedding_dim   = 1024
-
-[tool.apx.agent.session]
-type       = "lakebase"
-host       = "${LAKEBASE_HOST}"
-database   = "payroll_coworker"
-table_name = "main.payroll.apx_sessions"
-
-[tool.apx.agent.guardrails]
-rate_limit = 120
-```
-
-And the matching `agent.py`:
-
 ```python
+# agent.py
 from apx_agent import CoworkerAgent
 
 agent = CoworkerAgent(
     "main", "payroll",
+    name="payroll-coworker",
+    description="Payroll analyst across Kronos and Workday data.",
+    model="databricks-claude-sonnet-4-6",
     persona="a payroll operations analyst",
     join_key="employee ID",
     objective="surface mismatches between hours worked and paychecks issued",
-    memory="persistent",              # picks up [tool.apx.agent.memory] if present
+    max_iterations=15,
+    examples=[
+        "Why doesn't this paycheck match the hours worked?",
+        "Show me all employees with a discrepancy this pay period",
+        "What pay rules applied to employee 4821 last week?",
+    ],
+    memory={                              # persists across sessions
+        "type": "lakebase",
+        "host": "${LAKEBASE_HOST}",
+        "database": "payroll_coworker",
+        "embedding_model": "databricks-bge-large-en",
+        "embedding_dim": 1024,
+    },
+    session={
+        "type": "lakebase",
+        "host": "${LAKEBASE_HOST}",
+        "database": "payroll_coworker",
+        "table_name": "main.payroll.apx_sessions",
+    },
+    guardrails={"rate_limit": 120},
 )
+```
+
+```toml
+# pyproject.toml
+[tool.apx.deploy]
+name = "payroll-coworker"
 ```
 
 ---
 
 ## What goes where
 
-**TOML is ops. Python is behavior.**
-
-You could swap the model or tighten a rate limit without touching `agent.py`.
-You could point the agent at a different schema without touching `pyproject.toml`.
+**`pyproject.toml` is ops. `agent.py` is the agent.**
 
 | | `pyproject.toml` | `agent.py` |
 |---|---|---|
-| Name, model, description | ✓ | — |
-| Memory + session backend | ✓ | — |
-| Rate limits, guardrails | ✓ | — |
-| UI starter prompts | ✓ | — |
+| Deploy name, host, space, instances | `[tool.apx.deploy]` | — |
+| MLflow experiment, profile | `[tool.apx]` | — |
+| Model, description, instructions | — | agent arguments |
+| Memory + session backend | — | `memory=`, `session=` |
+| Rate limits, guardrails | — | `guardrails=` |
+| UI starter prompts | — | `examples=` |
 | What data it talks to | — | `DataAgent("catalog", "schema")` |
 | What tools it has | — | `genie_space=`, `extra_tools=[...]` |
 | Persona / role | — | `persona=` arg |
-| How agents compose | — | `RouterAgent`, `SequentialAgent`, … |
+| How agents compose | — | `RouterAgent`, `SequentialAgent`, ... |
 
 ---
 

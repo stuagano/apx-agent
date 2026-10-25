@@ -45,7 +45,7 @@ def test_python_fills_fields_toml_leaves_unset() -> None:
 
 
 def test_conflict_with_toml_fails() -> None:
-    with pytest.raises(ValueError, match=r"model: agent.py sets 'a' on agent 'root'; \[tool.apx.agent\] sets 'b'. Set it in one place."):
+    with pytest.raises(ValueError, match=r"model: agent.py sets 'a' on agent 'root'; pyproject.toml sets 'b'. Set it in one place."):
         resolve_settings(_leaf("root", model="a"), _toml(model="b"))
 
 

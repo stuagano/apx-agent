@@ -36,15 +36,12 @@ and [Configuration](../reference/configuration.md).
 
 ## One logical graph across app boundaries
 
-A named binding changes where one logical leaf executes without changing the
+A named binding, declared with `bindings=` on the root agent, changes where one logical leaf executes without changing the
 Python graph:
 
 ```toml
-[tool.apx.agent]
+[tool.apx]
 experiment = "/Shared/research-assistant"
-
-[tool.apx.agent.bindings]
-pricing = "$PRICING_APP_URL"
 ```
 
 ```python
@@ -53,7 +50,10 @@ from apx_agent import Agent, RouterAgent, SequentialAgent
 data = Agent(name="data", description="Looks up governed account facts.")
 pricing = Agent(name="pricing", description="Produces an approved price.")
 review = SequentialAgent([data, pricing], name="review")
-root = RouterAgent(agents=[data, review])
+root = RouterAgent(
+    agents=[data, review],
+    bindings={"pricing": "$PRICING_APP_URL"},
+)
 ```
 
 `pricing` is still a normal named leaf in source and in the visible topology.

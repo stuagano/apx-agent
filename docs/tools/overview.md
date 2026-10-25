@@ -286,7 +286,7 @@ my-agent/
 ├── tools/
 │   ├── __init__.py           # May be empty
 │   └── sales.py              # Factory calls or custom @tool functions
-├── pyproject.toml           # Packaging, [tool.apx.agent], deployment settings
+├── pyproject.toml           # Packaging, [tool.apx.deploy], deployment settings
 └── .build/agent.toml         # Generated native runtime contract; do not edit
 ```
 
@@ -338,8 +338,8 @@ not silently ignored or merged.
    Python string literals containing `$VAR` are not automatically expanded.
 3. Import the callables in `agent.py` and pass them to `Agent(tools=[...])`, or
    `DataAgent` / `CoworkerAgent(extra_tools=[...])`.
-4. Remove the legacy tool tables. Keep non-tool `[tool.apx.agent]` and deployment
-   configuration in `pyproject.toml`. `.build/agent.toml` remains generated output,
+4. Remove the legacy tool tables. Keep deployment
+   configuration in `pyproject.toml` and runtime settings on the agent in `agent.py`. `.build/agent.toml` remains generated output,
    not a replacement tool-authoring file.
 
 For per-tool identity, UC ceilings, secret scopes, or caller restrictions, use

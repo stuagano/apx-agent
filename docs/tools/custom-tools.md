@@ -314,12 +314,12 @@ Each `http_tool` covers one fixed operation. To expose multiple operations from 
 
 ### Declaring the connection resource
 
-In `pyproject.toml`, declare the UC HTTP connection so `apx-agent agents deploy` wires the `USE_CONNECTION` grant:
+`http_tool` declares its UC HTTP connection as a `uc_connection` resource, so `apx-agent agents deploy` wires the `USE_CONNECTION` grant with no extra step. A custom tool that calls a connection some other way declares it with `attach_resources`:
 
-```toml
-[[tool.apx.agent.resources]]
-type = "uc_connection"
-name = "weather_api"
+```python
+from apx_agent import ResourceSpec, attach_resources
+
+attach_resources(my_tool, [ResourceSpec("uc_connection", "weather_api")])
 ```
 
 ### Creating and granting the connection

@@ -871,7 +871,7 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False, native: b
     setup_banner = """
 <div id="setup-banner">
   <strong>⚠ Agent not configured</strong><br>
-  Add <code>[tool.apx.agent]</code> to <code>pyproject.toml</code> and create
+  Declare an agent in <code>agent.py</code> and create
   <code>src/{app}/backend/agent_router.py</code> with an <code>Agent(tools=[...])</code> call,
   then restart the dev server.
 </div>""" if not_configured else ""

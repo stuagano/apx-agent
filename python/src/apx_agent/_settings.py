@@ -1,4 +1,4 @@
-"""apx runtime settings declared on the agent tree, merged with [tool.apx.agent].
+"""apx runtime settings declared on the agent tree, merged with pyproject.toml.
 
 See docs/design/agent-toml-source-of-truth.md, "Sub-project 2"."""
 
@@ -20,7 +20,7 @@ _ROOT_ONLY = {"memory": "memory_config", "session": "session_config", "descripti
 
 
 class SettingsConflict(ValueError):
-    """Python and [tool.apx.agent], or a child and the root, declare different values."""
+    """Python and pyproject.toml, or a child and the root, declare different values."""
 
 
 def _label(agent: BaseAgent) -> str:
@@ -78,7 +78,7 @@ def resolve_settings(agent: BaseAgent, toml: AgentConfig | None) -> AgentConfig:
             theirs, mine = getattr(toml, field), getattr(ours, field)
             if field in toml.model_fields_set and theirs != mine:
                 raise SettingsConflict(f"{field}: agent.py sets {mine!r} on agent {_label(agent)!r}; "
-                                 f"[tool.apx.agent] sets {theirs!r}. Set it in one place.")
+                                 f"pyproject.toml sets {theirs!r}. Set it in one place.")
         config = toml.model_copy(update={f: getattr(ours, f) for f in declared}) if declared else toml
 
     from ._agents import BaseAgent

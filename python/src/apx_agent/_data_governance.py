@@ -1,4 +1,4 @@
-"""Declared data governance — compile ``[tool.apx.agent.data]`` to UC ABAC DDL.
+"""Declared data governance — compile ``data=`` to UC ABAC DDL.
 
 The ``data:`` block in ``AgentConfig`` declares governed tags, table tags, and
 row-filter / column-mask policies. This module compiles that declaration to a
@@ -173,7 +173,7 @@ def default_agent_tags_plan(table_name: str, *, kind: str) -> DataGovernancePlan
     Every UC table an agent creates (violations, trace export, registry,
     tools) carries ``apx_agent_managed = 'true'`` and
     ``apx_agent_kind = '<kind>'`` so catalog/schema-level ABAC policies can
-    target agent data even without an explicit ``[tool.apx.agent.data]``
+    target agent data even without an explicit ``data=``
     declaration. Raises ``ValueError`` for a kind outside the taxonomy —
     extending it means adding to ``DEFAULT_AGENT_KINDS``.
     """

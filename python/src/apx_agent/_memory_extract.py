@@ -99,12 +99,13 @@ def extract_declared_session(
     session = config.session
     if not extraction_enabled(config) or memory is None or memory.extraction is None:
         raise ValueError(
-            "Session extraction is off. Declare [tool.apx.agent.memory] "
-            "type='managed' with [tool.apx.agent.memory.extraction] enabled=true."
+            "Session extraction is off. Declare memory= "
+            "type='managed' with extraction enabled (memory={'type': 'managed', "
+            "'extraction': {'enabled': True}})."
         )
     if session is None or session.type != "managed":
         raise ValueError(
-            "Session extraction requires [tool.apx.agent.session] type='managed'. "
+            "Session extraction requires session= type='managed'. "
             "The service reads the completed transcript from that store."
         )
     if not isinstance(session_id, str) or not session_id.strip():

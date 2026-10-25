@@ -1165,7 +1165,7 @@ def chat_agent_for(
                 "Short-term memory: in-process (InMemorySaver) for agent %r — "
                 "remembers within a replica per session_id, but resets on "
                 "restart and does not span replicas. Configure a "
-                "[tool.apx.agent.session] type='lakebase' block for a durable "
+                "session={\"type\": \"lakebase\"} on the agent for a durable "
                 "cross-restart checkpointer (PostgresSaver) so thread state and "
                 "pending approvals survive restarts.",
                 getattr(agent, "name", None),

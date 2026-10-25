@@ -35,7 +35,7 @@ Deep-link to a specific trace: `/_apx/traces/{trace_id}`.
 When deployed to Databricks, traces flow into MLflow. Each agent writes to the experiment configured in `pyproject.toml`:
 
 ```toml
-[tool.apx.agent]
+[tool.apx]
 experiment = "/Shared/research-assistant"
 ```
 
@@ -71,7 +71,7 @@ Configure the shared destination on every participating application, for
 example:
 
 ```toml
-[tool.apx.agent]
+[tool.apx]
 experiment = "/Shared/research-assistant"
 ```
 
@@ -110,7 +110,7 @@ Every framework-emitted span carries a stable set of `apx.*` attributes. These a
 ### Agent & session
 | Attribute | Value |
 |---|---|
-| `apx.agent.name` | Agent name from `[tool.apx.agent]` |
+| `apx.agent.name` | The agent's name |
 | `apx.agent.version` | Deployed version |
 | `apx.session.id` | Session identifier for multi-turn conversations |
 | `apx.operation` | `predict` \| `predict_stream` \| `tool_call` \| `model_call` \| `sub_agent_call` |

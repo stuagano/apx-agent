@@ -9,16 +9,14 @@ human feedback, judge calibration, production scoring, and issue triage.
 Each agent gets its own experiment so runs, traces, and eval results stay organized. Set the experiment at three layers, in priority order:
 
 1. **CLI flag** — `apx-agent agents deploy --experiment ...`, `apx-agent eval run --experiment ...`
-2. **`[tool.apx.agent]` in pyproject** — `experiment = "/Users/me/agents/my_agent"`
+2. **`[tool.apx]` in pyproject** — `experiment = "/Users/me/agents/my_agent"`
 3. **Direct kwarg** — `log_agent(..., experiment=...)`, `evaluate(..., experiment=...)`
 
 When none is set, MLflow's currently-active experiment (or default) is used.
 
 ```toml
 # pyproject.toml
-[tool.apx.agent]
-name = "customer_triage"
-model = "databricks-claude-sonnet-4-6"
+[tool.apx]
 experiment = "/Users/me@company.com/agents/customer_triage"
 ```
 

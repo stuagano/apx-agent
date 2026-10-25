@@ -107,20 +107,24 @@ memory/session degrade to no-op rather than crashing.
 the bare `"lakebase"` value exists to catch a typo where you meant to declare
 an explicit backend block yourself. To fully control the Lakebase connection
 (non-default host/database/embedding model), pass `memory="off"` (or omit it)
-and declare the backend explicitly in `pyproject.toml`:
+and declare the backend explicitly as a dict:
 
-```toml
-[tool.apx.agent.memory]
-type           = "lakebase"
-host           = "my-lakebase.db.databricks.com"
-database       = "agentdb"
-embedding_model = "databricks-bge-large-en"
-embedding_dim  = 1024
+```python
+agent = CoworkerAgent(
+    "main", "payroll",
+    memory={
+        "type": "lakebase",
+        "host": "my-lakebase.db.databricks.com",
+        "database": "agentdb",
+        "embedding_model": "databricks-bge-large-en",
+        "embedding_dim": 1024,
+    },
+)
 ```
 
 The upgrade path is: `off → inmemory → persistent`. Start with `off` (the
 default) and add `memory="persistent"` when you want facts to survive
-restarts; declare an explicit `[tool.apx.agent.memory]` block only when the
+restarts; pass an explicit `memory={...}` dict only when the
 generated Lakebase defaults don't fit (custom host/database/embedding model),
 or to use `"managed"` instead.
 
@@ -149,16 +153,14 @@ agent = CoworkerAgent(
     objective="surface mismatches between hours worked and paychecks issued",
     # memory="persistent",  # uncomment to remember facts across sessions
     name="my-coworker",
+    model="databricks-claude-sonnet-4-6",
 )
 ```
 
 **`pyproject.toml`** — the app envelope:
 ```toml
-[tool.apx.agent]
-name        = "my-coworker"
-description = "An apx-agent on Databricks Apps."
-model       = "databricks-claude-sonnet-4-6"
-module      = "agent:agent"
+[tool.apx.deploy]
+name = "my-coworker"
 ```
 
 Edit `agent.py` to point at your catalog/schema and set a persona. Don't
@@ -258,7 +260,7 @@ builds.
 
 ## Further reading
 
-- [`docs/reference/configuration.md`](../reference/configuration.md) — full `[tool.apx.agent.memory]` and `[tool.apx.agent.session]` field reference
+- [`docs/reference/configuration.md`](../reference/configuration.md) — full `memory` and `session` field reference
 - [`docs/running/sessions-and-memory.md`](../running/sessions-and-memory.md) — how memory and session stores work under the hood
 - [`docs/agents/coworker-use-cases.md`](coworker-use-cases.md) — the five two-system join use cases in detail
 - [`python/src/apx_agent/coworker.py`](../../python/src/apx_agent/coworker.py) — the implementation (it's short)

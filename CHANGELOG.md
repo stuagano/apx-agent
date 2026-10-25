@@ -109,6 +109,7 @@ and managed sessions and memory replace app-owned state on that path.
 
 ### Docs
 
+- **Messages and docs name each setting's new home.** CLI help, error messages and the user docs stop telling you to write `[tool.apx.agent]`: runtime settings are keyword arguments on the agent in `agent.py`, deploy and registration keys go in `[tool.apx.deploy]`, `profile`/`experiment` in `[tool.apx]`, graphs and templates in YAML specs. `docs/reference/pyproject-toml.md` lists every home and points existing projects at `apx-agent agents migrate-config`. The `memory_store`/`example_store`/`summarize_fn` CLI defaults are still read from the old table for now.
 - How a durable agent operates, App Space vs serverless runtime vs horizontal
   scaling, where managed stores live, and the native execution boundary
   (#880–#897).

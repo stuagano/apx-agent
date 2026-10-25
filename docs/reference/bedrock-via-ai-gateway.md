@@ -4,10 +4,8 @@ APX sends the declared chat model unchanged through Unity Catalog AI Gateway.
 Declare an existing model service, or a supported Databricks foundation-model
 name. Deployment does not create or reconcile a Model Serving endpoint for chat.
 
-```toml
-[tool.apx.agent]
-name = "support-agent"
-model = "main.ai.support_chat"
+```python
+agent = Agent(name="support-agent", model="main.ai.support_chat")
 ```
 
 `main.ai.support_chat` is an example name: create and authorize that service
@@ -24,7 +22,7 @@ of an AI Gateway model service configured for that provider:
 2. Grant the calling service principal `EXECUTE` on the model service and
    `USE CATALOG` / `USE SCHEMA` on its parents.
 3. Set APX `model` to that service name, for example `main.ai.support_chat`.
-4. Remove the old `[tool.apx.agent.gateway]` chat settings. These legacy
+4. Remove the old `gateway=` chat settings from the agent. These legacy
    endpoint settings do not configure Gateway model-service policies.
 5. Verify a bounded request with the intended deployment identity before
    deployment. APX validates the declaration locally; that does not prove the

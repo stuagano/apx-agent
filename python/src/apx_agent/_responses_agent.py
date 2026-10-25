@@ -1056,7 +1056,7 @@ def compile_to_responses_agent(
         agent_id: Identifier bound to conversations created by these handlers,
             e.g. ``"my-agent"``. Pass the SAME name the reader filters by —
             the dev-UI History panel lists ``list_conversations(agent_id=
-            config.name)``, so the pyproject ``[tool.apx.agent].name`` is the
+            config.name)``, so the ``[tool.apx.deploy]`` ``name`` is the
             right value. Falls back to ``agent.name`` when omitted.
 
     Returns:
@@ -1104,7 +1104,7 @@ def compile_to_responses_agent(
             logger.info(
                 "Short-term memory: in-process (InMemorySaver) for ResponsesAgent "
                 "%r — per-replica, resets on restart. Configure "
-                "[tool.apx.agent.session] for durable memory.",
+                "session= on the agent for durable memory.",
                 _agent_id,
             )
 

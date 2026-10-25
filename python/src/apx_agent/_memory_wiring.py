@@ -53,7 +53,7 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
             return None
         if not cfg.host:
             raise ValueError(
-                "[tool.apx.agent.memory] type='lakebase' requires host (the "
+                "memory= type='lakebase' requires host (the "
                 "Lakebase project endpoint or instance DNS)."
             )
         # Resolve $ENV_VAR in host — imported locally to avoid top-level
@@ -67,15 +67,15 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
             return None
         if not cfg.database:
             raise ValueError(
-                "[tool.apx.agent.memory] type='lakebase' requires database."
+                "memory= type='lakebase' requires database."
             )
         if not cfg.embedding_model:
             raise ValueError(
-                "[tool.apx.agent.memory] type='lakebase' requires embedding_model."
+                "memory= type='lakebase' requires embedding_model."
             )
         if cfg.embedding_dim is None:
             raise ValueError(
-                "[tool.apx.agent.memory] type='lakebase' requires embedding_dim."
+                "memory= type='lakebase' requires embedding_dim."
             )
         from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
         from ._embeddings import make_embedding_fn  # noqa: PLC0415
@@ -97,7 +97,7 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
             return None
         if not cfg.store_name:
             raise ValueError(
-                "[tool.apx.agent.memory] type='managed' requires store_name "
+                "memory= type='managed' requires store_name "
                 "(a workspace memory store display name, e.g. 'agent-memory')."
             )
         from ._memory_managed import ManagedMemoryStore  # noqa: PLC0415
@@ -115,7 +115,7 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
         )
 
     raise ValueError(
-        f"[tool.apx.agent.memory] unknown type {cfg.type!r}. "
+        f"memory= has unknown type {cfg.type!r}. "
         "Known: inmemory, lakebase, managed."
     )
 
@@ -141,12 +141,12 @@ def _build_example_store(cfg: Any, ws: Any | None) -> Any | None:
         host = _resolve_env_var(cfg.host) if cfg.host else None
         if not host or not cfg.database:
             raise ValueError(
-                "[tool.apx.agent.example] type='lakebase' requires host (the "
+                "example= type='lakebase' requires host (the "
                 "Lakebase endpoint) and database."
             )
         if not cfg.embedding_model or cfg.embedding_dim is None:
             raise ValueError(
-                "[tool.apx.agent.example] type='lakebase' requires embedding_model and embedding_dim."
+                "example= type='lakebase' requires embedding_model and embedding_dim."
             )
         from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
         from ._embeddings import make_embedding_fn  # noqa: PLC0415
@@ -166,7 +166,7 @@ def _build_example_store(cfg: Any, ws: Any | None) -> Any | None:
         )
 
     raise ValueError(
-        f"[tool.apx.agent.example] unknown type {cfg.type!r}. "
+        f"example= has unknown type {cfg.type!r}. "
         "Known: inmemory, lakebase."
     )
 
@@ -215,7 +215,7 @@ def attach_declared_memory(
     register = getattr(agent, "_register_tool", None)
     if register is None:
         logger.warning(
-            "[tool.apx.agent.memory/example] declared on a %s root that has no "
+            "memory=/example= declared on a %s root that has no "
             "_register_tool — skipping (attach on a leaf LlmAgent).",
             type(agent).__name__,
         )
@@ -233,7 +233,7 @@ def attach_declared_memory(
     from ._example_tools import make_example_tools  # noqa: PLC0415
 
     # --- memory ---
-    # Explicit [tool.apx.agent.memory] block wins; else use the agent-carried
+    # Explicit memory= block wins; else use the agent-carried
     # config (e.g. CoworkerAgent.memory_config). The framework supplies ``ws``.
     mcfg = config.memory if config.memory is not None else getattr(agent, "memory_config", None)
     if mcfg is not None:
@@ -242,7 +242,7 @@ def attach_declared_memory(
             store = _build_memory_store(mcfg, ws)
         except (ValueError, ImportError) as exc:
             logger.warning(
-                "[tool.apx.agent.memory] build failed — skipping memory tools: %s",
+                "memory= build failed — skipping memory tools: %s",
                 exc,
             )
         # Managed memory has no runtime auto-create, so probe that the workspace store
@@ -258,7 +258,7 @@ def attach_declared_memory(
             # to build would leave /readyz reporting memory="ok" with no store.
             if mcfg.type == "managed":
                 logger.warning(
-                    "[tool.apx.agent.memory] managed store %r not active (missing "
+                    "memory= managed store %r not active (missing "
                     "workspace creds or not provisioned). Provision it with "
                     "`apx-agent memory provision --store %s`. Memory tools will be absent.",
                     mcfg.store_name, mcfg.store_name,
@@ -269,7 +269,7 @@ def attach_declared_memory(
                 )
             elif mcfg.type == "lakebase" and ws is None:
                 logger.warning(
-                    "[tool.apx.agent.memory] type=%r requires ws; ws=None at this point "
+                    "memory= type=%r requires ws; ws=None at this point "
                     "(deploy with valid Databricks credentials). Memory tools will be absent.",
                     mcfg.type,
                 )
@@ -299,7 +299,7 @@ def attach_declared_memory(
                 nm = getattr(fn, "__name__", None)
                 if nm in existing:
                     logger.warning(
-                        "[tool.apx.agent.memory] declares %r but the agent already wires "
+                        "memory= declares %r but the agent already wires "
                         "a tool with that name — keeping the code-wired tool, ignoring "
                         "the declared one. Use tool_prefix to mount both.",
                         nm,
@@ -317,7 +317,7 @@ def attach_declared_memory(
             estore = _build_example_store(ecfg, ws)
         except (ValueError, ImportError) as exc:
             logger.warning(
-                "[tool.apx.agent.example] build failed — skipping example tools: %s",
+                "example= build failed — skipping example tools: %s",
                 exc,
             )
         if estore is not None:
@@ -333,7 +333,7 @@ def attach_declared_memory(
                 nm = getattr(fn, "__name__", None)
                 if nm in existing:
                     logger.warning(
-                        "[tool.apx.agent.example] declares %r but name collision — "
+                        "example= declares %r but name collision — "
                         "keeping code-wired tool.",
                         nm,
                     )
@@ -364,13 +364,13 @@ def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
     if cfg.type == "lakebase":
         if ws is None:
             logger.warning(
-                "[tool.apx.agent.session] type='lakebase' requires ws; "
+                "session= type='lakebase' requires ws; "
                 "skipping conversation store (deploy with valid Databricks credentials)."
             )
             return None
         if not cfg.host or not cfg.database:
             raise ValueError(
-                "[tool.apx.agent.session] type='lakebase' requires host (the "
+                "session= type='lakebase' requires host (the "
                 "Lakebase project endpoint or instance DNS) and database."
             )
         from ._lakebase_engine import build_lakebase_engine  # noqa: PLC0415
@@ -392,7 +392,7 @@ def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
         )
 
     raise ValueError(
-        f"[tool.apx.agent.session] unknown type {cfg.type!r}. "
+        f"session= has unknown type {cfg.type!r}. "
         "Known: inmemory, lakebase."
     )
 
@@ -428,7 +428,7 @@ def resolve_conversation_store(
         return _build_conversation_store(scfg, ws)
     except (ValueError, ImportError) as exc:
         logger.warning(
-            "[tool.apx.agent.session] build failed — no conversation store: %s", exc
+            "session= build failed — no conversation store: %s", exc
         )
         return None
 
@@ -469,7 +469,7 @@ def resolve_checkpointer(
         # Broad by design: build eagerly opens a pool and runs .setup(), so this
         # can fail with connection/credential errors, not just import/config ones.
         logger.warning(
-            "[tool.apx.agent.session] durable checkpointer unavailable — served "
+            "session= durable checkpointer unavailable — served "
             "agent falls back to in-process memory (approvals won't survive a "
             "restart): %s", exc,
         )
@@ -510,7 +510,7 @@ def _lakebase_checkpointer_target(
 
     if agent is not None and not isinstance(agent, LlmAgent):
         logger.warning(
-            "[tool.apx.agent.session] type='lakebase' is only supported for an "
+            "session= type='lakebase' is only supported for an "
             "LlmAgent; %s runs stateless (no durable checkpointer).",
             type(agent).__name__,
         )
@@ -592,11 +592,11 @@ def scaled_in_memory_error(replicas: int) -> str:
     """Fix-naming guardrail message for both catch points (compile + runtime boot)."""
     return (
         f"This app declares {replicas} replicas "
-        "([tool.apx.agent.deploy]) but its session state is in-memory (per-process). "
+        "([tool.apx.deploy]) but its session state is in-memory (per-process). "
         "Databricks Apps affinity is best-effort, so a turn landing on another replica "
         "silently loses history and any mid-turn approval. Make session state durable by "
-        "declaring [tool.apx.agent.session] type='lakebase', "
-        "or remove the [tool.apx.agent.deploy] scaling block."
+        "declaring session= type='lakebase', "
+        "or remove the [tool.apx.deploy] scaling block."
     )
 
 

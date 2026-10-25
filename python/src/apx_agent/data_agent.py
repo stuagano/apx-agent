@@ -523,7 +523,7 @@ class DataTemplate:
     Genie / Vector Search) — the reference Template implementation.
 
     The Spec covers only role/skill inputs. Persona (``model``, instruction
-    tone, generation knobs) is layered later from ``[tool.apx.agent]`` via
+    tone, generation knobs) is layered later from the agent's settings via
     ``apply_config_knobs``; ``name``/``instructions``/``extra_tools`` from the
     direct ``DataAgent`` constructor are intentionally out of the Spec for now.
     """

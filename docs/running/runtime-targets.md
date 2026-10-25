@@ -31,7 +31,7 @@ Databricks product responsibility, not another APX runtime target.
 stores are the Agent Bricks product surface, documented canonically in
 [`databricks/databricks-ai-bridge` › `integrations/agentbricks`](https://github.com/databricks/databricks-ai-bridge/tree/main/integrations/agentbricks)
 (README + `cli.md`). This page tracks that contract and adds what APX layers on
-top: the declarative `[tool.apx.agent]` envelope, governance wiring, and
+top: the declarative agent settings (declared on the agent in `agent.py`), governance wiring, and
 behavior observed on live deployments. Where the two could drift, upstream is
 the source of truth for the API and stores; APX owns the declaration and policy.
 
@@ -219,7 +219,7 @@ Generated deployment names use `agent-bricks-<name>` (30 characters
 maximum). Existing unprefixed Apps are never silently renamed: regenerate the
 project or explicitly select a prefixed `--app-name`, which targets a different
 App. A name the prefix would break, such as an `mcp-` name that Databricks
-needs to discover the App as an MCP server, needs `[tool.apx.agent.deploy]
+needs to discover the App as an MCP server, needs `[tool.apx.deploy]
 backend = "apps_api"`. That path keeps the declared name and works with or
 without an App Space. Existing managed stores must still pass APX's read-access checks. The CLI
 binds tracing to `/Users/<deploying-user>/<app-name>-<bundle-target>` unless
@@ -289,18 +289,19 @@ from apx_agent import LlmAgent
 agent = LlmAgent(name="orders", tools=[])
 ```
 
-Declare its runtime and managed stores in `pyproject.toml`:
+Declare its runtime and managed stores on the agent in `agent.py`:
 
-```toml
-[tool.apx.agent]
-name = "orders"
-module = "agent:agent"
-target = "durable_agent_server"
-model = "system.ai.claude-sonnet-4-6"
+```python
+from apx_agent import LlmAgent
 
-# Optional long-term memory. Sessions need no declaration.
-[tool.apx.agent.memory]
-type = "managed"
+agent = LlmAgent(
+    name="orders",
+    tools=[],
+    target="durable_agent_server",
+    model="system.ai.claude-sonnet-4-6",
+    # Optional long-term memory. Sessions need no declaration.
+    memory={"type": "managed"},
+)
 ```
 
 APX derives `apx-orders-sessions` automatically and `apx-orders-memory` when
@@ -344,7 +345,7 @@ run if they do not exist yet.
 An existing project may declare a particular governance boundary:
 
 ```toml
-[tool.apx.agent.deploy]
+[tool.apx.deploy]
 space = "your-space"
 ```
 

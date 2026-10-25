@@ -68,7 +68,7 @@ def _builtin_agent_flow_graph(agent: BaseAgent) -> LlmAgent | None:
 
 
 def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
-    """Apply ``[tool.apx.agent]`` config values onto the live agent instance.
+    """Apply the declared config values onto the live agent instance.
 
     This is the **shared config→instance seam** that both serve paths must run:
 
@@ -145,7 +145,7 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
 
 
 def _guardrails_configured(cfg: Any) -> bool:
-    """True when ``[tool.apx.agent.guardrails]`` declares any active rule."""
+    """True when ``guardrails=`` declares any active rule."""
     return bool(
         cfg.blocked_tools
         or cfg.allowed_tools is not None
@@ -248,7 +248,7 @@ def _attach_config_guards_to_leaf(
 
 
 def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
-    """Apply ``[tool.apx.agent.guardrails]`` config onto live agent leaf instances.
+    """Apply ``guardrails=`` config onto live agent leaf instances.
 
     Translates ``config.guardrails`` (a ``GuardrailsConfig``) into built-in
     guard callables and attaches them additively to every ``LlmAgent`` leaf
@@ -295,7 +295,7 @@ def apply_config_guardrails(agent: BaseAgent, config: AgentConfig) -> None:
     # scope-only wiring that finds no scoped tools is a legitimate no-op.
     if configured and not attached_any:
         raise ValueError(
-            f"[tool.apx.agent.guardrails] declared on {type(agent).__name__} but "
+            f"guardrails= declared on {type(agent).__name__} but "
             "no LlmAgent leaf could receive them (composition roots and remote "
             "agent_tool peers have no _before_tool / _input_guardrails). Attach "
             "guardrails on each leaf LlmAgent, or ensure the tree contains one."
@@ -364,7 +364,7 @@ def apply_config_service_policies(agent: BaseAgent, config: AgentConfig) -> None
             attached_any = True
     if not attached_any:
         raise ValueError(
-            f"[tool.apx.agent.service_policies] declared on {type(agent).__name__} but "
+            f"service_policies= declared on {type(agent).__name__} but "
             "no eligible local agent leaf could receive policy hooks."
         )
     setattr(agent, "_apx_service_policies_applied", True)
@@ -372,7 +372,7 @@ def apply_config_service_policies(agent: BaseAgent, config: AgentConfig) -> None
 
 
 def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None:
-    """Wire ``[tool.apx.agent] vector_search_index`` into the agent as a tool.
+    """Wire ``vector_search_index`` into the agent as a tool.
 
     Mints a ``vector_search_tool`` for the declared index and registers it on the
     agent, so a declared index becomes a live tool in both the A2A card and the
@@ -397,7 +397,7 @@ def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None
     register = getattr(agent, "_register_tool", None)
     if register is None:
         logger.warning(
-            "[tool.apx.agent] vector_search_index declared on a %s root that has no "
+            "vector_search_index declared on a %s root that has no "
             "_register_tool — skipping (attach on a leaf LlmAgent).",
             type(agent).__name__,
         )
@@ -406,7 +406,7 @@ def attach_declared_vector_search(agent: BaseAgent, config: AgentConfig) -> None
     existing = {getattr(fn, "__name__", None) for fn in getattr(agent, "_tool_fns", [])}
     if "vector_search" in existing:
         logger.warning(
-            "[tool.apx.agent] vector_search_index declares a 'vector_search' tool but "
+            "vector_search_index declares a 'vector_search' tool but "
             "the agent already wires one — keeping the code-wired tool, ignoring the "
             "declared index.",
         )
@@ -525,7 +525,7 @@ def _apply_remote_leaf_bindings(
 def ensure_scope_guard(agent: BaseAgent) -> None:
     """Attach a live ScopeGuard to every leaf that has scoped tools.
 
-    Independent of ``[tool.apx.agent]`` / ``apply_config_guardrails`` so a
+    Independent of the config settings / ``apply_config_guardrails`` so a
     pure-Python ``build_tool(scope=...)`` agent still enforces at serve.
     Idempotent: leaves that already have ``_apx_scope_guard`` are skipped.
     """
@@ -563,7 +563,7 @@ def finalize_agent(
     *config* is supplied, knobs are applied from it; otherwise it is loaded
     from *pyproject_path*. With no config, Python tool scope guards still run.
 
-    A project with no [tool.apx.agent] still compiles from the Python agent
+    A project with no settings table still compiles from the Python agent
     (#954). ScopeGuard still attaches here when any tool declares a scope, so
     log/deploy/Python-API paths do not silently drop runtime enforcement.
     """
@@ -703,8 +703,8 @@ def resolve_agent(
     if not module_spec:
         raise TemplateConfigError(
             "No agent to resolve: config has no 'template' field and no module_spec "
-            "was provided. Either add 'template = { name = \"...\", ... }' to "
-            "[tool.apx.agent] or pass a 'module:variable' module_spec."
+            "was provided. Either define `agent` in agent.py "
+            "or pass a 'module:variable' module_spec."
         )
     if ":" not in module_spec:
         raise TemplateConfigError(
@@ -929,7 +929,7 @@ def _schedule_registration(
             payload["url"] = public_url.rstrip("/")
         else:
             logger.warning(
-                "No public URL configured (set url in [tool.apx.agent]) — "
+                "No public URL configured (set url= on the agent in agent.py) — "
                 "registry may not be able to crawl this agent"
             )
 

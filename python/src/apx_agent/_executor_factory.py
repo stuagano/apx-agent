@@ -67,7 +67,7 @@ def governance_guards_present(
             or g.rate_limit is not None
             or g.injection_detection
         ):
-            return "config declares [tool.apx.agent.guardrails]"
+            return "config declares guardrails="
     return None
 
 

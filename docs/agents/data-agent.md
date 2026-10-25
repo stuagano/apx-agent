@@ -189,6 +189,6 @@ and `objective` — the three identity knobs for a two-system join — plus a
 ## Further reading
 
 - [`docs/agents/coworker.md`](coworker.md) — `DataAgent + persona + join_key + objective + memory`
-- [`docs/reference/configuration.md`](../reference/configuration.md) — full `[tool.apx.agent]` TOML reference
+- [`docs/reference/configuration.md`](../reference/configuration.md) — full agent settings reference
 - [`docs/tools/overview.md`](../tools/overview.md) — `sql_tool`, `genie_tool`, `vector_search_tool`, `uc_function_tool`
 - [`python/src/apx_agent/data_agent.py`](../../python/src/apx_agent/data_agent.py) — the implementation
