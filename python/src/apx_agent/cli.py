@@ -41,7 +41,7 @@ import sys
 import tempfile
 import time
 import warnings
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 
@@ -948,6 +948,22 @@ class _ApxCommand(click.Command):
                 ["--json", "fmt"], flag_value="json",
                 help="Shorthand for --format json.",
             ))
+
+
+_MODEL_SERVING_REMOVED = (
+    "Model Serving was removed: apx deploys agents to Databricks Apps. Run apx-agent {command} --target apps."
+)
+
+
+def _reject_model_serving(command: str) -> Callable[[click.Context, click.Parameter, str | None], str | None]:
+    """A --target callback: 'model-serving' is accepted for one release only to say where to go."""
+
+    def _check(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+        if value == "model-serving":
+            raise click.UsageError(_MODEL_SERVING_REMOVED.format(command=command))
+        return value
+
+    return _check
 
 
 class _ApxGroup(click.Group):
@@ -4536,6 +4552,7 @@ def _echo_scaffold_next_steps(
 @click.option(
     "--target", "scaffold_target",
     type=click.Choice(["apps", "model-serving"]),
+    callback=_reject_model_serving("agents scaffold"),
     default=None,
     help=(
         "Deployment destination. 'apps' (default) generates a native Agent Bricks project. "
@@ -6951,6 +6968,7 @@ _APPS_ONLY_DEPLOY_FLAGS = (
 @click.option(
     "--target", "target", default=None,
     type=click.Choice(["model-serving", "apps"]),
+    callback=_reject_model_serving("agents deploy"),
     help="Deployment destination (where the agent is hosted), auto-detected "
          "from the project when omitted. Distinct from the agent runtime in "
          "the agent's target. Apps hosts native durable_agent_server "
@@ -13545,6 +13563,7 @@ def lint_cmd(module: str, model: str | None, fmt: str) -> None:
 @agents.command("hot-swap")
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
+              callback=_reject_model_serving("agents hot-swap"),
               default="model-serving",
               help="Deploy target. 'model-serving' rewrites env_vars on the served "
                    "entity (existing behavior). 'apps' re-deploys the Apps bundle "
@@ -16156,6 +16175,7 @@ def canary() -> None:
 @canary.command("status")
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
+              callback=_reject_model_serving("canary status"),
               default="model-serving",
               help="Deploy target. See docs/apps-canary-hotswap-design.md.")
 @click.option("--endpoint", default=None,
@@ -16268,6 +16288,7 @@ def _canary_status_impl(
 @canary.command("deploy")
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
+              callback=_reject_model_serving("canary deploy"),
               default="model-serving",
               help="Deploy target. 'model-serving' adds a new served entity "
                    "to an existing endpoint (existing behavior). 'apps' writes "
@@ -16461,6 +16482,7 @@ def _canary_deploy_impl(
 @canary.command("promote")
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
+              callback=_reject_model_serving("canary promote"),
               default="model-serving",
               help="Deploy target. See docs/apps-canary-hotswap-design.md.")
 @click.option("--endpoint", default=None,
@@ -16624,6 +16646,7 @@ def _canary_promote_impl(
 @canary.command("rollback")
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
+              callback=_reject_model_serving("canary rollback"),
               default="model-serving",
               help="Deploy target. See docs/apps-canary-hotswap-design.md.")
 @click.option("--endpoint", default=None,
@@ -16763,6 +16786,7 @@ def _canary_rollback_impl(
 @canary.command("analyze")
 @click.option("--target", "deploy_target",
               type=click.Choice(["model-serving", "apps"]),
+              callback=_reject_model_serving("canary analyze"),
               default="model-serving",
               help="Deploy target. See docs/apps-canary-hotswap-design.md.")
 @click.option("--endpoint", default=None,
