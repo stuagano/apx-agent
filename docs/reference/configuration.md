@@ -235,6 +235,7 @@ the coworker gallery specs do; `apx-agent agents run <spec>.yaml` renders it
 into `agent.py`:
 
 ```yaml
+name: payroll-coworker
 template:
   name: coworker
   catalog: main

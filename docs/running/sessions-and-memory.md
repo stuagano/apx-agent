@@ -374,7 +374,9 @@ apx-agent examples find   --agent-id triage --query "why is my bill high?" -k 5
 apx-agent examples save   --agent-id triage --input "..." --output "..." --score 0.9
 ```
 
-Store loaded via `--store-module MODULE:VAR` or `memory_store` / `example_store` in the project's settings.
+Store loaded via `--store-module MODULE:VAR`, or a `memory_store` / `example_store` default (`"module:variable"`).
+Those two CLI defaults are still read from the legacy `[tool.apx.agent]` table, and `apx-agent agents migrate-config`
+leaves them there for now; pass `--store-module` to avoid depending on it.
 
 A worked example lives in [`python/examples/memory_demo/`](../python/examples/memory_demo/) — seeded memories, recall/remember tools wired in, prompt assembly building the system prompt at every turn.
 

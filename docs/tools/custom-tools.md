@@ -314,12 +314,12 @@ Each `http_tool` covers one fixed operation. To expose multiple operations from 
 
 ### Declaring the connection resource
 
-Attach the UC HTTP connection to the tool so `apx-agent agents deploy` wires the `USE_CONNECTION` grant:
+`http_tool` declares its UC HTTP connection as a `uc_connection` resource, so `apx-agent agents deploy` wires the `USE_CONNECTION` grant with no extra step. A custom tool that calls a connection some other way declares it with `attach_resources`:
 
 ```python
 from apx_agent import ResourceSpec, attach_resources
 
-attach_resources(weather_tool, [ResourceSpec("uc_connection", "weather_api")])
+attach_resources(my_tool, [ResourceSpec("uc_connection", "weather_api")])
 ```
 
 ### Creating and granting the connection

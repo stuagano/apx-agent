@@ -769,7 +769,7 @@ def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
                 label, Status.FAIL,
                 f"schema not found: {fqn}",
                 f"Confirm `{fqn}` exists in Unity Catalog and your principal has USE SCHEMA. "
-                "Update catalog/schema in the agent's template to match.",
+                "Update catalog/schema in [tool.apx.agent.template] to match.",
             )
         if "403" in msg or "permission" in msg.lower() or "denied" in msg.lower():
             return Check(

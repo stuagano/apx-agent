@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -131,7 +132,10 @@ def test_payroll_coworker_keeps_history_without_a_declared_session() -> None:
 _TABLE_TEXT_ALLOWED = {
     "_migrate_config.py": None,  # the whole module migrates the table
     "_tool_config.py": None,
-    "cli.py": {"migrate_config", "migrate_agent_toml", "_read_apx_agent_config", "_save_to_pyproject"},
+    "cli.py": {"migrate_config", "migrate_agent_toml", "_read_apx_agent_config", "_save_to_pyproject",
+               # CLI store defaults still read only from the table (homed in 3d PR C):
+               "_load_store", "memory", "memory_recall_cmd", "memory_export_cmd",
+               "examples", "examples_import_cmd", "memory_consolidate_cmd"},
     "_inspection.py": {"_fold_deploy_table", "_agent_config_fields"},
     "_doctor.py": {"check_uc_data_source", "_is_apx_project"},  # the template fallback and table sniff go in PR C
 }
@@ -146,7 +150,8 @@ def _allowed_lines(path: Path) -> set[int] | None:
     lines: set[int] = set()
     for node in ast.walk(ast.parse(path.read_text())):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
-            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+            start = min([node.lineno, *(d.lineno for d in node.decorator_list)])  # help= lives in decorators
+            lines.update(range(start, (node.end_lineno or node.lineno) + 1))
     return lines
 
 
@@ -170,3 +175,12 @@ def test_user_docs_show_the_new_homes() -> None:
     hits = sorted(str(p.relative_to(_REPO)) for p in docs
                   if "tool.apx.agent" in p.read_text() and "migrate-config" not in p.read_text())
     assert hits == [], f"{len(hits)} docs: " + ", ".join(hits)
+
+
+def test_store_fallback_text_names_where_the_cli_reads_it() -> None:
+    # memory_store / example_store / summarize_fn are read only from [tool.apx.agent] until 3d's
+    # reject PR gives them a home; their help must not point anywhere else.
+    cli = (_REPO / "python" / "src" / "apx_agent" / "cli.py").read_text().splitlines()
+    wrong = [i for i, line in enumerate(cli, 1)
+             if re.search(r"(memory_store|example_store|summarize_fn)\b.*in the project's settings", line)]
+    assert wrong == [], wrong

@@ -17107,8 +17107,8 @@ def governance_status(
 # against a user-supplied store. The store comes from one of two places:
 #
 #   1. --store-module MODULE:VAR              (explicit flag)
-#   2. memory_store in the project's settings /         (pyproject fallback)
-#      example_store in the project's settings
+#   2. memory_store in [tool.apx.agent] /         (pyproject fallback)
+#      example_store in [tool.apx.agent]
 #
 # The referenced variable must be an importable :class:`MemoryStore` or
 # :class:`ExampleStore` instance. The CLI is store-shape-agnostic — anything
@@ -17127,7 +17127,7 @@ def _load_store(
 
     Resolution order:
       1. ``module_spec`` argument (the --store-module flag value).
-      2. ``{store_kind}_store`` in the project's settings.
+      2. ``{store_kind}_store`` in ``[tool.apx.agent]``.
 
     Raises ``click.UsageError`` if no spec is configured anywhere, and
     ``click.ClickException`` on a load failure.
@@ -17139,7 +17139,7 @@ def _load_store(
     if not spec:
         raise click.UsageError(
             f"Pass --store-module MODULE:VAR or set "
-            f"{store_kind}_store in the project's settings. "
+            f"{store_kind}_store in [tool.apx.agent]. "
             f"The variable must be a {store_kind.title()}Store instance."
         )
 
@@ -17224,7 +17224,7 @@ def memory() -> None:
     """Operate on a MemoryStore — recall, remember, forget, list.
 
     Configure the store via ``--store-module MODULE:VAR`` on each command,
-    or set ``memory_store = "module:variable"`` in the project's settings (``pyproject.toml``) to share one default across calls.
+    or set ``memory_store = "module:variable"`` in [tool.apx.agent] (``pyproject.toml``) to share one default across calls.
 
     The referenced variable must be an instance of
     :class:`apx_agent.MemoryStore` — typically
@@ -17269,7 +17269,7 @@ def memory_provision_cmd(
 @click.option("-k", "top_k", default=5, type=int, help="Top-k. Default 5.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to memory_store in the project's settings.")
+                   "Falls back to memory_store in [tool.apx.agent].")
 @click.option("--format", "fmt", type=click.Choice(["json", "text"]),
               default="json", help="Output format. Default: json.")
 def memory_recall_cmd(
@@ -17425,7 +17425,7 @@ def memory_list_cmd(
               help="Max memories to export. Default 10000.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to memory_store in the project's settings.")
+                   "Falls back to memory_store in [tool.apx.agent].")
 def memory_export_cmd(
     principal_id: str,
     output_file: str,
@@ -17474,7 +17474,7 @@ def examples() -> None:
     """Operate on an ExampleStore — find, save, remove, list.
 
     Configure the store via ``--store-module MODULE:VAR`` on each command,
-    or set ``example_store = "module:variable"`` in the project's settings (``pyproject.toml``) to share one default across calls.
+    or set ``example_store = "module:variable"`` in [tool.apx.agent] (``pyproject.toml``) to share one default across calls.
 
     The referenced variable must be an instance of
     :class:`apx_agent.ExampleStore` — typically
@@ -17648,7 +17648,7 @@ def examples_list_cmd(
 @click.option("--agent-id", required=True, help="Agent ID to assign to each imported example.")
 @click.option("--store-module", "store_module", default=None,
               help="MODULE:VAR pointing at an ExampleStore instance. "
-                   "Falls back to example_store in the project's settings.")
+                   "Falls back to example_store in [tool.apx.agent].")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Parse and count rows without writing to the store.")
 @click.option(
@@ -17905,12 +17905,12 @@ def memory_extract_cmd(
 @memory.command("consolidate")
 @click.option("--store", "store_spec", default=None,
               help="MODULE:VAR pointing at a MemoryStore instance. "
-                   "Falls back to memory_store in the project's settings.")
+                   "Falls back to memory_store in [tool.apx.agent].")
 @click.option("--principal-id", required=True,
               help="Scope consolidation to a single principal.")
 @click.option("--summarize-fn", "summarize_fn_spec", default=None,
               help="MODULE:VAR of a Sequence[Memory] -> str summarizer. "
-                   "Falls back to summarize_fn in the project's settings.")
+                   "Falls back to summarize_fn in [tool.apx.agent].")
 @click.option("--namespace", default=None,
               help="Optional namespace filter for the candidate pool.")
 @click.option("--max-age-seconds", default=None, type=float,
