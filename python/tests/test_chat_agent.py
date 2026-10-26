@@ -330,7 +330,7 @@ def test_chat_msg_to_new_items_no_empty_message_without_text() -> None:
     assert [it.type for it in items] == ["function_call"]
 
 
-# --- T6: finalize_agent wired into log_agent (GOVERNANCE) ---
+# --- finalize_agent contributes resources (GOVERNANCE) ---
 
 
 def test_finalized_agent_contributes_genie_space_resource():
@@ -341,74 +341,8 @@ def test_finalized_agent_contributes_genie_space_resource():
     assert ("genie_space", space_id) in {(s.kind, s.identifier) for s in resources}
 
 
-def test_log_agent_finalizes_before_resource_derivation(tmp_path, monkeypatch):
-    # GOVERNANCE: finalization must precede resource derivation. Python tools
-    # exist at construction, so observe a setting declared on the agent at that seam as well
-    # as the actual Genie resource; mere tool presence cannot prove ordering.
-    monkeypatch.chdir(tmp_path)
-    pp = tmp_path / "pyproject.toml"
-    pp.write_text('[tool.apx.deploy]\nname = "t"\n')
-    monkeypatch.setenv("APX_PYPROJECT", str(pp))
-    import sys
-    import types
-    import apx_agent._resources as res
-    import apx_agent._chat_agent as ca
-
-    seen = {}
-    def spy_resources(agent, **kw):
-        # State of the agent AT the resource-derivation call site.
-        seen["tools"] = [t.name for t in agent.collect_tools()]
-        seen["guarded"] = agent._before_tool is not None
-        seen["resources"] = collect_resource_specs(agent, model=kw["model"])
-        return []
-    # log_agent does a LOCAL `from ._resources import ... mlflow_resources_for`,
-    # so the name resolves from the _resources module → patch it THERE, not on ca.
-    monkeypatch.setattr(res, "mlflow_resources_for", spy_resources)
-    # compile_to_chat_agent is a module global of _chat_agent → patch on ca.
-    monkeypatch.setattr(ca, "compile_to_chat_agent", lambda agent, **kw: object())
-    # Stub mlflow so no real logging happens. log_agent does NOT call start_run.
-    fake_pyfunc = types.SimpleNamespace(log_model=lambda **kw: types.SimpleNamespace(name="m"))
-    fake_mlflow = types.SimpleNamespace(pyfunc=fake_pyfunc, set_experiment=lambda *a, **k: None)
-    monkeypatch.setitem(sys.modules, "mlflow", fake_mlflow)
-    monkeypatch.setitem(sys.modules, "mlflow.pyfunc", fake_pyfunc)
-
-    from apx_agent._chat_agent import log_agent
-    space_id = "01ef0000000000000000000000000000"
-    agent = Agent(
-        tools=[genie_tool(space_id, name="ask_sales")],
-        guardrails={"blocked_tools": ["delete_record"]},
-    )
-    assert agent._before_tool is None
-    log_agent(agent, model="m")
-    assert seen["guarded"]  # finalize ran BEFORE resource derivation
-    assert seen["tools"] == ["ask_sales"]
-    assert ("genie_space", space_id) in {
-        (s.kind, s.identifier) for s in seen["resources"]
-    }
 
 
-def test_log_agent_rejects_legacy_tool_config_before_logging(tmp_path, monkeypatch):
-    from apx_agent._chat_agent import log_agent
-    from apx_agent._tool_config import ToolConfigError
-
-    pp = tmp_path / "pyproject.toml"
-    pp.write_text(textwrap.dedent("""
-        [tool.apx.agent]
-        name = "t"
-        [[tool.apx.tools]]
-        type = "genie"
-        space_id = "legacy-space"
-    """))
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("APX_PYPROJECT", str(pp))
-    with patch("mlflow.pyfunc.log_model") as log_model, \
-         patch("apx_agent._resources.mlflow_resources_for") as resources, \
-         patch("apx_agent._chat_agent.compile_to_chat_agent") as compile_agent:
-        with pytest.raises(ToolConfigError, match=r"tools/.*agent\.py"):
-            log_agent(Agent(tools=[]), model="m")
-    resources.assert_not_called()
-    compile_agent.assert_not_called()
-    log_model.assert_not_called()
 
 
 def test_resolve_ws_keeps_user_client_absent_in_app_without_obo(monkeypatch):

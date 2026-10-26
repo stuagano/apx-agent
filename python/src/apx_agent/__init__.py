@@ -140,7 +140,7 @@ from ._claude_sdk_executor import ClaudeSDKExecutor, OpenAICompatExecutor
 from ._executor_factory import create_executor
 
 # MLflow ChatAgent wrapper (optional — requires the ``langgraph`` and ``eval`` extras)
-from ._chat_agent import chat_agent_for, compile_to_chat_agent, log_agent
+from ._chat_agent import chat_agent_for, compile_to_chat_agent
 
 # Databricks Apps ResponsesAgent compile target (optional — same extras)
 from ._responses_agent import compile_to_responses_agent  # legacy model-serving target
@@ -155,7 +155,6 @@ from ._resources import (
     ResourceSpec,
     attach_resources,
     collect_resource_specs,
-    mlflow_resources_for,
     require_user_api_scopes,
     resources_to_databricks_yml,
 )
@@ -312,7 +311,6 @@ from ._service_policies_native import (
 )
 
 # Cost tracking helpers
-from ._cost import CostBreakdown, cost_for_agent, cost_for_endpoint
 
 # Scheduled-job / batch invocation — non-interactive entry point
 from ._run_once import run_once
@@ -321,12 +319,6 @@ from ._run_once import run_once
 from ._lint import LintFinding, Severity, lint_agent
 
 # Hot-swap the LLM endpoint on a deployed agent without re-logging
-from ._hot_swap import (
-    APX_MODEL_OVERRIDE_ENV,
-    HotSwapResult,
-    get_active_override,
-    hot_swap_model,
-)
 
 # Hot-swap analog for the Apps target — re-deploys with a different bundle var
 from ._hot_swap_apps import (
@@ -363,16 +355,6 @@ from ._industry_models import industry_model_question_pairs, industry_model_topo
 from ._eval_chain import ChainCaseResult, ChainEvalReport, StepEvalResult, evaluate_chain
 
 # Canary / A-B deployment helpers (Model Serving target)
-from ._canary import (
-    CanaryConfig,
-    CanaryReport,
-    VersionMetrics,
-    analyze_canary,
-    deploy_canary,
-    get_canary_config,
-    promote_canary,
-    rollback_canary,
-)
 
 # Canary helpers for the Databricks Apps target — multi-target bundle flow
 from ._canary_apps import (
@@ -561,7 +543,6 @@ __all__ = [
     # MLflow ChatAgent wrapper
     "chat_agent_for",
     "compile_to_chat_agent",
-    "log_agent",
     # Databricks Apps ResponsesAgent compile target
     "compile_to_responses_agent",
     "compile_agent",
@@ -579,7 +560,6 @@ __all__ = [
     "attach_resources",
     "require_user_api_scopes",
     "collect_resource_specs",
-    "mlflow_resources_for",
     "resources_to_databricks_yml",
     # @tool decorator and UC publishing
     "tool",
@@ -711,9 +691,6 @@ __all__ = [
     "build_native_policy_plan",
     "verify_native_policy_plan",
     # Cost tracking
-    "CostBreakdown",
-    "cost_for_agent",
-    "cost_for_endpoint",
     # Batch / scheduled-job invocation
     "run_once",
     # Lint
@@ -721,10 +698,6 @@ __all__ = [
     "Severity",
     "lint_agent",
     # Hot-swap
-    "APX_MODEL_OVERRIDE_ENV",
-    "HotSwapResult",
-    "get_active_override",
-    "hot_swap_model",
     # Hot-swap (Apps target)
     "AppsHotSwapResult",
     "DEFAULT_LLM_VAR_NAME",
@@ -755,14 +728,6 @@ __all__ = [
     "StepEvalResult",
     "evaluate_chain",
     # Canary / A-B helpers (Model Serving)
-    "CanaryConfig",
-    "CanaryReport",
-    "VersionMetrics",
-    "analyze_canary",
-    "deploy_canary",
-    "get_canary_config",
-    "promote_canary",
-    "rollback_canary",
     # Canary helpers (Databricks Apps)
     "AppsCanaryConfig",
     "AppsCanaryReport",

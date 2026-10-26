@@ -1,16 +1,14 @@
-"""Legacy compiler: an apx-agent ``BaseAgent`` to MLflow ``ResponsesAgent``.
+"""Compile an apx-agent ``BaseAgent`` to the MLflow ``ResponsesAgent`` runtime.
 
-**Legacy.** Databricks Apps no longer serve this target — Apps use
-``DurableAgentServer``. ``compile_to_responses_agent`` remains for model
-serving (``mlflow.pyfunc.log_model``) and for callers that pass
-``target="responses_agent"`` explicitly. New Apps projects must not use it.
+The ``responses_agent`` target runs on Databricks Apps through the scaffolded
+``agent_server/start_server.py`` (the ``samples-*`` apps use it). New native
+projects default to ``DurableAgentServer`` (``durable_agent_server``).
 
 This is the **Apps-native peer** of :func:`apx_agent._chat_agent.compile_to_chat_agent`.
 Same agent definition, different runtime contract:
 
-  * **Model Serving** (ChatAgent): ``mlflow.pyfunc.log_model`` + UC + container
-    build queue + ``databricks.agents.deploy``. Wire shape is ``ChatAgentRequest``
-    (messages-style). See ``_chat_agent.py``.
+  * **ChatAgent** (``_chat_agent.py``): the ``/invocations`` route, dev UI and eval.
+    Wire shape is ``ChatAgentRequest`` (messages-style).
   * **Databricks Apps** (this module): ``mlflow.genai.agent_server`` decorators
     on plain functions, deployed via ``databricks bundle deploy && bundle run``.
     Wire shape is ``ResponsesAgentRequest`` (input items + custom_inputs).
@@ -1030,7 +1028,7 @@ def compile_to_responses_agent(
     agent_id: str | None = None,
     checkpointer: Any | None = None,
 ) -> CompiledResponsesAgent:
-    """Legacy model-serving compiler. Apps use DurableAgentServer.\n\nCompile an apx-agent ``BaseAgent`` to the Databricks Apps ResponsesAgent contract.
+    """Compile an apx-agent ``BaseAgent`` to the Databricks Apps ResponsesAgent contract.
 
     Returns two plain (undecorated) functions; the caller is responsible for
     applying ``@invoke()`` / ``@stream()`` at module level in the scaffold's
@@ -1586,11 +1584,10 @@ def _resolve_model(default: str) -> str:
     """Return the effective model for this request.
 
     Reads ``APX_AGENT_MODEL_OVERRIDE`` at runtime so operators can hot-swap
-    the LLM on a deployed endpoint without re-logging an artifact.  This is a
-    sanctioned exception to Design Principle 1 (Spec Self-Containment) — the
-    override is endpoint-scoped config written only by
-    :func:`apx_agent.hot_swap_model` via the Databricks SDK, never by ambient
-    server state.  See ``designs/DESIGN_PRINCIPLES.md`` §Sanctioned Exceptions.
+    the LLM of a deployed agent without rebuilding it.  This is a sanctioned
+    exception to Design Principle 1 (Spec Self-Containment) — the override is
+    deployment-scoped config set by the operator (e.g. as an App env var), never
+    ambient server state.  See ``designs/DESIGN_PRINCIPLES.md`` §Sanctioned Exceptions.
 
     :param default: The compile-time model from the agent spec.
     :returns: ``APX_AGENT_MODEL_OVERRIDE`` if set on this endpoint, else ``default``.

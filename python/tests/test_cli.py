@@ -906,65 +906,8 @@ def test_info_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 
-def test_deploy_no_publish_tools_flag_skips_publish(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-    fake_publish = MagicMock(return_value=[])
-    fake_set_tags = MagicMock(return_value={})
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("apx_agent.publish_tools_to_uc", fake_publish), \
-         patch("apx_agent.set_uc_tags_for_agent", fake_set_tags), \
-         patch("mlflow.start_run"):
-        runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                "--no-deploy",
-                "--no-publish-tools",
-            ],
-        )
-    sys.modules.pop("tmp_test_agent", None)
-
-    fake_publish.assert_not_called()
 
 
-def test_deploy_no_set_uc_tags_flag_skips_tag_writes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-    fake_set_tags = MagicMock(return_value={})
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("apx_agent.publish_tools_to_uc", return_value=[]), \
-         patch("apx_agent.set_uc_tags_for_agent", fake_set_tags), \
-         patch("mlflow.start_run"):
-        runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                "--no-deploy",
-                "--no-set-uc-tags",
-            ],
-        )
-    sys.modules.pop("tmp_test_agent", None)
-
-    fake_set_tags.assert_not_called()
 
 
 
@@ -4351,25 +4294,6 @@ class TestScaffoldSchemaManifest:
         assert json.loads(manifest.read_text())["tables"] == {"t": ["a(int)"]}
         assert profiles == ["author"]
 
-    def test_model_serving_scaffold_uses_author_profile(self, tmp_path, monkeypatch):
-        from apx_agent import cli
-        profiles = []
-
-        def manifest_for_scaffold(catalog, schema, profile=None):
-            profiles.append(profile)
-
-        monkeypatch.setattr(
-            cli,
-            "_schema_manifest_for_scaffold",
-            manifest_for_scaffold,
-        )
-
-        cli._scaffold_model_serving(
-            tmp_path, "demo", force=True, catalog="samples", schema="tpch",
-            profile="author",
-        )
-
-        assert profiles == ["author"]
 
     def test_apps_scaffold_no_manifest_when_none(self, tmp_path, monkeypatch):
         from apx_agent import cli

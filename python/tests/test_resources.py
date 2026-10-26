@@ -14,8 +14,6 @@ Covers:
        * Sub-agent URLs become serving_endpoint specs
        * Apps URLs are skipped (no MLflow resource for them)
        * Duplicates are deduped, order preserved
-  5. mlflow_resources_for materialises specs into the correct
-     ``mlflow.models.resources.Databricks*`` classes (skipped without mlflow).
 """
 
 from __future__ import annotations
@@ -315,52 +313,8 @@ def test_collect_with_no_model_omits_endpoint() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mlflow_resources_for_materialises_each_kind() -> None:
-    pytest.importorskip("mlflow")
-    from mlflow.models.resources import (
-        DatabricksFunction,
-        DatabricksGenieSpace,
-        DatabricksServingEndpoint,
-    )
-
-    from apx_agent import mlflow_resources_for
-
-    agent = Agent(
-        tools=[
-            genie_tool("space-abc"),
-            uc_function_tool("main.tools.classify"),
-        ],
-        sub_agents=["endpoints/billing"],
-    )
-    resources = mlflow_resources_for(agent, model="databricks-claude-sonnet-4-6")
-
-    # The materialised list mixes Databricks* types; check by walking.
-    found_kinds: set[str] = set()
-    for r in resources:
-        if isinstance(r, DatabricksFunction):
-            found_kinds.add("uc_function")
-        elif isinstance(r, DatabricksGenieSpace):
-            found_kinds.add("genie_space")
-        elif isinstance(r, DatabricksServingEndpoint):
-            found_kinds.add("serving_endpoint")
-
-    assert found_kinds == {"uc_function", "genie_space", "serving_endpoint"}
 
 
-def test_mlflow_resources_for_passes_extra_specs() -> None:
-    pytest.importorskip("mlflow")
-    from mlflow.models.resources import DatabricksSQLWarehouse
-
-    from apx_agent import mlflow_resources_for
-
-    agent = Agent(tools=[_plain_tool])
-    resources = mlflow_resources_for(
-        agent,
-        model="m",
-        extra=[ResourceSpec("sql_warehouse", "wh-prod")],
-    )
-    warehouses = [r for r in resources if isinstance(r, DatabricksSQLWarehouse)]
-    assert len(warehouses) == 1
 
 
 # ---------------------------------------------------------------------------

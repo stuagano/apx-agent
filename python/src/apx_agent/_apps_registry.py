@@ -8,16 +8,12 @@ registers a minimal UC model version anyway, as a **version-ledger record**: "Ap
 mistakes it for a serving-promoted version and never tries to
 ``databricks.agents.deploy`` it.
 
-This closes the gap the model-serving deploy flagged in its own docstring —
-"the auto-derived UC tags / publish-tools flow does not currently apply to
-``--target apps`` (no model version to tag)". Now it does.
+This gives Apps agents a UC version ledger and the auto-derived UC tags.
 
 See ``docs/engine-scope/apps-uc-registry-shim-design.md`` for the full rationale,
 including why the registered artifact is a manifest/shadow (not the executable)
 and the explicit non-goals (no platform traffic split).
 
-For the model-serving path — where the registered version IS what serves — see
-``log_agent`` + ``databricks.agents.deploy`` in the deploy command.
 """
 
 from __future__ import annotations
@@ -152,8 +148,7 @@ def register_apps_manifest(
     Args:
         agent: The finalized apx-agent to log.
         uc_name: Three-part UC name (``catalog.schema.model``) to register under.
-        model: LLM serving endpoint name — required by ``log_agent`` to compile
-            and to record on the resources list.
+        model: The agent's LLM endpoint name, recorded on the logged manifest.
         app_name: Workspace App name, recorded as a version tag.
         bundle_target: DAB target the App was deployed under, recorded as a tag.
         agent_name: Friendly name for the ``apx.agent.name`` discovery tag.
@@ -171,7 +166,7 @@ def register_apps_manifest(
 
     Raises:
         ImportError: if mlflow isn't installed.
-        Exception: anything ``log_agent`` / tag writes raise — the caller
+        Exception: anything ``log_model`` / tag writes raise — the caller
             decides whether that's fatal (it should not be, for Apps).
     """
     import mlflow

@@ -129,7 +129,7 @@ class GatewayConfig(BaseModel):
 
 StoreType = Literal["inmemory", "lakebase", "managed"]
 RuntimeTarget = Literal["responses_agent", "durable_agent_server"]
-"""``responses_agent`` is the legacy model-serving contract. Apps use ``durable_agent_server``."""
+"""``responses_agent`` is the MLflow ResponsesAgent runtime on Apps; ``durable_agent_server`` is the native default."""
 DeployBackend = Literal["agentbricks", "apps_api"]
 
 # Default embedding endpoint for the "persistent" knob's Lakebase memory —
@@ -696,12 +696,10 @@ class AgentConfig(BaseModel):
     name: str
     target: RuntimeTarget = "durable_agent_server"
     """Compilation contract. Omitted ``target`` means the native durable
-    server; set ``responses_agent`` explicitly for the legacy (model serving)
-    compatibility contract."""
-    host: Literal["apps", "model_serving"] | None = None
-    """Where the compiled agent executes. ``apps`` requires the Apps
-    compilation contract; ``model_serving`` keeps the legacy contract.
-    """
+    server; set ``responses_agent`` for the MLflow ResponsesAgent runtime
+    (hosted on Databricks Apps, as the ``samples-*`` apps are)."""
+    host: Literal["apps"] | None = None
+    """Where the compiled agent executes: Databricks Apps (Model Serving was removed)."""
     identity: str | None = None
     """The agent's own principal — its default execution identity (#816).
 

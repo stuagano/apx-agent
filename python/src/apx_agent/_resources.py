@@ -377,47 +377,6 @@ def collect_resource_specs(
 # ---------------------------------------------------------------------------
 
 
-def mlflow_resources_for(
-    agent: "BaseAgent",
-    *,
-    model: str | None = None,
-    extra: Iterable[ResourceSpec] | None = None,
-) -> list[Any]:
-    """Return the MLflow ``DatabricksResource`` list ready for log_model.
-
-    Equivalent to ``collect_resource_specs`` followed by mapping each spec to
-    its corresponding ``mlflow.models.resources.Databricks*`` class.
-
-    Requires the ``eval`` extra (``pip install 'apx-agent[eval]'``) for the
-    ``mlflow`` import. Raises ``ImportError`` with a friendly message if
-    mlflow is not available.
-    """
-    try:
-        from mlflow.models.resources import (
-            DatabricksFunction,
-            DatabricksGenieSpace,
-            DatabricksServingEndpoint,
-            DatabricksSQLWarehouse,
-            DatabricksTable,
-            DatabricksVectorSearchIndex,
-        )
-    except ImportError as e:  # pragma: no cover — exercised only without mlflow
-        raise ImportError(
-            "mlflow is required to materialise resources. "
-            "Install with: pip install 'apx-agent[eval]'"
-        ) from e
-
-    kind_to_cls: dict[str, Any] = {
-        "uc_function": lambda ident: DatabricksFunction(function_name=ident),
-        "genie_space": lambda ident: DatabricksGenieSpace(genie_space_id=ident),
-        "serving_endpoint": lambda ident: DatabricksServingEndpoint(endpoint_name=ident),
-        "sql_warehouse": lambda ident: DatabricksSQLWarehouse(warehouse_id=ident),
-        "vector_search_index": lambda ident: DatabricksVectorSearchIndex(index_name=ident),
-        "uc_table": lambda ident: DatabricksTable(table_name=ident),
-    }
-
-    specs = collect_resource_specs(agent, model=model, extra=extra)
-    return [kind_to_cls[s.kind](s.identifier) for s in specs]
 
 
 # ---------------------------------------------------------------------------

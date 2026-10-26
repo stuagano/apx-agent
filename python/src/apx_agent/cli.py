@@ -825,30 +825,6 @@ def _scan_python_env_refs(root: Path) -> set[str]:
     return found
 
 
-def _run_secret_scan(cwd: Path) -> list[str]:
-    """Return suspicious env vars that look like secrets AND are referenced.
-
-    The scan is intentionally conservative: a name only fires the warning
-    when it both (a) looks like a secret by naming convention and (b) is
-    actually referenced via ``os.environ`` / ``os.getenv`` in the project's
-    Python sources. We additionally fold in any names that show up in
-    ``.env`` / ``.env.local`` / ``pyproject.toml`` so users get warned about
-    credentials they've staged locally.
-    """
-    referenced = _scan_python_env_refs(cwd)
-    declared: set[str] = set()
-    for fname in (".env", ".env.local"):
-        p = cwd / fname
-        if p.exists():
-            declared |= _collect_env_keys_from_dotenv(p)
-    pyproject = cwd / "pyproject.toml"
-    if pyproject.exists():
-        declared |= _collect_env_keys_from_pyproject(pyproject)
-
-    suspicious_referenced = {n for n in referenced if _looks_like_secret(n)}
-    # Names declared locally that also appear in source.
-    declared_in_use = {n for n in declared if n in referenced and _looks_like_secret(n)}
-    return sorted(suspicious_referenced | declared_in_use)
 
 
 class _EnvVarGuard:
@@ -1398,53 +1374,10 @@ def shell() -> None:
 # ---------------------------------------------------------------------------
 
 
-_SCAFFOLD_PYPROJECT = '''\
-[project]
-name = "{name}"
-version = "0.1.0"
-requires-python = ">=3.11"
-# langgraph/langchain/databricks-langchain are required by the agent compile
-# path — they're included as required deps in apx-agent's core package.
-dependencies = ["apx-agent"]
-
-[tool.uv.sources]
-# Editable local install — keeps `uv sync` working from this directory.
-# At deploy time apx-agent agents deploy builds a wheel and rewrites pyproject.toml to
-# reference it (since the App container can't resolve ".."). Drop this block
-# and change dependencies to `"apx-agent==<version>"` once published to PyPI.
-apx-agent = {{ path = "..", editable = true }}
-
-# Runtime settings (model, instructions, ...) live on the agent in agent.py.
-# Declare tools with Python factories in tools/ and import them in agent.py.
-# Pass them to tools=[...] (or extra_tools=[...] for DataAgent).
-# See docs/tools/overview.md. AgentKit's agent.toml is generated at build time.
-'''
 
 
-_SCAFFOLD_AGENT = '''\
-"""Agent definition for {name}."""
-
-from apx_agent import DataAgent
-
-{example_tool}
-# A governed data agent over ``{catalog}.{schema}`` (schema baked at scaffold
-# time — no runtime discovery needed). To switch catalogs or refresh the
-# baked schema: ``apx-agent agents scaffold <name> --catalog <cat> --schema <sch>``.
-agent = DataAgent("{catalog}", "{schema}", name="{name}", description="An apx-agent.",
-                  model="databricks-claude-sonnet-4-6"{extra_tools}{knowledge_arg})
-agent.overlay_instructions("You are a helpful assistant.")
-'''
 
 
-_SCAFFOLD_APP = '''\
-"""FastAPI app entry point — for `apx-agent agents run` / Databricks Apps hosting."""
-
-from apx_agent import create_app
-
-from agent import agent
-
-app = create_app(agent)
-'''
 
 
 _SCAFFOLD_GITIGNORE = """\
@@ -1459,26 +1392,6 @@ mlruns/
 """
 
 
-_SCAFFOLD_README = '''\
-# {name}
-
-An apx-agent.
-
-## Local dev
-
-```bash
-uv sync
-apx-agent agents run             # uvicorn against app.py:app
-```
-
-## Deploy to Model Serving
-
-```bash
-apx-agent uc publish                                                    # any @tool(uc=...) tools
-apx-agent agents deploy --name main.agents.{name}                       # logs + deploys
-apx-agent agents publish --endpoint {name} --supervisor SUPERVISOR_ID   # optional
-```
-'''
 
 
 # ---------------------------------------------------------------------------
@@ -4017,43 +3930,6 @@ def _write_okf_bundle_for_scaffold(target: Path, manifest: dict, *, force: bool)
     click.echo(f"  write  {okf_root} (OKF bundle)")
 
 
-def _scaffold_model_serving(
-    target: Path, name: str, force: bool, catalog: str, schema: str,
-    table: str | None = None,
-    profile: str | None = None,
-) -> None:
-    """Write the original Model Serving project layout into ``target``.
-
-    Mirrors the pre-``--target`` shape: top-level ``agent.py`` + ``app.py``.
-    """
-    prelude, extra_tools = _example_tool_block(catalog, schema, table)
-
-    manifest = _schema_manifest_for_scaffold(catalog, schema, profile)
-    knowledge_arg = ', knowledge="./.apx/okf"' if manifest is not None else ""
-    files = {
-        "pyproject.toml": _SCAFFOLD_PYPROJECT.format(name=name),
-        "agent.py": _SCAFFOLD_AGENT.format(
-            name=name, catalog=catalog, schema=schema,
-            example_tool=prelude, extra_tools=extra_tools,
-            knowledge_arg=knowledge_arg,
-        ),
-        "app.py": _SCAFFOLD_APP,
-        ".gitignore": _SCAFFOLD_GITIGNORE,
-        "README.md": _SCAFFOLD_README.format(name=name),
-    }
-    if manifest is not None:
-        from ._okf import dump_schema_cache
-        files[".apx/schema.json"] = dump_schema_cache(manifest)
-    for rel_path, content in files.items():
-        path = target / rel_path
-        if path.exists() and not force:
-            click.echo(f"  skip   {path} (exists; pass --force to overwrite)")
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-        click.echo(f"  write  {path}")
-    if manifest is not None:
-        _write_okf_bundle_for_scaffold(target, manifest, force=force)
 
 
 def _is_inside_framework_repo(target: Path) -> bool:
@@ -7387,181 +7263,8 @@ def _emit_apps_deploy_plan(
         click.echo(f"  {step}: {disposition}")
 
 
-def _emit_serving_deploy_plan(
-    *,
-    uc_name: str,
-    model: str,
-    module: str,
-    target_reason: str,
-    experiment: Any,
-    publish_tools: bool,
-    no_deploy: bool,
-    readyz_gate: bool,
-    set_uc_tags: bool,
-    version: int | None,
-    scale_to_zero: bool | None,
-    workload_size: str | None,
-    json_output: bool,
-    timeout_seconds: int,
-    data_config: Any = None,
-) -> None:
-    """Print the ``--target model-serving`` deploy plan WITHOUT mutating (#414).
-
-    No ``databricks.agents`` import, no MLflow calls, no uv.lock sanitize,
-    no network — the UC name shown is fully resolved (config fallback +
-    ``--env-suffix`` already applied by the caller).
-    """
-    scale_kwargs: dict[str, Any] = {}
-    if scale_to_zero is not None:
-        scale_kwargs["scale_to_zero"] = scale_to_zero
-    if workload_size is not None:
-        scale_kwargs["workload_size"] = workload_size
-    redeploy = version is not None
-    steps: dict[str, str] = {
-        "publish_tools": (
-            "skipped (--version redeploy)" if redeploy
-            else "run" if publish_tools
-            else "skipped (--no-publish-tools)"
-        ),
-        "data_governance": (
-            "skipped (--version redeploy)" if redeploy
-            else "run" if data_config is not None
-            else "skipped (no data= on the agent)"
-        ),
-        "log": "skipped (--version redeploy)" if redeploy else "run",
-        "deploy": "skipped (--no-deploy)" if no_deploy else "run",
-        "gate": (
-            "skipped (--no-deploy)" if no_deploy
-            else f"run (timeout {timeout_seconds}s)" if readyz_gate
-            else "skipped (--no-readyz-gate)"
-        ),
-        "set_uc_tags": "run" if set_uc_tags else "skipped (--no-set-uc-tags)",
-    }
-    if json_output:
-        click.echo(json.dumps({
-            "plan": True,
-            "target": "model-serving",
-            "target_reason": target_reason,
-            "module": module,
-            "uc_name": uc_name,
-            "model": model,
-            "experiment": experiment,
-            "version": version,
-            "scale_kwargs": scale_kwargs,
-            "steps": steps,
-        }))
-        return
-    click.echo("# DRY RUN — plan only; nothing logged, deployed, or written")
-    click.echo(f"target: model-serving ({target_reason})")
-    click.echo(f"module: {module}")
-    click.echo(f"uc_name: {uc_name}")
-    click.echo(f"model: {model}")
-    click.echo(f"experiment: {experiment or '(MLflow default)'}")
-    if redeploy:
-        click.echo(f"version: {version} (already logged — redeploy)")
-    click.echo(
-        "scale kwargs forwarded: "
-        + (
-            json.dumps(scale_kwargs) if scale_kwargs
-            else "(none — databricks.agents.deploy defaults apply)"
-        )
-    )
-    click.echo("steps:")
-    for step, disposition in steps.items():
-        click.echo(f"  {step}: {disposition}")
-    if data_config is not None and not redeploy:
-        from ._data_governance import compile_data_governance_plan
-        plan = compile_data_governance_plan(data_config)
-        click.echo("data governance DDL:")
-        for ddl in plan.all_ddl:
-            click.echo(f"  {ddl}")
 
 
-def _serving_health_gate(
-    endpoint_name: str,
-    *,
-    log: Any,
-    timeout_seconds: int = 300,
-) -> str | None:
-    """Post-deploy health gate for ``--target model-serving`` (#406).
-
-    Polls ``ws.serving_endpoints.get(endpoint_name)`` until the endpoint
-    reports ``state.ready == READY`` with no config update in progress
-    (bounded by ``timeout_seconds``, exponential backoff capped at 15s,
-    fast-failing on a terminal UPDATE_FAILED / UPDATE_CANCELED — the
-    serving mirror of ``_poll_app_ready``), then sends ONE minimal smoke
-    invocation through ``ws.serving_endpoints.query``. Success is any
-    non-error structured response: the agent parsed a request and answered.
-
-    Returns ``None`` when the endpoint answers, or an error-detail string
-    otherwise. Never raises — the CALLER owns the failure contract.
-    """
-    try:
-        from databricks.sdk import WorkspaceClient
-        ws = WorkspaceClient()
-    except Exception as exc:
-        return f"could not build a workspace client to verify the endpoint: {exc}."
-
-    log(f"# health gate: polling endpoint {endpoint_name!r} for READY")
-    deadline = time.time() + timeout_seconds
-    delay = 1.0
-    last_state: tuple[str, str] = ("", "")
-    while True:
-        try:
-            info = ws.serving_endpoints.get(endpoint_name)
-        except Exception as exc:
-            # The endpoint may not be visible yet right after deploy —
-            # treat get() errors as transient until the deadline.
-            log(f"  (serving_endpoints.get failed: {exc}; retrying)")
-        else:
-            state = getattr(info, "state", None)
-            raw_ready = getattr(state, "ready", None)
-            raw_update = getattr(state, "config_update", None)
-            ready = (
-                str(getattr(raw_ready, "value", raw_ready)).upper()
-                if raw_ready is not None else ""
-            )
-            update = (
-                str(getattr(raw_update, "value", raw_update)).upper()
-                if raw_update is not None else ""
-            )
-            if (ready, update) != last_state:
-                log(f"  status: ready={ready or '?'} config_update={update or '?'}")
-                last_state = (ready, update)
-            if update in ("UPDATE_FAILED", "UPDATE_CANCELED"):
-                return (
-                    f"endpoint {endpoint_name!r} config update ended in "
-                    f"{update}. Inspect the build with `apx-agent agents logs "
-                    f"--endpoint {endpoint_name} --build`."
-                )
-            if ready == "READY" and update in ("", "NOT_UPDATING"):
-                break
-
-        if time.time() >= deadline:
-            return (
-                f"timed out after {timeout_seconds}s waiting for endpoint "
-                f"{endpoint_name!r} to reach READY (last observed: "
-                f"ready={last_state[0] or '?'} "
-                f"config_update={last_state[1] or '?'})."
-            )
-        time.sleep(min(delay, max(0.0, deadline - time.time())))
-        delay = min(delay * 1.5, 15.0)
-
-    log(f"# health gate: smoke invocation on {endpoint_name!r}")
-    try:
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-        response = ws.serving_endpoints.query(
-            name=endpoint_name,
-            messages=[ChatMessage(role=ChatMessageRole.USER, content="ping")],
-        )
-    except Exception as exc:
-        return (
-            f"endpoint {endpoint_name!r} is READY but the smoke invocation "
-            f"failed: {exc}."
-        )
-    if response is None:
-        return f"endpoint {endpoint_name!r} returned an empty smoke response."
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -11885,34 +11588,6 @@ def mcp_config(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_served_model_name(ws: Any, endpoint_name: str) -> str:
-    """Find the most recent served-model name on a serving endpoint.
-
-    Walks ``ws.serving_endpoints.get(name).config.served_models`` and
-    returns the first entry's name. Raises ``click.ClickException`` with
-    a friendly message if the endpoint has no served models yet.
-    """
-    endpoint = ws.serving_endpoints.get(endpoint_name)
-    config = getattr(endpoint, "config", None) or getattr(endpoint, "pending_config", None)
-    if config is None:
-        raise click.ClickException(
-            f"Endpoint {endpoint_name!r} has no config — has it finished deploying?"
-        )
-    served_models = (
-        getattr(config, "served_entities", None)
-        or getattr(config, "served_models", None)
-        or []
-    )
-    if not served_models:
-        raise click.ClickException(
-            f"Endpoint {endpoint_name!r} has no served models on its config."
-        )
-    name = getattr(served_models[0], "name", None)
-    if not name:
-        raise click.ClickException(
-            f"Endpoint {endpoint_name!r}: first served model has no name field."
-        )
-    return name
 
 
 @agents.command()
@@ -12923,36 +12598,6 @@ def hot_swap_cmd(
         )
 
 
-def _hot_swap_model_serving(
-    *, endpoint: str, model: str, no_wait: bool, as_json: bool = False,
-) -> None:
-    """Click handler body for the Model Serving hot-swap path."""
-    from ._hot_swap import hot_swap_model
-
-    try:
-        result = hot_swap_model(endpoint, model, wait=not no_wait)
-    except Exception as e:
-        raise click.ClickException(f"hot-swap failed: {type(e).__name__}: {e}") from e
-
-    if as_json:
-        click.echo(json.dumps({
-            "ok": True,
-            "target": "model-serving",
-            "endpoint": result.endpoint_name,
-            "new_model": result.new_model,
-            "previous_model": result.previous_model,
-            "served_entities_updated": result.served_entities_updated,
-        }))
-        return
-    click.echo(f"apx-agent agents hot-swap: {result.endpoint_name}")
-    click.echo(f"  new model:      {result.new_model}")
-    if result.previous_model:
-        click.echo(f"  previous override: {result.previous_model}")
-    else:
-        click.echo("  previous override: (none — first swap on this endpoint)")
-    click.echo(f"  served entities updated: {result.served_entities_updated}")
-    if no_wait:
-        click.echo("  (update dispatched async; pass --wait or check `databricks serving-endpoints get` to confirm)")
 
 
 def _hot_swap_apps_cli(

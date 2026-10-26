@@ -8,9 +8,21 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeGuard
 
-from ._canary import _percentile
 from ._eval import evaluate
 from ._eval_chain import evaluate_chain
+
+
+def _percentile(values: list[int], percentile: int) -> int | None:
+    """Compute the requested percentile from a sorted list (or return None)."""
+    if not values:
+        return None
+    if percentile <= 0:
+        return values[0]
+    if percentile >= 100:
+        return values[-1]
+    # Nearest-rank — fine for the small samples (~hundreds) we expect.
+    idx = max(0, min(len(values) - 1, int(round(len(values) * percentile / 100)) - 1))
+    return values[idx]
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
