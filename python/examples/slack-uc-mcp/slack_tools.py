@@ -3,8 +3,8 @@
 Wraps the raw `ws.serving_endpoints.http_request(conn="slack_mcp", ...)` call
 pattern into proper apx-agent tools that:
 
-  * Declare the UC connection as a `ResourceSpec` so `log_agent` auto-emits the
-    serving-endpoint resource and the platform-minted token has the right scope.
+  * Declare the UC connection as a `ResourceSpec` so the deploy grants it and the
+    platform-minted token has the right scope.
   * Resolve `user_identity` from the calling user's request context (the OBO
     header chain), so the agent doesn't have to plumb it manually.
   * Surface Slack API errors as structured tool output the LLM can act on

@@ -103,5 +103,3 @@ tool from anyone else, and its `/api/tools/<name>` route (which MCP `call_tool`
 dispatches through) returns 403 `caller_denied` with a `scope_action=deny` audit
 event. A request with no caller email is denied. Tools without `callers` stay
 open. Matching is by email only; group membership is not resolved.
-
-Model Serving agents don't expose `/mcp` — Model Serving uses the `/invocations` endpoint with the `ChatAgent` contract.

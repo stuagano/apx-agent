@@ -165,7 +165,7 @@ The agent runs **as the SP**. It receives the calling user's identity from its o
 
 ### Recommended: use the apx-agent tool factories
 
-`slack_tools.py` wraps the raw `serving_endpoints.http_request` pattern into proper apx-agent tools — `slack_history_tool` and `slack_post_tool` — that declare a `ResourceSpec` for the connection (so `log_agent` picks it up), resolve `user_identity` from the calling user's request context, and surface Slack API errors as structured tool output.
+`slack_tools.py` wraps the raw `serving_endpoints.http_request` pattern into proper apx-agent tools — `slack_history_tool` and `slack_post_tool` — that declare a `ResourceSpec` for the connection (so the agent's resource manifest picks it up), resolve `user_identity` from the calling user's request context, and surface Slack API errors as structured tool output.
 
 ```python
 from apx_agent import Agent

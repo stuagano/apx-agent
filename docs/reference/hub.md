@@ -18,7 +18,7 @@ A worked example lives at [`python/examples/agent-hub/`](../python/examples/agen
 
 ## Publish — register as a Supervisor sub-agent
 
-Once an apx-agent is deployed as a Model Serving endpoint, `publish_to_supervisor` adds it as a sub-agent on an existing Mosaic AI Supervisor Agent. The supervisor's LLM routes among declared sub-agents — yours sits alongside Knowledge Assistants, Genie spaces, and other agents in the supervisor's tool list.
+`publish_to_supervisor` registers a deployed Databricks App as a sub-agent on an existing Mosaic AI Supervisor Agent. The supervisor's LLM routes among declared sub-agents — yours sits alongside Knowledge Assistants, Genie spaces, and other agents in the supervisor's tool list.
 
 ```python
 from apx_agent import create_supervisor_agent, publish_to_supervisor
@@ -34,16 +34,16 @@ supervisor = create_supervisor_agent(
     ws=ws,
 )
 
-# Per agent: register the deployed serving endpoint as a sub-agent
+# Per agent: register the deployed App as a sub-agent
 publish_to_supervisor(
     supervisor_agent_id=supervisor.id,
-    serving_endpoint="data-triage",
+    app_name="data-triage",
     description="Triages questions about missing data in Databricks tables.",
     ws=ws,
 )
 ```
 
-User identity threads from the supervisor down through your sub-agent automatically — when the supervisor is called from AI Playground, the user's identity flows to the data-triage endpoint, scoped to *its* declared resources. No SP secrets, no CAN_USE grants between apps; the platform handles the chain.
+User identity threads from the supervisor down through your sub-agent automatically — when the supervisor is called from AI Playground, the user's identity flows to the data-triage agent, scoped to *its* declared resources. No SP secrets, no CAN_USE grants between apps; the platform handles the chain.
 
 `extra_tool_kwargs={...}` is the escape hatch for additional `Tool` fields if the preview SDK surface evolves before this helper is updated.
 

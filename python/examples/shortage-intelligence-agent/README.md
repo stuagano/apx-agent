@@ -404,7 +404,7 @@ Migration status:
 
 | Move | Status |
 |---|---|
-| Deploy via `apx-agent agents deploy` (chains publish-tools + log_agent + agents.deploy + set_uc_tags) | ✅ shipped |
+| Deploy via `apx-agent agents deploy` (Databricks Apps) | ✅ shipped |
 | `evalset.jsonl` for `apx-agent eval chain` | ✅ shipped |
 | Extract `classify_shortage_severity` as `@tool(uc=...)` (worked UC-function example) | ✅ shipped |
 | Wire `DeltaConversationStore` (multi-turn) | ✅ shipped 2026-05-25 |
@@ -414,30 +414,17 @@ Migration status:
 ### Deploy via the canonical flow
 
 ```bash
-apx-agent agents deploy \
-  --module agent:agent \
-  --model databricks-claude-opus-4-7 \
-  --name main.agents.shortage_intelligence \
-  --agent-name shortage_intelligence \
-  --experiment /Users/me@company.com/agents/shortage_intelligence
+apx-agent agents deploy --target apps
 ```
 
-By default `apx-agent agents deploy` runs the full canonical flow in one command:
-
-1. `publish_tools_to_uc(agent)` — register any `@tool(uc=...)` decorated tools (currently `classify_shortage_severity`).
-2. `log_agent(agent, ...)` — log the compiled ChatAgent + auto-derived MLflow resources, register a model version in UC.
-3. `databricks.agents.deploy(...)` — promote the registered version to a Model Serving endpoint.
-4. `set_uc_tags_for_agent(...)` — write `apx.agent.*` UC tags so the agent shows up in `apx-agent agents list`, `apx-agent uc topology`, and governance's crawler.
-
-Toggle individual stages with `--no-publish-tools`, `--no-deploy`, or `--no-set-uc-tags`. The model lives on the agent in `agent.py`, an optional `experiment` in `[tool.apx]`, and the deploy name in `[tool.apx.deploy]` of `pyproject.toml`, so once configured you can just run `apx-agent agents deploy --name main.agents.shortage_intelligence`.
+`apx-agent agents deploy` deploys the agent to Databricks Apps. Register any `@tool(uc=...)` decorated tools (currently `classify_shortage_severity`) with `apx-agent uc publish --module agent:agent`. The model lives on the agent in `agent.py`, and deploy settings live in `[tool.apx.deploy]` of `pyproject.toml`.
 
 ### Operate via the apx-agent CLI
 
 ```bash
 apx-agent agents describe --module agent:agent
-apx-agent agents logs --endpoint shortage_intelligence
+apx-agent agents logs --app shortage-intelligence
 apx-agent traces list --agent shortage_intelligence --limit 20
-apx-agent agents cost --agent shortage_intelligence --hours 24
 apx-agent uc topology --format mermaid > shortage_topology.mmd
 apx-agent agents list
 ```

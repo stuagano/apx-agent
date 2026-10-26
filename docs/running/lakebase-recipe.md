@@ -100,7 +100,7 @@ Pool tuning notes:
 
 - `pool_recycle=1800` is the load-bearing knob. The default Lakebase token TTL is one hour. Set the pool to drop and re-mint well under that boundary.
 - `pool_pre_ping=True` adds a cheap `SELECT 1` on checkout; the round-trip cost is in the single-digit ms range and avoids the "connection died while idle" failure mode at the cost of one extra packet per checkout.
-- `pool_size` + `max_overflow` should reflect the agent's parallelism. For a Mosaic AI Model Serving endpoint with a 4-replica scale, `pool_size=5, max_overflow=10` per replica is a safe baseline.
+- `pool_size` + `max_overflow` should reflect the agent's parallelism. For an App scaled to 4 replicas, `pool_size=5, max_overflow=10` per replica is a safe baseline.
 
 ## 4. Wire `LakebaseConversationStore`
 

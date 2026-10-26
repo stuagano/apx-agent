@@ -47,15 +47,13 @@ The three wire-protocol contracts are pinned:
 ```python
 from apx_agent import (
     Agent, GovernanceClient, GovernanceGuard,
-    make_governance_transport, set_uc_tags_for_agent, log_agent,
+    make_governance_transport, set_uc_tags_for_agent,
 )
 from databricks.sdk import WorkspaceClient
 
 ws = WorkspaceClient()
 
 # One-time at deploy: write metadata as UC tags on the registered model
-log_agent(agent, model="databricks-claude-sonnet-4-6",
-          registered_model_name="main.agents.customer_triage")
 set_uc_tags_for_agent(
     agent,
     registered_model_name="main.agents.customer_triage",

@@ -8,7 +8,7 @@ Sibling docs:
 
 ## 1. Pre-flight checklist
 
-Run these in order before `apx-agent agents deploy`. Five minutes here saves the 20–40 minute round-trip on a failed deployment.
+Run these in order before `apx-agent agents deploy`. Five minutes here saves a failed-deploy round-trip.
 
 ```bash
 # 1. apx-agent eval lint — static checks against your agent definition.
@@ -20,7 +20,7 @@ apx-agent eval lint --module agent:agent
 #    If this fails locally, deploy will fail too.
 apx-agent eval test --module agent:agent --prompt "ping"
 
-# 3. apx-agent agents describe — show the resource list MLflow will record on the model.
+# 3. apx-agent agents describe — show the resource list the deploy will declare.
 #    Compare against what UC / Genie / Vector Search actually has.
 apx-agent agents describe --module agent:agent
 
@@ -31,118 +31,7 @@ databricks --profile prod current-user me
 databricks --profile prod schemas get main.agents
 ```
 
-Then, the env-var hygiene step that bit us today:
-
-```bash
-# 6. Stop MLflow from baking your dev-shell secrets into the model image.
-#    Without this, anything that looks like a token in your environment
-#    (ATLASSIAN_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, ...) gets
-#    captured into the model's loader env and travels with the artifact.
-export MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING=false
-```
-
-The serving endpoint will pick up secrets through Databricks Secrets / serving env vars at runtime — it does not need them baked into the model image, and you do not want them there.
-
 ## 2. Common deploy failures
-
-### `RESOURCE_DOES_NOT_EXIST: Could not find experiment with ID None`
-
-**Symptom.** `apx-agent agents deploy` crashes inside `mlflow.start_run()` before any model logging happens. Stack trace points at `mlflow.tracking.client._get_experiment` returning a `None`-id experiment.
-
-**Diagnosis.** `MLFLOW_TRACKING_URI=databricks` (the default in a workspace shell) requires an active experiment context. The outer `mlflow.start_run()` in the CLI runs *before* `log_agent`'s internal `mlflow.set_experiment(...)` call — so the outer run has nowhere to land.
-
-**Fix.** Already patched in `apx-agent agents deploy` as of commit `41e82eee` (CLI now calls `mlflow.set_experiment(effective_experiment)` before the outer `start_run`).
-
-Still possible if **you** pass `--experiment` pointing at a path that doesn't exist:
-
-```bash
-# Pre-create the experiment once; mlflow does NOT auto-create folder paths.
-mlflow experiments create --experiment-name /Users/you@databricks.com/apx-smoke
-```
-
-Or set the default in `pyproject.toml` so the CLI picks it up:
-
-```toml
-[tool.apx]
-experiment = "/Users/you@databricks.com/apx-smoke"
-```
-
-### Deployment stuck in `DEPLOYMENT_CREATING` / "Container creation pending" for >30 min
-
-**Symptom.** `databricks.agents.deploy(...)` returns immediately, the serving endpoint shows up in the UI, status sits at `DEPLOYMENT_CREATING` for 30+ minutes.
-
-**Diagnosis.** Either (a) the workspace's serving build queue is backed up, or (b) your dependency closure is large enough (>140 packages, or any heavy native build like `psycopg[binary]` + `torch`) that the image build is genuinely slow.
-
-**Fix.**
-
-```bash
-# Inspect what's happening on the build side.
-databricks --profile prod serving-endpoints get <endpoint-name> \
-  | python3 -c "import sys, json; d=json.load(sys.stdin); print(json.dumps(d.get('state'), indent=2))"
-
-# If it's been >45 min with no movement, delete and retry — usually faster
-# than waiting for the queue to clear.
-databricks --profile prod serving-endpoints delete <endpoint-name>
-```
-
-If the deploy succeeds on retry against an empty queue but consistently fails when re-run, the agent has too much in its closure. Split it:
-
-- Move heavy dependencies behind a runtime import (so they only load when the tool fires).
-- Move that tool out into a `uc_function_tool(...)` so it runs in UC, not in the serving container.
-
-### `ModuleNotFoundError: No module named 'databricks.agents'`
-
-**Symptom.** `apx-agent agents deploy` raises a `ClickException` saying "databricks-agents is required for deployment".
-
-**Diagnosis.** `databricks-agents` is not in `apx-agent`'s base dependencies — it's a Databricks-only package and pulls in a large transitive closure. The CLI imports it lazily so dev installs stay light.
-
-**Fix.**
-
-```bash
-# Either install ad-hoc:
-pip install databricks-agents
-
-# Or pin it in your project's pyproject.toml as a [deploy] extra:
-# [project.optional-dependencies]
-# deploy = ["databricks-agents>=0.20.0"]
-pip install '.[deploy]'
-```
-
-### Env vars accidentally captured into the model image
-
-**Symptom.** `mlflow models predict ...` against the logged model leaks environment variables in its output, or worse, the deployed endpoint silently uses a secret value from your *dev shell* instead of from the workspace's secret scope.
-
-**Diagnosis.** MLflow's default behavior is to record env vars referenced by the model's loader code into the model image's metadata so the runtime can re-inject them. That's helpful for `MLFLOW_S3_ENDPOINT_URL`-shaped config and harmful for API keys.
-
-**Fix.**
-
-```bash
-# Before running apx-agent agents deploy:
-export MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING=false
-```
-
-Persist this in your shell rc, the project's `.envrc`, or the `[env]` block of whatever task runner you use. Inject runtime secrets via `databricks secrets` + serving endpoint env vars instead.
-
-### `PERMISSION_DENIED` on UC model register
-
-**Symptom.** `log_agent` runs to MLflow log step OK, then fails on the register-to-UC step with a UC-side `PERMISSION_DENIED`.
-
-**Diagnosis.** You need both `USE SCHEMA` on the schema **and** `CREATE MODEL` on the schema. `CREATE FUNCTION` is enough for `publish_tools_to_uc` but not for `log_agent`.
-
-**Fix.**
-
-```sql
--- Run as a metastore admin or the schema owner:
-GRANT USE SCHEMA ON SCHEMA main.agents TO `your.user@databricks.com`;
-GRANT CREATE MODEL ON SCHEMA main.agents TO `your.user@databricks.com`;
-```
-
-Verify:
-
-```bash
-databricks --profile prod schemas get-permissions main.agents \
-  | grep -E "USE_SCHEMA|CREATE_MODEL"
-```
 
 ### LLM endpoint not accessible / model name resolves wrong
 
@@ -170,9 +59,8 @@ Then validate the deployment plan locally:
 apx-agent agents deploy --target apps --dry-run
 ```
 
-If you need to swap the model on a deployed agent without re-logging, use `apx-agent agents hot-swap` — see `python/src/apx_agent/cli.py` for the command.
-
-### Apps vs Model Serving — which one am I deploying?
+If you need to swap the model on a deployed agent without redeploying, use `apx-agent agents hot-swap --llm-endpoint` — see `python/src/apx_agent/cli.py` for the command.
+### Which App am I deploying?
 
 `apx-agent agents deploy --target apps --profile <profile>` deploys an App.
 New native projects declare `target="durable_agent_server"` on the
@@ -181,47 +69,12 @@ Bricks. The normal native flow does not require an authored Bundle. Existing
 Bundle projects retain their build and configuration; native durable projects
 without a named space still delegate rollout to Agent Bricks.
 
-`apx-agent agents deploy --target model-serving` logs an MLflow model and calls
-`databricks.agents.deploy(...)` to create a serving endpoint. Use this destination
-when you need Model Serving packaging and deployment.
-
-The command's `--target` selects the **deployment destination**. The declaration's
-`target=` on the agent selects the **runtime contract**. Run
-`apx-agent agents deploy --dry-run` to inspect the detected destination and plan.
-MLflow tracing and evaluation also apply to Apps; they do not require deploying a
-serving endpoint. Native Apps `/readyz` verifies durable runtime initialization;
+The declaration's `target=` on the agent selects the **runtime contract**. Run
+`apx-agent agents deploy --dry-run` to inspect the detected plan.
+Native Apps `/readyz` verifies durable runtime initialization;
 use a separate invocation to prove model and tool execution.
 
-## 3. Build queue and provisioning
-
-`DEPLOYMENT_CREATING` covers a stack of stages: image build, container provisioning, model load, health-check pass. Expected timing:
-
-| Window | What it usually means |
-|---|---|
-| 0–5 min | Healthy. Image cached or trivially small. |
-| 5–15 min | Healthy. Standard image build with a moderate dep closure. |
-| 15–30 min | Watch it. Large dep closure (psycopg, torch, langchain stack), or queue contention. |
-| 30–45 min | Probably stuck. Re-check the workspace's serving capacity. |
-| >45 min | Almost always stuck. Delete + retry. |
-
-Check workspace capacity if multiple deploys are slow:
-
-```bash
-databricks --profile prod serving-endpoints list \
-  | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-states = {}
-for ep in data.get('endpoints', []):
-    s = ep.get('state', {}).get('ready', 'UNKNOWN')
-    states[s] = states.get(s, 0) + 1
-print(states)
-"
-```
-
-If you see a lot of endpoints in `NOT_READY` or `CREATING`, the workspace has capacity pressure. File a ticket with the workspace admin rather than retrying.
-
-## 4. Trace and observability gotchas
+## 3. Trace and observability gotchas
 
 ### MLflow autolog must be enabled before the SDK client is created
 
@@ -271,27 +124,16 @@ def lookup_customer(customer_id: str) -> dict:
 MLFLOW_TRACKING_URI=databricks apx-agent traces export --experiment /Users/you@databricks.com/apx-smoke
 ```
 
-## 5. Cleaning up after a failed deploy
+## 4. Cleaning up after a failed deploy
 
 ```bash
-# 1. Tear down the serving endpoint. Cheap and the standard first step.
-databricks --profile prod serving-endpoints delete <endpoint-name>
-
-# 2. Optional — delete the UC model VERSION that failed to deploy.
-#    Default is to KEEP it; version history is useful for forensic comparison.
-#    Only delete if the version is corrupt or contains accidentally captured secrets.
-databricks --profile prod registered-models delete-version main.agents.my_agent --version N
-
-# 3. The MLflow run can stay. It documents the attempt, costs nothing, and
-#    `apx-agent eval --run-id` later can compare a healthy run against the failed
-#    one to find what changed.
+# Delete the App and its UC version-ledger model (--uc-name is required).
+apx-agent agents delete --uc-name <catalog.schema.model> --app <app-name> --profile <profile>
 ```
 
-Do **not** delete the registered model (`main.agents.my_agent` without `--version`) on a failed deploy — that wipes every prior version too. Almost never the right move.
+The MLflow experiment and its traces can stay. They document the attempt and cost nothing.
 
-## 6. Cross-references
+## 5. Cross-references
 
 - Lakebase / durable state: [`docs/running/lakebase-recipe.md`](../running/lakebase-recipe.md)
 - CLI source: [`python/src/apx_agent/cli.py`](../../python/src/apx_agent/cli.py)
-- The `apx-agent agents deploy` flow (publish-tools → log_agent → agents.deploy → set_uc_tags): commit `7a857b75`
-- The `mlflow.set_experiment` ordering fix: commit `41e82eee`

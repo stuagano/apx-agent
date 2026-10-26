@@ -1,7 +1,6 @@
 # Databricks Asset Bundle config for memory_demo (Apps target).
 #
-# Deploys the agent as a Databricks App, not a Model Serving endpoint.
-# Tradeoffs and rationale are in docs/apps-vs-model-serving.md.
+# Deploys the agent as a Databricks App.
 #
 # Deploy:
 #   uv sync

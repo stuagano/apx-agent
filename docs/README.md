@@ -55,13 +55,11 @@
 ## Observability
 
 - [running/tracing.md](running/tracing.md) — automatic MLflow tracing, `/_apx/traces` dev UI, `apx.*` span schema, Delta export
-- [reference/cost-tracking.md](reference/cost-tracking.md) — `apx-agent agents cost`, `cost_for_agent`, DBU tracking
 
 ## Deploy
 
 - [deploy/agentbricks-platform.md](deploy/agentbricks-platform.md) — how the Agent Bricks product works (durable-agent model, CLI, deploy, hosting tiers, identity) and where APX fits
 - [deploy/overview.md](deploy/overview.md) — deploy targets, compile flow, bundle structure
-- [deploy/apps-vs-model-serving.md](deploy/apps-vs-model-serving.md) — decision table and tradeoffs
 - [deploy/troubleshooting.md](deploy/troubleshooting.md) — common failure modes and fixes
 
 ## Evaluate
@@ -77,7 +75,7 @@
 - [reference/configuration.md](reference/configuration.md) — full agent settings reference
 - [reference/service-policies.md](reference/service-policies.md) — portable local/native Service Policy declaration
 - [reference/pyproject-toml.md](reference/pyproject-toml.md) — `pyproject.toml` shape
-- [reference/cost-tracking.md](reference/cost-tracking.md) — `cost_for_agent`, `apx-agent agents cost` CLI
+- [reference/cost-tracking.md](reference/cost-tracking.md) — token-usage cost estimates for the budget guard and dev UI
 - [reference/bedrock-via-ai-gateway.md](reference/bedrock-via-ai-gateway.md) — bind chat to an AI Gateway model service and migrate provider-prefixed declarations
 - [reference/ecosystem.md](reference/ecosystem.md) — ecosystem integrations
 - [reference/hub.md](reference/hub.md) — apx Hub

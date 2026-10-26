@@ -62,7 +62,7 @@ Three agent types cover most use cases:
 | **`DataAgent`** | One line over a Unity Catalog schema. Grounded in real columns, runs as the calling user. |
 | **`CoworkerAgent`** | Joins two source systems on a shared key. Persona, join key, objective. |
 
-Deploy compatible declarations to Databricks Apps or Mosaic AI Model Serving. The compiler checks each runtime’s supported behavior before accepting the target.
+Deploy compatible declarations to Databricks Apps. The compiler checks each runtime’s supported behavior before accepting the target.
 
 ```bash
 uv add apx-agent
@@ -387,7 +387,7 @@ See [docs/get-started/cli.md](docs/get-started/cli.md) for the full surface.
 | Guardrails and callbacks | [docs/safety/callbacks.md](docs/safety/callbacks.md) |
 | Identity passthrough + OBO | [docs/safety/identity-passthrough.md](docs/safety/identity-passthrough.md) |
 | Compliance (governance-monitoring, audit log) | [docs/safety/compliance.md](docs/safety/compliance.md) |
-| Deploy targets | [docs/deploy/apps-vs-model-serving.md](docs/deploy/apps-vs-model-serving.md) |
+| Deploy | [docs/deploy/overview.md](docs/deploy/overview.md) |
 | Scaffolded Apps CI/CD | [docs/deploy-cicd.md](docs/deploy-cicd.md) |
 | Upgrade apx-agent pins safely | [docs/upgrade.md](docs/upgrade.md) |
 | Evaluation | [docs/evaluate/overview.md](docs/evaluate/overview.md) |

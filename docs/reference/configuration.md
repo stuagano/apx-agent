@@ -13,8 +13,7 @@ agent = Agent(
     model="databricks-claude-sonnet-4-6",
     instructions="System prompt for the agent",
     max_iterations=10,
-    sub_agents=["endpoints/sql-explainer"],   # Model Serving target
-    # sub_agents=["$SQL_EXPLAINER_URL"],      # Apps target
+    sub_agents=["$SQL_EXPLAINER_URL"],      # an Apps agent's URL
 )
 ```
 
@@ -443,10 +442,10 @@ agent = Agent(
 
 **Principal isolation:** Memory tools scope reads and writes by the OBO user (`X-Forwarded-User`). The APX tool surface does not offer User B a way to read User A's memories, and no-principal requests (local dev without headers) return `NO_PRINCIPAL` without writing. On a `managed` store this is application-side partitioning, not a service ACL: any principal that can reach the store can still address every actor's entries, so strict tenant isolation needs a separate store. See [sessions and memory](../running/sessions-and-memory.md) and the [managed-state contract map](../design/managed-state-contract-map.md).
 
-**Deployment caveat — where `user_id` comes from:** Per-user memory only activates when the request carries a resolvable `user_id` (the principal). How that is supplied differs by serving surface:
+**Deployment caveat — where `user_id` comes from:** Per-user memory only activates when the request carries a resolvable `user_id` (the principal). How that is supplied depends on the caller:
 
 - **Databricks Apps** (FastAPI `/invocations`): the `user_id` is bridged automatically from the `X-Forwarded-User` header injected by the Apps proxy. Memory activates with no caller action.
-- **Pure Model Serving** (pyfunc served via `databricks.agents.deploy`, not routed through `/invocations`): the serving proxy does **not** inject `user_id`. The caller MUST pass it explicitly via `custom_inputs={"user_id": "<principal>", ...}` for per-user memory to activate. Without it, `recall`/`remember` return `NO_PRINCIPAL` and memory is inert (fail-closed — no cross-user leakage, but nothing is stored or recalled).
+- **Callers that bypass the Apps proxy** (a request that doesn't carry `X-Forwarded-User`): the caller MUST pass the principal explicitly via `custom_inputs={"user_id": "<principal>", ...}` for per-user memory to activate. Without it, `recall`/`remember` return `NO_PRINCIPAL` and memory is inert (fail-closed — no cross-user leakage, but nothing is stored or recalled).
 
 **Credential API:** Lakebase uses `ws.database.generate_database_credential` (the `DatabaseAPI`, not `PostgresAPI`).
 

@@ -25,7 +25,7 @@ Use apx-agent when you want a **production data agent**:
   `vector_search_tool`) run under UC grants and **end-user identity passthrough** — the agent
   sees only what the asking user is permitted to see. Even metadata *writes* (e.g. the
   `uc_comment_writer` tool) run as the calling user under their grants and are audited.
-- **Deployed to Databricks.** Targets Databricks Apps and model serving, with sessions,
+- **Deployed to Databricks.** Targets Databricks Apps, with sessions,
   semantic memory, and MLflow tracing wired from the declaration.
 - **Declared, not wired — for one agent and for many.** One Python object or a
   YAML spec becomes a working, observable, governed agent; apx-agent
@@ -165,7 +165,7 @@ agent = LlmAgent(
 ```
 
 ```bash
-apx-agent agents deploy meridian.yaml --target apps   # or --target model-serving
+apx-agent agents deploy meridian.yaml --target apps
 ```
 
 What each step costs, side by side:
@@ -195,44 +195,32 @@ Two honest caveats:
    is real domain work, not boilerplate. apx-agent removes the `agent_fn` adapter and the
    serving/logging scaffold around it, not the dataset.
 
-## Deploy anywhere, light up the right Databricks tools
+## Deploy to Databricks Apps, light up the Databricks tools
 
-The promise is **one agent definition, deployed to whichever Databricks target the
-tools you need require** — not one deployment that magically appears everywhere. The
-same declared agent compiles to either [Databricks Apps or Model
-Serving](deploy/apps-vs-model-serving.md); switching is a `--target` flag, not a
-rewrite. `apx-agent agents deploy --target apps` runs the bundle path;
-`apx-agent agents deploy --target model-serving` runs `log_agent` +
-`databricks.agents.deploy`.
+The same declared agent compiles to a Databricks App: `apx-agent agents deploy
+--target apps` runs the bundle path (or Agent Bricks for a native project).
 
 What that unlocks across the rest of the Databricks agent ecosystem follows one rule:
-**how does a given tool find your agent?** Two families, two answers.
+**how does a given tool find your agent?**
 
 - **Trace/experiment-keyed tools** read the MLflow traces your agent emits. apx-agent
-  wires tracing on both targets, so these work no matter where you deploy.
-- **Serving-endpoint-keyed tools** call your agent by a Model Serving endpoint *name*.
-  They only light up when the agent **is** a serving endpoint — i.e. deployed
-  `--target model-serving`. This is a Databricks-side contract, not an apx-agent
-  limitation: those tools have no way to dial a Databricks App URL.
+  wires tracing on Apps, so these work wherever the App runs.
+- **Serving-endpoint-keyed tools** (AI Playground, the Review App chat UI, Mosaic AI
+  Supervisor routing by endpoint name) call an agent by a Model Serving endpoint
+  *name*. They can't dial a Databricks App URL, so they don't reach an apx-agent App.
 
-| Databricks tool | Finds your agent via | Apps | Model Serving |
-|---|---|:---:|:---:|
-| [Agent Evaluation](evaluate/overview.md) (`mlflow.genai.evaluate`) | traces / `predict_fn` | ✅ | ✅ |
-| Review App **labeling sessions** (review existing traces) | traces in the experiment | ✅ | ✅ |
-| MLflow trace UI / monitoring | traces in the experiment | ✅ | ✅ |
-| AI Playground | serving endpoint name | ❌ | ✅ |
-| Review App **chat UI** (live interactive testing) | serving endpoint name | ❌ | ✅ |
-| Mosaic AI Supervisor routing | serving endpoint name | ❌ | ✅ |
+| Databricks tool | Finds your agent via | Apps |
+|---|---|:---:|
+| [Agent Evaluation](evaluate/overview.md) (`mlflow.genai.evaluate`) | traces / `predict_fn` | ✅ |
+| Review App **labeling sessions** (review existing traces) | traces in the experiment | ✅ |
+| MLflow trace UI / monitoring | traces in the experiment | ✅ |
+| AI Playground | serving endpoint name | ❌ |
+| Review App **chat UI** (live interactive testing) | serving endpoint name | ❌ |
+| Mosaic AI Supervisor routing by endpoint name | serving endpoint name | ❌ |
 
-So the practical guidance is: **deploy `--target model-serving` when your release process
-includes Playground, the Review App chat UI, or Supervisor routing; deploy `--target apps`
-when you want fast iteration, a co-located UI, async/WebSocket work, or per-app
-governance** — and either way, evaluation, trace monitoring, and human trace-review (via
-labeling sessions) work unchanged. The one path that is Model-Serving-only is *live*,
-chat-driven review; on Apps the supported substitute is a labeling session over captured
-traces, which is also Databricks' own recommendation. See
-[deploy/apps-vs-model-serving.md](deploy/apps-vs-model-serving.md) for the full
-target-by-target comparison.
+Evaluation, trace monitoring, and human trace-review (via labeling sessions) work
+unchanged. On Apps the supported substitute for live, chat-driven review is a
+labeling session over captured traces, which is also Databricks' own recommendation.
 
 ## What apx-agent is not for
 
@@ -262,7 +250,7 @@ layer.
 | You want to… | Reach for |
 |---|---|
 | Build a data agent grounded in a UC schema | **apx-agent** (`DataAgent` / `CoworkerAgent`) |
-| Serve a governed agent on Databricks Apps / model serving | **apx-agent** |
+| Serve a governed agent on Databricks Apps | **apx-agent** |
 | Have tools run as the asking user under UC grants | **apx-agent** |
 | Hand-author a custom `ResponsesAgent` with maximum control | the Databricks Agent Framework directly (apx-agent builds on it) |
 | Orchestrate / swap coding agents (Claude Code, Codex, Cursor) | an agent-orchestration / meta-harness framework |
@@ -274,7 +262,5 @@ layer.
 - [design/okf-grounding-substrate.md](design/okf-grounding-substrate.md) — the open-format
   grounding substrate
 - [tools/overview.md](tools/overview.md) — the governed tool primitives
-- [deploy/apps-vs-model-serving.md](deploy/apps-vs-model-serving.md) — picking a deploy
-  target and what each one unlocks
 - [evaluate/overview.md](evaluate/overview.md) — evaluation and trace-based review
 - [get-started/migration.md](get-started/migration.md) — coming from ADK or the OpenAI Agents SDK

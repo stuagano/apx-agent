@@ -27,7 +27,7 @@ apx-agent is structurally aligned with both Google ADK and the OpenAI Agents SDK
 | Wrap agent as tool | `AgentTool` | `agents_as_tools(...)` | `agent_tool(sub_agent)` |
 | Sessions (in-conversation) | `Session` + `SessionService` | `session` strategy / `conversation_id` | `ConversationStore` — pass `session_id` in `custom_inputs` |
 | Cross-session memory | `MemoryService` | `to_input_list()` + external store | `MemoryStore` — `make_memory_tools` or `assemble_memory_context` |
-| Deploy agent | _(separate infra)_ | _(separate infra)_ | `apx-agent agents deploy` — Apps or Model Serving |
+| Deploy agent | _(separate infra)_ | _(separate infra)_ | `apx-agent agents deploy` — Databricks Apps |
 | Scaffold new agent | _(manual)_ | _(manual)_ | `apx-agent agents scaffold my-agent` writes an editable `my-agent/` project directory |
 | Governed data access | _(manual)_ | _(manual)_ | `DataAgent`, `genie_tool`, `uc_function_tool` |
 | Two-system join pattern | _(manual)_ | _(manual)_ | `CoworkerAgent` |
@@ -226,14 +226,13 @@ Tracing is on by default — every run produces an MLflow span tree (LLM call, t
 
 ## Deployment — Databricks-specific
 
-Neither ADK nor the OpenAI Agents SDK has a built-in deploy story. apx-agent adds `apx-agent agents deploy` to ship to Databricks Apps or Model Serving from a single command:
+Neither ADK nor the OpenAI Agents SDK has a built-in deploy story. apx-agent adds `apx-agent agents deploy` to ship to Databricks Apps from a single command:
 
 ```bash
 # apx-agent — no equivalent in ADK or OpenAI SDK
 apx-agent agents scaffold my-agent   # writes a real my-agent/ project
 cd my-agent && apx-agent agents run                  # local dev server with hot reload
 apx-agent agents deploy --target apps                # bundle + deploy to Databricks Apps
-apx-agent agents deploy --target model-serving --name main.agents.my_agent
 ```
 
 See [quickstart.md](quickstart.md) for the full flow from scaffold to live endpoint.
@@ -252,7 +251,7 @@ These have no equivalent in ADK or the OpenAI Agents SDK:
 | `uc_function_tool(...)` | Calls a Unity Catalog SQL function as a tool |
 | `vector_search_tool(...)` | Databricks Vector Search index as a retrieval tool |
 | OBO identity passthrough | The calling user's OAuth token is forwarded to all tool calls, UC functions, and sub-agents — no service principal needed |
-| `apx-agent agents deploy` | One-command deploy to Databricks Apps or Model Serving |
+| `apx-agent agents deploy` | One-command deploy to Databricks Apps |
 | `apx-agent agents scaffold` | Scaffolds a real, editable project from flags/wizard |
 | `apx-agent generate` | Same output as scaffold, described in plain English instead |
 | `apx-agent uc publish` | Syncs `@tool(uc=...)` functions to Unity Catalog |
@@ -287,3 +286,16 @@ go onto the root agent in `agent.py`, deploy and registration keys to
 `[tool.apx.deploy]`, and `profile` / `experiment` to `[tool.apx]`. See the
 [settings map](../reference/pyproject-toml.md#removed-toolapxagent) for where
 each setting lives now.
+
+---
+
+## Model Serving was removed
+
+apx deploys agents to Databricks Apps only. Use `apx-agent agents deploy --target apps`
+and `apx-agent agents scaffold --target apps`; passing `--target model-serving` to
+`deploy`, `scaffold`, `hot-swap` or `canary` now fails with a message saying so. The
+serving-only flags (`--model`, `--name`, `--workload-size`, `--scale-to-zero`,
+`--endpoint` and the rest), the `agents cost` and `endpoints` commands, and the
+Python API behind them (the logging, hot-swap, cost and canary helpers) were
+removed with it. Calling a Databricks LLM serving
+endpoint from an agent (`model="databricks-claude-sonnet-4-6"`) is unchanged.

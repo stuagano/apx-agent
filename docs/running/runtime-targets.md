@@ -148,9 +148,6 @@ router or its legacy evaluation and replay actions. Input discovery and validati
 remain available at `/api/input-schema` and `/api/input-validation`, including
 for Python-only declarations without discovered project configuration.
 
-`--target model-serving` retains its existing layout and Responses-compatible
-contract; it rejects `--runtime durable_agent_server`.
-
 Declarations that omit `target` mean `durable_agent_server`. A written
 `target = "responses_agent"` stays on the compatibility contract. Re-scaffolding
 with `--force` preserves the runtime already in the project and refuses a
@@ -817,8 +814,7 @@ operates" and "Observed deployed lifecycle".
 
 ## Optional: package an MLflow model
 
-Use this path when you need an MLflow model artifact for registration or
-Model Serving. It is not a prerequisite for Apps deployment, tracing or
+Use this path when you need an MLflow model artifact for registration. It is not a prerequisite for Apps deployment, tracing or
 evaluation. The same APX agent declaration can be compiled into a
 `ResponsesAgent` model with `predict` and `predict_stream`.
 

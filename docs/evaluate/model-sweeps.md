@@ -105,7 +105,7 @@ accepts `workspace_host`. Live CLI runs honor the `experiment` in `[tool.apx]` w
   zero. `cost_cases` shows how many cases were priced. Uninstrumented calls
   cannot be accounted for. Scorer/judge calls, MLflow's prediction-validation
   calls, tools, infrastructure, and billing discounts are excluded. Fixture
-  cost is currently unavailable. Endpoint-wide `cost_for_endpoint` billing is
+  cost is currently unavailable. Endpoint-wide billing is
   deliberately not attributed to evaluation runs.
 - **Failures:** per-model exceptions become error rows; later models still
   run. Cancellation propagates. Missing/duplicate traces, failed traces, and

@@ -1,7 +1,6 @@
 # Databricks Asset Bundle config for customer_triage (Apps target).
 #
 # Deploys the RouterAgent + 4 route agents as a Databricks App.
-# Tradeoffs and rationale: see docs/apps-vs-model-serving.md.
 #
 # Deploy:
 #   uv sync

@@ -108,7 +108,7 @@ publish_tools_to_uc(agent)   # registers + grants in UC, idempotent
 
 ### Declaring custom resources
 
-When your tool accesses a specific Databricks asset, declare it so `log_agent` can include it in the Model Serving resource manifest:
+When your tool accesses a specific Databricks asset, declare it so the agent's resource manifest includes it:
 
 ```python
 from apx_agent import ResourceSpec, attach_resources
@@ -127,7 +127,7 @@ attach_resources(query_orders, [ResourceSpec("uc_table", "main.sales.orders")])
 
 ## Built-in tools — Databricks platform factories
 
-These are pre-built tools for the Databricks platform. Each factory returns a ready-to-use tool (or list of tools) and automatically attaches the required resource declaration for `log_agent`.
+These are pre-built tools for the Databricks platform. Each factory returns a ready-to-use tool (or list of tools) and automatically attaches the required resource declaration.
 
 | Factory | What it does | Resource declared |
 |---------|--------------|-------------------|
@@ -242,34 +242,17 @@ orchestrator = Agent(tools=[agent_tool(remote_billing,
 
 ---
 
-## Declared resources and `log_agent`
+## Declared resources
 
-When the agent is logged to MLflow for Model Serving, its resource requirements are declared up front. Built-in tool factories attach their resources automatically. `log_agent` collects them from the full agent tree:
+An agent's resource requirements are declared up front. Built-in tool factories attach their resources automatically, and apx collects them from the full agent tree and emits them with the app's deployment:
 
-```python
-from apx_agent import log_agent
-
-log_agent(
-    agent,
-    model="databricks-claude-sonnet-4-6",
-    registered_model_name="main.agents.data_triage",
-)
-# resources auto-derived from the agent tree:
-#   DatabricksServingEndpoint("databricks-claude-sonnet-4-6")  # the LLM
-#   DatabricksGenieSpace("abc123")                              # from genie_tool(...)
-#   DatabricksFunction("main.tools.classify_intent")            # from uc_function_tool(...)
+```text
+DatabricksServingEndpoint("databricks-claude-sonnet-4-6")  # the LLM
+DatabricksGenieSpace("abc123")                              # from genie_tool(...)
+DatabricksFunction("main.tools.classify_intent")            # from uc_function_tool(...)
 ```
 
-The platform enforces that the agent can only access the declared resources. For resources the framework can't infer automatically (a specific SQL warehouse, a UC table accessed from a raw SQL string), pass `extra_resources=[...]`:
-
-```python
-log_agent(
-    agent,
-    model="databricks-claude-sonnet-4-6",
-    registered_model_name="main.agents.data_triage",
-    extra_resources=[ResourceSpec("sql_warehouse", "wh-prod")],
-)
-```
+The platform enforces that the agent can only access the declared resources. For resources the framework can't infer automatically (a specific SQL warehouse, a UC table accessed from a raw SQL string), declare them on the tool with `attach_resources(tool, [ResourceSpec("sql_warehouse", "wh-prod")])`.
 
 ---
 

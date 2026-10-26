@@ -439,7 +439,7 @@ declaration into the inputs the product consumes.
   [`running/sessions-and-memory.md`](../running/sessions-and-memory.md) for the
   stores themselves.
 - **Portability.** The same declaration compiles to the durable Apps target or to
-  a `ResponsesAgent` model for Model Serving, so moving between serving contracts
+  the `responses_agent` contract, so moving between runtime contracts
   is a target switch, not a rewrite.
 
 **Rule of thumb:** the CLI gives you the running, durable, scale-to-zero app;

@@ -180,3 +180,32 @@ def test_store_fallback_text_names_where_the_cli_reads_it() -> None:
     wrong = [i for i, line in enumerate(cli, 1)
              if re.search(r"(memory_store|example_store|summarize_fn)\b.*in the project's settings", line)]
     assert wrong == [], wrong
+
+
+_VENDORED_EXAMPLES = ("databricks-skills", "databricks-mcp-server", "databricks-tools-core")
+_REMOVED_API = ("log_agent", "mlflow_resources_for", "hot_swap_model", "HotSwapResult", "get_active_override",
+                "APX_MODEL_OVERRIDE_ENV", "cost_for_endpoint", "cost_for_agent", "CostBreakdown", "CanaryConfig",
+                "CanaryReport", "VersionMetrics", "analyze_canary", "deploy_canary", "get_canary_config",
+                "promote_canary", "rollback_canary")
+
+
+def _user_docs() -> list[Path]:
+    history = ("docs/design/", "docs/superpowers/", "docs/engine-scope/", "docs/specs/")
+    docs = [*(_REPO / "docs").rglob("*.md"), _REPO / "README.md", _REPO / "python" / "README.md",
+            *(p for p in (_REPO / "python" / "examples").glob("*/README.md") if p.parent.name not in _VENDORED_EXAMPLES),
+            *(_REPO / "python").glob("samples-*/agent.py")]
+    return sorted(p for p in docs if not str(p.relative_to(_REPO)).startswith(history))
+
+
+def test_user_docs_do_not_offer_model_serving_hosting() -> None:
+    hosting = re.compile(r"--target model-serving|deploy (?:it |the agent |agents? )?to (?:Mosaic AI )?Model Serving"
+                         r"|apps-vs-model-serving|agents cost\b|apx-agent endpoints\b", re.I)
+    hits = sorted(str(p.relative_to(_REPO)) for p in _user_docs()
+                  if hosting.search(p.read_text()) and "Model Serving was removed" not in p.read_text())
+    assert hits == [], f"{len(hits)}: " + ", ".join(hits)
+
+
+def test_user_docs_do_not_use_the_removed_api() -> None:
+    hits = sorted(f"{p.relative_to(_REPO)}:{name}" for p in _user_docs() for name in _REMOVED_API
+                  if re.search(rf"\b{name}\b", p.read_text()))
+    assert hits == [], f"{len(hits)}: " + ", ".join(hits)

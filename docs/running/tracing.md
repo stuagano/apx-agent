@@ -270,4 +270,3 @@ For audit-relevant attributes that need to appear consistently across agents, op
 - [Dev UI](../get-started/dev-ui.md) — `/_apx/traces` and other dev surfaces
 - [Evaluate](../evaluate/overview.md) — MLflow experiments and eval results
 - [Guardrails & Safety](../safety/callbacks.md) — governance decisions in traces
-- [Cost tracking](../reference/cost-tracking.md) — `cost_for_agent`, CLI cost surface
