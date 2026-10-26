@@ -318,6 +318,11 @@ def compile_durable_handlers(
     return DurableHandlers(invoke=invoke)
 
 
+def _free_text_dev_route(path: str) -> bool:
+    """Dev UI routes that send plain chat messages, which typed workflow leaves reject."""
+    return path == "/_apx/chat" or path.startswith("/_apx/eval")
+
+
 def compile_to_durable_agent_server(
     agent: BaseAgent,
     *,
@@ -413,11 +418,21 @@ def compile_to_durable_agent_server(
     # The card advertises /api/invocations so peers use the durable contract.
     app.state.apx_durable_host = True
     app.state.dev_ui_mount_error = None
-    if not typed_workflow and os.environ.get("APX_DEV_UI") != "0":
+    # Typed hosts keep their opt-in default on Apps (as their native /_apx/chat does).
+    dev_ui = (os.environ.get("APX_DEV_UI", "0" if os.environ.get("DATABRICKS_APP_NAME") else "1") != "0"
+              if typed_workflow else os.environ.get("APX_DEV_UI") != "0")
+    if dev_ui:
         try:
             from ._dev import build_dev_ui_router
 
-            app.include_router(build_dev_ui_router())
+            router = build_dev_ui_router()
+            if typed_workflow:
+                # Typed leaves take structured input: the native /_apx/chat (mounted at
+                # startup) is the Chat tab, and the free-text Eval actions stay off.
+                router.routes = [r for r in router.routes if not _free_text_dev_route(getattr(r, "path", ""))]
+            if not hasattr(app.state, "agent_context"):
+                app.state.agent_context = None  # the shell renders without a config
+            app.include_router(router)
         except Exception as exc:  # recorded, never hidden (same as mount_mcp_endpoints)
             app.state.dev_ui_mount_error = f"{type(exc).__name__}: {exc}"
             logger.warning("Dev UI not mounted on durable host: %s", app.state.dev_ui_mount_error)

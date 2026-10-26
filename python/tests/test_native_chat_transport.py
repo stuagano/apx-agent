@@ -119,3 +119,41 @@ def test_typed_chat_without_config_preserves_declaration_and_project_root(
         assert schema == (DomainInput.model_json_schema() if declaration == "input" else None)
         validation = client.post("/api/input-validation", json={"amount": 4})
         assert validation.status_code == (200 if declaration == "input" else 422)
+
+
+@pytest.mark.parametrize("dev_ui", ["1", None])
+def test_typed_native_host_mounts_dev_ui_with_native_chat(execution, monkeypatch, tmp_path, dev_ui):
+    # A typed workflow gets the developer surfaces (shell, Topology, Discover) when enabled;
+    # its Chat tab stays the native typed chat and free-text eval/replay stay off.
+    from fastapi.testclient import TestClient
+    from apx_agent import LlmAgent, SequentialAgent, compile_agent
+    from tests.test_native_remote_invocations import DomainInput
+    from tests.test_runtime_targets import _write_native_pyproject
+
+    _write_native_pyproject(tmp_path)  # a deployed App has a project config
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "typed-app")
+    if dev_ui is None:
+        monkeypatch.delenv("APX_DEV_UI", raising=False)
+    else:
+        monkeypatch.setenv("APX_DEV_UI", dev_ui)
+    agent = SequentialAgent([LlmAgent(name="typed", input_schema=DomainInput, input_key="domain")])
+    app = compile_agent(agent, target="durable_agent_server", model="test", service_ws=execution.ws)
+    with TestClient(app) as client:
+        shell = client.get("/_apx/agent")
+        if dev_ui is None:  # Apps do not enable the developer surface implicitly
+            assert shell.status_code == 404
+            assert client.get("/_apx/discover").status_code == 404
+            return
+        assert shell.status_code == 200, shell.text
+        assert client.get("/_apx/discover").status_code == 200
+        assert client.get("/_apx/topology.json").status_code == 200
+        chat = client.get("/_apx/chat")
+        assert chat.status_code == 200 and "apxNativeChat" in chat.text
+        assert client.post("/_apx/eval/judge", json={}).status_code == 404
+        assert "/_apx/eval" not in shell.text  # no Eval tab that would load a 404
+        # Tool replay re-runs a tool from JSON args (the Tools page's Run), not chat text.
+        assert client.post("/_apx/replay/tool", json={}).status_code != 404
+        assert app.state.dev_ui_mount_error is None

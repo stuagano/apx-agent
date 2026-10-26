@@ -142,9 +142,12 @@ model apx uses elsewhere.
 If any agent leaf declares `input_schema` or `output_schema`, the host instead
 serves the native workflow chat. It validates declared request JSON and displays
 SDK invocation replay and execution evidence. The root page remains available
-(unless the project supplies its own); `/_apx/chat` is enabled locally and is
-opt-in on Apps with `APX_DEV_UI=1`. Typed hosts do not mount the full developer
-router or its legacy evaluation and replay actions. Input discovery and validation
+(unless the project supplies its own). The developer surfaces are enabled locally
+and opt-in on Apps with `APX_DEV_UI=1`: the `/_apx/agent` shell, Topology,
+Discover and the other read-only pages mount, and the shell's Chat tab is the
+native workflow chat at `/_apx/chat`. The free-text Eval actions (`/_apx/eval*`)
+and the Eval tab stay off, because typed leaves reject plain chat messages; tool
+replay (the Tools page's Run) still works. Input discovery and validation
 remain available at `/api/input-schema` and `/api/input-validation`, including
 for Python-only declarations without discovered project configuration.
 
