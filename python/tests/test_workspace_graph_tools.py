@@ -198,6 +198,7 @@ def test_tools_declare_obo_scopes(tools):
         assert op.execution_identity == "user"
         assert set(op.user_api_scopes) == set(tools_mod.SCOPES)
     assert "genie" in tools_mod.SCOPES and "apps" in tools_mod.SCOPES
+    assert "sql" in tools_mod.SCOPES  # lineage reads system.access.table_lineage as the caller
 
 
 @pytest.mark.asyncio

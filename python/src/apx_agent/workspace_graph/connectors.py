@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -18,6 +19,7 @@ from databricks.sdk.service.apps import AppResource
 
 from .._apps_discovery import discover_app_agents
 from .._discover_data import _MAX_TABLES, list_discover_tables
+from .._sql import run_sql
 from .._workspace_apis import (
     list_genie_spaces,
     list_serving_endpoints,
@@ -148,8 +150,23 @@ def unity_catalog(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
     return frag
 
 
-MAX_LINEAGE_TABLES = 200
+MAX_LINEAGE_TABLES = 200  # REST fallback only: one call per table
 _LINEAGE_PATH = "/api/2.0/lineage-tracking/table-lineage"
+MAX_LINEAGE_EDGES = 5000
+_LINEAGE_POLL_S = 30  # graph.json is a user request: bounded, then the API fallback
+# Edges between the discovered tables over the last year (the system table's retention),
+# from the caller's own system table: Apps user tokens can't reach the lineage REST API,
+# `sql` can. Names are joined on '/', which UC names can't contain (commas they can).
+_LINEAGE_SQL = """
+SELECT DISTINCT source_table_full_name AS src, target_table_full_name AS dst
+FROM system.access.table_lineage
+WHERE event_date >= date_sub(current_date(), 365)
+  AND source_table_full_name <> target_table_full_name
+  AND array_contains(split(lower(:tables), '/'), lower(source_table_full_name))
+  AND array_contains(split(lower(:tables), '/'), lower(target_table_full_name))
+ORDER BY src, dst
+LIMIT {limit}
+"""
 _SECURABLE_PREFIX = {"TABLE": "table", "VOLUME": "volume", "FUNCTION": "function"}
 
 
@@ -306,7 +323,34 @@ def apps(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
 
 
 def lineage(ws: WorkspaceClient, table_fqns: list[str]) -> Fragment:
-    """Table→table ``feedsInto`` from the UC lineage API (no system tables in v1)."""
+    """Table→table ``feedsInto`` from ``system.access.table_lineage``, else the UC lineage API."""
+    if not table_fqns:
+        return Fragment()
+    # The deployed App's warehouse (apx writes it into app.yaml). Without one (local dev)
+    # use the API rather than auto-pick, and start, a warehouse on every graph refresh.
+    warehouse_id = os.environ.get("MLFLOW_TRACING_SQL_WAREHOUSE_ID")
+    if warehouse_id is None:
+        return _lineage_api(ws, table_fqns)
+    try:
+        rows = run_sql(ws, _LINEAGE_SQL.format(limit=MAX_LINEAGE_EDGES + 1),
+                       parameters=[{"name": "tables", "value": "/".join(table_fqns), "type": "STRING"}],
+                       warehouse_id=warehouse_id, poll_timeout_s=_LINEAGE_POLL_S)
+    except Exception as exc:  # noqa: BLE001 — no warehouse or no system.access grant: say so, use REST
+        frag = _lineage_api(ws, table_fqns)
+        frag.warnings.insert(0, f"system.access.table_lineage unavailable ({type(exc).__name__}: {exc}); used the lineage API")
+        return frag
+    cut = len(rows) > MAX_LINEAGE_EDGES
+    frag = Fragment(edges=[  # node_id lower-cases, matching the graph's table ids
+        Edge(node_id("table", r["src"]), node_id("table", r["dst"]), "feedsInto")
+        for r in rows[:MAX_LINEAGE_EDGES]
+    ])
+    if cut:
+        frag.warnings.append(f"showing first {MAX_LINEAGE_EDGES} lineage edges")
+    return frag
+
+
+def _lineage_api(ws: WorkspaceClient, table_fqns: list[str]) -> Fragment:
+    """The UC lineage REST API, one call per table (capped)."""
     frag = Fragment()
     targets = table_fqns[:MAX_LINEAGE_TABLES]
     if len(table_fqns) > MAX_LINEAGE_TABLES:
