@@ -51,7 +51,7 @@ Before continuing, confirm your workspace has:
 
 - A model serving endpoint accessible to your user (e.g. `databricks-claude-sonnet-4-6`). Check under **Serving**.
 - A SQL warehouse (Classic, Pro, or Serverless) — needed for `DataAgent` queries.
-- Databricks Apps enabled — check under **Workspace Settings → Apps**. Without this, `apx-agent agents deploy` will fail. If Apps isn't available, you can use `--target model-serving` instead.
+- Databricks Apps enabled — check under **Workspace Settings → Apps**. Without this, `apx-agent agents deploy` will fail.
 
 ### Step 4 — Install apx-agent
 
@@ -140,8 +140,6 @@ uv run apx-agent agents deploy --target apps
 
 This bundles the project directory, creates the App, and prints the URL when
 it finishes.
-
-> **Deploy to Model Serving instead:** `uv run apx-agent agents deploy --target model-serving --name <catalog.schema.model>` from inside the project.
 
 ---
 
@@ -312,7 +310,7 @@ uv run apx-agent doctor --json     # machine-readable output
 
 **Warehouse stopped** — open the Probe tab at `/_apx/probe/checks`. It shows warehouse status and a link to start it.
 
-**`apx-agent agents deploy` fails with Apps error** — confirm Apps is enabled under **Workspace Settings → Apps**. If not available, use `--target model-serving` instead.
+**`apx-agent agents deploy` fails with Apps error** — confirm Apps is enabled under **Workspace Settings → Apps**.
 
 For deploy failures, see [../deploy/troubleshooting.md](../deploy/troubleshooting.md).
 
@@ -327,7 +325,6 @@ For deploy failures, see [../deploy/troubleshooting.md](../deploy/troubleshootin
 | Build a multi-step pipeline | [../agents/composition.md](../agents/composition.md) |
 | Add multi-turn memory | [../running/sessions-and-memory.md](../running/sessions-and-memory.md) |
 | Write and publish UC function tools | [../tools/overview.md](../tools/overview.md) |
-| Choose Apps vs Model Serving | [../deploy/apps-vs-model-serving.md](../deploy/apps-vs-model-serving.md) |
 | Guardrails and callbacks | [../safety/callbacks.md](../safety/callbacks.md) |
 | Full CLI reference | [cli.md](cli.md) |
 | Coming from ADK or OpenAI Agents SDK | [migration.md](migration.md) |

@@ -14,17 +14,13 @@ cd my_agent && uv sync
 apx-agent agents run               # uvicorn against an existing project directory
 apx-agent uc publish --dry-run     # preview UC function registrations
 apx-agent uc publish               # actually register
-apx-agent agents deploy --model databricks-claude-sonnet-4-6 \
-           --name main.agents.my_agent              # default: --target model-serving
-apx-agent agents deploy --target apps               # Apps destination; native projects use Agent Bricks
+apx-agent agents deploy --target apps               # Databricks Apps; native projects use Agent Bricks
 apx-agent agents advertise --description "Handles X for users asking about Y"
-apx-agent supervisor add --endpoint my_agent --supervisor sa-12345
+apx-agent supervisor add --app my-agent-app --supervisor sa-12345
 apx-agent uc mcp-config --host https://workspace.cloud.databricks.com
 apx-agent eval run evalset.jsonl --model databricks-claude-sonnet-4-6
 apx-agent eval run chain-cases.json --fixtures  # typed step checks using recorded tool results
 apx-agent eval sweep evalset.jsonl --model endpoint-a --model endpoint-b  # compare quality, latency, estimated LLM cost
-apx-agent agents logs --endpoint my_agent           # runtime logs from Model Serving
-apx-agent agents logs --endpoint my_agent --build   # build-time logs
 apx-agent agents logs --app my-app --profile prod   # Databricks Apps logs (via the CLI)
 apx-agent agents describe                   # introspect tools, sub-agents, declared resources
 apx-agent eval lint                         # static checks: instructions, docstrings, env vars, model names
@@ -35,15 +31,15 @@ apx-agent traces feedback tr-123 --name domain_quality --value 4 \
           --idempotency-key review-row-123 --evidence screenshot_uri=s3://bucket/review.png
 apx-agent traces feedback-view tr-123 --format json  # trace tags + normalized assessments
 apx-agent agents list                       # discover deployed apx-agents via UC tag scan
-apx-agent agents cost --agent customer_triage --hours 24 # DBU + $ over a lookback window
 apx-agent traces export --table main.agents.traces --hours 24    # MLflow traces → Delta
 apx-agent uc topology --format mermaid > topology.mmd            # multi-agent graph
 apx-agent eval chain evalset.jsonl --model X --experiment /Users/me/...  # per-prompt sub-agent coverage
-apx-agent agents hot-swap --endpoint customer_triage --model databricks-claude-opus-4-7  # change LLM without re-logging
-apx-agent canary deploy --endpoint customer_triage --model main.agents.x --version 42 --traffic 10
-apx-agent canary analyze --endpoint customer_triage --hours 24    # per-version requests / errors / latency
-apx-agent canary promote --endpoint customer_triage --model main.agents.x --version 42
-apx-agent canary rollback --endpoint customer_triage --model main.agents.x --version 41
+# hot-swap and canary work on Bundle (responses_agent) projects, which carry a databricks.yml
+apx-agent agents hot-swap --target apps --llm-endpoint databricks-claude-opus-4-7 --profile prod  # change the LLM endpoint of a deployed App
+apx-agent canary deploy --target apps --canary-version v42 --profile prod   # second App as a canary
+apx-agent canary analyze --target apps --canary-version v42 --hours 24    # per-version requests / errors / latency
+apx-agent canary promote --target apps --canary-version v42 --profile prod
+apx-agent canary rollback --target apps --to-version 41 --profile prod
 # judge alignment loop — collect SME labels, then align the BYO LLM judge
 # step 1: register a judge with make_judge().register() against the agent's experiment
 # step 2: open the labeling session (experiment auto-resolved from the apx.mlflow.experiment_id UC tag set at deploy)
@@ -64,6 +60,6 @@ apx-agent examples save --agent-id triage --input "..." --output "..." --score 0
 
 Trace feedback commands require the `eval` extra and use the active MLflow tracking configuration. See [Trace-linked human feedback](../evaluate/overview.md#trace-linked-human-feedback) for the external-review workflow, authentication expectations, and idempotency behavior.
 
-Commands that load the agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`): the `agents run`, `agents deploy`, `agents describe`, `agents publish`, and `agents advertise` commands; the `uc publish` / `uc mcp-config` commands; and the `eval run` / `eval sweep` / `eval lint` / `eval test` / `eval chain` commands. (Commands like `agents scaffold`, `agents cost`, and the `agents pull-comments` / `agents migrate-to-okf` / `agents refresh-schema` OKF commands don't take `--module`.)
+Commands that load the agent accept `--module module:variable` to point at the agent (defaults to `agent:agent`): the `agents run`, `agents deploy`, `agents describe`, `agents publish`, and `agents advertise` commands; the `uc publish` / `uc mcp-config` commands; and the `eval run` / `eval sweep` / `eval lint` / `eval test` / `eval chain` commands. (Commands like `agents scaffold` and the `agents pull-comments` / `agents migrate-to-okf` / `agents refresh-schema` OKF commands don't take `--module`.)
 
 A worked example exercising the full surface — `@tool(uc=...)`, `genie_tool`, `vector_search_tool`, `sql`-style tools, and `HandoffAgent` routing — lives in [`python/examples/customer_triage/`](../python/examples/customer_triage/). Read its README for the end-to-end flow from scaffold to deploy to publish.

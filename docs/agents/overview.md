@@ -1,6 +1,6 @@
 # Agents overview
 
-An **agent** in apx-agent is a declaration: `instructions` + `tools` + a model name. The framework compiles it to a runnable service on Databricks (Apps or Model Serving) without changing the agent definition.
+An **agent** in apx-agent is a declaration: `instructions` + `tools` + a model name. The framework compiles it to a runnable service on Databricks Apps without changing the agent definition.
 
 ## Key concepts
 

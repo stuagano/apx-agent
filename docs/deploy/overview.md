@@ -1,24 +1,8 @@
 # Deployment
 
-apx-agent compiles the same agent to either runtime. Pick by workload; swap with one CLI flag. The full decision table is in [apps-vs-model-serving.md](apps-vs-model-serving.md).
+apx-agent deploys agents to Databricks Apps (`--target apps`).
 
 New to the Apps/Agent Bricks runtime? Read [How the Agent Bricks platform works](agentbricks-platform.md) first — it explains the durable-agent model, the CLI, deploy, the hosting tiers (scale-to-zero vs dedicated-instance), and the identity model that everything below builds on.
-
-## Model Serving (Mosaic AI) — `--target model-serving`
-
-The default. `compile_to_chat_agent` produces an MLflow `ChatAgent` with declared resources; `log_agent` registers it in Unity Catalog; `databricks.agents.deploy` promotes it to a serving endpoint. Recognized natively by AI Playground, Review App, Agent Evaluation, MLflow tracing, and Supervisor Agent as a sub-agent.
-
-```bash
-apx-agent agents deploy --model databricks-claude-sonnet-4-6 \
-           --name main.agents.my_agent
-```
-
-- **Pay-per-request** — scale-to-zero, no idle cost
-- **Identity passthrough** automatic from Playground / Genie / Supervisor (via `customInputs.user_token`)
-- **Stateless** — request/response only; no persistent state between calls
-- **Production patterns** — canary deploys (`apx-agent canary deploy/promote/rollback`), traffic-split, hot-swap LLM (`apx-agent agents hot-swap`)
-- **Container build** — 5–30 min on first deploy; subsequent deploys reuse cached layers
-- **Best for** — production agents the platform routes traffic to (Supervisor sub-agents, AI Playground, Knowledge Assistants)
 
 ## Databricks Apps — `--target apps`
 

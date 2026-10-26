@@ -198,7 +198,7 @@ tokens, and credentials are not logged or included in native plans.
 
 Existing `guardrails=` settings, code-defined hooks, PolicyGate, and
 GovernanceGuard remain supported. Service Policy hooks are additive and are
-attached through the same finalize_agent seam used by Apps and model-serving
-paths. Code-defined hooks run first; the declarative local mirror runs after
+attached through the same finalize_agent seam used by Apps
+deployments. Code-defined hooks run first; the declarative local mirror runs after
 them. Migrate one policy at a time, run with dry_run, inspect audit decisions,
 then change the attachment to enforce.

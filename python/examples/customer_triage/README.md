@@ -1,6 +1,6 @@
 # customer_triage — worked example
 
-A customer-support triage agent that exercises the full apx-agent surface end-to-end. Deploys to **either** Model Serving **or** Databricks Apps via `apx-agent agents deploy --target {model-serving,apps}`.
+A customer-support triage agent that exercises the full apx-agent surface end-to-end. Deploys to Databricks Apps via `apx-agent agents deploy --target apps`.
 
 ```
                     RouterAgent (one routing call)
@@ -47,37 +47,15 @@ apx-agent agents run             # uvicorn against app.py:app
 
 ## Publish + deploy
 
-This example ships two deploy paths — pick by workload. The full tradeoff write-up is in [`docs/deploy/apps-vs-model-serving.md`](../../../docs/deploy/apps-vs-model-serving.md).
-
-### Option A: Model Serving (`--target model-serving`, default)
-
-For production endpoints recognized by AI Playground, Review App, Supervisor Agent. Container build pipeline.
+Code-push deploy via `databricks bundle deploy + bundle run`; no container build. Files in `agent_server/`, `databricks.yml`, `pyproject.toml`.
 
 ```bash
-# 1. Publish UC-syncable helpers (classify_intent, …)
+# Publish UC-syncable helpers (classify_intent, …)
 apx-agent uc publish --module agent:agent --dry-run    # preview
 apx-agent uc publish --module agent:agent              # actually create + grant
 
-# 2. Log the ChatAgent to MLflow + deploy to Model Serving
-export ACCOUNT_GENIE_SPACE_ID=abc-123  # used by ask_account_data
-apx-agent agents deploy --module agent:agent \
-           --model databricks-claude-sonnet-4-6 \
-           --name main.agents.customer_triage
-
-# 3. Register as a Supervisor sub-agent (optional)
-apx-agent agents advertise --description "Routes customer support queries to specialists."
-apx-agent supervisor add --endpoint customer_triage --supervisor sa-12345
-
-# 4. Generate Claude Desktop / Cursor MCP config (optional)
-apx-agent uc mcp-config --module agent:agent --host "$DATABRICKS_HOST" --name triage
-```
-
-### Option B: Databricks Apps (`--target apps`)
-
-For fast iteration. Code-push deploy via `databricks bundle deploy + bundle run`; no container build. Files in `agent_server/`, `databricks.yml`, `pyproject.toml`.
-
-```bash
 cd python/examples/customer_triage
+export ACCOUNT_GENIE_SPACE_ID=abc-123  # used by ask_account_data
 apx-agent agents deploy --target apps
 
 # After deploy, query the live app:
@@ -85,6 +63,14 @@ curl -X POST https://customer-triage-<workspace-id>.<region>.databricksapps.com/
   -H "Authorization: Bearer $(databricks auth token --profile <p> | jq -r .access_token)" \
   -H "Content-Type: application/json" \
   -d '{"input":[{"role":"user","content":"why is my bill so high?"}]}'
+
+# Register as a Supervisor sub-agent (optional)
+apx-agent agents advertise --endpoint customer-triage --endpoint-type apps \
+  --description "Routes customer support queries to specialists."
+apx-agent supervisor add --supervisor sa-12345 --app customer-triage
+
+# Generate Claude Desktop / Cursor MCP config (optional)
+apx-agent uc mcp-config --module agent:agent --host "$DATABRICKS_HOST" --name triage
 ```
 
 `apx-agent agents deploy --target apps` is the complete pipeline — builds the

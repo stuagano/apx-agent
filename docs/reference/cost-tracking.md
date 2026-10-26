@@ -1,28 +1,17 @@
 # Cost tracking
 
-```python
-from apx_agent import cost_for_agent
-from databricks.sdk import WorkspaceClient
+apx-agent estimates dollar cost from token usage. It does not query billing
+tables; the estimate is for the session budget guard and the dev UI's trace
+panel.
 
-breakdown = cost_for_agent(
-    agent_name="customer_triage",
-    ws=WorkspaceClient(),
-    lookback_hours=24,
-    warehouse_id="wh-prod",
-)
-print(f"Total DBUs: {breakdown.total_dbus}")
-print(f"Total USD:  ${breakdown.total_usd}")
-for row in breakdown.rows:
-    print(f"  {row['sku_name']}: {row['dbus']} DBUs → ${row['usd']}")
-```
+`apx_agent._cost.usd_for_token_usage(input_tokens, output_tokens, model=...)`
+prices an input/output token count with published per-million-token rates for known
+foundation models (for example `databricks-claude-sonnet-4-6`). It returns
+`None` for a model with no published rate, so an unknown model shows no price
+instead of a wrong one.
 
-Queries `system.billing.usage` joined to `system.billing.list_prices` (best-effort) scoped to the agent's serving endpoint. `total_usd` is `None` when pricing isn't joinable for every row — partial coverage would understate the bill, so it's better to surface the gap than print a misleading total.
+Two surfaces use it:
 
-Same surface from the CLI:
-
-```bash
-apx-agent agents cost --agent customer_triage --hours 24
-apx-agent agents cost --endpoint my-endpoint --hours 168 --format json
-```
-
-Requires the `system.billing` share to be enabled in the workspace.
+- the session budget guard, which caps running dollar cost per session from the
+  same usage;
+- the dev UI trace panel, which shows the estimated cost of each trace.

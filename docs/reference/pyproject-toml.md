@@ -84,7 +84,7 @@ Deploy settings live in their own table, which deploy reads without importing
 [tool.apx.deploy]
 name = "orders-agent"     # optional; defaults to [project].name
 app_name = "mcp-orders"   # optional; Apps API App name, when it differs from name
-host = "apps"             # apps | model_serving
+host = "apps"             # apps
 space = "shared-space"    # an App Space picks compute; without one:
 # instances = 2           #   fixed count, or [tool.apx.deploy.autoscale] min/max, 1-5
 backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)

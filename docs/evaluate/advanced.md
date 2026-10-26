@@ -8,9 +8,9 @@ human feedback, judge calibration, production scoring, and issue triage.
 
 Each agent gets its own experiment so runs, traces, and eval results stay organized. Set the experiment at three layers, in priority order:
 
-1. **CLI flag** — `apx-agent agents deploy --experiment ...`, `apx-agent eval run --experiment ...`
+1. **CLI flag** — `apx-agent eval run --experiment ...`
 2. **`[tool.apx]` in pyproject** — `experiment = "/Users/me/agents/my_agent"`
-3. **Direct kwarg** — `log_agent(..., experiment=...)`, `evaluate(..., experiment=...)`
+3. **Direct kwarg** — `evaluate(..., experiment=...)`
 
 When none is set, MLflow's currently-active experiment (or default) is used.
 
@@ -21,9 +21,6 @@ experiment = "/Users/me@company.com/agents/customer_triage"
 ```
 
 ```python
-log_agent(agent, model="...", registered_model_name="...",
-          experiment="/Users/me@company.com/agents/triage")
-
 evaluate(agent, model="...", evalset=[...],
          experiment="/Users/me@company.com/agents/triage")
 ```
@@ -307,10 +304,8 @@ treat missing human feedback as agreement. Compare latency between scored and
 unscored traces to verify that asynchronous scoring did not change request-path
 latency.
 
-`apx-agent agents cost` reports the agent serving endpoint's usage. It is useful
-request-path context but is not proof of the monitoring scorer's cost. Attribute
-monitoring cost from workspace billing data when possible, otherwise report it
-as unavailable rather than folding it into endpoint cost.
+Attribute monitoring cost from workspace billing data when possible, otherwise
+report it as unavailable rather than folding it into request-path cost.
 
 Promote the sample rate only after coverage is stable, the human-reviewed
 false-positive rate meets the threshold chosen during calibration, latency has

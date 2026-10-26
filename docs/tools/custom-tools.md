@@ -202,7 +202,7 @@ publish_tools_to_uc(agent)   # idempotent
 
 ### Declaring resources on a custom tool
 
-When your tool accesses a specific Databricks asset, declare it so `log_agent` can include it in the Model Serving manifest:
+When your tool accesses a specific Databricks asset, declare it so the agent's resource manifest includes it:
 
 ```python
 from apx_agent import ResourceSpec, attach_resources

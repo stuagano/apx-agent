@@ -1,6 +1,6 @@
 # Data Triage Agent
 
-Investigates why data is missing from Databricks tables — **six-step `SequentialAgent` pipeline, each step structurally guaranteed to run**. Deploys to **either** Databricks Apps **or** Mosaic AI Model Serving via `apx-agent agents deploy --target {apps,model-serving}`.
+Investigates why data is missing from Databricks tables — **six-step `SequentialAgent` pipeline, each step structurally guaranteed to run**. Deploys to Databricks Apps via `apx-agent agents deploy --target apps`.
 
 A `SequentialAgent` composes six focused `Agent`s that each handle one phase of the investigation. Conversation history accumulates automatically — every agent's output is visible to the next. Delegates SQL and Delta forensics to the [data-inspector](../data-inspector/) sub-agent via A2A.
 
@@ -197,10 +197,6 @@ The events table has no rows after midnight — what happened?
 
 ## Part 3: Deploy
 
-The agent ships with two deploy paths. Pick by workload; the full tradeoff write-up is in [`docs/deploy/apps-vs-model-serving.md`](../../../docs/deploy/apps-vs-model-serving.md).
-
-### Option A: Databricks Apps (`--target apps`, recommended for fast iteration)
-
 Code-push deploy via `databricks bundle deploy + bundle run`. No container build. `app.py` is the native entrypoint: `apx_agent._serve.create_app()` compiles the declared `target = "durable_agent_server"` runtime (native durable `/invocations`; stateless per request, with no managed session store because the root is a `KeywordRouter`. Invocation events are persisted in the runtime store, but request-user invocations are not recovered in the background), then re-mounts `/mcp` + `/api/*` + the Jira webhook on top so Genie Code still discovers the tools.
 
 ```bash
@@ -232,16 +228,6 @@ curl -X POST "$APP_URL/invocations" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"input":[{"role":"user","content":"why is main.gold.orders empty?"}]}'
-```
-
-### Option B: Model Serving (`--target model-serving`, default)
-
-For production endpoints recognized by AI Playground, Review App, Supervisor Agent. Container build path.
-
-```bash
-apx-agent agents deploy --module agent:agent \
-           --model databricks-claude-sonnet-4-6 \
-           --name main.agents.data_triage_agent
 ```
 
 ---

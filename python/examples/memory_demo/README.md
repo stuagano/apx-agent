@@ -15,11 +15,6 @@ same `make_memory_tools` callables, and the same `assemble_context`
 system-prompt assembly. The only difference is whether you import the
 module locally or behind a FastAPI route inside an App.
 
-`memory_demo` previously deployed via Model Serving (`databricks.agents.deploy`).
-We moved the deploy story to Apps because Model Serving container builds queue —
-iteration suffers. The full tradeoff write-up is in
-[`docs/deploy/apps-vs-model-serving.md`](../../../docs/deploy/apps-vs-model-serving.md).
-
 ## What's in here
 
 - `app.py` — the canonical in-process demo. Seeds the stores, builds the

@@ -22,7 +22,7 @@ def get_table_lineage(table_full_name: str, ws: Dependencies.Workspace) -> dict:
 | 3 | `DATABRICKS_TOKEN` env var | Local dev with a static PAT |
 | 4 | M2M OAuth (`DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`) | Background jobs, workflows — no user present |
 
-When deployed to Model Serving and called from a trusted Databricks surface (AI Playground, Genie, Review App, or Supervisor sub-agent) that supplies caller identity, the calling user's identity can thread through the agent and its sub-agents — scoped to the declared resources at every supported hop.
+When deployed to Databricks Apps and called from a trusted Databricks surface (Genie, or a Supervisor that routes to the App as a sub-agent) that supplies caller identity, the calling user's identity can thread through the agent and its sub-agents — scoped to the declared resources at every supported hop.
 
 ## New permissions require reauthorization
 

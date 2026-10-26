@@ -29,8 +29,6 @@ caller-scoped discovery, not App-SP recon. Discover is read-only.
 Apps user** (SSO / `X-Forwarded-Access-Token`). Optional `APX_DEV_UI_TOKEN`
 covers non-browser automation.
 
-Model Serving deployments use AI Playground as the equivalent surface.
-
 ## Surfaces
 
 ### `/_apx/agent` — Chat shell
