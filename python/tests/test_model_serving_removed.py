@@ -109,3 +109,45 @@ def test_advertise_still_registers_a_serving_endpoint_peer() -> None:
     # Kept by the spec: advertising an existing serving endpoint is not hosting one.
     opt = next(p for p in cli.agents.commands["advertise"].params if p.name == "endpoint_type")
     assert "model-serving" in opt.type.choices
+
+
+def test_the_scaffold_wizard_never_offers_model_serving(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The default first-run path in a TTY: it must not prompt for, or return, model-serving.
+    prompts: list[str] = []
+    monkeypatch.setattr(cli.click, "prompt", lambda text, **kw: prompts.append(text) or kw["default"])
+    target, *_ = cli._scaffold_wizard(None, None, "base", None, None)
+    assert target == "apps"
+    assert "Target" not in prompts
+
+
+def test_apps_preflight_on_a_flat_layout_does_not_point_at_model_serving(tmp_path: Path,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
+    (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', tools=[], target='responses_agent')\n")
+    (tmp_path / "app.py").write_text("app = None\n")
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli.main, ["agents", "deploy", "--profile", "x"])
+    assert result.exit_code != 0
+    assert "--target model-serving" not in result.output
+    assert "agents scaffold" in result.output and "--target apps" in result.output, result.output
+
+
+def test_doctor_accepts_a_flat_app_py_project(tmp_path: Path) -> None:
+    from apx_agent import _doctor
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nname = "p"\n')
+    (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', tools=[])\n")
+    (tmp_path / "app.py").write_text("from apx_agent import create_app\nfrom agent import agent\napp = create_app(agent)\n")
+    assert _doctor.check_project_layout(tmp_path).status is _doctor.Status.OK
+
+
+def test_generated_and_help_text_never_point_at_model_serving() -> None:
+    src = Path(cli.__file__).read_text()
+    for template in ("_SCAFFOLD_APPS_AGENT",):
+        start = src.index(f"{template} = ")
+        assert "--target model-serving" not in src[start:src.index('"""', src.index('"""', start) + 3)], template
+    helps = [p.help for c in (cli.agents.commands["deploy"], cli.agents.commands["scaffold"], cli.agents.commands["refresh-schema"])
+             for p in c.params if isinstance(p, cli.click.Option) and p.help]
+    assert not [h for h in helps if "model-serving" in h or "Model Serving" in h]
+    deploy_help = cli.agents.commands["deploy"].help
+    assert deploy_help is not None and "Model Serving" not in deploy_help.replace("Model Serving was removed", "")

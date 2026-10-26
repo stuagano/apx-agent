@@ -2534,27 +2534,6 @@ def test_preflight_apps_durable_bundle_needs_agent_py_not_agent_server(tmp_path:
     _preflight_apps(tmp_path, durable=True)  # no agent_server/ needed
 
 
-def test_preflight_apps_suggests_model_serving_for_adk_layout(tmp_path: Path) -> None:
-    """agent.py + databricks.yml misrouted to apps → suggest --target model-serving (#411)."""
-    import click
-
-    from apx_agent.cli import _preflight_apps
-
-    (tmp_path / "agent.py").write_text("agent = None\n")
-    (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
-    (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname = 'x'\n")
-    with pytest.raises(click.ClickException) as excinfo:
-        _preflight_apps(tmp_path)
-    assert "--target model-serving" in excinfo.value.message
-    assert "scaffold" not in excinfo.value.message
-
-    # A bare directory keeps the scaffold hint — nothing suggests model-serving.
-    bare = tmp_path / "bare"
-    bare.mkdir()
-    with pytest.raises(click.ClickException) as excinfo:
-        _preflight_apps(bare)
-    assert "scaffold" in excinfo.value.message
-    assert "--target model-serving" not in excinfo.value.message
 
 
 def test_run_autodetects_apps_module() -> None:

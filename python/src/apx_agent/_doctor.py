@@ -1016,10 +1016,11 @@ def check_project_layout(cwd: Path) -> Check:
             f"{cwd} is not an apx project",
             "Run `apx-agent scaffold my-agent` to create one, then cd into it.",
         )
-    from apx_agent.cli import _declares_durable, _detect_target
+    from apx_agent.cli import _declares_durable, _detect_target, _run_module_for_layout
 
     target = _detect_target(cwd).target
-    native = _declares_durable(cwd)
+    # A native project, or the flat agent.py + app.py layout, needs agent.py; the Apps launcher needs agent_server/.
+    native = _declares_durable(cwd) or _run_module_for_layout(cwd) == "app:app"
     marker = "agent_server/" if target == "apps" and not native else "agent.py"
     if target == "apps" and not native:
         ok = (cwd / "agent_server").is_dir()
