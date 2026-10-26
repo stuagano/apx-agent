@@ -290,7 +290,12 @@ def test_apps_connector_uses_declared_resources(monkeypatch):
 
 
 def test_lineage_connector_feeds_into_and_caps(monkeypatch):
+    # The REST path is the fallback when system.access.table_lineage can't be queried.
     monkeypatch.setattr(connectors, "MAX_LINEAGE_TABLES", 2)
+    def _no_sql(*a, **k):
+        raise PermissionError("no system.access")
+    monkeypatch.setattr(connectors, "run_sql", _no_sql)
+    monkeypatch.setenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", "wh-app")
     ws = MagicMock()
 
     def _do(method, path, query):
@@ -317,8 +322,74 @@ def test_lineage_connector_feeds_into_and_caps(monkeypatch):
     assert [(e.src, e.dst, e.type) for e in frag.edges] == [
         ("table:main.sales.orders", "table:main.sales.daily", "feedsInto")
     ]
-    assert "checked first 2 of 3 tables" in frag.warnings[0]
-    assert "1 of 2 tables failed" in frag.warnings[1]
+    assert "system.access.table_lineage unavailable" in frag.warnings[0]
+    assert "PermissionError" in frag.warnings[0]
+    assert "checked first 2 of 3 tables" in frag.warnings[1]
+    assert "1 of 2 tables failed" in frag.warnings[2]
+
+
+def test_lineage_reads_system_table_in_one_bound_query(monkeypatch):
+    # Apps user tokens can't reach the lineage REST API; one SQL query over the
+    # caller's own system.access.table_lineage covers every discovered table.
+    calls = []
+
+    def _run_sql(ws, sql, *, parameters, warehouse_id, poll_timeout_s):
+        calls.append((sql, parameters, warehouse_id, poll_timeout_s))
+        return [{"src": "main.sales.orders", "dst": "main.sales.daily"},
+                {"src": "Main.Sales.Orders", "dst": "main.gold.revenue"}]
+
+    monkeypatch.setattr(connectors, "run_sql", _run_sql)
+    # The deployed App's own warehouse (apx writes it into app.yaml), not the first one listed.
+    monkeypatch.setenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", "wh-app")
+    ws = MagicMock()
+    tables = [f"main.sales.t{i}" for i in range(300)] + ["main.sales.orders", "main.sales.daily", "Main.Gold.Revenue"]
+    frag = connectors.lineage(ws, tables)
+    [(sql, params, warehouse_id, poll_timeout_s)] = calls
+    assert warehouse_id == "wh-app"
+    assert poll_timeout_s <= 30  # a user-facing request: bounded, then fall back
+    assert "365" in sql and "lower(target_table_full_name)" in sql  # a year; both ends in the graph
+    assert "system.access.table_lineage" in sql and ":tables" in sql
+    # Bound, not interpolated; joined on '/', which UC names can't contain (commas they can).
+    assert params == [{"name": "tables", "value": "/".join(tables), "type": "STRING"}]
+    assert [(e.src, e.dst, e.type) for e in frag.edges] == [
+        ("table:main.sales.orders", "table:main.sales.daily", "feedsInto"),
+        ("table:main.sales.orders", "table:main.gold.revenue", "feedsInto"),  # ids are case-insensitive
+    ]
+    assert frag.warnings == []  # no 200-table cap on this path
+    ws.api_client.do.assert_not_called()
+
+
+def test_lineage_warns_only_when_edges_were_cut(monkeypatch):
+    monkeypatch.setattr(connectors, "MAX_LINEAGE_EDGES", 1)
+    monkeypatch.setenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", "wh-app")
+    rows = [{"src": "a.b.c", "dst": "a.b.d"}]
+    monkeypatch.setattr(connectors, "run_sql", lambda ws, sql, **k: list(rows))
+    assert connectors.lineage(MagicMock(), ["a.b.c", "a.b.d"]).warnings == []  # exactly at the cap
+    rows.append({"src": "a.b.c", "dst": "a.b.e"})
+    frag = connectors.lineage(MagicMock(), ["a.b.c", "a.b.d"])
+    assert len(frag.edges) == 1 and "first 1 lineage edges" in frag.warnings[0]
+
+
+def test_lineage_without_app_warehouse_uses_the_api_and_starts_nothing(monkeypatch):
+    # Locally there's no App warehouse: never auto-pick (and start) one for a graph refresh.
+    monkeypatch.delenv("MLFLOW_TRACING_SQL_WAREHOUSE_ID", raising=False)
+    def _fail(*a, **k):
+        raise AssertionError("no SQL without the App warehouse")
+    monkeypatch.setattr(connectors, "run_sql", _fail)
+    ws = MagicMock()
+    ws.api_client.do.return_value = {"downstreams": []}
+    frag = connectors.lineage(ws, ["main.s.t"])
+    ws.api_client.do.assert_called_once()
+    assert frag.warnings == []
+
+
+def test_lineage_without_tables_runs_nothing(monkeypatch):
+    def _fail(*a, **k):
+        raise AssertionError("no query without tables")
+    monkeypatch.setattr(connectors, "run_sql", _fail)
+    ws = MagicMock()
+    assert connectors.lineage(ws, []).edges == []
+    ws.api_client.do.assert_not_called()
 
 
 def test_connector_registry_names():

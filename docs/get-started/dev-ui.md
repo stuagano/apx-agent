@@ -49,6 +49,13 @@ and connections, and press **Impact** to light up everything downstream. Above
 can't be read (for example, no Genie permission), you get a warning banner and a
 partial graph, not an error.
 
+On a deployed App, `feedsInto` lineage comes from `system.access.table_lineage`: the
+last year of edges between tables in the graph (up to 5,000), queried as you through
+the `sql` user scope on the App's `MLFLOW_TRACING_SQL_WAREHOUSE_ID` warehouse. Apps
+user tokens can't call the lineage REST API. That API (one call per table, first 200)
+is used locally, where no App warehouse is set, and as the fallback when the query
+fails or runs past 30 s; a warning says why.
+
 It is the same graph agents query:
 
     from apx_agent import Agent, workspace_graph_tools
@@ -60,7 +67,7 @@ That adds six tools: `graph_summary`, `search_assets`, `get_asset`,
 the caller's credentials and cache it per caller for 10 minutes. Backed by
 `GET /_apx/discover/graph.json?catalogs=a,b&refresh=1` and
 `GET /_apx/discover/impact/{id}`. The tools declare the OBO scopes the connectors need
-(Unity Catalog read, `genie`, `vector-search`, `model-serving`, `apps`), so `apx-agent deploy`
+(Unity Catalog read, `genie`, `vector-search`, `model-serving`, `apps`, `sql`), so `apx-agent deploy`
 grants them to the App.
 
 ### `/_apx/topology` — Interactive topology graph

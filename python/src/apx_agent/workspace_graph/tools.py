@@ -24,6 +24,7 @@ SCOPES = [
     "vector-search",
     "model-serving",
     "apps",
+    "sql",  # lineage: system.access.table_lineage, queried as the caller
 ]
 
 
