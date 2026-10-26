@@ -101,8 +101,7 @@ def _check_instructions(agent: "BaseAgent") -> Iterable[LintFinding]:
                 message=(
                     "LlmAgent has no instructions set. The LLM will receive "
                     "no system prompt and its behavior is undefined. Pass "
-                    "instructions= to the constructor or set "
-                    "instructions= on the agent in agent.py."
+                    "instructions= to the agent's constructor in agent.py."
                 ),
             )
 

@@ -630,25 +630,6 @@ class TemplateConfigError(ValueError):
     """Raised when an agent cannot be resolved from the given template config or module."""
 
 
-def _ws_for_template(config: "AgentConfig | None") -> Any:
-    """Return a WorkspaceClient for template resolution, or None.
-
-    Only attempts construction when config has a template field (template.build
-    may need ws for live schema introspection). Degrades gracefully on failure —
-    DataTemplate.build(spec, ws=None) still returns a working agent.
-    """
-    if config is None or config.template is None:
-        return None
-    try:
-        return _make_workspace_client()
-    except Exception as e:
-        logger.warning(
-            "Could not build workspace client for template resolution: %s. "
-            "Template will build with ws=None (graceful degradation — "
-            "grounded instructions require live introspection).",
-            e,
-        )
-        return None
 
 
 def resolve_agent(

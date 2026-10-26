@@ -310,7 +310,7 @@ uv run apx-agent agents deploy
 ### Step 3: Verify
 
 ```bash
-databricks apps get shortage-intelligence-agent --profile my-workspace
+databricks apps get shortage-intelligence --profile my-workspace
 # look for "state": "RUNNING"
 ```
 

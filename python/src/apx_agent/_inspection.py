@@ -285,10 +285,13 @@ def _fold_deploy_table(data: dict[str, Any], fields: dict[str, Any]) -> dict[str
     return merged
 
 
-def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str, Any] | None:
+def _agent_config_fields(
+    path: Path, section_path: tuple[str, ...], from_agent_py: set[str] | None = None,
+) -> dict[str, Any] | None:
     """AgentConfig fields declared at ``section_path`` in *path*, or None.
 
-    For the APX section, ``[tool.apx.deploy]`` is folded in (sub-project 3a)."""
+    For the APX section, ``[tool.apx.deploy]`` is folded in (sub-project 3a). Keys
+    read statically from agent.py are added to *from_agent_py* when given."""
     import tomllib
 
     with open(path, "rb") as f:
@@ -299,6 +302,7 @@ def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str,
         if not section:
             break
     fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields} if section else {}
+    static = from_agent_py if from_agent_py is not None else set()
     if section_path == _AGENT_SECTION:
         fields = _fold_deploy_table(data, fields)
         if fields:
@@ -310,10 +314,12 @@ def _agent_config_fields(path: Path, section_path: tuple[str, ...]) -> dict[str,
                 value = static_agent_setting(agent_py, key) if key not in fields else None
                 if isinstance(value, str):
                     fields[key] = value
+                    static.add(key)
             for key in ("memory", "session"):
                 value = static_agent_setting(agent_py, key) if key not in fields else None
                 if isinstance(value, dict):
                     fields[key] = value
+                    static.add(key)
     # Deploy-envelope keys alone do not declare an agent config.
     return fields if fields else None
 
@@ -397,7 +403,8 @@ def _load_agent_config(
     from ._tool_config import reject_legacy_tool_config
 
     reject_legacy_tool_config(str(resolved), allow_agent_table=allow_agent_table)  # only migrate-config allows it
-    fields = _agent_config_fields(resolved, section_path)
+    from_agent_py: set[str] = set()
+    fields = _agent_config_fields(resolved, section_path, from_agent_py)
     if fields is None:
         return None
     runtime_name = os.environ.get("APX_AGENT_NAME")
@@ -407,6 +414,7 @@ def _load_agent_config(
             raise ValueError("APX_AGENT_NAME must not be blank")
         fields["name"] = runtime_name
     config = AgentConfig(**fields)
+    config._from_agent_py = frozenset(from_agent_py)
     logging.getLogger(__name__).info(
         "[%s] loaded from %s (name=%s)", ".".join(section_path), resolved, config.name
     )

@@ -31,7 +31,7 @@ variables:
     description: |
       Base URL of the deployed data-inspector sub-agent (A2A). The
       investigation pipeline delegates SQL + Delta forensics to it. Set
-      to the data-inspector's Apps URL or Model Serving endpoint URL.
+      to the data-inspector's Apps URL.
     default: ""
 
 artifacts:

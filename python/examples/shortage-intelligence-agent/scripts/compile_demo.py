@@ -160,7 +160,7 @@ def validate_against_market_news(
         col_names = [c.name for c in result.manifest.columns]
         for row in result.result.data_array:
             r = dict(zip(col_names, row))
-            docs.append(r.get("content", ""))
+            docs.append(r["content"])
             sources.append(r.get("source_file", "unknown"))
     return json.dumps({
         "component_id": component_id,
@@ -207,7 +207,7 @@ def check_vendor_availability(part_numbers: list[str]) -> str:
             p = r.json().get("Product", {})
             listings.append({
                 "part_number": pn,
-                "manufacturer": p.get("Manufacturer", {}).get("Name", ""),
+                "manufacturer": p.get("Manufacturer", {}).get("Name", "unknown"),
                 "unit_price_usd": float(p.get("UnitPrice", 0.0)),
                 "quantity_available": int(p.get("QuantityAvailable", 0)),
             })
@@ -290,8 +290,8 @@ pipeline = SequentialAgent(
 # Wiring it up — pick ONE of these depending on hosting model
 # ---------------------------------------------------------------------------
 
-# (A) MLflow ChatAgent — loggable to UC, deployable to Model Serving, recognized
-#     by AI Playground / Review App / Agent Eval.
+# (A) MLflow ChatAgent — the ChatAgent contract recognized by AI Playground /
+#     Review App / Agent Eval.
 def build_chat_agent():
     from apx_agent import chat_agent_for
 

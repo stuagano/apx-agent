@@ -2,6 +2,8 @@
 
 Sub-project 4 of [`agent-toml-source-of-truth.md`](agent-toml-source-of-truth.md).
 
+**Status:** shipped — PR A (#1003) CLI target, PR B (#1004) hosting code, PR C (#1005) docs.
+
 ## Decision
 
 apx-agent deploys agents to **Databricks Apps only**. The Mosaic AI Model Serving

@@ -168,6 +168,13 @@ def run_checks(cwd: Path, *, online: bool, durable: bool = False) -> list[tuple[
     `online=True` adds the live workspace round-trip; it is skipped when auth
     can't even be resolved (nothing to live-test).
     """
+    from ._doctor_durable import one_import_per_run
+
+    with one_import_per_run():
+        return _run_checks(cwd, online=online, durable=durable)
+
+
+def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, list[Check]]]:
     environment = [
         check_python_version(),
         check_apx_install(),
@@ -255,7 +262,7 @@ def _agent_toml_rows(cwd: Path, config: AgentConfig | None) -> list[Check]:
 
     try:
         with chdir(cwd):
-            agent = _load_finalized_agent(_detect_module_spec(cwd) or "agent:agent", template_ws=False)
+            agent = _load_finalized_agent(_detect_module_spec(cwd) or "agent:agent")
     except Exception as exc:  # reported, not raised: doctor keeps going
         return [Check("agent.toml", Status.SKIP, f"agent not importable: {type(exc).__name__}: {exc}")]
     try:
@@ -1559,11 +1566,8 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
         if not _is_apx_project(cwd):
             return []
         cfg = _load_agent_config(pyproject_path=pyproject)
-    except ToolConfigError as exc:
-        return [Check(
-            "Declared tools", Status.FAIL, str(exc),
-            "Move tool declarations into Python tools/ modules and explicitly import them in agent.py; remove [[tool.apx.tools]].",
-        )]
+    except ToolConfigError as exc:  # the message names its own next step
+        return [Check("Declared tools", Status.FAIL, str(exc))]
     except Exception as exc:
         return [Check(
             "Declared tools", Status.FAIL, f"Could not load agent config: {exc}",

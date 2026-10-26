@@ -55,4 +55,4 @@ CLI / Asset Bundle as with the other examples.
 
 ## License
 
-© Databricks, Inc. See [LICENSE.md](../LICENSE.md).
+© Databricks, Inc. See [LICENSE](../../../LICENSE).

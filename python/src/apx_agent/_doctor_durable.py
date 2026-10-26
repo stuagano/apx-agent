@@ -252,6 +252,20 @@ def _isolated(project: Path) -> Iterator[_Harness]:
                     del sys.modules[name]
 
 
+_run_configs: "dict[Path, AgentConfig | None] | None" = None
+
+
+@contextlib.contextmanager
+def one_import_per_run() -> Iterator[None]:
+    """Within a doctor run, agent.py is imported once and its merged config reused."""
+    global _run_configs
+    _run_configs = {}
+    try:
+        yield
+    finally:
+        _run_configs = None
+
+
 def effective_config_isolated(project: Path) -> "AgentConfig | None":
     """The project's merged config, importing agent.py under the doctor's isolation (3b-2)."""
     from ._inspection import _load_agent_config
@@ -259,12 +273,17 @@ def effective_config_isolated(project: Path) -> "AgentConfig | None":
     from ._wiring import resolve_agent
 
     project = project.resolve()
+    if _run_configs is not None and project in _run_configs:
+        return _run_configs[project]
     toml = _load_agent_config(pyproject_path=project / "pyproject.toml")
     if not (project / "agent.py").is_file():
         return toml
     with _isolated(project):
         agent = resolve_agent("agent:agent", toml, ws=_FakeWorkspaceClient())
-        return resolve_settings(agent, toml)
+        config = resolve_settings(agent, toml)
+    if _run_configs is not None:
+        _run_configs[project] = config
+    return config
 
 
 def _fail(name: str, exc: BaseException) -> Check:
@@ -321,10 +340,12 @@ def _stage_config(project: Path) -> _Loaded | Check:
         else:
             # Validate the declared fields once, as durable: validating the current
             # target first rejects durable-only settings (e.g. deploy.space) mid-migration.
-            fields = _agent_config_fields(project / "pyproject.toml", ("tool", "apx", "agent"))
+            from_agent_py: set[str] = set()
+            fields = _agent_config_fields(project / "pyproject.toml", ("tool", "apx", "agent"), from_agent_py)
             if fields is None:
                 return Check("Config", Status.FAIL, "could not load the agent settings")
             config = AgentConfig.model_validate({**fields, "target": "durable_agent_server"})
+            config._from_agent_py = frozenset(from_agent_py)
             # The native host imports `agent:agent` (as _serve.create_app does).
             agent = resolve_agent("agent:agent", config, ws=_FakeWorkspaceClient())
             if (outside := _outside_project(project)) is not None:

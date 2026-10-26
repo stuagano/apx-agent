@@ -330,23 +330,14 @@ def _load_agent(module_spec: str) -> Any:
     return getattr(module, variable)
 
 
-def _load_finalized_agent(module_spec: str, *, template_ws: bool = True) -> Any:
-    """Resolve + finalize an agent for CLI commands.
-
-    Loads the project's settings first, then resolve_agent so template-only
-    projects (no agent.py) work via apx-agent agents describe / eval lint /
-    eval run / agents run. Falls back to module-import for code-defined agents.
-    """
-    from ._wiring import finalize_agent, resolve_agent, _ws_for_template, TemplateConfigError
+def _load_finalized_agent(module_spec: str) -> Any:
+    """Resolve (import *module_spec*) and finalize an agent for CLI commands."""
+    from ._wiring import finalize_agent, resolve_agent, TemplateConfigError
     from ._inspection import _load_agent_config
 
     config = _load_agent_config(pyproject_path=None)
     try:
-        agent = resolve_agent(
-            module_spec,
-            config,
-            ws=_ws_for_template(config) if template_ws else None,
-        )
+        agent = resolve_agent(module_spec, config)
     except TemplateConfigError as e:
         raise click.ClickException(
             f"{e}\n"
@@ -738,124 +729,6 @@ def _preflight_databricks_auth() -> None:
                 live.fix,
             )
         )
-
-
-# ---------------------------------------------------------------------------
-# Deploy env-var / secret-scan helpers
-# ---------------------------------------------------------------------------
-
-# Env var name pattern that looks like a secret: KEY/TOKEN/SECRET/PASSWORD suffix.
-_SECRET_NAME_RE = re.compile(
-    r".*(_TOKEN|_KEY|_SECRET|_PASSWORD|_PASS|_PWD)$",
-    re.IGNORECASE,
-)
-
-# Detect os.environ["X"], os.environ.get("X"), os.getenv("X")
-_ENV_REF_RE = re.compile(
-    r"""os\.(?:environ\s*\[\s*|environ\.get\s*\(\s*|getenv\s*\(\s*)["']([A-Z][A-Z0-9_]*)["']""",
-)
-
-
-def _looks_like_secret(name: str) -> bool:
-    """Return True if ``name`` matches a suspicious env-var naming convention."""
-    return bool(_SECRET_NAME_RE.match(name))
-
-
-def _collect_env_keys_from_dotenv(path: Path) -> set[str]:
-    """Read KEY=value lines from a .env-style file, return the set of keys."""
-    keys: set[str] = set()
-    try:
-        text = path.read_text()
-    except Exception:
-        return keys
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key = line.split("=", 1)[0].strip()
-        # Strip a leading 'export ' if present.
-        if key.startswith("export "):
-            key = key[len("export "):].strip()
-        if key:
-            keys.add(key)
-    return keys
-
-
-def _collect_env_keys_from_pyproject(path: Path) -> set[str]:
-    """Pull env-like keys out of a pyproject.toml.
-
-    Conservatively scans for keys that match the secret pattern anywhere in
-    the file — both in section headers and as raw string occurrences. This
-    is a heuristic; we only use it to drive a warning, never to block.
-    """
-    keys: set[str] = set()
-    try:
-        text = path.read_text()
-    except Exception:
-        return keys
-    for match in re.finditer(r"\b([A-Z][A-Z0-9_]{2,})\b", text):
-        candidate = match.group(1)
-        if _looks_like_secret(candidate):
-            keys.add(candidate)
-    return keys
-
-
-def _scan_python_env_refs(root: Path) -> set[str]:
-    """Scan .py files under ``root`` for os.environ / os.getenv references.
-
-    Returns the union of referenced env-var names. Skips common virtualenv,
-    cache, and build directories.
-    """
-    skip_dirs = {".venv", "venv", "__pycache__", "build", "dist", ".git", "node_modules"}
-    found: set[str] = set()
-    if not root.exists():
-        return found
-    for py in root.rglob("*.py"):
-        # Skip anything inside a directory we don't want to walk.
-        if any(part in skip_dirs for part in py.parts):
-            continue
-        try:
-            text = py.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            continue
-        for m in _ENV_REF_RE.finditer(text):
-            found.add(m.group(1))
-    return found
-
-
-
-
-class _EnvVarGuard:
-    """Context manager that scopes MLFLOW env-var capture controls.
-
-    On entry, sets ``MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING`` to the desired
-    value (or leaves it alone). On exit, restores whatever was there before —
-    including the absent case. Defensive against polluting the caller shell.
-    """
-
-    _KEY = "MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING"
-
-    def __init__(self, capture: bool) -> None:
-        self._capture = capture
-        self._prev_present = False
-        self._prev_value: str | None = None
-
-    def __enter__(self) -> _EnvVarGuard:
-        self._prev_present = self._KEY in os.environ
-        self._prev_value = os.environ.get(self._KEY)
-        # Only force the kill-switch when capture is disabled.
-        if not self._capture:
-            os.environ[self._KEY] = "false"
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        if self._prev_present:
-            # mypy: prev_value is the original string when prev_present is True.
-            os.environ[self._KEY] = self._prev_value  # type: ignore[assignment]
-        else:
-            os.environ.pop(self._KEY, None)
 
 
 # ---------------------------------------------------------------------------
@@ -6924,7 +6797,7 @@ def _deploy_from_yaml(
 )
 @click.option(
     "--yes", "-y", "assume_yes", is_flag=True,
-    help="Skip the secret-scan confirmation prompt. Use in CI / scripts.",
+    help="Accepted for compatibility; deploy does not prompt.",
 )
 def deploy(
     spec: str | None,
@@ -7765,21 +7638,6 @@ def _run_bundle_artifacts(cwd: Path) -> None:
         )
 
 
-def _apps_config_env_value(
-    doc: dict[str, Any], bundle_key: str, name: str,
-) -> str | None:
-    apps = ((doc.get("resources") or {}).get("apps") or {})
-    app_block = apps.get(bundle_key) if isinstance(apps, dict) else None
-    config = app_block.get("config") if isinstance(app_block, dict) else None
-    env = config.get("env") if isinstance(config, dict) else None
-    if not isinstance(env, list):
-        return None
-    for item in env:
-        if not isinstance(item, dict) or item.get("name") != name:
-            continue
-        value = item.get("value")
-        return value if isinstance(value, str) else None
-    return None
 
 
 def _stage_build_manifest(
@@ -11928,7 +11786,7 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
 
     # Finalize so `apx-agent agents describe` reports the same tools/resources the serve and
     # deploy paths will, including Python-declared tools and their governance.
-    agent = _load_finalized_agent(module, template_ws=False)
+    agent = _load_finalized_agent(module)
 
     # Walk the whole tree — HandoffAgent / SequentialAgent / etc. have no
     # _tool_fns of their own; the tools live on nested LlmAgents.
@@ -13594,18 +13452,15 @@ def delete_agent_cmd(
     assert registry_table is not None and tools_table is not None
 
     # The registry keys rows on _slug(f"{name}_{host_short}") — mirror the
-    # advertise-side derivation for both names the victim may be listed under.
+    # advertise-side derivation for the app name.
     host = getattr(ws_cfg, "host", None)
     host_short = host.replace("https://", "").split(".")[0] if isinstance(host, str) else ""
-    victim_agent_ids = list(dict.fromkeys(
-        _slug(f"{name}_{host_short}")
-        for name in (resolved_app,) if name
-    ))
+    victim_agent_ids = [_slug(f"{resolved_app}_{host_short}")] if resolved_app else []
 
     registry_ready = False
     if not victim_agent_ids:
         _out(
-            "Notice: registry cleanup skipped (no endpoint or app name to "
+            "Notice: registry cleanup skipped (no app name to "
             "derive the agent's registry rows from)."
         )
     else:

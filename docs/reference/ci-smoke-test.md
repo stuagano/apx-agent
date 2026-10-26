@@ -37,7 +37,7 @@ docs-only PRs shouldn't burn DBUs.
 
 This workflow is framework CI only (ephemeral `memory_demo`). Agent
 project **dev / staging / prod** deploys live in scaffolded repos — see
-[deploy-cicd.md](deploy-cicd.md).
+[deploy-cicd.md](../deploy-cicd.md).
 
 ## Required GitHub secrets
 
