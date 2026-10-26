@@ -1059,7 +1059,7 @@ def check_target(cwd: Path) -> Check:
 def check_extras(cwd: Path) -> Check:
     if not _is_apx_project(cwd):
         return Check("Required extra", Status.SKIP, "not in an apx project", None)
-    from apx_agent.cli import _declares_durable, _detect_target
+    from apx_agent.cli import _declares_durable, _detect_target, _run_module_for_layout
 
     target = _detect_target(cwd).target
     if _declares_durable(cwd):
@@ -1067,7 +1067,7 @@ def check_extras(cwd: Path) -> Check:
             "databricks_agentkit.runtime.app", "AgentKit native runtime",
             "uv add 'apx-agent[agentbricks]'",
         )
-    elif target == "apps":
+    elif _run_module_for_layout(cwd) != "app:app":  # the Apps launcher (agent_server/start_server.py)
         module, label, fix = (
             "mlflow.genai.agent_server",
             "mlflow.genai (eval extra)",

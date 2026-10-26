@@ -971,34 +971,6 @@ def test_scaffold_explicit_target_non_tty_writes_apps_bundle(
     assert "fallback" in result.output
 
 
-def test_scaffold_explicit_target_non_tty_writes_model_serving_layout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Same routing fix for --target model-serving: the flat layout, exit 0."""
-    import apx_agent.cli as cli
-
-    monkeypatch.setattr(cli, "_discover_default_data", lambda profile: None)
-    monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
-
-    result = CliRunner().invoke(
-        main,
-        [
-            "agents",
-            "scaffold",
-            "--runtime",
-            "responses_agent",
-            "flat_agent",
-            "--target",
-            "model-serving",
-            "--dir",
-            str(tmp_path),
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    base = tmp_path / "flat_agent"
-    assert (base / "agent.py").exists()
-    assert (base / "app.py").exists()
-    assert not (tmp_path / "flat_agent.yaml").exists()
 
 
 # ---------------------------------------------------------------------------

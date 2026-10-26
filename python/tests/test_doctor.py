@@ -449,8 +449,8 @@ def test_native_project_doctor_does_not_require_a_bundle(tmp_path: Path, monkeyp
 
 def _make_langgraph_project(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname='x'\n")
-    # app.py without databricks.yml → model-serving layout
-    (tmp_path / "app.py").write_text("# model-serving entry point\n")
+    # app.py without databricks.yml → the flat create_app layout
+    (tmp_path / "app.py").write_text("# flat create_app entry point\n")
     return tmp_path
 
 
@@ -893,7 +893,7 @@ class TestCheckAppsEnabled:
             c = doctor.check_apps_enabled(auth_ok=True)
         assert c is not None
         assert c.status is Status.WARN
-        assert "model-serving" in c.fix
+        assert "enable Databricks Apps" in c.fix and "model-serving" not in c.fix
 
     def test_other_error_returns_none(self):
         ws = MagicMock()

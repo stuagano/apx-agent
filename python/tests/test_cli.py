@@ -624,22 +624,6 @@ def test_scaffold_host_preflight_times_out_slow_dns(
     assert _scaffold_databricks_host_resolves(None) is False
 
 
-def test_scaffold_creates_expected_files(tmp_path: Path) -> None:
-    runner = CliRunner()
-    # Pin model-serving (flat agent.py + app.py); apps is the default and is
-    # covered by test_scaffold_apps.py.
-    result = runner.invoke(
-        main,
-        ["agents", "scaffold", "my_agent", "--target", "model-serving", "--dir", str(tmp_path)],
-    )
-    assert result.exit_code == 0, result.output
-    base = tmp_path / "my_agent"
-    for filename in ("pyproject.toml", "agent.py", "app.py", ".gitignore", "README.md"):
-        assert (base / filename).exists(), f"missing {filename}"
-    pyproject = (base / "pyproject.toml").read_text()
-    assert 'name = "my_agent"' in pyproject
-    assert "[tool.apx.agent" not in pyproject  # 3b-3c: settings live on agent.py's DataAgent
-    assert 'name="my_agent"' in (base / "agent.py").read_text()
 
 
 def test_scaffold_refuses_overwrite_without_force(tmp_path: Path) -> None:
@@ -914,141 +898,12 @@ def test_info_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_forwards_experiment_flag_to_log_agent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--target", "model-serving",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                "--experiment", "/Users/me/agents/x",
-                "--no-deploy",
-                "--no-publish-tools",
-            ],
-        )
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    assert fake_log_agent.call_args.kwargs["experiment"] == "/Users/me/agents/x"
 
 
-def test_deploy_falls_back_to_pyproject_experiment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_agent_module(tmp_path)
-    (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx]\n'
-        'experiment = "/Users/me/agents/x"\n'
-        '[tool.apx.deploy]\n'
-        'name = "x"\n'
-    )
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--target", "model-serving",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                # no --experiment flag
-                "--no-deploy",
-                "--no-publish-tools",
-            ],
-        )
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    assert fake_log_agent.call_args.kwargs["experiment"] == "/Users/me/agents/x"
 
 
-def test_deploy_cli_flag_wins_over_pyproject(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_agent_module(tmp_path)
-    (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx]\n'
-        'experiment = "/Users/me/agents/from-pyproject"\n'
-        '[tool.apx.deploy]\n'
-        'name = "test-agent"\n'
-    )
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--target", "model-serving",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                "--experiment", "/Users/me/agents/from-cli",
-                "--no-deploy",
-                "--no-publish-tools",
-            ],
-        )
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0
-    assert fake_log_agent.call_args.kwargs["experiment"] == "/Users/me/agents/from-cli"
 
 
-def test_deploy_chains_publish_tools_and_set_uc_tags_by_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-    fake_publish = MagicMock(return_value=[])
-    fake_set_tags = MagicMock(return_value={})
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("apx_agent.publish_tools_to_uc", fake_publish), \
-         patch("apx_agent.set_uc_tags_for_agent", fake_set_tags), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--target", "model-serving",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                "--no-deploy",
-            ],
-        )
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    fake_publish.assert_called_once()
-    fake_set_tags.assert_called_once()
-    # agent_name defaults to short part of registered_model_name
-    assert fake_set_tags.call_args.kwargs["name"] == "x"
 
 
 def test_deploy_no_publish_tools_flag_skips_publish(
@@ -1112,63 +967,8 @@ def test_deploy_no_set_uc_tags_flag_skips_tag_writes(
     fake_set_tags.assert_not_called()
 
 
-def test_deploy_agent_name_flag_overrides_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_set_tags = MagicMock(return_value={})
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent",
-               return_value=SimpleNamespace(registered_model_version="1")), \
-         patch("apx_agent.publish_tools_to_uc", return_value=[]), \
-         patch("apx_agent.set_uc_tags_for_agent", fake_set_tags), \
-         patch("mlflow.start_run"):
-        runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--target", "model-serving",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                "--agent-name", "explicit_name",
-                "--no-deploy",
-            ],
-        )
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert fake_set_tags.call_args.kwargs["name"] == "explicit_name"
 
 
-def test_deploy_no_experiment_when_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--target", "model-serving",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                "--no-deploy",
-                "--no-publish-tools",
-            ],
-        )
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert fake_log_agent.call_args.kwargs["experiment"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1214,117 +1014,14 @@ def _invoke_model_serving_deploy(
     return result
 
 
-def test_deploy_publish_tools_failure_fails_exit_code(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#402: a publish_tools failure is best-effort (log still runs) but must
-    NOT vanish — it is aggregated and fails the command's exit code."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-    fake_publish = MagicMock(side_effect=RuntimeError("UC permission denied"))
-
-    result = _invoke_model_serving_deploy(
-        [], log_agent=fake_log_agent, publish=fake_publish,
-    )
-
-    assert result.exit_code != 0, result.output
-    # Best-effort semantics preserved: log + register still ran.
-    fake_log_agent.assert_called_once()
-    # The failure is named in the final error, not just a mid-flow warning.
-    assert "publish-tools" in result.output
-    assert "UC permission denied" in result.output
-    assert "failed sub-step" in result.output
 
 
-def test_deploy_set_uc_tags_failure_fails_exit_code(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#402: a set_uc_tags failure must exit non-zero — an untagged agent
-    silently never shows up in list / topology / governance."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_set_tags = MagicMock(side_effect=RuntimeError("tag write denied"))
-
-    result = _invoke_model_serving_deploy([], set_tags=fake_set_tags)
-
-    assert result.exit_code != 0, result.output
-    assert "set-uc-tags" in result.output
-    assert "tag write denied" in result.output
 
 
-def test_deploy_midflow_abort_names_orphaned_resources(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#402: if log_agent raises after tools were published, the error names
-    the already-created (orphaned) UC tools."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_publish = MagicMock(return_value=[
-        SimpleNamespace(uc_name="main.tools.classify_intent", grants_applied=["agent_consumers"]),
-    ])
-    fake_log_agent = MagicMock(side_effect=RuntimeError("mlflow exploded"))
-
-    result = _invoke_model_serving_deploy(
-        [], log_agent=fake_log_agent, publish=fake_publish,
-    )
-
-    assert result.exit_code != 0, result.output
-    assert "log_agent failed" in result.output
-    assert "mlflow exploded" in result.output
-    # The orphaned published tool is named so the operator can clean up.
-    assert "main.tools.classify_intent" in result.output
-    assert "NOT rolled back" in result.output
 
 
-def test_deploy_model_serving_json_output_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#405: --json-output emits one parseable JSON object on stdout with
-    ok / uc_name / version / per-step outcomes; progress goes to stderr."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    result = _invoke_model_serving_deploy(["--json-output"])
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)   # stdout is ONLY the JSON object
-    assert payload["ok"] is True
-    assert payload["uc_name"] == "main.agents.x"
-    assert payload["version"] == "1"
-    assert payload["steps"] == {
-        "publish_tools": "ok",
-        "data_governance": "skipped",  # no [tool.apx.agent.data] in test fixture
-        "log": "ok",
-        "deploy": "skipped",     # --no-deploy
-        "gate": "skipped",       # --no-deploy: nothing to health-check (#406)
-        "set_uc_tags": "ok",
-    }
-    # Progress logs were routed to stderr, not stdout.
-    assert "Logged main.agents.x" in result.stderr
 
 
-def test_deploy_model_serving_json_output_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#405: --json-output emits {ok: false, error, steps} and exits 1 when a
-    sub-step fails."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_set_tags = MagicMock(side_effect=RuntimeError("tag write denied"))
-
-    result = _invoke_model_serving_deploy(["--json-output"], set_tags=fake_set_tags)
-
-    assert result.exit_code == 1, result.output
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is False
-    assert "set-uc-tags: tag write denied" in payload["error"]
-    assert payload["steps"]["set_uc_tags"] == "failed"
-    assert payload["steps"]["log"] == "ok"
 
 
 _TEST_PROXY_HOST = "pypi-proxy.example.databricks.com"
@@ -1334,60 +1031,10 @@ _POISONED_LOCK = (
 )
 
 
-def test_deploy_failure_restores_sanitized_uv_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#416: the model-serving deploy sanitizes the project's OWN uv.lock in
-    place; if the deploy then fails, the original bytes must come back — the
-    working tree must not be left silently mutated."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "uv.lock").write_text(_POISONED_LOCK)
-
-    fake_log_agent = MagicMock(side_effect=RuntimeError("mlflow exploded"))
-    result = _invoke_model_serving_deploy([], log_agent=fake_log_agent)
-
-    assert result.exit_code != 0, result.output
-    assert (tmp_path / "uv.lock").read_text() == _POISONED_LOCK  # byte-identical
-    assert "restored original uv.lock" in result.output
 
 
-def test_deploy_success_keeps_sanitized_uv_lock_and_says_so(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#416: on success the sanitized (public-PyPI) lock is kept — repo policy —
-    and the in-place rewrite is announced instead of happening silently."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "uv.lock").write_text(_POISONED_LOCK)
-
-    result = _invoke_model_serving_deploy([])
-
-    assert result.exit_code == 0, result.output
-    text = (tmp_path / "uv.lock").read_text()
-    assert _TEST_PROXY_HOST not in text
-    assert 'registry = "https://pypi.org/simple"' in text
-    assert "rewrote uv.lock in place" in result.output
 
 
-def test_deploy_warns_on_unknown_mirror_in_uv_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#416: an unknown mirror host in uv.lock isn't rewritten (no invented
-    rules) and doesn't block the deploy, but the warning names the host."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    mirror_lock = (
-        'source = { registry = "https://artifactory.corp.example.com/api/pypi/simple" }\n'
-    )
-    (tmp_path / "uv.lock").write_text(mirror_lock)
-
-    result = _invoke_model_serving_deploy([])
-
-    assert result.exit_code == 0, result.output  # warn, don't block
-    assert (tmp_path / "uv.lock").read_text() == mirror_lock  # untouched
-    assert "WARNING" in result.output
-    assert "artifactory.corp.example.com" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1451,141 +1098,16 @@ def _invoke_serving_deploy_with_gate(
     return result
 
 
-def test_deploy_serving_gate_pass_is_green(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#406: endpoint READY + smoke invocation answered → exit 0, steps.gate=ok."""
-    ws = MagicMock()
-    ws.serving_endpoints.get.return_value = _endpoint_state("READY", "NOT_UPDATING")
-    ws.serving_endpoints.query.return_value = SimpleNamespace(choices=[])
-
-    result = _invoke_serving_deploy_with_gate(
-        tmp_path, monkeypatch, ["--json-output"], ws=ws,
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is True
-    assert payload["endpoint"] == "agents_main-agents-x"
-    assert payload["steps"]["deploy"] == "ok"
-    assert payload["steps"]["gate"] == "ok"
-    # Exactly one smoke invocation, against the endpoint the deploy named.
-    ws.serving_endpoints.query.assert_called_once()
-    assert ws.serving_endpoints.query.call_args.kwargs["name"] == "agents_main-agents-x"
 
 
-def test_deploy_serving_gate_update_failed_fails_and_names_version(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#406: a terminal UPDATE_FAILED fast-fails the deploy — non-zero exit,
-    version + endpoint named, escape hatch mentioned, no smoke query sent."""
-    ws = MagicMock()
-    ws.serving_endpoints.get.return_value = _endpoint_state(
-        "NOT_READY", "UPDATE_FAILED",
-    )
-
-    result = _invoke_serving_deploy_with_gate(tmp_path, monkeypatch, [], ws=ws)
-
-    assert result.exit_code != 0, result.output
-    assert "version 1" in result.output
-    assert "agents_main-agents-x" in result.output
-    assert "UPDATE_FAILED" in result.output
-    assert "--no-readyz-gate" in result.output
-    ws.serving_endpoints.query.assert_not_called()
 
 
-def test_deploy_serving_gate_timeout_names_version(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#406: an endpoint that never reaches READY times out the gate — the
-    deploy fails and the error names the deployed version. Time is faked so
-    the 300s poll budget elapses instantly."""
-    from apx_agent import cli as cli_mod
-
-    class _Clock:
-        now = 0.0
-
-        def time(self) -> float:
-            return self.now
-
-        def sleep(self, seconds: float) -> None:
-            self.now += seconds
-
-    monkeypatch.setattr(cli_mod, "time", _Clock())
-
-    ws = MagicMock()
-    ws.serving_endpoints.get.return_value = _endpoint_state(
-        "NOT_READY", "IN_PROGRESS",
-    )
-
-    result = _invoke_serving_deploy_with_gate(tmp_path, monkeypatch, [], ws=ws)
-
-    assert result.exit_code != 0, result.output
-    assert "timed out after 300s" in result.output
-    assert "version 1" in result.output
-    assert "--no-readyz-gate" in result.output
-    ws.serving_endpoints.query.assert_not_called()
 
 
-def test_deploy_serving_gate_smoke_failure_fails_with_json_detail(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#406: READY endpoint whose smoke invocation errors → non-zero exit;
-    the --json-output failure carries the gate detail + step ledger."""
-    ws = MagicMock()
-    ws.serving_endpoints.get.return_value = _endpoint_state("READY", "NOT_UPDATING")
-    ws.serving_endpoints.query.side_effect = RuntimeError("boom")
-
-    result = _invoke_serving_deploy_with_gate(
-        tmp_path, monkeypatch, ["--json-output"], ws=ws,
-    )
-
-    assert result.exit_code == 1, result.output
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is False
-    assert payload["steps"]["deploy"] == "ok"
-    assert payload["steps"]["gate"] == "failed"
-    assert payload["version"] == "1"
-    assert payload["endpoint"] == "agents_main-agents-x"
-    assert "smoke invocation failed" in payload["error"]
-    assert "boom" in payload["error"]
-    assert "--no-readyz-gate" in payload["error"]
 
 
-def test_deploy_serving_no_readyz_gate_skips_poll_and_query(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#406: --no-readyz-gate is the escape hatch — no poll, no smoke query,
-    steps.gate=skipped, deploy still green."""
-    ws = MagicMock()
-
-    result = _invoke_serving_deploy_with_gate(
-        tmp_path, monkeypatch, ["--no-readyz-gate", "--json-output"], ws=ws,
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is True
-    assert payload["steps"]["deploy"] == "ok"
-    assert payload["steps"]["gate"] == "skipped"
-    ws.serving_endpoints.get.assert_not_called()
-    ws.serving_endpoints.query.assert_not_called()
 
 
-def test_deploy_serving_no_deploy_skips_gate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#406: --no-deploy never touches the gate — nothing was deployed, so
-    there is nothing to health-check (steps.gate=skipped, exit 0)."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    result = _invoke_model_serving_deploy(["--json-output"])
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert payload["steps"]["deploy"] == "skipped"
-    assert payload["steps"]["gate"] == "skipped"
 
 
 # ---------------------------------------------------------------------------
@@ -1601,159 +1123,16 @@ def _ready_ws() -> MagicMock:
     return ws
 
 
-def test_deploy_serving_scale_flags_reach_agents_deploy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#407: --scale-to-zero + --workload-size are forwarded verbatim to
-    databricks.agents.deploy and land in the --json-output summary."""
-    deploy_mock = MagicMock(
-        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
-    )
-
-    result = _invoke_serving_deploy_with_gate(
-        tmp_path, monkeypatch,
-        ["--scale-to-zero", "--workload-size", "Medium", "--json-output"],
-        ws=_ready_ws(), deploy_mock=deploy_mock,
-    )
-
-    assert result.exit_code == 0, result.output
-    kwargs = deploy_mock.call_args.kwargs
-    assert kwargs["scale_to_zero"] is True
-    assert kwargs["workload_size"] == "Medium"
-    payload = json.loads(result.stdout)
-    assert payload["scale_to_zero"] is True
-    assert payload["workload_size"] == "Medium"
 
 
-def test_deploy_serving_no_scale_to_zero_forwards_false(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#407: the flag is tri-state — --no-scale-to-zero forwards an explicit
-    False (distinct from "not passed", which forwards nothing)."""
-    deploy_mock = MagicMock(
-        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
-    )
-
-    result = _invoke_serving_deploy_with_gate(
-        tmp_path, monkeypatch, ["--no-scale-to-zero", "--json-output"],
-        ws=_ready_ws(), deploy_mock=deploy_mock,
-    )
-
-    assert result.exit_code == 0, result.output
-    kwargs = deploy_mock.call_args.kwargs
-    assert kwargs["scale_to_zero"] is False
-    assert "workload_size" not in kwargs
-    payload = json.loads(result.stdout)
-    assert payload["scale_to_zero"] is False
-    assert "workload_size" not in payload
 
 
-def test_deploy_serving_unset_scale_flags_are_not_forwarded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#407: when neither scale flag is passed, NOTHING is forwarded —
-    databricks.agents.deploy's own defaults stay in charge — and the JSON
-    summary omits the keys."""
-    deploy_mock = MagicMock(
-        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
-    )
-
-    result = _invoke_serving_deploy_with_gate(
-        tmp_path, monkeypatch, ["--json-output"],
-        ws=_ready_ws(), deploy_mock=deploy_mock,
-    )
-
-    assert result.exit_code == 0, result.output
-    kwargs = deploy_mock.call_args.kwargs
-    assert "scale_to_zero" not in kwargs
-    assert "workload_size" not in kwargs
-    payload = json.loads(result.stdout)
-    assert "scale_to_zero" not in payload
-    assert "workload_size" not in payload
 
 
-def test_deploy_env_suffix_suffixes_uc_name_end_to_end(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#407: --env-suffix staging registers + deploys under
-    catalog.schema.model-staging — a naming convention, applied once, that
-    flows through log, deploy, and the JSON summary."""
-    deploy_mock = MagicMock(
-        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x-staging"),
-    )
-
-    result = _invoke_serving_deploy_with_gate(
-        tmp_path, monkeypatch, ["--env-suffix", "staging", "--json-output"],
-        ws=_ready_ws(), deploy_mock=deploy_mock,
-    )
-
-    assert result.exit_code == 0, result.output
-    # databricks.agents.deploy saw the suffixed UC name (positional arg 0).
-    assert deploy_mock.call_args.args[0] == "main.agents.x-staging"
-    payload = json.loads(result.stdout)
-    assert payload["uc_name"] == "main.agents.x-staging"
-    assert payload["steps"]["deploy"] == "ok"
 
 
-def test_deploy_name_falls_back_to_configured_registered_model(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#407: --name is optional when [tool.apx.deploy].registered_model is set
-    in pyproject.toml — the configured UC name is used end-to-end."""
-    _write_agent_module(tmp_path)
-    (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.deploy]\nregistered_model = "main.agents.from_cfg"\n'
-    )
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(
-        return_value=SimpleNamespace(registered_model_version="1"),
-    )
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("apx_agent.set_uc_tags_for_agent",
-               MagicMock(return_value={"apx.agent.name": "x"})), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--no-publish-tools",
-            "--no-deploy",
-            "--json-output",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    assert (
-        fake_log_agent.call_args.kwargs["registered_model_name"]
-        == "main.agents.from_cfg"
-    )
-    payload = json.loads(result.stdout)
-    assert payload["uc_name"] == "main.agents.from_cfg"
 
 
-def test_deploy_name_missing_and_unconfigured_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#407: with no --name and no configured registered_model, the error
-    names BOTH ways to provide the UC name."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    result = CliRunner().invoke(main, [
-        "agents", "deploy",
-        "--target", "model-serving",
-        "--module", "tmp_test_agent:agent",
-        "--model", "databricks-claude-sonnet-4-6",
-        "--no-deploy",
-    ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code != 0
-    assert "--name is required" in result.output
-    assert "registered_model in [tool.apx.deploy]" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1761,210 +1140,18 @@ def test_deploy_name_missing_and_unconfigured_errors(
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_serving_dry_run_prints_plan_without_logging_or_lock_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#414: --dry-run on model-serving prints the plan (with --env-suffix
-    applied to the UC name) and exits 0 — no log_agent call, no
-    databricks.agents import, and uv.lock is byte-identical (no sanitize)."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "uv.lock").write_text(_POISONED_LOCK)
-    lock_before = (tmp_path / "uv.lock").read_bytes()
-
-    fake_log_agent = MagicMock(
-        side_effect=AssertionError("log_agent must not run under --dry-run"),
-    )
-    with patch("apx_agent.log_agent", fake_log_agent):
-        result = CliRunner().invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--env-suffix", "staging",
-            "--dry-run",
-        ])
-
-    assert result.exit_code == 0, result.output
-    assert "DRY RUN" in result.stdout
-    assert "main.agents.x-staging" in result.stdout  # suffix applied in plan
-    assert "publish_tools: run" in result.stdout
-    assert "log: run" in result.stdout
-    fake_log_agent.assert_not_called()
-    assert (tmp_path / "uv.lock").read_bytes() == lock_before  # untouched
-    # databricks.agents is not installed in the test venv — a real import
-    # attempt would have failed the command, and it must not be loaded.
-    assert "databricks.agents" not in sys.modules
 
 
-def test_deploy_serving_dry_run_json_plan_with_config_fallback_and_version(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#414: --dry-run --json-output emits {plan: true, ...} with the UC name
-    resolved from [tool.apx.deploy].registered_model and the --version
-    redeploy step list (publish_tools + log skipped)."""
-    (tmp_path / "pyproject.toml").write_text(
-        '[tool.apx.deploy]\nregistered_model = "main.agents.from_cfg"\n'
-    )
-    monkeypatch.chdir(tmp_path)
-
-    result = CliRunner().invoke(main, [
-        "agents", "deploy",
-        "--target", "model-serving",
-        "--model", "databricks-claude-sonnet-4-6",
-        "--version", "3",
-        "--no-set-uc-tags",
-        "--dry-run", "--json-output",
-    ])
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert payload["plan"] is True
-    assert payload["target"] == "model-serving"
-    assert payload["uc_name"] == "main.agents.from_cfg"
-    assert payload["version"] == 3
-    assert payload["steps"]["publish_tools"] == "skipped (--version redeploy)"
-    assert payload["steps"]["log"] == "skipped (--version redeploy)"
-    assert payload["steps"]["deploy"] == "run"
-    assert payload["steps"]["set_uc_tags"] == "skipped (--no-set-uc-tags)"
 
 
-def test_timeout_flag_reaches_serving_health_gate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#414: --timeout drives the serving gate's READY poll budget — the same
-    flag that bounds the apps ACTIVE/RUNNING poll."""
-    gate = MagicMock(return_value=None)
-    monkeypatch.setattr("apx_agent.cli._serving_health_gate", gate)
-
-    result = _invoke_serving_deploy_with_gate(
-        tmp_path, monkeypatch, ["--timeout", "77"], ws=MagicMock(),
-    )
-
-    assert result.exit_code == 0, result.output
-    assert gate.call_args.kwargs["timeout_seconds"] == 77
 
 
-def test_successful_model_serving_deploy_records_local_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    history_path = tmp_path / "deploy-history.json"
-    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
-
-    ws = MagicMock()
-    ws.serving_endpoints.get.return_value = _endpoint_state("READY", "NOT_UPDATING")
-    ws.serving_endpoints.query.return_value = SimpleNamespace(choices=[])
-
-    result = _invoke_serving_deploy_with_gate(tmp_path, monkeypatch, [], ws=ws)
-
-    assert result.exit_code == 0, result.output
-    entry = json.loads(history_path.read_text())["main.agents.x"]
-    assert entry["path"] == str(tmp_path)
-    assert entry["target"] == "model-serving"
 
 
-def test_no_deploy_flag_records_no_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """--no-deploy logs/registers a version but never actually deploys —
-    no history entry, since nothing is actually running."""
-    history_path = tmp_path / "deploy-history.json"
-    monkeypatch.setattr("apx_agent.cli._deploy_history_path", lambda: history_path)
-
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    with patch("apx_agent.log_agent", fake_log_agent), patch("mlflow.start_run"):
-        result = CliRunner().invoke(main, [
-            "agents", "deploy", "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--no-deploy", "--no-publish-tools",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    assert not history_path.exists()
 
 
-def test_deploy_version_redeploys_logged_version_skipping_publish_and_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#414: --version N never calls publish_tools_to_uc or log_agent
-    (ledger: skipped) and goes straight to databricks.agents.deploy(name, N)
-    + gate + tags."""
-    import types as _types
-
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "uv.lock").write_text(_POISONED_LOCK)
-
-    deploy_mock = MagicMock(
-        return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
-    )
-    fake_agents = _types.ModuleType("databricks.agents")
-    import importlib.util as _ilu
-    fake_agents.__spec__ = _ilu.spec_from_loader("databricks.agents", None)  # type: ignore[attr-defined]
-    fake_agents.deploy = deploy_mock  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "databricks.agents", fake_agents)
-    fake_log_agent = MagicMock(
-        side_effect=AssertionError("log_agent must not run with --version"),
-    )
-    fake_publish = MagicMock(
-        side_effect=AssertionError("publish_tools must not run with --version"),
-    )
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("apx_agent.publish_tools_to_uc", fake_publish), \
-         patch("apx_agent.set_uc_tags_for_agent",
-               MagicMock(return_value={"apx.agent.name": "x"})), \
-         patch("databricks.sdk.WorkspaceClient", return_value=_ready_ws()):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--version", "7",
-            "--json-output",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    fake_log_agent.assert_not_called()
-    fake_publish.assert_not_called()
-    assert deploy_mock.call_args.args[0] == "main.agents.x"
-    assert deploy_mock.call_args.kwargs["model_version"] == 7
-    payload = json.loads(result.stdout)
-    assert payload["version"] == "7"
-    assert payload["steps"]["publish_tools"] == "skipped"
-    assert payload["steps"]["log"] == "skipped"
-    assert payload["steps"]["deploy"] == "ok"
-    assert payload["steps"]["gate"] == "ok"
-    # A redeploy logs nothing, so the lock sanitize never runs (#414).
-    assert (tmp_path / "uv.lock").read_text() == _POISONED_LOCK
 
 
-def test_deploy_version_with_no_deploy_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#414: --version + --no-deploy is a no-op combination — refuse it."""
-    monkeypatch.chdir(tmp_path)
-
-    result = CliRunner().invoke(main, [
-        "agents", "deploy",
-        "--target", "model-serving",
-        "--model", "databricks-claude-sonnet-4-6",
-        "--name", "main.agents.x",
-        "--version", "7",
-        "--no-deploy",
-    ])
-
-    assert result.exit_code != 0
-    assert "--version" in result.output
-    assert "--no-deploy" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -2164,11 +1351,6 @@ def test_governance_status_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cost_requires_agent_or_endpoint() -> None:
-    runner = CliRunner()
-    result = runner.invoke(main, ["agents", "cost"])
-    assert result.exit_code != 0
-    assert "Pass --agent" in result.output or "Pass --agent" in result.stderr
 
 
 def test_cost_agent_and_endpoint_mutually_exclusive() -> None:
@@ -2177,65 +1359,10 @@ def test_cost_agent_and_endpoint_mutually_exclusive() -> None:
     assert result.exit_code != 0
 
 
-def test_cost_text_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    from apx_agent._cost import CostBreakdown
-
-    fake_breakdown = CostBreakdown.from_rows(
-        endpoint="customer_triage",
-        lookback_hours=24,
-        rows=[
-            {"sku_name": "MODEL_SERVING", "usage_unit": "DBU", "dbus": 100.0, "usd": 7.5, "unit_price": 0.075},
-            {"sku_name": "WAREHOUSE",     "usage_unit": "DBU", "dbus": 50.0,  "usd": 3.0, "unit_price": 0.06},
-        ],
-    )
-
-    runner = CliRunner()
-    with patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
-         patch("apx_agent.cost_for_agent", return_value=fake_breakdown):
-        result = runner.invoke(main, ["agents", "cost", "--agent", "customer_triage"])
-
-    assert result.exit_code == 0, result.output
-    assert "customer_triage" in result.output
-    assert "MODEL_SERVING" in result.output
-    assert "150.00" in result.output  # total DBUs
-    assert "10.50" in result.output  # total USD
 
 
-def test_cost_json_output() -> None:
-    from apx_agent._cost import CostBreakdown
-
-    fake_breakdown = CostBreakdown.from_rows(
-        endpoint="triage",
-        lookback_hours=12,
-        rows=[{"sku_name": "X", "usage_unit": "DBU", "dbus": 5.0, "usd": 1.0, "unit_price": 0.2}],
-    )
-
-    runner = CliRunner()
-    with patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
-         patch("apx_agent.cost_for_agent", return_value=fake_breakdown):
-        result = runner.invoke(main, [
-            "agents", "cost", "--endpoint", "triage", "--hours", "12", "--format", "json",
-        ])
-
-    assert result.exit_code == 0
-    parsed = json.loads(result.output)
-    assert parsed["endpoint"] == "triage"
-    assert parsed["lookback_hours"] == 12
-    assert parsed["total_dbus"] == 5.0
-    assert parsed["total_usd"] == 1.0
 
 
-def test_cost_no_usage_rows_prints_helpful_message() -> None:
-    from apx_agent._cost import CostBreakdown
-
-    empty = CostBreakdown(endpoint="triage", lookback_hours=24)
-    runner = CliRunner()
-    with patch("apx_agent.cli._connect_workspace", return_value=(MagicMock(), MagicMock())), \
-         patch("apx_agent.cost_for_agent", return_value=empty):
-        result = runner.invoke(main, ["agents", "cost", "--agent", "triage"])
-
-    assert result.exit_code == 0
-    assert "No usage rows" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -2560,11 +1687,11 @@ def _fake_endpoint_with_served_model(name: str) -> object:
     )
 
 
-def test_logs_requires_endpoint_or_app() -> None:
+def test_logs_requires_an_app() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["agents", "logs"])
     assert result.exit_code != 0
-    assert "either --endpoint" in result.output or "either --endpoint" in result.stderr
+    assert "Pass --app NAME" in result.output
 
 
 def test_logs_endpoint_and_app_mutually_exclusive() -> None:
@@ -2573,74 +1700,12 @@ def test_logs_endpoint_and_app_mutually_exclusive() -> None:
     assert result.exit_code != 0
 
 
-def test_logs_endpoint_auto_discovers_served_model_and_prints_runtime_logs() -> None:
-    fake_ws = MagicMock()
-    fake_ws.serving_endpoints.get.return_value = _fake_endpoint_with_served_model(
-        "customer_triage-1"
-    )
-    fake_ws.serving_endpoints.logs.return_value = SimpleNamespace(
-        logs="2026-05-18 12:00:00 [INFO] healthy\n"
-    )
-
-    runner = CliRunner()
-    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
-        result = runner.invoke(main, ["agents", "logs", "--endpoint", "customer_triage"])
-
-    assert result.exit_code == 0, result.output
-    assert "healthy" in result.output
-    fake_ws.serving_endpoints.get.assert_called_once_with("customer_triage")
-    fake_ws.serving_endpoints.logs.assert_called_once_with(
-        name="customer_triage", served_model_name="customer_triage-1",
-    )
 
 
-def test_logs_build_flag_calls_build_logs() -> None:
-    fake_ws = MagicMock()
-    fake_ws.serving_endpoints.get.return_value = _fake_endpoint_with_served_model("triage-1")
-    fake_ws.serving_endpoints.build_logs.return_value = SimpleNamespace(
-        logs="Building model...\n"
-    )
-
-    runner = CliRunner()
-    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
-        result = runner.invoke(main, ["agents", "logs", "--endpoint", "triage", "--build"])
-
-    assert result.exit_code == 0, result.output
-    assert "Building" in result.output
-    fake_ws.serving_endpoints.build_logs.assert_called_once()
-    fake_ws.serving_endpoints.logs.assert_not_called()
 
 
-def test_logs_explicit_served_model_skips_discovery() -> None:
-    fake_ws = MagicMock()
-    fake_ws.serving_endpoints.logs.return_value = SimpleNamespace(logs="ok\n")
-
-    runner = CliRunner()
-    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
-        result = runner.invoke(
-            main,
-            ["agents", "logs", "--endpoint", "triage", "--served-model", "triage-2"],
-        )
-
-    assert result.exit_code == 0
-    fake_ws.serving_endpoints.get.assert_not_called()
-    fake_ws.serving_endpoints.logs.assert_called_once_with(
-        name="triage", served_model_name="triage-2",
-    )
 
 
-def test_logs_endpoint_without_served_models_errors() -> None:
-    fake_ws = MagicMock()
-    fake_ws.serving_endpoints.get.return_value = SimpleNamespace(
-        config=SimpleNamespace(served_entities=[])
-    )
-
-    runner = CliRunner()
-    with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())):
-        result = runner.invoke(main, ["agents", "logs", "--endpoint", "triage"])
-
-    assert result.exit_code != 0
-    assert "no served models" in result.output
 
 
 def test_logs_app_shells_out_to_databricks_cli() -> None:
@@ -3275,315 +2340,22 @@ def _make_env_capturing_log_agent(captured: dict) -> MagicMock:
     return MagicMock(side_effect=_capture)
 
 
-def test_deploy_no_capture_env_vars_default_sets_mlflow_kill_switch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Default (no flag) must set MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING=false."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv(_ENV_KEY, raising=False)
-
-    captured: dict = {}
-    fake_log_agent = _make_env_capturing_log_agent(captured)
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--no-deploy",
-            "--no-publish-tools",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    # During the log_agent call, the kill switch was on.
-    assert captured["mlflow_env"] == "false"
-    # After the deploy returns, the caller's env is unchanged (var absent).
-    assert _ENV_KEY not in os.environ
-    # And the honest-output status line printed.
-    assert "env-var-capture=off" in result.output
-    assert "secrets-scan=on" in result.output
 
 
-def test_deploy_capture_env_vars_flag_lets_mlflow_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """--capture-env-vars must NOT set the kill switch."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv(_ENV_KEY, raising=False)
-
-    captured: dict = {}
-    fake_log_agent = _make_env_capturing_log_agent(captured)
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--capture-env-vars",
-            "--no-deploy",
-            "--no-publish-tools",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    # The guard did NOT touch the env, so during the call the var is still absent.
-    assert captured["mlflow_env"] is None
-    assert _ENV_KEY not in os.environ
-    assert "env-var-capture=on" in result.output
 
 
-def test_deploy_env_var_guard_restores_preexisting_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING was already set, restore it."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    # Pre-existing value the user had in their shell.
-    monkeypatch.setenv(_ENV_KEY, "true")
-
-    captured: dict = {}
-    fake_log_agent = _make_env_capturing_log_agent(captured)
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--no-deploy",
-            "--no-publish-tools",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    assert captured["mlflow_env"] == "false"
-    # Caller's "true" must be restored exactly.
-    assert os.environ.get(_ENV_KEY) == "true"
 
 
-def test_deploy_allow_env_var_requires_capture_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """--allow-env-var X without --capture-env-vars must error loudly."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--allow-env-var", "DATABRICKS_HOST",
-            "--no-deploy",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code != 0
-    # Click renders BadParameter via stderr-merged output.
-    assert "allow-env-var" in result.output.lower()
-    fake_log_agent.assert_not_called()
 
 
-def test_deploy_allow_env_var_with_capture_flag_combines_and_warns(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """--capture-env-vars + repeated --allow-env-var prints the all-or-nothing warning."""
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv(_ENV_KEY, raising=False)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--capture-env-vars",
-            "--allow-env-var", "DATABRICKS_HOST",
-            "--allow-env-var", "DATABRICKS_TOKEN",
-            "--no-deploy",
-            "--no-publish-tools",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    # All-or-nothing warning fired and both vars are listed.
-    assert "all-or-nothing" in result.output
-    assert "DATABRICKS_HOST" in result.output
-    assert "DATABRICKS_TOKEN" in result.output
 
 
-def test_deploy_secret_scan_warns_on_secret_referenced_in_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A *_KEY referenced via os.environ in the project must appear in the warning."""
-    _write_agent_module(tmp_path)
-    # Plant a source file that references a clearly-secret-looking env var.
-    (tmp_path / "leaky.py").write_text(
-        'import os\n'
-        'token = os.environ["ATLASSIAN_API_KEY"]\n'
-        'gem = os.getenv("GEMINI_API_KEY")\n'
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv(_ENV_KEY, raising=False)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--no-deploy",
-            "--no-publish-tools",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    # Capture is off, so we just surface the note (no prompt).
-    assert "ATLASSIAN_API_KEY" in result.output
-    assert "GEMINI_API_KEY" in result.output
 
 
-def test_deploy_secret_scan_prompts_when_capture_on(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """With capture ON and secret-looking refs, deploy must prompt unless --yes."""
-    _write_agent_module(tmp_path)
-    (tmp_path / "leaky.py").write_text(
-        'import os\n'
-        'tok = os.environ["ATLASSIAN_API_KEY"]\n'
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv(_ENV_KEY, raising=False)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        # Respond "n" → abort.
-        result_n = runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--target", "model-serving",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                "--capture-env-vars",
-                "--no-deploy",
-            ],
-            input="n\n",
-        )
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result_n.exit_code != 0  # aborted
-    fake_log_agent.assert_not_called()
-    assert "ATLASSIAN_API_KEY" in result_n.output
 
 
-def test_deploy_yes_flag_skips_secret_scan_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """--yes must bypass the secret-scan confirm prompt."""
-    _write_agent_module(tmp_path)
-    (tmp_path / "leaky.py").write_text(
-        'import os\n'
-        'tok = os.environ["ATLASSIAN_API_KEY"]\n'
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv(_ENV_KEY, raising=False)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--capture-env-vars",
-            "--yes",
-            "--no-deploy",
-            "--no-publish-tools",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    fake_log_agent.assert_called_once()
-    # Even with --yes, the warning text is still emitted.
-    assert "ATLASSIAN_API_KEY" in result.output
 
 
-def test_deploy_secret_scan_picks_up_dotenv_keys(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A KEY in .env.local that's also referenced in source must surface."""
-    _write_agent_module(tmp_path)
-    (tmp_path / ".env.local").write_text(
-        "ATLASSIAN_API_KEY=sk-xxx\n"
-        "BENIGN_FLAG=true\n"
-    )
-    (tmp_path / "uses_env.py").write_text(
-        'import os\n'
-        'k = os.environ.get("ATLASSIAN_API_KEY")\n'
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv(_ENV_KEY, raising=False)
-
-    fake_log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--no-deploy",
-            "--no-publish-tools",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-
-    assert result.exit_code == 0, result.output
-    assert "ATLASSIAN_API_KEY" in result.output
-    # BENIGN_FLAG should not appear — it doesn't match the secret pattern.
-    assert "BENIGN_FLAG" not in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -3717,11 +2489,9 @@ def test_detect_target_distinguishes_layouts(tmp_path: Path) -> None:
 
     # Empty directory → apps (catch-all default)
     assert _detect_target(tmp_path) == ("apps", "no layout markers; apps is the default")
-    # Flat app.py without databricks.yml → model-serving
+    # Flat app.py without databricks.yml → apps too (Model Serving was removed)
     (tmp_path / "app.py").write_text("app = None\n")
-    assert _detect_target(tmp_path) == (
-        "model-serving", "app.py present without databricks.yml",
-    )
+    assert _detect_target(tmp_path) == ("apps", "no layout markers; apps is the default")
     # databricks.yml routes to apps even alongside app.py (the ADK-style case)
     (tmp_path / "databricks.yml").write_text("bundle:\n  name: x\n")
     assert _detect_target(tmp_path) == ("apps", "databricks.yml present")
@@ -3815,15 +2585,6 @@ def test_deploy_autodetects_apps_target() -> None:
     mock_apps.assert_called_once()
 
 
-def test_deploy_autodetects_model_serving_target() -> None:
-    """A flat app.py layout (no databricks.yml) detects as model-serving."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        Path("app.py").write_text("app = None\n")
-        result = runner.invoke(main, ["agents", "deploy"])
-
-    assert result.exit_code != 0
-    assert "--model is required" in result.output
 
 
 def test_run_friendly_error_when_auth_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6144,19 +4905,7 @@ class TestPublishDisambiguation:
 
 
 class TestHotSwap:
-    def test_model_serving_missing_endpoint(self):
-        result = CliRunner().invoke(main, [
-            "agents", "hot-swap", "--model", "databricks-claude-opus-4",
-        ])
-        assert result.exit_code != 0
-        assert "endpoint" in result.output.lower()
 
-    def test_model_serving_missing_model(self):
-        result = CliRunner().invoke(main, [
-            "agents", "hot-swap", "--endpoint", "my-ep",
-        ])
-        assert result.exit_code != 0
-        assert "--model" in result.output
 
     def test_apps_missing_llm_endpoint(self):
         result = CliRunner().invoke(main, [
@@ -6165,22 +4914,6 @@ class TestHotSwap:
         assert result.exit_code != 0
         assert "llm-endpoint" in result.output
 
-    def test_model_serving_happy_path(self):
-        fake_result = SimpleNamespace(
-            endpoint_name="my-ep",
-            new_model="databricks-claude-opus-4",
-            previous_model=None,
-            served_entities_updated=1,
-        )
-        with patch("apx_agent._hot_swap.hot_swap_model", return_value=fake_result) as mock_hs:
-            result = CliRunner().invoke(main, [
-                "agents", "hot-swap",
-                "--endpoint", "my-ep",
-                "--model", "databricks-claude-opus-4",
-            ])
-        assert result.exit_code == 0, result.output
-        assert "my-ep" in result.output
-        mock_hs.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -6333,52 +5066,13 @@ class TestEvalChain:
 
 
 class TestCanary:
-    def test_canary_status_happy_path(self):
-        fake_cfg = SimpleNamespace(
-            endpoint="my-ep",
-            served_entities=[("entity-v1", "catalog.schema.model", "1")],
-            traffic_split={"entity-v1": 100},
-        )
-        fake_ws = MagicMock()
-
-        with patch("apx_agent.cli._connect_workspace", return_value=(fake_ws, MagicMock())), \
-             patch("apx_agent.get_canary_config", return_value=fake_cfg):
-            result = CliRunner().invoke(main, ["canary", "status", "--endpoint", "my-ep"])
-
-        assert result.exit_code == 0, result.output
-        assert "my-ep" in result.output
-        assert "entity-v1" in result.output
 
     def test_canary_status_missing_endpoint(self):
         result = CliRunner().invoke(main, ["canary", "status"])
         assert result.exit_code != 0
 
-    def test_canary_deploy_model_serving_missing_endpoint(self):
-        result = CliRunner().invoke(main, [
-            "canary", "deploy",
-            "--model", "catalog.schema.model",
-            "--version", "1",
-        ])
-        assert result.exit_code != 0
-        assert "endpoint" in result.output.lower()
 
-    def test_canary_deploy_model_serving_missing_model(self):
-        result = CliRunner().invoke(main, [
-            "canary", "deploy",
-            "--endpoint", "my-ep",
-            "--version", "1",
-        ])
-        assert result.exit_code != 0
-        assert "--model" in result.output
 
-    def test_canary_deploy_model_serving_missing_version(self):
-        result = CliRunner().invoke(main, [
-            "canary", "deploy",
-            "--endpoint", "my-ep",
-            "--model", "catalog.schema.model",
-        ])
-        assert result.exit_code != 0
-        assert "--version" in result.output
 
     def test_canary_deploy_apps_missing_canary_version(self):
         result = CliRunner().invoke(main, [
@@ -6819,8 +5513,8 @@ class TestAgentsDelete:
             ])
 
         assert result.exit_code == 0, result.output
-        # Endpoint delete must have been called using the UC-tag-resolved name
-        fake_ws.serving_endpoints.delete.assert_called_once_with("my-ep")
+        # A legacy apx.agent.model tag never tears down a serving endpoint (Model Serving removed).
+        fake_ws.serving_endpoints.delete.assert_not_called()
         # Registered model delete must have been called
         fake_ws.registered_models.delete.assert_called_once_with("main.schema.my_model")
 
@@ -6844,7 +5538,7 @@ class TestAgentsDelete:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
         assert payload["ok"] is True
-        assert "endpoint:my-ep" in payload["deleted"]
+        assert not any(d.startswith("endpoint:") for d in payload["deleted"])
         assert "uc_model:main.schema.my_model" in payload["deleted"]
         assert payload["errors"] == []
 
@@ -6865,7 +5559,7 @@ class TestAgentsDelete:
         assert payload["ok"] is False
         assert any("locked" in e for e in payload["errors"])
 
-    def test_with_explicit_endpoint_and_app(self):
+    def test_with_explicit_app(self):
         fake_ws = MagicMock()
         fake_ws.registered_models.get.return_value = SimpleNamespace(tags=[])
 
@@ -6873,13 +5567,12 @@ class TestAgentsDelete:
             result = CliRunner().invoke(main, [
                 "agents", "delete",
                 "--uc-name", "main.schema.m",
-                "--endpoint", "explicit-ep",
                 "--app", "my-app",
                 "--yes",
             ])
 
         assert result.exit_code == 0, result.output
-        fake_ws.serving_endpoints.delete.assert_called_once_with("explicit-ep")
+        fake_ws.serving_endpoints.delete.assert_not_called()
         fake_ws.registered_models.delete.assert_called_once_with("main.schema.m")
         fake_ws.apps.delete.assert_called_once_with("my-app")
 
@@ -7113,8 +5806,9 @@ class TestAgentsDelete:
 
         assert result.exit_code == 0, result.output
         deletes = [s for s in calls if "DELETE FROM" in s]
-        # Both advertise names (endpoint + app) are deregistered from both tables.
-        for agent_id in ("my_ep", "my_app"):
+        # The App's advertise name is deregistered from both tables (a legacy serving
+        # endpoint name is no longer derived from the apx.agent.model tag).
+        for agent_id in ("my_app",):
             assert any(
                 "main.apx.agent_registry" in s and f"'{agent_id}'" in s for s in deletes
             ), (agent_id, deletes)
@@ -8975,36 +7669,8 @@ def _invoke_provenance_deploy(monkeypatch, tmp_path, fake_client):
     return result
 
 
-def test_deploy_model_serving_stamps_provenance_on_version(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """After log+register, the registered model VERSION carries the same
-    provenance tags the Apps manifest gets (issue #403)."""
-    fake_client = MagicMock()
-    result = _invoke_provenance_deploy(monkeypatch, tmp_path, fake_client)
-    assert result.exit_code == 0, result.output
-    written = {
-        call.args[2]: call.args[3]
-        for call in fake_client.set_model_version_tag.call_args_list
-    }
-    assert written == _PROVENANCE
-    # Every write targeted the registered name + version just logged.
-    assert all(
-        call.args[:2] == ("main.agents.x", "7")
-        for call in fake_client.set_model_version_tag.call_args_list
-    )
-    assert "provenance: 3 tags written on version 7" in result.output
 
 
-def test_deploy_model_serving_provenance_failure_is_non_fatal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A provenance tag-write failure warns but never reddens the deploy."""
-    fake_client = MagicMock()
-    fake_client.set_model_version_tag.side_effect = RuntimeError("UC down")
-    result = _invoke_provenance_deploy(monkeypatch, tmp_path, fake_client)
-    assert result.exit_code == 0, result.output
-    assert "provenance tags failed (non-fatal): UC down" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -9719,19 +8385,6 @@ def test_generate_deploy_runs_when_receipt_green(tmp_path: Path) -> None:
     assert (tmp_path / "helper-agent" / "agent.py").is_file()
 
 
-def test_scaffold_deploy_refuses_model_serving(tmp_path: Path) -> None:
-    result = CliRunner().invoke(
-        main,
-        [
-            "agents", "scaffold", "ms",
-            "--target", "model-serving",
-            "--dir", str(tmp_path),
-            "--no-interactive",
-            "--deploy",
-        ],
-    )
-    assert result.exit_code != 0
-    assert "--deploy only works with --target apps" in result.output
 
 
 def test_scaffold_deploy_receipt_gated(tmp_path: Path) -> None:
