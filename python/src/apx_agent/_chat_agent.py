@@ -1,8 +1,8 @@
 """Wrap an apx-agent BaseAgent as an MLflow ``ChatAgent``.
 
 The ``ChatAgent`` interface is the supported Mosaic AI agent contract: agents
-that subclass it can be logged via ``mlflow.pyfunc.log_model``, registered to
-Unity Catalog, served via Model Serving, and evaluated with Agent Evaluation.
+that subclass it can be logged via ``mlflow.pyfunc.log_model`` and evaluated
+with Agent Evaluation.
 The Review App and AI Playground both speak this protocol.
 
 Public surface in this module:
@@ -11,10 +11,6 @@ Public surface in this module:
     — return a lazy MLflow ChatAgent wrapping the apx-agent tree. The two
     names are interchangeable; ``compile_to_chat_agent`` is the canonical name
     matching the DSL story (apx-agent compiles to a ChatAgent).
-  * ``log_agent(agent, *, model, registered_model_name, ...)`` — convenience
-    that runs ``mlflow.pyfunc.log_model`` with the wrapped ChatAgent and the
-    auto-derived ``resources=[...]`` list from ``mlflow_resources_for``. One
-    call gets you a registered, deploy-ready model.
 
 User-scoped OBO auth is preserved by passing the OBO token through
 ``custom_inputs={"user_token": "<token>"}``; the caller (a Databricks App's
@@ -30,11 +26,6 @@ Hosting decision matrix:
         (b) instantiate ``ApxChatAgent`` and call ``predict(messages,
             custom_inputs={"user_token": token})`` (uniform interface, useful
             if the same app also wants the agent loggable to MLflow).
-
-  Model Serving deployment (SP scope by default):
-      Log the ApxChatAgent via mlflow.pyfunc.log_model, register in UC,
-      deploy. Each request runs as the model's service principal unless the
-      caller threads a user token through ``custom_inputs``.
 
 Requires the ``eval`` extra (mlflow)::
 
@@ -639,9 +630,8 @@ def chat_agent_for(
         def _resolve_model(self) -> str:
             """Return the model endpoint to use for this request.
 
-            Honors the ``APX_AGENT_MODEL_OVERRIDE`` env var if set — enables
-            ``hot_swap_model`` to change a deployed agent's LLM without
-            re-logging the artifact. Falls back to the compile-time model
+            Honors the ``APX_AGENT_MODEL_OVERRIDE`` env var if set — lets an
+            operator change a deployed agent's LLM without rebuilding it. Falls back to the compile-time model
             otherwise.
             """
             return os.environ.get("APX_AGENT_MODEL_OVERRIDE") or self._model
@@ -1209,114 +1199,3 @@ def compile_to_chat_agent(
 # ---------------------------------------------------------------------------
 
 
-def log_agent(
-    agent: BaseAgent,
-    *,
-    model: str,
-    registered_model_name: str | None = None,
-    artifact_path: str = "agent",
-    extra_resources: list[Any] | None = None,
-    input_example: Any | None = None,
-    pip_requirements: list[str] | None = None,
-    experiment: str | None = None,
-    **log_model_kwargs: Any,
-) -> Any:
-    """Log the apx-agent as an MLflow ChatAgent with auto-derived resources.
-
-    Equivalent to::
-
-        chat = compile_to_chat_agent(agent, model=model)
-        resources = mlflow_resources_for(agent, model=model, extra=extra_resources)
-        mlflow.pyfunc.log_model(
-            artifact_path=artifact_path,
-            python_model=chat,
-            resources=resources,
-            registered_model_name=registered_model_name,
-            ...
-        )
-
-    Run inside an ``mlflow.start_run()`` context, or call ``mlflow.set_experiment``
-    first; this function does not manage runs.
-
-    Args:
-        agent: The apx-agent ``BaseAgent`` to log.
-        model: Databricks serving endpoint name for the LLM. Also added to the
-            ``resources`` list as a ``DatabricksServingEndpoint``.
-        registered_model_name: Optional UC three-part name to register the model
-            under (e.g. ``"main.agents.data_triage"``). If omitted, the model is
-            logged to the run but not registered in UC.
-        artifact_path: Subdirectory in the run's artifact store. Default
-            ``"agent"``.
-        extra_resources: Extra ``ResourceSpec`` instances (or pre-built MLflow
-            ``Databricks*`` resources) to append. Use this for resources that
-            apx-agent can't auto-infer — e.g. a specific SQL warehouse the
-            tools dispatch SQL through, a Vector Search index, a UC table the
-            agent reads directly.
-        input_example: Optional ``mlflow.types.agent`` example dict passed
-            through to ``log_model``.
-        pip_requirements: Optional pip requirements list passed through to
-            ``log_model``. If omitted, MLflow auto-infers.
-        experiment: Optional MLflow experiment name (path or numeric id).
-            When set, ``mlflow.set_experiment(experiment)`` is called before
-            logging so the run lands in that experiment. When omitted, the
-            currently-active experiment (or MLflow's default) is used. Use
-            this to keep each agent's runs in its own experiment.
-        **log_model_kwargs: Anything else accepted by
-            ``mlflow.pyfunc.log_model``.
-
-    Returns:
-        The ``ModelInfo`` object returned by ``mlflow.pyfunc.log_model``.
-    """
-    try:
-        import mlflow
-        import mlflow.pyfunc
-    except ImportError as e:  # pragma: no cover — exercised only without mlflow
-        raise ImportError(
-            "mlflow is required to log an agent. "
-            "Install with: pip install 'apx-agent[eval]'"
-        ) from e
-
-    if experiment:
-        try:
-            mlflow.set_experiment(experiment)
-        except Exception as e:
-            raise RuntimeError(
-                f"mlflow.set_experiment({experiment!r}) failed: {e}. "
-                f"For Databricks-hosted MLflow, experiment names are workspace "
-                f"paths (e.g. '/Users/you@company.com/agents/my_agent')."
-            ) from e
-
-    from ._wiring import finalize_agent
-
-    # Finalize BEFORE resource derivation AND before compile capture: config
-    # tools must appear in the logged resources AND in the agent the served
-    # model compiles at predict time. log_agent is public (notebooks/Coworker
-    # call it directly), so this single site covers all log/deploy paths.
-    finalize_agent(agent, pyproject_path=None)  # reads cwd pyproject.toml
-
-    from ._resources import ResourceSpec, mlflow_resources_for
-
-    # Split extra_resources into specs (auto-materialised) and pre-built
-    # mlflow resource objects (passed through verbatim).
-    extra_specs: list[ResourceSpec] = []
-    prebuilt_resources: list[Any] = []
-    for item in extra_resources or []:
-        if isinstance(item, ResourceSpec):
-            extra_specs.append(item)
-        else:
-            prebuilt_resources.append(item)
-
-    resources = mlflow_resources_for(agent, model=model, extra=extra_specs)
-    resources = resources + prebuilt_resources
-
-    chat_agent = compile_to_chat_agent(agent, model=model)
-
-    return mlflow.pyfunc.log_model(
-        artifact_path=artifact_path,
-        python_model=chat_agent,
-        resources=resources,
-        registered_model_name=registered_model_name,
-        input_example=cast("Any", input_example),
-        pip_requirements=pip_requirements,
-        **log_model_kwargs,
-    )

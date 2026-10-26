@@ -73,9 +73,7 @@ def apply_config_knobs(agent: BaseAgent, config: AgentConfig) -> None:
     This is the **shared config→instance seam** that both serve paths must run:
 
       * ``apx-agent run`` / Apps target — via ``setup_agent`` (this module).
-      * model-serving deploy — via ``apx-agent deploy`` calling this right before
-        ``log_agent``, because MLflow captures the agent *at log time*; nothing
-        re-applies config inside the logged model's per-request compile.
+      * the Apps launcher and the Apps manifest registration — via ``finalize_agent``.
 
     Keeping both paths on one helper is what prevents cross-target drift (a
     knob that works under ``apx-agent run`` but silently no-ops on a deploy). Future
@@ -557,7 +555,7 @@ def finalize_agent(
 
     The single seam every runtime must run: apply generation knobs, persona
     instructions, and governance to Python-authored tools. Idempotent — safe
-    to call from setup_agent (serve), log_agent (log/deploy), and apx info.
+    to call from setup_agent (serve), the Apps launcher, and apx info.
 
     Removed TOML tool declarations are rejected before factory I/O. When
     *config* is supplied, knobs are applied from it; otherwise it is loaded

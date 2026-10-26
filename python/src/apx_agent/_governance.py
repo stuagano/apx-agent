@@ -691,8 +691,7 @@ def set_uc_tags_for_agent(
     Args:
         agent: The apx-agent ``BaseAgent`` to introspect.
         registered_model_name: UC three-part name of the registered model
-            (``catalog.schema.model``) — what was passed as
-            ``registered_model_name`` to ``log_agent``.
+            (``catalog.schema.model``) the agent is registered under.
         model: Optional LLM endpoint name. Included in tags.
         name: Optional agent name override. Defaults to the agent's
             ``_name`` attribute.

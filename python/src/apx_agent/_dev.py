@@ -1840,7 +1840,7 @@ def _latency_trend(rows: list[dict[str, Any]], *, window: int = _LATENCY_TREND_W
     left-to-right sparkline tracks latency as instructions change. Rows
     without ``duration_ms`` (ring-buffer-only merges) are dropped.
     """
-    from ._canary import _percentile
+    from ._eval_sweep import _percentile
 
     durs: list[int] = []
     for row in rows:

@@ -1,8 +1,7 @@
 """publish_to_supervisor — register an apx-agent as a Mosaic AI Supervisor sub-agent.
 
-Closes the multi-agent topology loop: once an apx-agent is deployed as a
-Model Serving endpoint via ``log_agent`` + ``databricks.agents.deploy``,
-this module registers it as a tool on an existing Supervisor Agent so the
+Closes the multi-agent topology loop: once an apx-agent is deployed (as a
+Databricks App), this module registers it as a tool on an existing Supervisor Agent so the
 supervisor can route to it alongside Knowledge Assistants, Genie spaces,
 and other sub-agents.
 

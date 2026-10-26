@@ -152,3 +152,63 @@ def test_generated_and_help_text_never_point_at_model_serving() -> None:
     assert not [h for h in helps if "model-serving" in h or "Model Serving" in h]
     deploy_help = cli.agents.commands["deploy"].help
     assert deploy_help is not None and "Model Serving" not in deploy_help.replace("Model Serving was removed", "")
+
+
+_REMOVED_EXPORTS = ("log_agent", "hot_swap_model", "HotSwapResult", "get_active_override", "APX_MODEL_OVERRIDE_ENV",
+                    "cost_for_endpoint", "cost_for_agent", "CostBreakdown", "CanaryConfig", "CanaryReport",
+                    "VersionMetrics", "analyze_canary", "deploy_canary", "get_canary_config", "promote_canary",
+                    "rollback_canary")
+_REMOVED_CLI_SYMBOLS = ("_emit_serving_deploy_plan", "_serving_health_gate", "_scaffold_model_serving",
+                        "_hot_swap_model_serving", "_resolve_served_model_name", "mlflow_resources_for",
+                        "_SCAFFOLD_PYPROJECT ", "_SCAFFOLD_AGENT ", "_SCAFFOLD_APP ")
+
+
+def test_no_public_model_serving_hosting_api() -> None:
+    import apx_agent
+
+    assert [n for n in _REMOVED_EXPORTS if hasattr(apx_agent, n) or n in apx_agent.__all__] == []
+    src = Path(cli.__file__).read_text()
+    assert [s for s in _REMOVED_CLI_SYMBOLS if s in src] == []
+
+
+def test_the_serving_modules_are_gone() -> None:
+    import importlib.util
+
+    assert [m for m in ("apx_agent._canary", "apx_agent._hot_swap") if importlib.util.find_spec(m)] == []
+
+
+@pytest.mark.parametrize(("override", "expected"), [("databricks-claude-opus-4-7", "databricks-claude-opus-4-7"),
+                                                    (None, "databricks-claude-sonnet-4-6"),
+                                                    ("", "databricks-claude-sonnet-4-6")])
+def test_the_runtime_model_override_still_applies(override: str | None, expected: str,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    # Kept by the spec: both runtimes honor APX_AGENT_MODEL_OVERRIDE; unset or empty falls back.
+    from apx_agent._chat_agent import chat_agent_for
+    from apx_agent._responses_agent import _resolve_model
+    from apx_agent import Agent
+
+    if override is None:
+        monkeypatch.delenv("APX_AGENT_MODEL_OVERRIDE", raising=False)
+    else:
+        monkeypatch.setenv("APX_AGENT_MODEL_OVERRIDE", override)
+    assert _resolve_model("databricks-claude-sonnet-4-6") == expected
+    chat = chat_agent_for(Agent(name="p", tools=[]), model="databricks-claude-sonnet-4-6")
+    assert chat._resolve_model() == expected
+
+
+def test_host_model_serving_is_a_clear_validation_error() -> None:
+    from pydantic import ValidationError
+
+    from apx_agent._models import AgentConfig
+
+    with pytest.raises(ValidationError, match="Model Serving was removed"):
+        AgentConfig.model_validate({"name": "p", "host": "model_serving"})
+
+
+def test_user_facing_help_and_samples_do_not_name_removed_apis() -> None:
+    # CLI help and the package's own code samples must not point at removed functions.
+    src = Path(cli.__file__).parent
+    helps = [p.help for c in cli.agents.commands.values() for p in c.params
+             if isinstance(p, cli.click.Option) and p.help]
+    assert [h for h in helps if "log_agent" in h] == []
+    assert "log_agent" not in (src / "_tool_publish.py").read_text()

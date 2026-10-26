@@ -419,6 +419,27 @@ def test_user_docs_do_not_offer_model_serving_hosting() -> None:
     assert hits == [], hits
 ```
 
+- [ ] **Step 1b: Write a second guard (added after PR B's review).** User docs and example READMEs must not show code that imports the removed API:
+
+```python
+_REMOVED_API = ("log_agent", "mlflow_resources_for", "hot_swap_model", "HotSwapResult", "get_active_override",
+                "APX_MODEL_OVERRIDE_ENV", "cost_for_endpoint", "cost_for_agent", "CostBreakdown", "CanaryConfig",
+                "CanaryReport", "VersionMetrics", "analyze_canary", "deploy_canary", "get_canary_config",
+                "promote_canary", "rollback_canary")
+
+
+def test_user_docs_do_not_use_the_removed_api() -> None:
+    history = ("docs/design/", "docs/superpowers/", "docs/engine-scope/", "docs/specs/")
+    docs = [p for p in [*(_REPO / "docs").rglob("*.md"), _REPO / "README.md", _REPO / "python" / "README.md",
+                        *(_REPO / "python" / "examples").glob("*/README.md")]
+            if not str(p.relative_to(_REPO)).startswith(history)]
+    hits = sorted(f"{p.relative_to(_REPO)}:{n}" for p in docs
+                  for name in _REMOVED_API if re.search(rf"\b{name}\b", p.read_text()) for n in [name])
+    assert hits == [], hits
+```
+
+Known hits at PR B: `docs/tools/overview.md` and `docs/safety/compliance.md` (`log_agent` imports); `docs/reference/cost-tracking.md` (`cost_for_agent`; delete the page or reduce it to `usd_for_token_usage`); `docs/evaluate/advanced.md`, `docs/tools/custom-tools.md`, `docs/running/tracing.md`, `docs/evaluate/model-sweeps.md`, `python/examples/slack-uc-mcp/README.md`. Also fix `docs/reference/pyproject-toml.md`'s `# apps | model_serving` host comment.
+
 - [ ] **Step 2: Run to verify it fails.** Expected: about 25 docs.
 - [ ] **Step 3: Rewrite.**
   - **`docs/deploy/apps-vs-model-serving.md`:** delete it, and the links to it in `README.md`, `docs/README.md` and `docs/deploy/overview.md`.

@@ -19,10 +19,9 @@ that catches exactly what the task listed:
 
   1. Import the example's agent module and resolve the agent variable
      (catches import errors and broken composition at import time).
-  2. Call ``apx_agent.mlflow_resources_for(agent, model=...)`` to derive
-     MLflow resources (catches missing tool resources / un-resolvable
-     ``ResourceSpec`` entries on the agent — same coverage as
-     ``apx-agent deploy``'s log step, minus the predict() roundtrip).
+  2. Call ``collect_resource_specs(agent, model=...)`` to derive the agent's
+     resource specs (catches missing tool resources / un-resolvable
+     ``ResourceSpec`` entries on the agent — the specs the Apps deploy grants).
 
 Both probes run inside the example's own ``uv run`` so its dep set
 (fitz, slack_sdk, vector_search, ...) is in scope. The probe runs as
@@ -120,7 +119,7 @@ ENV_STRIPS = (
 # else is just stderr.
 #
 # Pass criterion: agent imports and the agent variable resolves. Resource
-# derivation is a "bonus" signal — if `mlflow_resources_for` isn't
+# derivation is a "bonus" signal — if `collect_resource_specs` isn't
 # available (example pins an old apx_agent), the probe still passes but
 # resource_count stays -1 and a 'stale_apx_agent' warning is emitted.
 PROBE = """
@@ -141,13 +140,13 @@ try:
     result['agent_type'] = type(agent).__name__
     result['phase'] = 'resource_derivation'
     try:
-        from apx_agent import mlflow_resources_for  # type: ignore[attr-defined]
+        from apx_agent._resources import collect_resource_specs
     except ImportError:
         result['warnings_internal'].append('stale_apx_agent')
         result['resource_count'] = -1
     else:
         try:
-            resources = mlflow_resources_for(
+            resources = collect_resource_specs(
                 agent, model='databricks-claude-sonnet-4-6')
             result['resource_count'] = len(resources)
         except Exception as e:
@@ -155,7 +154,7 @@ try:
             # ResourceSpec references a UC entity that can't be looked up.
             # Surface it as a separate failure mode (the import probe passed).
             raise RuntimeError(
-                f'mlflow_resources_for failed: {type(e).__name__}: {e}'
+                f'collect_resource_specs failed: {type(e).__name__}: {e}'
             ) from e
     result['phase'] = 'ok'
     result['ok'] = True

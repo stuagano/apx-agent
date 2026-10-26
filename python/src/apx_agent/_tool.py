@@ -241,8 +241,7 @@ def tool(
         )
         target._apx_tool = metadata  # type: ignore[attr-defined]
 
-        # When UC-synced, the function becomes a declared resource so
-        # log_agent picks it up automatically.
+        # When UC-synced, the function becomes a declared resource the deploy grants.
         if uc is not None:
             attach_resources(target, [ResourceSpec("uc_function", uc)])
 

@@ -11,14 +11,14 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "apx_agent"
 
-CHAT_NAMES = frozenset({"chat_agent_for", "compile_to_chat_agent", "log_agent"})
+CHAT_NAMES = frozenset({"chat_agent_for", "compile_to_chat_agent"})
 INVOCATIONS_NAME = "mount_invocations_route"
 
 # Production modules that still compile or serve the MLflow ChatAgent.
 CHAT_AGENT_MODULES = frozenset({
     "_chat_agent.py",  # definitions
     "__init__.py",     # public re-export
-    "cli.py",          # log_agent + eval test
+    "cli.py",          # eval test
     "_run_once.py",
     "_eval.py",
     "_dev.py",
