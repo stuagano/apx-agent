@@ -1,6 +1,8 @@
 """Tests for hub fold into dev-UI (Task 1-8)."""
 from __future__ import annotations
 
+import pytest
+
 
 def test_crawl_agent_keeps_traceparent_from_response_header(monkeypatch):
     """The running agent's trace header stays with the crawled card (#834)."""
@@ -335,6 +337,29 @@ def test_hub_fleet_lists_from_registry_under_obo(dev_ui_app, monkeypatch):
     rows = r.json()
     assert len(rows) == 2, f"Expected 2 rows, got {len(rows)}: {rows}"
     assert {r["name"] for r in rows} == {"agent-a", "agent-b"}
+
+
+def test_hub_fleet_query_runs_off_the_event_loop(dev_ui_app, monkeypatch):
+    """A cold-warehouse registry query (minutes on Apps) must not freeze the
+    loop: on a deployed App it stalled /_apx/approvals and /_apx/conversations
+    behind it until the proxy returned 502."""
+    import asyncio
+
+    import apx_agent._sql as sql
+    from starlette.testclient import TestClient
+
+    def run_sql(ws, q, **k):
+        with pytest.raises(RuntimeError):
+            asyncio.get_running_loop()
+        return []
+
+    monkeypatch.setattr(sql, "run_sql", run_sql)
+    r = TestClient(dev_ui_app).get(
+        "/_apx/hub/fleet",
+        headers={"X-Forwarded-Access-Token": "tok", "X-Forwarded-User": "a@x.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == []
 
 
 def test_hub_fleet_fails_closed_without_obo(dev_ui_app, monkeypatch):

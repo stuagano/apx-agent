@@ -3817,8 +3817,11 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         # List agents from the registry using the caller's OBO credentials.
         # The SQL execution uses the caller's UC grants, so authorization is
         # naturally enforced (SELECT failure for a user without grants).
-        agents = list_registry_agents(ws=ws)
-        return agents
+        # Off the loop: a cold warehouse can take minutes, and blocking here
+        # stalls every other request the App is serving.
+        import asyncio as _asyncio
+
+        return await _asyncio.to_thread(list_registry_agents, ws=ws)
 
     @router.get("/_apx/grounding")
     async def grounding_ui() -> Any:
