@@ -1,19 +1,18 @@
 """Unified OBO (on-behalf-of) header extraction.
 
-The apx-agent SDK supports two Databricks runtime targets:
+The apx-agent SDK accepts OBO context in two conventions:
 
-  * **Model Serving** (``compile_to_chat_agent``): the OBO token is plumbed
-    through ``custom_inputs={"user_token": ..., "workspace_host": ...}``. A
-    FastAPI front door extracts the ``X-Forwarded-Access-Token`` header and
-    forwards it as a ``custom_inputs`` field so the deployed pyfunc has access
-    to it through the request payload.
+  * **Request body** (e.g. ``compile_to_chat_agent``, local dev, the eval
+    bridge): the OBO token is plumbed through
+    ``custom_inputs={"user_token": ..., "workspace_host": ...}``, so a pyfunc
+    sees it in the request payload.
 
   * **Databricks Apps** (``compile_to_responses_agent``): the Apps proxy
     auto-injects ``X-Forwarded-Access-Token``, ``X-Forwarded-User``, and
     ``X-Forwarded-Email`` per request. The agent reads them directly from the
     incoming HTTP headers via ``mlflow.genai.agent_server.get_request_headers``.
 
-Both runtimes must end up at the same place — a per-request user-scoped
+Both conventions must end up at the same place — a per-request user-scoped
 ``WorkspaceClient`` whose tools see the calling user's grants. The single
 source of truth is :func:`extract_obo_headers`, which normalizes BOTH input
 shapes into a uniform dict::
@@ -36,7 +35,7 @@ The same ``custom_inputs``-first rule applies to ``workspace_host``
 ``user_id`` / ``user_email`` (#615): in the Databricks Apps runtime, proxy
 ``X-Forwarded-User`` / ``X-Forwarded-Email`` win when present — body values
 must not spoof session/memory/approval scoping. Outside Apps, ``custom_inputs``
-still wins (local + Model Serving).
+still wins (local dev).
 """
 
 from __future__ import annotations
@@ -131,7 +130,7 @@ def scope_session_key(
     re-derives the same namespaced key from their principal — so the same user
     resumes their own thread, while a different user with the same raw id gets a
     different key. Returns *custom_inputs* unchanged when there is no principal
-    (local dev / single-user Model Serving) — nothing to isolate by.
+    (local dev) — nothing to isolate by.
     """
     if not custom_inputs or not principal:
         return custom_inputs
@@ -176,9 +175,8 @@ def resolve_no_obo_or_raise() -> None:
 
     Operators that genuinely run as a service principal opt in with
     ``APX_ALLOW_SERVICE_PRINCIPAL_FALLBACK=true``, which downgrades the reject to
-    a one-time warning. Outside the Apps runtime (local dev, and Model Serving
-    which is service-principal by default) this is a no-op so the existing
-    behavior is unchanged. See ``docs/design/served-path-guards-and-identity.md`` (G2).
+    a one-time warning. Outside the Apps runtime (local dev) this is a no-op
+    so the existing behavior is unchanged. See ``docs/design/served-path-guards-and-identity.md`` (G2).
     """
     if not _in_databricks_app():
         return
@@ -354,8 +352,7 @@ def extract_obo_headers(
 
     Args:
         custom_inputs: The ``custom_inputs`` dict on a ``ChatAgentRequest`` or
-            ``ResponsesAgentRequest`` (Model Serving and Apps both pass these
-            verbatim through to the agent). May contain ``user_token``,
+            ``ResponsesAgentRequest`` (passed verbatim through to the agent). May contain ``user_token``,
             ``workspace_host``, ``user_id``, ``user_email``.
         headers: Per-request HTTP headers. Accepts dicts, starlette
             ``Headers``, or any object exposing ``.get(name, default)``. The
@@ -375,13 +372,13 @@ def extract_obo_headers(
             ws = WorkspaceClient(token=obo["user_token"], host=obo["workspace_host"])
 
     Precedence:
-      * ``user_token`` — ``custom_inputs`` wins over headers (Model Serving
-        callers supply the token in the body).
+      * ``user_token`` — ``custom_inputs`` wins over headers (body callers
+        supply the token in the request).
       * ``workspace_host`` — ``custom_inputs`` > ``DATABRICKS_HOST`` >
         ``X-Forwarded-Host`` (outside Apps only).
       * ``user_id`` / ``user_email`` — in the Databricks Apps runtime, proxy
         ``X-Forwarded-*`` headers win when present (#615); otherwise
-        ``custom_inputs`` wins (local / Model Serving).
+        ``custom_inputs`` wins (local dev).
     """
     ci = dict(custom_inputs) if custom_inputs else {}
     hdrs = _coerce_headers(headers)
@@ -425,7 +422,7 @@ def extract_obo_headers(
     # In Apps, the proxy identity is authoritative for session/memory/approval
     # scoping. A client-supplied custom_inputs.user_id must not override
     # X-Forwarded-User (confused-deputy / cross-principal resume). Outside
-    # Apps (local + Model Serving), custom_inputs still wins.
+    # Apps (local dev), custom_inputs still wins.
     header_user = _header_lookup(hdrs, "X-Forwarded-User")
     if _in_databricks_app() and header_user:
         out["user_id"] = str(header_user)

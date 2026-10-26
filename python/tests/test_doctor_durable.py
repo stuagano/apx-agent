@@ -896,3 +896,30 @@ def test_another_projects_agent_on_sys_path_never_stands_in(tmp_path: Path, monk
     config = _by_name(check_durable_readiness(root))["Config"]
     assert config.status is Status.FAIL
     assert config.fix is not None and "agent.py" in config.fix, config
+
+
+def test_static_model_conflict_names_agent_py_not_pyproject(tmp_path):
+    # The static read supplied `model`; blaming pyproject.toml sends the user to a file that doesn't set it.
+    from apx_agent._doctor_durable import effective_config_isolated
+    from apx_agent._settings import SettingsConflict
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nname = "p"\n')
+    (tmp_path / "agent.py").write_text(
+        "from apx_agent import LlmAgent\n"
+        "agent = LlmAgent(name='p', tools=[], model='databricks-a')\n"
+        "if True:\n    agent.configure(model='databricks-b')\n")
+    with pytest.raises(SettingsConflict) as caught:
+        effective_config_isolated(tmp_path)
+    assert "pyproject.toml" not in str(caught.value)
+    assert "a literal in agent.py sets 'databricks-a'" in str(caught.value)
+
+
+def test_durable_readiness_static_model_conflict_names_agent_py(tmp_path):
+    # doctor --durable re-validates the fields itself; it must keep their agent.py provenance.
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "p", "from apx_agent import LlmAgent\n"
+                    "agent = LlmAgent(name='p', tools=[], model='databricks-a')\n"
+                    "if True:\n    agent.configure(model='databricks-b')\n")
+    detail = _by_name(check_durable_readiness(root))["Config"].detail
+    assert "a literal in agent.py sets 'databricks-a'" in detail and "pyproject.toml" not in detail

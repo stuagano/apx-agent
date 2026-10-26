@@ -78,8 +78,9 @@ def resolve_settings(agent: BaseAgent, toml: AgentConfig | None) -> AgentConfig:
         for field in declared:
             theirs, mine = getattr(toml, field), getattr(ours, field)
             if field in toml.model_fields_set and theirs != mine:
+                source = "a literal in agent.py" if field in toml._from_agent_py else "pyproject.toml"
                 raise SettingsConflict(f"{field}: agent.py sets {mine!r} on agent {_label(agent)!r}; "
-                                 f"pyproject.toml sets {theirs!r}. Set it in one place.")
+                                 f"{source} sets {theirs!r}. Set it in one place.")
         config = toml.model_copy(update={f: getattr(ours, f) for f in declared}) if declared else toml
 
     from ._agents import BaseAgent

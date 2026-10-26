@@ -117,9 +117,9 @@ def _scan_via_genie(
 
     question = (
         f"List all components requested by at least {min_customer_count} distinct customers "
-        f"in the last {lookback_hours} hours. Include: component_id, component_name, "
-        f"number of distinct customers, earliest request time, latest request time, "
-        f"and total units requested. Return as a table."
+        f"in the last {lookback_hours} hours. Return a table with exactly these columns: "
+        f"component_id, component_name, customer_count (distinct customers), "
+        f"earliest_request, latest_request (request times), total_units_requested."
     )
 
     msg = ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
@@ -128,14 +128,18 @@ def _scan_via_genie(
         return []
 
     signals: list[ShortageSignal] = []
+    required = ("component_id", "component_name", "earliest_request", "latest_request")
     for r in _genie_rows(ws, space_id, msg):
+        if any(r.get(k) is None for k in required):
+            logger.warning("Skipping Genie row without %s: %s", required, r)
+            continue
         count = int(r.get("customer_count", r.get("distinct_customers", 0)) or 0)
         signals.append(ShortageSignal(
-            component_id=str(r.get("component_id", "")),
-            component_name=str(r.get("component_name", "")),
+            component_id=str(r["component_id"]),
+            component_name=str(r["component_name"]),
             customer_count=count,
-            earliest_request=str(r.get("earliest_request", "")),
-            latest_request=str(r.get("latest_request", "")),
+            earliest_request=str(r["earliest_request"]),
+            latest_request=str(r["latest_request"]),
             total_units_requested=int(r.get("total_units_requested", r.get("units_requested", 0)) or 0),
             confidence="HIGH" if count >= 4 else "MEDIUM",
         ))
@@ -253,7 +257,7 @@ def validate_against_market_news(
             )
             for row in result.result.data_array:
                 r = dict(zip(col_names, row))
-                content = r.get("content", "")
+                content = r.get("content")
                 if content:
                     docs.append(content[:800])
                 src = r.get("source_file", "unknown")
@@ -347,7 +351,7 @@ def check_vendor_availability(part_numbers: list[str]) -> dict[str, Any]:
 
             listings.append(VendorListing(
                 part_number=part_number,
-                manufacturer=product.get("Manufacturer", {}).get("Name", ""),
+                manufacturer=product.get("Manufacturer", {}).get("Name", "unknown"),
                 vendor="DigiKey",
                 unit_price_usd=float(pricing),
                 quantity_available=int(qty),
@@ -449,7 +453,7 @@ def find_alternative_parts(
 
 
 # ---------------------------------------------------------------------------
-# Resource declarations for log_agent / Model Serving manifests
+# Resource declarations (attach_resources) for the deploy's authorization plan
 # ---------------------------------------------------------------------------
 
 _settings = get_settings()

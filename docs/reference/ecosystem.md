@@ -6,7 +6,7 @@ How apx-agent relates to other tools in the Databricks AI space.
 
 | Project | Relationship |
 |---------|--------------|
-| [stuagano/databricks-agent-governance-monitoring](https://github.com/stuagano/databricks-agent-governance-monitoring) | **Compliance posture** — cross-domain policies, violation lifecycle, owner accountability (including a `data_quality` domain). apx-agent is the **agent runtime** (tools, OBO, hooks, deploy); governance-monitoring decides allow / reject / redact. Wire them with `GovernanceGuard` — see [compliance.md](compliance.md). Pipeline DQ frameworks such as [DQX](https://databrickslabs.github.io/dqx/) feed governance-monitoring posture, not the agent SDK. |
+| [stuagano/databricks-agent-governance-monitoring](https://github.com/stuagano/databricks-agent-governance-monitoring) | **Compliance posture** — cross-domain policies, violation lifecycle, owner accountability (including a `data_quality` domain). apx-agent is the **agent runtime** (tools, OBO, hooks, deploy); governance-monitoring decides allow / reject / redact. Wire them with `GovernanceGuard` — see [compliance.md](../safety/compliance.md). Pipeline DQ frameworks such as [DQX](https://databrickslabs.github.io/dqx/) feed governance-monitoring posture, not the agent SDK. |
 
 ```text
 apx-agent               = agent runtime (tools, OBO, hooks, Apps / Serving deploy)

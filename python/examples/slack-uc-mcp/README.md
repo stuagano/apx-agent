@@ -232,4 +232,3 @@ If both users see the same data, the connection is configured as machine-to-mach
 ## See also
 
 - [slack-agent](../slack-agent/) — Slack → Databricks direction, manual reference (also benefits from this u2m pattern; see that README's "Migration note")
-- [databricks-builder-app](../databricks-builder-app/) — full-stack apx-agent app demonstrating SP-authenticated `WorkspaceClient` usage

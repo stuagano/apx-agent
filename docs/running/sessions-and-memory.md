@@ -377,7 +377,7 @@ apx-agent examples save   --agent-id triage --input "..." --output "..." --score
 Store loaded via `--store-module MODULE:VAR`, or a `memory_store` / `example_store` default
 (`"module:variable"`) in `[tool.apx]` of `pyproject.toml`.
 
-A worked example lives in [`python/examples/memory_demo/`](../python/examples/memory_demo/) — seeded memories, recall/remember tools wired in, prompt assembly building the system prompt at every turn.
+A worked example lives in [`python/examples/memory_demo/`](../../python/examples/memory_demo/) — seeded memories, recall/remember tools wired in, prompt assembly building the system prompt at every turn.
 
 ---
 

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StrictInt, ValidationInfo, field_validator, model_validator
 
 from ._service_policies import ServicePoliciesConfig
 
@@ -693,6 +693,9 @@ class NativeBinding(BaseModel):
 class AgentConfig(BaseModel):
     """Agent configuration — declared as agent constructor arguments in agent.py or constructed directly."""
 
+    _from_agent_py: frozenset[str] = PrivateAttr(default_factory=frozenset)
+    """Fields read statically from agent.py literals rather than the TOML (named in conflicts)."""
+
     name: str
     target: RuntimeTarget = "durable_agent_server"
     """Compilation contract. Omitted ``target`` means the native durable
@@ -779,15 +782,12 @@ class AgentConfig(BaseModel):
     service_policies: ServicePoliciesConfig = Field(default_factory=ServicePoliciesConfig)
     """Portable Service Policy declaration and native/local lifecycle mode."""
     template: dict[str, Any] | None = None
-    """Template-as-config: ``{ name = "data", catalog = "main", schema = "sales" }``.
+    """YAML spec only: ``template: {name: data, catalog: main, schema: sales}``.
 
-    When set, ``resolve_agent`` builds the leaf agent from the named template
-    via ``template_registry.build(name, spec, ws=ws)`` rather than importing a
-    Python module. The ``name`` key selects the template; all other keys become
-    the spec dict passed to the template's ``Spec.model_validate``. The
-    agent settings (instructions, model, knobs) is layered on top
-    afterward via ``finalize_agent`` as usual — template builds the leaf, persona
-    overlays.
+    ``generate_project`` renders it into ``agent.py`` (``DataAgent(...)`` /
+    ``CoworkerAgent(...)``); the ``name`` key selects the registered template and
+    the other keys become its spec. A pyproject cannot set it, and ``resolve_agent``
+    always imports the agent from ``agent.py``.
     """
     agents: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """YAML graph leaf declarations keyed by local agent name.

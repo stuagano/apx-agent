@@ -2,7 +2,7 @@
 
 Covers:
 
-  1. Model Serving convention: ``custom_inputs.user_token`` + ``workspace_host``
+  1. Request-body convention: ``custom_inputs.user_token`` + ``workspace_host``
      → normalized dict carries both fields untouched.
   2. Apps convention: ``X-Forwarded-Access-Token`` / ``-User`` / ``-Email``
      headers → normalized dict carries the same fields.
@@ -21,7 +21,7 @@ from apx_agent import extract_obo_headers
 
 
 # ---------------------------------------------------------------------------
-# Model Serving convention — custom_inputs
+# Request-body convention — custom_inputs
 # ---------------------------------------------------------------------------
 
 
@@ -106,7 +106,7 @@ def test_precedence_workspace_host_custom_inputs_wins() -> None:
 def test_precedence_user_id_custom_inputs_wins_outside_apps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Outside Apps, body user_id still wins (local / Model Serving)."""
+    """Outside Apps, body user_id still wins (local dev)."""
     monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
     monkeypatch.delenv("DATABRICKS_APP_URL", raising=False)
     obo = extract_obo_headers(

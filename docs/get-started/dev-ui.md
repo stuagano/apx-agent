@@ -65,7 +65,7 @@ grants them to the App.
 
 ### `/_apx/topology` — Interactive topology graph
 
-![topology view of customer_triage — HandoffAgent + 4 specialists + 8 tools + serving endpoint](images/topology-customer-triage.png)
+![topology view of customer_triage — HandoffAgent + 4 specialists + 8 tools + serving endpoint](../images/topology-customer-triage.png)
 
 A React-flow visualization of the agent topology: agent nodes, tools, sub-agents, and platform resources (UC functions, Genie spaces, vector indexes, serving endpoints), connected by typed edges (`uses-tool`, `delegates-to`, `calls-model`, `next-step`, `branch`, `iterates`). Click any node to inspect its details in a side panel — instructions, model, JSON Schema, resource identifier, or sub-agent URL.
 

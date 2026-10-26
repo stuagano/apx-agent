@@ -547,7 +547,7 @@ class TestCheckDeclaredTools:
         assert len(checks) == 1
         assert checks[0].status is Status.FAIL
         assert "tool.apx.tools" in checks[0].detail
-        assert "Python" in checks[0].fix
+        assert "Python factories" in checks[0].detail  # the rejection names its own next step
         make_ws.assert_not_called()
 
     def test_auth_unavailable_skips_import_and_session_probe(self, tmp_path):
@@ -1369,3 +1369,27 @@ def test_workspace_scope_allowlist_fails_on_blocked_scope():
     check = doctor.check_workspace_scope_allowlist(plan, ws)
     assert check.status is Status.FAIL
     assert "sql" in check.detail
+
+
+def test_doctor_isolated_checks_share_one_agent_import(tmp_path, monkeypatch):
+    # The isolated checks share one import per run; agent.toml adds one deploy-shaped load.
+    marker = tmp_path / "imports.log"
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.deploy]\nname = "p"\n')
+    (tmp_path / "agent.py").write_text(
+        f"open({str(marker)!r}, 'a').write('x')\n"
+        "from apx_agent import LlmAgent\n"
+        "agent = LlmAgent(name='p', tools=[], sub_agents=['https://peer.example.com'], memory={'type': 'inmemory'})\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(doctor, "probe_sub_agents", lambda urls: [])
+    doctor.run_checks(tmp_path, online=False)
+    assert marker.read_text() == "xx", f"agent.py imported {len(marker.read_text())} times"
+
+
+def test_declared_tools_agent_table_hint_is_migrate_config_not_tools(tmp_path):
+    # The rejection message carries its own next step; a [[tool.apx.tools]] hint misdirects.
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n\n[tool.apx.agent]\nname = "p"\n')
+    (tmp_path / "agent.py").write_text("agent = None\n")
+    [check] = doctor.check_declared_tools(tmp_path, auth_ok=True, online=True)
+    assert check.status is doctor.Status.FAIL
+    assert "migrate-config" in check.detail
+    assert check.fix is None  # the rejection message names its own next step

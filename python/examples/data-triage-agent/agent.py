@@ -3,8 +3,8 @@
 Tool functions live in ``tools.py``; this module composes them into a
 SequentialAgent investigation pipeline plus a general-purpose fallback,
 wired via :class:`apx_agent.KeywordRouter` — substring-based routing with
-no LLM round trip. The router compiles cleanly for both Model Serving and
-the native DurableAgentServer Apps target; routing happens inside the
+no LLM round trip. The router compiles cleanly for the native
+DurableAgentServer Apps target; routing happens inside the
 compiled graph, so ``app.py`` never dispatches at the request layer.
 """
 from __future__ import annotations

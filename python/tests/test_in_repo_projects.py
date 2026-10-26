@@ -189,11 +189,20 @@ _REMOVED_API = ("log_agent", "mlflow_resources_for", "hot_swap_model", "HotSwapR
                 "promote_canary", "rollback_canary")
 
 
+def _example_text() -> list[Path]:
+    """Every tracked example doc, module and bundle config (nested too), minus vendored trees.
+
+    Tracked files only: deploy staging copies (.build/) and venvs are gitignored."""
+    listed = subprocess.run(["git", "ls-files", "python/examples/**.md", "python/examples/**.py",
+                             "python/examples/**databricks.yml"],
+                            cwd=_REPO, capture_output=True, text=True, check=True).stdout.split()
+    return [_REPO / p for p in listed if Path(p).parts[2] not in _VENDORED_EXAMPLES and (_REPO / p).is_file()]
+
+
 def _user_docs() -> list[Path]:
     history = ("docs/design/", "docs/superpowers/", "docs/engine-scope/", "docs/specs/")
     docs = [*(_REPO / "docs").rglob("*.md"), _REPO / "README.md", _REPO / "python" / "README.md",
-            *(p for p in (_REPO / "python" / "examples").glob("*/README.md") if p.parent.name not in _VENDORED_EXAMPLES),
-            *(_REPO / "python").glob("samples-*/agent.py")]
+            *_example_text(), *(_REPO / "python").glob("samples-*/agent.py")]
     return sorted(p for p in docs if not str(p.relative_to(_REPO)).startswith(history))
 
 
@@ -214,4 +223,13 @@ def test_user_docs_do_not_offer_model_serving_hosting() -> None:
 def test_user_docs_do_not_use_the_removed_api() -> None:
     hits = sorted(f"{p.relative_to(_REPO)}:{name}" for p in _user_docs() for name in _REMOVED_API
                   if re.search(rf"\b{name}\b", p.read_text()))
+    assert hits == [], f"{len(hits)}: " + ", ".join(hits)
+
+
+def test_user_docs_relative_links_resolve() -> None:
+    def _targets(p: Path) -> list[str]:
+        text = re.sub(r"(?s)```.*?```", "", p.read_text())  # code samples aren't links
+        return [m.split("#")[0] for m in re.findall(r"\]\(([^)\s]+)\)", text)]
+    hits = sorted(f"{p.relative_to(_REPO)}: {t}" for p in _user_docs() if p.suffix == ".md"
+                  for t in _targets(p) if t and not re.match(r"[a-z]+:|/", t) and not (p.parent / t).exists())
     assert hits == [], f"{len(hits)}: " + ", ".join(hits)

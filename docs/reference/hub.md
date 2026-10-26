@@ -14,7 +14,7 @@ agent = Agent(
 )
 ```
 
-A worked example lives at [`python/examples/agent-hub/`](../python/examples/agent-hub/).
+A worked example lives at [`python/examples/agent-hub/`](../../python/examples/agent-hub/).
 
 ## Publish — register as a Supervisor sub-agent
 

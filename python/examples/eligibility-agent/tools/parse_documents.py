@@ -95,7 +95,7 @@ async def parse_documents(application_id: str, ws: Dependencies.Workspace) -> di
     Lists the application's files from the documents table, then extracts
     each with ``ai_parse_document`` + ``ai_extract`` on the declared SQL
     warehouse. One schema per document type. Declares the warehouse and
-    documents table via attach_resources for log_agent.
+    documents table via attach_resources for the deploy's grants.
 
     Returns:
         {

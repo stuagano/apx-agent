@@ -1,6 +1,6 @@
 # Design: `agent.toml` is the platform's source of truth
 
-**Status:** sub-projects 1–2 (#984) 3a (#990), 3b-1 (#992) and 3b-2 (#994) and 3b-3a (#995) implemented; 3b-3b proposed · **Date:** 2026-10-19
+**Status:** shipped — sub-projects 1–2 (#984); 3a (#990); 3b-1 (#992), 3b-2 (#994), 3b-3a (#995), 3b-3b (#996), 3b-3c (#997); 3c (#998, #999); 3d (#1000–#1002); 4 (#1003–#1005, see [`remove-model-serving.md`](remove-model-serving.md)) · **Date:** 2026-10-19
 
 ## Intent
 

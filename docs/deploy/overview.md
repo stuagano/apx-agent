@@ -28,7 +28,7 @@ The legacy `create_app(agent)` FastAPI wrapper still works for Apps hosting that
 
 Worked examples deployed to a real workspace as Databricks Apps:
 
-- [`python/examples/memory_demo/`](../python/examples/memory_demo/) — single agent with in-memory memory store
-- [`python/examples/customer_triage/`](../python/examples/customer_triage/) — `HandoffAgent` over 4 sub-agents with memory wired into the account specialist
+- [`python/examples/memory_demo/`](../../python/examples/memory_demo/) — single agent with in-memory memory store
+- [`python/examples/customer_triage/`](../../python/examples/customer_triage/) — `HandoffAgent` over 4 sub-agents with memory wired into the account specialist
 
 Memory recall verified working across the HandoffAgent boundary — principal-keyed memory survives sub-agent transitions because the key is the user, not the session.
