@@ -126,6 +126,7 @@ def test_apps_preflight_on_a_flat_layout_does_not_point_at_model_serving(tmp_pat
     (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', tools=[], target='responses_agent')\n")
     (tmp_path / "app.py").write_text("app = None\n")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_preflight_databricks_cli", lambda: None)  # CI has no databricks binary
     result = CliRunner().invoke(cli.main, ["agents", "deploy", "--profile", "x"])
     assert result.exit_code != 0
     assert "--target model-serving" not in result.output
