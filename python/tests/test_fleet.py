@@ -348,7 +348,7 @@ def test_fleet_repoint_skips_when_already_latest():
 
 
 @pytest.mark.unit
-def test_fleet_repoint_skip_reason_names_model_serving():
+def test_fleet_repoint_skip_reason_names_never_prod_deployed():
     """An agent with no prod-tagged versions (model-serving, or never
     prod-deployed) must be skipped WITH the reason, not silently."""
     ws = _fake_ws([_model("a", catalog="cat", schema="sch",
@@ -361,7 +361,7 @@ def test_fleet_repoint_skip_reason_names_model_serving():
     assert result.exit_code == 0, result.output
     setp.assert_not_called()
     assert "no prod-tagged versions" in result.output
-    assert "model-serving or never prod-deployed" in result.output
+    assert "never prod-deployed" in result.output and "model-serving" not in result.output
 
 
 @pytest.mark.unit

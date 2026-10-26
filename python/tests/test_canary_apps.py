@@ -556,41 +556,6 @@ def test_cli_canary_deploy_apps_requires_canary_version(
     assert "--canary-version" in result.output
 
 
-def test_cli_canary_deploy_default_target_still_model_serving(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Verify the no --target flag path didn't regress. Patches the SDK
-    side so this test doesn't need a real WorkspaceClient."""
-    import apx_agent.cli as cli_mod
-
-    captured: dict[str, Any] = {}
-
-    def fake_deploy(**kwargs: Any) -> Any:
-        captured.update(kwargs)
-        # Return a minimal CanaryConfig stand-in.
-        return SimpleNamespace(traffic_split={"a-1": 90, "a-2": 10})
-
-    monkeypatch.setattr("apx_agent.deploy_canary", fake_deploy)
-    # Patch the CLI's connection helper (not databricks.sdk.WorkspaceClient):
-    # _connect_workspace probes auth via Config() before constructing the
-    # client, so patching the SDK class alone still hits the auth error.
-    monkeypatch.setattr(
-        "apx_agent.cli._connect_workspace",
-        lambda profile=None: (SimpleNamespace(), SimpleNamespace()),
-    )
-    # Provide a click context.
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["canary", "deploy",
-         "--endpoint", "ep",
-         "--model", "cat.sch.mod",
-         "--version", "5",
-         "--traffic", "10"],
-    )
-    assert result.exit_code == 0, result.output
-    assert captured.get("endpoint") == "ep"
-    assert captured.get("canary_traffic_pct") == 10
 
 
 # NOTE: the old `test_cli_canary_promote_apps_dispatches_correctly` was removed

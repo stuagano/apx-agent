@@ -94,7 +94,7 @@ def test_force_preserves_legacy_project_without_runtime_config(tmp_path):
     assert static_agent_setting(root / "agent.py", "target") == "responses_agent"  # 3b-3c
 
 
-@pytest.mark.parametrize("options", [["--lakebase"], ["--ci", "github"], ["--target", "model-serving", "--runtime", "durable_agent_server"]])
+@pytest.mark.parametrize("options", [["--lakebase"], ["--ci", "github"]])
 def test_native_scaffold_rejects_incompatible_options(tmp_path, options):
     result = CliRunner().invoke(cli.main, ["agents", "scaffold", "orders", "--here", "--dir", str(tmp_path),
                                         "--template", "base", "--no-interactive", *options])

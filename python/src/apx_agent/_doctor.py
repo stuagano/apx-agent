@@ -907,8 +907,7 @@ def check_apps_enabled(*, auth_ok: bool) -> Check | None:
                 "Databricks Apps",
                 Status.WARN,
                 "Apps may not be enabled in this workspace",
-                "Ask your workspace admin to enable Databricks Apps, or deploy with "
-                "`uv run apx-agent deploy --target model-serving` instead.",
+                "Ask your workspace admin to enable Databricks Apps: apx deploys agents to Apps.",
             )
         # Any other error (network, auth) — don't fail the check hard
         return None
@@ -1017,10 +1016,11 @@ def check_project_layout(cwd: Path) -> Check:
             f"{cwd} is not an apx project",
             "Run `apx-agent scaffold my-agent` to create one, then cd into it.",
         )
-    from apx_agent.cli import _declares_durable, _detect_target
+    from apx_agent.cli import _declares_durable, _detect_target, _run_module_for_layout
 
     target = _detect_target(cwd).target
-    native = _declares_durable(cwd)
+    # A native project, or the flat agent.py + app.py layout, needs agent.py; the Apps launcher needs agent_server/.
+    native = _declares_durable(cwd) or _run_module_for_layout(cwd) == "app:app"
     marker = "agent_server/" if target == "apps" and not native else "agent.py"
     if target == "apps" and not native:
         ok = (cwd / "agent_server").is_dir()
@@ -1041,7 +1041,7 @@ def check_target(cwd: Path) -> Check:
         return Check("Target", Status.SKIP, "not in an apx project", None)
     from apx_agent.cli import _detect_target, _read_apx_agent_config
 
-    # _detect_target only ever returns "apps" or "model-serving"; no failure mode to surface.
+    # _detect_target always returns "apps" (Model Serving was removed); no failure mode to surface.
     detected = _detect_target(cwd)
     from ._inspection import static_agent_setting
 
@@ -1060,7 +1060,7 @@ def check_target(cwd: Path) -> Check:
 def check_extras(cwd: Path) -> Check:
     if not _is_apx_project(cwd):
         return Check("Required extra", Status.SKIP, "not in an apx project", None)
-    from apx_agent.cli import _declares_durable, _detect_target
+    from apx_agent.cli import _declares_durable, _detect_target, _run_module_for_layout
 
     target = _detect_target(cwd).target
     if _declares_durable(cwd):
@@ -1068,7 +1068,7 @@ def check_extras(cwd: Path) -> Check:
             "databricks_agentkit.runtime.app", "AgentKit native runtime",
             "uv add 'apx-agent[agentbricks]'",
         )
-    elif target == "apps":
+    elif _run_module_for_layout(cwd) != "app:app":  # the Apps launcher (agent_server/start_server.py)
         module, label, fix = (
             "mlflow.genai.agent_server",
             "mlflow.genai (eval extra)",
@@ -1113,8 +1113,7 @@ def check_databricks_yml(cwd: Path) -> Check:
         "databricks.yml",
         Status.WARN,
         "missing — `apx-agent deploy --target apps` needs it",
-        "Re-run `apx-agent scaffold <name> --target apps`, or `apx-agent deploy` "
-        "for model-serving (no bundle required).",
+        "Re-run `apx-agent scaffold <name> --target apps`.",
     )
 
 

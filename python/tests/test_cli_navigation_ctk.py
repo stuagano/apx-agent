@@ -98,14 +98,6 @@ def test_mcp_doctor_runs() -> None:
     assert "uvx" in result.output
 
 
-def test_endpoints_url(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "apx_agent.cli._connect_workspace",
-        lambda *_a, **_k: (MagicMock(), SimpleNamespace(host="https://h.example")),
-    )
-    result = CliRunner().invoke(cli, ["endpoints", "url", "my-ep"])
-    assert result.exit_code == 0, result.output
-    assert "https://h.example/serving-endpoints/my-ep/invocations" in result.output
 
 
 def test_resources_list(tmp_path) -> None:

@@ -71,7 +71,7 @@ def test_typed_smoke_fails_before_deploy_provisioning(tmp_path, monkeypatch):
     assert not (tmp_path / ".build").exists()
 
 
-@pytest.mark.parametrize("args", [["--target", "model-serving"], ["example.yaml"]])
+@pytest.mark.parametrize("args", [["example.yaml"]])
 def test_smoke_input_rejected_for_unsupported_destinations(tmp_path, args):
     path = tmp_path / "smoke.json"
     path.write_text('{"value":1}')

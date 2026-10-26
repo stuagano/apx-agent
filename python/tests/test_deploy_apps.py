@@ -3715,45 +3715,8 @@ def test_plain_deploy_threads_provenance_to_registrar(
 # ---------------------------------------------------------------------------
 
 
-def test_experiment_flag_warns_under_apps_target(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """--experiment is model-serving-only; under --target apps the deploy
-    succeeds but warns loudly and points at the apps-flow equivalent."""
-    _install_subprocess_mock(monkeypatch)
-    result = CliRunner().invoke(main, [
-        "agents", "deploy", "--target", "apps",
-        "--experiment", "/Users/me/my-exp",
-    ])
-    assert result.exit_code == 0, result.output
-    assert "--experiment is ignored with --target apps" in result.output
-    # The warning names the apps-flow equivalents.
-    assert "mlflow_experiment_id" in result.output
-    assert "--auto-experiment" in result.output
 
 
-def test_model_serving_only_flags_warn_when_explicit_under_apps(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Explicitly passing model-serving-only flags under --target apps prints
-    one combined warning naming every ignored flag."""
-    _install_subprocess_mock(monkeypatch)
-    result = CliRunner().invoke(main, [
-        "agents", "deploy", "--target", "apps",
-        "--no-publish-tools", "--agent-name", "my-agent",
-        "--scale-to-zero", "--workload-size", "Small",
-        "--env-suffix", "staging",
-    ])
-    assert result.exit_code == 0, result.output
-    assert "ignored with --target apps" in result.output
-    assert "--publish-tools/--no-publish-tools" in result.output
-    assert "--agent-name" in result.output
-    # #407: scale + env-suffix flags are model-serving-only too.
-    assert "--scale-to-zero/--no-scale-to-zero" in result.output
-    assert "--workload-size" in result.output
-    assert "--env-suffix" in result.output
-    # Flags left at their defaults are NOT named.
-    assert "--no-deploy" not in result.output
 
 
 def test_default_apps_deploy_does_not_warn_about_ignored_flags(
@@ -4180,22 +4143,6 @@ def test_secret_env_emits_value_from_reference_never_a_value(
     assert "OPENAI_API_KEY" in result.output
 
 
-def test_env_flags_warn_and_are_ignored_under_model_serving(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """--env / --secret-env are apps-only; --target model-serving warns and
-    never touches databricks.yml (mirror of the #413 hygiene warnings)."""
-    before = (scaffold / "databricks.yml").read_text()
-    result = CliRunner().invoke(main, [
-        "agents", "deploy", "--target", "model-serving",
-        "--env", "FEATURE_FLAG=on",
-        "--secret-env", "TOK=scope/key",
-    ])
-    # The warning fires before the --model requirement aborts the command.
-    assert "ignored with --target model-serving" in result.output
-    assert "--env" in result.output
-    assert "--secret-env" in result.output
-    assert (scaffold / "databricks.yml").read_text() == before
 
 
 def test_model_serving_without_env_flags_does_not_warn(
@@ -4359,18 +4306,6 @@ def test_readyz_retries_flag_reaches_check_readyz(
     assert gate.call_args.kwargs["attempts"] == 9
 
 
-def test_readyz_retries_warns_under_model_serving(
-    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#414: --readyz-retries is apps-only — --target model-serving warns
-    (same hygiene table as --env / --secret-env)."""
-    result = CliRunner().invoke(main, [
-        "agents", "deploy", "--target", "model-serving",
-        "--readyz-retries", "9",
-    ])
-    # The warning fires before the --model requirement aborts the command.
-    assert "ignored with --target model-serving" in result.output
-    assert "--readyz-retries" in result.output
 
 
 # ---------------------------------------------------------------------------
