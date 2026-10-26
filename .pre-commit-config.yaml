@@ -67,7 +67,6 @@ repos:
         exclude: |-
           (?x)^(
             python/src/apx_agent/_trace_store\.py$
-            |python/tests/test_canary\.py$
             |python/tests/test_cli\.py$
             |python/tests/test_example\.py$
             |python/tests/test_example_lakebase\.py$

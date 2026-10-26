@@ -177,12 +177,23 @@ def test_the_serving_modules_are_gone() -> None:
     assert [m for m in ("apx_agent._canary", "apx_agent._hot_swap") if importlib.util.find_spec(m)] == []
 
 
-def test_the_runtime_model_override_still_applies(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Kept by the spec: the responses runtime still honors APX_AGENT_MODEL_OVERRIDE.
+@pytest.mark.parametrize(("override", "expected"), [("databricks-claude-opus-4-7", "databricks-claude-opus-4-7"),
+                                                    (None, "databricks-claude-sonnet-4-6"),
+                                                    ("", "databricks-claude-sonnet-4-6")])
+def test_the_runtime_model_override_still_applies(override: str | None, expected: str,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    # Kept by the spec: both runtimes honor APX_AGENT_MODEL_OVERRIDE; unset or empty falls back.
+    from apx_agent._chat_agent import chat_agent_for
     from apx_agent._responses_agent import _resolve_model
+    from apx_agent import Agent
 
-    monkeypatch.setenv("APX_AGENT_MODEL_OVERRIDE", "databricks-claude-opus-4-7")
-    assert _resolve_model("databricks-claude-sonnet-4-6") == "databricks-claude-opus-4-7"
+    if override is None:
+        monkeypatch.delenv("APX_AGENT_MODEL_OVERRIDE", raising=False)
+    else:
+        monkeypatch.setenv("APX_AGENT_MODEL_OVERRIDE", override)
+    assert _resolve_model("databricks-claude-sonnet-4-6") == expected
+    chat = chat_agent_for(Agent(name="p", tools=[]), model="databricks-claude-sonnet-4-6")
+    assert chat._resolve_model() == expected
 
 
 def test_host_model_serving_is_a_clear_validation_error() -> None:
@@ -190,5 +201,14 @@ def test_host_model_serving_is_a_clear_validation_error() -> None:
 
     from apx_agent._models import AgentConfig
 
-    with pytest.raises(ValidationError, match="apps"):
+    with pytest.raises(ValidationError, match="Model Serving was removed"):
         AgentConfig.model_validate({"name": "p", "host": "model_serving"})
+
+
+def test_user_facing_help_and_samples_do_not_name_removed_apis() -> None:
+    # CLI help and the package's own code samples must not point at removed functions.
+    src = Path(cli.__file__).parent
+    helps = [p.help for c in cli.agents.commands.values() for p in c.params
+             if isinstance(p, cli.click.Option) and p.help]
+    assert [h for h in helps if "log_agent" in h] == []
+    assert "log_agent" not in (src / "_tool_publish.py").read_text()

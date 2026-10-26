@@ -700,6 +700,14 @@ class AgentConfig(BaseModel):
     (hosted on Databricks Apps, as the ``samples-*`` apps are)."""
     host: Literal["apps"] | None = None
     """Where the compiled agent executes: Databricks Apps (Model Serving was removed)."""
+
+    @field_validator("host", mode="before")
+    @classmethod
+    def _host_model_serving_removed(cls, value: Any) -> Any:
+        if value == "model_serving":
+            raise ValueError("host: Model Serving was removed: apx deploys agents to Databricks Apps. "
+                             "Set host = \"apps\" (or drop it) in [tool.apx.deploy].")
+        return value
     identity: str | None = None
     """The agent's own principal — its default execution identity (#816).
 

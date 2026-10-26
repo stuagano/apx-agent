@@ -16,12 +16,9 @@ This module derives that list automatically from the agent's own structure:
     HandoffAgent), gathers every tool's specs, and adds an endpoint reference
     for each sub-agent. The chat ``model`` is not a serving-endpoint resource;
     it is called through Unity Catalog AI Gateway (OBO scope ``ai-gateway``).
-  * ``mlflow_resources_for(agent, model=...)`` materializes the specs into
-    concrete ``mlflow.models.resources.DatabricksResource`` instances ready to
-    pass to ``mlflow.pyfunc.log_model(resources=...)``.
 
 The spec layer is mlflow-free so the package imports cleanly without the
-``eval`` extra. Only ``mlflow_resources_for`` and ``log_agent`` require mlflow.
+``eval`` extra.
 
 Custom tools can opt in by setting ``my_tool._apx_resources`` to a list of
 ``ResourceSpec`` instances at definition time.
@@ -70,8 +67,7 @@ _VALID_KINDS = frozenset({
 class ResourceSpec:
     """Lightweight, mlflow-free description of a Databricks resource.
 
-    Materialized into ``mlflow.models.resources.Databricks*`` at log time via
-    ``mlflow_resources_for``. Stored on tool callables as ``_apx_resources``.
+    Stored on tool callables as ``_apx_resources``.
 
     Args:
         kind: One of ``"uc_function"``, ``"genie_space"``,
@@ -521,8 +517,7 @@ def resources_to_databricks_yml(
     Apps deployments declare their grants in ``databricks.yml`` rather than in
     a logged pyfunc's ``resources=`` list — at deploy time, the bundle's
     ``resources`` block is what determines which Databricks objects the
-    App's runtime token can access. This function is the Apps-side counterpart
-    to :func:`mlflow_resources_for` (Model Serving / ChatAgent path).
+    App's runtime token can access.
 
     Output shape per spec kind:
 

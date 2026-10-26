@@ -6856,7 +6856,7 @@ def _deploy_from_yaml(
 @click.option(
     "--register-uc/--no-register-uc", default=True,
     help="After the app is live, register a UC model-version *manifest* for it "
-         "(log_agent + apx.* tags, tagged apx.serving=apps) so the Apps agent "
+         "(mlflow.pyfunc.log_model + apx.* tags, tagged apx.serving=apps) so the Apps agent "
          "gets a version ledger and shows up in apx-agent agents list / uc topology / "
          "governance. NOT promoted to serving — the App serves traffic, the UC "
          "version is a record of what it's running. Skips with a notice if no "
@@ -14020,7 +14020,7 @@ def uc_validate_cmd(catalog: str, schema: str, fmt: str, profile: str | None) ->
       • USE CATALOG on CATALOG
       • USE SCHEMA on CATALOG.SCHEMA
       • SELECT on at least one table in CATALOG.SCHEMA (DataAgent reads)
-      • CREATE MODEL on CATALOG.SCHEMA (log_agent registers a model)
+      • CREATE MODEL on CATALOG.SCHEMA (the Apps manifest registers a model version)
 
     Exits non-zero if any required permission appears to be missing.
     """

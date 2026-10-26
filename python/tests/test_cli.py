@@ -919,42 +919,6 @@ def test_info_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 # ---------------------------------------------------------------------------
 
 
-def _invoke_model_serving_deploy(
-    extra_args: list[str],
-    *,
-    log_agent: MagicMock | None = None,
-    publish: MagicMock | None = None,
-    set_tags: MagicMock | None = None,
-) -> Result:
-    """Invoke `agents deploy --target model-serving` with mocked sub-steps.
-
-    log_agent / publish / set_tags default to succeeding fakes.
-    """
-    if log_agent is None:
-        log_agent = MagicMock(return_value=SimpleNamespace(registered_model_version="1"))
-    if publish is None:
-        publish = MagicMock(return_value=[])
-    if set_tags is None:
-        set_tags = MagicMock(return_value={"apx.agent.name": "x"})
-
-    runner = CliRunner()
-    with patch("apx_agent.log_agent", log_agent), \
-         patch("apx_agent.publish_tools_to_uc", publish), \
-         patch("apx_agent.set_uc_tags_for_agent", set_tags), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(
-            main,
-            [
-                "agents", "deploy",
-                "--target", "model-serving",
-                "--module", "tmp_test_agent:agent",
-                "--model", "databricks-claude-sonnet-4-6",
-                "--name", "main.agents.x",
-                "--no-deploy",
-            ] + extra_args,
-        )
-    sys.modules.pop("tmp_test_agent", None)
-    return result
 
 
 
@@ -992,53 +956,6 @@ def _endpoint_state(ready: str, config_update: str) -> SimpleNamespace:
     )
 
 
-def _invoke_serving_deploy_with_gate(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    extra_args: list[str],
-    *,
-    ws: MagicMock,
-    deploy_mock: MagicMock | None = None,
-) -> Result:
-    """Invoke `agents deploy --target model-serving` WITHOUT --no-deploy.
-
-    ``databricks.agents`` (not installed in the test venv) is faked with a
-    deploy() returning an endpoint name (pass ``deploy_mock`` to inspect the
-    kwargs it received), and the SDK WorkspaceClient behind the health gate
-    is replaced with ``ws``.
-    """
-    import types as _types
-
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    if deploy_mock is None:
-        deploy_mock = MagicMock(
-            return_value=SimpleNamespace(endpoint_name="agents_main-agents-x"),
-        )
-    fake_agents = _types.ModuleType("databricks.agents")
-    fake_agents.deploy = deploy_mock  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "databricks.agents", fake_agents)
-
-    runner = CliRunner()
-    with patch(
-        "apx_agent.log_agent",
-        MagicMock(return_value=SimpleNamespace(registered_model_version="1")),
-    ), \
-         patch("apx_agent.set_uc_tags_for_agent",
-               MagicMock(return_value={"apx.agent.name": "x"})), \
-         patch("databricks.sdk.WorkspaceClient", return_value=ws), \
-         patch("mlflow.start_run"):
-        result = runner.invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--no-publish-tools",
-        ] + extra_args)
-    sys.modules.pop("tmp_test_agent", None)
-    return result
 
 
 
@@ -2272,15 +2189,8 @@ def test_memory_consolidate_requires_summarize_fn(
 # ---------------------------------------------------------------------------
 
 
-_ENV_KEY = "MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING"
 
 
-def _make_env_capturing_log_agent(captured: dict) -> MagicMock:
-    """Build a log_agent mock that snapshots os.environ at call time."""
-    def _capture(*args, **kwargs):  # noqa: ANN001 — match log_agent signature loosely
-        captured["mlflow_env"] = os.environ.get(_ENV_KEY)
-        return SimpleNamespace(registered_model_version="1")
-    return MagicMock(side_effect=_capture)
 
 
 
@@ -7548,28 +7458,6 @@ _PROVENANCE = {
 }
 
 
-def _invoke_provenance_deploy(monkeypatch, tmp_path, fake_client):
-    _write_agent_module(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        "apx_agent.cli._provenance_version_tags", lambda cwd: dict(_PROVENANCE),
-    )
-    fake_log_agent = MagicMock(
-        return_value=SimpleNamespace(registered_model_version="7")
-    )
-    with patch("apx_agent.log_agent", fake_log_agent), \
-         patch("mlflow.start_run"), \
-         patch("mlflow.tracking.MlflowClient", return_value=fake_client):
-        result = CliRunner().invoke(main, [
-            "agents", "deploy",
-            "--target", "model-serving",
-            "--module", "tmp_test_agent:agent",
-            "--model", "databricks-claude-sonnet-4-6",
-            "--name", "main.agents.x",
-            "--no-deploy", "--no-publish-tools", "--no-set-uc-tags",
-        ])
-    sys.modules.pop("tmp_test_agent", None)
-    return result
 
 
 

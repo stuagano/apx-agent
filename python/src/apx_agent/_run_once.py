@@ -1,7 +1,6 @@
 """run_once — invoke an agent in batch (no HTTP, no FastAPI lifecycle).
 
-The third deployment shape, complementing Model Serving (``log_agent`` +
-``databricks.agents.deploy``) and Apps hosting (``create_app``). Designed
+A batch shape, complementing Apps hosting (``create_app``). Designed
 for Databricks Job / cron / scheduled batch contexts where the agent
 needs to run once with a known prompt and return its final text — no
 incoming HTTP request, no serving endpoint, just compile + invoke.

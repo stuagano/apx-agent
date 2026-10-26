@@ -1,8 +1,6 @@
 """Hot-swap an Apps-target agent's LLM endpoint via bundle var re-deploy.
 
-The Model Serving hot-swap (``_hot_swap.py``) rewrites
-``environment_vars`` on a served entity. Apps has no equivalent — the
-container env is set at deploy time. The Apps analog re-deploys the
+The container env of an App is set at deploy time, so this re-deploys the
 bundle with a different ``--var llm_endpoint_name=NEW``, which
 restarts the App with the new env.
 

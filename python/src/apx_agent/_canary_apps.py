@@ -9,9 +9,6 @@ running alongside production at a separate URL. Promote / rollback
 re-deploy ``prod`` from one tree or another. Analyze partitions MLflow
 traces by App name across the lookback window.
 
-For the Model Serving canary (two served entities, one endpoint, real
-traffic split), see ``_canary.py``.
-
 Public surface:
 
   * ``deploy_canary_app`` — write a ``canary-<version>`` DAB target,

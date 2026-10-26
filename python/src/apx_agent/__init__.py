@@ -143,7 +143,7 @@ from ._executor_factory import create_executor
 from ._chat_agent import chat_agent_for, compile_to_chat_agent
 
 # Databricks Apps ResponsesAgent compile target (optional — same extras)
-from ._responses_agent import compile_to_responses_agent  # legacy model-serving target
+from ._responses_agent import compile_to_responses_agent  # the responses_agent runtime on Apps
 from ._runtime_targets import RuntimeRequirements, TargetCapability, TargetReport, compile_agent, inspect_target
 from ._durable_agent import compile_to_durable_agent_server
 

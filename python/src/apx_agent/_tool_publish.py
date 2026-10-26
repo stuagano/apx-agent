@@ -21,7 +21,7 @@ Grants go through the Databricks SDK's permissions API directly.
 
 Usage::
 
-    from apx_agent import Agent, log_agent, publish_tools_to_uc, tool
+    from apx_agent import Agent, publish_tools_to_uc, tool
 
     @tool(uc="main.agents.tools.classify_intent", grant=["agent_consumers"])
     def classify_intent(query: str) -> str:
@@ -31,7 +31,6 @@ Usage::
     agent = Agent(tools=[classify_intent], instructions="...")
 
     publish_tools_to_uc(agent)            # registers + grants
-    log_agent(agent, model="...", registered_model_name="main.agents.triage")
 """
 
 from __future__ import annotations
