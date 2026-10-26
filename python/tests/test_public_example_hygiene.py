@@ -1,47 +1,26 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
 
 _REPO = Path(__file__).resolve().parents[2]
-_PUBLIC_ROOTS = (
-    _REPO / "README.md",
-    _REPO / "docs",
-    _REPO / "python" / "examples",
-    _REPO / "python" / "src" / "apx_agent",
-)
-_TEXT_SUFFIXES = frozenset(
-    {
-        ".md",
-        ".py",
-        ".toml",
-        ".yaml",
-        ".yml",
-        ".json",
-        ".txt",
-        ".html",
-        ".css",
-        ".js",
-        ".ts",
-    }
-)
 _PRIVATE_CUSTOMER_TERMS = ("curinos",)
 
 
 def _public_text_files() -> list[Path]:
-    paths: list[Path] = []
-    for root in _PUBLIC_ROOTS:
-        if root.is_file():
-            paths.append(root)
-        elif root.is_dir():
-            paths.extend(
-                path
-                for path in root.rglob("*")
-                if path.is_file() and path.suffix in _TEXT_SUFFIXES
-            )
-    return sorted(paths)
+    # ponytail: every tracked file — the repo is public, so any path can leak.
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=_REPO, check=True, capture_output=True, text=True
+    ).stdout.splitlines()
+    this_file = Path(__file__).resolve()
+    return sorted(
+        path
+        for path in (_REPO / name for name in tracked)
+        if path.resolve() != this_file
+    )
 
 
 def _assert_no_private_terms(
