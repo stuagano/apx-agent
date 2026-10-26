@@ -31,7 +31,7 @@ _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _render_unified_shell(ctx: AgentContext | None) -> str:
+def _render_unified_shell(ctx: AgentContext | None, *, hidden_tabs: frozenset[str] = frozenset()) -> str:
     """Render the tabbed shell that hosts every /_apx/* page in one iframe.
 
     Each tab swaps the iframe src + updates the URL hash so bookmarks +
@@ -42,9 +42,10 @@ def _render_unified_shell(ctx: AgentContext | None) -> str:
     agent_name = ctx.config.name if ctx else "Agent"
     agent_desc = ctx.config.description if ctx else ""
 
+    tabs = [tab for tab in _UNIFIED_TABS if tab[0] not in hidden_tabs]
     tab_buttons = "".join(
         f'<button class="tab" data-tab="{slug}" data-src="{src}">{label}</button>'
-        for slug, label, src in _UNIFIED_TABS
+        for slug, label, src in tabs
     )
     default_slug = _UNIFIED_TABS[0][0]
     default_src = _UNIFIED_TABS[0][2]

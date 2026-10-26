@@ -5,10 +5,10 @@ Apps-hosted agents include built-in development tooling under the `/_apx/*` path
 Each surface is self-contained and styled to a shared dark theme; a fixed header
 (rendered by `_ui_nav.py`) lets you jump between them.
 
-Native hosts with declared `input_schema` or `output_schema` use the narrower
-[native workflow chat](../running/runtime-targets.md#choose-the-server-behavior-when-needed).
-They do not mount the developer surfaces listed below; their `/_apx/chat` page
-is opt-in on Apps with `APX_DEV_UI=1`.
+Native hosts with declared `input_schema` or `output_schema` use the
+[native workflow chat](../running/runtime-targets.md#choose-the-server-behavior-when-needed)
+as their Chat tab. On Apps their developer surfaces are opt-in with `APX_DEV_UI=1`;
+the free-text Eval actions and tab are not mounted on them.
 
 On a **deployed App**, chat/Discover/Probe/Topology work behind workspace SSO.
 Discover **and Setup** inventory GETs use the caller's OBO token and **fail
