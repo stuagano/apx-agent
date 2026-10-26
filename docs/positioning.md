@@ -217,6 +217,7 @@ What that unlocks across the rest of the Databricks agent ecosystem follows one 
 | AI Playground | serving endpoint name | ❌ |
 | Review App **chat UI** (live interactive testing) | serving endpoint name | ❌ |
 | Mosaic AI Supervisor routing by endpoint name | serving endpoint name | ❌ |
+| Mosaic AI Supervisor routing to an App (`apx-agent supervisor add --app`) | App | ✅ |
 
 Evaluation, trace monitoring, and human trace-review (via labeling sessions) work
 unchanged. On Apps the supported substitute for live, chat-driven review is a

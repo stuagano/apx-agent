@@ -199,9 +199,15 @@ def _user_docs() -> list[Path]:
 
 def test_user_docs_do_not_offer_model_serving_hosting() -> None:
     hosting = re.compile(r"--target model-serving|deploy (?:it |the agent |agents? )?to (?:Mosaic AI )?Model Serving"
-                         r"|apps-vs-model-serving|agents cost\b|apx-agent endpoints\b", re.I)
-    hits = sorted(str(p.relative_to(_REPO)) for p in _user_docs()
-                  if hosting.search(p.read_text()) and "Model Serving was removed" not in p.read_text())
+                         r"|apps-vs-model-serving|agents cost\b|apx-agent endpoints\b|Apps (?:or|vs\.?) Model Serving"
+                         r"|agents logs --endpoint", re.I)
+    # Only the migration note may name the removed target, and only in its own section.
+    def _text(p: Path) -> str:
+        text = p.read_text()
+        if p == _REPO / "docs" / "get-started" / "migration.md":
+            text = re.sub(r"(?ms)^#+ Model Serving was removed.*?(?=^#+ |\Z)", "", text)
+        return text
+    hits = sorted(str(p.relative_to(_REPO)) for p in _user_docs() if hosting.search(_text(p)))
     assert hits == [], f"{len(hits)}: " + ", ".join(hits)
 
 

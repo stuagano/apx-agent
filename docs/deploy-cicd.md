@@ -93,4 +93,4 @@ name, `deployed_at`, and a capped `_audit` trail. Read it with
 
 - [Upgrade apx-agent](upgrade.md) — bump pins safely (mismatch hard-fails deploy)
 - [CI smoke test](ci-smoke-test.md) — framework-repo Apps e2e (not consumer CI)
-- [Deployment](deployment.md) — Apps vs Model Serving
+- [Deployment](deploy/overview.md) — deploying to Databricks Apps

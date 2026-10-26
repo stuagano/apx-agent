@@ -53,7 +53,8 @@ from databricks.sdk import WorkspaceClient
 
 ws = WorkspaceClient()
 
-# One-time at deploy: write metadata as UC tags on the registered model
+# `apx-agent agents deploy` registers the UC model (--register-uc / --uc-name) and tags it;
+# call this to re-write the metadata tags on that registered model.
 set_uc_tags_for_agent(
     agent,
     registered_model_name="main.agents.customer_triage",

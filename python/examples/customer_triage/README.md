@@ -63,6 +63,14 @@ curl -X POST https://customer-triage-<workspace-id>.<region>.databricksapps.com/
   -H "Authorization: Bearer $(databricks auth token --profile <p> | jq -r .access_token)" \
   -H "Content-Type: application/json" \
   -d '{"input":[{"role":"user","content":"why is my bill so high?"}]}'
+
+# Register as a Supervisor sub-agent (optional)
+apx-agent agents advertise --endpoint customer-triage --endpoint-type apps \
+  --description "Routes customer support queries to specialists."
+apx-agent supervisor add --supervisor sa-12345 --app customer-triage
+
+# Generate Claude Desktop / Cursor MCP config (optional)
+apx-agent uc mcp-config --module agent:agent --host "$DATABRICKS_HOST" --name triage
 ```
 
 `apx-agent agents deploy --target apps` is the complete pipeline — builds the

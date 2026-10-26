@@ -59,7 +59,8 @@ Then validate the deployment plan locally:
 apx-agent agents deploy --target apps --dry-run
 ```
 
-If you need to swap the model on a deployed agent without redeploying, use `apx-agent agents hot-swap --llm-endpoint` — see `python/src/apx_agent/cli.py` for the command.
+For a Bundle (`responses_agent`) project you can also swap the model without editing code: `apx-agent agents hot-swap --llm-endpoint <endpoint>` re-deploys with a new `llm_endpoint_name` bundle variable. Native (`durable_agent_server`) projects change `model=` on the agent and redeploy.
+
 ### Which App am I deploying?
 
 `apx-agent agents deploy --target apps --profile <profile>` deploys an App.
@@ -126,8 +127,11 @@ MLFLOW_TRACKING_URI=databricks apx-agent traces export --experiment /Users/you@d
 
 ## 4. Cleaning up after a failed deploy
 
+A failed **redeploy** of a running agent needs no cleanup: read `apx-agent agents logs --app <app-name> --profile <profile>`, fix the cause, and deploy again. Don't run `agents delete` here — it removes the live App and the whole UC registered model (every version, which `canary rollback --to-version` relies on).
+
+Only for an abandoned **first** deploy, remove everything it created:
+
 ```bash
-# Delete the App and its UC version-ledger model (--uc-name is required).
 apx-agent agents delete --uc-name <catalog.schema.model> --app <app-name> --profile <profile>
 ```
 

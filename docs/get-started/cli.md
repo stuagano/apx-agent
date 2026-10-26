@@ -34,6 +34,7 @@ apx-agent agents list                       # discover deployed apx-agents via U
 apx-agent traces export --table main.agents.traces --hours 24    # MLflow traces → Delta
 apx-agent uc topology --format mermaid > topology.mmd            # multi-agent graph
 apx-agent eval chain evalset.jsonl --model X --experiment /Users/me/...  # per-prompt sub-agent coverage
+# hot-swap and canary work on Bundle (responses_agent) projects, which carry a databricks.yml
 apx-agent agents hot-swap --target apps --llm-endpoint databricks-claude-opus-4-7 --profile prod  # change the LLM endpoint of a deployed App
 apx-agent canary deploy --target apps --canary-version v42 --profile prod   # second App as a canary
 apx-agent canary analyze --target apps --canary-version v42 --hours 24    # per-version requests / errors / latency

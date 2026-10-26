@@ -2,7 +2,7 @@
 
 ## Hub
 
-A lightweight registry for Apps-deployed agents. Agents self-register on startup. Provides a browseable index and powers cross-agent discovery in Apps deployments. UC + Mosaic AI's agent registry serves the same role for Model Serving deployments.
+A lightweight registry for Apps-deployed agents. Agents self-register on startup. Provides a browseable index and powers cross-agent discovery in Apps deployments.
 
 ```python
 # python/agent.py

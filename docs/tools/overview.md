@@ -252,7 +252,7 @@ DatabricksGenieSpace("abc123")                              # from genie_tool(..
 DatabricksFunction("main.tools.classify_intent")            # from uc_function_tool(...)
 ```
 
-The platform enforces that the agent can only access the declared resources. For resources the framework can't infer automatically (a specific SQL warehouse, a UC table accessed from a raw SQL string), declare them on the tool with `attach_resources(tool, [ResourceSpec("sql_warehouse", "wh-prod")])`.
+The declared resources become the App's resources and OAuth scopes at deploy, so the App is granted exactly those. For resources the framework can't infer automatically (a specific SQL warehouse, a UC table accessed from a raw SQL string), declare them on the tool with `attach_resources(tool, [ResourceSpec("sql_warehouse", "wh-prod")])`.
 
 ---
 
