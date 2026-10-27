@@ -3802,21 +3802,19 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def hub_fleet_view(
         request: Request,
     ) -> Any:
-        """List all agents from the UC registry under the caller's OBO.
+        """List all agents from the UC registry, read as the App principal.
 
-        Requires caller OBO identity; fails closed (401) on a deployed App
-        without OBO. AuthZ is the caller's UC grants on the registry table
-        (SELECT privilege required).
+        Requires a signed-in caller; fails closed (401) on a deployed App
+        without OBO. The query itself runs as the App SP: deploy grants the
+        registry to ``account users`` and every App SP, so this shows nothing
+        a caller couldn't read, and the caller's token needs no ``sql`` scope.
         """
         from ._defaults import _ws_prefer_obo
         from ._publish import list_registry_agents
 
-        # Resolve identity via _ws_prefer_obo (fails closed → 401 on deployed App without OBO)
-        ws = _ws_prefer_obo(request)
+        _ws_prefer_obo(request)  # signed-in gate: 401 on a deployed App without OBO
+        ws = request.app.state.workspace_client
 
-        # List agents from the registry using the caller's OBO credentials.
-        # The SQL execution uses the caller's UC grants, so authorization is
-        # naturally enforced (SELECT failure for a user without grants).
         # Off the loop: a cold warehouse can take minutes, and blocking here
         # stalls every other request the App is serving.
         import asyncio as _asyncio

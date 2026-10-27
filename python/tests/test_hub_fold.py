@@ -291,8 +291,8 @@ def test_allowlist_shared_helper_rejects_evil_hosts():
         assert _is_trusted_agent_host(host.lower()), f"Wire check should accept {host}"
 
 
-def test_hub_fleet_lists_from_registry_under_obo(dev_ui_app, monkeypatch):
-    """Verify fleet route lists agents from registry under caller OBO."""
+def test_hub_fleet_lists_from_registry(dev_ui_app, monkeypatch):
+    """Verify fleet route lists agents from the registry."""
     monkeypatch.setenv("APX_REGISTRY_TABLE", "main.apx.agent_registry")
     import apx_agent._sql as sql
     from starlette.testclient import TestClient
@@ -394,6 +394,23 @@ def test_hub_fleet_fails_closed_without_obo(dev_ui_app, monkeypatch):
     c = TestClient(dev_ui_app)
     r = c.get("/_apx/hub/fleet")  # no OBO headers
     assert r.status_code == 401, f"Should fail closed (401), got {r.status_code}: {r.text}"
+
+
+def test_hub_fleet_reads_as_the_app_principal(dev_ui_app, monkeypatch):
+    """The registry is readable by every account user, so the App SP reads it:
+    the caller's OBO token need not carry the ``sql`` scope. Still signed-in only."""
+    monkeypatch.setenv("APX_REGISTRY_TABLE", "c.apx.agent_registry")
+    import apx_agent._sql as sql
+    from starlette.testclient import TestClient
+
+    seen: list[int] = []
+    monkeypatch.setattr(sql, "run_sql", lambda ws, q, **k: seen.append(id(ws)) or [])
+    r = TestClient(dev_ui_app).get(
+        "/_apx/hub/fleet",
+        headers={"X-Forwarded-Access-Token": "tok", "X-Forwarded-User": "a@x.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert seen == [id(dev_ui_app.state.workspace_client)]
 
 
 def test_hub_xss_escaping_in_rendered_page():
