@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import click
 import pytest
 
+from apx_agent import cli
 from apx_agent._registry import (
     RegistryStepError,
     RegistryTables,
@@ -12,6 +14,9 @@ from apx_agent._registry import (
     registry_grant_sql,
     resolve_registry_tables,
 )
+
+# Captured before conftest's autouse fixture swaps it for a no-op.
+_REAL_DEPLOY_STEP = cli._deploy_registry_step
 
 
 def _ws_with_catalog(monkeypatch: pytest.MonkeyPatch, catalog: str | None) -> MagicMock:
@@ -135,3 +140,56 @@ def test_malformed_sp_id_is_rejected_before_any_sql(monkeypatch):
     with pytest.raises(ValueError, match="service principal"):
         provision_registry(ws, tables=RegistryTables("c.apx.agent_registry", "c.apx.agent_tools"), sp_client_id="x`y")
     assert ran == []
+
+
+def test_record_in_registry_provisions_then_writes_row_and_tools(monkeypatch):
+    order: list[tuple[str, ...]] = []
+    monkeypatch.setattr("apx_agent._registry.provision_registry",
+                        lambda ws, **k: order.append(("provision", k["sp_client_id"])))
+    monkeypatch.setattr("apx_agent.publish_to_registry",
+                        lambda **k: order.append(("row", k["registry_table"])) or "agent_x")
+    monkeypatch.setattr("apx_agent._publish.publish_tools_to_registry",
+                        lambda **k: order.append(("tools", k["agent_id"], k["tools_table"])) or 2)
+    monkeypatch.setattr(cli, "_load_finalized_agent", lambda module: MagicMock())
+    monkeypatch.setattr("apx_agent._resources._iter_tool_fns", lambda agent: [len, max])
+    n = cli._record_in_registry(
+        ws=MagicMock(), tables=RegistryTables("c.apx.agent_registry", "c.apx.agent_tools"),
+        name="proof", display_name="proof", description="d", endpoint_url="https://proof",
+        sp_client_id="sp-1", module="agent:agent", supervisor_agent_id=None, log=lambda m: None,
+    )
+    assert n == 2
+    assert order == [("provision", "sp-1"), ("row", "c.apx.agent_registry"),
+                     ("tools", "agent_x", "c.apx.agent_tools")]
+
+
+def test_record_in_registry_wraps_row_failure(monkeypatch):
+    monkeypatch.setattr("apx_agent._registry.provision_registry", lambda ws, **k: None)
+
+    def boom(**k):
+        raise PermissionError("not the owner")
+
+    monkeypatch.setattr("apx_agent.publish_to_registry", boom)
+    with pytest.raises(RegistryStepError) as exc:
+        cli._record_in_registry(
+            ws=MagicMock(), tables=RegistryTables("c.apx.agent_registry", "c.apx.agent_tools"),
+            name="proof", display_name="proof", description="d", endpoint_url=None,
+            sp_client_id=None, module=None, supervisor_agent_id=None, log=lambda m: None,
+        )
+    assert exc.value.step == "write the agent's row"
+    assert "not the owner" in str(exc.value)
+
+
+def test_deploy_registry_step_failure_exits_with_still_live(monkeypatch):
+    monkeypatch.setattr(cli, "_connect_workspace", lambda profile: (MagicMock(), MagicMock(host="https://h")))
+
+    def fail(**k):
+        raise RegistryStepError(step="grant the App's service principal", table="c.apx.agent_registry",
+                                cause=RuntimeError("PERMISSION_DENIED"), fix="ask its owner to run: GRANT ...")
+
+    monkeypatch.setattr(cli, "_record_in_registry", fail)
+    monkeypatch.setattr(cli, "_read_apx_agent_config", lambda: {"description": "d"})
+    with pytest.raises(click.ClickException) as exc:
+        _REAL_DEPLOY_STEP(profile="p", app_name="proof", app_url="https://proof",
+                          tables=RegistryTables("c.apx.agent_registry", "c.apx.agent_tools"),
+                          module="agent:agent", log=lambda m: None)
+    assert "STILL LIVE" in exc.value.message and "ask its owner to run" in exc.value.message

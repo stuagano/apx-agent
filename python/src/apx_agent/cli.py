@@ -11051,6 +11051,75 @@ def _cli_registry_tables(
         raise click.ClickException(str(exc)) from exc
 
 
+def _record_in_registry(
+    *, ws: "WorkspaceClient", tables: "RegistryTables", name: str, display_name: str,
+    description: str, endpoint_url: str | None, sp_client_id: str | None, module: str | None,
+    supervisor_agent_id: str | None, log: Callable[[str], None],
+) -> int:
+    """Provision the registry, upsert this agent's row, snapshot its tools."""
+    import apx_agent
+    from . import _publish, _registry, _resources
+
+    _registry.provision_registry(ws, tables=tables, sp_client_id=sp_client_id)
+    try:
+        agent_id = apx_agent.publish_to_registry(
+            name=name, description=description, display_name=display_name,
+            endpoint_url=endpoint_url, endpoint_type="apps",
+            supervisor_agent_id=supervisor_agent_id, registry_table=tables.agents, ws=ws,
+        )
+    except Exception as e:
+        raise _registry.RegistryStepError(
+            step="write the agent's row", table=tables.agents, cause=e,
+            fix=("a row for this agent was published by another principal; redeploy as that "
+                 "principal or remove the row with `apx-agent agents delete`"),
+        ) from e
+    log(f"  registry: {name} recorded in {tables.agents}")
+    if module is None:
+        return 0
+    try:
+        tool_fns = list(_resources._iter_tool_fns(_load_finalized_agent(module)))
+        written = _publish.publish_tools_to_registry(
+            agent_id=agent_id, agent_name=name, tool_fns=tool_fns, tools_table=tables.tools, ws=ws,
+        )
+    except Exception as e:
+        raise _registry.RegistryStepError(
+            step="write the agent's tools", table=tables.tools, cause=e,
+            fix=f"check MODIFY on {tables.tools} for the deployer",
+        ) from e
+    log(f"  registry: {written} tool(s) recorded in {tables.tools}")
+    return written
+
+
+def _resolve_deploy_registry(profile: str | None, cfg: dict[str, Any]) -> "RegistryTables":
+    """Resolve before deploy so the location can ride into the App env."""
+    ws, _ = _connect_workspace(profile)
+    return _cli_registry_tables(ws, cfg, None, None)
+
+
+def _deploy_registry_step(
+    *, profile: str | None, app_name: str, app_url: str | None, tables: "RegistryTables",
+    module: str, log: Callable[[str], None],
+) -> None:
+    """Deploy contract: the live App must be recorded in the registry."""
+    from ._registry import RegistryStepError
+
+    ws, _ = _connect_workspace(profile)
+    cfg = _read_apx_agent_config()
+    sp_client_id = ws.apps.get(app_name).service_principal_client_id
+    try:
+        _record_in_registry(
+            ws=ws, tables=tables, name=app_name, display_name=cfg.get("name") or app_name,
+            description=cfg.get("description") or app_name, endpoint_url=app_url,
+            sp_client_id=sp_client_id, module=module,
+            supervisor_agent_id=cfg.get("supervisor_id"), log=log,
+        )
+    except RegistryStepError as exc:
+        raise click.ClickException(
+            f"the app is STILL LIVE but is not recorded in the agent registry:\n  app: {app_name}\n  {exc}\n"
+            "Re-run the deploy after the fix, or pass --no-registry to skip."
+        ) from exc
+
+
 def _do_advertise(
     *, endpoint: str | None, display_name: str | None, description: str | None,
     endpoint_url: str | None, endpoint_type: str, registry_table: str | None,
@@ -11104,6 +11173,18 @@ def _do_advertise(
 
     if not no_registry:
         try:
+            from databricks.sdk.errors import NotFound
+
+            from . import _registry
+
+            try:
+                sp_client_id = (
+                    ws.apps.get(endpoint).service_principal_client_id
+                    if endpoint_type == "apps" else None
+                )
+            except NotFound:
+                sp_client_id = None
+            _registry.provision_registry(ws, tables=tables, sp_client_id=sp_client_id)
             publish_to_registry(
                 name=endpoint, description=description,
                 display_name=display_name or endpoint, endpoint_url=endpoint_url,
