@@ -152,6 +152,13 @@ uv run apx-agent agents deploy --target apps
 
 `deploy` bundles the current project and creates a Databricks App. It prints the URL when done. A hand-authored YAML spec can still be deployed by passing its path to `agents deploy`.
 
+**Deploying into an App Space (scale-to-zero)** is two steps, because the space is a governance boundary owned by a workspace admin, and APX never creates one or widens its grants:
+
+1. **An admin creates the App Space.** A workspace admin enables the *Governed agentic app-building* preview, then creates the space. The space owns who can create and share apps, the user API scopes apps get, and the service resources they can reach. Many agents can share one space.
+2. **You deploy into it.** Declare `space = "<name>"` under `[tool.apx.deploy]` and run `agents deploy`. APX checks the space's scopes and resources against what your tools need and names anything missing. It then creates the app in the space, deploys the source, and verifies the app landed on `LIQUID`, the serverless compute that scales to zero. The app inherits its permissions from the space, so a space declaration cannot set `compute_size`/`instances`, `user_api_scopes`, `resources`, or `permissions`.
+
+Running `databricks apps create --space` by itself only makes an empty app that never launches. `agents deploy` also runs the source deployment. See [docs/deploy/agentbricks-platform.md](docs/deploy/agentbricks-platform.md).
+
 **4. Run locally**
 
 ```bash
