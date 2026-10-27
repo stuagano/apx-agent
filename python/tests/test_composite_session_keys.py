@@ -386,7 +386,7 @@ def test_a_halting_step_can_name_its_human_message(monkeypatch):
         {"messages": [HumanMessage(content="price the savings product")]})
     assert seen == [] and result["state"]["intake"]["question"] == "Which window?"
     last = result["messages"][-1]
-    assert last.content == "Which window?" and last.additional_kwargs["apx_halt_message"] is True
+    assert last.content == "Which window?" and last.additional_kwargs["apx_answer"] is True
 
 
 def test_a_non_halting_step_adds_no_message(monkeypatch):
@@ -400,7 +400,7 @@ def test_a_non_halting_step_adds_no_message(monkeypatch):
     result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke(
         {"messages": [HumanMessage(content="price the savings product")]})
     assert len(seen) == 1 and result["messages"][-1].content == "done"
-    assert not any(m.additional_kwargs.get("apx_halt_message") for m in result["messages"])
+    assert not any(m.additional_kwargs.get("apx_answer") for m in result["messages"])
 
 
 @pytest.mark.parametrize("path", [("",), ("a-b",), (), "question"])
@@ -422,7 +422,7 @@ def test_a_halting_last_step_still_names_its_message(monkeypatch):
     seq = SequentialAgent([Agent(name="first"), _messaged_intake()], name="pipeline", halt_statuses=("needs_input",))
     result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="go")]})
     assert result["messages"][-1].content == "Which window?"
-    assert result["messages"][-1].additional_kwargs["apx_halt_message"] is True
+    assert result["messages"][-1].additional_kwargs["apx_answer"] is True
 
 
 def test_the_halt_message_keeps_the_steps_typed_output(monkeypatch):
@@ -439,9 +439,25 @@ def test_the_halt_message_keeps_the_steps_typed_output(monkeypatch):
     assert output_data_parts(halted["messages"]) == output_data_parts(plain["messages"])
 
 
-def test_output_message_path_needs_a_status_to_halt_on():
-    with pytest.raises(ValueError, match="output_message_path requires output_status_path"):
-        Agent(name="intake", output_schema=Intake, output_key="intake", output_message_path=("question",))
+class Summary(BaseModel):
+    text: str
+
+
+def test_a_finishing_last_step_names_the_answer(monkeypatch):
+    # The last step's declared message is the answer a person reads, not every step's JSON.
+    _model(monkeypatch, [AIMessage(content="first done"), AIMessage(content='{"text": "Hold at 4.80%."}')])
+    seq = SequentialAgent([Agent(name="first"), Agent(name="summary", output_schema=Summary, output_key="summary",
+                                                      output_message_path=("text",))], name="pipeline")
+    result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="go")]})
+    assert result["messages"][-1].content == "Hold at 4.80%."
+    assert result["messages"][-1].additional_kwargs["apx_answer"] is True
+
+
+def test_a_message_path_that_is_never_shown_is_refused():
+    seq = SequentialAgent([Agent(name="summary", output_schema=Summary, output_key="summary", output_message_path=("text",)),
+                           Agent(name="after")], name="pipeline")
+    with pytest.raises(ValueError, match="output_message_path"):
+        compile_to_langgraph(seq, ws=MagicMock(), model="fake")
 
 
 def test_an_empty_question_adds_no_halt_message(monkeypatch):
@@ -449,4 +465,4 @@ def test_an_empty_question_adds_no_halt_message(monkeypatch):
     seq = SequentialAgent([_messaged_intake(), Agent(name="downstream")], name="pipeline",
                           halt_statuses=("needs_input",))
     result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="go")]})
-    assert not any(m.additional_kwargs.get("apx_halt_message") for m in result["messages"])
+    assert not any(m.additional_kwargs.get("apx_answer") for m in result["messages"])

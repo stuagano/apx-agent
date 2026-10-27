@@ -47,7 +47,7 @@ SequentialAgent(
   is the final answer, and no later step runs. A halt is a normal completed turn,
   not an escalation. If the step also declares `output_message_path` (for example
   `("question",)`), the sequence ends with that field's text as a plain assistant
-  message, marked `apx_halt_message`. The native chat page shows only that text;
+  message, marked `apx_answer`. The native chat page shows only that text;
   the step's exact JSON stays in its recorded output.
 
 ## Behaviour

@@ -118,10 +118,19 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     const card = document.createElement('article');
     card.className = 'native-execution-card';
     const safe = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : 'unavailable';
+    // One readable line per step; the full provenance record stays under Details.
+    const head = document.createElement('div');
+    head.className = 'native-step-summary';
+    card.appendChild(head);
+    const record = document.createElement('details');
+    const recordLabel = document.createElement('summary');
+    recordLabel.textContent = 'Details';
+    record.appendChild(recordLabel);
+    card.appendChild(record);
     const line = (label, value) => {
       const row = document.createElement('div');
       row.textContent = label + ': ' + value;
-      card.appendChild(row);
+      record.appendChild(row);
     };
     const link = (label, value, remoteUrl = null) => {
       const row = document.createElement('div');
@@ -138,16 +147,19 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
                 url.pathname.endsWith('/api/invocations/' + encodeURIComponent(value))) href = url.href;
           } catch (_) {}
         }
-        if (!href) { row.append(value + ' (record link unavailable)'); card.appendChild(row); return; }
+        if (!href) { row.append(value + ' (record link unavailable)'); record.appendChild(row); return; }
         const a = document.createElement('a');
         a.href = href;
         a.textContent = value;
         row.appendChild(a);
       }
-      card.appendChild(row);
+      record.appendChild(row);
     };
     const unknown = event.type === 'agent.child.unknown';
     const correlation = unknown ? event.correlation || {} : event;
+    const transport = safe(event.transport_status), domain = safe(event.domain_status);
+    head.textContent = [(transport === 'completed' && !unknown ? '✓ ' : '? ') + safe(event.step),
+      ...(domain === 'unavailable' ? [] : [domain.replaceAll('_', ' ')]), unknown ? 'remote' : safe(event.location)].join(' · ');
     line('Step', safe(event.step));
     line('Location', unknown ? 'remote' : safe(event.location));
     line('Transport', safe(event.transport_status));
@@ -256,8 +268,8 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
         status.textContent = 'Interrupted: approval required' + (state.output.approval_required?.tool_name ? ' for ' + state.output.approval_required.tool_name : '');
       } else if (state.status === 'completed' && state.output?.status === 'completed') {
         const messages = state.output.messages || [];
-        // A halted sequence's declared human message (e.g. a follow-up question) is the whole answer.
-        const halt = messages.filter(m => m.type === 'ai' && m.additional_kwargs?.apx_halt_message === true);
+        // A sequence's declared answer (a follow-up question or a summary) is the whole answer.
+        const halt = messages.filter(m => m.type === 'ai' && m.additional_kwargs?.apx_answer === true);
         const text = (halt.length ? halt : messages.filter(m => m.type === 'ai')).map(m =>
           typeof m.content === 'string' ? m.content : (m.content || []).filter(p => p.type === 'text').map(p => p.text).join('')
         ).filter(Boolean).join('\n');
