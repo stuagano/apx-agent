@@ -97,7 +97,8 @@ def get_warehouse_id(ws: WorkspaceClient, *, prefer_serverless: bool = True) -> 
     for wh in ws.warehouses.list():
         if not wh.id:
             continue
-        if prefer_serverless and wh.warehouse_type and "serverless" in str(wh.warehouse_type).lower():
+        # Serverless is a flag on a PRO warehouse; warehouse_type is only CLASSIC/PRO.
+        if prefer_serverless and wh.enable_serverless_compute:
             return wh.id
         if fallback is None:
             fallback = wh.id
