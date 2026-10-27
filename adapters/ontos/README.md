@@ -1,184 +1,243 @@
-# Governance — Ontos Adapter
+# Ontos Governance Adapter
 
-A pluggable governance UI module that connects a Databricks governance scan engine
-to [Ontos](https://github.com/databrickslabs/ontos) (Databricks Labs
-governance platform). Think of it as the **Grafana data source plugin**
-for Governance's **Prometheus-like** scan engine.
+`apx-ontos-governance` puts governance scan results (violations, policies,
+exceptions, grants, remediation proposals) inside
+[Ontos](https://github.com/databrickslabs/ontos), the Databricks Labs data
+governance platform, and annotates Unity Catalog assets in Ontos with the
+ontology classes the scan engine assigned them.
 
-This adapter lives in the [apx-agent](https://github.com/stuagano/apx-agent)
-monorepo under `adapters/ontos/` and targets **vanilla** `databrickslabs/ontos`
-as the host platform — no Ontos fork or patches required, just the three-line
-registration below. It is distributed from source (path or git install); it is
-not published to PyPI.
+It is a self-contained package in the apx-agent monorepo. apx-agent core does
+not import it, and it is not published to PyPI — install it from source.
 
-## Architecture
+## Why it exists
+
+The governance scan engine (in the companion governance-monitoring repo, not
+here) finds problems: untagged tables, over-broad grants, failing data-quality
+checks. Data stewards already work in Ontos. This adapter is the bridge, so
+findings show up where stewards act on them instead of in a separate tool.
+
+The only coupling between engine and UI is a set of **Delta tables**. The
+engine writes them; the adapter reads them (and writes back steward decisions).
+Either side can be redeployed without the other, as long as the table shapes
+hold.
+
+## How it works
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Ontos (Platform)                                             │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────────┐│
-│  │  Governance Plugin Contract (REST API)                    ││
-│  │  /api/governance/violations, /policies, /exceptions, ...  ││
-│  └──────────────────────────────────────────────────────────┘│
-│            ▲                                                  │
-│            │  React views consume this API                    │
-│  ┌─────────┴────────────────────────────────────────────────┐│
-│  │  Frontend: 4 pages (Dashboard, ResourceDetail,           ││
-│  │            Policies, Exceptions)                          ││
-│  └──────────────────────────────────────────────────────────┘│
-└──────────────────────────────────────────────────────────────┘
-         ▲
-         │  implements
-         │
-┌────────┴─────────────────────────────────────────────────────┐
-│  apx-ontos-governance package (this adapter)                │
-│                                                               │
-│  GovernanceProvider protocol → GovernanceProvider (Delta SQL)    │
-│  Thin FastAPI routers → dependency-injected provider           │
-└──────────────────────────────────────────────────────────────┘
-         ▲
-         │  reads/writes
-         │
-┌────────┴─────────────────────────────────────────────────────┐
-│  platform.governance.* Delta tables                             │
-│  (written by the Governance Monitoring scan engine)                        │
-└──────────────────────────────────────────────────────────────┘
+scan engine (companion repo)
+   │ writes
+   ▼
+<catalog>.<schema>.* Delta tables          ← the integration contract
+   │ SQL via databricks-sql-connector
+   ▼
+GovernanceProvider   (providers/governance.py)
+   │ FastAPI dependency override
+   ▼
+/api/governance/* routers  ──►  React views inside the Ontos frontend
+
+ontos_sync.py:  resource_classifications ──POST──►  Ontos /api/semantic-links/
 ```
 
-**Key design principle:** The Delta tables are the integration contract.
-The adapter reads them; the engine writes them. They deploy independently.
+There are three moving parts.
 
-## Quick Start
+### 1. The provider — reads and writes Delta
 
-### Integrate with Ontos (3 lines)
+`GovernanceProvider` runs SQL on a SQL warehouse against
+`<GOVERNANCE_CATALOG>.<GOVERNANCE_SCHEMA>` (default `platform.governance`).
 
-**Backend** — in Ontos `app.py`:
+| Table | Adapter access | Used for |
+|-------|----------------|----------|
+| `violations`, `scan_results` | read | violation summary/list, scan history |
+| `resource_inventory` | read | resources, grants |
+| `resource_classifications` | read | resource detail; source for Ontos sync |
+| `dq_status` | read | per-resource data-quality metrics |
+| `policies`, `policies_history` | read + write | policy list, create/edit, history |
+| `exceptions` | read + write | approve / revoke / bulk-revoke-expired |
+| `remediation_proposals`, `remediation_reviews` | read + write | review inbox |
+| `v_remediation_funnel`, `v_agent_effectiveness`, `v_reviewer_load` | read | remediation dashboard |
+
+Policies with `origin = 'yaml'` are owned by the engine's policy YAML in git:
+the API refuses to edit them. Change those in git and redeploy the engine, or
+create a user policy instead.
+
+The ontology (class hierarchy) is **not** in Delta. It is loaded from
+`resource_classes.yml` in `GOVERNANCE_ONTOLOGY_DIR` — the same file the engine
+classifies with. `POST /api/governance/ontology/validate` flags derived classes
+with no classifier, missing parents, and cycles.
+
+Any backend can replace the default by implementing the `GovernanceProvider`
+protocol in `provider.py` and passing it to `register_routes(app, provider=...)`.
+
+### 2. The routers — the REST contract the UI consumes
+
+`register_routes(app)` mounts six thin routers under `/api/governance`:
+violations (plus scans and resources), policies, exceptions, grants, ontology,
+and remediation, plus `GET /api/governance/health`. All logic lives in the
+provider. Writes are attributed to the `x-forwarded-user` header, which the
+Databricks Apps proxy sets for the signed-in user (`unknown` outside Apps).
+
+### 3. The sync — classifications into Ontos
+
+`ontos_sync.sync_classifications_to_ontos()` is a one-way push:
+
+1. Take the latest `scan_id` in `resource_classifications`.
+2. Keep only UC resources (`table`, `schema`, `catalog` → Ontos `uc_table`,
+   `uc_schema`, `uc_catalog`). Jobs, clusters, warehouses etc. are skipped —
+   Catalog Commander only shows UC assets.
+3. POST one semantic link per `(resource_id, class_name)` to
+   `<ontos_url>/api/semantic-links/`, with IRI `<base_iri><class_name>`.
+
+The result is ontology-class annotations on UC assets in Ontos Catalog
+Commander. Links that already exist (409, or 400 "already exists") count as
+`skipped`, so re-running is safe. It only adds links: a class that a resource
+lost in a later scan is **not** removed from Ontos.
+
+## Setup
+
+### Prerequisites
+
+- The scan engine deployed and writing the tables above to a UC schema.
+- An Ontos instance (a Databricks App) you can redeploy.
+- A SQL warehouse, and a principal that can `SELECT` the governance schema
+  (and `MODIFY` on `policies`, `policies_history`, `exceptions`,
+  `remediation_proposals`, `remediation_reviews` for the write paths).
+- A copy of the engine's `resource_classes.yml`.
+
+### 1. Install the backend into Ontos
+
+```bash
+# from a local apx-agent checkout
+pip install -e "adapters/ontos[governance]"
+
+# or from git
+pip install "apx-ontos-governance[governance] @ git+https://github.com/stuagano/apx-agent.git#subdirectory=adapters/ontos"
+```
+
+Then in Ontos `app.py`:
 
 ```python
 from ontos_governance import register_routes as register_governance
 register_governance(app)
 ```
 
-**Frontend** — copy `frontend/src/` into Ontos fork, then:
-
-```typescript
-// config/features.ts
-import { governanceFeatures } from './features.governance'
-export const features = [...existingFeatures, ...governanceFeatures]
-
-// app.tsx — inside /governance route children
-import governanceRoutes from './routes.governance'
-children: [...existingGovernanceChildren, ...governanceRoutes]
-```
-
-### Install (from source)
-
-```bash
-# path install from a local apx-agent checkout
-pip install -e "adapters/ontos[governance,dev]"
-
-# or straight from git
-pip install "apx-ontos-governance[governance] @ git+https://github.com/stuagano/apx-agent.git#subdirectory=adapters/ontos"
-```
-
-### Standalone mode (development)
-
-```bash
-cd adapters/ontos
-pip install -e ".[governance,dev]"
-
-export DATABRICKS_HOST=https://adb-xxx.azuredatabricks.net
-export DATABRICKS_WAREHOUSE_HTTP_PATH=/sql/1.0/warehouses/xxx
-export DATABRICKS_TOKEN=dapi...
-export GOVERNANCE_ONTOLOGY_DIR=../engine/ontologies
-
-uvicorn ontos_governance.app:app --reload
-```
-
-## GovernanceProvider Protocol
-
-Any governance backend can implement this protocol. The default
-`GovernanceProvider` reads from Delta tables.
-
-| Domain | Methods |
-|--------|---------|
-| **Violations** | `violations_summary()`, `list_violations(filters)` |
-| **Scans** | `list_scans(limit)`, `get_scan(scan_id)` |
-| **Resources** | `list_resources(filters)`, `get_resource(resource_id)` |
-| **Policies** | `list_policies(filters)`, `get_policy(id)`, `create_policy(...)`, `update_policy(...)`, `policy_history(id)` |
-| **Exceptions** | `list_exceptions(filters)`, `exceptions_summary()`, `approve_exceptions(...)`, `revoke_exception(id)`, `bulk_revoke_expired()` |
-| **Ontology** | `list_ontology_classes(kind)`, `get_ontology_class(name)`, `ontology_tree()`, `validate_ontology()` |
-
-See `provider.py` for the full Protocol definition with type signatures.
-
-## Environment Variables
+`register_routes()` builds the provider from these environment variables:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `GOVERNANCE_CATALOG` | `platform` | Unity Catalog name |
-| `GOVERNANCE_SCHEMA` | `governance` | Schema within the catalog |
+| `GOVERNANCE_CATALOG` | `platform` | Catalog holding the governance tables |
+| `GOVERNANCE_SCHEMA` | `governance` | Schema holding the governance tables |
+| `GOVERNANCE_ONTOLOGY_DIR` | — | Directory containing `resource_classes.yml` |
 | `DATABRICKS_HOST` | — | Workspace URL |
 | `DATABRICKS_WAREHOUSE_HTTP_PATH` | — | SQL warehouse HTTP path |
-| `DATABRICKS_TOKEN` | — | PAT or OAuth token |
-| `DATABRICKS_CLIENT_ID` | — | SP client ID (alternative to token) |
-| `DATABRICKS_CLIENT_SECRET` | — | SP client secret (alternative to token) |
-| `GOVERNANCE_ONTOLOGY_DIR` | — | Path to `resource_classes.yml` directory |
+| `DATABRICKS_TOKEN` | — | Token for the warehouse connection |
+| `DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET` | — | SP credentials (used when no token is set) |
 
-## Writing a Custom Provider
+The provider connects lazily, so the app starts even when these are wrong —
+misconfiguration shows up as 500s on the first request. Check
+`/api/governance/violations/summary` after deploying, not just `/health`.
 
-Implement the `GovernanceProvider` protocol and pass it to `register_routes`:
+### 2. Add the frontend views
+
+The views use Ontos's own UI primitives (`@/components/ui/*`, `@/hooks/use-api`,
+`@/hooks/use-toast`, `@/stores/breadcrumb-store`), so they must be built
+inside the Ontos frontend. See [`frontend/README.md`](frontend/README.md) for
+the copy step and the feature/route/i18n registration lines.
+
+> **Known gap:** `routes.governance.tsx` imports
+> `@/views/GovernanceResourceDetail`, `GovernancePolicies`, and
+> `GovernanceExceptions`, but the files ship as `ResourceDetail.tsx`,
+> `Policies.tsx`, and `Exceptions.tsx`. Rename them when copying (or fix the
+> imports) or the Ontos build fails.
+
+### 3. Schedule the Ontos sync
+
+Nothing in this repo calls the sync — run it after each engine scan, typically
+as a task after the engine's evaluate step in the same Databricks job:
 
 ```python
-from ontos_governance import GovernanceProvider, register_routes
+from ontos_governance.ontos_sync import sync_classifications_to_ontos
 
-class MyProvider:
-    def violations_summary(self) -> ViolationSummary:
-        # your implementation
-        ...
-    # ... implement all protocol methods
-
-register_routes(app, provider=MyProvider())
+result = sync_classifications_to_ontos(
+    spark,
+    catalog="platform",
+    schema="governance",
+    ontos_url="https://<ontos-app>.databricksapps.com",
+    secret_scope="governance",   # holds ontos_client_id / ontos_client_secret
+    dry_run=False,
+)
+# {'posted': N, 'skipped': N, 'errors': N, 'total_candidates': N}
 ```
 
-Register as an entry point for auto-discovery:
+It needs `pyspark` (present on Databricks compute), `databricks-sdk`, and
+`requests` — these are **not** declared in this package's dependencies, so
+install them alongside it when running anywhere else.
 
-```toml
-[project.entry-points."ontos_governance.providers"]
-my-provider = "my_package:MyProvider"
+**Auth.** The Databricks Apps proxy in front of Ontos accepts only OAuth JWTs
+(`eyJ...`); PATs (`dapi...`) and the serverless job's internal token are
+rejected. The token is resolved in this order:
+
+1. `ontos_token=` argument
+2. `DATABRICKS_TOKEN`, only if it is a JWT
+3. SDK SP credentials (`DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET`) → M2M token
+4. Secret scope `ontos_client_id` + `ontos_client_secret` → M2M token
+   (**use this for scheduled jobs** — a fresh token every run, nothing expires)
+5. Secret scope `ontos_token` — a stored JWT that expires in about an hour; dev only
+
+The resolved principal needs `CAN_USE` on the Ontos app and `semantic-models`
+write access inside Ontos (Ontos admins have it by default).
+
+**IRI base.** Links point at `<base_iri><class_name>`, where `base_iri` is
+`ontology_base_iri=`, else `GOVERNANCE_ONTOLOGY_BASE_IRI`, else
+`<workspace_host>/ontology/governance/class/`. Keep it stable — changing it
+creates a second set of links instead of updating the first.
+
+Run with `dry_run=True` first; it logs every link it would post and needs no
+token.
+
+## Keeping it in sync
+
+There are three kinds of drift to manage.
+
+| What | Changes when | What to do |
+|------|--------------|------------|
+| **Classification data** | every engine scan | Run the sync after each scan (above). Watch `errors` in its result — a failed POST is logged and counted, not raised. Stale links for de-classified resources must be removed in Ontos by hand. |
+| **Table contract** | the engine adds/renames columns or tables | Update `models.py` and the SQL in `providers/governance.py` in the same change window as the engine. The adapter's tests stub the warehouse, so they will not catch a live schema change — hit the deployed endpoints after an engine upgrade. |
+| **Adapter code in Ontos** | this adapter changes, or Ontos upgrades | Backend: reinstall the package (pin a git SHA, not a branch) and redeploy Ontos. Frontend: re-copy `frontend/src/*` — the copies in Ontos do not update themselves — and rebuild. After an Ontos upgrade, confirm the UI primitives the views import still exist. |
+| **Ontology file** | the engine's `resource_classes.yml` changes | Ship the same file to `GOVERNANCE_ONTOLOGY_DIR`, then `POST /api/governance/ontology/validate`. A mismatch shows the wrong hierarchy in the UI and links IRIs Ontos doesn't know. |
+
+## Development
+
+```bash
+# standalone API against a real workspace
+cd adapters/ontos
+pip install -e ".[governance,dev]"
+export DATABRICKS_HOST=... DATABRICKS_WAREHOUSE_HTTP_PATH=... DATABRICKS_TOKEN=...
+export GOVERNANCE_ONTOLOGY_DIR=/path/to/dir/with/resource_classes.yml
+uvicorn ontos_governance.app:app --reload   # docs at /docs
+
+# tests (from the repo's python/ env; conftest stubs databricks.sql / sdk / pyspark)
+cd python && uv run pytest ../adapters/ontos/tests -q
 ```
 
-## Directory Structure
+These tests are **not** run by apx-agent CI — `pr-pytest-paths.sh` maps
+`adapters/*` changes to the core suite only. Run them by hand when you change
+the adapter.
+
+## Layout
 
 ```
 adapters/ontos/
-├── pyproject.toml                    # apx-ontos-governance package
-├── tests/                            # unit tests (run: pytest adapters/ontos/tests/)
-├── README.md
+├── pyproject.toml                 # apx-ontos-governance
 ├── src/ontos_governance/
-│   ├── __init__.py                   # exports: GovernanceProvider, register_routes
-│   ├── models.py                     # Pydantic models (the data contract)
-│   ├── provider.py                   # GovernanceProvider protocol
-│   ├── providers/
-│   │   └── governance.py               # GovernanceProvider (Delta SQL)
-│   ├── routers/
-│   │   ├── _deps.py                  # Shared dependencies (provider, current_user)
-│   │   ├── violations.py             # GET violations, scans, resources
-│   │   ├── policies.py               # CRUD policies + history
-│   │   ├── exceptions.py             # CRUD exceptions + bulk operations
-│   │   └── ontology.py               # GET class hierarchy, tree, validate
-│   ├── router.py                     # Mount all routers, register_routes()
-│   ├── app.py                        # Standalone FastAPI app
-│   └── ontos_sync.py                 # Semantic link sync (Governance → Ontos)
-└── frontend/
-    ├── README.md                     # Frontend integration guide
-    └── src/
-        ├── config/features.governance.ts
-        ├── i18n/en/governance.json
-        ├── routes.governance.tsx
-        └── views/
-            ├── GovernanceDashboard.tsx
-            ├── ResourceDetail.tsx
-            ├── Policies.tsx
-            └── Exceptions.tsx
+│   ├── __init__.py                # exports GovernanceProvider, register_routes
+│   ├── models.py                  # Pydantic models — the API data contract
+│   ├── provider.py                # GovernanceProvider protocol
+│   ├── providers/governance.py    # default provider (Delta SQL)
+│   ├── routers/                   # violations, policies, exceptions, grants,
+│   │                              # ontology, remediation, _deps
+│   ├── router.py                  # register_routes()
+│   ├── app.py                     # standalone FastAPI app
+│   └── ontos_sync.py              # classifications → Ontos semantic links
+├── frontend/src/                  # views, routes, features, i18n to copy into Ontos
+└── tests/
 ```
