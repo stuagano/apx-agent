@@ -71,10 +71,14 @@ def inspect_target(
     # A composite that declares session_keys binds the managed store for its allow-listed
     # state (composite-session-keys.md); it still never gets a graph checkpointer.
     effective_session = session if isinstance(agent, LlmAgent) or getattr(agent, "_session_keys", ()) else None
+    # A composite can't declare session=, so its config session is only the auto-derived
+    # default; the App's bound store (AGENT_SESSION_STORE) wins over that guess.
+    derived_only = (not isinstance(agent, LlmAgent) and getattr(agent, "_session_keys", ())
+                    and not (config is not None and "session" in config.model_fields_set))
     if effective_session is not None and effective_session.type == "managed" and checkpointer is None:
-        if session_store is not None and session_store != effective_session.store_name:
+        if session_store is not None and session_store != effective_session.store_name and not derived_only:
             raise ValueError("session_store conflicts with the declared session.store_name")
-        session_store = effective_session.store_name
+        session_store = session_store if session_store is not None and derived_only else effective_session.store_name
     if config is not None and config.session is not None and config.session.type == "managed" and checkpointer is not None:
         raise ValueError("Declared managed sessions cannot be combined with an explicit checkpointer")
     if target not in ("responses_agent", "durable_agent_server"):

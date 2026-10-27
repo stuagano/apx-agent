@@ -345,3 +345,29 @@ def test_session_keys_require_user_identity(execution, monkeypatch, tmp_path):
     root = SequentialAgent([Agent(name="a")], name="p", session_keys=("intake",))
     app = _host(tmp_path, monkeypatch, root, execution)
     assert app.auth_policy.requires_user is True
+
+
+def test_app_store_wins_over_an_auto_derived_session_name(execution, monkeypatch, tmp_path):
+    # On Apps, AGENT_SESSION_STORE is the bound store; a composite can't declare session=, so the
+    # config's auto-derived default ("apx-<name>-sessions") must not conflict with it.
+    from apx_agent import AgentConfig, compile_agent
+    from tests.test_runtime_targets import _write_native_pyproject
+    _write_native_pyproject(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    _store(monkeypatch)
+    root = SequentialAgent([Agent(name="a")], name="p", session_keys=("intake",))
+    config = AgentConfig(name="p", model="fake", target="durable_agent_server")
+    assert config.session.store_name != "apx-the-app-sessions"
+    compile_agent(root, config=config, target="durable_agent_server", model="fake",
+                  service_ws=execution.ws, session_store="apx-the-app-sessions")
+
+
+def test_an_explicit_session_still_conflicts_loudly():
+    from apx_agent import Agent as A, AgentConfig
+    from apx_agent._runtime_targets import inspect_target
+    root = SequentialAgent([A(name="a")], name="p", session_keys=("intake",))
+    config = AgentConfig(name="p", model="fake", target="durable_agent_server",
+                         session={"type": "managed", "store_name": "apx-declared-sessions"})
+    with pytest.raises(ValueError, match="conflicts"):
+        inspect_target(root, config=config, target="durable_agent_server", session_store="apx-other-sessions")
