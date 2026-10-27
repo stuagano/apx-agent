@@ -125,19 +125,13 @@ New Apps projects default to `durable_agent_server`. To create a compatibility
 project with MLflow AgentServer and Bundle deployment, run
 `apx-agent agents scaffold my-agent --runtime responses_agent`.
 
-A `durable_agent_server` App with ordinary text agents serves the AgentKit chat app at `/` and
-`/_apx/chat`, and the apx dev UI (Discover, Topology, Edit, Eval, Probe and the
-rest) under `/_apx/*`. Chat turns go to the server's own `/api/invocations`. If
-a project mounts its own UI at `/`, that UI keeps the root and the chat stays at
-`/_apx/chat`. Set `APX_DEV_UI=0` to drop the dev UI pages; the chat (`/`,
-`/_apx/chat`) and its `/_apx/assets/agentkit` and `/_apx/api/{ui,demo}` routes
-still serve. The chat's memory and session panels call the managed stores as the
-App service principal. They act for the actor in the forwarded identity
-headers, or for a caller-supplied `?actor=`, so any signed-in App user can read
-another actor's memory entries through the App's grants. This matches the
-upstream AgentKit chat app; see
-[the A2A trust model](../design/a2a-trust-model.md) for the per-hop identity
-model apx uses elsewhere.
+A `durable_agent_server` App with ordinary text agents serves apx's chat at `/` and,
+with the dev UI, at `/_apx/chat` (the dev shell's Chat tab, with its Tools and
+MCP panel), plus the apx dev UI (Discover, Topology, Edit, Eval, Probe
+and the rest) under `/_apx/*`, in the dark Du Bois theme. Chat turns go to the
+server's own `/api/invocations`. If a project mounts its own UI at `/`, that UI
+keeps the root. Set `APX_DEV_UI=0` to drop the dev UI pages and `/_apx/chat`;
+`/` still serves.
 
 If any agent leaf declares `input_schema` or `output_schema`, the host instead
 serves the native workflow chat. It validates declared request JSON and displays

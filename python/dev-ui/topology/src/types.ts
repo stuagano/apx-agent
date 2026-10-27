@@ -144,24 +144,24 @@ export interface InspectResponse {
 }
 
 // Color map for node types — matches the visual contract in the spec.
-// Node fills use the Du Bois surface tones (--apx-panel #ffffff for agents,
-// --apx-bg #f1f3ff for tools/resources); the stroke hues stay distinct because
+// Node fills use the Du Bois surface tones (--apx-panel #1F272D for agents,
+// --apx-bg #11171C for tools/resources); the stroke hues stay distinct because
 // they encode node TYPE (agent=blue, data=green, router=pink, genie=amber, …).
 export const NODE_STYLE: Record<NodeType, { fill: string; stroke: string }> = {
-  Agent: { fill: "#ffffff", stroke: "#1a5fc4" },
-  LlmAgent: { fill: "#ffffff", stroke: "#1a5fc4" },
-  DataAgent: { fill: "#ffffff", stroke: "#137333" },
-  SequentialAgent: { fill: "#ffffff", stroke: "#7040a0" },
-  ParallelAgent: { fill: "#ffffff", stroke: "#7040a0" },
-  LoopAgent: { fill: "#ffffff", stroke: "#7040a0" },
-  RouterAgent: { fill: "#ffffff", stroke: "#be185d" },
-  KeywordRouter: { fill: "#ffffff", stroke: "#be185d" },
-  HandoffAgent: { fill: "#ffffff", stroke: "#be185d" },
-  Tool: { fill: "#f1f3ff", stroke: "#5f6469" },
-  UCFunction: { fill: "#f1f3ff", stroke: "#137333" },
-  GenieSpace: { fill: "#f1f3ff", stroke: "#8b5000" },
-  VectorIndex: { fill: "#f1f3ff", stroke: "#0b7285" },
-  ServingEndpoint: { fill: "#f1f3ff", stroke: "#c2410c" },
-  SubAgent: { fill: "#f1f3ff", stroke: "#7040a0" },
-  WarehouseSQL: { fill: "#f1f3ff", stroke: "#4d7c0f" },
+  Agent: { fill: "#1F272D", stroke: "#4299E0" },
+  LlmAgent: { fill: "#1F272D", stroke: "#4299E0" },
+  DataAgent: { fill: "#1F272D", stroke: "#3BA65E" },
+  SequentialAgent: { fill: "#1F272D", stroke: "#A78BFA" },
+  ParallelAgent: { fill: "#1F272D", stroke: "#A78BFA" },
+  LoopAgent: { fill: "#1F272D", stroke: "#A78BFA" },
+  RouterAgent: { fill: "#1F272D", stroke: "#EC7BA8" },
+  KeywordRouter: { fill: "#1F272D", stroke: "#EC7BA8" },
+  HandoffAgent: { fill: "#1F272D", stroke: "#EC7BA8" },
+  Tool: { fill: "#11171C", stroke: "#92A4B3" },
+  UCFunction: { fill: "#11171C", stroke: "#3BA65E" },
+  GenieSpace: { fill: "#11171C", stroke: "#FACB66" },
+  VectorIndex: { fill: "#11171C", stroke: "#22D3EE" },
+  ServingEndpoint: { fill: "#11171C", stroke: "#FB923C" },
+  SubAgent: { fill: "#11171C", stroke: "#A78BFA" },
+  WarehouseSQL: { fill: "#11171C", stroke: "#A3E635" },
 };
