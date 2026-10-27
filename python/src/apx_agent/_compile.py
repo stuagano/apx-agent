@@ -679,9 +679,13 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             step = next((m for m in reversed(state.get("messages", [])) if isinstance(m, AIMessage)), None)
             parts = step.additional_kwargs.get("apx_data_parts") if step is not None else None
             extra = {"apx_data_parts": parts} if parts else {}
-            return {"messages": [AIMessage(content=text, additional_kwargs={"apx_halt_message": True, **extra})]}
+            return {"messages": [AIMessage(content=text, additional_kwargs={"apx_answer": True, **extra})]}
         return emit
 
+    for i, step in enumerate(agent._agents[:-1]):
+        if getattr(step, "_output_message_path", None) is not None and _halted(step, agent._halt_statuses) is None:
+            raise ValueError(f"output_message_path on step {node_names[i]!r} is never shown: "
+                             "it neither halts the sequence (output_status_path + halt_statuses) nor is its last step")
     for i, (src, dst) in enumerate(zip(node_names, node_names[1:])):
         # Insert a continuation node so dst never receives a conversation that
         # ends with src's assistant message (see _sequential_continuation).
@@ -701,15 +705,13 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
         else:
             graph.add_edge(src, cont)
         graph.add_edge(cont, dst)
-    # A halting last step still ends with its declared human message.
+    # The last step's declared message is the answer, whether it halted or finished the sequence.
     last = len(node_names) - 1
-    last_halted = _halted(agent._agents[last], agent._halt_statuses)
-    last_emit = _halt_message(agent._agents[last]) if last_halted is not None else None
-    if last_emit is not None and last_halted is not None:
+    last_emit = _halt_message(agent._agents[last])
+    if last_emit is not None:
         graph.add_node(f"_halt_{last}", last_emit)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
+        graph.add_edge(node_names[-1], f"_halt_{last}")
         graph.add_edge(f"_halt_{last}", END)
-        graph.add_conditional_edges(node_names[-1], lambda state, h=last_halted: "halt" if h(state) else "end",
-                                    {"halt": f"_halt_{last}", "end": END})
     else:
         graph.add_edge(node_names[-1], END)
 

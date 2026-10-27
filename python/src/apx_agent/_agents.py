@@ -245,10 +245,10 @@ class LlmAgent(BaseAgent):
     must be published instead of the model's final JSON. Skipped/repeated calls fail.
     ``output_status_path`` selects a nested JSON field for recorded native domain
     status; the default is the output's top-level ``status`` field.
-    ``output_message_path`` names the output field a person should read when this
-    step halts a ``SequentialAgent`` (e.g. its follow-up question); the sequence
-    then ends with that text as a plain assistant message. It requires
-    ``output_status_path``; an empty field adds no message.
+    ``output_message_path`` names the output field a person reads when this step
+    ends a ``SequentialAgent``, by halting it or by being its last step. The
+    sequence then ends with that text as a plain assistant message (an empty
+    field adds none); a step that can do neither is refused at compile time.
     Native outputs retain exact JSON and verified DataParts in the reserved
     ``apx_native_artifacts`` state map, indexed by output key (or leaf name).
     The compiled producer validates strictly before publishing JSON-compatible
@@ -358,8 +358,6 @@ class LlmAgent(BaseAgent):
         self._input_key = input_key
         self._input_preparation = input_preparation
         self._output_tool = output_tool
-        if output_message_path is not None and output_status_path is None:
-            raise ValueError("output_message_path requires output_status_path: the message is shown when that status halts")
         self._output_status_path = output_status_path
         self._output_message_path = output_message_path
         if timeout_s is not None:
