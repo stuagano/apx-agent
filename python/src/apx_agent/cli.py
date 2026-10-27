@@ -6729,6 +6729,12 @@ def _deploy_from_yaml(
          "both probes. /readyz itself does not call the model.",
 )
 @click.option(
+    "--registry/--no-registry", "record_registry", default=True,
+    help="After the app is live, record it in the workspace agent registry "
+         "(created on first use in the workspace default catalog; readable by all "
+         "users, writable by every apx agent's service principal).",
+)
+@click.option(
     "--register-uc/--no-register-uc", default=True,
     help="After the app is live, register a UC model-version *manifest* for it "
          "(mlflow.pyfunc.log_model + apx.* tags, tagged apx.serving=apps) so the Apps agent "
@@ -6813,6 +6819,7 @@ def deploy(
     auto_experiment: bool,
     readyz_gate: bool,
     register_uc: bool,
+    record_registry: bool,
     uc_name: str | None,
     vars: tuple[str, ...],
     env_pairs: tuple[str, ...],
@@ -6927,6 +6934,7 @@ def deploy(
             json_output=json_output,
             readyz_gate=readyz_gate,
             register_uc=register_uc,
+            record_registry=record_registry,
             uc_name=uc_name,
             poll_timeout_seconds=timeout_seconds,
             readyz_attempts=readyz_retries,
@@ -9734,6 +9742,7 @@ def _deploy_apps(
     json_output: bool,
     readyz_gate: bool = True,
     register_uc: bool = True,
+    record_registry: bool = True,
     uc_name: str | None = None,
     app_name_override: str | None = None,
     poll_timeout_seconds: int = 300,
@@ -9776,6 +9785,7 @@ def _deploy_apps(
             readyz_attempts=readyz_attempts,
             smoke_input=smoke_input,
             log=log,
+            record_registry=record_registry,
         )
 
 
@@ -9795,6 +9805,7 @@ def _deploy_apps_impl(
     json_output: bool,
     readyz_gate: bool = True,
     register_uc: bool = True,
+    record_registry: bool = True,
     uc_name: str | None = None,
     app_name_override: str | None = None,
     extra_version_tags: dict[str, str] | None = None,
@@ -9824,6 +9835,21 @@ def _deploy_apps_impl(
         effective_config is not None and effective_config.deploy is not None
         and effective_config.deploy.backend == "apps_api"
     )
+    registry_cfg = _read_apx_agent_config()
+    registry_tables = _resolve_deploy_registry(profile, registry_cfg) if record_registry else None
+    # Only an explicit location rides into the App env: the default resolves to
+    # the same table at runtime (current_catalog()), and the --env merge is not
+    # representable on every deploy path.
+    if registry_tables is not None and (
+        registry_cfg.get("registry_table") or registry_cfg.get("tools_table")
+    ):
+        from ._registry import REGISTRY_TABLE_ENV, TOOLS_TABLE_ENV
+
+        env_pairs = (
+            *env_pairs,
+            f"{REGISTRY_TABLE_ENV}={registry_tables.agents}",
+            f"{TOOLS_TABLE_ENV}={registry_tables.tools}",
+        )
     if apps_api:
         from ._apps_api_deploy import deploy_apps_api
 
@@ -9884,7 +9910,7 @@ def _deploy_apps_impl(
             secret_env_pairs=secret_env_pairs, app_name_override=app_name_override,
             json_output=json_output, extra_version_tags=extra_version_tags,
             poll_timeout_seconds=poll_timeout_seconds, readyz_attempts=readyz_attempts, pin=pin, log=log,
-            smoke_input=smoke_input,
+            smoke_input=smoke_input, registry_tables=registry_tables,
         )
     native_direct = (
         effective_config is not None and effective_config.target == "durable_agent_server"
@@ -10593,6 +10619,17 @@ def _deploy_apps_impl(
         else:
             log("# --no-register-uc: skipping the UC version-manifest registration")
 
+        # 6f. Record the App in the workspace agent registry — part of the
+        # deploy contract like the UC ledger (fails loudly, App stays live).
+        # --no-run skips it: the step follows readyz, which --no-run skips.
+        registry_recorded = registry_tables is not None and not no_run
+        if registry_recorded:
+            assert registry_tables is not None
+            _deploy_registry_step(
+                profile=profile, app_name=app_name, app_url=app_url or None,
+                tables=registry_tables, module=module, log=log,
+            )
+
         # 6e. Record local deploy history (redeploy convenience) — best-effort,
         # like every other provenance step above. Recorded whenever a UC identity
         # resolves, independent of --no-register-uc: "where does this source
@@ -10653,6 +10690,8 @@ def _deploy_apps_impl(
                 "deploy_state_recorded": deploy_state_recorded,
                 "deployment_backend": "agentbricks" if native_cli else "databricks_bundle",
                 "hosting": hosting,
+                "registry_recorded": registry_recorded,
+                "registry_table": registry_tables.agents if registry_tables is not None else None,
             }, default=str))
         elif no_run:
             log(f"# app not started (--no-run); run `databricks bundle run "
@@ -13578,6 +13617,8 @@ def delete_agent_cmd(
 
     dependents: list[dict[str, Any]] = []
     if registry_ready:
+        # registry_ready is only set once both tables resolved.
+        assert registry_table is not None and tools_table is not None
         try:
             dependents = find_registry_dependents(
                 agent_ids=victim_agent_ids,
@@ -13764,6 +13805,8 @@ def delete_agent_cmd(
     # 2. Remove the advertise-registry rows (best-effort, aggregated) so
     # discovery stops advertising the deleted agent (#446).
     if registry_ready:
+        # registry_ready is only set once both tables resolved.
+        assert registry_table is not None and tools_table is not None
         for victim_id in victim_agent_ids:
             try:
                 remove_from_registry(

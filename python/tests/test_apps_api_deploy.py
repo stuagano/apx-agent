@@ -217,17 +217,18 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return {"project": project, "ws": ws, "state": state}
 
 
-def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any, *, profile: str | None = "chosen", smoke_input: Path | None = None) -> None:
+def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any, *, profile: str | None = "chosen", smoke_input: Path | None = None,
+            registry_tables: Any = None, register_uc: bool = False, json_output: bool = False) -> None:
     from apx_agent._apps_api_deploy import deploy_apps_api
 
     deploy_apps_api(
         cwd=box["project"], agent=agent, config=config, plan=AuthorizationPlan((), (), (), ("sql",), ()),
         family_permissions=SimpleNamespace(can_use_groups=(), can_manage_groups=()), workspace=box["ws"],
         profile=profile, bundle_target="dev", app_name="proof", auto_experiment=True, auto_build_wheel=False,
-        readyz_gate=True, register_uc=False, uc_name=None, module="agent:agent", no_run=False, vars=(),
-        env_pairs=(), secret_env_pairs=(), app_name_override=None, json_output=False, extra_version_tags={},
+        readyz_gate=True, register_uc=register_uc, uc_name=None, module="agent:agent", no_run=False, vars=(),
+        env_pairs=(), secret_env_pairs=(), app_name_override=None, json_output=json_output, extra_version_tags={},
         poll_timeout_seconds=1, readyz_attempts=1, pin=SimpleNamespace(), log=lambda message: None,
-        smoke_input=smoke_input,
+        smoke_input=smoke_input, registry_tables=registry_tables,
     )
 
 
@@ -582,3 +583,23 @@ def test_plan_routes_apps_api_without_bundle(tmp_path: Path, monkeypatch: pytest
     assert payload["deployment_backend"] == "apps_api"
     assert payload["app_name"] == "planned"
     assert "agent-bricks-" not in payload["app_name"]
+
+
+def test_apps_api_records_registry_after_ledger_and_reports_json(harness, monkeypatch, capsys):
+    from apx_agent._registry import RegistryTables
+
+    steps: list[Any] = []
+    monkeypatch.setattr("apx_agent.cli._register_apps_manifest_step", lambda **k: steps.append("ledger") or "1")
+    monkeypatch.setattr("apx_agent.cli._deploy_registry_step",
+                        lambda **k: steps.append(("registry", k["app_name"], k["tables"].agents)))
+    tables = RegistryTables("c.apx.agent_registry", "c.apx.agent_tools")
+    _deploy(harness, _config(), LlmAgent(name="proof"), registry_tables=tables, register_uc=True, json_output=True)
+    assert steps == ["ledger", ("registry", "proof", "c.apx.agent_registry")]
+    doc = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert doc["registry_recorded"] is True and doc["registry_table"] == "c.apx.agent_registry"
+
+
+def test_apps_api_without_registry_reports_not_recorded(harness, capsys):
+    _deploy(harness, _config(), LlmAgent(name="proof"), registry_tables=None, json_output=True)
+    doc = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert doc["registry_recorded"] is False and doc["registry_table"] is None
