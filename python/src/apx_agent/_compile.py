@@ -675,7 +675,11 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             text = _state_path(state, key, path)
             if not isinstance(text, str) or not text:
                 return {}
-            return {"messages": [AIMessage(content=text, additional_kwargs={"apx_halt_message": True})]}
+            # Carry the step's typed DataParts: Responses/A2A callers read the final assistant message.
+            step = next((m for m in reversed(state.get("messages", [])) if isinstance(m, AIMessage)), None)
+            parts = step.additional_kwargs.get("apx_data_parts") if step is not None else None
+            extra = {"apx_data_parts": parts} if parts else {}
+            return {"messages": [AIMessage(content=text, additional_kwargs={"apx_halt_message": True, **extra})]}
         return emit
 
     for i, (src, dst) in enumerate(zip(node_names, node_names[1:])):
@@ -697,7 +701,17 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
         else:
             graph.add_edge(src, cont)
         graph.add_edge(cont, dst)
-    graph.add_edge(node_names[-1], END)
+    # A halting last step still ends with its declared human message.
+    last = len(node_names) - 1
+    last_halted = _halted(agent._agents[last], agent._halt_statuses)
+    last_emit = _halt_message(agent._agents[last]) if last_halted is not None else None
+    if last_emit is not None and last_halted is not None:
+        graph.add_node(f"_halt_{last}", last_emit)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
+        graph.add_edge(f"_halt_{last}", END)
+        graph.add_conditional_edges(node_names[-1], lambda state, h=last_halted: "halt" if h(state) else "end",
+                                    {"halt": f"_halt_{last}", "end": END})
+    else:
+        graph.add_edge(node_names[-1], END)
 
     return graph.compile()
 
