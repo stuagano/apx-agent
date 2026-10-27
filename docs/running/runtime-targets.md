@@ -871,7 +871,10 @@ SequentialAgent(
   managed Session Store at the start of a turn and saved when the turn completes.
   The store is the declared or auto-attached managed session, or `AGENT_SESSION_STORE`.
   - State is per agent, user and session (`session_thread_config` plus an `apx-state`
-    Session), so users never share it.
+    Session), so users never share it. `session_keys` therefore require request-user
+    authentication: the App rejects calls without a forwarded user identity.
+  - A typed `apx_data_parts` value wins over a persisted key of the same name.
+  - A nested sequence's halt also stops its parent.
   - A failed or interrupted turn saves nothing.
   - Other state, such as earlier `output_key` payloads, never carries into the next turn.
   - Keys must be unprefixed: `user:` and `app:` scopes aren't stored here.

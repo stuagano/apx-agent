@@ -112,6 +112,8 @@ def inspect_target(
     }
     responses = target == "responses_agent"
     checkpointed = (checkpointer is not None or session_store is not None) and isinstance(agent, LlmAgent)
+    # A composite's allow-listed session state (composite-session-keys.md) satisfies sessions, not approvals.
+    session_state_bound = session_store is not None and bool(getattr(agent, "_session_keys", ()))
     memory_bound = (
         getattr(agent, "_apx_memory_store", None) is not None
         and not getattr(agent, "_apx_memory_degraded", None)
@@ -145,7 +147,7 @@ def inspect_target(
     capabilities = {
         "user_identity": TargetCapability(responses or not raw_request_required, "The durable target supports SDK request-user clients, SQL and principal dependencies, and per-hop user OBO to sub-agents; raw headers and Request remain unsupported."),
         "approvals": TargetCapability(checkpointed, "Approvals require an LlmAgent checkpoint binding and stable session; native request-user sessions are isolated by the SDK and authenticated principal."),
-        "sessions": TargetCapability(checkpointed or (responses and conversation_store is not None), "An explicit checkpoint/history binding is required; restart persistence depends on the selected store."),
+        "sessions": TargetCapability(checkpointed or session_state_bound or (responses and conversation_store is not None), "An explicit checkpoint/history binding is required; restart persistence depends on the selected store."),
         "long_term_memory": TargetCapability(memory_bound, "Bind a reachable declared store; managed memory uses AgentKit workspace memory stores and trusted caller actor IDs."),
         "recovery": TargetCapability(recovery_supported, "Opt-in recovery requires a managed Session Store, service identity and an unwrapped LlmAgent. Tools and callbacks must tolerate replay of uncommitted work; request-user recovery is unsupported by the SDK."),
         "streaming": TargetCapability(True, "Native events are persisted: incremental message deltas normally, or a validated final message when output checks require buffering."),

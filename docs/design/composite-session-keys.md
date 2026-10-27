@@ -74,6 +74,10 @@ recovery, and approvals/interrupts.
 
 ## Risks
 
+- **Request-user auth is required** when `session_keys` are declared. Without it, state
+  would be keyed by a caller-chosen `session_id`.
+- **Compaction is clear-then-append.** A crash between the two calls loses that
+  session's slots, and the next turn starts empty.
 - **Last-write-wins.** There's no compare-and-set. The SDK serializes invocations
   per session, which mitigates concurrent writes; a concurrent write from an older
   worker could drop a slot update. Acceptable for intake slots.

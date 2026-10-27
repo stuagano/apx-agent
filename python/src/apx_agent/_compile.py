@@ -642,17 +642,21 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             lambda state: typed_node if state.get("state", {}).get("_apx_typed_entry") == entry else node_names[0],
             {typed_node: typed_node, node_names[0]: node_names[0]},
         )
-    def _halted(sub: BaseAgent) -> Callable[[dict[str, Any]], bool] | None:
-        """A step's halt check: its declared status (output_key at output_status_path) is a halt status."""
+    def _halted(sub: BaseAgent, statuses: frozenset[str]) -> Callable[[dict[str, Any]], bool] | None:
+        """A step's halt check: its declared status (output_key at output_status_path) is a halt
+        status. A nested sequence halts its parent when any of its own steps halted it."""
+        if isinstance(sub, SequentialAgent):
+            checks = [c for c in (_halted(child, sub._halt_statuses) for child in sub._agents) if c is not None]
+            return (lambda state: any(c(state) for c in checks)) if checks else None
         key, status_path = getattr(sub, "_output_key", None), getattr(sub, "_output_status_path", None)
-        if not agent._halt_statuses or not key or not status_path:
+        if not statuses or not key or not status_path:
             return None
 
         def check(state: dict[str, Any]) -> bool:
             value: Any = state.get("state", {}).get(key)
             for part in status_path:
                 value = value.get(part) if isinstance(value, dict) else None
-            return isinstance(value, str) and value in agent._halt_statuses
+            return isinstance(value, str) and value in statuses
         return check
 
     for i, (src, dst) in enumerate(zip(node_names, node_names[1:])):
@@ -660,7 +664,7 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
         # ends with src's assistant message (see _sequential_continuation).
         cont = f"_continue_{i}"
         graph.add_node(cont, _sequential_continuation)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
-        halted = _halted(agent._agents[i])
+        halted = _halted(agent._agents[i], agent._halt_statuses)
         if protected or halted is not None:
             def route(state: dict[str, Any], halted: Callable[[dict[str, Any]], bool] | None = halted) -> str:
                 if protected and state.get("_apx_escalation") is not None:

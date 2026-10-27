@@ -265,3 +265,75 @@ def test_typed_root_sequence_is_unchanged():
     from apx_agent._durable_agent import typed_entry_step
     seq = SequentialAgent([Agent(name="intelligence", input_schema=Request, input_key="request"), Agent(name="b")])
     assert typed_entry_step(seq) is None  # first step already typed: normal entry
+
+
+# --- final-review fixes -------------------------------------------------------------------
+
+
+def test_compiles_on_the_serve_path_with_an_agent_config(execution, monkeypatch, tmp_path):
+    # C1: _serve.create_app passes config= and session_store=$AGENT_SESSION_STORE.
+    from apx_agent import AgentConfig, compile_agent
+    from tests.test_runtime_targets import _write_native_pyproject
+    _write_native_pyproject(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    _store(monkeypatch)
+    root = SequentialAgent([Agent(name="a")], name="p", session_keys=("intake",))
+    config = AgentConfig(name="p", model="fake", target="durable_agent_server")
+    # A deployed App's AGENT_SESSION_STORE is the config's declared/derived managed store.
+    compile_agent(root, config=config, target="durable_agent_server", model="fake",
+                  service_ws=execution.ws, session_store=config.session.store_name)
+
+
+def test_typed_input_wins_over_loaded_session_state(execution, monkeypatch, tmp_path):
+    # I1: a typed caller's fresh part must not be overwritten by a persisted key of the same name.
+    from fastapi.testclient import TestClient
+    from apx_agent._native_input import native_data_part
+    import uuid
+    _store(monkeypatch)
+    seeded = _seeded(monkeypatch)
+    root = SequentialAgent([
+        Agent(name="intake", output_key="request"),
+        Agent(name="lookup", input_schema=Request, input_key="request"),
+    ], name="pipeline", session_keys=("request",))
+    _model(monkeypatch, [AIMessage(content="ok"), AIMessage(content="ok")])
+    app = _host(tmp_path, monkeypatch, root, execution)
+    sid = str(uuid.uuid4())
+    with TestClient(app) as client:
+        for bank in ("a", "b"):
+            part = native_data_part(Request, {"bank": bank})
+            assert _turn(client, {"id": str(uuid.uuid4()), "session_id": sid,
+                                  "input": {"messages": [], "apx_data_parts": [part]}})["status"] == "completed"
+    assert seeded[1]["request"] == {"bank": "b"}
+
+
+def test_nested_halt_stops_the_outer_sequence(monkeypatch):
+    # I2: spec — nested sequences halt the outer sequence too.
+    seen = []
+    _model(monkeypatch, [AIMessage(content='{"status": "needs_input", "question": "q"}')])
+    inner = SequentialAgent([
+        Agent(name="intake", output_schema=Intake, output_key="intake", output_status_path=("status",)),
+        Agent(name="inner2", before_agent_callback=seen.append),
+    ], name="inner", halt_statuses=("needs_input",))
+    outer = SequentialAgent([inner, Agent(name="after", before_agent_callback=seen.append)], name="outer")
+    compile_to_langgraph(outer, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="x")]})
+    assert seen == []
+
+
+def test_snapshots_are_read_oldest_first():
+    # I3: "latest" must not depend on the server's default item order.
+    from apx_agent._composite_session import load_session_state
+    store = _FakeSessions()
+    orders = []
+    real = store.list_items
+    store.list_items = lambda session, *, order_by=None: (orders.append(order_by), real(session))[1]
+    load_session_state(store, "t1", ("intake",))
+    assert orders == ["create_time asc"]
+
+
+def test_session_keys_require_user_identity(execution, monkeypatch, tmp_path):
+    # I4: persisted user-entered state is per user; app-auth would key it by a caller-chosen session_id.
+    _store(monkeypatch)
+    root = SequentialAgent([Agent(name="a")], name="p", session_keys=("intake",))
+    app = _host(tmp_path, monkeypatch, root, execution)
+    assert app.auth_policy.requires_user is True

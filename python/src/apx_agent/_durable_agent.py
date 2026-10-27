@@ -269,7 +269,9 @@ def compile_durable_handlers(
                 raise ValueError("session_keys require a non-empty session_id")
             state_thread = session_thread_config(getattr(agent, "_name", None), session,
                                                  headers.user_id if headers is not None else None)["configurable"]["thread_id"]
-            domain_input.update(load_session_state(session_state_client, state_thread, keys))
+            # A typed caller's fresh part wins over a persisted key of the same name.
+            loaded = load_session_state(session_state_client, state_thread, keys)
+            domain_input.update({k: v for k, v in loaded.items() if k not in domain_input})
         from langchain_core.messages import HumanMessage
 
         graph = compile_to_langgraph(
@@ -393,6 +395,8 @@ def compile_to_durable_agent_server(
     keys = getattr(agent, "_session_keys", ())
     session_state_client = None
     if keys:
+        # Persisted state is per user: app-auth would key it by a caller-chosen session_id.
+        require_user = True
         # session_keys persist through the managed store, never a graph checkpointer.
         store = session_store or inspect_target(agent, target="durable_agent_server", config=config).session_store
         if store is None:

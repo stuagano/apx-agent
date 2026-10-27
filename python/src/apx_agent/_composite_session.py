@@ -24,7 +24,8 @@ def _session(client: Any, thread_id: str) -> Any:
 
 
 def _snapshots(client: Any, session: Any) -> list[dict[str, Any]]:
-    return [item.data["state"] for item in client.list_items(session)
+    # Oldest first, as the SDK's own saver reads: "latest" must not rest on the server default.
+    return [item.data["state"] for item in client.list_items(session, order_by="create_time asc")
             if isinstance(item.data, dict) and item.data.get("type") == _ITEM_TYPE
             and isinstance(item.data.get("state"), dict)]
 
