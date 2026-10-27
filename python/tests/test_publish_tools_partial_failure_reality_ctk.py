@@ -52,7 +52,7 @@ def test_partial_insert_failure_raises_not_short_count(monkeypatch) -> None:
             agent_name="Agent One",
             tool_fns=[_t1, _t2],
             ws=MagicMock(name="ws"),
-            warehouse_id="wh",
+            warehouse_id="wh", tools_table="main.apx.agent_tools"
         )
 
 
@@ -69,6 +69,6 @@ def test_all_inserts_succeed_returns_count(monkeypatch) -> None:
         agent_name="Agent One",
         tool_fns=[_t1, _t2],
         ws=MagicMock(name="ws"),
-        warehouse_id="wh",
+        warehouse_id="wh", tools_table="main.apx.agent_tools"
     )
     assert n == 2

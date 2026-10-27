@@ -187,3 +187,14 @@ def _isolate_project_agent_module():
     sys.modules.pop("agent", None)
     yield
     sys.modules.pop("agent", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_agent_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deploy tests never reach a real registry; dedicated tests call the real helpers."""
+    from apx_agent import cli
+    from apx_agent._registry import RegistryTables
+
+    monkeypatch.setattr(cli, "_resolve_deploy_registry",
+                        lambda profile, cfg: RegistryTables("c.apx.agent_registry", "c.apx.agent_tools"))
+    monkeypatch.setattr(cli, "_deploy_registry_step", lambda **k: None)

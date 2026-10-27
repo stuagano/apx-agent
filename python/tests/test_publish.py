@@ -383,7 +383,7 @@ def test_remove_from_registry_deletes_both_tables() -> None:
 
     calls: list[str] = []
     with patch("apx_agent._sql.run_sql", side_effect=_capture_run_sql(calls)):
-        remove_from_registry(agent_id="victim_host", ws=MagicMock(), warehouse_id="wh1")
+        remove_from_registry(agent_id="victim_host", ws=MagicMock(), warehouse_id="wh1", registry_table="main.apx.agent_registry", tools_table="main.apx.agent_tools")
 
     deletes = [s for s in calls if "DELETE FROM" in s]
     assert len(deletes) == 2, f"expected registry + tools DELETE, got: {calls}"
@@ -419,7 +419,7 @@ def test_remove_from_registry_propagates_sql_failure() -> None:
         "apx_agent._sql.run_sql", side_effect=RuntimeError("PERMISSION_DENIED")
     ):
         with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
-            remove_from_registry(agent_id="victim", ws=MagicMock())
+            remove_from_registry(agent_id="victim", ws=MagicMock(), registry_table="main.apx.agent_registry", tools_table="main.apx.agent_tools")
 
 
 def test_remove_from_registry_rejects_malformed_table_name() -> None:
@@ -430,7 +430,7 @@ def test_remove_from_registry_rejects_malformed_table_name() -> None:
             remove_from_registry(
                 agent_id="victim",
                 registry_table="bad table; DROP",
-                ws=MagicMock(),
+                ws=MagicMock(), tools_table="main.apx.agent_tools"
             )
     run_sql.assert_not_called()
 
@@ -457,7 +457,7 @@ def test_publish_to_registry_blocks_foreign_owner() -> None:
     fake = _capture_run_sql(calls, rows_for={"SELECT published_by": [{"published_by": "alice@corp"}]})
     with patch("apx_agent._sql.run_sql", side_effect=fake):
         with pytest.raises(PermissionError, match="registered by 'alice@corp'"):
-            publish_to_registry(name="shared", description="x", ws=_ws_as("bob@corp"))
+            publish_to_registry(name="shared", description="x", ws=_ws_as("bob@corp"), registry_table="main.apx.agent_registry")
     assert not any("MERGE INTO" in s for s in calls), "must not write after ownership denial"
 
 
@@ -468,7 +468,7 @@ def test_remove_from_registry_blocks_foreign_owner() -> None:
     fake = _capture_run_sql(calls, rows_for={"SELECT published_by": [{"published_by": "alice@corp"}]})
     with patch("apx_agent._sql.run_sql", side_effect=fake):
         with pytest.raises(PermissionError, match="may not overwrite or remove"):
-            remove_from_registry(agent_id="shared_ws", ws=_ws_as("bob@corp"))
+            remove_from_registry(agent_id="shared_ws", ws=_ws_as("bob@corp"), registry_table="main.apx.agent_registry", tools_table="main.apx.agent_tools")
     assert not any("DELETE FROM" in s for s in calls), "must not delete after ownership denial"
 
 
@@ -478,7 +478,7 @@ def test_publish_to_registry_allows_same_owner() -> None:
     calls: list[str] = []
     fake = _capture_run_sql(calls, rows_for={"SELECT published_by": [{"published_by": "alice@corp"}]})
     with patch("apx_agent._sql.run_sql", side_effect=fake):
-        publish_to_registry(name="shared", description="x", ws=_ws_as("alice@corp"))
+        publish_to_registry(name="shared", description="x", ws=_ws_as("alice@corp"), registry_table="main.apx.agent_registry")
     assert any("MERGE INTO" in s for s in calls), "owner re-publish must proceed"
 
 
@@ -488,7 +488,7 @@ def test_publish_to_registry_allows_first_registration() -> None:
     calls: list[str] = []
     # Empty owner SELECT → no existing row → first registration proceeds.
     with patch("apx_agent._sql.run_sql", side_effect=_capture_run_sql(calls)):
-        publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"))
+        publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"), registry_table="main.apx.agent_registry")
     assert any("MERGE INTO" in s for s in calls), "first registration must proceed"
 
 
@@ -506,7 +506,7 @@ def test_registry_owner_check_skips_on_select_error() -> None:
         return []
 
     with patch("apx_agent._sql.run_sql", side_effect=_raise_on_select):
-        remove_from_registry(agent_id="x", ws=_ws_as("bob@corp"))
+        remove_from_registry(agent_id="x", ws=_ws_as("bob@corp"), registry_table="main.apx.agent_registry", tools_table="main.apx.agent_tools")
     assert any("DELETE FROM" in s for s in calls), "delete proceeds despite SELECT failure"
 
 
@@ -521,7 +521,7 @@ def test_publish_to_registry_applies_default_tags() -> None:
             side_effect=_capture_run_sql(tag_calls),
         ),
     ):
-        publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"))
+        publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"), registry_table="main.apx.agent_registry")
     ddl = "\n".join(tag_calls)
     assert "ALTER TABLE `main`.`apx`.`agent_registry` SET TAGS" in ddl
     assert "'apx_agent_managed' = 'true'" in ddl
@@ -544,7 +544,7 @@ def test_publish_tools_to_registry_applies_default_tags() -> None:
             agent_name="A1",
             tool_fns=[],
             ws=MagicMock(),
-            warehouse_id="wh",
+            warehouse_id="wh", tools_table="main.apx.agent_tools"
         )
     ddl = "\n".join(tag_calls)
     assert "ALTER TABLE `main`.`apx`.`agent_tools` SET TAGS" in ddl
@@ -569,7 +569,7 @@ def test_publish_standalone_tools_to_registry_applies_default_tags() -> None:
         publish_standalone_tools_to_registry(
             tool_fns=[ping_tool],
             ws=MagicMock(),
-            warehouse_id="wh",
+            warehouse_id="wh", tools_table="main.apx.agent_tools"
         )
     ddl = "\n".join(tag_calls)
     assert "ALTER TABLE `main`.`apx`.`agent_tools` SET TAGS" in ddl
@@ -588,7 +588,7 @@ def test_publish_to_registry_continues_when_tagging_fails() -> None:
         ),
     ):
         # Best-effort tagging must not break the publish path.
-        publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"))
+        publish_to_registry(name="fresh", description="x", ws=_ws_as("bob@corp"), registry_table="main.apx.agent_registry")
     assert any("MERGE INTO" in s for s in calls), "registration must still proceed"
 
 
@@ -617,7 +617,7 @@ def test_find_registry_dependents_merges_registry_and_tools_hits() -> None:
         dependents = find_registry_dependents(
             agent_ids=["victim_host"],
             references=["main.sch.victim", "my-ep", "my-app"],
-            ws=MagicMock(),
+            ws=MagicMock(), registry_table="main.apx.agent_registry", tools_table="main.apx.agent_tools"
         )
 
     assert [d["agent"] for d in dependents] == ["shadow-advertise", "billing-bot"]
@@ -637,9 +637,24 @@ def test_find_registry_dependents_without_references_runs_no_sql() -> None:
 
     with patch("apx_agent._sql.run_sql") as run_sql:
         assert find_registry_dependents(
-            agent_ids=["victim"], references=[], ws=MagicMock(),
+            agent_ids=["victim"], references=[], ws=MagicMock(), registry_table="main.apx.agent_registry", tools_table="main.apx.agent_tools"
         ) == []
         assert find_registry_dependents(
-            agent_ids=[], references=["my-app"], ws=MagicMock(),
+            agent_ids=[], references=["my-app"], ws=MagicMock(), registry_table="main.apx.agent_registry", tools_table="main.apx.agent_tools"
         ) == []
     run_sql.assert_not_called()
+
+
+def test_registry_functions_have_no_hard_coded_main_default():
+    import inspect
+
+    from apx_agent import _publish
+
+    for fn in (_publish.publish_to_registry, _publish.publish_tools_to_registry,
+               _publish.publish_standalone_tools_to_registry, _publish.remove_from_registry,
+               _publish.find_registry_dependents, _publish.list_registry_agents):
+        for name in ("registry_table", "tools_table"):
+            param = inspect.signature(fn).parameters.get(name)
+            if param is not None:
+                assert param.default is inspect.Parameter.empty, f"{fn.__name__}.{name} still defaults"
+    assert "main.apx." not in inspect.getsource(_publish)

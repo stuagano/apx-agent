@@ -14,7 +14,7 @@ cd my_agent && uv sync
 apx-agent agents run               # uvicorn against an existing project directory
 apx-agent uc publish --dry-run     # preview UC function registrations
 apx-agent uc publish               # actually register
-apx-agent agents deploy --target apps               # Databricks Apps; native projects use Agent Bricks
+apx-agent agents deploy --target apps               # Databricks Apps; native projects use Agent Bricks; records it in the agent registry
 apx-agent agents advertise --description "Handles X for users asking about Y"
 apx-agent supervisor add --app my-agent-app --supervisor sa-12345
 apx-agent uc mcp-config --host https://workspace.cloud.databricks.com

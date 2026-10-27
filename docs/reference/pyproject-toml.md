@@ -92,7 +92,15 @@ backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
 
 `[tool.apx.deploy]` also holds the registration and publishing keys:
 `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table` and
-`tools_table`. Dev-loop keys live in top-level `[tool.apx]`:
+`tools_table`.
+
+`agents deploy` records every App in the workspace agent registry. With no
+`registry_table` / `tools_table` set, it lives in the workspace default catalog
+(`<catalog>.apx.agent_registry` and `<catalog>.apx.agent_tools`) and is created by
+the first deploy, which grants `SELECT` to `account users`. Each deploy grants
+its App's service principal `SELECT, MODIFY`. Pass `--no-registry` to skip.
+
+Dev-loop keys live in top-level `[tool.apx]`:
 
 ```toml
 [tool.apx]

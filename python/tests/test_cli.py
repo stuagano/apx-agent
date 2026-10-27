@@ -38,6 +38,22 @@ from apx_agent.cli import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _registry_location_without_sql(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI tests use mocked workspaces; resolve the registry like a workspace
+    whose default catalog is ``main`` instead of issuing current_catalog()."""
+    from apx_agent._registry import RegistryTables
+
+    monkeypatch.setattr(
+        "apx_agent._registry.resolve_registry_tables",
+        lambda ws, **k: RegistryTables(
+            k.get("registry_table") or "main.apx.agent_registry",
+            k.get("tools_table") or "main.apx.agent_tools",
+        ),
+    )
+    monkeypatch.setattr("apx_agent._registry.provision_registry", lambda ws, **k: None)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -4572,6 +4588,39 @@ class TestPublishDisambiguation:
         assert result.exit_code == 0, result.output
         mock_reg.assert_called_once()
         mock_sup.assert_not_called()  # advertise is discovery-only
+
+    def test_advertise_provisions_registry_grants_for_the_app_sp(self):
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        mock_ws.apps.get.return_value = MagicMock(service_principal_client_id="sp-1")
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent._registry.provision_registry") as mock_prov, \
+             patch("apx_agent.publish_to_registry") as mock_reg:
+            result = CliRunner().invoke(main, [
+                "agents", "advertise", "--endpoint", "my-endpoint",
+                "--description", "Routes sales questions", "--no-tools",
+            ])
+        assert result.exit_code == 0, result.output
+        mock_prov.assert_called_once()
+        assert mock_prov.call_args.kwargs["sp_client_id"] == "sp-1"
+        assert mock_prov.call_args.kwargs["tables"].agents == "main.apx.agent_registry"
+        mock_reg.assert_called_once()
+
+    def test_advertise_still_writes_its_row_when_provisioning_fails(self):
+        mock_ws = MagicMock()
+        mock_ws.config.host = "https://my-workspace.databricks.com"
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
+             patch("databricks.sdk.config.Config"), \
+             patch("apx_agent._registry.provision_registry", side_effect=RuntimeError("needs MANAGE")), \
+             patch("apx_agent.publish_to_registry") as mock_reg:
+            result = CliRunner().invoke(main, [
+                "agents", "advertise", "--endpoint", "my-endpoint",
+                "--description", "Routes sales questions", "--no-tools",
+            ])
+        assert result.exit_code == 0, result.output
+        mock_reg.assert_called_once()
+        assert "needs MANAGE" in result.output
 
     def test_supervisor_add_requires_supervisor_id(self):
         result = CliRunner().invoke(main, [

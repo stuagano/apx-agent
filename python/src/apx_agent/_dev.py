@@ -3822,9 +3822,17 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         import asyncio as _asyncio
         from fastapi.responses import JSONResponse
 
+        from ._registry import REGISTRY_TABLE_ENV, resolve_registry_tables
+
+        configured = os.environ.get(REGISTRY_TABLE_ENV)
+
+        def _read() -> list[dict[str, Any]]:
+            table = configured or resolve_registry_tables(ws).agents
+            return list_registry_agents(registry_table=table, ws=ws)
+
         try:
-            return await _asyncio.to_thread(list_registry_agents, ws=ws)
-        except RuntimeError as e:
+            return await _asyncio.to_thread(_read)
+        except (RuntimeError, ValueError) as e:
             logger.exception("listing the agent registry failed")
             return JSONResponse({"error": str(e)}, status_code=503)
 
