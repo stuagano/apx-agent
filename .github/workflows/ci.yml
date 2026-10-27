@@ -122,6 +122,11 @@ jobs:
         # paths is an intentionally space-separated list from the selector.
         run: uv run pytest ${{ steps.pytest_paths.outputs.paths }} -n auto --tb=short --timeout=90 --timeout-method=thread
 
+      - name: Run adapter tests
+        if: needs.changes.outputs.code == 'true'
+        # Self-contained subtree outside python/tests (and the selector); ~6s, always run.
+        run: uv run pytest ../adapters/ontos/tests --tb=short --timeout=90 --timeout-method=thread
+
       - name: Docs-only change — tests not required
         if: needs.changes.outputs.code != 'true'
         run: echo "Docs-only PR — skipping tests; required check passes."

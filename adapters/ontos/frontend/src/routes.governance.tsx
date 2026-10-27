@@ -11,7 +11,7 @@ import RemediationInbox       from '@/views/RemediationInbox'
 
 const governanceRoutes = [
   { path: 'violations',                      element: <GovernanceDashboard /> },
-  { path: 'governance/resources/:resourceId', element: <GovernanceResourceDetail /> },
+  { path: 'resources/:resourceId',            element: <GovernanceResourceDetail /> },
   { path: 'policies',                       element: <GovernancePolicies /> },
   { path: 'exceptions',                     element: <GovernanceExceptions /> },
   { path: 'remediation',                    element: <RemediationDashboard /> },

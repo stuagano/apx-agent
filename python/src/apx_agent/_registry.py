@@ -76,13 +76,13 @@ class RegistryStepError(RuntimeError):
 class Grant:
     """One desired UC grant: ``privileges`` on a securable for a principal."""
 
-    securable: str  # "SCHEMA" | "TABLE"
+    securable: str  # "CATALOG" | "SCHEMA" | "TABLE"
     name: str
     principal: str
     privileges: frozenset[str]
 
     def sql(self, privileges: frozenset[str]) -> str:
-        order = ("USE_SCHEMA", "SELECT", "MODIFY")
+        order = ("USE_CATALOG", "USE_SCHEMA", "SELECT", "MODIFY")
         listed = ", ".join(p.replace("_", " ") for p in order if p in privileges)
         return f"GRANT {listed} ON {self.securable} {self.name} TO `{self.principal}`"
 
@@ -90,9 +90,10 @@ class Grant:
 def registry_grants(table: str, *, sp_client_id: str | None) -> list[Grant]:
     """Everything one registry table needs: readers, then the App SP.
 
-    ``USE SCHEMA`` rides with each table grant because UC table privileges are
-    unusable without it. ``USE CATALOG`` is not granted: the deployer usually
-    does not own the workspace default catalog.
+    ``USE CATALOG`` and ``USE SCHEMA`` ride with each table grant because UC
+    table privileges are unusable without them. Only missing privileges are
+    granted, so a deployer who can't grant on the catalog fails only when a
+    principal actually lacks ``USE CATALOG``.
     """
     from ._memory import validate_table_name
 
@@ -100,12 +101,14 @@ def registry_grants(table: str, *, sp_client_id: str | None) -> list[Grant]:
     if sp_client_id is not None and not _SP_ID.match(sp_client_id):
         raise ValueError(f"invalid service principal id {sp_client_id!r}")
     schema = table.rsplit(".", 1)[0]
+    catalog = table.split(".", 1)[0]
     principals = [("account users", frozenset({"SELECT"}))]
     if sp_client_id is not None:
         principals.append((sp_client_id, frozenset({"SELECT", "MODIFY"})))
     grants: list[Grant] = []
     for principal, table_privs in principals:
         grants += [
+            Grant("CATALOG", catalog, principal, frozenset({"USE_CATALOG"})),
             Grant("SCHEMA", schema, principal, frozenset({"USE_SCHEMA"})),
             Grant("TABLE", table, principal, table_privs),
         ]
@@ -174,10 +177,11 @@ def provision_registry(
             except Exception as e:
                 failed.append(statement)
                 causes.append(str(e))
+    failed = list(dict.fromkeys(failed))  # both tables share the catalog grant
     if failed:
         raise RegistryStepError(
             step="grant registry access", table=tables.agents,
             cause=RuntimeError("; ".join(causes)),
-            fix=("granting needs MANAGE (or ownership) on the registry schema and tables; "
+            fix=("granting needs MANAGE (or ownership) on the registry catalog, schema and tables; "
                  "ask their owner to run:\n    " + "\n    ".join(failed)),
         )

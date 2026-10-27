@@ -97,8 +97,11 @@ backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
 `agents deploy` records every App in the workspace agent registry. With no
 `registry_table` / `tools_table` set, it lives in the workspace default catalog
 (`<catalog>.apx.agent_registry` and `<catalog>.apx.agent_tools`) and is created by
-the first deploy, which grants `SELECT` to `account users`. Each deploy grants
-its App's service principal `SELECT, MODIFY`. Pass `--no-registry` to skip.
+the first deploy. Each deploy grants whatever is missing: `SELECT` for
+`account users` and `SELECT, MODIFY` for its App's service principal, plus
+`USE CATALOG` and `USE SCHEMA` on the parents for both. A deployer without
+MANAGE gets the exact `GRANT` statements to hand to the owner. Pass
+`--no-registry` to skip.
 
 Dev-loop keys live in top-level `[tool.apx]`:
 
