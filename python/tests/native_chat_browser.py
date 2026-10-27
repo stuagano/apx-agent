@@ -11,7 +11,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
-from playwright.sync_api import sync_playwright, expect
+# Optional: CI runs a PR's changed test files and has no Playwright/Chromium.
+playwright_sync = pytest.importorskip("playwright.sync_api")
+sync_playwright, expect = playwright_sync.sync_playwright, playwright_sync.expect
 
 from apx_agent._ui_chat import _render_agent_ui
 from apx_agent._ui_root_chat import render_root_chat
@@ -466,6 +468,11 @@ def test_reload_does_not_show_inaccessible_cached_content(browser_chat, failure)
 @pytest.mark.parametrize("surface", ["/", "/_apx/chat"])
 def test_browser_real_native_host(request, monkeypatch, surface):
     monkeypatch.setenv("APX_DEV_UI", "1")
+    # The dev page loads /_apx/workspace-context; give the fake client real strings (as
+    # test_native_server_mounts_apx_chat_and_dev_ui does) so its response validates.
+    ws = request.getfixturevalue("execution").ws
+    ws.config.host = "https://example.cloud.databricks.com"
+    ws.current_user.me.return_value.user_name = "dev@example.com"
     host = request.getfixturevalue("native")
     posts = []
     with sync_playwright() as p:
