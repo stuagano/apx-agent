@@ -940,6 +940,8 @@ class SequentialAgent(BaseAgent):
         instructions: str = "",
         name: str | None = None,
         on_failure: Literal["raise", "escalate"] = "raise",
+        session_keys: tuple[str, ...] = (),
+        halt_statuses: tuple[str, ...] = (),
         **settings: Unpack[CompositeSettings],
     ) -> None:
         self._set_settings(settings)
@@ -951,6 +953,13 @@ class SequentialAgent(BaseAgent):
         if on_failure not in {"raise", "escalate"}:
             raise ValueError("on_failure must be 'raise' or 'escalate'")
         self._on_failure = on_failure
+        # Allow-listed state persisted across turns of a durable session (composite-session-keys.md).
+        if any(not k or ":" in k for k in session_keys) or len(set(session_keys)) != len(session_keys):
+            raise ValueError("session_keys must be distinct unprefixed state keys (no user:/app: scope)")
+        self._session_keys = tuple(session_keys)
+        if any(not s for s in halt_statuses):
+            raise ValueError("halt_statuses must be non-empty status values")
+        self._halt_statuses = frozenset(halt_statuses)
 
     def _prepend_instructions(self, messages: list[Message]) -> list[Message]:
         if not self._instructions:

@@ -128,6 +128,16 @@ def _pending(graph: Any, config: dict[str, Any] | None) -> Any | None:
     return interrupts[0].value if interrupts else None
 
 
+from ._native_input import typed_entry_step  # noqa: E402,F401  (re-export)
+
+
+def _session_state_client(store_name: str, service_ws: Any) -> Any:
+    """The SDK client bound to the App's managed store, for composite session_keys."""
+    from databricks_agentkit.runtime.session_store_client import SessionStoreClient
+
+    return SessionStoreClient(service_ws).set_session_store(store_name)
+
+
 def compile_durable_handlers(
     agent: BaseAgent,
     *,
@@ -138,6 +148,7 @@ def compile_durable_handlers(
     recovery: bool = False,
     project_root: Path | None = None,
     platform_tools: dict[str, list[Any]] | None = None,
+    session_state_client: Any | None = None,
 ) -> DurableHandlers:
     """Build native message handlers; no MLflow request/response dependency.
 
@@ -216,13 +227,18 @@ def compile_durable_handlers(
             if message.get("role") != "user" or not isinstance(message.get("content"), str):
                 raise ValueError("Native input accepts user text messages only")
         resume = value.get("resume")
-        from ._native_input import NATIVE_ARTIFACTS_KEY, input_leaf, native_data_part
+        from ._agents import SequentialAgent
+        from ._native_input import NATIVE_ARTIFACTS_KEY, input_leaf, native_data_part, typed_entry_step
         from ._native_remote import validate_correlation
 
         correlation = validate_correlation(value.get("correlation"))
         leaf = input_leaf(agent)
+        # Typed callers to an intake-first sequence enter at its first typed step.
+        entry = typed_entry_step(agent) if value.get("apx_data_parts") is not None else None
+        if entry is not None and isinstance(agent, SequentialAgent):
+            leaf = input_leaf(agent._agents[entry])
         schema = getattr(leaf, "_input_schema", None)
-        domain_input = {NATIVE_ARTIFACTS_KEY: {}}
+        domain_input: dict[str, Any] = {NATIVE_ARTIFACTS_KEY: {}}
         parts = value.get("apx_data_parts")
         if parts is not None or schema is not None:
             if schema is None or not isinstance(parts, list) or len(parts) != 1 or resume is not None or recovery:
@@ -232,6 +248,8 @@ def compile_durable_handlers(
                 raise ValueError("Native typed input requires a data artifact")
             part = native_data_part(schema, part.get("data"), part)
             domain_input[leaf._input_key] = part["data"]
+            if entry is not None:
+                domain_input["_apx_typed_entry"] = entry
         if resume is not None and checkpointer is None:
             raise ValueError("Approval resume requires a checkpointed session")
         config = None
@@ -241,6 +259,17 @@ def compile_durable_handlers(
                 raise ValueError("A checkpointed invocation requires a non-empty session_id")
             config = session_thread_config(getattr(agent, "_name", None), session,
                                            headers.user_id if headers is not None else None)
+        keys = getattr(agent, "_session_keys", ())
+        state_thread = None
+        if keys and session_state_client is not None:
+            from ._composite_session import load_session_state
+
+            session = context.session_id
+            if not isinstance(session, str) or not session:
+                raise ValueError("session_keys require a non-empty session_id")
+            state_thread = session_thread_config(getattr(agent, "_name", None), session,
+                                                 headers.user_id if headers is not None else None)["configurable"]["thread_id"]
+            domain_input.update(load_session_state(session_state_client, state_thread, keys))
         from langchain_core.messages import HumanMessage
 
         graph = compile_to_langgraph(
@@ -259,6 +288,11 @@ def compile_durable_handlers(
             recovery=recovering,
             domain_input=domain_input,
         )
+        if state_thread is not None and turn.approval_required is None:
+            from ._composite_session import save_session_state
+
+            # Only a completed turn reaches here; a failed one raised out of run_graph_turn.
+            save_session_state(session_state_client, state_thread, keys, turn.state)
         if turn.approval_required is not None:
             return {"status": "interrupted", "messages": [], "approval_required": turn.approval_required}
         result = {"status": "completed", "messages": [m.model_dump(mode="json") for m in turn.messages]}
@@ -356,7 +390,17 @@ def compile_to_durable_agent_server(
         from databricks_agentkit.runtime.app import DurableAgentServer
     except ImportError as exc:
         raise ImportError("durable_agent_server requires the optional SDK; install apx-agent[agentbricks] in the host project") from exc
-    if session_store is not None:
+    keys = getattr(agent, "_session_keys", ())
+    session_state_client = None
+    if keys:
+        # session_keys persist through the managed store, never a graph checkpointer.
+        store = session_store or inspect_target(agent, target="durable_agent_server", config=config).session_store
+        if store is None:
+            raise ValueError("session_keys on a durable composite require a session store (AGENT_SESSION_STORE)")
+        if service_ws is None:
+            raise ValueError("session_store requires an explicit service_ws runtime binding")
+        session_state_client = _session_state_client(store, service_ws)
+    elif session_store is not None:
         if service_ws is None:
             raise ValueError("session_store requires an explicit service_ws runtime binding")
         from databricks_agentkit.langgraph.session_store import DatabricksSessionStoreSaver
@@ -373,7 +417,8 @@ def compile_to_durable_agent_server(
     startup = _startup_platform_tools(agent, project_root, model=model, service_ws=service_ws)
     handlers = compile_durable_handlers(agent, model=model, service_ws=service_ws,
                                         checkpointer=checkpointer, require_user=policy.requires_user, recovery=recovery,
-                                        project_root=project_root, platform_tools=startup.tools)
+                                        project_root=project_root, platform_tools=startup.tools,
+                                        session_state_client=session_state_client)
     app = DurableAgentServer(auth_policy=policy)
     # Per-id startup materialization failures, for offline doctor (by id, not message).
     app.state.apx_platform_tool_failures = startup.failures

@@ -699,7 +699,8 @@ def test_composite_managed_session_regression_fails_compile(tmp_path: Path, monk
 
     # Revert the composite-agent fix: the auto-attached managed session binds to any agent.
     _mutate(monkeypatch, _runtime_targets, "inspect_target",
-            "effective_session = session if isinstance(agent, LlmAgent) else None", "effective_session = session")
+            'effective_session = session if isinstance(agent, LlmAgent) or getattr(agent, "_session_keys", ()) else None',
+            "effective_session = session")
     checks = _by_name(check_durable_readiness(_project(tmp_path, "router2", ROUTER_AGENT)))
     assert checks["Compile"].status is Status.FAIL
     assert "session_store currently requires LlmAgent" in checks["Compile"].detail

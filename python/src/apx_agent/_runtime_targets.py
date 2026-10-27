@@ -68,7 +68,9 @@ def inspect_target(
     # auto-derived store rather than refuse to compile, and don't let it count
     # as a declared session requirement below. An explicit session_store= for a
     # composite agent still errors below (it's a real caller mistake).
-    effective_session = session if isinstance(agent, LlmAgent) else None
+    # A composite that declares session_keys binds the managed store for its allow-listed
+    # state (composite-session-keys.md); it still never gets a graph checkpointer.
+    effective_session = session if isinstance(agent, LlmAgent) or getattr(agent, "_session_keys", ()) else None
     if effective_session is not None and effective_session.type == "managed" and checkpointer is None:
         if session_store is not None and session_store != effective_session.store_name:
             raise ValueError("session_store conflicts with the declared session.store_name")
@@ -83,8 +85,8 @@ def inspect_target(
             raise ValueError("session_store must be a non-empty managed store name")
         if target != "durable_agent_server" or checkpointer is not None:
             raise ValueError("session_store requires durable_agent_server and cannot be combined with checkpointer")
-        if not isinstance(agent, LlmAgent):
-            raise ValueError("session_store currently requires LlmAgent")
+        if not isinstance(agent, LlmAgent) and not getattr(agent, "_session_keys", ()):
+            raise ValueError("session_store currently requires LlmAgent (or a composite declaring session_keys)")
     from ._apps_authorization import infer_operation_authorization
     from ._resources import _iter_tool_fns, _iter_sub_agents
     from ._topology import _iter_child_agents

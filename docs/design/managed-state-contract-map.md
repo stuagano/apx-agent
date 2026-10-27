@@ -258,7 +258,7 @@ bind as a checkpointer instead.
 | `list_conversations` (kind, agent_id, title search) | yes | `SessionStore.list(filter, order_by)` | **unmapped**. Filter language is SDK-specific, not APX `kind`/`agent_id`. |
 | `search` full-text over items | yes | **no session-item search API** | **gap**. Memory `search` is BM25 over memories, not transcripts. |
 | `update_conversation` (title, reasoning_effort, model_override) | yes | `Session.update(metadata=…)` string map only | **gap** for typed fields. |
-| `set_session_state` JSON dict, `temp:` stripped | yes | no dedicated field. Could be one opaque item or `metadata` (strings only). | **gap**. Mid-turn `state` already lives in the checkpointer channel; that is not `Conversation.session_state`. |
+| `set_session_state` JSON dict, `temp:` stripped | yes | no dedicated field. Could be one opaque item or `metadata` (strings only). | **gap** for ConversationStore hosts. Durable composites persist allow-listed keys as `{"type": "apx_session_state", "state": {...}}` items in an `apx-state` Session ([composite-session-keys.md](composite-session-keys.md)). |
 | `delete_conversation` | yes | `Session.delete(force=False)` | **unmapped**. Descendants require `force=True`. |
 | fork | stripped from APX ABC | `Session.fork(...)` | managed-only; do not add a UI feature just because the API exists (#857). |
 
