@@ -437,3 +437,16 @@ def test_the_halt_message_keeps_the_steps_typed_output(monkeypatch):
                           halt_statuses=("needs_input",))
     halted = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="go")]})
     assert output_data_parts(halted["messages"]) == output_data_parts(plain["messages"])
+
+
+def test_output_message_path_needs_a_status_to_halt_on():
+    with pytest.raises(ValueError, match="output_message_path requires output_status_path"):
+        Agent(name="intake", output_schema=Intake, output_key="intake", output_message_path=("question",))
+
+
+def test_an_empty_question_adds_no_halt_message(monkeypatch):
+    _model(monkeypatch, [AIMessage(content='{"status": "needs_input", "question": null}')])
+    seq = SequentialAgent([_messaged_intake(), Agent(name="downstream")], name="pipeline",
+                          halt_statuses=("needs_input",))
+    result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="go")]})
+    assert not any(m.additional_kwargs.get("apx_halt_message") for m in result["messages"])
