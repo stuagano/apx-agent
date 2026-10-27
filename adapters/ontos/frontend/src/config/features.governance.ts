@@ -6,7 +6,7 @@ export const governanceFeatures = [
   {
     id: 'governance-violations',
     name: 'Violations',
-    path: '/governance',
+    path: '/governance/violations',
     description: 'Active policy violations across all crawled resources',
     icon: 'ShieldAlert',
     group: 'govern' as const,
