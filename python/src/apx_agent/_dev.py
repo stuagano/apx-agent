@@ -3820,8 +3820,13 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         # Off the loop: a cold warehouse can take minutes, and blocking here
         # stalls every other request the App is serving.
         import asyncio as _asyncio
+        from fastapi.responses import JSONResponse
 
-        return await _asyncio.to_thread(list_registry_agents, ws=ws)
+        try:
+            return await _asyncio.to_thread(list_registry_agents, ws=ws)
+        except RuntimeError as e:
+            logger.exception("listing the agent registry failed")
+            return JSONResponse({"error": str(e)}, status_code=503)
 
     @router.get("/_apx/grounding")
     async def grounding_ui() -> Any:
