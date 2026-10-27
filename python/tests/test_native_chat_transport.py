@@ -2,6 +2,8 @@
 
 import pytest
 
+from apx_agent._ui_chat import NATIVE_PANEL_HIDE
+
 from tests.test_native_invocation_contract import native, request_body  # noqa: F401
 from tests.test_runtime_targets import execution  # noqa: F401
 
@@ -19,8 +21,8 @@ def test_native_chat_mounts_without_legacy_handlers(native):
     assert "apxNativeChat" in native.client.get("/").text
     assert native.client.post("/invocations", json={}).status_code == 404
     assert native.client.post("/api/invocations", json=request_body()).status_code == 401
-    # Apps do not enable the developer surface implicitly.
-    assert native.client.get("/_apx/chat").status_code == 404
+    # "Apps do not enable the developer surface implicitly" is pinned where the App env is
+    # set before compile (test_typed_native_host_mounts_dev_ui_with_native_chat[None]).
     assert native.client.get("/api/input-schema").json() is None
     assert native.client.post("/api/input-validation", json={}).status_code == 422
 
@@ -146,14 +148,43 @@ def test_typed_native_host_mounts_dev_ui_with_native_chat(execution, monkeypatch
         if dev_ui is None:  # Apps do not enable the developer surface implicitly
             assert shell.status_code == 404
             assert client.get("/_apx/discover").status_code == 404
+            assert client.get("/_apx/chat").status_code == 404
             return
         assert shell.status_code == 200, shell.text
         assert client.get("/_apx/discover").status_code == 200
         assert client.get("/_apx/topology.json").status_code == 200
         chat = client.get("/_apx/chat")
         assert chat.status_code == 200 and "apxNativeChat" in chat.text
+        # The right panel shows what works on a durable host (Tools, MCP) and opens on Tools;
+        # History/Trace/Events/Eval read stores and hooks the durable transport doesn't feed.
+        assert 'id="right-panel"' in chat.text and "#right-panel," not in chat.text
+        assert NATIVE_PANEL_HIDE in chat.text and "switchTab('tools'" in chat.text
+        tools = client.get("/_apx/tools")  # the Tools tab's iframe
+        assert tools.status_code == 200 and "apx-dubois-theme" in tools.text
         assert client.post("/_apx/eval/judge", json={}).status_code == 404
         assert "/_apx/eval" not in shell.text  # no Eval tab that would load a 404
         # Tool replay re-runs a tool from JSON args (the Tools page's Run), not chat text.
         assert client.post("/_apx/replay/tool", json={}).status_code != 404
         assert app.state.dev_ui_mount_error is None
+
+
+def test_durable_dev_chat_survives_a_project_ui_at_root(execution, monkeypatch, tmp_path):
+    # A project UI mounted at "/" after compile keeps the root; the shell's Chat tab still loads.
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.testclient import TestClient
+    from apx_agent import compile_agent
+    from tests.test_runtime_targets import _write_native_pyproject
+
+    _write_native_pyproject(tmp_path)
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "index.html").write_text("<p>project ui</p>")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setenv("APX_DEV_UI", "1")
+    app = compile_agent(execution.agent, target="durable_agent_server", model="test", service_ws=execution.ws)
+    app.mount("/", StaticFiles(directory=tmp_path / "dist", html=True))
+    with TestClient(app) as client:
+        assert "project ui" in client.get("/").text
+        chat = client.get("/_apx/chat")
+        assert chat.status_code == 200 and "apxNativeChat" in chat.text

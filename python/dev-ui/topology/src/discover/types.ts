@@ -19,27 +19,27 @@ export interface GraphResponse {
 
 // Lattice NodeTypes palette, mapped onto the Du Bois dark theme strokes.
 export const NODE_COLORS: Record<string, string> = {
-  Catalog: "#1a5fc4",
-  Schema: "#5f6469",
-  Table: "#1f2124",
-  View: "#0e7490",
-  Volume: "#4d7c0f",
-  Function: "#137333",
-  Model: "#be123c",
-  GenieSpace: "#8b5000",
-  VectorSearchIndex: "#0b7285",
-  ServingEndpoint: "#c2410c",
-  App: "#7040a0",
+  Catalog: "#4299E0",
+  Schema: "#92A4B3",
+  Table: "#E8ECF0",
+  View: "#06B6D4",
+  Volume: "#A3E635",
+  Function: "#3BA65E",
+  Model: "#E11D48",
+  GenieSpace: "#FACB66",
+  VectorSearchIndex: "#22D3EE",
+  ServingEndpoint: "#FB923C",
+  App: "#A78BFA",
 };
 
 // Port of Lattice EdgeLegend, cut to the v1 edge types.
 export const EDGE_LEGEND: ReadonlyArray<{ type: string; color: string; dashed?: boolean; description: string }> = [
-  { type: "contains", color: "#777d86", description: "Catalog→Schema→Table/View/Volume/Function/Model" },
-  { type: "derivedFrom", color: "#0e7490", description: "View→source Table" },
-  { type: "feedsInto", color: "#1a5fc4", dashed: true, description: "Table→Table lineage" },
-  { type: "indexesFrom", color: "#0b7285", description: "Vector Search index→source Table" },
-  { type: "serves", color: "#be123c", description: "Serving endpoint→Model" },
-  { type: "uses", color: "#7040a0", description: "Genie space/App→asset" },
+  { type: "contains", color: "#445461", description: "Catalog→Schema→Table/View/Volume/Function/Model" },
+  { type: "derivedFrom", color: "#06B6D4", description: "View→source Table" },
+  { type: "feedsInto", color: "#4299E0", dashed: true, description: "Table→Table lineage" },
+  { type: "indexesFrom", color: "#22D3EE", description: "Vector Search index→source Table" },
+  { type: "serves", color: "#E11D48", description: "Serving endpoint→Model" },
+  { type: "uses", color: "#A78BFA", description: "Genie space/App→asset" },
 ];
 
 export const NODE_TYPES = Object.keys(NODE_COLORS);

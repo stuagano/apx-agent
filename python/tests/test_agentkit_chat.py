@@ -104,7 +104,7 @@ def test_project_root_ui_keeps_slash(tmp_path: Path, monkeypatch: pytest.MonkeyP
         assert "/_apx/assets/agentkit/app.js" in client.get("/_apx/chat").text
 
 
-def test_topology_bundle_carries_agentkit_palette() -> None:
+def test_topology_bundle_carries_dubois_palette() -> None:
     from ctk import Artifact, verify
 
     assets = SRC / "_static" / "topology" / "assets"
@@ -112,11 +112,8 @@ def test_topology_bundle_carries_agentkit_palette() -> None:
     js = sorted(assets.glob("*.js"))
     assert len(css) == 1 and js, "rebuild the topology bundle (npm run build)"
     verify(
-        Artifact(str(css[0]), min_bytes=1000, must_contain="#f1f3ff", must_not_contain="#11171C"),
-        Artifact(str(css[0]), min_bytes=1000, must_contain="#1a73e8"),
-        *(Artifact(str(p), min_bytes=1000, must_not_contain="#11171C") for p in js),
-        # Discover edges must stay visible on the #f1f3ff canvas.
-        *(Artifact(str(p), min_bytes=1000, must_not_contain="#d9dce6") for p in assets.glob("discover-*.js")),
+        Artifact(str(css[0]), min_bytes=1000, must_contain="#11171C", must_not_contain="#f1f3ff"),
+        *(Artifact(str(p), min_bytes=1000, must_not_contain="#f1f3ff") for p in js),
     )
 
 

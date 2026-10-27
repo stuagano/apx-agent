@@ -18,15 +18,15 @@ async def test_trace_list_uses_dubois(dev_ui_app):
     """Verify trace list page uses AgentKit theme (not legacy palette)."""
     r = await _get(dev_ui_app, "/_apx/traces")
     assert r.status_code == 200
-    assert "apx-agentkit-theme" in r.text, "AgentKit theme style block must be injected"
+    assert "apx-dubois-theme" in r.text, "AgentKit theme style block must be injected"
 
     # Verify legacy neutral palette is gone
     for legacy in ["#0a0a0a", "#e5e7eb", "#2a2a2a", "#888"]:
         assert legacy not in r.text, f"trace list still uses legacy {legacy}"
 
     # Verify AgentKit palette is present
-    assert "#f1f3ff" in r.text, "AgentKit bg not found"
-    assert "#1a73e8" in r.text, "AgentKit accent not found"
+    assert "#11171C" in r.text, "Du Bois bg not found"
+    assert "#2272B4" in r.text, "Du Bois accent not found"
 
 
 @pytest.mark.asyncio
@@ -36,15 +36,15 @@ async def test_trace_detail_uses_dubois(dev_ui_app):
     # the HTML it renders for the theme before the error happens in JS
     r = await _get(dev_ui_app, "/_apx/traces/test-trace-id")
     assert r.status_code == 200
-    assert "apx-agentkit-theme" in r.text, "AgentKit theme style block must be injected"
+    assert "apx-dubois-theme" in r.text, "AgentKit theme style block must be injected"
 
     # Verify legacy palette is gone
     for legacy in ["#0a0a0a", "#e5e7eb", "#2a2a2a", "#888"]:
         assert legacy not in r.text, f"trace detail still uses legacy {legacy}"
 
     # Verify AgentKit palette is present
-    assert "#f1f3ff" in r.text, "AgentKit bg not found"
-    assert "#1a73e8" in r.text, "AgentKit accent not found"
+    assert "#11171C" in r.text, "Du Bois bg not found"
+    assert "#2272B4" in r.text, "Du Bois accent not found"
 
 
 @pytest.mark.asyncio
@@ -52,15 +52,15 @@ async def test_trace_diff_uses_dubois(dev_ui_app):
     """Verify trace diff page uses AgentKit theme."""
     r = await _get(dev_ui_app, "/_apx/traces/diff?a=tid1&b=tid2")
     assert r.status_code == 200
-    assert "apx-agentkit-theme" in r.text, "AgentKit theme style block must be injected"
+    assert "apx-dubois-theme" in r.text, "AgentKit theme style block must be injected"
 
     # Verify legacy palette is gone
     for legacy in ["#0a0a0a", "#e5e7eb", "#2a2a2a", "#888"]:
         assert legacy not in r.text, f"trace diff still uses legacy {legacy}"
 
     # Verify AgentKit palette is present
-    assert "#f1f3ff" in r.text, "AgentKit bg not found"
-    assert "#1a73e8" in r.text, "AgentKit accent not found"
+    assert "#11171C" in r.text, "Du Bois bg not found"
+    assert "#2272B4" in r.text, "Du Bois accent not found"
 
 
 @pytest.mark.asyncio

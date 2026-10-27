@@ -363,7 +363,7 @@ export function NodeInspector(props: NodeInspectorProps) {
         {loading && <div style={{ color: "var(--muted)" }}>Loading…</div>}
 
         {error && !loading && (
-          <div style={{ color: "#b3261e" }}>Could not load node details: {error}</div>
+          <div style={{ color: "#C83243" }}>Could not load node details: {error}</div>
         )}
 
         {data && !loading && !error && (

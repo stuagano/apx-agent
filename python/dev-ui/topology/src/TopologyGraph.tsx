@@ -39,7 +39,7 @@ export interface TopologyGraphProps {
   onNodeClick: (nodeId: string) => void;
 }
 
-const DEFAULT_NODE_STYLE = { fill: "#f7f8fc", stroke: "#5f6469" };
+const DEFAULT_NODE_STYLE = { fill: "#37444F", stroke: "#92A4B3" };
 const styleFor = (type: string) =>
   NODE_STYLE[type as NodeType] ?? DEFAULT_NODE_STYLE;
 
@@ -88,17 +88,17 @@ function layout(
       className: onRoute ? "apx-route-active" : "",
       style: {
         background: style.fill,
-        border: `1.5px solid ${onRoute ? "#8b5000" : style.stroke}`,
+        border: `1.5px solid ${onRoute ? "#FACB66" : style.stroke}`,
         borderRadius: 6,
-        color: "#1f2124",
+        color: "#E8ECF0",
         fontSize: 12,
         fontWeight: 500,
         padding: "8px 12px",
         width: NODE_WIDTH,
         boxShadow: isSelected
-          ? "0 0 0 2px var(--accent, #1a73e8)"
+          ? "0 0 0 2px var(--accent, #2272B4)"
           : onRoute
-            ? "0 0 0 2px #8b5000, 0 0 12px rgba(139, 80, 0, 0.25)"
+            ? "0 0 0 2px #FACB66, 0 0 12px rgba(250, 203, 102, 0.35)"
             : undefined,
       },
     };
@@ -112,13 +112,13 @@ function layout(
       source: e.source,
       target: e.target,
       label: e.kind,
-      labelStyle: { fill: onRoute ? "#8b5000" : "#5f6469", fontSize: 10 },
-      labelBgStyle: { fill: "#f1f3ff", fillOpacity: 0.85 },
+      labelStyle: { fill: onRoute ? "#FACB66" : "#92A4B3", fontSize: 10 },
+      labelBgStyle: { fill: "#11171C", fillOpacity: 0.85 },
       labelBgPadding: [4, 2] as [number, number],
       labelBgBorderRadius: 3,
       animated: onRoute,
       style: {
-        stroke: onRoute ? "#8b5000" : incident ? "var(--accent, #1a73e8)" : "#777d86",
+        stroke: onRoute ? "#FACB66" : incident ? "var(--accent, #2272B4)" : "#445461",
         strokeWidth: onRoute ? 2.5 : incident ? 2 : 1,
       },
     };
@@ -168,22 +168,22 @@ function TopologyGraphInner(props: TopologyGraphProps) {
       maxZoom={2}
     >
       <FitOnResize />
-      <Background color="#f7f8fc" gap={20} />
+      <Background color="#37444F" gap={20} />
       {!EMBED && showMap && <Controls />}
       {!EMBED && showMap && (
         <MiniMap
           pannable
           zoomable
-          maskColor="rgba(241, 243, 255, 0.7)"
-          style={{ background: "#f1f3ff" }}
+          maskColor="rgba(17, 23, 28, 0.7)"
+          style={{ background: "#11171C" }}
           nodeColor={(node) => {
             const topoNode = data.nodes.find((n) => n.id === node.id);
-            if (!topoNode) return "#d9dce6";
+            if (!topoNode) return "#445461";
             return styleFor(topoNode.type).stroke;
           }}
           nodeStrokeColor={(node) => {
             const topoNode = data.nodes.find((n) => n.id === node.id);
-            if (!topoNode) return "#d9dce6";
+            if (!topoNode) return "#445461";
             return styleFor(topoNode.type).stroke;
           }}
         />

@@ -659,8 +659,9 @@ def test_native_server_exposes_invoke_readback_replay_and_native_chat(
         assert ("GET", "/health") in started
         assert ("GET", "/") in started
         assert ("GET", "/_apx/chat") in started
-        assert "/_apx/assets/agentkit/app.js" in client.get("/").text
-        assert "/_apx/assets/agentkit/app.js" in client.get("/_apx/chat").text
+        for path in ("/", "/_apx/chat"):  # apx's own chat on the durable transport
+            page = client.get(path).text
+            assert "apxNativeChat" in page and "/_apx/assets/agentkit/" not in page
         assert ("POST", "/invocations") not in started
         # This agent has no user-scoped tool, so discovery must not invent one.
         assert app.auth_policy.requires_user is False
@@ -672,7 +673,7 @@ def test_native_server_exposes_invoke_readback_replay_and_native_chat(
 
 
 @pytest.mark.parametrize("dev_ui", ["1", "0"])
-def test_native_server_mounts_agentkit_chat_and_dev_ui(
+def test_native_server_mounts_apx_chat_and_dev_ui(
     execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dev_ui: str,
 ) -> None:
     from fastapi.testclient import TestClient
@@ -685,13 +686,19 @@ def test_native_server_mounts_agentkit_chat_and_dev_ui(
     monkeypatch.setenv("APX_DEV_UI", dev_ui)
     app = compile_agent(execution.agent, target="durable_agent_server", model="test", service_ws=execution.ws)
     with TestClient(app) as client:
-        for path in ("/", "/_apx/chat"):
-            page = client.get(path)
-            assert page.status_code == 200
-            # The vendored AgentKit page, not apx's legacy chat (route order).
-            assert "/_apx/assets/agentkit/app.js" in page.text
-        config = client.get("/_apx/api/ui/config", params={"session_id": "s"})
-        assert config.json()["models"]["default"] == "test"
+        root = client.get("/")
+        assert root.status_code == 200 and "apxNativeChat" in root.text
+        chat = client.get("/_apx/chat")
+        if dev_ui == "1":
+            # apx's chat (Du Bois) with its right panel (history, tools, MCP), not AgentKit's.
+            assert chat.status_code == 200 and "apxNativeChat" in chat.text
+            assert 'id="right-panel"' in chat.text and "#right-panel," not in chat.text
+            from apx_agent._ui_chat import NATIVE_PANEL_HIDE
+            assert NATIVE_PANEL_HIDE in chat.text
+            assert "apx-dubois-theme" in chat.text and "/_apx/assets/agentkit/" not in chat.text
+        else:
+            assert chat.status_code == 404
+        assert client.get("/_apx/api/ui/config", params={"session_id": "s"}).status_code == 404
         assert client.get("/_apx/discover").status_code == (200 if dev_ui == "1" else 404)
         assert app.state.dev_ui_mount_error is None
         # Dev UI handlers read the service client from app.state on every host.

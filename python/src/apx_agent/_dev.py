@@ -2130,8 +2130,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         """Unified tabbed shell hosting every /_apx/* page in one iframe."""
         ctx: AgentContext | None = request.app.state.agent_context
         # Typed native hosts don't mount the free-text Eval routes; don't offer the tab.
-        native = getattr(request.app.state, "_apx_native_chat", False)
-        return HTMLResponse(_render_unified_shell(ctx, hidden_tabs=frozenset({"eval"}) if native else frozenset()))
+        typed = getattr(request.app.state, "_apx_typed_workflow", False)
+        return HTMLResponse(_render_unified_shell(ctx, hidden_tabs=frozenset({"eval"}) if typed else frozenset()))
 
     @router.get("/_apx/chat", include_in_schema=False)
     async def chat_dev_ui(request: Request) -> HTMLResponse:

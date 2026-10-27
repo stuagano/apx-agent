@@ -318,9 +318,16 @@ def compile_durable_handlers(
     return DurableHandlers(invoke=invoke)
 
 
-def _free_text_dev_route(path: str) -> bool:
-    """Dev UI routes that send plain chat messages, which typed workflow leaves reject."""
-    return path == "/_apx/chat" or path.startswith("/_apx/eval")
+def _dev_ui_enabled(*, typed: bool) -> bool:
+    """Typed hosts keep their opt-in default on Apps; untyped hosts mount unless APX_DEV_UI=0."""
+    if typed:
+        return os.environ.get("APX_DEV_UI", "0" if os.environ.get("DATABRICKS_APP_NAME") else "1") != "0"
+    return os.environ.get("APX_DEV_UI") != "0"
+
+
+def _hidden_dev_route(path: str, *, typed: bool) -> bool:
+    """Dev routes a durable host replaces (its own /_apx/chat) or, typed, can't serve (free-text Eval)."""
+    return path == "/_apx/chat" or (typed and path.startswith("/_apx/eval"))
 
 
 def compile_to_durable_agent_server(
@@ -391,45 +398,42 @@ def compile_to_durable_agent_server(
         getattr(leaf, "_input_schema", None) is not None or getattr(leaf, "_output_schema", None) is not None
         for leaf in _collect_guardrail_targets(agent)
     )
-    if typed_workflow:
-        from fastapi.responses import HTMLResponse
-        from ._ui_chat import _render_agent_ui
-        from ._ui_root_chat import build_root_chat_router
+    from fastapi.responses import HTMLResponse
+    from ._ui_chat import _render_agent_ui
+    from ._ui_root_chat import build_root_chat_router
 
-        app.state._apx_native_chat = True
+    # apx's own chat on the durable transport: "/" for users and, with the dev UI,
+    # /_apx/chat (with its right panel) as the dev shell's Chat tab.
+    app.state._apx_native_chat = True
+    app.state._apx_typed_workflow = typed_workflow
 
-        async def _mount_native_chat() -> None:
-            app.include_router(build_root_chat_router())
-            if os.environ.get("APX_DEV_UI", "0" if os.environ.get("DATABRICKS_APP_NAME") else "1") != "0":
-                @app.get("/_apx/chat", include_in_schema=False)
-                async def native_chat(request: Request) -> HTMLResponse:
-                    return HTMLResponse(_render_agent_ui(
-                        getattr(app.state, "agent_context", None),
-                        embed=request.query_params.get("embed") == "1", native=True,
-                    ))
+    async def _mount_root_chat() -> None:  # at startup, so a project UI at "/" keeps the root
+        app.include_router(build_root_chat_router())
 
-        _chain_lifespan(app, _mount_native_chat)
-    else:
-        from ._ui_agentkit_chat import mount_agentkit_chat
-
-        mount_agentkit_chat(app, model=model, ws=service_ws)
+    _chain_lifespan(app, _mount_root_chat)
+    dev_ui = _dev_ui_enabled(typed=typed_workflow)
+    if dev_ui:
+        # Registered now, ahead of any project mount at "/", so the shell's Chat tab loads.
+        @app.get("/_apx/chat", include_in_schema=False)
+        async def native_chat(request: Request) -> HTMLResponse:
+            return HTMLResponse(_render_agent_ui(
+                getattr(app.state, "agent_context", None),
+                embed=request.query_params.get("embed") == "1", native=True,
+            ))
     # Dev UI handlers read the service client here (the MLflow host sets it too).
     app.state.workspace_client = service_ws
     # The card advertises /api/invocations so peers use the durable contract.
     app.state.apx_durable_host = True
     app.state.dev_ui_mount_error = None
-    # Typed hosts keep their opt-in default on Apps (as their native /_apx/chat does).
-    dev_ui = (os.environ.get("APX_DEV_UI", "0" if os.environ.get("DATABRICKS_APP_NAME") else "1") != "0"
-              if typed_workflow else os.environ.get("APX_DEV_UI") != "0")
     if dev_ui:
         try:
             from ._dev import build_dev_ui_router
 
             router = build_dev_ui_router()
-            if typed_workflow:
-                # Typed leaves take structured input: the native /_apx/chat (mounted at
-                # startup) is the Chat tab, and the free-text Eval actions stay off.
-                router.routes = [r for r in router.routes if not _free_text_dev_route(getattr(r, "path", ""))]
+            # The native /_apx/chat (mounted at startup) is the Chat tab; typed leaves also
+            # drop the free-text Eval actions.
+            router.routes = [r for r in router.routes
+                             if not _hidden_dev_route(getattr(r, "path", ""), typed=typed_workflow)]
             if not hasattr(app.state, "agent_context"):
                 app.state.agent_context = None  # the shell renders without a config
             app.include_router(router)

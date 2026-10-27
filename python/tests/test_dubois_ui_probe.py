@@ -36,7 +36,7 @@ async def _get(app: FastAPI, path: str) -> str:
 def _extract_probe_css(html: str) -> str:
     """Extract the second <style> block (probe CSS, after theme CSS)."""
     styles = re.findall(r'<style>(.*?)</style>', html, re.DOTALL)
-    # First style is theme (apx-agentkit-theme marker), second is probe CSS
+    # First style is theme (apx-dubois-theme marker), second is probe CSS
     return styles[1] if len(styles) >= 2 else ""
 
 
@@ -45,9 +45,9 @@ class TestProbeUsesDuboisTokens:
 
     @pytest.mark.asyncio
     async def test_probe_uses_dubois_tokens(self, dev_ui_app):
-        """The probe page must contain the apx-agentkit-theme marker and use CSS vars."""
+        """The probe page must contain the apx-dubois-theme marker and use CSS vars."""
         r = await _get(dev_ui_app, "/_apx/probe")
-        assert "apx-agentkit-theme" in r, "Missing apx-agentkit-theme marker"
+        assert "apx-dubois-theme" in r, "Missing apx-dubois-theme marker"
 
     @pytest.mark.asyncio
     async def test_probe_css_uses_design_tokens(self, dev_ui_app):

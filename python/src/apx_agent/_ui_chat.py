@@ -31,6 +31,18 @@ _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# History/Trace/Events/Eval read the conversation store and the legacy send hooks, which the
+# durable transport doesn't feed; hidden on native pages rather than shown empty or broken.
+NATIVE_PANEL_HIDE = (
+    "<style>#btn-deploy,#setup-banner,"
+    + ",".join(f".panel-tabs button[onclick*=\"'{t}'\"],#tab-{t}" for t in ("history", "trace", "events", "eval"))
+    + "{display:none!important}</style>"
+)
+NATIVE_PANEL_OPEN_TOOLS = (
+    "<script>switchTab('tools', document.querySelector(\".panel-tabs button[onclick*=\\\"'tools'\\\"]\"));</script>"
+)
+
+
 def _render_unified_shell(ctx: AgentContext | None, *, hidden_tabs: frozenset[str] = frozenset()) -> str:
     """Render the tabbed shell that hosts every /_apx/* page in one iframe.
 
@@ -2966,8 +2978,10 @@ inputEl.focus();
 
         page = page.replace('<script src="/_apx/vendor/marked.min.js"></script>', _inline_vendor())
         page = page.replace('<script src="/_apx/vendor/purify.min.js"></script>', '')
-        # Native hosts mount chat only; legacy eval, history and deploy controls have no backend.
-        page = page.replace('</head>', '<style>#right-panel,.resize-handle,header nav,#btn-deploy,#setup-banner {display:none!important}</style></head>', 1)
+        # Durable hosts: the native transport takes over send, so the right panel keeps what
+        # works there (Tools, MCP) and opens on Tools; deploy/setup have no backend either.
+        page = page.replace('</head>', NATIVE_PANEL_HIDE + '</head>', 1)
+        page = page.replace('</body>', NATIVE_PANEL_OPEN_TOOLS + '</body>', 1)
     return (page.replace("{APX_TABLE_CSS}", TABLE_CSS).replace("{APX_TABLE_JS}", TABLE_JS)
             .replace("{APX_NATIVE_CHAT}", native_chat_script(root=False) if native else ""))
 
