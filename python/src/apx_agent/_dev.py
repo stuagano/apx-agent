@@ -3832,7 +3832,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         try:
             return await _asyncio.to_thread(_read)
-        except RuntimeError as e:
+        except (RuntimeError, ValueError) as e:
             logger.exception("listing the agent registry failed")
             return JSONResponse({"error": str(e)}, status_code=503)
 

@@ -11106,11 +11106,16 @@ def _record_in_registry(
             endpoint_url=endpoint_url, endpoint_type="apps",
             supervisor_agent_id=supervisor_agent_id, registry_table=tables.agents, ws=ws,
         )
-    except Exception as e:
+    except PermissionError as e:  # _assert_registry_owner: row owned by someone else
         raise _registry.RegistryStepError(
             step="write the agent's row", table=tables.agents, cause=e,
             fix=("a row for this agent was published by another principal; redeploy as that "
                  "principal or remove the row with `apx-agent agents delete`"),
+        ) from e
+    except Exception as e:
+        raise _registry.RegistryStepError(
+            step="write the agent's row", table=tables.agents, cause=e,
+            fix=f"check MODIFY on {tables.agents} for the deployer",
         ) from e
     log(f"  registry: {name} recorded in {tables.agents}")
     if module is None:
@@ -11140,19 +11145,22 @@ def _deploy_registry_step(
     module: str, log: Callable[[str], None],
 ) -> None:
     """Deploy contract: the live App must be recorded in the registry."""
-    from ._registry import RegistryStepError
-
-    ws, _ = _connect_workspace(profile)
     cfg = _read_apx_agent_config()
-    sp_client_id = ws.apps.get(app_name).service_principal_client_id
     try:
+        ws, _ = _connect_workspace(profile)
+        sp_client_id = ws.apps.get(app_name).service_principal_client_id
+        if not sp_client_id:
+            raise RuntimeError(
+                f"the Apps API reports no service principal for {app_name!r}, so it can't be "
+                "granted access to the agent registry"
+            )
         _record_in_registry(
             ws=ws, tables=tables, name=app_name, display_name=cfg.get("name") or app_name,
             description=cfg.get("description") or app_name, endpoint_url=app_url,
             sp_client_id=sp_client_id, module=module,
             supervisor_agent_id=cfg.get("supervisor_id"), log=log,
         )
-    except RegistryStepError as exc:
+    except Exception as exc:
         raise click.ClickException(
             f"the app is STILL LIVE but is not recorded in the agent registry:\n  app: {app_name}\n  {exc}\n"
             "Re-run the deploy after the fix, or pass --no-registry to skip."
@@ -11223,7 +11231,10 @@ def _do_advertise(
                 )
             except NotFound:
                 sp_client_id = None
-            _registry.provision_registry(ws, tables=tables, sp_client_id=sp_client_id)
+            try:
+                _registry.provision_registry(ws, tables=tables, sp_client_id=sp_client_id)
+            except Exception as exc:  # grants are best-effort here; the row still matters
+                click.echo(click.style(f"  ✗ Registry provisioning incomplete: {exc}", fg="yellow"), err=True)
             publish_to_registry(
                 name=endpoint, description=description,
                 display_name=display_name or endpoint, endpoint_url=endpoint_url,

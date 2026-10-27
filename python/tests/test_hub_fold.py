@@ -515,3 +515,28 @@ def test_hub_fleet_unresolvable_catalog_is_503(dev_ui_app, monkeypatch):
     r = TestClient(dev_ui_app, raise_server_exceptions=False).get(
         "/_apx/hub/fleet", headers={"X-Forwarded-Access-Token": "t", "X-Forwarded-User": "a@x.com"})
     assert r.status_code == 503 and "registry_table" in r.json()["error"]
+
+
+def test_hub_fleet_warehouse_denial_during_resolution_is_503(dev_ui_app, monkeypatch):
+    import apx_agent._sql as sql
+    from databricks.sdk.errors import PermissionDenied
+    from starlette.testclient import TestClient
+
+    monkeypatch.delenv("APX_REGISTRY_TABLE", raising=False)
+
+    def run_sql(ws, q, **k):
+        raise PermissionDenied("no CAN_USE on warehouse")
+
+    monkeypatch.setattr(sql, "run_sql", run_sql)
+    r = TestClient(dev_ui_app, raise_server_exceptions=False).get(
+        "/_apx/hub/fleet", headers={"X-Forwarded-Access-Token": "t", "X-Forwarded-User": "a@x.com"})
+    assert r.status_code == 503 and "CAN_USE" in r.json()["error"]
+
+
+def test_hub_fleet_malformed_env_table_is_503(dev_ui_app, monkeypatch):
+    from starlette.testclient import TestClient
+
+    monkeypatch.setenv("APX_REGISTRY_TABLE", "not a table; DROP")
+    r = TestClient(dev_ui_app, raise_server_exceptions=False).get(
+        "/_apx/hub/fleet", headers={"X-Forwarded-Access-Token": "t", "X-Forwarded-User": "a@x.com"})
+    assert r.status_code == 503
