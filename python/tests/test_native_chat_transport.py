@@ -188,3 +188,17 @@ def test_durable_dev_chat_survives_a_project_ui_at_root(execution, monkeypatch, 
         assert "project ui" in client.get("/").text
         chat = client.get("/_apx/chat")
         assert chat.status_code == 200 and "apxNativeChat" in chat.text
+
+
+def test_native_page_injections_land_in_the_real_head_and_body():
+    # The inlined DOMPurify contains "<head></head><body>" in a JS string; an injection must
+    # never land there (it broke the page script: "Unexpected identifier 'button'").
+    from apx_agent._ui_chat import NATIVE_PANEL_HIDE, NATIVE_PANEL_OPEN_TOOLS, _render_agent_ui
+    from tests.test_dev_ui_routes import _make_ctx
+
+    html = _render_agent_ui(_make_ctx(), native=True)
+    assert html.count(NATIVE_PANEL_OPEN_TOOLS) == 1 and html.count(NATIVE_PANEL_HIDE) == 1
+    script, css = html.index(NATIVE_PANEL_OPEN_TOOLS), html.index(NATIVE_PANEL_HIDE)
+    assert html.rfind("<script", 0, script) < html.rfind("</script>", 0, script)  # not inside a script
+    assert html.rfind("<script", 0, css) < html.rfind("</script>", 0, css) or html.rfind("<script", 0, css) == -1
+    assert html[script + len(NATIVE_PANEL_OPEN_TOOLS):].strip() == "</body>\n</html>"

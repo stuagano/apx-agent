@@ -2981,7 +2981,9 @@ inputEl.focus();
         # Durable hosts: the native transport takes over send, so the right panel keeps what
         # works there (Tools, MCP) and opens on Tools; deploy/setup have no backend either.
         page = page.replace('</head>', NATIVE_PANEL_HIDE + '</head>', 1)
-        page = page.replace('</body>', NATIVE_PANEL_OPEN_TOOLS + '</body>', 1)
+        # The page's own </body> is the last one: the inlined DOMPurify carries "<body>" strings.
+        head, body_end, tail = page.rpartition('</body>')
+        page = head + NATIVE_PANEL_OPEN_TOOLS + body_end + tail
     return (page.replace("{APX_TABLE_CSS}", TABLE_CSS).replace("{APX_TABLE_JS}", TABLE_JS)
             .replace("{APX_NATIVE_CHAT}", native_chat_script(root=False) if native else ""))
 

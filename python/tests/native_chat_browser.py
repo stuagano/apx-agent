@@ -466,6 +466,11 @@ def test_reload_does_not_show_inaccessible_cached_content(browser_chat, failure)
 @pytest.mark.parametrize("surface", ["/", "/_apx/chat"])
 def test_browser_real_native_host(request, monkeypatch, surface):
     monkeypatch.setenv("APX_DEV_UI", "1")
+    # The dev page loads /_apx/workspace-context; give the fake client real strings (as
+    # test_native_server_mounts_apx_chat_and_dev_ui does) so its response validates.
+    ws = request.getfixturevalue("execution").ws
+    ws.config.host = "https://example.cloud.databricks.com"
+    ws.current_user.me.return_value.user_name = "dev@example.com"
     host = request.getfixturevalue("native")
     posts = []
     with sync_playwright() as p:
