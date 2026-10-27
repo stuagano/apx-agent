@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 from typing import Any, Callable
@@ -17,6 +17,7 @@ class GraphTurn:
     messages: list[Any]
     approval_required: Any | None
     resumed: bool
+    state: dict[str, Any] = field(default_factory=dict)  # the final keyed state channel
 
 
 def run_graph_turn(
@@ -139,4 +140,5 @@ def run_graph_turn(
             graph, config, prior, new_messages, budget_cap,
             strict=invocation_id is not None, usd_cap=usd_cap, model=budget_model,
         )
-    return GraphTurn(messages=new_messages, approval_required=None, resumed=resume is not None)
+    return GraphTurn(messages=new_messages, approval_required=None, resumed=resume is not None,
+                     state=dict(result.get("state") or {}))

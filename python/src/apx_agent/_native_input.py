@@ -74,3 +74,14 @@ def input_leaf(agent: Any) -> Any:
     while isinstance(agent, SequentialAgent):
         agent = agent._agents[0]
     return agent
+
+
+def typed_entry_step(agent: Any) -> int | None:
+    """Index of the first top-level step whose input leaf is typed, when the sequence's
+    own entry is untyped (an intake): typed data parts start there (composite-session-keys.md)."""
+    from ._agents import SequentialAgent
+
+    if not isinstance(agent, SequentialAgent) or getattr(input_leaf(agent), "_input_schema", None) is not None:
+        return None
+    return next((i for i, step in enumerate(agent._agents)
+                 if getattr(input_leaf(step), "_input_schema", None) is not None), None)

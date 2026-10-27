@@ -852,6 +852,42 @@ dependencies in the model environment. Cached runtime handlers are rebuilt after
 loading. Explicit checkpointers, stores and tool closures must be serializable;
 use MLflow models-from-code when constructing external runtime resources.
 
+## Session state on durable composites (`session_keys`, `halt_statuses`)
+
+A durable composite runs fresh on every request; it has no graph checkpointer. For an
+intake that has to remember slots across turns (the ADK pattern: an untyped step turns
+the conversation into a typed request and asks a follow-up when slots are missing),
+declare which state keys persist and which statuses stop the sequence:
+
+```python
+SequentialAgent(
+    [intake, lookup, score, report],
+    session_keys=("intake",),        # persisted across turns of one session
+    halt_statuses=("needs_input",),  # stop after a step whose status is one of these
+)
+```
+
+- **Persisted keys.** Only the listed keys persist. They're loaded from the App's
+  managed Session Store at the start of a turn and saved when the turn completes.
+  The store is the declared or auto-attached managed session, or `AGENT_SESSION_STORE`.
+  - State is per agent, user and session (`session_thread_config` plus an `apx-state`
+    Session), so users never share it. `session_keys` therefore require request-user
+    authentication: the App rejects calls without a forwarded user identity.
+  - A typed `apx_data_parts` value wins over a persisted key of the same name.
+  - A nested sequence's halt also stops its parent.
+  - A failed or interrupted turn saves nothing.
+  - Other state, such as earlier `output_key` payloads, never carries into the next turn.
+  - Keys must be unprefixed: `user:` and `app:` scopes aren't stored here.
+  - A composite with `session_keys` and no store fails at compile.
+- **Halting.** After a step whose `output_status_path` value is in `halt_statuses`,
+  the sequence ends. That step's message is the answer, and no later step runs.
+  This is a normal completed turn, not an escalation.
+- **Typed entry.** When the sequence's first step is untyped and a request carries
+  `apx_data_parts`, the part is validated against the first typed step's
+  `input_schema` and the sequence starts at that step. Typed callers keep working
+  unchanged.
+- **Still refused for composites:** a full checkpointer, recovery and approvals.
+
 ## Exact typed native workflow artifacts
 
 On native invocations, object-valued `output_schema` results are validated as

@@ -68,7 +68,9 @@ def inspect_target(
     # auto-derived store rather than refuse to compile, and don't let it count
     # as a declared session requirement below. An explicit session_store= for a
     # composite agent still errors below (it's a real caller mistake).
-    effective_session = session if isinstance(agent, LlmAgent) else None
+    # A composite that declares session_keys binds the managed store for its allow-listed
+    # state (composite-session-keys.md); it still never gets a graph checkpointer.
+    effective_session = session if isinstance(agent, LlmAgent) or getattr(agent, "_session_keys", ()) else None
     if effective_session is not None and effective_session.type == "managed" and checkpointer is None:
         if session_store is not None and session_store != effective_session.store_name:
             raise ValueError("session_store conflicts with the declared session.store_name")
@@ -83,8 +85,8 @@ def inspect_target(
             raise ValueError("session_store must be a non-empty managed store name")
         if target != "durable_agent_server" or checkpointer is not None:
             raise ValueError("session_store requires durable_agent_server and cannot be combined with checkpointer")
-        if not isinstance(agent, LlmAgent):
-            raise ValueError("session_store currently requires LlmAgent")
+        if not isinstance(agent, LlmAgent) and not getattr(agent, "_session_keys", ()):
+            raise ValueError("session_store currently requires LlmAgent (or a composite declaring session_keys)")
     from ._apps_authorization import infer_operation_authorization
     from ._resources import _iter_tool_fns, _iter_sub_agents
     from ._topology import _iter_child_agents
@@ -110,6 +112,8 @@ def inspect_target(
     }
     responses = target == "responses_agent"
     checkpointed = (checkpointer is not None or session_store is not None) and isinstance(agent, LlmAgent)
+    # A composite's allow-listed session state (composite-session-keys.md) satisfies sessions, not approvals.
+    session_state_bound = session_store is not None and bool(getattr(agent, "_session_keys", ()))
     memory_bound = (
         getattr(agent, "_apx_memory_store", None) is not None
         and not getattr(agent, "_apx_memory_degraded", None)
@@ -143,7 +147,7 @@ def inspect_target(
     capabilities = {
         "user_identity": TargetCapability(responses or not raw_request_required, "The durable target supports SDK request-user clients, SQL and principal dependencies, and per-hop user OBO to sub-agents; raw headers and Request remain unsupported."),
         "approvals": TargetCapability(checkpointed, "Approvals require an LlmAgent checkpoint binding and stable session; native request-user sessions are isolated by the SDK and authenticated principal."),
-        "sessions": TargetCapability(checkpointed or (responses and conversation_store is not None), "An explicit checkpoint/history binding is required; restart persistence depends on the selected store."),
+        "sessions": TargetCapability(checkpointed or session_state_bound or (responses and conversation_store is not None), "An explicit checkpoint/history binding is required; restart persistence depends on the selected store."),
         "long_term_memory": TargetCapability(memory_bound, "Bind a reachable declared store; managed memory uses AgentKit workspace memory stores and trusted caller actor IDs."),
         "recovery": TargetCapability(recovery_supported, "Opt-in recovery requires a managed Session Store, service identity and an unwrapped LlmAgent. Tools and callbacks must tolerate replay of uncommitted work; request-user recovery is unsupported by the SDK."),
         "streaming": TargetCapability(True, "Native events are persisted: incremental message deltas normally, or a validated final message when output checks require buffering."),

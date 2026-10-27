@@ -28,7 +28,7 @@ import inspect
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -626,16 +626,51 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             init_name += "_"
         graph.add_node(init_name, lambda state: {"_apx_escalation": None, "_apx_step_evidence": []})
         graph.add_edge(START, init_name)
-        graph.add_edge(init_name, node_names[0])
+        entry_from = init_name
     else:
-        graph.add_edge(START, node_names[0])
+        entry_from = START
+    from ._native_input import typed_entry_step
+
+    entry = typed_entry_step(agent) if not ctx.step_path else None
+    if entry is None:
+        graph.add_edge(entry_from, node_names[0])
+    else:
+        # A typed data part skips the untyped intake and starts at the first typed step.
+        typed_node = node_names[entry]
+        graph.add_conditional_edges(
+            entry_from,
+            lambda state: typed_node if state.get("state", {}).get("_apx_typed_entry") == entry else node_names[0],
+            {typed_node: typed_node, node_names[0]: node_names[0]},
+        )
+    def _halted(sub: BaseAgent, statuses: frozenset[str]) -> Callable[[dict[str, Any]], bool] | None:
+        """A step's halt check: its declared status (output_key at output_status_path) is a halt
+        status. A nested sequence halts its parent when any of its own steps halted it."""
+        if isinstance(sub, SequentialAgent):
+            checks = [c for c in (_halted(child, sub._halt_statuses) for child in sub._agents) if c is not None]
+            return (lambda state: any(c(state) for c in checks)) if checks else None
+        key, status_path = getattr(sub, "_output_key", None), getattr(sub, "_output_status_path", None)
+        if not statuses or not key or not status_path:
+            return None
+
+        def check(state: dict[str, Any]) -> bool:
+            value: Any = state.get("state", {}).get(key)
+            for part in status_path:
+                value = value.get(part) if isinstance(value, dict) else None
+            return isinstance(value, str) and value in statuses
+        return check
+
     for i, (src, dst) in enumerate(zip(node_names, node_names[1:])):
         # Insert a continuation node so dst never receives a conversation that
         # ends with src's assistant message (see _sequential_continuation).
         cont = f"_continue_{i}"
         graph.add_node(cont, _sequential_continuation)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
-        if protected:
-            graph.add_conditional_edges(src, lambda state: "stop" if state.get("_apx_escalation") is not None else "next", {"stop": END, "next": cont})
+        halted = _halted(agent._agents[i], agent._halt_statuses)
+        if protected or halted is not None:
+            def route(state: dict[str, Any], halted: Callable[[dict[str, Any]], bool] | None = halted) -> str:
+                if protected and state.get("_apx_escalation") is not None:
+                    return "stop"
+                return "stop" if halted is not None and halted(state) else "next"
+            graph.add_conditional_edges(src, route, {"stop": END, "next": cont})
         else:
             graph.add_edge(src, cont)
         graph.add_edge(cont, dst)
