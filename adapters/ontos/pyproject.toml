@@ -22,6 +22,11 @@ dependencies = [
 governance = [
     "databricks-sql-connector>=3.0.0",
 ]
+# ontos_sync.sync_classifications_to_ontos (pyspark comes from the caller's runtime)
+sync = [
+    "databricks-sdk>=0.20.0",
+    "requests>=2.28",
+]
 # OWL/Turtle export needs the engine's OntologyEngine, which is not
 # published as a PyPI package — install the governance-monitoring
 # engine from source alongside this adapter to use it.
