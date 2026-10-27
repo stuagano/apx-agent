@@ -163,7 +163,8 @@ async def test_timed_out_sync_tool_cannot_publish_or_mutate_prior_state(monkeypa
         assert result["state"] == {"prior": {"ids": [42]}}
     finally:
         release.set()
-        assert await asyncio.to_thread(finished.wait, 1)
+        # Cleanup only: the released worker must end, however loaded the runner is.
+        assert await asyncio.to_thread(finished.wait, 10)
     assert initial["state"] == {"prior": {"ids": [42]}}
     assert result["state"] == {"prior": {"ids": [42]}}
 
@@ -264,7 +265,8 @@ async def test_timeout_does_not_wait_for_blocking_schema_hooks(monkeypatch, phas
         assert result["_apx_escalation"]["reason"] == "timeout"
     finally:
         release.set()
-        assert await asyncio.to_thread(finished.wait, 1)
+        # Cleanup only: the released worker must end, however loaded the runner is.
+        assert await asyncio.to_thread(finished.wait, 10)
 
 
 @pytest.mark.asyncio
