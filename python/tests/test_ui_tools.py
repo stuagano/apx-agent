@@ -62,14 +62,15 @@ class _FakeStatementExecution:
 
 
 class _FakeWarehouse:
-    def __init__(self, wid: str, wh_type: str) -> None:
+    def __init__(self, wid: str, wh_type: str, *, serverless: bool) -> None:
         self.id = wid
         self.warehouse_type = wh_type
+        self.enable_serverless_compute = serverless
 
 
 class _FakeWarehouses:
     def list(self):
-        return [_FakeWarehouse("wh-serverless-1", "PRO_SERVERLESS")]
+        return [_FakeWarehouse("wh-classic-1", "CLASSIC", serverless=False), _FakeWarehouse("wh-serverless-1", "PRO", serverless=True)]
 
 
 class _FakeConfig:

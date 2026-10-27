@@ -255,7 +255,7 @@ def _connection_status(functions: list[Any], config: dict[str, Any]) -> dict[str
             except Exception:
                 warehouses = []
             for wh in warehouses:
-                if getattr(wh, "warehouse_type", None) and "serverless" in str(wh.warehouse_type).lower():
+                if wh.enable_serverless_compute:
                     warehouse = (getattr(wh, "id", "") or "").strip()
                     break
             if not warehouse:

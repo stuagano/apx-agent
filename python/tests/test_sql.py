@@ -15,17 +15,20 @@ from apx_agent._sql import get_warehouse_id, run_sql
 
 
 class TestGetWarehouseId:
-    def _make_warehouse(self, wh_id: str, wh_type: str = "") -> MagicMock:
+    def _make_warehouse(self, wh_id: str, wh_type: str = "", *, serverless: bool = False) -> MagicMock:
+        # Real SDK shape: serverless is the ``enable_serverless_compute`` flag
+        # on a PRO warehouse — ``warehouse_type`` is only CLASSIC or PRO.
         wh = MagicMock()
         wh.id = wh_id
         wh.warehouse_type = wh_type
+        wh.enable_serverless_compute = serverless
         return wh
 
     def test_prefers_serverless(self):
         ws = MagicMock()
         ws.warehouses.list.return_value = [
             self._make_warehouse("classic-1", "CLASSIC"),
-            self._make_warehouse("serverless-1", "PRO_SERVERLESS"),
+            self._make_warehouse("serverless-1", "PRO", serverless=True),
         ]
         assert get_warehouse_id(ws) == "serverless-1"
 
@@ -64,7 +67,7 @@ class TestGetWarehouseId:
         ws = MagicMock()
         ws.warehouses.list.return_value = [
             self._make_warehouse("classic-1", "CLASSIC"),
-            self._make_warehouse("serverless-1", "PRO_SERVERLESS"),
+            self._make_warehouse("serverless-1", "PRO", serverless=True),
         ]
         # With prefer_serverless=False, should return first one with an ID
         result = get_warehouse_id(ws, prefer_serverless=False)
@@ -142,7 +145,8 @@ class TestRunSql:
         ws = self._make_ws(result)
         wh = MagicMock()
         wh.id = "auto-wh"
-        wh.warehouse_type = "PRO_SERVERLESS"
+        wh.warehouse_type = "PRO"
+        wh.enable_serverless_compute = True
         ws.warehouses.list.return_value = [wh]
 
         rows = run_sql(ws, "SELECT 1")
