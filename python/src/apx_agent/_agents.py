@@ -245,6 +245,9 @@ class LlmAgent(BaseAgent):
     must be published instead of the model's final JSON. Skipped/repeated calls fail.
     ``output_status_path`` selects a nested JSON field for recorded native domain
     status; the default is the output's top-level ``status`` field.
+    ``output_message_path`` names the output field a person should read when this
+    step halts a ``SequentialAgent`` (e.g. its follow-up question); the sequence
+    then ends with that text as a plain assistant message.
     Native outputs retain exact JSON and verified DataParts in the reserved
     ``apx_native_artifacts`` state map, indexed by output key (or leaf name).
     The compiled producer validates strictly before publishing JSON-compatible
@@ -305,6 +308,7 @@ class LlmAgent(BaseAgent):
         output_tool: str | None = None,
         timeout_s: float | None = None,
         output_status_path: tuple[str, ...] | None = None,
+        output_message_path: tuple[str, ...] | None = None,
         **settings: Unpack[AgentSettings],
     ) -> None:
         # tools is optional (#449): an orchestrator whose only capabilities are
@@ -342,17 +346,19 @@ class LlmAgent(BaseAgent):
             raise ValueError("input_preparation requires a callable and declared input_schema")
         if output_tool is not None and (output_schema is None or output_tool not in {fn.__name__ for fn in self._tool_fns}):
             raise ValueError("output_tool requires an output_schema and a declared Python tool name")
-        if output_status_path is not None and (
-            output_schema is None or not isinstance(output_status_path, tuple) or not 1 <= len(output_status_path) <= 8
-            or any(not isinstance(key, str) or not 1 <= len(key) <= 64 or not key.isascii() or not key.isidentifier()
-                   for key in output_status_path)
-        ):
-            raise ValueError("output_status_path requires an output_schema and 1-8 safe JSON field names of at most 64 characters")
+        for label, path in (("output_status_path", output_status_path), ("output_message_path", output_message_path)):
+            if path is not None and (
+                output_schema is None or not isinstance(path, tuple) or not 1 <= len(path) <= 8
+                or any(not isinstance(key, str) or not 1 <= len(key) <= 64 or not key.isascii() or not key.isidentifier()
+                       for key in path)
+            ):
+                raise ValueError(f"{label} requires an output_schema and 1-8 safe JSON field names of at most 64 characters")
         self._input_schema = input_schema
         self._input_key = input_key
         self._input_preparation = input_preparation
         self._output_tool = output_tool
         self._output_status_path = output_status_path
+        self._output_message_path = output_message_path
         if timeout_s is not None:
             if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or not math.isfinite(timeout_s) or timeout_s <= 0:
                 raise ValueError("timeout_s must be a positive finite number")

@@ -653,11 +653,30 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             return None
 
         def check(state: dict[str, Any]) -> bool:
-            value: Any = state.get("state", {}).get(key)
-            for part in status_path:
-                value = value.get(part) if isinstance(value, dict) else None
+            value = _state_path(state, key, status_path)
             return isinstance(value, str) and value in statuses
         return check
+
+    def _state_path(state: dict[str, Any], key: str, path: tuple[str, ...]) -> Any:
+        value: Any = state.get("state", {}).get(key)
+        for part in path:
+            value = value.get(part) if isinstance(value, dict) else None
+        return value
+
+    def _halt_message(sub: BaseAgent) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+        """End a halted sequence with the step's declared human message (e.g. its question)."""
+        key, path = getattr(sub, "_output_key", None), getattr(sub, "_output_message_path", None)
+        if not key or not path:
+            return None
+
+        def emit(state: dict[str, Any]) -> dict[str, Any]:
+            from langchain_core.messages import AIMessage
+
+            text = _state_path(state, key, path)
+            if not isinstance(text, str) or not text:
+                return {}
+            return {"messages": [AIMessage(content=text, additional_kwargs={"apx_halt_message": True})]}
+        return emit
 
     for i, (src, dst) in enumerate(zip(node_names, node_names[1:])):
         # Insert a continuation node so dst never receives a conversation that
@@ -669,8 +688,12 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             def route(state: dict[str, Any], halted: Callable[[dict[str, Any]], bool] | None = halted) -> str:
                 if protected and state.get("_apx_escalation") is not None:
                     return "stop"
-                return "stop" if halted is not None and halted(state) else "next"
-            graph.add_conditional_edges(src, route, {"stop": END, "next": cont})
+                return "halt" if halted is not None and halted(state) else "next"
+            emit = _halt_message(agent._agents[i]) if halted is not None else None
+            if emit is not None:
+                graph.add_node(f"_halt_{i}", emit)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
+                graph.add_edge(f"_halt_{i}", END)
+            graph.add_conditional_edges(src, route, {"stop": END, "next": cont, "halt": f"_halt_{i}" if emit else END})
         else:
             graph.add_edge(src, cont)
         graph.add_edge(cont, dst)

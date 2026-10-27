@@ -371,3 +371,41 @@ def test_an_explicit_session_still_conflicts_loudly():
                          session={"type": "managed", "store_name": "apx-declared-sessions"})
     with pytest.raises(ValueError, match="conflicts"):
         inspect_target(root, config=config, target="durable_agent_server", session_store="apx-other-sessions")
+
+
+def test_a_halting_step_can_name_its_human_message(monkeypatch):
+    # The halting step's recorded output stays exact JSON; the person typing gets the question.
+    seen = []
+    _model(monkeypatch, [AIMessage(content='{"status": "needs_input", "question": "Which window?"}')])
+    seq = SequentialAgent([
+        Agent(name="intake", output_schema=Intake, output_key="intake", output_status_path=("status",),
+              output_message_path=("question",)),
+        Agent(name="downstream", before_agent_callback=seen.append),
+    ], name="pipeline", halt_statuses=("needs_input",))
+    result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke(
+        {"messages": [HumanMessage(content="price the savings product")]})
+    assert seen == [] and result["state"]["intake"]["question"] == "Which window?"
+    last = result["messages"][-1]
+    assert last.content == "Which window?" and last.additional_kwargs == {"apx_halt_message": True}
+
+
+def test_a_non_halting_step_adds_no_message(monkeypatch):
+    seen = []
+    _model(monkeypatch, [AIMessage(content='{"status": "ready", "question": "unused"}'), AIMessage(content="done")])
+    seq = SequentialAgent([
+        Agent(name="intake", output_schema=Intake, output_key="intake", output_status_path=("status",),
+              output_message_path=("question",)),
+        Agent(name="downstream", before_agent_callback=seen.append),
+    ], name="pipeline", halt_statuses=("needs_input",))
+    result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke(
+        {"messages": [HumanMessage(content="price the savings product")]})
+    assert len(seen) == 1 and result["messages"][-1].content == "done"
+    assert not any(m.additional_kwargs.get("apx_halt_message") for m in result["messages"])
+
+
+@pytest.mark.parametrize("path", [("",), ("a-b",), (), "question"])
+def test_output_message_path_is_validated_like_the_status_path(path):
+    with pytest.raises(ValueError, match="output_message_path"):
+        Agent(name="intake", output_schema=Intake, output_message_path=path)
+    with pytest.raises(ValueError, match="output_message_path"):
+        Agent(name="intake", output_message_path=("question",))  # needs an output_schema

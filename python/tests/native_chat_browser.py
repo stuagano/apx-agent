@@ -207,6 +207,22 @@ def test_native_message_content_blocks(browser_chat):
     expect(page.locator(".msg.assistant")).to_have_text("Block answer")
 
 
+def test_native_halt_message_is_the_whole_answer(browser_chat):
+    # A halted sequence's follow-up question replaces the step's preamble and recorded JSON.
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"] = [
+        {"type": "ai", "content": "I'll draft the request."},
+        {"type": "ai", "content": '{"status": "needs_input"}', "additional_kwargs": {"apx_data_parts": [
+            {"kind": "data", "data": {"status": "needs_input"}}]}},
+        {"type": "ai", "content": "Which bank?", "additional_kwargs": {"apx_halt_message": True}},
+    ]
+    submit(page)
+    answer = page.locator(".msg.assistant")
+    expect(answer).to_contain_text("Which bank?")
+    shown = answer.evaluate("e => { const c = e.cloneNode(true); c.querySelector('.native-recorded-output')?.remove(); return c.textContent.trim(); }")
+    assert shown == "Which bank?"  # the exact JSON stays only in the recorded-output details
+
+
 def test_native_typed_submission_requires_complete_declared_input(browser_chat):
     page, posts, reads, state, event = browser_chat
     state["input_schema"] = BrowserInput.model_json_schema()
