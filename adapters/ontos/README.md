@@ -216,9 +216,8 @@ uvicorn ontos_governance.app:app --reload   # docs at /docs
 cd python && uv run pytest ../adapters/ontos/tests -q
 ```
 
-These tests are **not** run by apx-agent CI — `pr-pytest-paths.sh` maps
-`adapters/*` changes to the core suite only. Run them by hand when you change
-the adapter.
+CI runs these in their own step (`Run adapter tests` in `.github/workflows/ci.yml`)
+on every code change.
 
 ## Layout
 
