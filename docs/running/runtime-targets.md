@@ -878,7 +878,9 @@ SequentialAgent(
   - A failed or interrupted turn saves nothing.
   - Other state, such as earlier `output_key` payloads, never carries into the next turn.
   - Keys must be unprefixed: `user:` and `app:` scopes aren't stored here.
-  - A composite with `session_keys` and no store fails at compile.
+  - A composite with `session_keys` and no store fails at compile. A composite can't
+    declare `session=`, so the App's `AGENT_SESSION_STORE` wins over the config's
+    auto-derived store name. An explicitly declared session must match it.
 - **Halting.** After a step whose `output_status_path` value is in `halt_statuses`,
   the sequence ends. That step's message is the answer, and no later step runs.
   This is a normal completed turn, not an escalation.
