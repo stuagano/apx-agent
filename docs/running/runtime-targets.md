@@ -880,7 +880,8 @@ SequentialAgent(
   - Keys must be unprefixed: `user:` and `app:` scopes aren't stored here.
   - A composite with `session_keys` and no store fails at compile. A composite can't
     declare `session=`, so the App's `AGENT_SESSION_STORE` wins over the config's
-    auto-derived store name. An explicitly declared session must match it.
+    auto-derived store name, and deploy preflight and `doctor` take agent.toml's
+    `[session_store]` the same way. An explicitly declared session must match it.
 - **Halting.** After a step whose `output_status_path` value is in `halt_statuses`,
   the sequence ends. That step's message is the answer, and no later step runs.
   This is a normal completed turn, not an escalation.

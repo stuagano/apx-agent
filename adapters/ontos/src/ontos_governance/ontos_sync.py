@@ -30,13 +30,18 @@ Non-UC resource types (jobs, clusters, warehouses, pipelines, users) are
 skipped — Ontos Catalog Commander only surfaces UC assets.
 """
 
+from __future__ import annotations
+
 import logging
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import requests
 from databricks.sdk import WorkspaceClient
-from pyspark.sql import SparkSession
+
+if TYPE_CHECKING:
+    # The caller passes its own session (Databricks compute ships pyspark).
+    from pyspark.sql import SparkSession
 
 logger = logging.getLogger(__name__)
 

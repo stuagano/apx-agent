@@ -100,3 +100,20 @@ class TestResolveOntologyBaseIri:
                 workspace_host="https://workspace.cloud.databricks.com",
             )
         assert result.endswith("/")
+
+
+def test_ontos_sync_imports_without_pyspark():
+    """pyspark is the caller's runtime, not a dependency — importing must not need it."""
+    import subprocess
+
+    src = Path(__file__).resolve().parents[1] / "src"
+    code = (
+        "import sys, types\n"
+        "sys.modules['pyspark'] = None\n"  # makes `import pyspark` raise ImportError
+        "sql = types.ModuleType('databricks.sql'); sql.connect = None\n"
+        "sys.modules['databricks.sql'] = sql\n"  # SQL connector is the router's extra
+        f"sys.path.insert(0, {str(src)!r})\n"
+        "import ontos_governance.ontos_sync\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
