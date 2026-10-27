@@ -256,7 +256,9 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
         status.textContent = 'Interrupted: approval required' + (state.output.approval_required?.tool_name ? ' for ' + state.output.approval_required.tool_name : '');
       } else if (state.status === 'completed' && state.output?.status === 'completed') {
         const messages = state.output.messages || [];
-        const text = messages.filter(m => m.type === 'ai').map(m =>
+        // A halted sequence's declared human message (e.g. a follow-up question) is the whole answer.
+        const halt = messages.filter(m => m.type === 'ai' && m.additional_kwargs?.apx_halt_message === true);
+        const text = (halt.length ? halt : messages.filter(m => m.type === 'ai')).map(m =>
           typeof m.content === 'string' ? m.content : (m.content || []).filter(p => p.type === 'text').map(p => p.text).join('')
         ).filter(Boolean).join('\n');
         if (!answer) answer = bubble('assistant', '');
