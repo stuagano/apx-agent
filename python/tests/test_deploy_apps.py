@@ -4605,3 +4605,72 @@ def test_space_scope_check_names_the_tool_missing_a_scope(monkeypatch: pytest.Mo
     assert raised.value.message == (
         "App Space 'app-space' is missing required scopes; ask the space admin to grant them:\n"
         "  - genie: needed by tool 'ask_genie'")
+
+
+def _capture_registry(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Record the env pairs merged into the bundle and the registry step call."""
+    from apx_agent import cli
+
+    seen: dict[str, Any] = {"env": [], "steps": []}
+    real_merge = cli._merge_env_into_databricks_yml
+
+    def merge(cwd, **kwargs):
+        seen["env"].extend(f"{p.name}={p.value}" for p in kwargs["env_pairs"])
+        return real_merge(cwd, **kwargs)
+
+    monkeypatch.setattr(cli, "_merge_env_into_databricks_yml", merge)
+    monkeypatch.setattr(cli, "_deploy_registry_step", lambda **k: seen["steps"].append(k["app_name"]))
+    return seen
+
+
+def test_bundle_deploy_records_registry_and_emits_its_location(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_registry(monkeypatch)
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--json-output"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["registry_recorded"] is True
+    assert payload["registry_table"] == "c.apx.agent_registry"
+    assert len(seen["steps"]) == 1
+    # Default location: the App resolves the same table via current_catalog(),
+    # so nothing rides the --env merge.
+    assert not any(e.startswith("APX_") and "_TABLE=" in e for e in seen["env"])
+
+
+def test_bundle_deploy_emits_an_explicitly_configured_registry_location(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with (scaffold / "pyproject.toml").open("a") as f:
+        f.write('\n[tool.apx.deploy]\nregistry_table = "x.y.agent_registry"\ntools_table = "x.y.agent_tools"\n')
+    seen = _capture_registry(monkeypatch)
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--json-output"])
+    assert result.exit_code == 0, result.output
+    assert "APX_REGISTRY_TABLE=c.apx.agent_registry" in seen["env"]
+    assert "APX_TOOLS_TABLE=c.apx.agent_tools" in seen["env"]
+
+
+def test_bundle_deploy_no_registry_skips_step_and_env(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_registry(monkeypatch)
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--no-registry", "--json-output"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["registry_recorded"] is False and payload["registry_table"] is None
+    assert seen["steps"] == []
+    assert not any(e.startswith("APX_REGISTRY_TABLE=") for e in seen["env"])
+
+
+def test_bundle_deploy_no_run_skips_registry_step(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_registry(monkeypatch)
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--no-run", "--json-output"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["registry_recorded"] is False
+    assert seen["steps"] == []

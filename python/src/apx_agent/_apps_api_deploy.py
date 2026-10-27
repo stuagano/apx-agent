@@ -5,11 +5,14 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from ._apps_authorization import AppFamilyPermissions, AuthorizationPlan
+
+if TYPE_CHECKING:
+    from ._registry import RegistryTables
 
 GRANT_UPDATE_MASK = "user_api_scopes,resources"
 APX_MODEL_ENV = "APX_MODEL"
@@ -48,6 +51,7 @@ def deploy_apps_api(
     pin: Any,
     log: Callable[[str], None],
     smoke_input: Path | None = None,
+    registry_tables: "RegistryTables | None" = None,
 ) -> str:
     """Run the Apps API path. Re-running is safe; nothing is deleted on failure."""
     if config.target != "durable_agent_server" or config.deploy is None or config.deploy.backend != "apps_api":
@@ -94,7 +98,7 @@ def deploy_apps_api(
         register_uc=register_uc, uc_name=uc_name, session_store=report.session_store,
         experiment_id=env.get(EXPERIMENT_ENV),
         extra_version_tags=extra_version_tags, pin=pin, json_output=json_output, log=log,
-        smoke_input=native_smoke_input, smoke_agent=agent,
+        smoke_input=native_smoke_input, smoke_agent=agent, registry_tables=registry_tables,
     )
 
 
@@ -456,11 +460,12 @@ def _verify(
     uc_name: str | None, session_store: str | None, experiment_id: str | None,
     extra_version_tags: dict[str, str] | None, pin: Any, json_output: bool, log: Callable[[str], None],
     smoke_input: dict[str, Any] | None = None, smoke_agent: Any = None,
+    registry_tables: "RegistryTables | None" = None,
 ) -> str:
     import json
 
     from .cli import (
-        _check_native_execution, _check_readyz, _fetch_app_log_tail, _maybe_write_deploy_state,
+        _check_native_execution, _check_readyz, _deploy_registry_step, _fetch_app_log_tail, _maybe_write_deploy_state,
         _poll_app_ready, _read_apx_agent_config, _register_apps_manifest_step, _resolve_apps_uc_name,
     )
 
@@ -500,6 +505,9 @@ def _verify(
             uc_name_override=uc_name, extra_version_tags=extra_version_tags, experiment_id=experiment_id,
             profile=profile, load_cwd=cwd / ".build", required=True, log=log,
         )
+    if registry_tables is not None:
+        _deploy_registry_step(profile=profile, app_name=app_name, app_url=app_url,
+                              tables=registry_tables, module=module, log=log)
     recorded = _maybe_write_deploy_state(
         profile=profile, app_name=app_name, bundle_target=bundle_target, app_url=app_url,
         experiment_id=experiment_id, pin=pin, wheel_path=None, log=log,
@@ -510,6 +518,8 @@ def _verify(
             "uc_name": _resolve_apps_uc_name(_read_apx_agent_config(), app_name, override=uc_name),
             "version": registered_version, "readyz": checks, "deploy_state_recorded": recorded,
             "deployment_backend": "apps_api",
+            "registry_recorded": registry_tables is not None,
+            "registry_table": registry_tables.agents if registry_tables is not None else None,
         }, default=str))
     else:
         log(f"# app ready: {app_name}")
