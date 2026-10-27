@@ -466,3 +466,34 @@ def test_an_empty_question_adds_no_halt_message(monkeypatch):
                           halt_statuses=("needs_input",))
     result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="go")]})
     assert not any(m.additional_kwargs.get("apx_answer") for m in result["messages"])
+
+
+def _summary_step() -> Any:
+    return Agent(name="summary", output_schema=Summary, output_key="summary", output_message_path=("text",))
+
+
+def test_a_nested_sequence_does_not_claim_the_outer_answer(monkeypatch):
+    _model(monkeypatch, [AIMessage(content='{"text": "inner summary"}'), AIMessage(content="FINAL ANSWER")])
+    outer = SequentialAgent([SequentialAgent([_summary_step()], name="inner"), Agent(name="final")], name="outer")
+    result = compile_to_langgraph(outer, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="go")]})
+    assert result["messages"][-1].content == "FINAL ANSWER"
+    assert not any(m.additional_kwargs.get("apx_answer") for m in result["messages"])
+
+
+def test_an_escalated_last_step_adds_no_stale_answer(monkeypatch):
+    _model(monkeypatch, [AIMessage(content="not json")])
+    seq = SequentialAgent([_summary_step()], name="pipeline", on_failure="escalate")
+    result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke(
+        {"messages": [HumanMessage(content="go")], "state": {"summary": {"text": "STALE"}}})
+    assert result.get("_apx_escalation") is not None
+    assert not any(m.additional_kwargs.get("apx_answer") for m in result["messages"])
+
+
+def test_the_finishing_answer_keeps_the_steps_typed_output(monkeypatch):
+    from apx_agent._a2a_models import output_data_parts
+
+    _model(monkeypatch, [AIMessage(content='{"text": "Hold."}')])
+    seq = SequentialAgent([_summary_step()], name="pipeline")
+    result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="go")]})
+    assert result["messages"][-1].additional_kwargs["apx_answer"] is True
+    assert output_data_parts(result["messages"])["apx_data_parts"][0]["data"] == {"text": "Hold."}

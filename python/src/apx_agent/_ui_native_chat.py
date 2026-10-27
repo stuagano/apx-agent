@@ -158,7 +158,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     const unknown = event.type === 'agent.child.unknown';
     const correlation = unknown ? event.correlation || {} : event;
     const transport = safe(event.transport_status), domain = safe(event.domain_status);
-    head.textContent = [(transport === 'completed' && !unknown ? '✓ ' : '? ') + safe(event.step),
+    head.textContent = [(unknown || transport === 'unknown' || transport === 'unavailable' ? '? ' : transport === 'completed' ? '✓ ' : '✗ ') + safe(event.step),
       ...(domain === 'unavailable' ? [] : [domain.replaceAll('_', ' ')]), unknown ? 'remote' : safe(event.location)].join(' · ');
     line('Step', safe(event.step));
     line('Location', unknown ? 'remote' : safe(event.location));

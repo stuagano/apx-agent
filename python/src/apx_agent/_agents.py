@@ -248,7 +248,7 @@ class LlmAgent(BaseAgent):
     ``output_message_path`` names the output field a person reads when this step
     ends a ``SequentialAgent``, by halting it or by being its last step. The
     sequence then ends with that text as a plain assistant message (an empty
-    field adds none); a step that can do neither is refused at compile time.
+    field adds none). In a sequence, a step that can do neither is refused at compile time.
     Native outputs retain exact JSON and verified DataParts in the reserved
     ``apx_native_artifacts`` state map, indexed by output key (or leaf name).
     The compiled producer validates strictly before publishing JSON-compatible

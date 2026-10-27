@@ -121,6 +121,7 @@ class CompileContext:
     logical_name: str | None = None
     escalate_failures: bool = False
     step_path: tuple[str, ...] = ()
+    in_sequence: bool = False  # compiling a step of an enclosing SequentialAgent
     fixture_replay: _FixtureReplay | None = None
     platform_tools: dict[str, list[Any]] | None = None
     """agent.toml tools by id, already materialized (see _platform_tools).
@@ -564,7 +565,7 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
     def _step(sub: BaseAgent, name: str, predecessor: str | None) -> Any:
         step_path = (*path, name)
         child_ctx = replace(ctx, escalate_failures=escalate, step_path=step_path if protected else ctx.step_path,
-                            logical_predecessor=predecessor, logical_name=name)
+                            logical_predecessor=predecessor, logical_name=name, in_sequence=True)
         compiled = _compile_any(sub, child_ctx)
         if not agent._instructions and not protected:
             return compiled
@@ -673,8 +674,8 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             from langchain_core.messages import AIMessage
 
             text = _state_path(state, key, path)
-            if not isinstance(text, str) or not text:
-                return {}
+            if not isinstance(text, str) or not text or state.get("_apx_escalation") is not None:
+                return {}  # nothing to say, or the escalation packet is the answer
             # Carry the step's typed DataParts: Responses/A2A callers read the final assistant message.
             step = next((m for m in reversed(state.get("messages", [])) if isinstance(m, AIMessage)), None)
             parts = step.additional_kwargs.get("apx_data_parts") if step is not None else None
@@ -706,8 +707,13 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             graph.add_edge(src, cont)
         graph.add_edge(cont, dst)
     # The last step's declared message is the answer, whether it halted or finished the sequence.
+    # Only the outermost sequence's finish is the answer; a nested one only speaks when it halts.
     last = len(node_names) - 1
+    last_halted = _halted(agent._agents[last], agent._halt_statuses)
     last_emit = _halt_message(agent._agents[last])
+    if last_emit is not None and ctx.in_sequence:
+        last_emit = None if last_halted is None else (
+            lambda state, h=last_halted, e=last_emit: e(state) if h(state) else {})
     if last_emit is not None:
         graph.add_node(f"_halt_{last}", last_emit)  # type: ignore[arg-type]  # langgraph StateNode generic can't infer state->dict nodes
         graph.add_edge(node_names[-1], f"_halt_{last}")
