@@ -38,6 +38,21 @@ from apx_agent.cli import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _registry_location_without_sql(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI tests use mocked workspaces; resolve the registry like a workspace
+    whose default catalog is ``main`` instead of issuing current_catalog()."""
+    from apx_agent._registry import RegistryTables
+
+    monkeypatch.setattr(
+        "apx_agent._registry.resolve_registry_tables",
+        lambda ws, **k: RegistryTables(
+            k.get("registry_table") or "main.apx.agent_registry",
+            k.get("tools_table") or "main.apx.agent_tools",
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

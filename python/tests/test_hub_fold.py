@@ -293,6 +293,7 @@ def test_allowlist_shared_helper_rejects_evil_hosts():
 
 def test_hub_fleet_lists_from_registry_under_obo(dev_ui_app, monkeypatch):
     """Verify fleet route lists agents from registry under caller OBO."""
+    monkeypatch.setenv("APX_REGISTRY_TABLE", "main.apx.agent_registry")
     import apx_agent._sql as sql
     from starlette.testclient import TestClient
 
@@ -343,6 +344,7 @@ def test_hub_fleet_query_runs_off_the_event_loop(dev_ui_app, monkeypatch):
     """A cold-warehouse registry query (minutes on Apps) must not freeze the
     loop: on a deployed App it stalled /_apx/approvals and /_apx/conversations
     behind it until the proxy returned 502."""
+    monkeypatch.setenv("APX_REGISTRY_TABLE", "main.apx.agent_registry")
     import asyncio
 
     import apx_agent._sql as sql
@@ -365,6 +367,7 @@ def test_hub_fleet_query_runs_off_the_event_loop(dev_ui_app, monkeypatch):
 def test_hub_fleet_reports_unreadable_registry_as_503(dev_ui_app, monkeypatch):
     """A registry the caller can't read (e.g. catalog 'main' not accessible in
     this workspace) is a clear 503 naming the table, not a bare 500."""
+    monkeypatch.setenv("APX_REGISTRY_TABLE", "main.apx.agent_registry")
     import apx_agent._sql as sql
     from starlette.testclient import TestClient
 
@@ -472,3 +475,43 @@ def test_hub_register_with_xss_payload_is_stored_escaped(dev_ui_app, monkeypatch
     # We check that the page JS contains the necessary escaping calls.
     assert "esc(agent.display_name" in page, "renderAgents should escape display_name"
     assert "esc(agent.description" in page, "renderAgents should escape description"
+
+
+def test_hub_fleet_reads_the_env_registry_table(dev_ui_app, monkeypatch):
+    import apx_agent._sql as sql
+    from starlette.testclient import TestClient
+
+    seen: list[str] = []
+    monkeypatch.setenv("APX_REGISTRY_TABLE", "ws_cat.apx.agent_registry")
+    monkeypatch.setattr(sql, "run_sql", lambda ws, q, **k: seen.append(q) or [])
+    r = TestClient(dev_ui_app).get("/_apx/hub/fleet", headers={"X-Forwarded-Access-Token": "t", "X-Forwarded-User": "a@x.com"})
+    assert r.status_code == 200 and r.json() == []
+    assert len(seen) == 1 and "FROM ws_cat.apx.agent_registry" in seen[0]
+
+
+def test_hub_fleet_resolves_default_catalog_without_env(dev_ui_app, monkeypatch):
+    import apx_agent._sql as sql
+    from starlette.testclient import TestClient
+
+    monkeypatch.delenv("APX_REGISTRY_TABLE", raising=False)
+    seen: list[str] = []
+
+    def run_sql(ws, q, **k):
+        seen.append(q)
+        return [{"catalog": "ws_cat"}] if "current_catalog" in q else []
+
+    monkeypatch.setattr(sql, "run_sql", run_sql)
+    r = TestClient(dev_ui_app).get("/_apx/hub/fleet", headers={"X-Forwarded-Access-Token": "t", "X-Forwarded-User": "a@x.com"})
+    assert r.status_code == 200
+    assert "FROM ws_cat.apx.agent_registry" in seen[-1]
+
+
+def test_hub_fleet_unresolvable_catalog_is_503(dev_ui_app, monkeypatch):
+    import apx_agent._sql as sql
+    from starlette.testclient import TestClient
+
+    monkeypatch.delenv("APX_REGISTRY_TABLE", raising=False)
+    monkeypatch.setattr(sql, "run_sql", lambda ws, q, **k: [{"catalog": "hive_metastore"}])
+    r = TestClient(dev_ui_app, raise_server_exceptions=False).get(
+        "/_apx/hub/fleet", headers={"X-Forwarded-Access-Token": "t", "X-Forwarded-User": "a@x.com"})
+    assert r.status_code == 503 and "registry_table" in r.json()["error"]

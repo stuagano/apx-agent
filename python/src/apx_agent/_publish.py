@@ -349,10 +349,10 @@ def publish_to_registry(
     endpoint_url: str | None = None,
     endpoint_type: str = "apps",
     supervisor_agent_id: str | None = None,
-    registry_table: str = "main.apx.agent_registry",
+    registry_table: str,
     ws: "WorkspaceClient | None" = None,
     warehouse_id: str | None = None,
-) -> None:
+) -> str:
     """Upsert an agent record into the UC Delta agent registry table.
 
     Creates the table (and schema) automatically on first use. Safe to
@@ -365,7 +365,7 @@ def publish_to_registry(
         endpoint_url: Full URL of the deployed agent.
         endpoint_type: ``"apps"`` or ``"model-serving"``.
         supervisor_agent_id: Set when also registering with Supervisor Agent.
-        registry_table: Fully-qualified UC table, e.g. ``main.apx.agent_registry``.
+        registry_table: Fully-qualified UC table, e.g. ``<catalog>.apx.agent_registry``.
         ws: Optional ``WorkspaceClient``.
         warehouse_id: SQL warehouse to use; auto-discovered when omitted.
     """
@@ -427,6 +427,7 @@ def publish_to_registry(
         warehouse_id=warehouse_id,
     )
     logger.info("Registered %s in registry table %s", name, registry_table)
+    return agent_id
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +494,7 @@ def publish_tools_to_registry(
     agent_id: str,
     agent_name: str,
     tool_fns: list[Any],
-    tools_table: str = "main.apx.agent_tools",
+    tools_table: str,
     ws: "WorkspaceClient | None" = None,
     warehouse_id: str | None = None,
 ) -> int:
@@ -506,7 +507,7 @@ def publish_tools_to_registry(
         agent_id: The stable agent key from ``publish_to_registry``.
         agent_name: Human-readable agent name (denormalised for easy queries).
         tool_fns: List of tool callables (the ``_tool_fns`` from the agent).
-        tools_table: Fully-qualified UC table, e.g. ``main.apx.agent_tools``.
+        tools_table: Fully-qualified UC table, e.g. ``<catalog>.apx.agent_tools``.
         ws: Optional ``WorkspaceClient``.
         warehouse_id: SQL warehouse to use; auto-discovered when omitted.
 
@@ -647,7 +648,7 @@ def publish_standalone_tools_to_registry(
     *,
     tool_fns: list[Any],
     uc_names: dict[str, str] | None = None,
-    tools_table: str = "main.apx.agent_tools",
+    tools_table: str,
     ws: "WorkspaceClient | None" = None,
     warehouse_id: str | None = None,
 ) -> int:
@@ -746,8 +747,8 @@ WHERE (agent_id IS NULL OR agent_id NOT IN ({agent_ids})) AND ({refs})
 def remove_from_registry(
     *,
     agent_id: str,
-    registry_table: str = "main.apx.agent_registry",
-    tools_table: str = "main.apx.agent_tools",
+    registry_table: str,
+    tools_table: str,
     ws: "WorkspaceClient | None" = None,
     warehouse_id: str | None = None,
 ) -> None:
@@ -761,8 +762,8 @@ def remove_from_registry(
     Args:
         agent_id: The stable agent key (same slug ``publish_to_registry``
             derives from name + workspace host).
-        registry_table: Fully-qualified UC table, e.g. ``main.apx.agent_registry``.
-        tools_table: Fully-qualified UC table, e.g. ``main.apx.agent_tools``.
+        registry_table: Fully-qualified UC table, e.g. ``<catalog>.apx.agent_registry``.
+        tools_table: Fully-qualified UC table, e.g. ``<catalog>.apx.agent_tools``.
         ws: Optional ``WorkspaceClient``.
         warehouse_id: SQL warehouse to use; auto-discovered when omitted.
     """
@@ -800,8 +801,8 @@ def find_registry_dependents(
     *,
     agent_ids: list[str],
     references: list[str],
-    registry_table: str = "main.apx.agent_registry",
-    tools_table: str = "main.apx.agent_tools",
+    registry_table: str,
+    tools_table: str,
     ws: "WorkspaceClient | None" = None,
     warehouse_id: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -872,7 +873,7 @@ def find_registry_dependents(
 
 def list_registry_agents(
     *,
-    registry_table: str = "main.apx.agent_registry",
+    registry_table: str,
     ws: "WorkspaceClient | None" = None,
     warehouse_id: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -883,7 +884,7 @@ def list_registry_agents(
     list with a clear log message.
 
     Args:
-        registry_table: Fully-qualified UC table, e.g. ``main.apx.agent_registry``.
+        registry_table: Fully-qualified UC table, e.g. ``<catalog>.apx.agent_registry``.
         ws: Optional ``WorkspaceClient``.
         warehouse_id: SQL warehouse to use; auto-discovered when omitted.
 

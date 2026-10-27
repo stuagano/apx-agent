@@ -55,6 +55,8 @@ if TYPE_CHECKING:
         ResolvedAppDependency,
     )
     from ._models import AgentConfig
+    from ._registry import RegistryTables
+    from databricks.sdk import WorkspaceClient
 
 # Suppress noisy third-party deprecation warnings that users can't act on.
 warnings.filterwarnings(
@@ -10880,7 +10882,7 @@ def _show_deploy_state_status(
 @click.option("--module", default="agent:agent", help='Agent module spec.')
 @click.option("--dry-run", is_flag=True, help="Report what would publish without writing.")
 @click.option("--tools-table", default=None,
-              help="UC Delta tools registry table. Defaults to tools_table in [tool.apx.deploy] or main.apx.agent_tools.")
+              help="UC Delta tools registry table. Defaults to tools_table in [tool.apx.deploy] or <workspace default catalog>.apx.agent_tools.")
 @click.option("--no-registry", is_flag=True, help="Skip the tools registry write (UC publish only).")
 @click.option("--profile", default=None, help="Databricks CLI profile.")
 @click.option("--json-output", "json_output", is_flag=True,
@@ -10896,7 +10898,7 @@ def publish_tools_cmd(
     """Publish all @tool(uc=...) decorated tools to Unity Catalog.
 
     Also registers each tool as a standalone entry in the org tools registry
-    (``main.apx.agent_tools`` by default) so they are discoverable by any
+    (``<workspace default catalog>.apx.agent_tools`` by default) so they are discoverable by any
     agent without being tied to a specific agent deployment. A registry-write
     failure is reported but still fails the command's exit code (like
     ``agents deploy``'s step ledger) — it never fails silently while still
@@ -10912,8 +10914,6 @@ def publish_tools_cmd(
         profile = profile or cfg.get("profile") or os.environ.get("DATABRICKS_CONFIG_PROFILE")
         if profile:
             os.environ["DATABRICKS_CONFIG_PROFILE"] = profile
-        tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
-        assert tools_table is not None
 
         agent = _load_finalized_agent(module)
         results = publish_tools_to_uc(agent, dry_run=dry_run)
@@ -10946,6 +10946,7 @@ def publish_tools_cmd(
             if tool_fns:
                 try:
                     ws, _ = _connect_workspace(profile)
+                    tools_table = _cli_registry_tables(ws, cfg, None, tools_table).tools
                     n = publish_standalone_tools_to_registry(
                         tool_fns=tool_fns,
                         tools_table=tools_table,
@@ -11034,6 +11035,22 @@ def _do_create_supervisor(
             click.echo(f'  supervisor_id = "{supervisor_id}"')
 
 
+def _cli_registry_tables(
+    ws: "WorkspaceClient", cfg: dict[str, Any], registry_table: str | None, tools_table: str | None,
+) -> "RegistryTables":
+    """Flag > [tool.apx.deploy] > workspace default catalog."""
+    from ._registry import resolve_registry_tables
+
+    try:
+        return resolve_registry_tables(
+            ws,
+            registry_table=registry_table or cfg.get("registry_table"),
+            tools_table=tools_table or cfg.get("tools_table"),
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 def _do_advertise(
     *, endpoint: str | None, display_name: str | None, description: str | None,
     endpoint_url: str | None, endpoint_type: str, registry_table: str | None,
@@ -11057,17 +11074,15 @@ def _do_advertise(
     endpoint = endpoint or cfg.get("name")
     display_name = display_name or cfg.get("name")
     description = description or cfg.get("description")
-    registry_table = registry_table or cfg.get("registry_table") or "main.apx.agent_registry"
-    tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
-
     if not endpoint:
         endpoint = click.prompt("Serving endpoint / app name")
     if not description:
         description = click.prompt("What does this agent do?")
     assert endpoint is not None and description is not None
-    assert registry_table is not None and tools_table is not None
 
     ws, ws_cfg = _connect_workspace(profile)
+    tables = _cli_registry_tables(ws, cfg, registry_table, tools_table)
+    registry_table, tools_table = tables.agents, tables.tools
     ws_host = (ws_cfg.host or "").rstrip("/")
     if not endpoint_url and ws_host:
         endpoint_url = (
@@ -11163,9 +11178,9 @@ def _do_supervisor_add(
 @click.option("--endpoint-type", default="apps", type=click.Choice(["apps", "model-serving"]),
               help="Deployment type stored in registry. Default: apps.")
 @click.option("--registry-table", default=None,
-              help="UC Delta agent registry table. Defaults to registry_table in [tool.apx.deploy] or main.apx.agent_registry.")
+              help="UC Delta agent registry table. Defaults to registry_table in [tool.apx.deploy] or <workspace default catalog>.apx.agent_registry.")
 @click.option("--tools-table", default=None,
-              help="UC Delta tools table. Defaults to tools_table in [tool.apx.deploy] or main.apx.agent_tools.")
+              help="UC Delta tools table. Defaults to tools_table in [tool.apx.deploy] or <workspace default catalog>.apx.agent_tools.")
 @click.option("--no-registry", is_flag=True, help="Skip the agent registry write.")
 @click.option("--no-tools", is_flag=True, help="Skip the tools registry write.")
 @click.option("--module", default=None, help="Agent module spec (e.g. agent:agent). Used to enumerate tools.")
@@ -11349,9 +11364,9 @@ def create_supervisor(
 @click.option("--endpoint-type", default="apps", type=click.Choice(["apps", "model-serving"]),
               help="Deployment type stored in registry. Default: apps.")
 @click.option("--registry-table", default=None,
-              help="UC Delta registry table. Defaults to registry_table in [tool.apx.deploy] or main.apx.agent_registry.")
+              help="UC Delta registry table. Defaults to registry_table in [tool.apx.deploy] or <workspace default catalog>.apx.agent_registry.")
 @click.option("--tools-table", default=None,
-              help="UC Delta tools table. Defaults to tools_table in [tool.apx.deploy] or main.apx.agent_tools.")
+              help="UC Delta tools table. Defaults to tools_table in [tool.apx.deploy] or <workspace default catalog>.apx.agent_tools.")
 @click.option("--no-registry", is_flag=True, help="Skip the Delta registry write.")
 @click.option("--no-tools", is_flag=True, help="Skip the tools registry write.")
 @click.option("--module", default=None, help="Agent module spec (e.g. agent:agent). Used to enumerate tools for the tools registry.")
@@ -13370,10 +13385,10 @@ def _registry_row_age(updated_at: Any) -> str:
 )
 @click.option("--registry-table", default=None,
               help="UC Delta agent registry table for the advertise-row cleanup. "
-                   "Defaults to registry_table in [tool.apx.deploy] or main.apx.agent_registry.")
+                   "Defaults to registry_table in [tool.apx.deploy] or <workspace default catalog>.apx.agent_registry.")
 @click.option("--tools-table", default=None,
               help="UC Delta tools registry table for the advertise-row cleanup. "
-                   "Defaults to tools_table in [tool.apx.deploy] or main.apx.agent_tools.")
+                   "Defaults to tools_table in [tool.apx.deploy] or <workspace default catalog>.apx.agent_tools.")
 @click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
               help="Databricks CLI profile (~/.databrickscfg).")
 @click.option("--json", "as_json", is_flag=True,
@@ -13447,9 +13462,6 @@ def delete_agent_cmd(
     from apx_agent._publish import _slug, find_registry_dependents, remove_from_registry
 
     cfg = _read_apx_agent_config()
-    registry_table = registry_table or cfg.get("registry_table") or "main.apx.agent_registry"
-    tools_table = tools_table or cfg.get("tools_table") or "main.apx.agent_tools"
-    assert registry_table is not None and tools_table is not None
 
     # The registry keys rows on _slug(f"{name}_{host_short}") — mirror the
     # advertise-side derivation for the app name.
@@ -13465,6 +13477,8 @@ def delete_agent_cmd(
         )
     else:
         try:
+            tables = _cli_registry_tables(ws, cfg, registry_table, tools_table)
+            registry_table, tools_table = tables.agents, tables.tools
             registry_ready = (
                 ws.tables.exists(registry_table).table_exists is True
                 and ws.tables.exists(tools_table).table_exists is True
