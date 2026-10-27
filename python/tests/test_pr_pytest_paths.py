@@ -108,6 +108,7 @@ def test_ci_yml_dispatches_full_suite_and_uses_selector() -> None:
     assert "scripts/pr-pytest-paths.sh" in body
     assert "pytest tests/" not in body.split("name: Run tests", 1)[1]
     assert "name: Select pytest paths" in body
+    assert "pytest ../adapters/ontos/tests" in body
     post = POST_MERGE_YML.read_text(encoding="utf-8")
     assert "schedule:" in post
     assert "gh workflow run CI" in post
