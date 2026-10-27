@@ -168,9 +168,8 @@ result = sync_classifications_to_ontos(
 # {'posted': N, 'skipped': N, 'errors': N, 'total_candidates': N}
 ```
 
-It needs `pyspark` (present on Databricks compute), `databricks-sdk`, and
-`requests` — these are **not** declared in this package's dependencies, so
-install them alongside it when running anywhere else.
+Install the `sync` extra (`pip install "...[sync]"`) for `databricks-sdk` and
+`requests`. `spark` is the caller's session — `pyspark` is not a dependency.
 
 **Auth.** The Databricks Apps proxy in front of Ontos accepts only OAuth JWTs
 (`eyJ...`); PATs (`dapi...`) and the serverless job's internal token are
