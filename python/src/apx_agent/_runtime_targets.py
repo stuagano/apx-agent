@@ -48,6 +48,10 @@ class TargetReport:
             raise ValueError(f"Target {self.target!r} cannot satisfy requirements: {reasons}")
 
 
+class SessionStoreConflict(ValueError):
+    """A bound session store differs from the explicitly declared one."""
+
+
 def inspect_target(
     agent: BaseAgent,
     *,
@@ -77,7 +81,7 @@ def inspect_target(
                     and not (config is not None and "session" in config.model_fields_set))
     if effective_session is not None and effective_session.type == "managed" and checkpointer is None:
         if session_store is not None and session_store != effective_session.store_name and not derived_only:
-            raise ValueError("session_store conflicts with the declared session.store_name")
+            raise SessionStoreConflict("session_store conflicts with the declared session.store_name")
         session_store = session_store if session_store is not None and derived_only else effective_session.store_name
     if config is not None and config.session is not None and config.session.type == "managed" and checkpointer is not None:
         raise ValueError("Declared managed sessions cannot be combined with an explicit checkpointer")

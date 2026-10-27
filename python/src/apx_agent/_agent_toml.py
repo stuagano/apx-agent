@@ -146,13 +146,13 @@ def _bound_session_store(agent: BaseAgent, config: AgentConfig, bound: str | Non
 
     ``bound`` is agent.toml's store: it wins where serving lets the App's store win (a
     composite's auto-derived name); a conflicting declaration falls back to the declared name."""
-    from ._runtime_targets import inspect_target
+    from ._runtime_targets import SessionStoreConflict, inspect_target
 
     if bound is not None:
         try:
             return inspect_target(agent, config=config, target=config.target, session_store=bound).session_store
-        except ValueError:
-            pass
+        except SessionStoreConflict:
+            pass  # reported below as a mismatch against the declared name
     return inspect_target(agent, config=config, target=config.target).session_store
 
 
@@ -160,10 +160,15 @@ def _store_findings(project: AgentProject, agent: BaseAgent, config: AgentConfig
     declared_memory = _declared_memory(agent, config)
     memory = declared_memory.store_name if declared_memory is not None and declared_memory.type == "managed" else None
     # A Python-only agent derives no session store (inspect_target binds none without config).
-    session = _bound_session_store(agent, config, project.session_store) if config is not None else None
+    out: list[Check] = []
+    try:
+        session = _bound_session_store(agent, config, project.session_store) if config is not None else None
+    except ValueError as exc:  # e.g. a composite without session_keys binding a store: serving would fail
+        session = None
+        out.append(Check(_NAME, Status.FAIL, str(exc),
+                         "Declare session_keys on the composite, or remove [session_store] from agent.toml."))
     pairs = (("memory", memory, project.memory_store, "agentbricks memory bind"),
              ("session", session, project.session_store, "agentbricks sessions bind"))
-    out: list[Check] = []
     for label, declared, bound, command in pairs:
         if declared is None:
             continue

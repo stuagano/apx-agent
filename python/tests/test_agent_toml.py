@@ -512,3 +512,23 @@ def test_apps_api_preflight_accepts_a_keyed_composite_session_store(tmp_path: Pa
     plain = SequentialAgent([Agent(name="a", tools=[_noop])], name="seq")
     with pytest.raises(click.ClickException, match="cannot bind"):
         preflight_apps_api(tmp_path, config, plain)
+
+
+def test_keyed_composite_explicit_matching_session_is_clean(tmp_path: Path) -> None:
+    root = _project(tmp_path, BASE + '\n[session_store]\nname = "team-sessions"\n')
+    assert _findings(root, _keyed_composite(), _config("session", "team-sessions")) == []
+
+
+def test_keyed_composite_without_a_bound_store_still_fails(tmp_path: Path) -> None:
+    config = AgentConfig.model_validate({"name": "a", "target": "durable_agent_server"})
+    [finding] = _findings(_project(tmp_path, BASE), _keyed_composite(), config)
+    assert "no session_store bound" in finding.detail
+
+
+def test_a_composite_without_keys_binding_a_store_is_refused_before_deploy(tmp_path: Path) -> None:
+    # Serving it with AGENT_SESSION_STORE fails at startup; preflight says so instead of hiding it.
+    config = AgentConfig.model_validate({"name": "a", "target": "durable_agent_server"})
+    root = _project(tmp_path, BASE + '\n[session_store]\nname = "team-sessions"\n')
+    plain = SequentialAgent([Agent(name="a", tools=[_noop])], name="seq")
+    [finding] = _findings(root, plain, config)
+    assert finding.status is Status.FAIL and "session_store currently requires" in finding.detail

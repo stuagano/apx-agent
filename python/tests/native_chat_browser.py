@@ -223,6 +223,16 @@ def test_native_halt_message_is_the_whole_answer(browser_chat):
     assert shown == "Which bank?"  # the exact JSON stays only in the recorded-output details
 
 
+def test_native_halt_message_in_content_blocks(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"] = [
+        {"type": "ai", "content": "preamble"},
+        {"type": "ai", "content": [{"type": "text", "text": "Which bank?"}], "additional_kwargs": {"apx_halt_message": True}},
+    ]
+    submit(page)
+    expect(page.locator(".msg.assistant")).to_have_text("Which bank?")
+
+
 def test_native_typed_submission_requires_complete_declared_input(browser_chat):
     page, posts, reads, state, event = browser_chat
     state["input_schema"] = BrowserInput.model_json_schema()
