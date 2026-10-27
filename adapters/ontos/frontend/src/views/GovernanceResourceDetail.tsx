@@ -98,7 +98,7 @@ export default function GovernanceResourceDetail() {
       setResource(data)
       breadcrumbs.setStaticSegments([
         { label: t('common:governance'), path: '/governance' },
-        { label: t('governance:title'), path: '/governance' },
+        { label: t('governance:title'), path: '/governance/violations' },
         { label: data.resource_name },
       ])
     }
