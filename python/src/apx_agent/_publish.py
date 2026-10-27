@@ -915,5 +915,6 @@ def list_registry_agents(
         if "TABLE_OR_VIEW_NOT_FOUND" in str(e):
             logger.info("Registry table %s does not exist; returning empty list", registry_table)
             return []
-        # Other errors are real and should propagate.
-        raise
+        # Other errors are real and should propagate — naming the table, since
+        # "catalog not accessible" alone doesn't say which registry was read.
+        raise RuntimeError(f"agent registry {registry_table}: {e}") from e

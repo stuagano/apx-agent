@@ -362,6 +362,27 @@ def test_hub_fleet_query_runs_off_the_event_loop(dev_ui_app, monkeypatch):
     assert r.json() == []
 
 
+def test_hub_fleet_reports_unreadable_registry_as_503(dev_ui_app, monkeypatch):
+    """A registry the caller can't read (e.g. catalog 'main' not accessible in
+    this workspace) is a clear 503 naming the table, not a bare 500."""
+    import apx_agent._sql as sql
+    from starlette.testclient import TestClient
+
+    def run_sql(ws, q, **k):
+        raise RuntimeError(
+            "Query failed: [INSUFFICIENT_PERMISSIONS] Catalog 'main' is not accessible"
+        )
+
+    monkeypatch.setattr(sql, "run_sql", run_sql)
+    r = TestClient(dev_ui_app, raise_server_exceptions=False).get(
+        "/_apx/hub/fleet",
+        headers={"X-Forwarded-Access-Token": "tok", "X-Forwarded-User": "a@x.com"},
+    )
+    assert r.status_code == 503, r.text
+    assert "main.apx.agent_registry" in r.json()["error"]
+    assert "INSUFFICIENT_PERMISSIONS" in r.json()["error"]
+
+
 def test_hub_fleet_fails_closed_without_obo(dev_ui_app, monkeypatch):
     """Verify fleet route fails closed (401) without OBO on deployed App."""
     monkeypatch.setattr("apx_agent._obo._in_databricks_app", lambda: True)
