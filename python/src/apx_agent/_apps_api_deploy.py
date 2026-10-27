@@ -107,7 +107,7 @@ def preflight_apps_api(cwd: Path, config: Any, agent: Any) -> str:
     deploy = config.deploy
     if deploy is None or deploy.backend != "apps_api" or deploy.entrypoint is None:
         raise click.ClickException("Apps API doctor preflight requires backend='apps_api' and deploy.entrypoint.")
-    from ._agents import LlmAgent
+    from ._agents import LlmAgent, SequentialAgent
     from ._runtime_targets import inspect_target
 
     report = inspect_target(agent, config=config, target="durable_agent_server")
@@ -115,7 +115,9 @@ def preflight_apps_api(cwd: Path, config: Any, agent: Any) -> str:
     if not declared_memory or any(name != "long_term_memory" for name in report.unsatisfied):
         report.require_compatible()
     manifest = cwd / ".build" / "agent.toml"
-    if manifest.is_file() and not isinstance(agent, LlmAgent) and "[session_store]" in manifest.read_text():
+    # An LlmAgent, or a composite keeping session_keys, binds a session store.
+    binds_store = isinstance(agent, LlmAgent) or (isinstance(agent, SequentialAgent) and bool(agent._session_keys))
+    if manifest.is_file() and not binds_store and "[session_store]" in manifest.read_text():
         raise click.ClickException("Staged agent.toml declares a session_store a composite agent cannot bind.")
     staged = cwd / ".build" / "app.yaml"
     if staged.is_file():
