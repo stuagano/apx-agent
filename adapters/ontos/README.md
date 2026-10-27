@@ -143,11 +143,8 @@ The views use Ontos's own UI primitives (`@/components/ui/*`, `@/hooks/use-api`,
 inside the Ontos frontend. See [`frontend/README.md`](frontend/README.md) for
 the copy step and the feature/route/i18n registration lines.
 
-> **Known gap:** `routes.governance.tsx` imports
-> `@/views/GovernanceResourceDetail`, `GovernancePolicies`, and
-> `GovernanceExceptions`, but the files ship as `ResourceDetail.tsx`,
-> `Policies.tsx`, and `Exceptions.tsx`. Rename them when copying (or fix the
-> imports) or the Ontos build fails.
+The views mount under Ontos's `/governance` route; the dashboard lands at
+`/governance/violations`.
 
 ### 3. Schedule the Ontos sync
 
