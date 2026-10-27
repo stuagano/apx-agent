@@ -141,10 +141,18 @@ def require_agent_toml_ok(project_root: Path, agent: BaseAgent, plan: Authorizat
         raise click.ClickException("agent.toml: " + "; ".join(f"{c.detail} — {c.fix}" for c in fails))
 
 
-def _bound_session_store(agent: BaseAgent, config: AgentConfig) -> str | None:
-    """The session store the agent binds: the one rule build_native_manifest and migration share."""
+def _bound_session_store(agent: BaseAgent, config: AgentConfig, bound: str | None = None) -> str | None:
+    """The session store the agent binds: the one rule build_native_manifest and migration share.
+
+    ``bound`` is agent.toml's store: it wins where serving lets the App's store win (a
+    composite's auto-derived name); a conflicting declaration falls back to the declared name."""
     from ._runtime_targets import inspect_target
 
+    if bound is not None:
+        try:
+            return inspect_target(agent, config=config, target=config.target, session_store=bound).session_store
+        except ValueError:
+            pass
     return inspect_target(agent, config=config, target=config.target).session_store
 
 
@@ -152,7 +160,7 @@ def _store_findings(project: AgentProject, agent: BaseAgent, config: AgentConfig
     declared_memory = _declared_memory(agent, config)
     memory = declared_memory.store_name if declared_memory is not None and declared_memory.type == "managed" else None
     # A Python-only agent derives no session store (inspect_target binds none without config).
-    session = _bound_session_store(agent, config) if config is not None else None
+    session = _bound_session_store(agent, config, project.session_store) if config is not None else None
     pairs = (("memory", memory, project.memory_store, "agentbricks memory bind"),
              ("session", session, project.session_store, "agentbricks sessions bind"))
     out: list[Check] = []

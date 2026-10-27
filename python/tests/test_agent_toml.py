@@ -482,3 +482,33 @@ def test_doctor_python_only_reports_agent_toml(tmp_path: Path, monkeypatch: pyte
     monkeypatch.chdir(tmp_path)
     rows = _agent_toml_doctor_rows(tmp_path)
     assert any(r.status is Status.FAIL and "nope" in r.detail for r in rows), rows
+
+
+# A composite with session_keys can't declare session=; the App's bound store is the truth.
+def _keyed_composite() -> SequentialAgent:
+    return SequentialAgent([Agent(name="a", tools=[_noop])], name="seq", session_keys=("intake",))
+
+
+def test_keyed_composite_binds_its_own_store_without_a_mismatch(tmp_path: Path) -> None:
+    config = AgentConfig.model_validate({"name": "a", "target": "durable_agent_server"})
+    root = _project(tmp_path, BASE + '\n[session_store]\nname = "team-sessions"\n')
+    assert _findings(root, _keyed_composite(), config) == []
+
+
+def test_keyed_composite_explicit_session_still_must_match(tmp_path: Path) -> None:
+    root = _project(tmp_path, BASE + '\n[session_store]\nname = "team-sessions"\n')
+    [finding] = _findings(root, _keyed_composite(), _config("session", "other-sessions"))
+    assert "mismatch" in finding.detail
+
+
+def test_apps_api_preflight_accepts_a_keyed_composite_session_store(tmp_path: Path) -> None:
+    from apx_agent._apps_api_deploy import preflight_apps_api
+
+    config = AgentConfig.model_validate({"name": "a", "target": "durable_agent_server",
+                                         "deploy": {"backend": "apps_api", "entrypoint": "app"}})
+    (tmp_path / ".build").mkdir()
+    (tmp_path / ".build" / "agent.toml").write_text(BASE + '\n[session_store]\nname = "team-sessions"\n')
+    preflight_apps_api(tmp_path, config, _keyed_composite())  # must not refuse
+    plain = SequentialAgent([Agent(name="a", tools=[_noop])], name="seq")
+    with pytest.raises(click.ClickException, match="cannot bind"):
+        preflight_apps_api(tmp_path, config, plain)
