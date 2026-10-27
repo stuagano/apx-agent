@@ -63,8 +63,10 @@ def test_unusable_default_catalog_is_refused(monkeypatch, catalog):
 def test_registry_grants_cover_readers_and_the_app_sp():
     grants = registry_grants("c.apx.agent_registry", sp_client_id="1111-2222")
     assert [g.sql(g.privileges) for g in grants] == [
+        "GRANT USE CATALOG ON CATALOG c TO `account users`",
         "GRANT USE SCHEMA ON SCHEMA c.apx TO `account users`",
         "GRANT SELECT ON TABLE c.apx.agent_registry TO `account users`",
+        "GRANT USE CATALOG ON CATALOG c TO `1111-2222`",
         "GRANT USE SCHEMA ON SCHEMA c.apx TO `1111-2222`",
         "GRANT SELECT, MODIFY ON TABLE c.apx.agent_registry TO `1111-2222`",
     ]
@@ -88,6 +90,8 @@ def test_malformed_table_is_rejected():
 
 _TABLES = RegistryTables("c.apx.agent_registry", "c.apx.agent_tools")
 _ALL_HELD = {
+    ("CATALOG", "c", "account users"): {"USE_CATALOG"},
+    ("CATALOG", "c", "sp-1"): {"USE_CATALOG"},
     ("SCHEMA", "c.apx", "account users"): {"USE_SCHEMA"},
     ("SCHEMA", "c.apx", "sp-1"): {"USE_SCHEMA"},
     ("TABLE", "c.apx.agent_registry", "account users"): {"SELECT"},
@@ -152,6 +156,17 @@ def test_only_the_missing_privilege_is_granted(monkeypatch):
     assert ran == ["GRANT MODIFY ON TABLE c.apx.agent_registry TO `sp-1`"]
 
 
+def test_missing_use_catalog_is_granted_alone(monkeypatch):
+    """Table grants are unusable without USE CATALOG on the default catalog."""
+    held = {k: v for k, v in _ALL_HELD.items() if k[0] != "CATALOG"}
+    ws, ran = _provision_ws(monkeypatch, exists=True, held=held)
+    provision_registry(ws, tables=_TABLES, sp_client_id="sp-1")
+    assert set(ran) == {
+        "GRANT USE CATALOG ON CATALOG c TO `account users`",
+        "GRANT USE CATALOG ON CATALOG c TO `sp-1`",
+    }
+
+
 def test_reader_grant_missing_after_a_failed_first_deploy_is_retried(monkeypatch):
     held = {k: v for k, v in _ALL_HELD.items() if k != ("TABLE", "c.apx.agent_registry", "account users")}
     ws, ran = _provision_ws(monkeypatch, exists=True, held=held)
@@ -165,6 +180,8 @@ def test_all_failed_grants_are_reported_in_one_error(monkeypatch):
         provision_registry(ws, tables=_TABLES, sp_client_id="sp-1")
     assert exc.value.step == "grant registry access"
     for statement in (
+        "GRANT USE CATALOG ON CATALOG c TO `account users`",
+        "GRANT USE CATALOG ON CATALOG c TO `sp-1`",
         "GRANT USE SCHEMA ON SCHEMA c.apx TO `account users`",
         "GRANT SELECT ON TABLE c.apx.agent_registry TO `account users`",
         "GRANT SELECT, MODIFY ON TABLE c.apx.agent_registry TO `sp-1`",
