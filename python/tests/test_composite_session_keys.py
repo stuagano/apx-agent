@@ -145,8 +145,15 @@ def _seeded(monkeypatch):
 
 
 def _host(tmp_path, monkeypatch, root, execution):
+    from databricks_agentkit.runtime.auth import RequestAuthContext
     from apx_agent import compile_agent
     from tests.test_runtime_targets import _write_native_pyproject
+
+    def user_client(auth, mode):  # session_keys require a request user (as in test_native_invocation_contract)
+        user = MagicMock()
+        user.current_user.me.return_value.id = auth.namespace("principal", "verified")
+        return user
+    monkeypatch.setattr(RequestAuthContext, "client_for", user_client)
     _write_native_pyproject(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
@@ -154,14 +161,15 @@ def _host(tmp_path, monkeypatch, root, execution):
     return compile_agent(root, target="durable_agent_server", model="fake", service_ws=execution.ws, session_store="s")
 
 
-def _turn(client, body):
+def _turn(client, body, principal="alice"):
     import time
-    r = client.post("/api/invocations", json=body)
+    from tests.test_native_invocation_contract import headers
+    r = client.post("/api/invocations", json=body, headers=headers(principal))
     if r.status_code >= 500:  # a synchronous invocation reports its failure on the POST
         return {"status": "failed"}
     assert r.status_code in (200, 202), r.text
     for _ in range(100):
-        state = client.get(f"/api/invocations/{body['id']}").json()
+        state = client.get(f"/api/invocations/{body['id']}", headers=headers(principal)).json()
         if state.get("status") in ("completed", "failed"):
             return state
         time.sleep(0.05)
