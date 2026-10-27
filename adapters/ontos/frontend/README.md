@@ -49,6 +49,8 @@ import governance from './en/governance.json'
 | `ResourceDetail.tsx` | `/governance/resources/:id` | Classifications / violations / exceptions tabs |
 | `Policies.tsx` | `/governance/policies` | Policy list with YAML-origin lock, create/edit dialog |
 | `Exceptions.tsx` | `/governance/exceptions` | Active/expired toggle, revoke, bulk-revoke-expired |
+| `RemediationDashboard.tsx` | `/governance/remediation` | Proposal funnel, agent effectiveness, reviewer load |
+| `RemediationInbox.tsx` | `/governance/remediation/inbox` | Review queue: approve / reject / reassign proposals |
 
 ## Dependencies
 
