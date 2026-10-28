@@ -565,3 +565,31 @@ def test_native_answer_without_replies_has_no_buttons(browser_chat):
     state["output"]["messages"] = [{"type": "ai", "content": "Done.", "additional_kwargs": {"apx_answer": True}}]
     submit(page)
     expect(page.locator(".native-quick-replies")).to_have_count(0)
+
+
+def test_native_old_quick_replies_are_disabled_after_a_new_message(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"] = [{"type": "ai", "content": "Ready.",
+                                    "additional_kwargs": {"apx_answer": True, "apx_replies": ["approve"]}}]
+    submit(page)
+    expect(page.locator(".native-quick-replies button")).to_have_count(1)
+    state["output"]["messages"] = [{"type": "ai", "content": "Next.", "additional_kwargs": {"apx_answer": True}}]
+    submit(page, "other")
+    expect(page.locator(".msg.assistant").last).to_have_text("Next.")
+    old = page.locator(".native-quick-replies button")
+    assert old.count() == 0 or old.first.is_disabled()
+    if old.count():
+        old.first.click(force=True)
+    assert len(posts) == 2
+
+
+def test_native_typed_input_hosts_show_no_quick_replies(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["input_schema"] = BrowserInput.model_json_schema()
+    state["output"]["messages"] = [{"type": "ai", "content": "Ready.",
+                                    "additional_kwargs": {"apx_answer": True, "apx_replies": ["approve"]}}]
+    page.reload()
+    expect(page.locator(".native-input-schema")).to_contain_text("as_of")
+    submit(page, json.dumps({"amount": 4, "as_of": "2026-10-22"}))
+    expect(page.locator(".msg.assistant")).to_have_text("Ready.")
+    expect(page.locator(".native-quick-replies")).to_have_count(0)
