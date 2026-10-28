@@ -679,6 +679,11 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             step = next((m for m in reversed(state.get("messages", [])) if isinstance(m, AIMessage)), None)
             parts = step.additional_kwargs.get("apx_data_parts") if step is not None else None
             extra = {"apx_data_parts": parts} if parts else {}
+            replies_path = getattr(sub, "_output_replies_path", None)
+            replies = _state_path(state, key, replies_path) if replies_path else None
+            if (isinstance(replies, list) and 1 <= len(replies) <= 4
+                    and all(isinstance(r, str) and 1 <= len(r.strip()) <= 40 for r in replies)):
+                extra["apx_replies"] = [r.strip() for r in replies]
             return {"messages": [AIMessage(content=text, additional_kwargs={"apx_answer": True, **extra})]}
         return emit
 

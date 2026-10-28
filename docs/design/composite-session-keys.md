@@ -49,6 +49,10 @@ SequentialAgent(
   `("question",)`), the sequence ends with that field's text as a plain assistant
   message, marked `apx_answer`. The native chat page shows only that text;
   the step's exact JSON stays in its recorded output.
+  `output_replies_path` (requires `output_message_path`) names a list of 1-4 strings
+  of at most 40 characters on the same output. The answer then carries them as
+  `apx_replies`, and the native chat page shows each as a button that sends its text
+  as the next message. Anything else in that field is ignored.
 
 ## Behaviour
 

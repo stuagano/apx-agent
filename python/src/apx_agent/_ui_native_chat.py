@@ -275,6 +275,19 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
         ).filter(Boolean).join('\n');
         if (!answer) answer = bubble('assistant', '');
         render(answer, text || '(empty response)');
+        const replies = halt.map(m => m.additional_kwargs.apx_replies).find(r => Array.isArray(r) && r.length);
+        if (replies) {
+          const row = document.createElement('div');
+          row.className = 'native-quick-replies';
+          replies.filter(r => typeof r === 'string').forEach(reply => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = reply;
+            button.addEventListener('click', () => { input.value = reply; form.requestSubmit(); });
+            row.appendChild(button);
+          });
+          answer.appendChild(row);
+        }
         if (messages.some(m => m.type === 'ai' && m.additional_kwargs?.apx_data_parts?.length)) {
           const details = document.createElement('details');
           details.className = 'native-recorded-output';

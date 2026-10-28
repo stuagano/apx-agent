@@ -544,3 +544,24 @@ def test_browser_real_native_host(request, monkeypatch, surface):
         assert len(posts) == 1 and host.effects == ["proof"]
         assert "contract-credential-sentinel" not in page.evaluate("JSON.stringify(sessionStorage)")
         browser.close()
+
+
+def test_native_quick_replies_send_their_text(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"] = [{"type": "ai", "content": "Ready.",
+                                    "additional_kwargs": {"apx_answer": True, "apx_replies": ["approve", "<b>x</b>"]}}]
+    submit(page)
+    buttons = page.locator(".native-quick-replies button")
+    expect(buttons).to_have_count(2)
+    expect(buttons.nth(1)).to_have_text("<b>x</b>")  # text, never markup
+    assert page.locator(".native-quick-replies b").count() == 0
+    buttons.first.click()
+    expect(page.locator(".msg.user").last).to_have_text("approve")
+    assert len(posts) == 2 and posts[1]["input"]["messages"][-1]["content"] == "approve"
+
+
+def test_native_answer_without_replies_has_no_buttons(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"] = [{"type": "ai", "content": "Done.", "additional_kwargs": {"apx_answer": True}}]
+    submit(page)
+    expect(page.locator(".native-quick-replies")).to_have_count(0)
