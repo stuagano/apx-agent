@@ -275,6 +275,23 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
         ).filter(Boolean).join('\n');
         if (!answer) answer = bubble('assistant', '');
         render(answer, text || '(empty response)');
+        const replies = halt.map(m => m.additional_kwargs.apx_replies).find(r => Array.isArray(r) && r.length);
+        if (replies && !schema) {
+          const row = document.createElement('div');
+          row.className = 'native-quick-replies';
+          replies.filter(r => typeof r === 'string').forEach(reply => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = reply;
+            button.addEventListener('click', () => {
+              if (busy || !ready || (saved && !saved.terminal)) return;
+              input.value = reply;
+              form.requestSubmit();
+            });
+            row.appendChild(button);
+          });
+          answer.appendChild(row);
+        }
         if (messages.some(m => m.type === 'ai' && m.additional_kwargs?.apx_data_parts?.length)) {
           const details = document.createElement('details');
           details.className = 'native-recorded-output';
@@ -307,6 +324,8 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     const text = schema ? input.value : input.value.trim();
     if (!text.trim() || !ready || busy || (saved && !saved.terminal)) return;
     validation.textContent = '';
+    // An earlier answer's quick replies must not act on whatever is pending now.
+    document.querySelectorAll('.native-quick-replies button').forEach(button => { button.disabled = true; });
     let inputWire;
     if (schema) {
       busy = true;

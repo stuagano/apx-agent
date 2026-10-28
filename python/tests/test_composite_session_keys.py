@@ -1,5 +1,6 @@
 """Session state and halt statuses for durable composites (docs/design/composite-session-keys.md)."""
 
+import json
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -466,3 +467,35 @@ def test_an_empty_question_adds_no_halt_message(monkeypatch):
                           halt_statuses=("needs_input",))
     result = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke({"messages": [HumanMessage(content="go")]})
     assert not any(m.additional_kwargs.get("apx_answer") for m in result["messages"])
+
+
+class Answer(BaseModel):
+    text: str
+    replies: list[str] = []
+
+
+def _answer_step(**kw):
+    return Agent(name="summary", output_schema=Answer, output_key="summary",
+                 output_message_path=("text",), **kw)
+
+
+def test_an_answer_can_offer_quick_replies(monkeypatch):
+    _model(monkeypatch, [AIMessage(content='{"text": "Ready.", "replies": ["approve", "reject"]}')])
+    seq = SequentialAgent([_answer_step(output_replies_path=("replies",))], name="pipeline")
+    last = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke(
+        {"messages": [HumanMessage(content="go")]})["messages"][-1]
+    assert last.content == "Ready." and last.additional_kwargs["apx_replies"] == ["approve", "reject"]
+
+
+@pytest.mark.parametrize("replies", [[], ["x" * 41], ["a", "b", "c", "d", "e"], [""]])
+def test_unusable_replies_are_not_offered(monkeypatch, replies):
+    _model(monkeypatch, [AIMessage(content=json.dumps({"text": "Ready.", "replies": replies}))])
+    seq = SequentialAgent([_answer_step(output_replies_path=("replies",))], name="pipeline")
+    last = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke(
+        {"messages": [HumanMessage(content="go")]})["messages"][-1]
+    assert "apx_replies" not in last.additional_kwargs
+
+
+def test_replies_need_a_message_path():
+    with pytest.raises(ValueError, match="output_replies_path"):
+        Agent(name="s", output_schema=Answer, output_replies_path=("replies",))
