@@ -250,7 +250,8 @@ class LlmAgent(BaseAgent):
     sequence then ends with that text as a plain assistant message (an empty
     field adds none); a step that can do neither is refused at compile time.
     ``output_fields_path`` names a small dict in the output (up to 8 scalar fields) that
-    the native chat shows on the step's card, e.g. which slots are filled.
+    the native chat shows on the step's card, e.g. which slots are filled. The values are
+    copied into the invocation's event log, so point it only at fields the caller may see.
     ``output_replies_path`` (requires ``output_message_path``) names a list of 1-4
     short strings the native chat page offers as quick-reply buttons under that answer.
     Native outputs retain exact JSON and verified DataParts in the reserved
