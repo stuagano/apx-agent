@@ -119,7 +119,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     const hr = t.createTHead().insertRow();
     cols.forEach(c => { const th = document.createElement('th'); th.textContent = c; hr.appendChild(th); });
     const body = t.createTBody();
-    rows.slice(0, 50).forEach(r => { const tr = body.insertRow(); cols.forEach(c => { tr.insertCell().textContent = c in r ? leaf(r[c]) : ''; }); });
+    rows.slice(0, 50).forEach(r => { const tr = body.insertRow(); cols.forEach(c => { tr.insertCell().textContent = Object.hasOwn(r, c) ? leaf(r[c]) : ''; }); });
     return t;
   }
   function tree(value, depth = 0) {
@@ -217,20 +217,23 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     const transport = safe(event.transport_status), domain = safe(event.domain_status);
     // A remote step names the App it ran in (from its verified child record link); a local one says nothing.
     const childId = unknown ? event.id : event.child_invocation_id;
-    let childHref = null, childApp = null;
+    let childHref = null, childApp = null, childHost = null;
     try {
       const url = new URL(event.child_invocation_url);
       if (typeof event.child_invocation_url === 'string' && event.child_invocation_url.length <= 2048 &&
           ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash &&
           known(childId) && url.pathname.endsWith('/api/invocations/' + encodeURIComponent(childId))) {
         childHref = url.href;
-        childApp = url.hostname.split('.')[0].replace(/-\d+$/, '');
+        childHost = url.hostname.slice(0, 253);
+        childApp = childHost.split('.')[0].replace(/-\d+$/, '').slice(0, 40);
       }
     } catch (_) {}
     const remote = unknown || event.location === 'remote';
     head.textContent = [(transport === 'completed' && !unknown ? '✓ ' : '? ') + safe(event.step),
       ...(domain === 'unavailable' ? [] : [domain.replaceAll('_', ' ')]),
       ...(remote ? [childApp ? '→ ' + childApp : 'remote'] : [])].join(' · ');
+    // The label is derived from the event's URL, so the full host always travels with it.
+    if (childHost) head.title = 'ran in ' + childHost;
     if (!known(event.step)) missing.push('step');
     if (transport !== 'completed') addRow('transport ' + transport);
     const timestamp = typeof event.recorded_at === 'string' && event.recorded_at.length <= 64 &&
@@ -260,6 +263,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
         a.href = childHref;
         a.textContent = childId;
         addRow('child ', a);
+        addRow('ran in ' + childHost);
       } else addRow('child ' + childId + ' (record link unavailable)');
     } else if (remote) missing.push('child invocation');
     if (known(correlation.parent_invocation_id)) addRow('parent ', short(correlation.parent_invocation_id));
