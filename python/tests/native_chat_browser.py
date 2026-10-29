@@ -403,6 +403,20 @@ def test_native_step_line_omits_local_and_names_the_remote_app(browser_chat):
                  child_invocation_url="https://pricing-app-prod-1234567890.aws.databricksapps.com/api/invocations/child-id")
     submit(page)
     expect(page.locator(".native-step-summary").last).to_have_text("✓ price · recommended · → pricing-app-prod")
+    host = "pricing-app-prod-1234567890.aws.databricksapps.com"
+    # The short label is derived from the event's URL, so the full host is always shown with it.
+    expect(page.locator(".native-step-summary").last).to_have_attribute("title", "ran in " + host)
+    expect(page.locator("details.native-step-record").last).to_contain_text("ran in " + host)
+
+
+def test_native_record_table_ignores_inherited_keys(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _typed_step(event, state, {"rows": [{"constructor": 1, "a": 2}, {"a": 3}]})
+    submit(page)
+    view = page.locator("details.native-step-output")
+    view.locator(":scope > summary").click()
+    view.locator("summary", has_text="rows").click()
+    expect(view.locator("table.native-tree-table tbody tr").nth(1)).not_to_contain_text("function")
 
 
 def _typed_step(event, state, data, sha="c" * 64):
