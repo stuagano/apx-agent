@@ -107,24 +107,48 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     container.appendChild(controls);
     answer = null;
   }
-  // A bounded, text-only tree of a typed output: objects indent, lists show as rows.
+  // A typed output, one level at a time: plain values show; each nested object or list is a
+  // closed row with a count, and a list of flat records opens as a small table. Text only, bounded.
+  const leaf = v => v === null ? 'null' : typeof v === 'string' ? (v.length > 300 ? v.slice(0, 299) + '…' : v) : String(v);
+  const isFlat = v => v !== null && typeof v === 'object' && !Array.isArray(v) &&
+    Object.values(v).every(x => x === null || typeof x !== 'object');
+  function table(rows) {
+    const cols = [...new Set(rows.flatMap(r => Object.keys(r)))].slice(0, 8);
+    const t = document.createElement('table');
+    t.className = 'native-tree-table';
+    const hr = t.createTHead().insertRow();
+    cols.forEach(c => { const th = document.createElement('th'); th.textContent = c; hr.appendChild(th); });
+    const body = t.createTBody();
+    rows.slice(0, 50).forEach(r => { const tr = body.insertRow(); cols.forEach(c => { tr.insertCell().textContent = c in r ? leaf(r[c]) : ''; }); });
+    return t;
+  }
   function tree(value, depth = 0) {
     const node = document.createElement('div');
     node.className = 'native-tree';
     if (depth > 0) node.style.paddingLeft = '1em';
-    const leaf = v => v === null ? 'null' : typeof v === 'string' ? (v.length > 300 ? v.slice(0, 299) + '…' : v) : String(v);
     if (value === null || typeof value !== 'object') { node.textContent = leaf(value); return node; }
     if (depth >= 6) { node.textContent = '…'; return node; }
+    if (Array.isArray(value) && value.length && value.every(isFlat)) {
+      node.appendChild(table(value));
+      if (value.length > 50) { const more = document.createElement('div'); more.textContent = '… ' + (value.length - 50) + ' more'; node.appendChild(more); }
+      return node;
+    }
     const entries = Array.isArray(value) ? value.map((v, i) => [String(i), v]) : Object.entries(value);
     entries.slice(0, 50).forEach(([key, item]) => {
-      const row = document.createElement('div');
-      const label = document.createElement('span');
-      label.className = 'native-tree-key';
-      label.textContent = key + ' ';
-      row.appendChild(label);
-      if (item !== null && typeof item === 'object') row.appendChild(tree(item, depth + 1));
-      else row.append(leaf(item));
-      node.appendChild(row);
+      if (item !== null && typeof item === 'object') {
+        const sub = document.createElement('details');
+        const label = document.createElement('summary');
+        const n = Array.isArray(item) ? item.length : Object.keys(item).length;
+        label.textContent = key.slice(0, 80) + ' ' + n + (Array.isArray(item) ? (n === 1 ? ' item' : ' items') : (n === 1 ? ' field' : ' fields'));
+        sub.appendChild(label);
+        // Built on first open, so a large output costs nothing until someone looks.
+        sub.addEventListener('toggle', () => { if (sub.open && sub.children.length === 1) sub.appendChild(tree(item, depth + 1)); });
+        node.appendChild(sub);
+      } else {
+        const row = document.createElement('div');
+        row.textContent = key.slice(0, 80) + ' ' + leaf(item);
+        node.appendChild(row);
+      }
     });
     if (entries.length > 50) {
       const more = document.createElement('div');
@@ -146,7 +170,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       const label = document.createElement('summary');
       label.textContent = 'Output · ' + card.dataset.schema;
       view.append(label, tree(bySha[card.dataset.sha]));
-      card.insertBefore(view, card.querySelector('details'));
+      card.insertBefore(view, card.querySelector('.native-step-record'));
     });
   }
   function showEvent(raw) {
@@ -169,66 +193,88 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     if (typeof sha === 'string' && /^[a-f0-9]{64}$/.test(sha)) card.dataset.sha = sha;
     card.dataset.schema = safe(event.output_schema);
     const record = document.createElement('details');
+    record.className = 'native-step-record';
     const recordLabel = document.createElement('summary');
     recordLabel.textContent = 'Details';
     record.appendChild(recordLabel);
     card.appendChild(record);
-    const line = (label, value) => {
-      const row = document.createElement('div');
-      row.textContent = label + ': ' + value;
-      record.appendChild(row);
+    const known = v => safe(v) !== 'unavailable';
+    const missing = [];
+    // Short ids and hashes read better; the full value stays on hover (title) and in copies.
+    const short = (text, full) => {
+      const span = document.createElement('span');
+      span.textContent = text.length > 12 ? text.slice(0, 8) + '…' : text;
+      span.title = full || text;
+      return span;
     };
-    const link = (label, value, remoteUrl = null) => {
-      const row = document.createElement('div');
-      row.textContent = label + ': ';
-      if (safe(value) === 'unavailable') row.append('unavailable');
-      else {
-        let href = '/api/invocations/' + encodeURIComponent(value);
-        if (label === 'Child invocation') {
-          href = null;
-          try {
-            const url = new URL(remoteUrl);
-            if (typeof remoteUrl === 'string' && remoteUrl.length <= 2048 && ['http:', 'https:'].includes(url.protocol) &&
-                !url.username && !url.password && !url.search && !url.hash &&
-                url.pathname.endsWith('/api/invocations/' + encodeURIComponent(value))) href = url.href;
-          } catch (_) {}
-        }
-        if (!href) { row.append(value + ' (record link unavailable)'); record.appendChild(row); return; }
-        const a = document.createElement('a');
-        a.href = href;
-        a.textContent = value;
-        row.appendChild(a);
-      }
-      record.appendChild(row);
+    const addRow = (...parts) => {
+      const div = document.createElement('div');
+      parts.forEach(part => div.append(part));
+      record.appendChild(div);
     };
     const unknown = event.type === 'agent.child.unknown';
     const correlation = unknown ? event.correlation || {} : event;
     const transport = safe(event.transport_status), domain = safe(event.domain_status);
+    // A remote step names the App it ran in (from its verified child record link); a local one says nothing.
+    const childId = unknown ? event.id : event.child_invocation_id;
+    let childHref = null, childApp = null;
+    try {
+      const url = new URL(event.child_invocation_url);
+      if (typeof event.child_invocation_url === 'string' && event.child_invocation_url.length <= 2048 &&
+          ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash &&
+          known(childId) && url.pathname.endsWith('/api/invocations/' + encodeURIComponent(childId))) {
+        childHref = url.href;
+        childApp = url.hostname.split('.')[0].replace(/-\d+$/, '');
+      }
+    } catch (_) {}
+    const remote = unknown || event.location === 'remote';
     head.textContent = [(transport === 'completed' && !unknown ? '✓ ' : '? ') + safe(event.step),
-      ...(domain === 'unavailable' ? [] : [domain.replaceAll('_', ' ')]), unknown ? 'remote' : safe(event.location)].join(' · ');
-    line('Step', safe(event.step));
-    line('Location', unknown ? 'remote' : safe(event.location));
-    line('Transport', safe(event.transport_status));
-    line('Domain', safe(event.domain_status));
-    link('Invocation', event.invocation_id);
-    link('Child invocation', unknown ? event.id : event.child_invocation_id, event.child_invocation_url);
-    link('Parent invocation', correlation.parent_invocation_id);
-    line('Sender', safe(correlation.transport_sender));
-    line('Predecessor', safe(correlation.logical_predecessor));
-    line('Schema validated', event.schema_validated === true ? 'true' : 'unavailable');
-    line('Readback verified', event.readback_verified === true ? 'true' : 'unavailable');
-    for (const direction of ['input', 'output']) {
-      line(direction + ' schema', safe(event[direction + '_schema']));
-      const artifact = event[direction + '_artifact'] || {};
-      line(direction + ' artifact', safe(artifact.artifact_id));
-      line(direction + ' SHA256', typeof artifact.sha256 === 'string' && /^[a-f0-9]{64}$/.test(artifact.sha256) ? artifact.sha256 : 'unavailable');
-    }
+      ...(domain === 'unavailable' ? [] : [domain.replaceAll('_', ' ')]),
+      ...(remote ? [childApp ? '→ ' + childApp : 'remote'] : [])].join(' · ');
+    if (!known(event.step)) missing.push('step');
+    if (transport !== 'completed') addRow('transport ' + transport);
     const timestamp = typeof event.recorded_at === 'string' && event.recorded_at.length <= 64 &&
       /^\d{4}-\d\d-\d\dT[\d:.+-]+Z?$/.test(event.recorded_at) && event.timestamp_source === 'application_emit';
-    line('Server event time', timestamp ? event.recorded_at + ' (application_emit)' : 'unavailable');
-    line('Child timing', 'unavailable');
-    line('Trace', 'unavailable');
-    line('Model/version', 'unavailable');
+    const head1 = [];
+    if (known(event.invocation_id)) head1.push(['invocation ', event.invocation_id]);
+    if (known(correlation.transport_sender)) head1.push(['sender ', correlation.transport_sender]);
+    if (head1.length || timestamp) {
+      const div = document.createElement('div');
+      head1.forEach(([label, value], i) => {
+        if (i) div.append(' · ');
+        div.append(label);
+        if (label === 'invocation ') {
+          const a = document.createElement('a');
+          a.href = '/api/invocations/' + encodeURIComponent(value);
+          a.append(short(value));
+          div.append(a);
+        } else div.append(value);
+      });
+      if (timestamp) div.append((head1.length ? ' · ' : '') + event.recorded_at.slice(0, 19).replace('T', ' ') + ' UTC');
+      record.appendChild(div);
+    } else missing.push('invocation');
+    if (!timestamp) missing.push('event time');
+    if (known(childId)) {
+      if (childHref) {
+        const a = document.createElement('a');
+        a.href = childHref;
+        a.textContent = childId;
+        addRow('child ', a);
+      } else addRow('child ' + childId + ' (record link unavailable)');
+    } else if (remote) missing.push('child invocation');
+    if (known(correlation.parent_invocation_id)) addRow('parent ', short(correlation.parent_invocation_id));
+    if (known(correlation.logical_predecessor)) addRow('predecessor ' + correlation.logical_predecessor);
+    for (const direction of ['input', 'output']) {
+      const schema = safe(event[direction + '_schema']);
+      const artifact = event[direction + '_artifact'] || {};
+      const digest = typeof artifact.sha256 === 'string' && /^[a-f0-9]{64}$/.test(artifact.sha256) ? artifact.sha256 : null;
+      if (schema === 'unavailable' && !digest) { if (direction === 'output') missing.push('output'); continue; }
+      addRow(direction + ' ' + (schema === 'unavailable' ? '' : schema + ' '), ...(digest ? [short(digest)] : []));
+    }
+    if (event.schema_validated === true) addRow('schema validated ✓');
+    if (event.readback_verified === true) addRow('readback verified ✓');
+    missing.push('child timing', 'trace', 'model/version');
+    addRow('not recorded: ' + missing.join(', '));
     cards.appendChild(card);
     if (cards.children.length > 64) cards.firstChild.remove();
   }
