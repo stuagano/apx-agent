@@ -6,14 +6,27 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-10-29
+
 Headline: apx declarations compile to the native Databricks durable agent
 runtime, which is now the only Apps host. Composite and A2A agents run on it,
 and managed sessions and memory replace app-owned state on that path.
 
+**Upgrading from 0.7.1: this release contains breaking changes.** Pin
+`apx-agent==0.7.1` if you are not ready for them.
+
+- **`[tool.apx.agent]` is an error.** Declare settings on the Python agent
+  and run `apx-agent agents migrate-config` (see Removed).
+- **Apps host is `DurableAgentServer` only.** The responses/ChatAgent Apps
+  host is gone (see Changed).
+- **Model Serving is removed.** Its deploy target and hosting API are gone,
+  and agents deploy to Databricks Apps (see Removed).
+- **The TypeScript agent runtime is retired** (see Changed).
+
 ### Added
 
 - **Calmer step cards.** A typed output opens one level at a time: plain values show, nested objects and lists are closed rows with a count (`decision 11 fields`, `scenarios 3 items`), a list of flat records opens as a small table, and nested parts are built only when opened. Details is compact: only recorded facts, short ids and hashes (full on hover), and one `not recorded: …` line. A step that ran in its own App no longer says `local`; a remote step names its App (`→ pricing-app-prod`).
-- **Typed step outputs on the native chat card.** Each step card shows its own typed output (the exact recorded artifact, matched by sha256) as a collapsed `Output · <Contract>` key/value tree: objects indent, lists show as rows, bounded to depth 6, 50 items per level and 300 characters per value, text only. The step-fields option from #1032 is removed in favour of it.
+- **Typed step outputs on the native chat card.** Each step card shows its own typed output (the exact recorded artifact, matched by sha256) as a collapsed `Output · <Contract>` key/value tree: objects indent, lists show as rows, bounded to depth 6, 50 items per level and 300 characters per value, text only.
 - **Readable native chat.** A step's `output_message_path` is also the answer when that step is a `SequentialAgent`'s last step, not only when it halts. The native chat page shows just that text (marked `apx_answer`, formerly `apx_halt_message`), and every step's exact JSON stays in the recorded output. Each step card is one line (`✓ calibrate · recommended · remote`), with its provenance one click away under Details. A message path that can never be shown is refused at compile time, replacing the declaration-time `output_status_path` requirement.
 - **Quick-reply buttons on an answer.** `LlmAgent(output_replies_path=(...))`, beside `output_message_path`, names a list of 1-4 short strings; the native chat page shows them as buttons under the answer, and a click sends that text as the next message. Anything unusable in the field is ignored.
 - **A halting step's question is the answer.** `LlmAgent(output_message_path=(...))` names the output field a person reads when the step halts a `SequentialAgent`. The sequence ends with that text as a plain assistant message, and the native chat page shows it instead of the step's JSON. See [composite-session-keys](docs/design/composite-session-keys.md).
