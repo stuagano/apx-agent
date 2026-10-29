@@ -387,6 +387,27 @@ def test_native_execution_card_is_one_readable_line(browser_chat):
     expect(card).to_contain_text("output SHA256: " + "b" * 64)  # still in the record
 
 
+def test_native_step_fields_render_as_chips(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    event.clear()
+    event.update(type="agent.step.completed", step="order", location="local", invocation_id="parent-id",
+                 transport_status="completed", domain_status="needs_input",
+                 fields={"size": "large", "color": "<b>x</b>", "date": None})
+    submit(page)
+    chips = page.locator(".native-execution-card .native-step-fields")
+    expect(chips).to_have_text("size large · color <b>x</b> · date —")
+    assert page.locator(".native-step-fields b").count() == 0  # text, never markup
+
+
+def test_native_step_without_fields_has_no_chip_row(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    event.clear()
+    event.update(type="agent.step.completed", step="calibrate", location="remote", invocation_id="parent-id",
+                 transport_status="completed", domain_status="recommended")
+    submit(page)
+    expect(page.locator(".native-step-fields")).to_have_count(0)
+
+
 def test_native_unknown_child_is_not_success(browser_chat):
     page, posts, reads, state, event = browser_chat
     event.clear()

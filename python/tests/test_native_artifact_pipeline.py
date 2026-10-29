@@ -626,3 +626,44 @@ def test_bad_preparation_fails_before_remote_call(chain, value):
     assert response.status_code == 500
     assert [name for name, _ in chain.consumed] == ["intelligence"]
     assert chain.sent == []
+
+
+def _emit_fields(path, payload):
+    from apx_agent._native_remote import emit_native_step
+
+    agent = LlmAgent(name="step", output_schema=Evidence, output_fields_path=path)
+    part = {"kind": "data", "data": payload, "metadata": {"artifact_id": "actual", "sha256": "a" * 64}}
+    events = []
+    token = _NATIVE_INVOCATION.set({"id": "actual-parent", "sender": "fleet", "emit": events.append})
+    try:
+        emit_native_step(agent, part, None, None, "predecessor")
+    finally:
+        _NATIVE_INVOCATION.reset(token)
+    return events[0]
+
+
+def test_declared_fields_ride_on_the_step_event():
+    # A step's small key/value summary (e.g. which slots are filled) is shown on its card.
+    event = _emit_fields(("view",), {"view": {"size": "large", "color": "blue", "date": None, "n": 5}})
+    assert event["fields"] == {"size": "large", "color": "blue", "date": None, "n": "5"}
+
+
+@pytest.mark.parametrize("payload", [
+    {"view": "not a dict"}, {"view": {}}, {}, {"view": {"bad key!": "x"}},
+    {"view": {f"k{i}": "v" for i in range(9)}},
+])
+def test_unusable_fields_are_not_published(payload):
+    assert "fields" not in _emit_fields(("view",), payload)
+
+
+def test_field_values_are_bounded():
+    event = _emit_fields(("view",), {"view": {"note": "x" * 100, "nested": {"a": 1}}})
+    assert event["fields"]["note"] == "x" * 39 + "…"
+    assert event["fields"]["nested"] is None  # only scalars are shown
+
+
+def test_output_fields_path_is_validated():
+    with pytest.raises(ValueError, match="output_fields_path"):
+        LlmAgent(output_schema=Evidence, output_fields_path=("bad.name",))
+    with pytest.raises(ValueError, match="output_fields_path"):
+        LlmAgent(output_fields_path=("view",))
