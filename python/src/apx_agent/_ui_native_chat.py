@@ -107,6 +107,48 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     container.appendChild(controls);
     answer = null;
   }
+  // A bounded, text-only tree of a typed output: objects indent, lists show as rows.
+  function tree(value, depth = 0) {
+    const node = document.createElement('div');
+    node.className = 'native-tree';
+    if (depth > 0) node.style.paddingLeft = '1em';
+    const leaf = v => v === null ? 'null' : typeof v === 'string' ? (v.length > 300 ? v.slice(0, 299) + '…' : v) : String(v);
+    if (value === null || typeof value !== 'object') { node.textContent = leaf(value); return node; }
+    if (depth >= 6) { node.textContent = '…'; return node; }
+    const entries = Array.isArray(value) ? value.map((v, i) => [String(i), v]) : Object.entries(value);
+    entries.slice(0, 50).forEach(([key, item]) => {
+      const row = document.createElement('div');
+      const label = document.createElement('span');
+      label.className = 'native-tree-key';
+      label.textContent = key + ' ';
+      row.appendChild(label);
+      if (item !== null && typeof item === 'object') row.appendChild(tree(item, depth + 1));
+      else row.append(leaf(item));
+      node.appendChild(row);
+    });
+    if (entries.length > 50) {
+      const more = document.createElement('div');
+      more.textContent = '… ' + (entries.length - 50) + ' more';
+      node.appendChild(more);
+    }
+    return node;
+  }
+  function attachOutputs(messages) {
+    const bySha = {};
+    messages.forEach(m => (m.additional_kwargs?.apx_data_parts || []).forEach(part => {
+      const sha = part?.metadata?.sha256;
+      if (typeof sha === 'string') bySha[sha] = part.data;
+    }));
+    cards.querySelectorAll('.native-execution-card[data-sha]').forEach(card => {
+      if (!(card.dataset.sha in bySha) || card.querySelector('.native-step-output')) return;
+      const view = document.createElement('details');
+      view.className = 'native-step-output';
+      const label = document.createElement('summary');
+      label.textContent = 'Output · ' + card.dataset.schema;
+      view.append(label, tree(bySha[card.dataset.sha]));
+      card.insertBefore(view, card.querySelector('details'));
+    });
+  }
   function showEvent(raw) {
     const event = typeof raw === 'string' ? JSON.parse(raw) : raw;
     const row = document.createElement('pre');
@@ -122,13 +164,10 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     const head = document.createElement('div');
     head.className = 'native-step-summary';
     card.appendChild(head);
-    if (event.fields && typeof event.fields === 'object' && !Array.isArray(event.fields)) {
-      const chips = document.createElement('div');
-      chips.className = 'native-step-fields';
-      chips.textContent = Object.entries(event.fields).slice(0, 8)
-        .map(([k, v]) => k + ' ' + (typeof v === 'string' && v ? v : '—')).join(' · ');
-      card.appendChild(chips);
-    }
+    // The step's typed output is attached once the run's recorded parts arrive (matched by sha).
+    const sha = event.output_artifact?.sha256;
+    if (typeof sha === 'string' && /^[a-f0-9]{64}$/.test(sha)) card.dataset.sha = sha;
+    card.dataset.schema = safe(event.output_schema);
     const record = document.createElement('details');
     const recordLabel = document.createElement('summary');
     recordLabel.textContent = 'Details';
@@ -299,6 +338,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
           });
           answer.appendChild(row);
         }
+        attachOutputs(messages);
         if (messages.some(m => m.type === 'ai' && m.additional_kwargs?.apx_data_parts?.length)) {
           const details = document.createElement('details');
           details.className = 'native-recorded-output';

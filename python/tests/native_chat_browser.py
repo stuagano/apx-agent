@@ -362,7 +362,7 @@ def test_native_execution_card_separates_status_and_provenance(browser_chat):
                  "CalibrateInput", "PricingDecision", "input-actual", "output-actual", "Server event time", "application_emit",
                  "Child timing: unavailable", "Trace: unavailable", "Model/version: unavailable"]:
         expect(card).to_contain_text(text)
-    card.locator("details > summary").click()  # provenance is one click away
+    card.locator("details > summary", has_text="Details").click()  # provenance is one click away
     assert card.get_by_role("link", name="child-id", exact=True).get_attribute("href") == "https://calibrate.example/api/invocations/child-id"
     assert json.loads(page.locator(".native-output").text_content())["output"]["messages"][0]["additional_kwargs"]["apx_data_parts"] == [part]
     assert page.evaluate("window.injected") is None
@@ -387,25 +387,46 @@ def test_native_execution_card_is_one_readable_line(browser_chat):
     expect(card).to_contain_text("output SHA256: " + "b" * 64)  # still in the record
 
 
-def test_native_step_fields_render_as_chips(browser_chat):
-    page, posts, reads, state, event = browser_chat
+def _typed_step(event, state, data, sha="c" * 64):
     event.clear()
-    event.update(type="agent.step.completed", step="order", location="local", invocation_id="parent-id",
-                 transport_status="completed", domain_status="needs_input",
-                 fields={"size": "large", "color": "<b>x</b>", "date": None})
-    submit(page)
-    chips = page.locator(".native-execution-card .native-step-fields")
-    expect(chips).to_have_text("size large · color <b>x</b> · date —")
-    assert page.locator(".native-step-fields b").count() == 0  # text, never markup
+    event.update(type="agent.step.completed", step="quote", location="remote", invocation_id="parent-id",
+                 transport_status="completed", domain_status="recommended", output_schema="QuoteV1",
+                 output_artifact={"artifact_id": "a1", "sha256": sha})
+    state["output"]["messages"] = [
+        {"type": "ai", "content": "Done.", "additional_kwargs": {"apx_data_parts": [
+            {"kind": "data", "data": data, "metadata": {"artifact_id": "a1", "sha256": sha}}]}}]
 
 
-def test_native_step_without_fields_has_no_chip_row(browser_chat):
+def test_native_step_card_shows_its_typed_output_as_structure(browser_chat):
+    # The step's exact typed artifact (matched by sha) renders as a collapsed key/value tree.
     page, posts, reads, state, event = browser_chat
-    event.clear()
-    event.update(type="agent.step.completed", step="calibrate", location="remote", invocation_id="parent-id",
-                 transport_status="completed", domain_status="recommended")
+    _typed_step(event, state, {"selected": 5, "options": [{"bps": 0}, {"bps": 5}],
+                               "decision": {"status": "recommended"}, "note": "<b>x</b>"})
     submit(page)
-    expect(page.locator(".native-step-fields")).to_have_count(0)
+    view = page.locator(".native-execution-card details.native-step-output")
+    expect(view).to_have_count(1)
+    expect(view.locator("summary")).to_have_text("Output · QuoteV1")
+    expect(view).not_to_have_attribute("open", "")
+    text = view.locator(":scope > .native-tree").text_content()
+    for fragment in ["selected", "5", "options", "bps", "decision", "status", "recommended", "<b>x</b>"]:
+        assert fragment in text
+    assert view.locator(".native-tree b").count() == 0  # values are text, never markup
+
+
+def test_native_step_output_only_matches_its_own_artifact(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _typed_step(event, state, {"selected": 5}, sha="c" * 64)
+    state["output"]["messages"][0]["additional_kwargs"]["apx_data_parts"][0]["metadata"]["sha256"] = "d" * 64
+    submit(page)
+    expect(page.locator("details.native-step-output")).to_have_count(0)
+
+
+def test_native_step_output_is_bounded(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _typed_step(event, state, {"rows": list(range(500)), "deep": {"a": {"b": {"c": {"d": {"e": {"f": {"g": 1}}}}}}}})
+    submit(page)
+    text = page.locator("details.native-step-output > .native-tree").text_content()
+    assert "… 450 more" in text and "…" in text
 
 
 def test_native_unknown_child_is_not_success(browser_chat):

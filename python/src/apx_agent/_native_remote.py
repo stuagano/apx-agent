@@ -52,19 +52,6 @@ def native_leaf_input(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     return native_data_part(agent._input_schema, payload, preserved)
 
 
-def _bounded_fields(value: Any) -> dict[str, str | None] | None:
-    """Up to 8 named scalars for a step card; None marks a missing value."""
-    if not isinstance(value, dict) or not 1 <= len(value) <= 8:
-        return None
-    if not all(isinstance(k, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,31}", k) for k in value):
-        return None
-    shown: dict[str, str | None] = {}
-    for key, item in value.items():
-        text = None if item is None or isinstance(item, (dict, list)) else str(item)
-        shown[key] = text if text is None or len(text) <= 40 else text[:39] + "…"
-    return shown
-
-
 def emit_native_step(agent: Any, part: dict[str, Any], input_part: dict[str, Any] | None,
                      child: dict[str, Any] | None, predecessor: str | None) -> None:
     """Publish validated evidence; the native host timestamps it before persistence."""
@@ -86,12 +73,6 @@ def emit_native_step(agent: Any, part: dict[str, Any], input_part: dict[str, Any
              "schema_validated": True, "output_schema": bounded_name(agent._output_schema.__name__),
              "output_artifact": dict(part["metadata"]),
              "domain_status": bounded_name(domain_status)}
-    fields = part["data"]
-    for key in getattr(agent, "_output_fields_path", None) or ():
-        fields = fields.get(key) if isinstance(fields, dict) else None
-    shown = _bounded_fields(fields) if getattr(agent, "_output_fields_path", None) else None
-    if shown:
-        event["fields"] = shown
     if input_part is not None:
         event["input_schema"] = bounded_name(agent._input_schema.__name__)
         event["input_artifact"] = dict(input_part["metadata"])
