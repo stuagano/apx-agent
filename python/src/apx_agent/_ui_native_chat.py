@@ -122,6 +122,13 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     const head = document.createElement('div');
     head.className = 'native-step-summary';
     card.appendChild(head);
+    if (event.fields && typeof event.fields === 'object' && !Array.isArray(event.fields)) {
+      const chips = document.createElement('div');
+      chips.className = 'native-step-fields';
+      chips.textContent = Object.entries(event.fields).slice(0, 8)
+        .map(([k, v]) => k + ' ' + (typeof v === 'string' && v ? v : '—')).join(' · ');
+      card.appendChild(chips);
+    }
     const record = document.createElement('details');
     const recordLabel = document.createElement('summary');
     recordLabel.textContent = 'Details';
