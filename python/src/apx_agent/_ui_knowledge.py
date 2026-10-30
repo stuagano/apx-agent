@@ -18,7 +18,7 @@ def render_knowledge_ui() -> str:
     no OKF bundle is found, never raises.
     """
     from ._ui_grounding import resolve_okf_root
-    from ._okf import okf_grounding, okf_glossary, OKFDocument
+    from ._okf import okf_grounding, okf_glossary, okf_manifest, OKFDocument
 
     okf_root = resolve_okf_root()
 
@@ -58,13 +58,15 @@ def render_knowledge_ui() -> str:
                     logger.debug(f"Failed to parse function {func_md.name}: {e}")
                     continue
 
-    return _render_knowledge_html(functions_data, views_data, glossary_data)
+    manifest = okf_manifest(okf_root) if okf_root else None
+    return _render_knowledge_html(functions_data, views_data, glossary_data, manifest)
 
 
 def _render_knowledge_html(
     functions: list[dict[str, str]],
     views: dict[str, Any],
     glossary: list[dict[str, Any]],
+    manifest: dict[str, Any] | None = None,
 ) -> str:
     """Render the Knowledge page HTML with Functions, Views, and Glossary.
 
@@ -165,7 +167,15 @@ def _render_knowledge_html(
 
     # Empty state
     empty_state = ""
-    if not functions and not views and not glossary:
+    if not functions and not views and not glossary and manifest:
+        # A freshly generated bundle has tables but nothing curated to show yet.
+        n = len(manifest.get("tables") or {})
+        empty_state = f'''<div class="empty-state">
+  <p>The OKF bundle for <code>{esc(f"{manifest.get('catalog')}.{manifest.get('schema')}")}</code> ({n} table{"" if n == 1 else "s"}) has no descriptions, glossary or functions yet.
+  Add column descriptions on <a href="/_apx/grounding">Grounding</a>, glossary terms under <code># Glossary</code> in its dataset doc, or functions under <code>functions/</code>.</p>
+</div>
+'''
+    elif not functions and not views and not glossary:
         empty_state = '''<div class="empty-state">
   <p>No OKF knowledge bundle found. Create a <code>.apx/okf</code> bundle to populate this view.</p>
 </div>

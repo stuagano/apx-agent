@@ -16,6 +16,7 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Fixed
 
+- **Knowledge page with a bare bundle.** A bundle that has tables but no descriptions, glossary or functions yet (e.g. one just generated) no longer shows "No OKF knowledge bundle found". The page names the bundle and points to Grounding.
 - **Readable Discover warnings.** A partial workspace graph lists one line per cause, e.g. `functions, models, volumes in 33 schemas (…): <reason>`. It no longer prints one line per schema, and drops the SDK's request id and `Config:` dump. Note that a Databricks Apps user token cannot list functions, registered models or volumes, because no Apps user scope covers them.
 
 ## [0.7.2] — 2026-10-29
