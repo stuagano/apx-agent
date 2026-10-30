@@ -719,3 +719,7 @@ def test_native_run_fills_the_events_timeline(browser_chat):
     expect(page.locator("#events-list .event:visible .event-title")).to_have_text(["tool call · lookup", "tool response · lookup"])
     page.locator("#events-filter button[data-filter=all]").click()
     expect(page.locator("#events-list .event:visible")).to_have_count(5)
+    page.reload()  # a restored run rebuilds the same timeline, user turn first
+    expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
+    page.locator(".panel-tabs button", has_text="Events").click()
+    expect(titles).to_have_text(["user", "tool call · lookup", "tool response · lookup", "step · calibrate", "assistant"])
