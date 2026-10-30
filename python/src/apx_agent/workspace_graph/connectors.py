@@ -11,6 +11,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+import re
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -40,13 +41,44 @@ def _merge(into: Fragment, part: Fragment) -> None:
     into.warnings.extend(part.warnings)
 
 
+def _reason(exc: Exception) -> str:
+    """The SDK error without its request id and trailing ``Config:`` dump."""
+    text = str(exc).split(". Config:")[0]
+    return re.sub(r"\s*\[ReqId: [^\]]*\]", "", text).strip()
+
+
 def _listed(frag: Fragment, label: str, fn: Callable[[], Any]) -> list[Any]:
     """Run one SDK list; a failure becomes a warning and an empty result."""
     try:
         return list(fn())
     except Exception as exc:  # noqa: BLE001 — per-listing isolation, surfaced as a warning
-        frag.warnings.append(f"{label}: {exc}")
+        frag.warnings.append(f"{label}: {_reason(exc)}")
         return []
+
+
+_SCHEMA_LISTING = re.compile(r"^(\S+\.\S+) (tables|volumes|functions|models): (.*)$")
+
+
+def _collapse(warnings: list[str]) -> list[str]:
+    """One line per cause: a scope gap fails the same listings in every schema."""
+    groups: dict[str, tuple[set[str], set[str]]] = {}
+    rest = []
+    for w in warnings:
+        m = _SCHEMA_LISTING.match(w)
+        if m is None:
+            rest.append(w)
+            continue
+        kinds, schemas = groups.setdefault(m[3], (set(), set()))
+        kinds.add(m[2])
+        schemas.add(m[1])
+    for reason, (kinds, schemas) in groups.items():
+        if len(kinds) == 1 and len(schemas) == 1:
+            rest.append(f"{next(iter(schemas))} {next(iter(kinds))}: {reason}")
+            continue
+        names = sorted(schemas)
+        shown = ", ".join(names[:3]) + (", …" if len(names) > 3 else "")
+        rest.append(f"{', '.join(sorted(kinds))} in {len(names)} schemas ({shown}): {reason}")
+    return rest
 
 
 def _default_catalogs(ws: WorkspaceClient, frag: Fragment) -> list[str]:
@@ -133,7 +165,7 @@ def unity_catalog(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
                 if s.name and s.name != "information_schema"
             ]
         except Exception as exc:  # noqa: BLE001 — unknown/denied catalog: warn, skip it
-            frag.warnings.append(f"{catalog}: {exc}")
+            frag.warnings.append(f"{catalog}: {_reason(exc)}")
             continue
         frag.nodes.append(
             Node(node_id("catalog", catalog), "Catalog", catalog, catalog)
@@ -147,6 +179,7 @@ def unity_catalog(ws: WorkspaceClient, catalogs: list[str] | None) -> Fragment:
                 lambda s, c=catalog: _schema_fragment(ws, c, s), schemas[:MAX_SCHEMAS]
             ):
                 _merge(frag, part)
+    frag.warnings = _collapse(frag.warnings)
     return frag
 
 
@@ -337,7 +370,7 @@ def lineage(ws: WorkspaceClient, table_fqns: list[str]) -> Fragment:
                        warehouse_id=warehouse_id, poll_timeout_s=_LINEAGE_POLL_S)
     except Exception as exc:  # noqa: BLE001 — no warehouse or no system.access grant: say so, use REST
         frag = _lineage_api(ws, table_fqns)
-        frag.warnings.insert(0, f"system.access.table_lineage unavailable ({type(exc).__name__}: {exc}); used the lineage API")
+        frag.warnings.insert(0, f"system.access.table_lineage unavailable ({type(exc).__name__}: {_reason(exc)}); used the lineage API")
         return frag
     cut = len(rows) > MAX_LINEAGE_EDGES
     frag = Fragment(edges=[  # node_id lower-cases, matching the graph's table ids
@@ -382,7 +415,7 @@ def _lineage_api(ws: WorkspaceClient, table_fqns: list[str]) -> Fragment:
             try:
                 frag.edges.extend(fut.result())
             except Exception as exc:  # noqa: BLE001 — per-table isolation, summarized below
-                failures.append(f"{fqn}: {exc}")
+                failures.append(f"{fqn}: {_reason(exc)}")
     if failures:
         frag.warnings.append(
             f"{len(failures)} of {len(targets)} tables failed (first: {failures[0]})"

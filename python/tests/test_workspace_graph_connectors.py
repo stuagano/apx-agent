@@ -108,6 +108,22 @@ def test_schema_listing_failure_is_a_warning():
     assert any(n.type == "Table" for n in frag.nodes)
 
 
+def test_one_cause_across_schemas_is_one_readable_warning():
+    # A scope gap fails functions/models/volumes in every schema; the SDK appends its whole Config.
+    ws = _uc_ws()
+    ws.schemas.list.return_value = [SimpleNamespace(name="sales"), SimpleNamespace(name="ops")]
+    denied = ("Provided OAuth token does not have required scopes: unity-catalog [ReqId: 8d8ea5c9]. "
+              "Config: host=https://example.cloud.databricks.com, client_id=abc, client_secret=***")
+    for lister in (ws.functions.list, ws.registered_models.list, ws.volumes.list):
+        lister.side_effect = PermissionError(denied)
+    frag = connectors.unity_catalog(ws, ["main"])
+    assert frag.warnings == [
+        "functions, models, volumes in 2 schemas (main.ops, main.sales): "
+        "Provided OAuth token does not have required scopes: unity-catalog"
+    ]
+    assert any(n.type == "Table" for n in frag.nodes)
+
+
 def test_missing_catalog_is_a_warning():
     ws = _uc_ws()
     ws.schemas.list.side_effect = ValueError("catalog nope does not exist")

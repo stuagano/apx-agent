@@ -10,6 +10,10 @@ All notable changes to apx-agent. Format loosely follows
 
 - **Events timeline on durable hosts.** The Events tab is back on native `/_apx/chat`, fed from the durable event stream. It lists the user turn, each tool call and response (by tool name), each step and the assistant reply, filterable by All / Messages / Tools / Steps. Rows are built with `textContent`, so tool output is never parsed as markup (on every host, not only durable ones). History, Trace and Eval stay hidden on durable hosts.
 
+### Fixed
+
+- **Readable Discover warnings.** A partial workspace graph lists one line per cause, e.g. `functions, models, volumes in 33 schemas (…): <reason>`. It no longer prints one line per schema, and drops the SDK's request id and `Config:` dump. Note that a Databricks Apps user token cannot list functions, registered models or volumes, because no Apps user scope covers them.
+
 ## [0.7.2] — 2026-10-29
 
 Headline: apx declarations compile to the native Databricks durable agent
