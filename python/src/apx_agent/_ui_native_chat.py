@@ -52,6 +52,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
   let session = saved ? saved.session : crypto.randomUUID();
   let busy = false;
   let restoring = false;
+  let answered = false; // the Events timeline already has this run's assistant row
   let answer, status, eventLog, controls, cards;
   let schema, ready = false;
   const validation = document.createElement('div');
@@ -82,6 +83,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
   function prepare() {
     document.getElementById('landing')?.remove();
     if (!restoring) bubble('user', requestText());
+    answered = false;
     if (!restoring && typeof addEvent === 'function') addEvent('user', 'user', requestText().slice(0, 200));
     status = document.createElement('div');
     status.className = 'native-status';
@@ -182,7 +184,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     if (event.type === 'agent.message.delta' && m.type === 'ai') {
       (m.tool_calls || []).forEach(call => addEvent('tool-call', String(call?.name || 'tool'), JSON.stringify(call?.args ?? {}).slice(0, 200), call));
       const said = text(m.content);
-      if (said) addEvent('assistant', 'assistant', said.slice(0, 200), {content: said});
+      if (said) { answered = true; addEvent('assistant', 'assistant', said.slice(0, 200), {content: said}); }
     } else if (event.type === 'agent.message.delta' && m.type === 'tool') {
       addEvent(m.status === 'error' ? 'tool-error' : 'tool-result', String(m.name || 'tool'), text(m.content).slice(0, 200), m);
     } else if (event.type === 'agent.step.completed' || event.type === 'agent.child.unknown') {
@@ -389,6 +391,8 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
         ).filter(Boolean).join('\n');
         if (!answer) answer = bubble('assistant', '');
         render(answer, text || '(empty response)');
+        // A sequence streams only step completions, so its answer closes the timeline here.
+        if (text && !answered && typeof addEvent === 'function') { answered = true; addEvent('assistant', 'assistant', text.slice(0, 200), {content: text}); }
         const replies = halt.map(m => m.additional_kwargs.apx_replies).find(r => Array.isArray(r) && r.length);
         if (replies && !schema) {
           const row = document.createElement('div');

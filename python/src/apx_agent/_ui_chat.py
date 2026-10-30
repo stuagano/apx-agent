@@ -2057,7 +2057,7 @@ document.getElementById('events-filter')?.addEventListener('click', e => {{
   }});
 }});
 function addEvent(type, title, subtitle, data) {{
-  if (!eventsStarted) {{ eventsList.innerHTML = ''; eventsStarted = true; }}
+  if (!eventsStarted) {{ eventsList.innerHTML = ''; eventsList.classList.remove('empty-state'); eventsStarted = true; }}
   const num = eventCounter++;
   const ev = {{ num, type, title, subtitle, data }};
   events.push(ev);
@@ -2125,7 +2125,7 @@ function parseMemoryLines(text) {{
 }}
 
 function addToolCall(groupId, name, reqText, reqData) {{
-  if (!eventsStarted) {{ eventsList.innerHTML = ''; eventsStarted = true; }}
+  if (!eventsStarted) {{ eventsList.innerHTML = ''; eventsList.classList.remove('empty-state'); eventsStarted = true; }}
   const num = eventCounter++;
   const reqEv = {{ num, type: 'tool-call', title: name || 'tool', subtitle: reqText, data: reqData }};
   events.push(reqEv);

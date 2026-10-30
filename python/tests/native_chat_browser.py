@@ -723,3 +723,22 @@ def test_native_run_fills_the_events_timeline(browser_chat):
     expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
     page.locator(".panel-tabs button", has_text="Events").click()
     expect(titles).to_have_text(["user", "tool call · lookup", "tool response · lookup", "step · calibrate", "assistant"])
+
+
+@pytest.mark.parametrize("browser_chat", ["dev"], indirect=True)
+def test_native_sequence_answer_closes_the_events_timeline(browser_chat):
+    # A sequence streams only step completions; its declared answer still ends the timeline, once.
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"] = [{"type": "ai", "content": "Ready for approval", "additional_kwargs": {"apx_answer": True}}]
+    body = f"id: 1\nevent: agent.step.completed\ndata: {json.dumps({'type': 'agent.step.completed', 'step': 'summary'})}\n\n"
+    page.route("**/events?after=*", lambda route: route.fulfill(content_type="text/event-stream", body=body))
+    submit(page)
+    expect(page.locator(".msg.assistant")).to_contain_text("Ready for approval")
+    page.locator(".panel-tabs button", has_text="Events").click()
+    expect(page.locator("#events-list .event .event-title")).to_have_text(["user", "step · summary", "assistant"])
+    expect(page.locator("#events-list .event").last).to_contain_text("Ready for approval")
+    assert page.locator("#events-list").evaluate("e => getComputedStyle(e).textAlign") != "center"  # rows read left-aligned
+    page.reload()
+    expect(page.locator(".msg.assistant")).to_contain_text("Ready for approval")
+    page.locator(".panel-tabs button", has_text="Events").click()
+    expect(page.locator("#events-list .event .event-title")).to_have_text(["user", "step · summary", "assistant"])
