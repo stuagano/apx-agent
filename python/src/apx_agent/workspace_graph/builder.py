@@ -199,7 +199,7 @@ def build_graph(ws: WorkspaceClient, catalogs: list[str] | None = None) -> Graph
             frag = run()
         except Exception as exc:  # noqa: BLE001 — per-connector isolation, surfaced as a warning
             logger.warning("workspace graph connector %s failed: %s", name, exc)
-            warnings.append(f"{name}: {exc}")
+            warnings.append(f"{name}: {connectors._reason(exc)}")
             return
         warnings.extend(f"{name}: {w}" for w in frag.warnings)
         fragments.append(Fragment(frag.nodes, frag.edges))
