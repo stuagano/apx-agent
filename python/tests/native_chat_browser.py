@@ -692,8 +692,9 @@ def test_native_typed_input_hosts_show_no_quick_replies(browser_chat):
     expect(page.locator(".native-quick-replies")).to_have_count(0)
 
 
+@pytest.mark.parametrize("browser_chat", ["dev"], indirect=True)  # only /_apx/chat has the Events panel
 def test_native_run_fills_the_events_timeline(browser_chat):
-    # The durable event stream feeds the Events tab (labelled, filterable, escaped) and Trace shows.
+    # The durable event stream feeds the Events tab: labelled, filterable, and never parsed as markup.
     page, posts, reads, state, event = browser_chat
     stream = [
         {"type": "agent.message.delta", "message": {"type": "ai", "content": "", "tool_calls": [
@@ -706,7 +707,7 @@ def test_native_run_fills_the_events_timeline(browser_chat):
     body = "".join(f"id: {i}\nevent: {e['type']}\ndata: {json.dumps(e)}\n\n" for i, e in enumerate(stream, 1))
     page.route("**/events?after=*", lambda route: route.fulfill(content_type="text/event-stream", body=body))
     expect(page.locator(".panel-tabs button", has_text="Events")).to_be_visible()
-    expect(page.locator(".panel-tabs button", has_text="Trace")).to_be_visible()
+    expect(page.locator(".panel-tabs button", has_text="Trace")).to_be_hidden()  # Trace still reads the legacy hooks
     submit(page)
     expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
     page.locator(".panel-tabs button", has_text="Events").click()
