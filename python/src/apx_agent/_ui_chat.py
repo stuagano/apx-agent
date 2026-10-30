@@ -1095,6 +1095,10 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False, native: b
             cursor: pointer; font-size: 13px; line-height: 1.4; transition: background .1s; }}
   .event:hover {{ background: var(--apx-panel); }}
   .event.selected {{ background: var(--apx-panel-2); }}
+  .events-filter {{ display: flex; gap: 4px; padding: 8px 16px; border-bottom: 1px solid var(--apx-panel); }}
+  .events-filter button {{ background: none; border: 1px solid var(--apx-border); border-radius: 12px; color: var(--apx-muted);
+                           font-size: 12px; padding: 2px 10px; cursor: pointer; }}
+  .events-filter button.active {{ background: var(--apx-panel-2); color: var(--apx-text); }}
   .event-num {{ color: var(--apx-muted); font-size: 12px; font-family: monospace; min-width: 26px; text-align: right; flex-shrink: 0; }}
   .event-icon {{ flex-shrink: 0; font-size: 14px; }}
   .event-body {{ flex: 1; min-width: 0; }}

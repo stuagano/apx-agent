@@ -182,7 +182,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     if (event.type === 'agent.message.delta' && m.type === 'ai') {
       (m.tool_calls || []).forEach(call => addEvent('tool-call', String(call?.name || 'tool'), JSON.stringify(call?.args ?? {}).slice(0, 200), call));
       const said = text(m.content);
-      if (said) addEvent('assistant', 'assistant', said.slice(0, 200), m);
+      if (said) addEvent('assistant', 'assistant', said.slice(0, 200), {content: said});
     } else if (event.type === 'agent.message.delta' && m.type === 'tool') {
       addEvent(m.status === 'error' ? 'tool-error' : 'tool-result', String(m.name || 'tool'), text(m.content).slice(0, 200), m);
     } else if (event.type === 'agent.step.completed' || event.type === 'agent.child.unknown') {
@@ -367,6 +367,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       // Check access before displaying cached content after a reload/account switch.
       if (restoring) {
         container.insertBefore(bubble('user', requestText()), status);
+        if (typeof addEvent === 'function') addEvent('user', 'user', requestText().slice(0, 200));
         saved.events.forEach(showEvent);
         restoring = false;
         controls.querySelectorAll('button').forEach(button => button.disabled = false);
