@@ -31,11 +31,12 @@ _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-# History/Trace/Events/Eval read the conversation store and the legacy send hooks, which the
-# durable transport doesn't feed; hidden on native pages rather than shown empty or broken.
+# History/Trace/Eval read the conversation store and the legacy send hooks, which the durable
+# transport doesn't feed; hidden on native pages rather than shown empty or broken. Events is fed
+# from the durable event stream (see _ui_native_chat.py).
 NATIVE_PANEL_HIDE = (
     "<style>#btn-deploy,#setup-banner,"
-    + ",".join(f".panel-tabs button[onclick*=\"'{t}'\"],#tab-{t}" for t in ("history", "trace", "events", "eval"))
+    + ",".join(f".panel-tabs button[onclick*=\"'{t}'\"],#tab-{t}" for t in ("history", "trace", "eval"))
     + "{display:none!important}</style>"
 )
 NATIVE_PANEL_OPEN_TOOLS = (
@@ -1368,6 +1369,7 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False, native: b
         <div id="trace-body" style="overflow-y:auto;flex:1;padding:12px"></div>
       </div>
       <div id="tab-events" class="{events_panel_class}">
+        <div id="events-filter" class="events-filter"><button type="button" data-filter="all" class="active">All</button><button type="button" data-filter="messages">Messages</button><button type="button" data-filter="tools">Tools</button><button type="button" data-filter="steps">Steps</button></div>
         <div id="events-list" class="empty-state">Send a message to see events</div>
       </div>
       <div id="tab-eval" class="tab-panel">
@@ -2040,6 +2042,16 @@ function fmt(v) {{
 }}
 
 // ── Events ──
+let eventsFilter = 'all';
+document.getElementById('events-filter')?.addEventListener('click', e => {{
+  const button = e.target.closest('button[data-filter]');
+  if (!button) return;
+  eventsFilter = button.dataset.filter;
+  document.querySelectorAll('#events-filter button').forEach(b => b.classList.toggle('active', b === button));
+  document.querySelectorAll('#events-list .event').forEach(row => {{
+    row.style.display = eventsFilter === 'all' || row.dataset.kind === eventsFilter ? '' : 'none';
+  }});
+}});
 function addEvent(type, title, subtitle, data) {{
   if (!eventsStarted) {{ eventsList.innerHTML = ''; eventsStarted = true; }}
   const num = eventCounter++;
@@ -2048,16 +2060,21 @@ function addEvent(type, title, subtitle, data) {{
   const div = document.createElement('div');
   div.className = 'event' + (type === 'tool-call' ? ' tool-call' : type === 'tool-result' ? ' tool-result' : type === 'tool-error' ? ' tool-error' : '');
   div.dataset.idx = events.length - 1;
-  const icons = {{ user: '👤', assistant: '🤖', 'tool-call': '⚡', 'tool-result': '✓', 'tool-error': '✗' }};
+  div.dataset.kind = type.startsWith('tool') ? 'tools' : type === 'step' ? 'steps' : 'messages';
+  if (eventsFilter !== 'all' && div.dataset.kind !== eventsFilter) div.style.display = 'none';
+  const icons = {{ user: '👤', assistant: '🤖', 'tool-call': '⚡', 'tool-result': '✓', 'tool-error': '✗', step: '▸' }};
   // Label tool rows clearly as call vs response (icons alone aren't obvious).
   // The tool name (when present and not the generic "tool") is appended.
   const kindLabel = {{ 'tool-call': 'tool call', 'tool-result': 'tool response', 'tool-error': 'tool error' }}[type] || '';
   const shownTitle = kindLabel
     ? (title && title !== 'tool' ? `${{kindLabel}} · ${{title}}` : kindLabel)
     : title;
-  div.innerHTML = `<span class="event-num">#${{num}}</span><span class="event-icon">${{icons[type] || '•'}}</span>`
-    + `<div class="event-body"><div class="event-title">${{shownTitle}}</div>`
-    + (subtitle ? `<div class="event-sub">${{subtitle}}</div>` : '') + '</div>';
+  // Built with textContent: event text (tool output included) is never parsed as markup.
+  const part = (cls, text, tag = 'span') => {{ const el = document.createElement(tag); el.className = cls; el.textContent = text; return el; }};
+  const bodyEl = part('event-body', '', 'div');
+  bodyEl.appendChild(part('event-title', shownTitle, 'div'));
+  if (subtitle) bodyEl.appendChild(part('event-sub', String(subtitle), 'div'));
+  div.append(part('event-num', '#' + num), part('event-icon', icons[type] || '•'), bodyEl);
   div.onclick = () => showDetail(ev, div);
   eventsList.appendChild(div);
   eventsList.scrollTop = eventsList.scrollHeight;

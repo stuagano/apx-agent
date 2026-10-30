@@ -82,6 +82,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
   function prepare() {
     document.getElementById('landing')?.remove();
     if (!restoring) bubble('user', requestText());
+    if (!restoring && typeof addEvent === 'function') addEvent('user', 'user', requestText().slice(0, 200));
     status = document.createElement('div');
     status.className = 'native-status';
     status.setAttribute('role', 'status');
@@ -173,6 +174,21 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       card.insertBefore(view, card.querySelector('.native-step-record'));
     });
   }
+  // The Events tab timeline, fed from the durable stream (rows are textContent-only; see addEvent).
+  function timeline(event) {
+    if (typeof addEvent !== 'function') return;
+    const text = c => typeof c === 'string' ? c : Array.isArray(c) ? c.filter(p => p?.type === 'text').map(p => p.text).join('') : '';
+    const m = event.message || {};
+    if (event.type === 'agent.message.delta' && m.type === 'ai') {
+      (m.tool_calls || []).forEach(call => addEvent('tool-call', String(call?.name || 'tool'), JSON.stringify(call?.args ?? {}).slice(0, 200), call));
+      const said = text(m.content);
+      if (said) addEvent('assistant', 'assistant', said.slice(0, 200), m);
+    } else if (event.type === 'agent.message.delta' && m.type === 'tool') {
+      addEvent(m.status === 'error' ? 'tool-error' : 'tool-result', String(m.name || 'tool'), text(m.content).slice(0, 200), m);
+    } else if (event.type === 'agent.step.completed' || event.type === 'agent.child.unknown') {
+      addEvent('step', 'step · ' + String(event.step || 'remote'), event.domain_status ? String(event.domain_status) : '', event);
+    }
+  }
   function showEvent(raw) {
     const event = typeof raw === 'string' ? JSON.parse(raw) : raw;
     const row = document.createElement('pre');
@@ -180,6 +196,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     row.textContent = typeof raw === 'string' ? raw : JSON.stringify(event, null, 2);
     eventLog.appendChild(row);
     if (eventLog.querySelectorAll('pre').length > 64) eventLog.querySelector('pre').remove();
+    timeline(event);
     if (!['agent.step.completed', 'agent.child.unknown'].includes(event.type)) return;
     const card = document.createElement('article');
     card.className = 'native-execution-card';

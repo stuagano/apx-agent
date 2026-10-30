@@ -6,6 +6,10 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **Events timeline on durable hosts.** The Events tab is back on native `/_apx/chat`, fed from the durable event stream. It lists the user turn, each tool call and response (by tool name), each step and the assistant reply, filterable by All / Messages / Tools / Steps. Rows are built with `textContent`, so tool output is never parsed as markup (on every host, not only durable ones). History, Trace and Eval stay hidden on durable hosts.
+
 ## [0.7.2] — 2026-10-29
 
 Headline: apx declarations compile to the native Databricks durable agent
