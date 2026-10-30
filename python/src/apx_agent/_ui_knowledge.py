@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,10 @@ def _render_knowledge_html(
             return ""
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
+    def inline(s: str) -> str:
+        """Escaped text with `backtick` spans as <code> (applied after escaping, so no markup leaks)."""
+        return re.sub(r"`([^`]+)`", r"<code>\1</code>", esc(s))
+
     # Render functions section
     functions_html = ""
     if functions:
@@ -110,13 +115,13 @@ def _render_knowledge_html(
     views_html = ""
     if views:
         views_html = '<section class="views-section">\n'
-        views_html += '<h2 class="section-title">Views</h2>\n'
+        views_html += '<h2 class="section-title">Tables</h2>\n'
         for view_name, view_data in views.items():
-            views_html += f'''<div class="view-card">
-  <div class="view-name">{esc(view_name)}</div>
+            n = len(view_data.get("columns") or [])
+            views_html += f'''<details class="view-card">
+  <summary><span class="view-name">{esc(view_name)}</span> <span class="view-count">{n} column{"" if n == 1 else "s"}</span>
+    <div class="view-desc">{inline(view_data.get("description") or "")}</div></summary>
 '''
-            if view_data.get("description"):
-                views_html += f'  <div class="view-desc">{esc(view_data["description"])}</div>\n'
 
             # Columns table
             if view_data.get("columns"):
@@ -128,7 +133,7 @@ def _render_knowledge_html(
                     views_html += f'''      <tr>
         <td><code>{esc(col.get("name", ""))}</code></td>
         <td><code>{esc(col.get("type", ""))}</code></td>
-        <td>{esc(col.get("description", ""))}</td>
+        <td>{inline(col.get("description", ""))}</td>
       </tr>
 '''
                 views_html += '''    </tbody>
@@ -143,7 +148,7 @@ def _render_knowledge_html(
     <pre><code>{esc(gq.get("sql", "")[:300])}</code></pre>
   </div>
 '''
-            views_html += '''</div>
+            views_html += '''</details>
 '''
         views_html += '</section>\n'
 
@@ -156,7 +161,7 @@ def _render_knowledge_html(
         for entry in glossary:
             glossary_html += f'''<div class="glossary-entry">
   <div class="term">{esc(entry.get("term", ""))}</div>
-  <div class="definition">{esc(entry.get("definition", ""))}</div>
+  <div class="definition">{inline(entry.get("definition", ""))}</div>
 '''
             if entry.get("synonyms"):
                 syn_chips = " ".join(f'<span class="synonym-chip">{esc(s)}</span>' for s in entry["synonyms"])
@@ -181,6 +186,9 @@ def _render_knowledge_html(
 </div>
 '''
 
+    filter_html = ('<input id="knowledge-filter" class="knowledge-filter" type="search" '
+                   'placeholder="Filter tables, columns and terms" aria-label="Filter knowledge">'
+                   if functions or views or glossary else "")
     theme_style = apx_theme_style()
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -223,9 +231,14 @@ def _render_knowledge_html(
   /* Views */
   .view-card {{ margin-bottom: 20px; padding: 14px; background: var(--apx-panel);
                border: 1px solid var(--apx-border); border-radius: 6px; }}
-  .view-name {{ font-family: var(--apx-mono); font-size: 13px; font-weight: 600;
-               color: var(--apx-ok); margin-bottom: 6px; }}
-  .view-desc {{ font-size: 12px; color: var(--apx-muted); margin-bottom: 10px; }}
+  .view-card {{ margin-bottom: 8px; padding: 10px 14px; }}
+  .view-card > summary {{ cursor: pointer; list-style-position: outside; }}
+  .view-name {{ font-family: var(--apx-mono); font-size: 13px; font-weight: 600; color: var(--apx-ok); }}
+  .view-count {{ font-size: 11px; color: var(--apx-muted); margin-left: 6px; }}
+  .view-desc {{ font-size: 12px; color: var(--apx-muted); margin-top: 4px; }}
+  .view-desc code, .definition code, .columns-table td code {{ font-family: var(--apx-mono); font-size: 11px; color: var(--apx-accent); }}
+  .knowledge-filter {{ width: 100%; max-width: 420px; padding: 7px 10px; font-size: 13px; color: var(--apx-text);
+                      background: var(--apx-panel); border: 1px solid var(--apx-border); border-radius: 6px; }}
   .columns-table {{ width: 100%; border-collapse: collapse; font-size: 11px;
                    margin: 10px 0; }}
   .columns-table th {{ background: var(--apx-bg); padding: 6px; text-align: left;
@@ -263,10 +276,20 @@ def _render_knowledge_html(
 </header>
 <main>
   {empty_state}
-  {functions_html}
-  {views_html}
+  {filter_html}
   {glossary_html}
+  {views_html}
+  {functions_html}
 </main>
+<script>
+// Hide tables, terms and functions that don't mention the query; textContent only, never markup.
+document.getElementById('knowledge-filter')?.addEventListener('input', e => {{
+  const q = e.target.value.trim().toLowerCase();
+  document.querySelectorAll('.view-card, .glossary-entry, .function-card').forEach(el => {{
+    el.hidden = !!q && !el.textContent.toLowerCase().includes(q);
+  }});
+}});
+</script>
 </body>
 </html>
 """
