@@ -10,6 +10,10 @@ All notable changes to apx-agent. Format loosely follows
 
 - **Events timeline on durable hosts.** The Events tab is back on native `/_apx/chat`, fed from the durable event stream. It lists the user turn, each tool call and response (by tool name), each step and the assistant reply, filterable by All / Messages / Tools / Steps. Rows are built with `textContent`, so tool output is never parsed as markup (on every host, not only durable ones). History, Trace and Eval stay hidden on durable hosts.
 
+### Changed
+
+- **A project's OKF bundle grounds a live-introspected DataAgent.** With `ws=` (e.g. `DataTemplate.build`), introspection still supplies the tables. The project's `.apx/okf` bundle for the same catalog.schema now also adds its descriptions, glossary and golden queries; previously they were dropped on this path. An explicit `tables=` override still skips the bundle. Without `ws=`, the bundle was already the default.
+
 ### Fixed
 
 - **Readable Discover warnings.** A partial workspace graph lists one line per cause, e.g. `functions, models, volumes in 33 schemas (…): <reason>`. It no longer prints one line per schema, and drops the SDK's request id and `Config:` dump. Note that a Databricks Apps user token cannot list functions, registered models or volumes, because no Apps user scope covers them.

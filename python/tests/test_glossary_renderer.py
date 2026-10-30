@@ -70,3 +70,18 @@ def test_dataagent_renders_glossary_from_knowledge_bundle(tmp_path):
     agent = DataAgent("c", "s", knowledge=str(tmp_path / "okf"))
     assert "Business glossary" in agent._instructions
     assert "Gross pay: Earnings before deductions. (also: gross)" in agent._instructions
+
+
+def test_project_bundle_still_grounds_an_introspected_dataagent(tmp_path, monkeypatch):
+    # With ws=, live introspection supplies the tables; the project's own bundle still adds its glossary.
+    import apx_agent.data_agent as data_agent
+    from apx_agent import DataAgent
+
+    _bundle_with_glossary(tmp_path / ".apx" / "okf")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(data_agent, "introspect_schema", lambda *a, **k: TABLES)
+    agent = DataAgent("c", "s", warehouse_id="w", ws=object(), include_functions=False)
+    assert agent._apx_data.schema_source == "introspect"
+    assert "Gross pay: Earnings before deductions. (also: gross)" in agent._instructions
+    other = DataAgent("c", "other", warehouse_id="w", ws=object(), include_functions=False)  # bundle is for c.s only
+    assert "Business glossary" not in other._instructions

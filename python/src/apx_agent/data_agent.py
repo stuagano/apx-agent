@@ -258,9 +258,16 @@ def _build_data_tools_and_instructions(
                 "built-in DataAgent tools already use these names — rename the extra tool."
             )
 
+    # Introspection supplies the tables, but the project's own bundle for this
+    # catalog.schema still carries its descriptions, glossary and golden queries.
+    project_bundle = baked_was_source
+    if schema_source == "introspect" and not knowledge:
+        bundle = load_baked_schema()
+        project_bundle = bool(bundle and bundle.get("catalog") == catalog and bundle.get("schema") == schema)
+
     if knowledge_was_source:
         grounding = explicit_grounding
-    elif baked_was_source:
+    elif project_bundle:
         grounding = load_okf_grounding()
     else:
         grounding = None
@@ -271,7 +278,7 @@ def _build_data_tools_and_instructions(
     if knowledge_was_source and knowledge:
         from ._okf import okf_glossary
         glossary = okf_glossary(knowledge)
-    elif baked_was_source:
+    elif project_bundle:
         from ._schema import load_okf_glossary
         glossary = load_okf_glossary()
     else:
