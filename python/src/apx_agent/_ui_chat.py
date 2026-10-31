@@ -380,8 +380,11 @@ def _render_eval_landing(
     cases: list[dict],
     loaded_path: str | None,
     load_error: str | None,
+    native: bool = False,
 ) -> str:
-    """Eval page — run eval cases against the live agent with LLM-as-judge scoring."""
+    """Eval page — run eval cases against the live agent with LLM-as-judge scoring.
+
+    ``native`` hosts serve the durable ``/api/invocations`` contract, not ``/invocations``."""
     import html as _html
     import json as _json
 
@@ -464,8 +467,8 @@ def _render_eval_landing(
   <div class="meta">{case_count} case{'' if case_count == 1 else 's'} &middot; <code>{file_label}</code></div>
   {empty_banner}
   <div class="toolbar">
-    <button class="btn btn-run" id="run-all">&var(--apx-text); Run All</button>
-    <button class="btn btn-reset" id="reset">&var(--apx-text); Reset</button>
+    <button class="btn btn-run" id="run-all">&#9654; Run All</button>
+    <button class="btn btn-reset" id="reset">&#8634; Reset</button>
     <span id="status"></span>
   </div>
   <div class="progress"><div class="progress-fill" id="progress-fill"></div></div>
@@ -496,6 +499,33 @@ def _render_eval_landing(
 </div>
 <script>
 let rows = {cases_json};
+const NATIVE = {_json.dumps(native)};
+
+// A durable host: submit the case in a fresh session (no state leaks between cases),
+// wait for the run to finish, and read the answer the native chat shows.
+async function runNative(question) {{
+  const id = crypto.randomUUID();
+  const post = await fetch('/api/invocations', {{
+    method: 'POST', headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{id, session_id: crypto.randomUUID(), background: true,
+      input: {{messages: [{{role: 'user', content: question}}]}}}}),
+  }});
+  if (!post.ok) throw new Error(`${{post.status}} ${{await post.text()}}`);
+  for (;;) {{
+    const got = await fetch('/api/invocations/' + encodeURIComponent(id));
+    if (!got.ok) throw new Error(`${{got.status}} ${{await got.text()}}`);
+    const state = await got.json();
+    if (state.status === 'failed') throw new Error(state.error?.message || 'run failed');
+    if (state.status === 'completed') {{
+      const messages = state.output?.messages || [];
+      const halt = messages.filter(m => m.type === 'ai' && m.additional_kwargs?.apx_answer === true);
+      return (halt.length ? halt : messages.filter(m => m.type === 'ai')).map(m =>
+        typeof m.content === 'string' ? m.content : (m.content || []).filter(p => p.type === 'text').map(p => p.text).join('')
+      ).filter(Boolean).join('\\n');
+    }}
+    await new Promise(done => setTimeout(done, 1500));
+  }}
+}}
 
 function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }}
 
@@ -510,7 +540,7 @@ function render() {{
       : r.status === 'fail' ? '<span class="badge badge-fail">FAIL</span>'
       : '';
     const runBtn = r.status !== 'running'
-      ? `<button class="run-btn" onclick="runCase(${{i}})" title="Run">&var(--apx-text);</button>` : '';
+      ? `<button class="run-btn" onclick="runCase(${{i}})" title="Run" aria-label="Run">&#9654;</button>` : '';
     const criterion = r.expected_judge || r.criterion || '';
     const expected = r.expected || '';
     return `<div class="case ${{cls}}">
@@ -534,6 +564,8 @@ async function runCase(i) {{
   render();
   let text = '';
   try {{
+    if (NATIVE) text = await runNative(r.question);
+    else {{
     const resp = await fetch('/invocations', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{input: [{{role: 'user', content: r.question}}], stream: true}}),
@@ -564,6 +596,7 @@ async function runCase(i) {{
           }}
         }} catch {{}}
       }}
+    }}
     }}
     r.response = text || '(no response)';
     const criterion = r.expected_judge || r.criterion || '';
@@ -674,7 +707,7 @@ window.addEventListener('message', (e) => {{
     addQ.focus();
     document.querySelector('.add-section').scrollIntoView({{behavior: 'smooth'}});
   }}
-}}}});
+}});
 
 // ── Judge Alignment ──────────────────────────────────────────────────────────
 function renderAlignHistory(runs) {{

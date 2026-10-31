@@ -361,9 +361,10 @@ def _dev_ui_enabled(*, typed: bool) -> bool:
     return os.environ.get("APX_DEV_UI") != "0"
 
 
-def _hidden_dev_route(path: str, *, typed: bool) -> bool:
-    """Dev routes a durable host replaces (its own /_apx/chat) or, typed, can't serve (free-text Eval)."""
-    return path == "/_apx/chat" or (typed and path.startswith("/_apx/eval"))
+def _hidden_dev_route(path: str, *, typed_entry: bool) -> bool:
+    """Dev routes a durable host replaces (its own /_apx/chat) or can't serve: free-text Eval
+    when the entry step needs typed input a question can't supply."""
+    return path == "/_apx/chat" or (typed_entry and path.startswith("/_apx/eval"))
 
 
 def compile_to_durable_agent_server(
@@ -455,6 +456,9 @@ def compile_to_durable_agent_server(
     # /_apx/chat (with its right panel) as the dev shell's Chat tab.
     app.state._apx_native_chat = True
     app.state._apx_typed_workflow = typed_workflow
+    from ._native_input import input_leaf
+    typed_entry = getattr(input_leaf(agent), "_input_schema", None) is not None
+    app.state._apx_typed_entry = typed_entry
 
     async def _mount_root_chat() -> None:  # at startup, so a project UI at "/" keeps the root
         app.include_router(build_root_chat_router())
@@ -479,10 +483,10 @@ def compile_to_durable_agent_server(
             from ._dev import build_dev_ui_router
 
             router = build_dev_ui_router()
-            # The native /_apx/chat (mounted at startup) is the Chat tab; typed leaves also
-            # drop the free-text Eval actions.
+            # The native /_apx/chat (mounted at startup) is the Chat tab; a typed entry also
+            # drops the free-text Eval actions.
             router.routes = [r for r in router.routes
-                             if not _hidden_dev_route(getattr(r, "path", ""), typed=typed_workflow)]
+                             if not _hidden_dev_route(getattr(r, "path", ""), typed_entry=typed_entry)]
             if not hasattr(app.state, "agent_context"):
                 app.state.agent_context = None  # the shell renders without a config
             app.include_router(router)

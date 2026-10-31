@@ -81,7 +81,8 @@ def test_native_dev_chat_enablement(enabled, native):
         assert "apxNativeChat" in response.text
         assert 'src="/_apx/vendor/' not in response.text
     assert host.client.post("/invocations", json={}).status_code == 404
-    assert host.client.post("/_apx/eval/judge", json={}).status_code == 404
+    # A free-text entry keeps Eval (it runs over /api/invocations); off when the dev UI is.
+    assert host.client.post("/_apx/eval/judge", json={}).status_code == (422 if enabled == "1" else 404)
 
 
 @pytest.mark.parametrize("declaration", ["input", "output"])
@@ -115,7 +116,8 @@ def test_typed_chat_without_config_preserves_declaration_and_project_root(
         assert chat.status_code == 200 and "apxNativeChat" in chat.text
         assert "native-execution-cards" in chat.text
         assert client.get("/_apx/api/ui/config").status_code == 404
-        assert client.post("/_apx/eval/judge", json={}).status_code == 404
+        # Only a typed entry, which a free-text question can't reach, hides Eval.
+        assert client.post("/_apx/eval/judge", json={}).status_code == (404 if declaration == "input" else 422)
         assert client.post("/invocations", json={}).status_code == 404
         schema = client.get("/api/input-schema").json()
         assert schema == (DomainInput.model_json_schema() if declaration == "input" else None)
@@ -166,6 +168,30 @@ def test_typed_native_host_mounts_dev_ui_with_native_chat(execution, monkeypatch
         # Tool replay re-runs a tool from JSON args (the Tools page's Run), not chat text.
         assert client.post("/_apx/replay/tool", json={}).status_code != 404
         assert app.state.dev_ui_mount_error is None
+
+
+def test_free_text_entry_with_typed_steps_keeps_eval(execution, monkeypatch, tmp_path):
+    # A sequence whose entry takes free text (an intake) can run Eval cases even when later
+    # steps are typed; only a typed entry, which a question can't reach, hides Eval.
+    from fastapi.testclient import TestClient
+    from apx_agent import LlmAgent, SequentialAgent, compile_agent
+    from tests.test_native_remote_invocations import DomainInput
+    from tests.test_runtime_targets import _write_native_pyproject
+
+    _write_native_pyproject(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "typed-app")
+    monkeypatch.setenv("APX_DEV_UI", "1")
+    agent = SequentialAgent([LlmAgent(name="intake"),
+                             LlmAgent(name="typed", output_schema=DomainInput, output_key="domain")])
+    app = compile_agent(agent, target="durable_agent_server", model="test", service_ws=execution.ws)
+    with TestClient(app) as client:
+        page = client.get("/_apx/eval")
+        assert page.status_code == 200, page.text
+        assert "/api/invocations" in page.text  # cases run over the durable contract
+        assert client.post("/_apx/eval/judge", json={}).status_code == 422  # mounted, validates
 
 
 def test_durable_dev_chat_survives_a_project_ui_at_root(execution, monkeypatch, tmp_path):

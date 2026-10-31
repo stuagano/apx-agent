@@ -2129,8 +2129,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
     async def agent_dev_ui(request: Request) -> HTMLResponse:
         """Unified tabbed shell hosting every /_apx/* page in one iframe."""
         ctx: AgentContext | None = request.app.state.agent_context
-        # Typed native hosts don't mount the free-text Eval routes; don't offer the tab.
-        typed = getattr(request.app.state, "_apx_typed_workflow", False)
+        # A typed-entry native host doesn't mount the free-text Eval routes; don't offer the tab.
+        typed = getattr(request.app.state, "_apx_typed_entry", False)
         return HTMLResponse(_render_unified_shell(ctx, hidden_tabs=frozenset({"eval"}) if typed else frozenset()))
 
     @router.get("/_apx/chat", include_in_schema=False)
@@ -4760,7 +4760,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
     # Redirects for old routes
     @router.get("/_apx/eval", response_class=HTMLResponse)
-    async def eval_ui() -> HTMLResponse:
+    async def eval_ui(request: Request) -> HTMLResponse:
         """Eval landing page — cases sourced from MLflow quality assessments.
 
         Serves from the shared _EVAL_CASES_CACHE (same cache as /_apx/eval/data)
@@ -4803,7 +4803,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
                 except (OSError, ValueError) as exc:
                     load_error = f"Could not parse {path}: {exc}"
 
-        return HTMLResponse(_render_eval_landing(cases, loaded_path, load_error))
+        native = getattr(request.app.state, "_apx_native_chat", False)
+        return HTMLResponse(_render_eval_landing(cases, loaded_path, load_error, native=native))
 
     @router.post("/_apx/eval/label-start")
     async def eval_label_start(request: Request) -> Any:
