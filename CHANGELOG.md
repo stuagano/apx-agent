@@ -16,6 +16,7 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Fixed
 
+- **A composite serves on the session store agent.toml binds (#1047).** An `apps_api` deploy of a composite with `session_keys` set `AGENT_SESSION_STORE` to the auto-derived `apx-<name>-sessions`, so the App served on that store rather than agent.toml's `[session_store]`. `apx doctor` checked the auto-derived name for every durable agent, including composites that bind no store. Deploy re-checked the store only for an `LlmAgent`. All three now use one rule, `project_session_store`.
 - **Eval cases at the project root.** `evals.json` is read and saved beside the agent module, or at the project root when a host started by its own launcher has no importable `agent` module. Before, such hosts showed no cases and could not save them.
 - **Eval works on durable hosts.**
   - The page's script no longer fails to parse: an extra `}` stopped every case from rendering on every host, and the Run / Run All / Reset buttons are labelled again.

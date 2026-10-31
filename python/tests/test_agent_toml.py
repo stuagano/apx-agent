@@ -532,3 +532,56 @@ def test_a_composite_without_keys_binding_a_store_is_refused_before_deploy(tmp_p
     plain = SequentialAgent([Agent(name="a", tools=[_noop])], name="seq")
     [finding] = _findings(root, plain, config)
     assert finding.status is Status.FAIL and "session_store currently requires" in finding.detail
+
+
+# #1047: doctor and deploy probe the store the agent binds, not the auto-derived guess.
+@pytest.mark.parametrize("toml_store, agent, expected", [
+    ("team-sessions", _keyed_composite(), "team-sessions"),
+    (None, SequentialAgent([Agent(name="a", tools=[_noop])], name="seq"), None),
+    (None, Agent(name="a", tools=[_noop]), "apx-a-sessions"),
+])
+def test_project_session_store_is_the_bound_store(tmp_path: Path, toml_store, agent, expected) -> None:
+    from apx_agent._agent_toml import project_session_store
+
+    config = AgentConfig.model_validate({"name": "a", "target": "durable_agent_server"})
+    body = BASE + (f'\n[session_store]\nname = "{toml_store}"\n' if toml_store else "")
+    assert project_session_store(_project(tmp_path, body), agent, config) == expected
+
+
+def test_project_session_store_is_none_off_the_durable_target(tmp_path: Path) -> None:
+    from apx_agent._agent_toml import project_session_store
+
+    config = AgentConfig.model_validate({"name": "a", "target": "responses_agent"})
+    assert project_session_store(tmp_path, Agent(name="a", tools=[_noop]), config) is None
+
+
+@pytest.mark.parametrize("agent_src, toml_store, shown", [
+    ("SequentialAgent([Agent(name='a', tools=[])], name='seq', session_keys=('intake',))", "team-sessions", "team-sessions"),
+    ("SequentialAgent([Agent(name='a', tools=[])], name='seq')", None, None),
+])
+def test_doctor_probes_the_bound_session_store(tmp_path: Path, monkeypatch, agent_src, toml_store, shown) -> None:
+    import apx_agent._doctor as doctor
+    from apx_agent._project_gen import generate_project
+
+    generate_project(AgentConfig(name="native", target="durable_agent_server"), tmp_path)
+    (tmp_path / "agent.py").write_text(f"from apx_agent import Agent, SequentialAgent\nagent = {agent_src}\n")
+    (tmp_path / "agent.toml").write_text(BASE + (f'\n[session_store]\nname = "{toml_store}"\n' if toml_store else ""))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(doctor, "check_databricks_auth", lambda: Check("Databricks auth", Status.OK, "test"))
+    rows = [c for _, group in doctor.run_checks(tmp_path, online=False) for c in group if c.name == "Managed sessions"]
+    assert [r.detail.split("'")[1] for r in rows] == ([shown] if shown else [])
+
+
+def test_deploy_reprobes_the_bound_store_for_a_keyed_composite(tmp_path: Path, monkeypatch) -> None:
+    # Before #1047 deploy re-probed only an LlmAgent's store; a keyed composite's went unchecked.
+    from apx_agent import cli
+
+    seen: list = []
+    monkeypatch.setattr(cli._doctor_mod, "check_agent_prerequisites",
+                        lambda config, **k: seen.append(k["session_store"]) or [])
+    config = AgentConfig.model_validate({"name": "a", "target": "durable_agent_server"})
+    root = _project(tmp_path, BASE + '\n[session_store]\nname = "team-sessions"\n')
+    cli._probe_session_store(root, _keyed_composite(), config, object(), provision_stores=True, log=lambda m: None)
+    plain = SequentialAgent([Agent(name="a", tools=[_noop])], name="seq")
+    cli._probe_session_store(_project(tmp_path, BASE), plain, config, object(), provision_stores=True, log=lambda m: None)
+    assert seen == ["team-sessions"]  # the keyless composite binds nothing, so nothing is probed

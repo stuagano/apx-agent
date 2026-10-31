@@ -29,14 +29,14 @@ def test_agent_prerequisites_read_real_sdk_responses_only(monkeypatch):
         return {"name": path.removeprefix("/api/2.0/agents/"), "display_name": path.rsplit("/", 1)[-1]}
 
     ws.api_client.do.side_effect = read
-    checks = doctor.check_agent_prerequisites(config, online=True, ws=ws)
+    checks = doctor.check_agent_prerequisites(config, online=True, ws=ws, session_store="agent-sessions")
     assert all(check.status is Status.OK for check in checks)
     assert calls == [("GET", "/api/2.0/agents/memory-stores/agent-memory"),
                      ("GET", "/api/2.0/agents/session-stores/agent-sessions")]
     ws.apps.get_space.assert_called_once_with("agent-space")
     assert all("write access is not proven" in c.detail for c in checks[1:])
     ws.reset_mock()
-    offline = doctor.check_agent_prerequisites(config, online=False, ws=ws)
+    offline = doctor.check_agent_prerequisites(config, online=False, ws=ws, session_store="agent-sessions")
     assert [c.status for c in offline] == [Status.OK, Status.SKIP, Status.SKIP, Status.SKIP]
     ws.api_client.do.assert_not_called()
     ws.apps.get_space.assert_not_called()
@@ -77,9 +77,11 @@ def test_offline_prerequisites_show_automatic_store_names():
 
     config = AgentConfig(name="orders", target="durable_agent_server",
                          memory={"type": "managed"}, session={"type": "managed"})
-    checks = doctor.check_agent_prerequisites(config, online=False)
+    checks = doctor.check_agent_prerequisites(config, online=False, session_store="apx-orders-sessions")
     assert checks[1].status is Status.SKIP and "apx-orders-memory" in checks[1].detail
     assert checks[2].status is Status.SKIP and "apx-orders-sessions" in checks[2].detail
+    # #1047: config.session alone is a guess, not a binding; without session_store there is no probe.
+    assert [c.name for c in doctor.check_agent_prerequisites(config, online=False)] == ["AgentKit SDK", "Managed memory"]
 
 
 @pytest.mark.parametrize("code", ["NOT_FOUND", "RESOURCE_DOES_NOT_EXIST", "PERMISSION_DENIED", "UNAUTHENTICATED", "FEATURE_DISABLED", "UNAVAILABLE"])
@@ -95,14 +97,14 @@ def test_native_provisioning_defers_only_missing_stores(code):
     failure = DatabricksError("sensitive-response-must-not-leak", error_code=code)
     ws.api_client.do.side_effect = failure
     ws.apps.get_space.side_effect = failure
-    checks = doctor.check_agent_prerequisites(config, online=True, ws=ws, provision_stores=True)
+    checks = doctor.check_agent_prerequisites(config, online=True, ws=ws, provision_stores=True, session_store="new-sessions")
     expected = Status.WARN if code in {"NOT_FOUND", "RESOURCE_DOES_NOT_EXIST"} else Status.FAIL
     assert [check.status for check in checks] == [Status.OK, expected, expected, Status.FAIL]
     assert "sensitive-response" not in repr(checks)
     if expected is Status.WARN:
         assert all("Agent Bricks" in check.fix and "unverified" in check.detail for check in checks[1:3])
     assert all(call.args[0] == "GET" for call in ws.api_client.do.call_args_list)
-    strict = doctor.check_agent_prerequisites(config, online=True, ws=ws)
+    strict = doctor.check_agent_prerequisites(config, online=True, ws=ws, session_store="new-sessions")
     assert all(check.status is Status.FAIL for check in strict[1:])
 
 
