@@ -79,6 +79,12 @@ def deploy_apps_api(
     declared_memory = config.memory is not None
     if not declared_memory or any(name != "long_term_memory" for name in report.unsatisfied):
         report.require_compatible()
+    from ._agent_toml import project_session_store
+
+    try:  # serving takes AGENT_SESSION_STORE over agent.toml, so it carries the bound store (#1047)
+        session_store = project_session_store(cwd, agent, config)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     space = config.deploy.space
     log(f"# Apps API deploy {app_name}" + (f" (space {space})" if space else " (dedicated)"))
 
@@ -87,7 +93,7 @@ def deploy_apps_api(
     app = _ensure_app(workspace, app_name=app_name, space=space, description=config.description or None, log=log)
     _apply_grants(workspace, app_name=app_name, space=space, profile=profile, plan=plan, family_permissions=family_permissions, log=log, resources=resources)
     env = _runtime_and_env(workspace, profile=profile, app_name=app_name, space=space, config=config,
-                           session_store=report.session_store, bundle_target=bundle_target, auto_experiment=auto_experiment,
+                           session_store=session_store, bundle_target=bundle_target, auto_experiment=auto_experiment,
                            env_pairs=env_pairs, app=app, log=log)
     _write_app_yaml(build_dir, config.deploy.entrypoint, env)
     _stage_lock(build_dir, auto_build_wheel, log)
@@ -95,7 +101,7 @@ def deploy_apps_api(
     return _verify(
         cwd=cwd, app_name=app_name, profile=profile, module=module, bundle_target=bundle_target,
         readyz_gate=readyz_gate, readyz_attempts=readyz_attempts, poll_timeout_seconds=poll_timeout_seconds,
-        register_uc=register_uc, uc_name=uc_name, session_store=report.session_store,
+        register_uc=register_uc, uc_name=uc_name, session_store=session_store,
         experiment_id=env.get(EXPERIMENT_ENV),
         extra_version_tags=extra_version_tags, pin=pin, json_output=json_output, log=log,
         smoke_input=native_smoke_input, smoke_agent=agent, registry_tables=registry_tables,

@@ -19,10 +19,13 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from ._models import AgentConfig
+
+if TYPE_CHECKING:
+    from ._agents import BaseAgent
 
 MIN_PYTHON = (3, 11)
 
@@ -214,12 +217,27 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
     except (ValueError, OSError) as exc:
         project.append(Check("Agent prerequisites", Status.FAIL, type(exc).__name__, "Fix the agent configuration."))
     else:
-        project.extend(check_agent_prerequisites(agent_config, online=online and auth.status is Status.OK))
+        agent: BaseAgent | None = None
+        agent_rows: list[Check] = []
+        if agent_config is None or agent_config.target == "durable_agent_server":
+            from contextlib import chdir  # noqa: PLC0415
+
+            from .cli import _detect_module_spec, _load_finalized_agent  # noqa: PLC0415
+
+            try:
+                with chdir(cwd):
+                    loaded = _load_finalized_agent(_detect_module_spec(cwd) or "agent:agent")
+            except Exception as exc:  # reported, not raised: doctor keeps going
+                agent_rows = [Check("agent.toml", Status.SKIP, f"agent not importable: {type(exc).__name__}: {exc}")]
+            else:
+                agent = loaded
+                agent_rows = _agent_toml_rows(cwd, loaded, agent_config)
+        project.extend(check_agent_prerequisites(agent_config, online=online and auth.status is Status.OK,
+                                                 session_store=_doctor_session_store(cwd, agent, agent_config)))
         image_check = check_agent_image(cwd, agent_config)
         if image_check is not None:
             project.append(image_check)
-        if agent_config is None or agent_config.target == "durable_agent_server":
-            project.extend(_agent_toml_rows(cwd, agent_config))
+        project.extend(agent_rows)
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
         project.append(memory_check)
@@ -253,18 +271,22 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
     return groups
 
 
-def _agent_toml_rows(cwd: Path, config: AgentConfig | None) -> list[Check]:
-    """agent.toml findings, loading the agent and plan the way deploy does."""
-    from contextlib import chdir  # noqa: PLC0415
-
-    from . import _apps_authorization  # noqa: PLC0415
-    from .cli import _detect_module_spec, _load_finalized_agent  # noqa: PLC0415
+def _doctor_session_store(cwd: Path, agent: BaseAgent | None, config: AgentConfig | None) -> str | None:
+    """The bound store to probe; none when the agent or agent.toml can't say (their rows report why)."""
+    if agent is None or config is None:
+        return None
+    from ._agent_toml import project_session_store  # noqa: PLC0415
 
     try:
-        with chdir(cwd):
-            agent = _load_finalized_agent(_detect_module_spec(cwd) or "agent:agent")
-    except Exception as exc:  # reported, not raised: doctor keeps going
-        return [Check("agent.toml", Status.SKIP, f"agent not importable: {type(exc).__name__}: {exc}")]
+        return project_session_store(cwd, agent, config)
+    except (ImportError, ValueError):  # the agent.toml rows report this binding failure
+        return None
+
+
+def _agent_toml_rows(cwd: Path, agent: BaseAgent, config: AgentConfig | None) -> list[Check]:
+    """agent.toml findings, with the plan compiled the way deploy does."""
+    from . import _apps_authorization  # noqa: PLC0415
+
     try:
         from ._agent_toml import check_agent_toml  # noqa: PLC0415
 
@@ -1126,8 +1148,12 @@ def check_databricks_yml(cwd: Path) -> Check:
 
 def check_agent_prerequisites(
     config: AgentConfig | None, *, online: bool, ws: Any = None, provision_stores: bool = False,
+    session_store: str | None = None,
 ) -> list[Check]:
-    """Read-only checks; native deployment may defer missing stores to its provisioner."""
+    """Read-only checks; native deployment may defer missing stores to its provisioner.
+
+    ``session_store`` is the store the agent binds (``project_session_store``), never
+    ``config.session``: a composite's config carries an auto-derived name it may not bind."""
     if config is None:
         return []
     durable = config.target == "durable_agent_server"
@@ -1153,8 +1179,8 @@ def check_agent_prerequisites(
     if managed_memory:
         assert config.memory is not None
         probes.append(("Managed memory", "memory_stores", config.memory.store_name))
-    if config.session is not None and config.session.type == "managed":
-        probes.append(("Managed sessions", "session_stores", config.session.store_name))
+    if session_store is not None:
+        probes.append(("Managed sessions", "session_stores", session_store))
     if config.deploy is not None and config.deploy.space is not None:
         probes.append(("App Space", "apps", config.deploy.space))
     if not probes:

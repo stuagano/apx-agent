@@ -603,3 +603,22 @@ def test_apps_api_without_registry_reports_not_recorded(harness, capsys):
     _deploy(harness, _config(), LlmAgent(name="proof"), registry_tables=None, json_output=True)
     doc = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert doc["registry_recorded"] is False and doc["registry_table"] is None
+
+
+def test_keyed_composite_serves_on_its_agent_toml_store(harness: dict[str, Any]) -> None:
+    # #1047: AGENT_SESSION_STORE wins at serving (_durable_agent), so it must carry the
+    # store agent.toml binds, not the auto-derived apx-proof-sessions guess.
+    from apx_agent import SequentialAgent
+
+    (harness["project"] / "agent.toml").write_text(
+        'schema_version = 1\n\n[agent]\nframework = "langgraph"\nserver = "agentbricks"\n'
+        '\n[auth.user]\nrequired = true\nadditional_api_scopes = ["sql"]\n'
+        '\n[session_store]\nname = "team-sessions"\n')
+    config = AgentConfig(name="proof", target="durable_agent_server",
+                         deploy={"backend": "apps_api", "entrypoint": "app"},
+                         memory={"type": "managed", "store_name": "proof-memory"})
+    _deploy(harness, config, SequentialAgent([LlmAgent(name="leaf")], name="proof", session_keys=("intake",)))
+    app_yaml = yaml.safe_load((harness["project"] / ".build" / "app.yaml").read_text().split("\n", 1)[1])
+    env = {item["name"]: item["value"] for item in app_yaml["env"]}
+    assert env["AGENT_SESSION_STORE"] == "team-sessions"
+    assert ("session.grant", "team-sessions", "sp-1") in harness["state"]["calls"]

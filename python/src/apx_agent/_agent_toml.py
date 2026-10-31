@@ -156,6 +156,18 @@ def _bound_session_store(agent: BaseAgent, config: AgentConfig, bound: str | Non
     return inspect_target(agent, config=config, target=config.target).session_store
 
 
+def project_session_store(project_root: Path, agent: BaseAgent, config: AgentConfig) -> str | None:
+    """The session store this project's agent binds: what doctor and deploy probe (#1047).
+
+    Raises ValueError where serving would refuse the binding; check_agent_toml words it."""
+    if config.target != "durable_agent_server":
+        return None
+    toml = load_agent_toml(project_root)
+    bound = toml.session_store if toml is not None else None
+    # The SDK hands back a tomlkit String; YAML (app.yaml env) can't represent it.
+    return _bound_session_store(agent, config, str(bound) if bound is not None else None)
+
+
 def _store_findings(project: AgentProject, agent: BaseAgent, config: AgentConfig | None) -> list[Check]:
     declared_memory = _declared_memory(agent, config)
     memory = declared_memory.store_name if declared_memory is not None and declared_memory.type == "managed" else None

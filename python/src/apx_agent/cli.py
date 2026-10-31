@@ -392,12 +392,32 @@ def _recheck_prerequisites(config, ws, *, provision_stores: bool = False) -> Non
 
     ``provision_stores`` matches the pre-import check it repeats: stores declared only in
     Python (a generated agent.py, 3b-3b) are provisioned here."""
-    probe = config.model_copy(update={"session": None}) if config.session is not None else config
     for online in (False, True) if ws is not None else (False,):
         kwargs = {"ws": ws, "provision_stores": provision_stores} if online else {}
-        for check in _doctor_mod.check_agent_prerequisites(probe, online=online, **kwargs):
+        for check in _doctor_mod.check_agent_prerequisites(config, online=online, **kwargs):
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+
+
+def _probe_session_store(cwd: Path, agent, config, ws, *, provision_stores: bool, log: Callable[[str], None]) -> None:
+    """Probe the store the agent binds (#1047): only the imported agent and agent.toml can say."""
+    from ._agent_toml import project_session_store
+
+    try:
+        store = project_session_store(cwd, agent, config)
+    except ValueError:
+        return  # a binding serving refuses: require_agent_toml_ok fails the deploy with its fix next
+    if store is None:
+        return
+    for check in _doctor_mod.check_agent_prerequisites(config, online=True, ws=ws, provision_stores=provision_stores,
+                                                      session_store=store):
+        if check.name != "Managed sessions":
+            continue
+        log(f"# {check.name}: {check.detail}")
+        if check.status is _doctor_mod.Status.WARN and check.fix:
+            log(f"  {check.fix}")
+        if check.status is _doctor_mod.Status.FAIL:
+            raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
 
 
 def _sync_native_app(app, config) -> None:
@@ -9858,22 +9878,16 @@ def _deploy_apps_impl(
         _preflight_apps(cwd, native=True, durable=True)
         app_name = app_name_override or _apps_api_app_name(cwd, effective_config.name)
         from ._apps_authorization import compile_authorization_plan, read_app_family_permissions, require_workspace_scope_allowlist
-        from ._agents import LlmAgent
-
-        session_config = effective_config
-        probe_config = effective_config
-        if effective_config.session is not None:
-            probe_config = effective_config.model_copy(update={"session": None})
         try:
             workspace = _make_scaffold_workspace_client(profile)
         except Exception as exc:
             raise click.ClickException(
                 "Apps API deploy could not connect to the selected workspace. Verify the profile and retry."
             ) from exc
-        for check in _doctor_mod.check_agent_prerequisites(probe_config, online=False):
+        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=False):
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
-        for check in _doctor_mod.check_agent_prerequisites(probe_config, online=True, ws=workspace, provision_stores=False):
+        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=False):
             log(f"# {check.name}: {check.detail}")
             if check.status is _doctor_mod.Status.FAIL:
                 raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
@@ -9881,13 +9895,9 @@ def _deploy_apps_impl(
         merged = _merged_config(agent, effective_config)
         if merged != effective_config:
             _recheck_prerequisites(merged, workspace)
-            session_config = effective_config = merged
+            effective_config = merged
         _prepare_native_smoke_input(agent, smoke_input, readyz_gate=readyz_gate)
-        if isinstance(agent, LlmAgent):
-            for check in _doctor_mod.check_agent_prerequisites(session_config, online=True, ws=workspace, provision_stores=True):
-                if check.name != "Managed sessions" or check.status is not _doctor_mod.Status.FAIL:
-                    continue
-                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+        _probe_session_store(cwd, agent, effective_config, workspace, provision_stores=True, log=log)
         try:
             authorization_plan = compile_authorization_plan(
                 agent,
@@ -10040,14 +10050,9 @@ def _deploy_apps_impl(
         native_smoke_input = _prepare_native_smoke_input(agent, smoke_input, readyz_gate=readyz_gate)
     if session_config is not effective_config and isinstance(agent, LlmAgent):
         effective_config = session_config
-        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli or app.get("space") is not None):
-            if check.name != "Managed sessions":
-                continue
-            log(f"# {check.name}: {check.detail}")
-            if check.status is _doctor_mod.Status.WARN and check.fix:
-                log(f"  {check.fix}")
-            if check.status is _doctor_mod.Status.FAIL:
-                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+    if session_config is not None and workspace is not None:
+        _probe_session_store(cwd, agent, session_config, workspace,
+                             provision_stores=native_cli or app.get("space") is not None, log=log)
     if effective_config is not None:
         merged = _merged_config(agent, effective_config)
         if merged != effective_config:
