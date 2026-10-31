@@ -16,6 +16,7 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Fixed
 
+- **Eval cases at the project root.** `evals.json` is read and saved beside the agent module, or at the project root when a host started by its own launcher has no importable `agent` module. Before, such hosts showed no cases and could not save them.
 - **Eval works on durable hosts.**
   - The page's script no longer fails to parse: an extra `}` stopped every case from rendering on every host, and the Run / Run All / Reset buttons are labelled again.
   - On a durable host, a case runs over `/api/invocations` in a fresh session and is judged on the run's declared answer.

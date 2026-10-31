@@ -4669,7 +4669,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         body = await request.json()
         path = _find_evals_path()
         if path is None:
-            return JSONResponse({"ok": False, "error": "agent_router.py not found in running process"}, status_code=503)
+            return JSONResponse({"ok": False, "error": "No agent module or project root (pyproject.toml) to hold evals.json"}, status_code=503)
         content = _json.dumps(body, indent=2)
         try:
             path.write_text(content)

@@ -114,9 +114,15 @@ def _find_deploy_root() -> "Path | None":
 
 
 def _find_evals_path() -> "Path | None":
-    """Return the path to evals.json colocated with agent_router.py."""
+    """Return evals.json beside the agent module, else at the project root (a host
+    started by its own launcher has no importable ``agent`` module)."""
     ar = _find_agent_router_path()
-    return ar.parent / "evals.json" if ar is not None else None
+    if ar is not None:
+        return ar.parent / "evals.json"
+    from ._ui_grounding import resolve_project_root  # local: _ui_grounding imports this module
+
+    root = resolve_project_root()
+    return root / "evals.json" if root is not None else None
 
 
 # ---------------------------------------------------------------------------
