@@ -16,6 +16,10 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Fixed
 
+- **Eval works on durable hosts.**
+  - The page's script no longer fails to parse: an extra `}` stopped every case from rendering on every host, and the Run / Run All / Reset buttons are labelled again.
+  - On a durable host, a case runs over `/api/invocations` in a fresh session and is judged on the run's declared answer.
+  - Only a typed entry step, which a free-text question can't reach, hides Eval. Previously any typed step hid it, while the nav still linked to it (a 404).
 - **A readable Knowledge page.** The glossary comes first, and tables are listed under "Tables" (they were labelled "Views"). Each table is one collapsed row (name, overview, column count) that opens to its columns. A filter box narrows tables, columns and terms, and `backtick` spans render as code.
 - **Knowledge page with a bare bundle.** A bundle that has tables but no descriptions, glossary or functions yet (e.g. one just generated) no longer shows "No OKF knowledge bundle found". The page names the bundle and points to Grounding.
 - **Readable Discover warnings.** A partial workspace graph lists one line per cause, e.g. `functions, models, volumes in 33 schemas (…): <reason>`. It no longer prints one line per schema, and drops the SDK's request id and `Config:` dump. Note that a Databricks Apps user token cannot list functions, registered models or volumes, because no Apps user scope covers them.

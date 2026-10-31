@@ -742,3 +742,50 @@ def test_native_sequence_answer_closes_the_events_timeline(browser_chat):
     expect(page.locator(".msg.assistant")).to_contain_text("Ready for approval")
     page.locator(".panel-tabs button", has_text="Events").click()
     expect(page.locator("#events-list .event .event-title")).to_have_text(["user", "step · summary", "assistant"])
+
+
+def test_native_eval_runs_a_case_over_the_durable_contract():
+    # The Eval page on a durable host submits each case to /api/invocations in a fresh
+    # session, waits for completion, and judges the declared answer.
+    from apx_agent._ui_chat import _render_eval_landing
+
+    html = _render_eval_landing([{"question": "Price our HYSA", "expected_judge": "gives options"}],
+                                "evals.json", None, native=True)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE"))
+        page = browser.new_page()
+        errors, posts, judged = [], [], []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        polls = {"n": 0}
+
+        def route(req):
+            url, method = req.request.url, req.request.method
+            if url.endswith("/api/invocations") and method == "POST":
+                posts.append(req.request.post_data_json)
+                req.fulfill(status=202, json={"id": posts[-1]["id"], "status": "active"})
+            elif "/api/invocations/" in url:
+                polls["n"] += 1  # first poll still running, then the declared answer
+                state = {"status": "active"} if polls["n"] == 1 else {"status": "completed", "output": {"messages": [
+                    {"type": "ai", "content": "step chatter"},
+                    {"type": "ai", "content": "Options: hold, +5", "additional_kwargs": {"apx_answer": True}}]}}
+                req.fulfill(json={"id": posts[-1]["id"], **state})
+            elif url.endswith("/_apx/eval/judge"):
+                judged.append(req.request.post_data_json)
+                req.fulfill(json={"ok": True, "pass": True, "verdict": "PASS", "reason": "lists options"})
+            elif url.endswith("/_apx/eval/data"):
+                req.fulfill(json={"ok": True})
+            elif url.endswith("/"):
+                req.fulfill(content_type="text/html", body=html)
+            else:
+                req.fulfill(status=404, json={"detail": "Not found"})
+
+        page.route("**/*", route)
+        page.goto("http://localhost/")
+        page.get_by_role("button", name="Run", exact=True).first.click()
+        expect(page.locator(".badge-pass")).to_be_visible(timeout=10000)
+        assert errors == []
+        assert posts[0]["input"] == {"messages": [{"role": "user", "content": "Price our HYSA"}]}
+        uuid.UUID(posts[0]["session_id"])
+        assert posts[0]["background"] is True
+        assert judged[0]["response"] == "Options: hold, +5"  # the declared answer, not step chatter
+        browser.close()
