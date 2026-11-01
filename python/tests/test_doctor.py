@@ -125,6 +125,22 @@ def test_offline_doctor_includes_unverified_agent_features(tmp_path, monkeypatch
     client.assert_not_called()
 
 
+
+def test_doctor_checks_settings_agent_py_declares_non_literally(tmp_path, monkeypatch):
+    # #1049: the static agent.py read sees only literals; deploy merges the imported agent's
+    # settings (_merged_config), so doctor must too or it skips a store deploy will probe.
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+
+    generate_project(AgentConfig(name="native", target="durable_agent_server"), tmp_path)
+    (tmp_path / "agent.py").write_text(
+        "from apx_agent import LlmAgent\nMEM = {'type': 'managed', 'store_name': 'agent-memory'}\n"
+        "agent = LlmAgent(name='native', tools=[], memory=MEM, target='durable_agent_server')\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(doctor, "check_databricks_auth", lambda: Check("Databricks auth", Status.OK, "test"))
+    checks = {c.name: c for _, group in doctor.run_checks(tmp_path, online=False) for c in group}
+    assert "agent-memory" in checks["Managed memory"].detail
+
 @pytest.mark.parametrize("dependency,version,expected", [
     ("apx-agent[langgraph]", "0.5.0", Status.FAIL),
     ("apx-agent[eval,agentbricks]", "0.5.0", Status.OK),
