@@ -230,7 +230,11 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
             except Exception as exc:  # reported, not raised: doctor keeps going
                 agent_rows = [Check("agent.toml", Status.SKIP, f"agent not importable: {type(exc).__name__}: {exc}")]
             else:
+                from ._settings import resolve_settings  # noqa: PLC0415
+
                 agent = loaded
+                # Check what deploy checks (_merged_config): the static agent.py read sees only literals (#1049).
+                agent_config = resolve_settings(loaded, agent_config)
                 agent_rows = _agent_toml_rows(cwd, loaded, agent_config)
         project.extend(check_agent_prerequisites(agent_config, online=online and auth.status is Status.OK,
                                                  session_store=_doctor_session_store(cwd, agent, agent_config)))
