@@ -924,3 +924,37 @@ def test_durable_readiness_static_model_conflict_names_agent_py(tmp_path):
                     "if True:\n    agent.configure(model='databricks-b')\n")
     detail = _by_name(check_durable_readiness(root))["Config"].detail
     assert "a literal in agent.py sets 'databricks-a'" in detail and "pyproject.toml" not in detail
+
+
+# #1048: doctor validates the App that `agents deploy` deploys. With a databricks.yml that is
+# _resolve_app_name's answer; [tool.apx.deploy] app_name names only an Apps API App (#986).
+def test_bundle_deploy_ignores_apps_api_app_name(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _bundle_project(tmp_path, "named", "agent-bricks-named", "")
+    (root / "pyproject.toml").write_text((root / "pyproject.toml").read_text() + 'app_name = "mcp-elsewhere"\n')
+    deploy = _by_name(check_durable_readiness(root))["Deploy"]
+    assert deploy.status is Status.OK, deploy.detail
+    assert "agent-bricks-named" in deploy.detail
+
+
+def test_bundle_without_a_name_uses_its_key(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _bundle_project(tmp_path, "keyed", "agent-bricks-keyed", "")
+    yml = root / "databricks.yml"
+    yml.write_text(yml.read_text().replace("      name: agent-bricks-keyed\n", ""))
+    deploy = _by_name(check_durable_readiness(root))["Deploy"]
+    assert deploy.status is Status.OK, deploy.detail
+    assert "agent-bricks-keyed" in deploy.detail
+
+
+def test_bundle_with_two_apps_fails_like_deploy(tmp_path: Path) -> None:
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _bundle_project(tmp_path, "twoapps", "agent-bricks-one", "")
+    yml = root / "databricks.yml"
+    yml.write_text(yml.read_text() + "    agent-bricks-two:\n      name: agent-bricks-two\n      source_code_path: ./.build\n")
+    deploy = _by_name(check_durable_readiness(root))["Deploy"]
+    assert deploy.status is Status.FAIL
+    assert "multiple apps" in deploy.detail
