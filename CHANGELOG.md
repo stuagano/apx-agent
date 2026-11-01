@@ -16,6 +16,7 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Fixed
 
+- **`apx doctor --durable` checks the App that deploy deploys (#1048).** With a `databricks.yml`, the Deploy stage took the App name from `[tool.apx.deploy] app_name`, which names only an Apps API App, instead of the bundle's `name`. A valid bundle failed the `agent-bricks-` name check. A bundle that left out `name:` failed with `KeyError: 'name'`, and one with two Apps gave a misleading reason. The Deploy stage now uses deploy's own resolver.
 - **A composite serves on the session store agent.toml binds (#1047).** An `apps_api` deploy of a composite with `session_keys` set `AGENT_SESSION_STORE` to the auto-derived `apx-<name>-sessions`, so the App served on that store rather than agent.toml's `[session_store]`. `apx doctor` checked the auto-derived name for every durable agent, including composites that bind no store. Deploy re-checked the store only for an `LlmAgent`. All three now use one rule, `project_session_store`.
 - **Eval cases at the project root.** `evals.json` is read and saved beside the agent module, or at the project root when a host started by its own launcher has no importable `agent` module. Before, such hosts showed no cases and could not save them.
 - **Eval works on durable hosts.**

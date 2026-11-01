@@ -593,12 +593,11 @@ def _cascade(results: list[Check]) -> list[Check]:
 
 
 def _stage_deploy(loaded: _Loaded) -> Check:
-    import tomllib
-
     import click
     import yaml
 
     from ._agentbricks_deploy import validate_cli_deployment
+    from .cli import _resolve_app_name
 
     declared = loaded.config.deploy
     if declared is not None and declared.backend == "apps_api":
@@ -622,9 +621,8 @@ def _stage_deploy(loaded: _Loaded) -> Check:
         if not isinstance(apps, dict) or not apps:
             return Check("Deploy", Status.FAIL, "databricks.yml has no resources.apps entry",
                          "Declare the app under resources.apps (native deploy needs exactly one).")
-        bundle_key = next(iter(apps))
-        deploy = tomllib.loads((loaded.project / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}).get("deploy", {})
-        app_name = deploy["app_name"] if "app_name" in deploy else apps[bundle_key]["name"]
+        # The App `agents deploy` deploys (#1048); [tool.apx.deploy] app_name names only an Apps API App.
+        bundle_key, app_name = _resolve_app_name(doc)
         declared_space = declared.space if declared is not None else None
         if declared_space is not None:
             # Row 2. A declared App Space on the Agent Bricks path goes through
