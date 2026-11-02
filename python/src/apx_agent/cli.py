@@ -387,6 +387,17 @@ def _merged_config(agent, config):
         raise click.ClickException(str(exc)) from exc
 
 
+def _require_prerequisites(checks, log: Callable[[str], None] | None = None) -> None:
+    """Stop the deploy at the first failing prerequisite row, logging each row first when *log* is given."""
+    for check in checks:
+        if log is not None:
+            log(f"# {check.name}: {check.detail}")
+            if check.status is _doctor_mod.Status.WARN and check.fix:
+                log(f"  {check.fix}")
+        if check.status is _doctor_mod.Status.FAIL:
+            raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+
+
 def _recheck_prerequisites(config, ws, *, provision_stores: bool = False) -> None:
     """Prerequisites ran on the pyproject settings before the agent loaded; re-run them on the merged config.
 
@@ -394,9 +405,7 @@ def _recheck_prerequisites(config, ws, *, provision_stores: bool = False) -> Non
     Python (a generated agent.py, 3b-3b) are provisioned here."""
     for online in (False, True) if ws is not None else (False,):
         kwargs = {"ws": ws, "provision_stores": provision_stores} if online else {}
-        for check in _doctor_mod.check_agent_prerequisites(config, online=online, **kwargs):
-            if check.status is _doctor_mod.Status.FAIL:
-                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+        _require_prerequisites(_doctor_mod.check_agent_prerequisites(config, online=online, **kwargs))
 
 
 def _probe_session_store(cwd: Path, agent, config, ws, *, provision_stores: bool, log: Callable[[str], None]) -> None:
@@ -409,15 +418,9 @@ def _probe_session_store(cwd: Path, agent, config, ws, *, provision_stores: bool
         return  # a binding serving refuses: require_agent_toml_ok fails the deploy with its fix next
     if store is None:
         return
-    for check in _doctor_mod.check_agent_prerequisites(config, online=True, ws=ws, provision_stores=provision_stores,
-                                                      session_store=store):
-        if check.name != "Managed sessions":
-            continue
-        log(f"# {check.name}: {check.detail}")
-        if check.status is _doctor_mod.Status.WARN and check.fix:
-            log(f"  {check.fix}")
-        if check.status is _doctor_mod.Status.FAIL:
-            raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+    checks = _doctor_mod.check_agent_prerequisites(config, online=True, ws=ws, provision_stores=provision_stores,
+                                                   session_store=store)
+    _require_prerequisites((c for c in checks if c.name == "Managed sessions"), log)
 
 
 def _sync_native_app(app, config) -> None:
@@ -9884,13 +9887,9 @@ def _deploy_apps_impl(
             raise click.ClickException(
                 "Apps API deploy could not connect to the selected workspace. Verify the profile and retry."
             ) from exc
-        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=False):
-            if check.status is _doctor_mod.Status.FAIL:
-                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
-        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=False):
-            log(f"# {check.name}: {check.detail}")
-            if check.status is _doctor_mod.Status.FAIL:
-                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+        _require_prerequisites(_doctor_mod.check_agent_prerequisites(effective_config, online=False))
+        _require_prerequisites(_doctor_mod.check_agent_prerequisites(
+            effective_config, online=True, ws=workspace, provision_stores=False), log)
         agent = preloaded_agent if preloaded_agent is not None else _load_finalized_agent(module)
         merged = _merged_config(agent, effective_config)
         if merged != effective_config:
@@ -10027,9 +10026,7 @@ def _deploy_apps_impl(
         image_check = _doctor_mod.check_agent_image(cwd, effective_config)
         if image_check is not None:
             local_checks.append(image_check)
-        for check in local_checks:
-            if check.status is _doctor_mod.Status.FAIL:
-                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+        _require_prerequisites(local_checks)
         try:
             workspace = _make_scaffold_workspace_client(profile)
         except Exception as exc:
@@ -10037,12 +10034,8 @@ def _deploy_apps_impl(
                 "Agent prerequisite checks could not connect/authenticate to the selected workspace. "
                 "Verify the profile and connectivity, then rerun doctor."
             ) from exc
-        for check in _doctor_mod.check_agent_prerequisites(effective_config, online=True, ws=workspace, provision_stores=native_cli):
-            log(f"# {check.name}: {check.detail}")
-            if check.status is _doctor_mod.Status.WARN and check.fix:
-                log(f"  {check.fix}")
-            if check.status is _doctor_mod.Status.FAIL:
-                raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+        _require_prerequisites(_doctor_mod.check_agent_prerequisites(
+            effective_config, online=True, ws=workspace, provision_stores=native_cli), log)
     agent = preloaded_agent if preloaded_agent is not None else _load_finalized_agent(module)
     from ._agents import LlmAgent
 

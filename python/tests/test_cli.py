@@ -8517,3 +8517,16 @@ def test_native_execution_reads_back_a_user_scoped_session(monkeypatch) -> None:
     )
     assert result.completed is True, result.detail
     assert result.readback is True
+
+
+def test_require_prerequisites_logs_rows_and_stops_at_the_first_fail() -> None:
+    from apx_agent import cli
+    from apx_agent._doctor import Check, Status
+
+    logged: list[str] = []
+    rows = [Check("A", Status.OK, "fine"), Check("B", Status.WARN, "slow", "wait"),
+            Check("C", Status.FAIL, "down", "fix C"), Check("D", Status.FAIL, "never reached", "no")]
+    with pytest.raises(click.ClickException, match=r"^C: down\. fix C$"):
+        cli._require_prerequisites(rows, logged.append)
+    assert logged == ["# A: fine", "# B: slow", "  wait", "# C: down"]
+    cli._require_prerequisites([Check("A", Status.WARN, "slow", "wait")])  # no log, no FAIL: silent
