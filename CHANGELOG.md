@@ -12,6 +12,7 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Changed
 
+- **An Apps API deploy prints the fix for a warning prerequisite**, as the other deploy paths already did. The six copies of deploy's check-and-stop loop are now one helper (#1051).
 - **A project's OKF bundle grounds a live-introspected DataAgent.** With `ws=` (e.g. `DataTemplate.build`), introspection still supplies the tables. The project's `.apx/okf` bundle for the same catalog.schema now also adds its descriptions, glossary and golden queries; previously they were dropped on this path. An explicit `tables=` override still skips the bundle. Without `ws=`, the bundle was already the default.
 
 ### Fixed
