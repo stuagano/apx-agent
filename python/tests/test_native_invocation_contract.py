@@ -157,8 +157,76 @@ def test_native_envelope_and_handler_errors(native):
         assert response.status_code == 422
     body["input"] = {"operation": "record", "arguments": {"value": "proof"}}
     response = native.client.post("/api/invocations", json=body, headers=headers())
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Native input must contain messages and optional resume; session_id belongs in the top-level invocation envelope"}
+    saved = native.client.get(f"/api/invocations/{body['id']}", headers=headers())
+    assert saved.status_code == 404
+    assert native.effects == []
+    assert not native.app._runtime.runtime_store.states
+    assert not native.app._request_auth
+
+
+@pytest.mark.parametrize("mode", ["sync", "stream", "background", "background_stream"])
+@pytest.mark.parametrize("value,detail", [
+    ({"messages": "private-payload"}, "messages must be a list"),
+    ({"messages": [{"role": "system", "content": "private-payload"}]}, "Native input accepts user text messages only"),
+    ({"messages": [{"role": "user", "content": "private-payload", "state": {}}]}, "Each message must contain only role and content"),
+    ({"correlation": {}}, "Invalid native application correlation"),
+    ({"apx_data_parts": []}, "Native typed input requires its declared schema and one fresh data artifact"),
+])
+def test_native_invalid_input_rejected_before_persistence(native, mode, value, detail):
+    body = request_body()
+    body.update(input=value, background=mode.startswith("background"), stream="stream" in mode)
+    assert native.client.post("/api/invocations", json=body).status_code == 401
+    response = native.client.post("/api/invocations", json=body, headers=headers())
+    assert response.status_code == 422, response.text
+    assert response.json() == {"detail": detail}
+    assert "private-payload" not in response.text
+    assert not native.app._runtime.runtime_store.states
+    assert not native.app._request_auth
+    assert native.effects == []
+    # Rejected requests do not reserve an id: a corrected request can run.
+    body.update(input=request_body()["input"], background=False, stream=False)
+    assert native.client.post("/api/invocations", json=body, headers=headers()).status_code == 200
+    assert native.effects == ["proof"]
+    # An existing id still belongs to the SDK's conflict contract, even for bad input.
+    body["input"] = value
+    assert native.client.post("/api/invocations", json=body, headers=headers()).status_code == 409
+
+
+def test_native_queued_retry_registers_auth_before_scheduling(native):
+    body = request_body()
+    auth = RequestAuthContext.from_headers(headers())
+    try:
+        invocation_id = auth.namespace("invocation", body["id"])
+        session_id = auth.namespace("session", body["session_id"])
+    finally:
+        auth.close()
+    # Seed an accepted first attempt without scheduling it (e.g. a worker restart).
+    native.client.portal.call(
+        native.app._runtime.runtime_store.accept, invocation_id,
+        {"input": body["input"], "invocation_id": body["id"]}, session_id,
+    )
+    assert not native.app._request_auth
+    response = native.client.post("/api/invocations", json=body, headers=headers())
+    assert response.status_code == 200, response.text
+    assert response.json()["output"]["messages"][-1]["content"] == "Recorded proof"
+    saved = native.client.get(f"/api/invocations/{body['id']}", headers=headers())
+    assert saved.json() == response.json()
+    assert native.effects == ["proof"]
+    assert not native.app._request_auth
+
+
+def test_native_execution_failure_remains_persisted_500(native, monkeypatch):
+    def fail(*args, **kwargs):
+        raise ValueError("private-runtime-failure")
+
+    monkeypatch.setattr("apx_agent._durable_agent.run_graph_turn", fail)
+    body = request_body()
+    response = native.client.post("/api/invocations", json=body, headers=headers())
     assert response.status_code == 500
     assert response.json() == {"detail": "agent invocation failed"}
     saved = native.client.get(f"/api/invocations/{body['id']}", headers=headers())
     assert saved.json() == {"id": body["id"], "status": "failed", "error": "agent invocation failed"}
+    assert len(native.app._runtime.runtime_store.states) == 1
     assert native.effects == []

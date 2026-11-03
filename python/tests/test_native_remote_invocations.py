@@ -318,7 +318,8 @@ def test_native_ingress_rejects_invalid_domain_input_before_child(two_hosts, cha
         body["input"]["messages"][0]["role"] = "assistant"
     else:
         body["input"]["state"] = {"domain_input": {"amount": 8}}
-    assert two_hosts.parent.post("/api/invocations", json=body, headers=headers()).status_code == 500
+    # Bad caller input is correctable (422), not a runtime failure, and reserves no invocation.
+    assert two_hosts.parent.post("/api/invocations", json=body, headers=headers()).status_code == 422
     assert two_hosts.consumed == []
     assert two_hosts.sent == []
 
@@ -350,5 +351,5 @@ def test_native_input_bounds_and_undeclared_input(two_hosts):
             native_data_part(OpenDomain, payload)
     two_hosts.specialist._input_schema = None
     response = two_hosts.child.post("/api/invocations", json=domain_request(), headers=headers())
-    assert response.status_code == 500
+    assert response.status_code == 422
     assert two_hosts.consumed == []
