@@ -96,10 +96,21 @@ This is where the targets diverge most:
 - **Model Serving** — `canary rollback <prior-version>` sends 100% back to the
   previous version. Because the prior entity was never torn down, this is
   **instant** and requires no rebuild. This is the tight story.
-- **Apps** — rollback is a **redeploy of the previous label**. It is as fast as a
-  deploy (not instant) and as reliable as your version-labeling discipline. If
-  you didn't stamp the prior version, you're rolling back to "whatever the prior
-  bundle was," which is weaker.
+- **Apps** — rollback is a **redeploy**, not a traffic swap, and comes in two
+  flavours:
+  - *Bundle canary rollback* (`canary rollback --to-version`) rebuilds prod from
+    the commit recorded on that UC manifest. A matching Git SHA is **not** byte
+    identity: the wheel and dependencies are rebuilt and re-resolved.
+  - *Native snapshot rollback* (`releases rollback --deployment-id`) redeploys the
+    platform's own packaged-source snapshot for an earlier deployment of the
+    **same** App, so the source bytes are the ones that already ran. Dependencies
+    are still installed at deploy time, so this is not an identical-runtime
+    guarantee, and it does not restore historical App permissions or resources.
+    Cross-App promotion of a snapshot is deliberately unsupported.
+
+  Either way it is as fast as a deploy, not instant, and as reliable as your
+  version-labeling discipline. If you didn't stamp the prior version, you're
+  rolling back to "whatever the prior bundle was," which is weaker.
 
 ---
 
@@ -120,10 +131,11 @@ registry so writes land where you expect.
 
 | Concern | Model Serving | Apps |
 |---|---|---|
-| Version identity | UC registered-model version (first-class) | stamped label (git SHA / `APX_MODEL_VERSION`) |
+| Version identity | UC registered-model version (first-class) | stamped label (git SHA / `APX_MODEL_VERSION`) + the platform's own deployment ID |
 | Canary | platform traffic-split, concurrent | side-by-side app, **no traffic split** |
-| Promote | traffic → 100% (no redeploy) | redeploy at label |
-| Rollback | **instant** (prior entity still warm) | redeploy prior label (manual, discipline-dependent) |
+| Promote | traffic → 100% (no redeploy) | redeploy at label (rebuilt from the commit, not the canary's bytes) |
+| Rollback | **instant** (prior entity still warm) | redeploy: prior label (rebuild) or prior same-App source snapshot (`releases rollback`) |
+| Release history | UC versions / aliases | UC ledger (`canary history`) + platform deployments (`releases history`) |
 | Per-version metrics | yes (trace-keyed) | yes *if labeled*, else workspace-wide |
 | Deploy state / audit | workspace-stored `ApxAppDeployState` | same |
 
@@ -138,9 +150,12 @@ registry so writes land where you expect.
    in `[tool.apx.agent]` is a new version even when no code changed — label and
    canary it like one.
 3. **Choose the target for the day-2 story you need.** If instant, traffic-split
-   rollback matters (regulated, high-availability), that's Model Serving. Apps is
-   the right call for the runtime and cost profile, with a manual rollback you
-   accept knowingly.
+   rollback matters (regulated, high-availability), that's Model Serving — and
+   check target availability for your workload before taking that as the
+   recommendation. Apps is the right call for the runtime and cost profile, with
+   a redeploy-based rollback you accept knowingly; prefer `releases rollback` for
+   the strongest Apps story, since it redeploys source bytes that already ran
+   rather than rebuilding them.
 4. **Rely on workspace deploy-state, not local.** It's the single source of truth
    and it's already where drift detection reads from.
 

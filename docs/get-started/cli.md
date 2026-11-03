@@ -38,6 +38,11 @@ apx-agent eval chain evalset.jsonl --model X --experiment /Users/me/...  # per-p
 apx-agent agents hot-swap --target apps --llm-endpoint databricks-claude-opus-4-7 --profile prod  # change the LLM endpoint of a deployed App
 apx-agent canary deploy --target apps --canary-version v42 --profile prod   # second App as a canary
 apx-agent canary analyze --target apps --canary-version v42 --hours 24    # per-version requests / errors / latency
+apx-agent releases history --app-name my-app --profile prod   # native App deployment history
+apx-agent releases rollback --app-name my-app --deployment-id <exact-id> --profile prod
+apx-agent canary status --target apps --profile prod   # recorded @prod + latest canary
+apx-agent canary history --profile prod                # recorded UC Apps release ledger
+apx-agent canary history --profile prod --json         # structured metadata for automation
 apx-agent canary promote --target apps --canary-version v42 --profile prod
 apx-agent canary rollback --target apps --to-version 41 --profile prod
 # judge alignment loop — collect SME labels, then align the BYO LLM judge
@@ -57,6 +62,55 @@ apx-agent memory remember --principal-id user:alice --content "..." --importance
 apx-agent examples find --agent-id triage --query "why is my bill high?" -k 5
 apx-agent examples save --agent-id triage --input "..." --output "..." --score 0.9
 ```
+
+## Native App release snapshots
+
+`releases history --app-name NAME --profile PROFILE [--json]` reads native
+Databricks Apps deployment history, independently of the Bundle UC manifest
+ledger. It shows exact deployment IDs, the active ID reported by the App,
+deployment state/mode, and packaged-source snapshot paths. Latest does not imply
+active. Metadata omits command/environment values; history and active-ID reads
+are not atomic and do not prove runtime health.
+
+`releases rollback --app-name NAME --deployment-id EXACT --profile PROFILE
+[--json]` authorizes a same-App deployment from that exact successful `SNAPSHOT`
+release's packaged-source path, then verifies the new deployment is active. It
+never falls back to the original mutable source directory. The existing App's
+current governance remains in effect; this is not a historical permissions
+restore. The selected release's command/environment overrides are replayed only
+within that same App and are not printed.
+
+This restores an **exact packaged-source snapshot**, not an immutable installed
+runtime or dependencies: dependencies may be reinstalled. **Cross-App promotion
+is unsupported** because packaged source/configuration may embed stage identity
+or environment settings. Use the same-App rollback command only for the named
+App; it does not copy identity, resources, or permissions to another App.
+
+## Bundle Apps release lifecycle
+
+Hot-swap and canary commands apply to **Bundle (`responses_agent`) projects**
+with a `databricks.yml`, not native Agent Bricks deployments. Configure
+`registered_model` in `[tool.apx.deploy]` (or a non-placeholder catalog and
+schema) for the UC Apps manifest ledger.
+
+`canary history` lists recorded Apps releases newest first: UC version, App name,
+role, aliases, git SHA, Bundle target, dirty-tree flag, and lockfile SHA-256.
+`--profile` selects registry credentials; `--json` emits one object with
+`ok`, `target`, `uc_name`, `releases`, and a `caveat` (or `ok:false` and `error`
+on read failure). Missing historical tags are `null`, not inferred values.
+
+`canary promote --canary-version v42` selects the latest recorded canary manifest
+for the exact App derived from that deploy label. A missing label fails before
+prod deploy or canary teardown. Promote and `rollback --to-version <UC-version>`
+require a clean checkout at the recorded commit, then **rebuild and redeploy**
+prod; they do not restore an immutable executable. The recorded git SHA does
+not pin external resources or prove runtime equivalence.
+
+History and status describe recorded UC metadata, **not actual live runtime or
+health**. UC tags and aliases can change, and manifest registration can fail
+independently of an App deployment. Check the App's status, logs, and readiness
+separately. Apps canaries are separate App URLs; `--traffic` is a recorded hint,
+not platform traffic routing.
 
 Trace feedback commands require the `eval` extra and use the active MLflow tracking configuration. See [Trace-linked human feedback](../evaluate/overview.md#trace-linked-human-feedback) for the external-review workflow, authentication expectations, and idempotency behavior.
 

@@ -13,6 +13,8 @@ captured args + the on-disk YAML.
 
 from __future__ import annotations
 
+import contextlib
+
 import json
 import sys
 import textwrap
@@ -647,6 +649,180 @@ def test_cli_canary_promote_apps_requires_canary_version(
     )
     assert result.exit_code != 0
     assert "--canary-version" in result.output
+
+
+@pytest.fixture
+def release_scaffold(scaffold: Path) -> Path:
+    (scaffold / "pyproject.toml").write_text(
+        '[project]\nname = "test-app"\n\n'
+        '[tool.apx.deploy]\nregistered_model = "main.agents.my_app"\n'
+    )
+    return scaffold
+
+
+@pytest.mark.parametrize("label_exists", [True, False])
+def test_cli_promote_selects_requested_app_before_deploy_or_teardown(
+    release_scaffold: Path, monkeypatch: pytest.MonkeyPatch, label_exists: bool,
+) -> None:
+    from apx_agent._apps_registry import CanaryManifest
+
+    calls: dict[str, Any] = {"deploy": [], "teardown": []}
+
+    def lookup(uc_name, *, app_name=None, profile=None):
+        calls["lookup"] = {"uc_name": uc_name, "app_name": app_name, "profile": profile}
+        if app_name == "my-app-canary-v1-2":
+            return CanaryManifest("4", "requested-sha") if label_exists else None
+        return CanaryManifest("9", "wrong-newer-sha")
+
+    monkeypatch.setattr("apx_agent.find_latest_canary_version", lookup)
+    monkeypatch.setattr("apx_agent.get_prod_alias_version", lambda uc, *, profile=None: "2")
+    monkeypatch.setattr(
+        "apx_agent._apps_registry._uc_registry_context", lambda profile=None: contextlib.nullcontext(),
+    )
+
+    def deploy(**kwargs):
+        calls["deploy"].append(kwargs)
+        return "10"
+
+    def teardown(**kwargs):
+        calls["teardown"].append(kwargs)
+        return True
+
+    monkeypatch.setattr("apx_agent.cli._apps_deploy_prod_at_commit", deploy)
+    monkeypatch.setattr("apx_agent._canary_apps._teardown_canary", teardown)
+    result = CliRunner().invoke(main, [
+        "canary", "promote", "--canary-version", "v1.2", "--profile", "release", "--json",
+    ])
+    payload = json.loads(result.stdout)
+    assert calls["lookup"] == {
+        "uc_name": "main.agents.my_app", "app_name": "my-app-canary-v1-2", "profile": "release",
+    }
+    if label_exists:
+        assert result.exit_code == 0, result.output
+        assert payload["git_sha"] == "requested-sha"
+        assert calls["deploy"][0]["expected_sha"] == "requested-sha"
+        assert calls["teardown"][0]["canary_version"] == "v1.2"
+    else:
+        assert result.exit_code != 0
+        assert payload["ok"] is False
+        assert "my-app-canary-v1-2" in payload["error"]
+        assert calls["deploy"] == []
+        assert calls["teardown"] == []
+
+
+def test_cli_status_forwards_profile_to_canary_lookup(
+    release_scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--profile`` must reach the canary lookup, which accepts it — otherwise
+    status reports the default workspace's canary under another profile."""
+    from apx_agent._apps_registry import CanaryManifest
+
+    seen: dict[str, Any] = {}
+    def prod_version(uc, *, profile=None):
+        seen["alias_profile"] = profile
+        return "5"
+
+    def version_sha(uc, v, *, profile=None):
+        seen["sha_profile"] = profile
+        return "prodsha123456"
+
+    monkeypatch.setattr("apx_agent.get_prod_alias_version", prod_version)
+    monkeypatch.setattr("apx_agent.get_version_git_sha", version_sha)
+
+    def lookup(uc_name, *, app_name=None, profile=None):
+        seen["lookup_profile"] = profile
+        return CanaryManifest("8", "canarysha6789")
+
+    monkeypatch.setattr("apx_agent.find_latest_canary_version", lookup)
+    result = CliRunner().invoke(main, ["canary", "status", "--profile", "release", "--json"])
+    assert result.exit_code == 0, result.output
+    assert seen == {
+        "lookup_profile": "release", "alias_profile": "release", "sha_profile": "release",
+    }
+
+
+def test_cli_history_lists_recorded_releases(
+    release_scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_list(uc_name, *, profile=None):
+        seen.update(uc_name=uc_name, profile=profile)
+        return [
+            {"version": "9", "app_name": "my-app-canary-v2", "role": "canary",
+             "git_sha": "canary9sha0000", "bundle_target": "canary-v2",
+             "git_dirty": "false", "lock_sha256": "lock9", "aliases": []},
+            {"version": "8", "app_name": "my-app", "role": "prod",
+             "git_sha": "prod8sha00000", "bundle_target": "prod",
+             "git_dirty": "true", "lock_sha256": "lock8", "aliases": ["prod"]},
+        ]
+
+    monkeypatch.setattr("apx_agent._apps_registry.list_apps_releases", fake_list)
+    result = CliRunner().invoke(main, ["canary", "history", "--profile", "release"])
+    assert result.exit_code == 0, result.output
+    assert seen == {"uc_name": "main.agents.my_app", "profile": "release"}
+    # Newest first, with the recorded ledger facts an operator needs.
+    assert result.output.index("version 9  my-app-canary-v2") < result.output.index("version 8  my-app")
+    assert "canary9sha000" in result.output
+    assert "@prod" in result.output
+    assert "dirty" in result.output
+    # The ledger is what deploy recorded, not a probe of the live App.
+    assert "recorded" in result.output.lower()
+
+
+def test_cli_history_json_payload(
+    release_scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.list_apps_releases",
+        lambda uc_name, *, profile=None: [
+            {"version": "9", "app_name": "my-app", "role": "prod",
+             "git_sha": "sha9", "bundle_target": "prod", "git_dirty": "false",
+             "lock_sha256": "lock9", "aliases": ["prod"]},
+        ],
+    )
+    result = CliRunner().invoke(main, ["canary", "history", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["uc_name"] == "main.agents.my_app"
+    assert payload["releases"][0]["version"] == "9"
+    assert payload["releases"][0]["aliases"] == ["prod"]
+
+
+def test_cli_history_reports_empty_ledger(
+    release_scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "apx_agent._apps_registry.list_apps_releases",
+        lambda uc_name, *, profile=None: [],
+    )
+    result = CliRunner().invoke(main, ["canary", "history"])
+    assert result.exit_code == 0, result.output
+    assert "No Apps releases recorded" in result.output
+
+
+def test_cli_history_surfaces_registry_failure(
+    release_scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read failure must not render as an empty (clean-looking) history."""
+    def _raise(uc_name, *, profile=None):
+        raise RuntimeError("permission denied on main.agents.my_app")
+
+    monkeypatch.setattr("apx_agent._apps_registry.list_apps_releases", _raise)
+    result = CliRunner().invoke(main, ["canary", "history", "--json"])
+    assert result.exit_code != 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "permission denied" in payload["error"]
+
+
+def test_cli_history_requires_uc_name(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = CliRunner().invoke(main, ["canary", "history"])
+    assert result.exit_code != 0
+    assert "registered_model" in result.output
 
 
 def test_deploy_canary_app_stamps_git_sha_tag(tmp_path: Path) -> None:
