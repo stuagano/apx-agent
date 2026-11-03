@@ -131,6 +131,56 @@ def _pending(graph: Any, config: dict[str, Any] | None) -> Any | None:
 from ._native_input import typed_entry_step  # noqa: E402,F401  (re-export)
 
 
+def _validate_native_input(value: Any, agent: BaseAgent, *, checkpointed: bool,
+                           recovery: bool, session_id: str | None) -> dict[str, Any]:
+    """Pure input contract shared by HTTP admission and direct/recovered execution."""
+    from ._agents import SequentialAgent
+    from ._native_input import NATIVE_ARTIFACTS_KEY, input_leaf, native_data_part
+    from ._native_remote import validate_correlation
+
+    if isinstance(value, list):
+        value = {"messages": value}
+    if not isinstance(value, dict) or set(value) - {"messages", "resume", "apx_data_parts", "correlation"}:
+        raise ValueError("Native input must contain messages and optional resume; session_id belongs in the top-level invocation envelope")
+    messages = value.get("messages", [])
+    if not isinstance(messages, list):
+        raise ValueError("messages must be a list")
+    # Callers supply fresh user text, never tool results or checkpoint state.
+    for message in messages:
+        if not isinstance(message, dict) or set(message) - {"role", "content"}:
+            raise ValueError("Each message must contain only role and content")
+        if message.get("role") != "user" or not isinstance(message.get("content"), str):
+            raise ValueError("Native input accepts user text messages only")
+    resume = value.get("resume")
+    correlation = validate_correlation(value.get("correlation"))
+    leaf = input_leaf(agent)
+    entry = typed_entry_step(agent) if value.get("apx_data_parts") is not None else None
+    if entry is not None and isinstance(agent, SequentialAgent):
+        leaf = input_leaf(agent._agents[entry])
+    schema = getattr(leaf, "_input_schema", None)
+    domain_input: dict[str, Any] = {NATIVE_ARTIFACTS_KEY: {}}
+    parts = value.get("apx_data_parts")
+    if parts is not None or schema is not None:
+        if schema is None or not isinstance(parts, list) or len(parts) != 1 or resume is not None or recovery:
+            raise ValueError("Native typed input requires its declared schema and one fresh data artifact")
+        part = parts[0]
+        if not isinstance(part, dict):
+            raise ValueError("Native typed input requires a data artifact")
+        part = native_data_part(schema, part.get("data"), part)
+        parts = [part]
+        domain_input[leaf._input_key] = part["data"]
+        if entry is not None:
+            domain_input["_apx_typed_entry"] = entry
+    if resume is not None and not checkpointed:
+        raise ValueError("Approval resume requires a checkpointed session")
+    if checkpointed and (not isinstance(session_id, str) or not session_id):
+        raise ValueError("A checkpointed invocation requires a non-empty session_id")
+    if getattr(agent, "_session_keys", ()) and (not isinstance(session_id, str) or not session_id):
+        raise ValueError("session_keys require a non-empty session_id")
+    return {"messages": messages, "resume": resume, "correlation": correlation,
+            "parts": parts, "domain_input": domain_input}
+
+
 def _session_state_client(store_name: str, service_ws: Any) -> Any:
     """The SDK client bound to the App's managed store, for composite session_keys."""
     from databricks_agentkit.runtime.session_store_client import SessionStoreClient
@@ -212,51 +262,16 @@ def compile_durable_handlers(
             # "user" client is the developer/app credential, never forward it.
             forward = has_delegates and not auth._local
             headers = durable_request_headers(auth, principal=principal, forward=forward)
-        if isinstance(value, list):
-            value = {"messages": value}
-        if not isinstance(value, dict) or set(value) - {"messages", "resume", "apx_data_parts", "correlation"}:
-            raise ValueError("Native input must contain messages and optional resume; session_id belongs in the top-level invocation envelope")
-        messages = value.get("messages", [])
-        if not isinstance(messages, list):
-            raise ValueError("messages must be a list")
-        # Durable invocation input is fresh chat input. Tool results and state
-        # are produced by execution/checkpoints, never supplied by a caller.
-        for message in messages:
-            if not isinstance(message, dict) or set(message) - {"role", "content"}:
-                raise ValueError("Each message must contain only role and content")
-            if message.get("role") != "user" or not isinstance(message.get("content"), str):
-                raise ValueError("Native input accepts user text messages only")
-        resume = value.get("resume")
-        from ._agents import SequentialAgent
-        from ._native_input import NATIVE_ARTIFACTS_KEY, input_leaf, native_data_part, typed_entry_step
-        from ._native_remote import validate_correlation
-
-        correlation = validate_correlation(value.get("correlation"))
-        leaf = input_leaf(agent)
-        # Typed callers to an intake-first sequence enter at its first typed step.
-        entry = typed_entry_step(agent) if value.get("apx_data_parts") is not None else None
-        if entry is not None and isinstance(agent, SequentialAgent):
-            leaf = input_leaf(agent._agents[entry])
-        schema = getattr(leaf, "_input_schema", None)
-        domain_input: dict[str, Any] = {NATIVE_ARTIFACTS_KEY: {}}
-        parts = value.get("apx_data_parts")
-        if parts is not None or schema is not None:
-            if schema is None or not isinstance(parts, list) or len(parts) != 1 or resume is not None or recovery:
-                raise ValueError("Native typed input requires its declared schema and one fresh data artifact")
-            part = parts[0]
-            if not isinstance(part, dict):
-                raise ValueError("Native typed input requires a data artifact")
-            part = native_data_part(schema, part.get("data"), part)
-            domain_input[leaf._input_key] = part["data"]
-            if entry is not None:
-                domain_input["_apx_typed_entry"] = entry
-        if resume is not None and checkpointer is None:
-            raise ValueError("Approval resume requires a checkpointed session")
+        validated = _validate_native_input(value, agent, checkpointed=checkpointer is not None,
+                                           recovery=recovery, session_id=context.session_id)
+        messages = validated["messages"]
+        resume = validated["resume"]
+        correlation = validated["correlation"]
+        parts = validated["parts"]
+        domain_input = validated["domain_input"]
         config = None
         if checkpointer is not None:
             session = context.session_id
-            if not isinstance(session, str) or not session:
-                raise ValueError("A checkpointed invocation requires a non-empty session_id")
             config = session_thread_config(getattr(agent, "_name", None), session,
                                            headers.user_id if headers is not None else None)
         keys = getattr(agent, "_session_keys", ())
@@ -265,8 +280,6 @@ def compile_durable_handlers(
             from ._composite_session import load_session_state
 
             session = context.session_id
-            if not isinstance(session, str) or not session:
-                raise ValueError("session_keys require a non-empty session_id")
             state_thread = session_thread_config(getattr(agent, "_name", None), session,
                                                  headers.user_id if headers is not None else None)["configurable"]["thread_id"]
             # A typed caller's fresh part wins over a persisted key of the same name.
@@ -281,7 +294,7 @@ def compile_durable_handlers(
         )
         input_messages = [HumanMessage(content=m["content"]) for m in messages]
         if parts is not None:
-            input_messages.append(HumanMessage(content="Declared domain input", additional_kwargs={"apx_data_parts": [part]}))
+            input_messages.append(HumanMessage(content="Declared domain input", additional_kwargs={"apx_data_parts": parts}))
         turn = run_graph_turn(
             graph, agent, input_messages,
             config=config, resume=resume, read_interrupt=_pending,
@@ -425,6 +438,46 @@ def compile_to_durable_agent_server(
                                         project_root=project_root, platform_tools=startup.tools,
                                         session_state_client=session_state_client)
     app = DurableAgentServer(auth_policy=policy)
+
+    @app.middleware("http")
+    async def validate_invocation_input(request: Request, call_next: Any) -> Any:
+        # AgentKit has no admission hook: invoke() runs only after persistence.
+        # Reuse its envelope model rather than maintaining a second outer contract.
+        from databricks_agentkit.runtime.app import _InvocationRequest
+        from databricks_agentkit.runtime.auth import AuthError, RequestAuthContext
+        from fastapi.responses import JSONResponse
+        from pydantic import ValidationError
+
+        if request.method != "POST" or request.url.path.rstrip("/") != "/api/invocations":
+            return await call_next(request)
+        try:
+            body = _InvocationRequest.model_validate(await request.json())
+        except (ValueError, ValidationError):
+            # Preserve the SDK/FastAPI's envelope validation response.
+            return await call_next(request)
+        auth = None
+        try:
+            if policy.requires_user:
+                auth = RequestAuthContext.from_headers(request.headers)
+            invocation_id = auth.namespace("invocation", str(body.id)) if auth is not None else str(body.id)
+            # Runtime.get_invocation schedules queued work before the SDK has
+            # registered request auth. Admission must only inspect stored state.
+            existing = await app._runtime.runtime_store.get(invocation_id=invocation_id)
+        except AuthError as exc:
+            return JSONResponse({"error": exc.payload()}, status_code=exc.status_code)
+        finally:
+            if auth is not None:
+                auth.close()
+        # The SDK remains authoritative for retries and conflicts, including an
+        # existing id resubmitted with invalid input. Never reserve a rejected id.
+        if existing is None:
+            try:
+                _validate_native_input(body.input, agent, checkpointed=checkpointer is not None,
+                                       recovery=recovery, session_id=body.session_id)
+            except ValueError as exc:
+                return JSONResponse({"detail": str(exc)}, status_code=422)
+        return await call_next(request)
+
     # Per-id startup materialization failures, for offline doctor (by id, not message).
     app.state.apx_platform_tool_failures = startup.failures
     app.invoke(handlers.invoke)
