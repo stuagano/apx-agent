@@ -175,27 +175,28 @@ def _demo_twin(fn: Any, demo_module: Any | None) -> Any | None:
 
 
 def _runtime_config(functions: list[Any]) -> dict[str, Any]:
-    """The scalar module-level constants bound in the tool modules.
+    """Read only explicitly supported diagnostic constants, never callbacks.
 
-    Derived from the modules rather than a hardcoded key list, so a renamed or
-    added setting shows up (or disappears) without this file drifting.
+    Tool modules can hold credentials under any name. Uppercase/scalar is not
+    a disclosure policy, so arbitrary constants must stay out of the payload.
     """
+    safe_keys = {
+        "CATALOG", "SCHEMA", "SA_CATALOG", "SA_SCHEMA", "WAREHOUSE_ID",
+        "DEMO_MODE", "DEMO_MODE_EFFECTIVE",
+    }
     out: dict[str, Any] = {}
     for mod_name in sorted({getattr(fn, "__module__", "") for fn in functions}):
         module = sys.modules.get(mod_name)
         if module is None:
             continue
-        for name, value in vars(module).items():
-            if name.startswith("_") or not name.isupper():
-                continue
-            if isinstance(value, (str, int, float, bool)) and name not in out:
+        for name in sorted(safe_keys):
+            value = vars(module).get(name)
+            if name in ("DEMO_MODE", "DEMO_MODE_EFFECTIVE"):
+                safe_value = type(value) is bool
+            else:
+                safe_value = type(value) is str
+            if safe_value and name not in out:
                 out[name] = value
-        demo_flag = getattr(module, "_demo_mode", None)
-        if callable(demo_flag) and "DEMO_MODE_EFFECTIVE" not in out:
-            try:
-                out["DEMO_MODE_EFFECTIVE"] = bool(demo_flag())
-            except Exception:  # noqa: BLE001 — defensive
-                pass
     return dict(sorted(out.items()))
 
 
@@ -211,7 +212,9 @@ def _context_status(request: Request) -> dict[str, Any]:
 
 
 def _connection_status(functions: list[Any], config: dict[str, Any]) -> dict[str, Any]:
-    demo = bool(config.get("DEMO_MODE_EFFECTIVE"))
+    # Declared configuration does not establish a dynamic callback's result.
+    # Inspect only the published effective flag; never invoke callbacks.
+    demo = config.get("DEMO_MODE_EFFECTIVE")
     catalog = str(
         config.get("SA_CATALOG")
         or config.get("CATALOG")
@@ -223,10 +226,19 @@ def _connection_status(functions: list[Any], config: dict[str, Any]) -> dict[str
         or ""
     ).strip()
     warehouse = str(config.get("WAREHOUSE_ID") or "").strip()
-    table_candidates = []
-    for key in sorted(config):
-        if key.endswith("_TABLE") and isinstance(config.get(key), str) and config.get(key):
-            table_candidates.append(str(config[key]))
+    if demo is None:
+        return {
+            "mode": "unknown",
+            "connected": False,
+            "workspace": "",
+            "catalog": catalog,
+            "schema": schema,
+            "warehouse_id": warehouse,
+            "tables": [],
+            "headline": "Effective branch undetermined — Databricks UC not probed",
+            "detail": "Publish a Boolean DEMO_MODE_EFFECTIVE constant to identify the effective branch.",
+            "error": "",
+        }
     if demo:
         detail = []
         if catalog:
@@ -1004,7 +1016,7 @@ function renderConnectionBanner() {
     clearBanner();
     return;
   }
-  const kind = c.connected ? 'ok' : (c.mode === 'demo' ? 'warn' : 'err');
+  const kind = c.connected ? 'ok' : (c.mode === 'live' ? 'err' : 'warn');
   const bits = [];
   if (c.detail) bits.push(esc(c.detail));
   if (c.error) bits.push('reason: ' + esc(c.error));
@@ -1050,6 +1062,8 @@ function renderDetail() {
     return;
   }
   const t = current;
+  // A declared flag cannot establish what a dynamic _demo_mode() callback does.
+  // Never execute that callback for inspection; require a published effective flag.
   const demo = DATA.config.DEMO_MODE_EFFECTIVE;
   const parts = [];
 
@@ -1061,7 +1075,9 @@ function renderDetail() {
     ? 'connected · ' + [conn.workspace && conn.workspace.replace('https://', ''), conn.catalog, conn.schema].filter(Boolean).join(' · ')
     : (conn.mode === 'demo'
         ? 'DEMO — Databricks UC not connected'
-        : 'LIVE configured — Databricks UC unreachable');
+        : (conn.mode === 'live'
+            ? 'LIVE configured — Databricks UC unreachable'
+            : 'Effective branch undetermined — Databricks UC not probed'));
   parts.push('<div class="chips">' +
     '<span class="chip ' + (conn.connected ? 'ok' : (conn.mode === 'demo' ? 'warn' : 'warn')) + '">' + esc(connText) + '</span>' +
     '<span class="chip">' + esc(DATA.how === 'agent' ? 'registered' : 'recovered from source') + '</span>' +
@@ -1108,9 +1124,12 @@ function renderDetail() {
   if (t.source.indexOf('_demo_mode()') !== -1) {
     parts.push('<details><summary>Both branches — this function short-circuits on <code>_demo_mode()</code></summary>' +
       '<div class="body"><p style="color:var(--apx-muted);font-size:12px;line-height:1.6">' +
-      'This deployment is currently using the ' +
-      '<strong>' + (demo ? 'synthetic (demo)' : 'live UC/SQL') + '</strong> branch.' +
-      (demo ? '' : ' The tables it reads are shown in Runtime below.') +
+      (demo === undefined
+        ? 'The effective branch is <strong>undetermined</strong>; publish a Boolean ' +
+          '<code>DEMO_MODE_EFFECTIVE</code> constant to identify it without invoking callbacks.'
+        : 'This deployment is currently using the <strong>' +
+          (demo ? 'synthetic (demo)' : 'live UC/SQL') + '</strong> branch.' +
+          (demo ? '' : ' The tables it reads are shown in Runtime below.')) +
       '</p></div></details>');
   }
 
@@ -1129,7 +1148,8 @@ function renderDetail() {
 
   if (t.demo_source) {
     parts.push('<details><summary>' + esc(t.demo_name) + ' — ' +
-      (demo ? 'the branch this deployment runs' : 'not executed in this deployment') +
+      (demo === undefined ? 'effective branch undetermined' :
+        (demo ? 'the branch this deployment runs' : 'not executed in this deployment')) +
       '</summary><div class="body">' + codeBlock(t.demo_source, 1) + '</div></details>');
   }
 

@@ -131,7 +131,7 @@ These are pre-built tools for the Databricks platform. Each factory returns a re
 
 | Factory | What it does | Resource declared |
 |---------|--------------|-------------------|
-| `uc_function_tool(name)` | Execute a registered UC function. Schema auto-derived from UC. | `DatabricksFunction` |
+| `uc_function_tool(name)` | Execute a registered UC function with a `params` dictionary. UC types guide SQL literal conversion. | `DatabricksFunction` |
 | `uc_function_toolkit(schema)` | All agent-facing functions in a UC schema as tools | `DatabricksFunction` (×N) |
 | `genie_tool(space_id)` | Ask a natural-language question to a Genie space | `DatabricksGenieSpace` |
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
@@ -188,7 +188,7 @@ agent = Agent(tools=[
 ])
 ```
 
-The function's `COMMENT` becomes the tool description; parameter types become the tool schema. Scaffold, deploy, and `apx-agent agents refresh-schema` bake those signatures into `.apx/schema.json`, so deployed Apps execute known functions through SQL without a request-time Unity Catalog metadata lookup. Projects without a baked signature fall back to live metadata discovery. The user's grants on `main.tools.classify_intent` still apply at runtime.
+The function's baked `COMMENT` becomes the tool description; without a baked signature, pass `ws=` to fetch the comment at construction time (otherwise a generic description is used). The model-facing input is a generic `params` dictionary, not a per-parameter schema derived from UC types. UC signatures provide parameter names, order, and types for SQL literal conversion at execution time. Unknown supplied parameter names are rejected, and BOOLEAN values must be JSON booleans or null. Omitted parameters retain the existing behavior of being passed as SQL `NULL`, not omitted to invoke UC defaults. Scaffold, deploy, and `apx-agent agents refresh-schema` bake those signatures into `.apx/schema.json`, so deployed Apps execute known functions through SQL without a request-time Unity Catalog metadata lookup. Projects without a baked signature fall back to live metadata discovery. The user's grants on `main.tools.classify_intent` still apply at runtime.
 
 When the data team has curated an entire schema of agent-facing functions, register the whole toolkit at once:
 

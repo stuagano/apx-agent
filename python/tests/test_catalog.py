@@ -251,6 +251,99 @@ def _make_func_info(params: list[tuple[str, str, int]], data_type: str = "STRING
 
 
 class TestUcFunctionToolFactory:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "true", "", 0, 1, [], {}])
+    async def test_rejects_non_boolean_before_sql(self, value, monkeypatch):
+        from apx_agent import ToolError
+        from apx_agent import catalog as cat_module
+
+        ws = MagicMock()
+        ws.functions.get.return_value = _make_func_info([("enabled", "BOOLEAN", 0)])
+        run_sql = MagicMock(return_value=[])
+        monkeypatch.setattr(cat_module, "run_sql", run_sql)
+        tool = uc_function_tool("main.tools.fn")
+        with pytest.raises(ToolError, match="BOOLEAN"):
+            await tool(params={"enabled": value}, ws=ws)
+        run_sql.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_boolean_failure_does_not_disclose_supplied_value(self, monkeypatch):
+        from apx_agent import ToolError
+        from apx_agent import catalog as cat_module
+
+        sentinel = "synthetic-boolean-credential-sentinel"
+        ws = MagicMock()
+        ws.functions.get.return_value = _make_func_info([("enabled", "BOOLEAN", 0)])
+        run_sql = MagicMock(return_value=[])
+        monkeypatch.setattr(cat_module, "run_sql", run_sql)
+        tool = uc_function_tool("main.tools.fn")
+        with pytest.raises(ToolError) as failure:
+            await tool(params={"enabled": sentinel}, ws=ws)
+        assert sentinel not in str(failure.value)
+        assert "str" in str(failure.value)
+        assert "BOOLEAN" in str(failure.value)
+        run_sql.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("params, expected", [
+        ({"enabled": True}, "TRUE"),
+        ({"enabled": False}, "FALSE"),
+        ({"enabled": None}, "NULL"),
+        ({}, "NULL"),
+    ])
+    async def test_boolean_and_omitted_null_compatibility(self, params, expected, monkeypatch):
+        from apx_agent import catalog as cat_module
+
+        ws = MagicMock()
+        ws.functions.get.return_value = _make_func_info([("enabled", "BOOLEAN", 0)])
+        run_sql = MagicMock(return_value=[{"result": "ok"}])
+        monkeypatch.setattr(cat_module, "run_sql", run_sql)
+        tool = uc_function_tool("main.tools.fn")
+        assert await tool(params=params, ws=ws) == "ok"
+        run_sql.assert_called_once_with(ws, f"SELECT main.tools.fn({expected})", warehouse_id=None)
+
+    @pytest.mark.asyncio
+    async def test_baked_default_metadata_preserves_omitted_null_behavior(self, monkeypatch):
+        from apx_agent import catalog as cat_module
+        from apx_agent import _schema
+
+        monkeypatch.setattr(_schema, "load_baked_schema", lambda: {
+            "functions": {"main.tools.fn": {"parameters": [
+                {"name": "x", "position": 0, "type_name": "STRING", "parameter_default": "'default'"},
+                {"name": "y", "position": 1, "type_name": "STRING"},
+            ]}},
+        })
+        ws = MagicMock()
+        run_sql = MagicMock(return_value=[])
+        monkeypatch.setattr(cat_module, "run_sql", run_sql)
+        tool = uc_function_tool("main.tools.fn")
+        await tool(params={"y": "supplied"}, ws=ws)
+        run_sql.assert_called_once_with(ws, "SELECT main.tools.fn(NULL, 'supplied')", warehouse_id=None)
+        ws.functions.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("baked", [False, True])
+    @pytest.mark.parametrize("parameters", [[], [{"name": "x", "type_name": "STRING", "position": 0}]])
+    async def test_rejects_unknown_supplied_params(self, baked, parameters, monkeypatch):
+        from apx_agent import ToolError
+        from apx_agent import catalog as cat_module
+        from apx_agent import _schema
+
+        signature = {"functions": {"main.tools.fn": {"parameters": parameters}}}
+        monkeypatch.setattr(_schema, "load_baked_schema", lambda: signature if baked else None)
+        ws = MagicMock()
+        ws.functions.get.return_value = _make_func_info([
+            (p["name"], p["type_name"], p["position"]) for p in parameters
+        ])
+        run_sql = MagicMock(return_value=[])
+        monkeypatch.setattr(cat_module, "run_sql", run_sql)
+        tool = uc_function_tool("main.tools.fn")
+        with pytest.raises(ToolError, match="Unknown.*unexpected"):
+            await tool(params={"unexpected": "ignored before fix"}, ws=ws)
+        run_sql.assert_not_called()
+        if baked:
+            ws.functions.get.assert_not_called()
+
     def test_default_name_is_short_function_name(self):
         tool = uc_function_tool("main.tools.classify_intent")
         assert tool.__name__ == "classify_intent"

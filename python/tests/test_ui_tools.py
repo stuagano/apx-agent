@@ -164,6 +164,132 @@ def client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", [True, False, None])
+async def test_unknown_effective_mode_is_not_inferred_or_probed(client, tools_module, monkeypatch, declared, tmp_path):
+    from unittest.mock import Mock
+    import apx_agent._ui_tools as ui_tools
+
+    callback = Mock(return_value=False)
+    workspace = Mock(side_effect=AssertionError("unknown mode must not probe workspace"))
+    if declared is None:
+        monkeypatch.delattr(tools_module, "DEMO_MODE")
+    else:
+        monkeypatch.setattr(tools_module, "DEMO_MODE", declared)
+    monkeypatch.delattr(tools_module, "DEMO_MODE_EFFECTIVE", raising=False)
+    monkeypatch.setattr(tools_module, "_demo_mode", callback, raising=False)
+    monkeypatch.setattr(ui_tools, "WorkspaceClient", workspace)
+    response = await client.get("/_apx/tools/list")
+    assert response.status_code == 200
+    status = response.json()["connection"]
+    assert status["mode"] == "unknown"
+    assert status["connected"] is False
+    assert "undetermined" in status["headline"]
+    callback.assert_not_called()
+    workspace.assert_not_called()
+
+    assert NODE is not None, "Node is required to verify unknown-mode rendering"
+    prelude = """
+global.document = { getElementById: () => ({ addEventListener() {},
+  classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' }) };
+global.window = {};
+global.fetch = async () => ({ ok: false, status: 500, text: async () => '' });
+"""
+    checks = """
+const main = { innerHTML: '' };
+const connectionBanner = { innerHTML: '' };
+document.getElementById = (id) => id === 'main' ? main : (id === 'banner' ? connectionBanner : null);
+current = DATA.tools[0];
+renderConnectionBanner();
+renderDetail();
+console.log('RESULT:' + JSON.stringify({ banner: connectionBanner.innerHTML, detail: main.innerHTML }));
+"""
+    path = tmp_path / "unknown_connection_probe.js"
+    path.write_text(prelude + "\n" + _tools_page_script() + "\nDATA = " + response.text + ";\n" + checks)
+    proc = subprocess.run([NODE, str(path)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    lines = [line for line in proc.stdout.splitlines() if line.startswith("RESULT:")]
+    assert lines, proc.stdout[-2000:]
+    rendered = json.loads(lines[-1][len("RESULT:"):])
+    for html in rendered.values():
+        assert "undetermined" in html
+        assert "DEMO —" not in html
+        assert "LIVE configured" not in html
+        assert "connected ·" not in html
+
+
+@pytest.mark.asyncio
+async def test_tools_list_exposes_only_safe_diagnostic_config(client, tools_module, monkeypatch):
+    import apx_agent._ui_tools as ui_tools
+
+    monkeypatch.setattr(ui_tools, "WorkspaceClient", _FakeWorkspaceClient)
+    sentinel = "synthetic-credential-sentinel"
+    for name in ("API_KEY", "ACCESS_TOKEN", "FAVORITE_COLOR", "CUSTOM_TABLE"):
+        monkeypatch.setattr(tools_module, name, sentinel, raising=False)
+    monkeypatch.setattr(tools_module, "WAREHOUSE_ID", "wh-explicit", raising=False)
+    monkeypatch.setattr(tools_module, "SA_CATALOG", "safe_catalog", raising=False)
+    monkeypatch.setattr(tools_module, "SA_SCHEMA", "safe_schema", raising=False)
+
+    r = await client.get("/_apx/tools/list")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["config"] == {
+        "CATALOG": "main", "SCHEMA": "default", "DEMO_MODE": False,
+        "WAREHOUSE_ID": "wh-explicit", "SA_CATALOG": "safe_catalog", "SA_SCHEMA": "safe_schema",
+    }
+    assert sentinel not in r.text
+    assert data["connection"]["catalog"] == "safe_catalog"
+    assert data["connection"]["schema"] == "safe_schema"
+    assert data["connection"]["warehouse_id"] == "wh-explicit"
+
+
+def test_runtime_config_does_not_invoke_module_callbacks(tools_module, monkeypatch):
+    from unittest.mock import Mock
+    from apx_agent._ui_tools import _runtime_config
+
+    callback = Mock(return_value="synthetic-callback-credential")
+    monkeypatch.setattr(tools_module, "_demo_mode", callback, raising=False)
+    config = _runtime_config([tools_module.alpha])
+    callback.assert_not_called()
+    assert "DEMO_MODE_EFFECTIVE" not in config
+    assert config["DEMO_MODE"] is False
+
+
+def test_demo_constant_preserves_connection_diagnostic_without_callback(tools_module, monkeypatch):
+    from unittest.mock import Mock
+    import apx_agent._ui_tools as ui_tools
+
+    workspace = Mock(side_effect=AssertionError("demo must not probe workspace"))
+    monkeypatch.setattr(ui_tools, "WorkspaceClient", workspace)
+    monkeypatch.setattr(tools_module, "DEMO_MODE", True)
+    monkeypatch.setattr(tools_module, "DEMO_MODE_EFFECTIVE", True, raising=False)
+    config = ui_tools._runtime_config([tools_module.alpha])
+    status = ui_tools._connection_status([tools_module.alpha], config)
+    assert status["mode"] == "demo"
+    assert status["catalog"] == "main"
+    workspace.assert_not_called()
+
+
+def test_runtime_config_preserves_explicit_demo_diagnostic(tools_module, monkeypatch):
+    from apx_agent._ui_tools import _runtime_config
+
+    monkeypatch.setattr(tools_module, "DEMO_MODE_EFFECTIVE", True, raising=False)
+    assert _runtime_config([tools_module.alpha])["DEMO_MODE_EFFECTIVE"] is True
+
+
+def test_connection_status_probes_live_when_effective_flag_is_false(tools_module, monkeypatch):
+    import apx_agent._ui_tools as ui_tools
+
+    monkeypatch.setattr(ui_tools, "WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setattr(tools_module, "DEMO_MODE", True)
+    monkeypatch.setattr(tools_module, "DEMO_MODE_EFFECTIVE", False, raising=False)
+    config = ui_tools._runtime_config([tools_module.alpha])
+    status = ui_tools._connection_status([tools_module.alpha], config)
+    assert status["mode"] == "live"
+    assert status["connected"] is True
+
+
 # ── replace_function ─────────────────────────────────────────────────────────
 
 
@@ -318,6 +444,41 @@ console.log("RESULT:" + JSON.stringify(R));
     assert not failed, f"renderer checks failed: {failed}"
 
 
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_tools_browser_demo_branch_distinguishes_declared_from_effective(tmp_path: Path):
+    prelude = """
+global.document = { getElementById: () => ({ addEventListener() {},
+  classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' }) };
+global.window = {};
+global.fetch = async () => ({ ok: false, status: 500, text: async () => '' });
+"""
+    checks = """
+const main = { innerHTML: '' };
+document.getElementById = (id) => id === 'main' ? main : (id === 'banner' ? {} : null);
+current = { name: 'alpha', source: '_demo_mode()', signature: '()', module: 'probe' };
+const results = [];
+for (const [config, expected] of [
+  [{}, 'undetermined'],
+  [{ DEMO_MODE: true }, 'undetermined'],
+  [{ DEMO_MODE: false }, 'undetermined'],
+  [{ DEMO_MODE: true, DEMO_MODE_EFFECTIVE: false }, 'live UC/SQL'],
+  [{ DEMO_MODE: false, DEMO_MODE_EFFECTIVE: true }, 'synthetic (demo)'],
+]) {
+  DATA = { config, connection: {}, status: {}, warnings: [], how: 'agent' };
+  renderDetail();
+  results.push(main.innerHTML.includes('<strong>' + expected + '</strong>'));
+}
+console.log('RESULT:' + JSON.stringify(results));
+"""
+    path = tmp_path / "demo_branch_probe.js"
+    path.write_text(prelude + "\n" + _tools_page_script() + "\n" + checks)
+    proc = subprocess.run([NODE, str(path)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    lines = [line for line in proc.stdout.splitlines() if line.startswith("RESULT:")]
+    assert lines, proc.stdout[-2000:]
+    assert json.loads(lines[-1][len("RESULT:"):]) == [True, True, True, True, True]
+
+
 @pytest.mark.asyncio
 async def test_tools_page_includes_connection_banner_strings(client: AsyncClient):
     r = await client.get("/_apx/tools")
@@ -339,6 +500,7 @@ async def test_tools_list_includes_connection_status(
 ):
     import apx_agent._ui_tools as ui_tools
 
+    monkeypatch.setattr(tools_module, "DEMO_MODE_EFFECTIVE", False, raising=False)
     monkeypatch.setattr(ui_tools, "WorkspaceClient", _FakeWorkspaceClient)
     r = await client.get("/_apx/tools/list")
     assert r.status_code == 200
@@ -374,7 +536,7 @@ async def test_tools_list_derives_source_from_the_defining_file(
     assert alpha["demo_name"] == "alpha_demo"
     assert 'return "fake:" + value' in alpha["demo_source"]
     assert data["tools"][1]["demo_name"] == ""
-    # Runtime constants come from the tool module, not a hardcoded list.
+    # Explicitly supported diagnostic constants come from the tool module.
     assert data["config"]["CATALOG"] == "main"
     assert data["config"]["SCHEMA"] == "default"
     assert "_private" not in data["config"]

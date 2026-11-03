@@ -24,16 +24,22 @@ response, and tears down the bundle — every time.
 
 ## When it runs
 
-- On every PR to `main` that touches (once the commented `pull_request`
-  trigger is enabled):
-  - `python/src/apx_agent/**`
-  - `python/examples/memory_demo/**`
-  - `.github/workflows/apps-smoke-test.yml`
-- On-demand via `workflow_dispatch` from the Actions tab. Use this to
-  retry a flaky run or to test workflow edits without pushing a PR.
+- **Currently manual only**, via `workflow_dispatch` from the Actions tab.
+  The `pull_request` trigger is commented out in the workflow; a green PR check
+  does not mean a hosted smoke ran.
+- If that trigger is enabled later, its proposed watched paths are
+  `python/src/apx_agent/**`, `python/examples/memory_demo/**`, and
+  `.github/workflows/apps-smoke-test.yml`.
 
-PRs that don't touch the watched paths skip the smoke test by design —
-docs-only PRs shouldn't burn DBUs.
+## Proof boundary
+
+This workflow exercises the legacy `/invocations` route, **not** native
+`/api/invocations`. It does not prove native managed-store persistence, delegated
+user identity, approval behavior, or cross-user isolation. `make check` runs the
+ordinary pytest collection, but the separately named
+`python/tests/native_chat_browser.py` browser suite must be invoked explicitly.
+Neither a local test run nor a healthy `/readyz` replaces authenticated live
+execution and browser read-back for the deployed target.
 
 This workflow is framework CI only (ephemeral `memory_demo`). Agent
 project **dev / staging / prod** deploys live in scaffolded repos — see
