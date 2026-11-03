@@ -79,6 +79,26 @@ def _uc_registry_context(profile: str | None = None):
         mlflow.set_registry_uri(old_registry_uri)
 
 
+def _all_version_summaries(client: Any, uc_name: str) -> list[Any]:
+    """Return every version summary, following MLflow's ``PagedList.token``.
+
+    ``search_model_versions`` returns one page, so selecting or sorting from a
+    single call silently drops older releases (and the canary an operator asked
+    for) once a model has more versions than one page holds.
+    """
+    summaries: list[Any] = []
+    token: str | None = None
+    while True:
+        page = (
+            client.search_model_versions(f"name='{uc_name}'", page_token=token)
+            if token else client.search_model_versions(f"name='{uc_name}'")
+        )
+        summaries.extend(page)
+        token = getattr(page, "token", None)
+        if not token:
+            return summaries
+
+
 def _looks_like_uc_visibility_delay(error: Exception) -> bool:
     message = str(error).lower()
     return (
@@ -257,7 +277,8 @@ class CanaryManifest:
 
 
 def find_latest_canary_version(
-    uc_name: str, *, mlflow_client: Any | None = None,
+    uc_name: str, *, app_name: str | None = None,
+    mlflow_client: Any | None = None, profile: str | None = None,
 ) -> CanaryManifest | None:
     """Return the most recent ``apx.apps.role=canary`` manifest version, or None.
 
@@ -265,12 +286,16 @@ def find_latest_canary_version(
     manifests, and returns the highest version number — the canary a fresh
     ``promote`` should ship. ``None`` when no canary manifest exists (the
     operator hasn't deployed a canary, or it was already promoted/torn down).
+
+    When ``app_name`` is supplied, match that exact App name and require an
+    ``apx.serving=apps`` tag. Without it, retain historical role-only lookup.
+    ``profile`` selects MLflow tracking/registry credentials for the query.
     """
     from mlflow.tracking import MlflowClient
 
-    with _uc_registry_context():
+    with _uc_registry_context(profile):
         client = mlflow_client or MlflowClient()
-        version_summaries = client.search_model_versions(f"name='{uc_name}'")
+        version_summaries = _all_version_summaries(client, uc_name)
         versions = [
             client.get_model_version(uc_name, str(v.version))
             for v in version_summaries
@@ -278,6 +303,13 @@ def find_latest_canary_version(
         canaries = [
             v for v in versions
             if tag_value(getattr(v, "tags", None) or {}, ROLE_TAG) == "canary"
+            and (
+                app_name is None
+                or (
+                    tag_value(getattr(v, "tags", None) or {}, APP_NAME_TAG) == app_name
+                    and tag_value(getattr(v, "tags", None) or {}, SERVING_TAG) == "apps"
+                )
+            )
         ]
         if not canaries:
             return None
@@ -289,13 +321,52 @@ def find_latest_canary_version(
         )
 
 
-def get_prod_alias_version(
+def list_apps_releases(
     uc_name: str, *, mlflow_client: Any | None = None,
-) -> str | None:
-    """Return the version the ``@prod`` alias points at, or None if unset."""
+    profile: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return Apps-tagged UC release metadata, newest version first.
+
+    Tag values remain strings (or ``None`` when absent), including
+    ``git_dirty``. Aliases are returned as a list, empty when unavailable.
+    Historical dotted and UC-safe tag keys are both supported. Registry errors
+    propagate to the caller; an empty list means no Apps releases were found.
+    ``profile`` selects MLflow tracking/registry credentials for the query.
+    """
     from mlflow.tracking import MlflowClient
 
-    with _uc_registry_context():
+    with _uc_registry_context(profile):
+        client = mlflow_client or MlflowClient()
+        releases = []
+        for summary in _all_version_summaries(client, uc_name):
+            version = client.get_model_version(uc_name, str(summary.version))
+            tags = getattr(version, "tags", None) or {}
+            if tag_value(tags, SERVING_TAG) != "apps":
+                continue
+            releases.append({
+                "version": str(version.version),
+                "app_name": tag_value(tags, APP_NAME_TAG),
+                "role": tag_value(tags, ROLE_TAG),
+                "git_sha": tag_value(tags, GIT_SHA_TAG),
+                "bundle_target": tag_value(tags, BUNDLE_TARGET_TAG),
+                "git_dirty": tag_value(tags, GIT_DIRTY_TAG),
+                "lock_sha256": tag_value(tags, LOCK_SHA256_TAG),
+                "aliases": list(getattr(version, "aliases", None) or []),
+            })
+        return sorted(releases, key=lambda release: int(release["version"]), reverse=True)
+
+
+def get_prod_alias_version(
+    uc_name: str, *, mlflow_client: Any | None = None,
+    profile: str | None = None,
+) -> str | None:
+    """Return the version the ``@prod`` alias points at, or None if unset.
+
+    ``profile`` selects MLflow tracking/registry credentials for the read.
+    """
+    from mlflow.tracking import MlflowClient
+
+    with _uc_registry_context(profile):
         client = mlflow_client or MlflowClient()
         try:
             mv = client.get_model_version_by_alias(uc_name, PROD_ALIAS)
@@ -306,17 +377,22 @@ def get_prod_alias_version(
 
 def set_prod_alias_version(
     uc_name: str, version: str, *, mlflow_client: Any | None = None,
+    profile: str | None = None,
 ) -> None:
-    """Point the ``@prod`` alias at ``version`` (records the live prod version)."""
+    """Point the ``@prod`` alias at ``version`` (records the live prod version).
+
+    ``profile`` selects MLflow tracking/registry credentials for the write.
+    """
     from mlflow.tracking import MlflowClient
 
-    with _uc_registry_context():
+    with _uc_registry_context(profile):
         client = mlflow_client or MlflowClient()
         client.set_registered_model_alias(uc_name, PROD_ALIAS, version)
 
 
 def get_latest_prod_version(
     uc_name: str, *, mlflow_client: Any | None = None,
+    profile: str | None = None,
 ) -> str | None:
     """Return the highest version tagged ``apx.apps.role=prod``, or None.
 
@@ -325,12 +401,14 @@ def get_latest_prod_version(
     manifest registration didn't create a new prod version, this returns the
     previous prod version (not the canary), so ``@prod`` is never pointed at a
     canary version.
+
+    ``profile`` selects MLflow tracking/registry credentials for the query.
     """
     from mlflow.tracking import MlflowClient
 
-    with _uc_registry_context():
+    with _uc_registry_context(profile):
         client = mlflow_client or MlflowClient()
-        version_summaries = client.search_model_versions(f"name='{uc_name}'")
+        version_summaries = _all_version_summaries(client, uc_name)
         versions = [
             client.get_model_version(uc_name, str(v.version))
             for v in version_summaries
@@ -365,11 +443,15 @@ def get_latest_apps_version(
 
 def get_version_git_sha(
     uc_name: str, version: str, *, mlflow_client: Any | None = None,
+    profile: str | None = None,
 ) -> str | None:
-    """Return the ``apx.apps.git_sha`` tag of a specific version, or None."""
+    """Return the ``apx.apps.git_sha`` tag of a specific version, or None.
+
+    ``profile`` selects MLflow tracking/registry credentials for the read.
+    """
     from mlflow.tracking import MlflowClient
 
-    with _uc_registry_context():
+    with _uc_registry_context(profile):
         client = mlflow_client or MlflowClient()
         try:
             mv = client.get_model_version(uc_name, version)

@@ -14470,10 +14470,10 @@ def _apps_deploy_prod_at_commit(
     # can never point @prod at the canary version (get_latest_apps_version took
     # the max over ALL roles). Compare against the prior prod version to avoid
     # claiming a move when no new prod manifest was actually registered.
-    new_version = get_latest_prod_version(uc_name)
+    new_version = get_latest_prod_version(uc_name, profile=profile)
     if new_version and new_version != prev_prod_version:
         try:
-            set_prod_alias_version(uc_name, new_version)
+            set_prod_alias_version(uc_name, new_version, profile=profile)
             log(f"# @prod → version {new_version}")
         except Exception as e:
             log(f"# warning: couldn't move @prod alias (non-fatal): {e}")
@@ -14983,8 +14983,102 @@ def label_align_cmd(
 
 
 @main.group(cls=_ApxGroup)
+def releases() -> None:
+    """Native App deployment history and same-App packaged-source rollback.
+
+    For Bundle UC manifest history/rebuilds, use ``canary history/rollback``.
+    Cross-App promotion and immutable installed-runtime restore are unsupported.
+    """
+
+
+@releases.command("history")
+@click.option("--app-name", required=True, help="Existing Databricks App name.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON result object.")
+def releases_history(app_name: str, profile: str | None, as_json: bool) -> None:
+    """List native deployment IDs, active identity, state, and snapshot paths.
+
+    Reads platform metadata, not the Bundle UC ledger. Does not expose env values.
+    """
+    from databricks.sdk import WorkspaceClient
+    from apx_agent._app_releases import list_app_releases
+
+    with _json_cli_errors(as_json):
+        try:
+            workspace = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+            result = list_app_releases(workspace, app_name)
+        except Exception:
+            raise click.ClickException(
+                "Could not read native App release history. Check authentication, "
+                "App access, and native deployment status securely."
+            ) from None
+        if as_json:
+            click.echo(json.dumps({"ok": True, **result}))
+            return
+        click.echo(f"# Native App releases: {result['app_name']}")
+        click.echo(f"Active deployment: {result['active_deployment_id'] or '(none)'}")
+        if not result["deployments"]:
+            click.echo("No native App deployments recorded.")
+        for deployment in result["deployments"]:
+            click.echo(
+                f"  {deployment['deployment_id']}  state={deployment['state'] or '?'}  "
+                f"mode={deployment['mode'] or '?'}  active={deployment['active']}"
+            )
+            click.echo(f"    snapshot={deployment['snapshot_source_code_path'] or '(unavailable)'}")
+        click.echo(
+            "Platform metadata is not proof of runtime health. Snapshot rollback "
+            "restores packaged source, not immutable installed dependencies."
+        )
+
+
+@releases.command("rollback")
+@click.option("--app-name", required=True, help="Existing App to restore (same-App only).")
+@click.option("--deployment-id", required=True, help="Exact successful SNAPSHOT deployment ID.")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON result object.")
+def releases_rollback(
+    app_name: str, deployment_id: str, profile: str | None, as_json: bool,
+) -> None:
+    """Deploy an exact recorded packaged-source snapshot into the same App.
+
+    This command authorizes deployment. Current App governance remains in effect;
+    dependencies may reinstall. Cross-App promotion is unsupported.
+    """
+    from databricks.sdk import WorkspaceClient
+    from apx_agent._app_releases import restore_app_release
+
+    with _json_cli_errors(as_json):
+        try:
+            workspace = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+            result = restore_app_release(workspace, app_name, deployment_id)
+        except Exception:
+            raise click.ClickException(
+                "Native App snapshot rollback failed or could not be verified active. "
+                "Check authentication, App access, and native deployment status "
+                "securely before retrying. Requires a successful same-App SNAPSHOT "
+                "with a stable packaged-source path and no pending deployment."
+            ) from None
+        if as_json:
+            click.echo(json.dumps({"ok": True, **result}))
+            return
+        click.echo(
+            f"Restored App {result['app_name']} from deployment "
+            f"{result['restored_from_deployment_id']}."
+        )
+        click.echo(f"Active deployment: {result['deployment_id']}")
+        click.echo(f"  state={result['state']}  snapshot={result['snapshot_source_code_path']}")
+        click.echo("Packaged source restored; installed runtime/dependencies are not immutable.")
+
+
+@main.group(cls=_ApxGroup)
 def canary() -> None:
-    """Canary / A-B deployment helpers — multi-version traffic split."""
+    """Bundle Apps canary helpers and recorded UC manifest release ledger.
+
+    Requires a responses_agent Bundle project. For native App snapshot history
+    and same-App rollback, use ``releases history/rollback``.
+    """
 
 
 @canary.command("status")
@@ -14999,8 +15093,10 @@ def canary() -> None:
               help="Emit a single JSON result object on stdout "
                    "(ok:false + error on failure).")
 def canary_status(deploy_target: str, profile: str | None, as_json: bool) -> None:
-    """Show the live canary/prod state: the @prod alias and the latest canary
-    version, with their commits."""
+    """Show recorded UC @prod/latest-canary versions and commits.
+
+    This ledger does not probe the live App runtime or health.
+    """
     with _json_cli_errors(as_json):
         _canary_status_impl(deploy_target=deploy_target, profile=profile, as_json=as_json)
 
@@ -15030,9 +15126,9 @@ def _canary_status_impl(*, deploy_target: str, profile: str | None, as_json: boo
 
     if not as_json:
         click.echo(f"# canary status (apps): {uc_name}")
-    prod_v = get_prod_alias_version(uc_name)
-    prod_sha = get_version_git_sha(uc_name, prod_v) if prod_v else None
-    canary = find_latest_canary_version(uc_name)
+    prod_v = get_prod_alias_version(uc_name, profile=profile)
+    prod_sha = get_version_git_sha(uc_name, prod_v, profile=profile) if prod_v else None
+    canary = find_latest_canary_version(uc_name, profile=profile)
 
     if as_json:
         click.echo(json.dumps({
@@ -15060,6 +15156,61 @@ def _canary_status_impl(*, deploy_target: str, profile: str | None, as_json: boo
             click.echo(f"           promote ships {canary.git_sha[:12]} to prod")
     else:
         click.echo("  canary → (none deployed)")
+
+
+@canary.command("history")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile (~/.databrickscfg).")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit one JSON object (ok:false + error on failure).")
+def canary_history(profile: str | None, as_json: bool) -> None:
+    """Browse recorded Apps release metadata in Unity Catalog.
+
+    This ledger is not proof of the live App's runtime or health.
+    """
+    from apx_agent._apps_registry import list_apps_releases
+
+    with _json_cli_errors(as_json):
+        doc = _read_databricks_yml(Path.cwd())
+        _, base_app_name = _resolve_app_name(doc)
+        uc_name = _resolve_apps_uc_name(_read_apx_agent_config(), base_app_name)
+        if uc_name is None:
+            raise click.UsageError(
+                "history needs a UC model name; set registered_model in "
+                "[tool.apx.deploy] (or a non-placeholder catalog + schema)."
+            )
+        try:
+            releases = list_apps_releases(uc_name, profile=profile)
+        except Exception as e:
+            raise click.ClickException(f"Failed to read Apps release history: {e}") from e
+        caveat = (
+            "Recorded UC Apps ledger metadata, not proof of the live App's "
+            "runtime or health. Promote/rollback rebuild from a recorded commit; "
+            "they do not restore an immutable executable."
+        )
+        if as_json:
+            click.echo(json.dumps({
+                "ok": True, "target": "apps", "uc_name": uc_name,
+                "releases": releases, "caveat": caveat,
+            }))
+            return
+        click.echo(f"# Apps release history: {uc_name}")
+        click.echo(caveat)
+        if not releases:
+            click.echo("No Apps releases recorded.")
+            return
+        for release in releases:
+            aliases = ", ".join(f"@{alias}" for alias in release["aliases"]) or "-"
+            click.echo(
+                f"  version {release['version']}  {release['app_name'] or '?'}  "
+                f"role={release['role'] or '?'}  aliases={aliases}"
+            )
+            click.echo(
+                f"    commit={release['git_sha'] or '?'}  "
+                f"target={release['bundle_target'] or '?'}  "
+                f"dirty={release['git_dirty'] or '?'}  "
+                f"lock_sha256={release['lock_sha256'] or '?'}"
+            )
 
 
 @canary.command("deploy")
@@ -15207,7 +15358,7 @@ def _canary_promote_impl(*, deploy_target: str, canary_version: str | None, prof
             "--canary-version is required for --target apps (the deploy-time "
             "label, used to tear down the canary App after promote)."
         )
-    from apx_agent import find_latest_canary_version, get_prod_alias_version
+    from apx_agent import canary_app_name, find_latest_canary_version, get_prod_alias_version
     from apx_agent._canary_apps import _teardown_canary
 
     cwd = Path.cwd()
@@ -15222,12 +15373,19 @@ def _canary_promote_impl(*, deploy_target: str, canary_version: str | None, prof
             "non-placeholder catalog + schema)."
         )
 
-    # 1. Resolve the canary manifest + the commit it soaked.
-    canary = find_latest_canary_version(uc_name)
+    # 1. Resolve the manifest of the App the requested label names, so promote
+    #    ships THAT canary's commit — not whichever canary happens to be newest
+    #    (a concurrent canary would otherwise be promoted and torn down under a
+    #    different label).
+    requested_app_name = canary_app_name(base_app_name, canary_version)
+    canary = find_latest_canary_version(
+        uc_name, app_name=requested_app_name, profile=profile,
+    )
     if canary is None:
         raise click.ClickException(
-            f"No canary manifest found for {uc_name}. Deploy a canary first: "
-            "apx canary deploy --target apps --canary-version <v>."
+            f"No canary manifest found for App {requested_app_name} under "
+            f"{uc_name}. Deploy that canary first: apx canary deploy "
+            f"--target apps --canary-version {canary_version}."
         )
     if not canary.git_sha:
         raise click.ClickException(
@@ -15241,7 +15399,7 @@ def _canary_promote_impl(*, deploy_target: str, canary_version: str | None, prof
     def log(msg: str) -> None:
         click.echo(msg, err=True)
 
-    prev_prod_version = get_prod_alias_version(uc_name)
+    prev_prod_version = get_prod_alias_version(uc_name, profile=profile)
     new_version = _apps_deploy_prod_at_commit(
         cwd=cwd, uc_name=uc_name, prod_app_name=base_app_name, profile=profile,
         prod_target=prod_target, expected_sha=canary.git_sha,
@@ -15324,7 +15482,7 @@ def _canary_rollback_impl(*, deploy_target: str, to_version: str | None, profile
             "catalog + schema)."
         )
 
-    target_sha = get_version_git_sha(uc_name, to_version)
+    target_sha = get_version_git_sha(uc_name, to_version, profile=profile)
     if not target_sha:
         raise click.ClickException(
             f"Version {to_version} of {uc_name} has no recorded apx.apps.git_sha, "
@@ -15335,7 +15493,7 @@ def _canary_rollback_impl(*, deploy_target: str, to_version: str | None, profile
     def log(msg: str) -> None:
         click.echo(msg, err=True)
 
-    prev_prod_version = get_prod_alias_version(uc_name)
+    prev_prod_version = get_prod_alias_version(uc_name, profile=profile)
     new_version = _apps_deploy_prod_at_commit(
         cwd=cwd, uc_name=uc_name, prod_app_name=base_app_name, profile=profile,
         prod_target=prod_target, expected_sha=target_sha,

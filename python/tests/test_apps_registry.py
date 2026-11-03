@@ -316,6 +316,242 @@ def test_find_latest_canary_version_sha_none_when_tag_absent() -> None:
     assert cm is not None and cm.version == "2" and cm.git_sha is None
 
 
+@pytest.mark.parametrize("safe_keys", [False, True])
+@pytest.mark.parametrize("app_name, expected", [("app-old", "3"), ("app-new", "10"), ("missing", None)])
+def test_find_canary_filters_exact_app_name(
+    safe_keys: bool, app_name: str, expected: str | None,
+) -> None:
+    from apx_agent._apps_registry import find_latest_canary_version
+
+    versions = [
+        _FakeModelVersion("3", {"apx.serving": "apps", "apx.apps.role": "canary", "apx.apps.app_name": "app-old"}),
+        _FakeModelVersion("10", {"apx.serving": "apps", "apx.apps.role": "canary", "apx.apps.app_name": "app-new"}),
+        _FakeModelVersion("11", {"apx.serving": "serving", "apx.apps.role": "canary", "apx.apps.app_name": "app-old"}),
+        _FakeModelVersion("12", {"apx.apps.role": "canary", "apx.apps.app_name": "app-old"}),
+        _FakeModelVersion("13", {"apx.serving": "apps", "apx.apps.role": "prod", "apx.apps.app_name": "app-old"}),
+    ]
+    if safe_keys:
+        for version in versions:
+            version.tags = {uc_safe_tag_key(key): value for key, value in version.tags.items()}
+    result = find_latest_canary_version(
+        "main.agents.my_app", app_name=app_name,
+        mlflow_client=_FakeQueryClient(versions),
+    )
+    assert (result.version if result else None) == expected
+
+
+@pytest.mark.parametrize("safe_keys", [False, True])
+def test_list_apps_releases_returns_sorted_json_metadata(safe_keys: bool) -> None:
+    import json
+
+    from apx_agent._apps_registry import list_apps_releases
+
+    versions = [
+        _FakeModelVersion("2", {"apx.serving": "apps", "apx.apps.app_name": "app-old"}),
+        _FakeModelVersion("11", {"apx.serving": "serving", "apx.apps.role": "canary"}),
+        _FakeModelVersion("12", {"apx.apps.role": "canary"}),
+        _FakeModelVersion("10", {
+            "apx.serving": "apps",
+            "apx.apps.app_name": "app-new",
+            "apx.apps.role": "canary",
+            "apx.apps.git_sha": "abc123",
+            "apx.apps.bundle_target": "canary-new",
+            "apx.git_dirty": "false",
+            "apx.lock_sha256": "deadbeef",
+        }),
+    ]
+    versions[-1].aliases = ["candidate"]
+    if safe_keys:
+        for version in versions:
+            version.tags = {uc_safe_tag_key(key): value for key, value in version.tags.items()}
+    releases = list_apps_releases(
+        "main.agents.my_app", mlflow_client=_FakeQueryClient(versions),
+    )
+    assert json.loads(json.dumps(releases)) == [
+        {
+            "version": "10", "app_name": "app-new", "role": "canary",
+            "git_sha": "abc123", "bundle_target": "canary-new",
+            "git_dirty": "false", "lock_sha256": "deadbeef", "aliases": ["candidate"],
+        },
+        {
+            "version": "2", "app_name": "app-old", "role": None,
+            "git_sha": None, "bundle_target": None,
+            "git_dirty": None, "lock_sha256": None, "aliases": [],
+        },
+    ]
+    assert list_apps_releases(
+        "main.agents.my_app", mlflow_client=_FakeQueryClient([]),
+    ) == []
+
+
+@pytest.mark.parametrize("helper_name", ["find_latest_canary_version", "list_apps_releases"])
+@pytest.mark.parametrize("profile", [None, "release-profile"])
+@pytest.mark.parametrize("failure_at", [None, "search", "get"])
+def test_release_readers_use_profile_and_propagate_errors(
+    monkeypatch: pytest.MonkeyPatch, helper_name: str,
+    profile: str | None, failure_at: str | None,
+) -> None:
+    import mlflow
+    from unittest.mock import Mock
+
+    from apx_agent import _apps_registry
+
+    helper = vars(_apps_registry)[helper_name]
+    old_tracking = mlflow.get_tracking_uri()
+    old_registry = mlflow.get_registry_uri()
+    expected_tracking = f"databricks://{profile}" if profile else "databricks"
+    expected_registry = f"databricks-uc://{profile}" if profile else "databricks-uc"
+    version = _FakeModelVersion("2", {"apx.serving": "apps", "apx.apps.role": "canary"})
+
+    def search_versions(filter_string: str) -> list:
+        assert filter_string == "name='main.agents.my_app'"
+        assert mlflow.get_tracking_uri() == expected_tracking
+        assert mlflow.get_registry_uri() == expected_registry
+        if failure_at == "search":
+            raise RuntimeError("PERMISSION_DENIED search")
+        # Search summaries may omit tags; the reader must fetch full metadata.
+        return [types.SimpleNamespace(version="2")]
+
+    def get_version(name: str, version_number: str) -> Any:
+        assert name == "main.agents.my_app" and version_number == "2"
+        assert mlflow.get_tracking_uri() == expected_tracking
+        assert mlflow.get_registry_uri() == expected_registry
+        if failure_at == "get":
+            raise RuntimeError("PERMISSION_DENIED get")
+        return version
+
+    client = Mock(search_model_versions=search_versions, get_model_version=get_version)
+
+    def make_client() -> Any:
+        assert mlflow.get_tracking_uri() == expected_tracking
+        assert mlflow.get_registry_uri() == expected_registry
+        return client
+
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", make_client)
+    if failure_at:
+        with pytest.raises(RuntimeError, match=f"PERMISSION_DENIED {failure_at}"):
+            helper("main.agents.my_app", profile=profile)
+    else:
+        result = helper("main.agents.my_app", profile=profile)
+        if helper_name == "find_latest_canary_version":
+            assert result.version == "2"
+        else:
+            assert result[0]["version"] == "2"
+    assert mlflow.get_tracking_uri() == old_tracking
+    assert mlflow.get_registry_uri() == old_registry
+
+
+@pytest.mark.parametrize("profile", [None, "release-profile"])
+@pytest.mark.parametrize("helper_name", [
+    "get_prod_alias_version", "set_prod_alias_version",
+    "get_latest_prod_version", "get_version_git_sha",
+])
+def test_alias_and_sha_helpers_use_profile_uris(
+    monkeypatch: pytest.MonkeyPatch, helper_name: str, profile: str | None,
+) -> None:
+    """The canary CLI reads/writes @prod and provenance tags under an explicit
+    ``--profile``; each helper opens its own registry context, so the profile
+    has to reach it directly rather than relying on an outer context."""
+    import mlflow
+
+    from apx_agent import _apps_registry
+
+    expected_tracking = f"databricks://{profile}" if profile else "databricks"
+    expected_registry = f"databricks-uc://{profile}" if profile else "databricks-uc"
+    seen: list[str] = []
+
+    class _UriAssertingClient:
+        def _record(self) -> None:
+            assert mlflow.get_tracking_uri() == expected_tracking
+            assert mlflow.get_registry_uri() == expected_registry
+            seen.append("called")
+
+        def get_model_version_by_alias(self, name: str, alias: str) -> Any:
+            self._record()
+            return _FakeModelVersion("7", {})
+
+        def set_registered_model_alias(self, name: str, alias: str, version: str) -> None:
+            self._record()
+
+        def search_model_versions(self, filter_string: str) -> list:
+            self._record()
+            return [_FakeModelVersion("7", {})]
+
+        def get_model_version(self, name: str, version: str) -> Any:
+            self._record()
+            return _FakeModelVersion(
+                "7", {"apx.apps.role": "prod", "apx.apps.git_sha": "abc123"},
+            )
+
+    client = _UriAssertingClient()
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: client)
+    args: list[Any] = ["main.agents.my_app"]
+    if helper_name == "set_prod_alias_version":
+        args.append("7")
+    elif helper_name == "get_version_git_sha":
+        args.append("7")
+
+    result = vars(_apps_registry)[helper_name](*args, profile=profile)
+
+    assert seen, f"{helper_name} never reached the registry client"
+    if helper_name == "get_version_git_sha":
+        assert result == "abc123"
+    elif helper_name != "set_prod_alias_version":
+        assert result == "7"
+
+
+@pytest.mark.parametrize("helper_name", ["find_latest_canary_version", "list_apps_releases"])
+def test_release_readers_exhaust_pages_before_selecting(
+    monkeypatch: pytest.MonkeyPatch, helper_name: str,
+) -> None:
+    import mlflow
+    from unittest.mock import Mock
+
+    from apx_agent import _apps_registry
+
+    class _Page(list):
+        token: str | None = None
+
+    calls: list[dict[str, Any]] = []
+
+    def search_versions(filter_string: str, **kwargs: Any) -> list:
+        assert mlflow.get_registry_uri() == "databricks-uc://release-profile"
+        calls.append({"filter": filter_string, **kwargs})
+        if not kwargs:
+            page = _Page([types.SimpleNamespace(version="2")])
+            page.token = "next-exact-token"
+            return page
+        assert kwargs == {"page_token": "next-exact-token"}
+        return _Page([types.SimpleNamespace(version="10"), types.SimpleNamespace(version="11")])
+
+    versions = {
+        "2": _FakeModelVersion("2", {"apx.serving": "apps", "apx.apps.app_name": "first-app"}),
+        "10": _FakeModelVersion("10", {
+            "apx.serving": "apps", "apx.apps.role": "canary",
+            "apx.apps.app_name": "second-page-app", "apx.apps.git_sha": "second-sha",
+        }),
+        "11": _FakeModelVersion("11", {"apx.serving": "serving"}),
+    }
+    client = Mock(
+        search_model_versions=search_versions,
+        get_model_version=lambda name, version: versions[version],
+    )
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: client)
+    kwargs: dict[str, Any] = {"profile": "release-profile"}
+    if helper_name == "find_latest_canary_version":
+        kwargs["app_name"] = "second-page-app"
+    result = vars(_apps_registry)[helper_name]("main.agents.my_app", **kwargs)
+    if helper_name == "find_latest_canary_version":
+        assert result is not None and result.version == "10" and result.git_sha == "second-sha"
+    else:
+        assert [release["version"] for release in result] == ["10", "2"]
+        assert result[0]["app_name"] == "second-page-app"
+    assert calls == [
+        {"filter": "name='main.agents.my_app'"},
+        {"filter": "name='main.agents.my_app'", "page_token": "next-exact-token"},
+    ]
+
+
 def test_prod_alias_get_and_set() -> None:
     from apx_agent._apps_registry import get_prod_alias_version, set_prod_alias_version
 
