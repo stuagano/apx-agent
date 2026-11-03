@@ -223,6 +223,18 @@ def test_runtime_config_preserves_explicit_demo_diagnostic(tools_module, monkeyp
     assert _runtime_config([tools_module.alpha])["DEMO_MODE_EFFECTIVE"] is True
 
 
+def test_connection_status_probes_live_when_effective_flag_is_false(tools_module, monkeypatch):
+    import apx_agent._ui_tools as ui_tools
+
+    monkeypatch.setattr(ui_tools, "WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setattr(tools_module, "DEMO_MODE", True)
+    monkeypatch.setattr(tools_module, "DEMO_MODE_EFFECTIVE", False, raising=False)
+    config = ui_tools._runtime_config([tools_module.alpha])
+    status = ui_tools._connection_status([tools_module.alpha], config)
+    assert status["mode"] == "live"
+    assert status["connected"] is True
+
+
 # ── replace_function ─────────────────────────────────────────────────────────
 
 
@@ -378,7 +390,7 @@ console.log("RESULT:" + JSON.stringify(R));
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_tools_browser_demo_branch_matches_config_fallback(tmp_path: Path):
+def test_tools_browser_demo_branch_distinguishes_declared_from_effective(tmp_path: Path):
     prelude = """
 global.document = { getElementById: () => ({ addEventListener() {},
   classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' }) };
@@ -391,8 +403,9 @@ document.getElementById = (id) => id === 'main' ? main : (id === 'banner' ? {} :
 current = { name: 'alpha', source: '_demo_mode()', signature: '()', module: 'probe' };
 const results = [];
 for (const [config, expected] of [
-  [{ DEMO_MODE: true }, 'synthetic (demo)'],
-  [{ DEMO_MODE: false }, 'live UC/SQL'],
+  [{}, 'undetermined'],
+  [{ DEMO_MODE: true }, 'undetermined'],
+  [{ DEMO_MODE: false }, 'undetermined'],
   [{ DEMO_MODE: true, DEMO_MODE_EFFECTIVE: false }, 'live UC/SQL'],
   [{ DEMO_MODE: false, DEMO_MODE_EFFECTIVE: true }, 'synthetic (demo)'],
 ]) {
@@ -408,7 +421,7 @@ console.log('RESULT:' + JSON.stringify(results));
     assert proc.returncode == 0, proc.stderr[-2000:]
     lines = [line for line in proc.stdout.splitlines() if line.startswith("RESULT:")]
     assert lines, proc.stdout[-2000:]
-    assert json.loads(lines[-1][len("RESULT:"):]) == [True, True, True, True]
+    assert json.loads(lines[-1][len("RESULT:"):]) == [True, True, True, True, True]
 
 
 @pytest.mark.asyncio

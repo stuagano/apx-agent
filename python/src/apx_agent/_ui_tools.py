@@ -1050,7 +1050,9 @@ function renderDetail() {
     return;
   }
   const t = current;
-  const demo = DATA.config.DEMO_MODE_EFFECTIVE ?? DATA.config.DEMO_MODE;
+  // A declared flag cannot establish what a dynamic _demo_mode() callback does.
+  // Never execute that callback for inspection; require a published effective flag.
+  const demo = DATA.config.DEMO_MODE_EFFECTIVE;
   const parts = [];
 
   parts.push('<h1>' + esc(t.name) + '</h1>');
@@ -1108,9 +1110,12 @@ function renderDetail() {
   if (t.source.indexOf('_demo_mode()') !== -1) {
     parts.push('<details><summary>Both branches — this function short-circuits on <code>_demo_mode()</code></summary>' +
       '<div class="body"><p style="color:var(--apx-muted);font-size:12px;line-height:1.6">' +
-      'This deployment is currently using the ' +
-      '<strong>' + (demo ? 'synthetic (demo)' : 'live UC/SQL') + '</strong> branch.' +
-      (demo ? '' : ' The tables it reads are shown in Runtime below.') +
+      (demo === undefined
+        ? 'The effective branch is <strong>undetermined</strong>; publish a Boolean ' +
+          '<code>DEMO_MODE_EFFECTIVE</code> constant to identify it without invoking callbacks.'
+        : 'This deployment is currently using the <strong>' +
+          (demo ? 'synthetic (demo)' : 'live UC/SQL') + '</strong> branch.' +
+          (demo ? '' : ' The tables it reads are shown in Runtime below.')) +
       '</p></div></details>');
   }
 
@@ -1129,7 +1134,8 @@ function renderDetail() {
 
   if (t.demo_source) {
     parts.push('<details><summary>' + esc(t.demo_name) + ' — ' +
-      (demo ? 'the branch this deployment runs' : 'not executed in this deployment') +
+      (demo === undefined ? 'effective branch undetermined' :
+        (demo ? 'the branch this deployment runs' : 'not executed in this deployment')) +
       '</summary><div class="body">' + codeBlock(t.demo_source, 1) + '</div></details>');
   }
 
