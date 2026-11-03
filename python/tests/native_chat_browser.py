@@ -89,6 +89,122 @@ def submit(page, text="record"):
     page.locator("button[type=submit]").click()
 
 
+def test_native_result_button_opens_recorded_inline_answer(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    submit(page)
+    button = page.get_by_role("button", name="View result", exact=True)
+    expect(button).to_be_visible()
+    expect(button).to_be_enabled()
+    expect(page.locator(".native-result-panel")).to_be_hidden()
+    button.click()
+    panel = page.get_by_role("region", name="Run result", exact=True)
+    expect(panel).to_be_visible()
+    expect(panel.locator(".native-result-answer")).to_have_text("Recorded proof")
+    expect(panel).to_contain_text("Approval status not recorded")
+    assert button.get_attribute("aria-expanded") == "true"
+    assert page.locator("[role=dialog]").count() == 0
+    button.click()
+    expect(panel).to_be_hidden()
+
+
+def test_native_result_packets_are_readable_without_step_events(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    attack = '<img src=x onerror="window.injected=1">'
+    state["output"]["messages"] = [{"type": "ai", "content": "", "additional_kwargs": {
+        "apx_data_parts": [{"kind": "data", "data": {
+            "recommendation": "Keep the recorded option", "evidence": [{"source": attack}],
+            "approval_status": "pending"}}]}}]
+    submit(page)
+    page.get_by_role("button", name="View result", exact=True).click()
+    panel = page.locator(".native-result-panel")
+    expect(panel).to_contain_text("Keep the recorded option")
+    panel.locator("summary", has_text="evidence").click()
+    expect(panel).to_contain_text(attack)
+    expect(panel).to_contain_text("approval_status pending")
+    expect(page.locator(".native-status")).to_have_text("Completed")
+    assert page.locator(".native-recorded-output").get_attribute("open") is None
+    assert panel.locator("img, [onerror]").count() == 0
+    assert page.evaluate("window.injected") is None
+    page.reload()
+    page.get_by_role("button", name="View result", exact=True).click()
+    expect(page.locator(".native-result-panel")).to_contain_text("Keep the recorded option")
+    assert len(posts) == 1
+
+
+def test_native_result_buttons_keep_each_runs_recorded_answer(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    submit(page)
+    expect(page.locator(".native-status")).to_have_text("Completed")
+    state["output"]["messages"][0]["content"] = "Second result"
+    submit(page, "next")
+    expect(page.locator(".native-status").last).to_have_text("Completed")
+    buttons = page.get_by_role("button", name="View result", exact=True)
+    buttons.first.click()
+    expect(page.locator(".native-result-panel").first).to_be_visible()
+    expect(page.locator(".native-result-panel").first.locator(".native-result-answer")).to_have_text("Recorded proof")
+    expect(page.locator(".native-result-panel").last).to_be_hidden()
+    buttons.last.click()
+    expect(page.locator(".native-result-panel").last.locator(".native-result-answer")).to_have_text("Second result")
+
+
+def test_native_result_structured_json_stays_secondary(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    data = {"recommendation": "Recorded recommendation", "evidence": {"source": "warehouse"}}
+    state["output"]["messages"] = [{"type": "ai", "content": json.dumps(data), "additional_kwargs": {
+        "apx_data_parts": [{"kind": "data", "data": data}]}}]
+    submit(page)
+    page.get_by_role("button", name="View result", exact=True).click()
+    panel = page.locator(".native-result-panel")
+    expect(panel.locator(".native-result-answer")).to_have_count(0)
+    expect(panel.locator(".native-result-packet")).to_contain_text("recommendation Recorded recommendation")
+    assert panel.locator(".native-recorded-output").get_attribute("open") is None
+
+
+def test_native_result_multiple_typed_messages_keep_only_prose_first(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"] = [
+        {"type": "ai", "content": json.dumps(data), "additional_kwargs": {
+            "apx_data_parts": [{"kind": "data", "data": data}]}}
+        for data in [{"first": 1}, {"second": 2}]] + [{"type": "ai", "content": "Recorded conclusion"}]
+    submit(page)
+    page.get_by_role("button", name="View result", exact=True).click()
+    expect(page.locator(".native-result-answer")).to_have_text("Recorded conclusion")
+    expect(page.locator(".native-result-packet")).to_have_count(2)
+
+
+def test_native_whitespace_answer_with_replies_does_not_throw(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["output"]["messages"] = [{"type": "ai", "content": "   ", "additional_kwargs": {
+        "apx_answer": True, "apx_replies": ["Continue"]}}]
+    submit(page)
+    expect(page.locator(".native-status")).to_have_text("Completed — no recorded result")
+    expect(page.locator(".native-quick-replies button")).to_have_text("Continue")
+    expect(page.get_by_role("button", name="View result", exact=True)).to_be_disabled()
+
+
+def test_native_result_approval_is_separate_from_completion(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["output"].update(status="interrupted", approval_required={"tool_name": "publish", "args": {"target": "draft"}})
+    submit(page)
+    page.get_by_role("button", name="View result", exact=True).click()
+    panel = page.locator(".native-result-panel")
+    expect(panel).to_contain_text("Approval required")
+    expect(panel).to_contain_text("publish")
+    expect(page.locator(".native-status")).to_contain_text("Interrupted")
+    expect(panel).not_to_contain_text("Approved")
+
+
+@pytest.mark.parametrize("output", [None, {"status": "completed", "messages": []},
+                                    {"status": "completed", "messages": [{"type": "ai", "content": "   "}]}])
+def test_native_empty_result_is_not_presented_as_an_answer(browser_chat, output):
+    page, posts, reads, state, event = browser_chat
+    state["output"] = output
+    submit(page)
+    expect(page.get_by_role("button", name="View result", exact=True)).to_be_disabled()
+    expect(page.locator(".native-result-panel")).to_be_hidden()
+    expect(page.locator(".native-status")).to_contain_text("result")
+
+
 def test_native_question_and_stable_session(browser_chat):
     page, posts, reads, state, event = browser_chat
     submit(page)
@@ -118,6 +234,11 @@ def test_native_terminal_states(browser_chat, status):
     submit(page)
     expect(page.locator(".native-status")).to_contain_text(status.capitalize())
     expect(page.locator(".msg.assistant")).to_have_count(0)
+    button = page.get_by_role("button", name="View result", exact=True)
+    if status == "failed":
+        expect(button).to_be_disabled()
+    else:
+        expect(button).to_be_enabled()
     assert len(posts) == 1
 
 
@@ -584,6 +705,8 @@ def test_reload_does_not_show_inaccessible_cached_content(browser_chat, failure)
     expect(page.locator(".msg.assistant")).to_have_count(0)
     expect(page.locator(".msg.user")).to_have_count(0)
     expect(page.locator(".native-event")).to_have_count(0)
+    expect(page.get_by_role("button", name="View result", exact=True)).to_be_disabled()
+    expect(page.locator(".native-result-panel")).to_be_empty()
     assert len(posts) == 1
     retry = page.get_by_role("button", name="Retry same request", exact=True)
     retry.dispatch_event("click")
