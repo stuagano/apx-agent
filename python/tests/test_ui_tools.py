@@ -165,6 +165,60 @@ def client(app: FastAPI) -> AsyncClient:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("declared", [True, False, None])
+async def test_unknown_effective_mode_is_not_inferred_or_probed(client, tools_module, monkeypatch, declared, tmp_path):
+    from unittest.mock import Mock
+    import apx_agent._ui_tools as ui_tools
+
+    callback = Mock(return_value=False)
+    workspace = Mock(side_effect=AssertionError("unknown mode must not probe workspace"))
+    if declared is None:
+        monkeypatch.delattr(tools_module, "DEMO_MODE")
+    else:
+        monkeypatch.setattr(tools_module, "DEMO_MODE", declared)
+    monkeypatch.delattr(tools_module, "DEMO_MODE_EFFECTIVE", raising=False)
+    monkeypatch.setattr(tools_module, "_demo_mode", callback, raising=False)
+    monkeypatch.setattr(ui_tools, "WorkspaceClient", workspace)
+    response = await client.get("/_apx/tools/list")
+    assert response.status_code == 200
+    status = response.json()["connection"]
+    assert status["mode"] == "unknown"
+    assert status["connected"] is False
+    assert "undetermined" in status["headline"]
+    callback.assert_not_called()
+    workspace.assert_not_called()
+
+    assert NODE is not None, "Node is required to verify unknown-mode rendering"
+    prelude = """
+global.document = { getElementById: () => ({ addEventListener() {},
+  classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' }) };
+global.window = {};
+global.fetch = async () => ({ ok: false, status: 500, text: async () => '' });
+"""
+    checks = """
+const main = { innerHTML: '' };
+const connectionBanner = { innerHTML: '' };
+document.getElementById = (id) => id === 'main' ? main : (id === 'banner' ? connectionBanner : null);
+current = DATA.tools[0];
+renderConnectionBanner();
+renderDetail();
+console.log('RESULT:' + JSON.stringify({ banner: connectionBanner.innerHTML, detail: main.innerHTML }));
+"""
+    path = tmp_path / "unknown_connection_probe.js"
+    path.write_text(prelude + "\n" + _tools_page_script() + "\nDATA = " + response.text + ";\n" + checks)
+    proc = subprocess.run([NODE, str(path)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    lines = [line for line in proc.stdout.splitlines() if line.startswith("RESULT:")]
+    assert lines, proc.stdout[-2000:]
+    rendered = json.loads(lines[-1][len("RESULT:"):])
+    for html in rendered.values():
+        assert "undetermined" in html
+        assert "DEMO —" not in html
+        assert "LIVE configured" not in html
+        assert "connected ·" not in html
+
+
+@pytest.mark.asyncio
 async def test_tools_list_exposes_only_safe_diagnostic_config(client, tools_module, monkeypatch):
     import apx_agent._ui_tools as ui_tools
 
@@ -209,6 +263,7 @@ def test_demo_constant_preserves_connection_diagnostic_without_callback(tools_mo
     workspace = Mock(side_effect=AssertionError("demo must not probe workspace"))
     monkeypatch.setattr(ui_tools, "WorkspaceClient", workspace)
     monkeypatch.setattr(tools_module, "DEMO_MODE", True)
+    monkeypatch.setattr(tools_module, "DEMO_MODE_EFFECTIVE", True, raising=False)
     config = ui_tools._runtime_config([tools_module.alpha])
     status = ui_tools._connection_status([tools_module.alpha], config)
     assert status["mode"] == "demo"
@@ -445,6 +500,7 @@ async def test_tools_list_includes_connection_status(
 ):
     import apx_agent._ui_tools as ui_tools
 
+    monkeypatch.setattr(tools_module, "DEMO_MODE_EFFECTIVE", False, raising=False)
     monkeypatch.setattr(ui_tools, "WorkspaceClient", _FakeWorkspaceClient)
     r = await client.get("/_apx/tools/list")
     assert r.status_code == 200

@@ -212,10 +212,9 @@ def _context_status(request: Request) -> dict[str, Any]:
 
 
 def _connection_status(functions: list[Any], config: dict[str, Any]) -> dict[str, Any]:
-    # ``DEMO_MODE_EFFECTIVE`` is only present when the tool module publishes it
-    # as a constant; the declared ``DEMO_MODE`` flag is the fallback, so a demo
-    # deployment is still reported as demo instead of being probed as live.
-    demo = bool(config.get("DEMO_MODE_EFFECTIVE", config.get("DEMO_MODE")))
+    # Declared configuration does not establish a dynamic callback's result.
+    # Inspect only the published effective flag; never invoke callbacks.
+    demo = config.get("DEMO_MODE_EFFECTIVE")
     catalog = str(
         config.get("SA_CATALOG")
         or config.get("CATALOG")
@@ -227,6 +226,19 @@ def _connection_status(functions: list[Any], config: dict[str, Any]) -> dict[str
         or ""
     ).strip()
     warehouse = str(config.get("WAREHOUSE_ID") or "").strip()
+    if demo is None:
+        return {
+            "mode": "unknown",
+            "connected": False,
+            "workspace": "",
+            "catalog": catalog,
+            "schema": schema,
+            "warehouse_id": warehouse,
+            "tables": [],
+            "headline": "Effective branch undetermined — Databricks UC not probed",
+            "detail": "Publish a Boolean DEMO_MODE_EFFECTIVE constant to identify the effective branch.",
+            "error": "",
+        }
     if demo:
         detail = []
         if catalog:
@@ -1004,7 +1016,7 @@ function renderConnectionBanner() {
     clearBanner();
     return;
   }
-  const kind = c.connected ? 'ok' : (c.mode === 'demo' ? 'warn' : 'err');
+  const kind = c.connected ? 'ok' : (c.mode === 'live' ? 'err' : 'warn');
   const bits = [];
   if (c.detail) bits.push(esc(c.detail));
   if (c.error) bits.push('reason: ' + esc(c.error));
@@ -1063,7 +1075,9 @@ function renderDetail() {
     ? 'connected · ' + [conn.workspace && conn.workspace.replace('https://', ''), conn.catalog, conn.schema].filter(Boolean).join(' · ')
     : (conn.mode === 'demo'
         ? 'DEMO — Databricks UC not connected'
-        : 'LIVE configured — Databricks UC unreachable');
+        : (conn.mode === 'live'
+            ? 'LIVE configured — Databricks UC unreachable'
+            : 'Effective branch undetermined — Databricks UC not probed'));
   parts.push('<div class="chips">' +
     '<span class="chip ' + (conn.connected ? 'ok' : (conn.mode === 'demo' ? 'warn' : 'warn')) + '">' + esc(connText) + '</span>' +
     '<span class="chip">' + esc(DATA.how === 'agent' ? 'registered' : 'recovered from source') + '</span>' +
