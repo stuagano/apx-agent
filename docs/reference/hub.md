@@ -43,7 +43,9 @@ publish_to_supervisor(
 )
 ```
 
-User identity threads from the supervisor down through your sub-agent automatically — when the supervisor is called from AI Playground, the user's identity flows to the data-triage agent, scoped to *its* declared resources. No SP secrets, no CAN_USE grants between apps; the platform handles the chain.
+User identity threads from the supervisor down through your sub-agent — when the supervisor is called from AI Playground, the user's identity flows to the data-triage agent, and the hop runs under that user's Unity Catalog grants rather than a service principal's. No SP secrets are exchanged.
+
+Two caveats, both from [the A2A trust model](../design/a2a-trust-model.md): an app-to-app `CAN_USE` grant may still be required as *infrastructure reachability* (one app's SP opening a connection to its peer) even though it is not the access-control boundary, and long-running or disconnected work can exceed the lifetime of a forwarded user token — see that document for which patterns stay inside per-hop OBO.
 
 `extra_tool_kwargs={...}` is the escape hatch for additional `Tool` fields if the preview SDK surface evolves before this helper is updated.
 

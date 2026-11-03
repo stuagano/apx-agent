@@ -33,6 +33,15 @@ def _to_sql_literal(value: Any, type_name: str) -> str:
         return "NULL"
     type_upper = type_name.upper()
     if type_upper in ("BOOLEAN",):
+        # Python truthiness would render the string "false" as TRUE and 0/[]/{}
+        # as FALSE — a silently inverted or coerced predicate inside a governed
+        # UC call. Only a real bool is a BOOLEAN argument; anything else is a
+        # legible argument error the agent should see and retry.
+        if not isinstance(value, bool):
+            raise ToolError(
+                f"BOOLEAN parameter expects true or false, got {type(value).__name__}. "
+                "Pass a JSON boolean, not a string or number."
+            )
         return "TRUE" if value else "FALSE"
     if type_upper in ("STRING", "CHAR", "VARCHAR", "TEXT"):
         return sql_str_literal(str(value))
@@ -330,6 +339,17 @@ def uc_function_tool(
 
         # Build positional SQL args from param dict
         cached_params: list[dict[str, Any]] = _cache["parameters"]
+        known_names = {p["name"] for p in cached_params}
+        unknown = set(params) - known_names
+        if unknown:
+            raise ToolError(
+                f"Unknown parameter(s) for UC function {function_name!r}: "
+                f"{', '.join(sorted(unknown))}. "
+                f"Expected: {', '.join(p['name'] for p in cached_params) or '(none)'}."
+            )
+        # Preserve the existing omitted-argument behavior (NULL). Do not require
+        # every signature parameter here: older baked signatures do not carry
+        # enough metadata to distinguish required parameters from defaults.
         sql_args = [
             _to_sql_literal(params.get(p["name"]), p["type_name"])
             for p in cached_params

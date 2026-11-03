@@ -175,27 +175,28 @@ def _demo_twin(fn: Any, demo_module: Any | None) -> Any | None:
 
 
 def _runtime_config(functions: list[Any]) -> dict[str, Any]:
-    """The scalar module-level constants bound in the tool modules.
+    """Read only explicitly supported diagnostic constants, never callbacks.
 
-    Derived from the modules rather than a hardcoded key list, so a renamed or
-    added setting shows up (or disappears) without this file drifting.
+    Tool modules can hold credentials under any name. Uppercase/scalar is not
+    a disclosure policy, so arbitrary constants must stay out of the payload.
     """
+    safe_keys = {
+        "CATALOG", "SCHEMA", "SA_CATALOG", "SA_SCHEMA", "WAREHOUSE_ID",
+        "DEMO_MODE", "DEMO_MODE_EFFECTIVE",
+    }
     out: dict[str, Any] = {}
     for mod_name in sorted({getattr(fn, "__module__", "") for fn in functions}):
         module = sys.modules.get(mod_name)
         if module is None:
             continue
-        for name, value in vars(module).items():
-            if name.startswith("_") or not name.isupper():
-                continue
-            if isinstance(value, (str, int, float, bool)) and name not in out:
+        for name in sorted(safe_keys):
+            value = vars(module).get(name)
+            if name in ("DEMO_MODE", "DEMO_MODE_EFFECTIVE"):
+                safe_value = type(value) is bool
+            else:
+                safe_value = type(value) is str
+            if safe_value and name not in out:
                 out[name] = value
-        demo_flag = getattr(module, "_demo_mode", None)
-        if callable(demo_flag) and "DEMO_MODE_EFFECTIVE" not in out:
-            try:
-                out["DEMO_MODE_EFFECTIVE"] = bool(demo_flag())
-            except Exception:  # noqa: BLE001 — defensive
-                pass
     return dict(sorted(out.items()))
 
 
@@ -211,7 +212,10 @@ def _context_status(request: Request) -> dict[str, Any]:
 
 
 def _connection_status(functions: list[Any], config: dict[str, Any]) -> dict[str, Any]:
-    demo = bool(config.get("DEMO_MODE_EFFECTIVE"))
+    # ``DEMO_MODE_EFFECTIVE`` is only present when the tool module publishes it
+    # as a constant; the declared ``DEMO_MODE`` flag is the fallback, so a demo
+    # deployment is still reported as demo instead of being probed as live.
+    demo = bool(config.get("DEMO_MODE_EFFECTIVE", config.get("DEMO_MODE")))
     catalog = str(
         config.get("SA_CATALOG")
         or config.get("CATALOG")
@@ -223,10 +227,6 @@ def _connection_status(functions: list[Any], config: dict[str, Any]) -> dict[str
         or ""
     ).strip()
     warehouse = str(config.get("WAREHOUSE_ID") or "").strip()
-    table_candidates = []
-    for key in sorted(config):
-        if key.endswith("_TABLE") and isinstance(config.get(key), str) and config.get(key):
-            table_candidates.append(str(config[key]))
     if demo:
         detail = []
         if catalog:
@@ -1050,7 +1050,7 @@ function renderDetail() {
     return;
   }
   const t = current;
-  const demo = DATA.config.DEMO_MODE_EFFECTIVE;
+  const demo = DATA.config.DEMO_MODE_EFFECTIVE ?? DATA.config.DEMO_MODE;
   const parts = [];
 
   parts.push('<h1>' + esc(t.name) + '</h1>');

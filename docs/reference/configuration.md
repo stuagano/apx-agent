@@ -116,7 +116,7 @@ control.
 
 **Trust controls (environment variables):**
 
-- `APX_TOOLS_ALLOWED_HOSTS` — comma-separated host allow-list for supported HTTP/OpenAPI/MCP factory destinations. An out-of-list host is a hard error before network discovery. Unset means no host restriction.
+- `APX_TOOLS_ALLOWED_HOSTS` — comma-separated host allow-list for supported HTTP/OpenAPI/MCP factory destinations. An out-of-list host is a hard error before network discovery. Unset means no host restriction. This checks the **declared** host only: OpenAPI spec fetches (`http_tools.py`) and MCP client sessions (`mcp_consume.py`) follow redirects, so an allow-listed host can still redirect the request to another host. Treat this as a configuration guard against mistyped or unapproved destinations, not as a network sandbox or SSRF boundary.
 - `APX_DEV_UI_TOKEN` — optional shared secret for **non-browser** Dev UI writes (CI / curl). On deployed Apps, browser writes are authorized by Apps SSO (`X-Forwarded-Access-Token`). When this token is set, `X-APX-Dev-Token` (or `?token=`) is also accepted. Locally (not a deployed App), writes are allowed without either.
 
 ### `document_extract_tool` — parse a volume file, extract a schema
