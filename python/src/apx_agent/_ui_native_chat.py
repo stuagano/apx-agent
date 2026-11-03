@@ -44,6 +44,20 @@ NATIVE_CHAT_SCRIPT = r"""
 .native-execution-card {border: 1px solid var(--apx-border); border-radius: 8px; padding: 12px; margin: 8px 0; overflow-wrap: anywhere;}
 .native-event, .native-output, .native-input-schema pre {white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto;}
 .native-validation {color: var(--apx-err);}
+.native-status-row {display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 12px 0;}
+.native-result-button {border: 1px solid var(--apx-border); border-radius: 6px; padding: 7px 14px; font: inherit; font-weight: 600; cursor: pointer;}
+.native-result-button:disabled {opacity: .5; cursor: default;}
+.native-result-panel {border: 1px solid var(--apx-border); border-radius: 8px; padding: 16px; margin-bottom: 12px; overflow-wrap: anywhere; min-width: 0;}
+.native-result-panel h3 {margin: 0 0 12px;}
+.native-result-panel h4 {margin: 16px 0 8px;}
+.native-result-panel .native-tree-table {display: block; max-width: 100%; overflow-x: auto;}
+.native-result-answer {white-space: pre-wrap;}
+.native-result-packet {margin: 12px 0;}
+@media (max-width: 700px) {
+  .main:has(.native-status-row) {flex-direction: column; overflow-y: auto;}
+  .main:has(.native-status-row) .chat-panel {flex: 1 0 70vh;}
+  .main:has(.native-status-row) .right-panel {width: 100%; min-width: 0; max-width: none; flex: 0 0 40vh;}
+}
 </style>
 <script>
 function apxNativeChat({form, input, send, container, bubble, render}) {
@@ -53,7 +67,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
   let busy = false;
   let restoring = false;
   let answered = false; // the Events timeline already has this run's assistant row
-  let answer, status, eventLog, controls, cards;
+  let answer, status, eventLog, controls, cards, resultButton, resultPanel;
   let schema, ready = false;
   const validation = document.createElement('div');
   validation.className = 'native-validation';
@@ -88,7 +102,29 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     status = document.createElement('div');
     status.className = 'native-status';
     status.setAttribute('role', 'status');
-    container.appendChild(status);
+    const statusRow = document.createElement('div');
+    statusRow.className = 'native-status-row';
+    resultButton = document.createElement('button');
+    resultButton.type = 'button';
+    resultButton.className = 'native-result-button';
+    resultButton.textContent = 'View result';
+    resultButton.disabled = true;
+    resultButton.setAttribute('aria-expanded', 'false');
+    resultPanel = document.createElement('section');
+    resultPanel.className = 'native-result-panel';
+    resultPanel.id = 'native-result-' + saved.request.id;
+    resultPanel.setAttribute('role', 'region');
+    resultPanel.setAttribute('aria-label', 'Run result');
+    resultPanel.hidden = true;
+    resultButton.setAttribute('aria-controls', resultPanel.id);
+    // Capture this run's nodes: earlier result buttons must never open the newest run.
+    const panel = resultPanel, button = resultButton;
+    button.onclick = () => {
+      panel.hidden = !panel.hidden;
+      button.setAttribute('aria-expanded', String(!panel.hidden));
+    };
+    statusRow.append(status, resultButton);
+    container.append(statusRow, resultPanel);
     eventLog = document.createElement('details');
     const summary = document.createElement('summary');
     summary.textContent = 'Run events';
@@ -159,6 +195,73 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       node.appendChild(more);
     }
     return node;
+  }
+  const messageText = m => typeof m.content === 'string' ? m.content :
+    (Array.isArray(m.content) ? m.content : []).filter(p => p?.type === 'text').map(p => p.text).join('');
+  function showResult(state, recorded, selected, messages) {
+    const text = selected.map(m => {
+      const content = messageText(m);
+      // Typed runtimes also put canonical JSON in each message's content.
+      // Hide only exact packet duplicates; preserve prose and JSON-only fallbacks.
+      try {
+        const value = JSON.stringify(JSON.parse(content));
+        if ((m.additional_kwargs?.apx_data_parts || []).some(p => p?.kind === 'data' && JSON.stringify(p.data) === value)) return '';
+      } catch (_) { /* The recorded answer is ordinary text. */ }
+      return content;
+    }).filter(Boolean).join('\n');
+    resultPanel.replaceChildren();
+    const parts = messages.filter(m => m.type === 'ai').flatMap(m => m.additional_kwargs?.apx_data_parts || [])
+      .filter(p => p?.kind === 'data' && p.data !== null && typeof p.data === 'object' && Object.keys(p.data).length);
+    const approval = state.output?.status === 'interrupted' && state.output?.approval_required;
+    const available = state.status === 'completed' && (state.output?.status === 'completed' || approval) &&
+      Boolean(text.trim() || parts.length || approval);
+    resultButton.disabled = !available;
+    if (!available) {
+      resultPanel.hidden = true;
+      resultButton.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    const heading = document.createElement('h3');
+    heading.textContent = 'Run result';
+    resultPanel.appendChild(heading);
+    if (text.trim()) {
+      const answerText = document.createElement('div');
+      answerText.className = 'native-result-answer';
+      answerText.textContent = text;
+      resultPanel.appendChild(answerText);
+    }
+    const approvalStatus = document.createElement('p');
+    approvalStatus.className = 'native-result-approval';
+    approvalStatus.textContent = approval ? 'Approval required — agent execution paused' : 'Approval status not recorded';
+    resultPanel.appendChild(approvalStatus);
+    if (approval) resultPanel.appendChild(tree(approval));
+    if (parts.length) {
+      const label = document.createElement('h4');
+      label.textContent = 'Returned packets and evidence';
+      resultPanel.appendChild(label);
+      // A declared answer can carry a copy of a preceding step's packet.
+      const seen = new Set();
+      parts.forEach(part => {
+        const identity = JSON.stringify(part.data);
+        if (seen.has(identity)) return;
+        seen.add(identity);
+        if (seen.size > 50) return;
+        const packet = document.createElement('div');
+        packet.className = 'native-result-packet';
+        packet.appendChild(tree(part.data));
+        resultPanel.appendChild(packet);
+      });
+      if (seen.size > 50) resultPanel.append('Additional packets omitted from preview; see exact JSON.');
+    }
+    const details = document.createElement('details');
+    details.className = 'native-recorded-output';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Recorded invocation response (exact JSON)';
+    const output = document.createElement('pre');
+    output.className = 'native-output';
+    output.textContent = recorded.length <= 131072 ? recorded : 'Recorded response exceeds display limit; retrieve the invocation record.';
+    details.append(summary, output);
+    resultPanel.appendChild(details);
   }
   function attachOutputs(messages) {
     const bySha = {};
@@ -368,7 +471,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       else await checked(path); // Reconnect reads existing state; it never submits.
       // Check access before displaying cached content after a reload/account switch.
       if (restoring) {
-        container.insertBefore(bubble('user', requestText()), status);
+        container.insertBefore(bubble('user', requestText()), status.parentElement);
         if (typeof addEvent === 'function') addEvent('user', 'user', requestText().slice(0, 200));
         saved.events.forEach(showEvent);
         restoring = false;
@@ -378,23 +481,26 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       const recorded = await (await checked(path)).text();
       const state = JSON.parse(recorded);
       saved.terminal = state.status === 'completed' || state.status === 'failed';
+      const messages = Array.isArray(state.output?.messages) ? state.output.messages : [];
+      // Only explicitly marked answers override the ordinary assistant text fallback.
+      const halt = messages.filter(m => m.type === 'ai' && m.additional_kwargs?.apx_answer === true);
+      const selected = halt.length ? halt : messages.filter(m => m.type === 'ai');
+      const text = selected.map(messageText).filter(Boolean).join('\n');
+      showResult(state, recorded, selected, messages);
       if (state.status === 'failed') {
         status.textContent = 'Failed: ' + (typeof state.error === 'string' ? state.error : 'Invocation failed');
       } else if (state.status === 'completed' && state.output?.status === 'interrupted') {
         status.textContent = 'Interrupted: approval required' + (state.output.approval_required?.tool_name ? ' for ' + state.output.approval_required.tool_name : '');
       } else if (state.status === 'completed' && state.output?.status === 'completed') {
-        const messages = state.output.messages || [];
-        // A sequence's declared answer (a follow-up question or a summary) is the whole answer.
-        const halt = messages.filter(m => m.type === 'ai' && m.additional_kwargs?.apx_answer === true);
-        const text = (halt.length ? halt : messages.filter(m => m.type === 'ai')).map(m =>
-          typeof m.content === 'string' ? m.content : (m.content || []).filter(p => p.type === 'text').map(p => p.text).join('')
-        ).filter(Boolean).join('\n');
-        if (!answer) answer = bubble('assistant', '');
-        render(answer, text || '(empty response)');
+        if (text.trim()) {
+          if (!answer) answer = bubble('assistant', '');
+          render(answer, text);
+        }
         // A sequence streams only step completions, so its answer closes the timeline here.
         if (text && !answered && typeof addEvent === 'function') { answered = true; addEvent('assistant', 'assistant', text.slice(0, 200), {content: text}); }
         const replies = halt.map(m => m.additional_kwargs.apx_replies).find(r => Array.isArray(r) && r.length);
         if (replies && !schema) {
+          if (!answer) answer = bubble('assistant', '');
           const row = document.createElement('div');
           row.className = 'native-quick-replies';
           replies.filter(r => typeof r === 'string').forEach(reply => {
@@ -411,20 +517,9 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
           answer.appendChild(row);
         }
         attachOutputs(messages);
-        if (messages.some(m => m.type === 'ai' && m.additional_kwargs?.apx_data_parts?.length)) {
-          const details = document.createElement('details');
-          details.className = 'native-recorded-output';
-          const summary = document.createElement('summary');
-          summary.textContent = 'Recorded invocation response (exact JSON)';
-          const output = document.createElement('pre');
-          output.className = 'native-output';
-          output.textContent = recorded.length <= 131072 ? recorded : 'Recorded response exceeds display limit; retrieve the invocation record.';
-          details.append(summary, output);
-          answer.appendChild(details);
-        }
-        status.textContent = 'Completed';
+        status.textContent = resultButton.disabled ? 'Completed — no recorded result' : 'Completed';
       } else {
-        status.textContent = 'Result unavailable. Reconnect to check this run.';
+        status.textContent = state.status === 'completed' ? 'Completed — result unavailable. Reconnect to check this run.' : 'Result unavailable. Reconnect to check this run.';
         controls.hidden = false;
       }
       persist();
