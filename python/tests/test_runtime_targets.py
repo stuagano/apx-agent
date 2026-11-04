@@ -1181,7 +1181,7 @@ def test_packaged_deployment_launcher_uses_same_factory(monkeypatch: pytest.Monk
     launch = MagicMock()
     monkeypatch.setattr("uvicorn.run", launch)
     main()
-    launch.assert_called_once_with("apx_agent._serve:create_app", factory=True,
+    launch.assert_called_once_with("apx_agent._serve:create_served_app", factory=True,
                                    host="0.0.0.0", port=8123, app_dir=str(tmp_path))
 
 
