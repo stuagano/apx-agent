@@ -127,6 +127,36 @@ async def test_discover_page_serves_built_spa(app):
     assert "apx-agent · discover" in r.text
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("env_catalog, expected", [("runtime_catalog", "runtime_catalog"), ("${var.catalog}", "project_catalog"), ("", "project_catalog")])
+async def test_context_exposes_project_catalog_and_verified_identity(app, monkeypatch, tmp_path, env_catalog, expected):
+    from types import SimpleNamespace
+
+    (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\ncatalog = "project_catalog"\n')
+    monkeypatch.setattr("apx_agent._ui_grounding.resolve_project_root", lambda: tmp_path)
+    monkeypatch.setenv("APX_CATALOG", env_catalog)
+    ws = MagicMock()
+    ws.config.host = "https://workspace.example"
+    ws.current_user.me.return_value = SimpleNamespace(id="scim-123", user_name="reader@example.com")
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda request: ws)
+    r = await _get(app, "/_apx/workspace-context")
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-store"
+    assert r.json()["project_catalog"] == expected
+    assert r.json()["user_id"] == "scim-123"
+    import hashlib
+
+    assert r.json()["project_id"] == hashlib.sha256(str(tmp_path.resolve()).encode()).hexdigest()
+    assert str(tmp_path) not in r.text  # Stable project namespace without exposing a server path.
+    assert r.json()["used_catalogs"] == []  # Default is not a fabricated resource footprint.
+    ws.current_user.me.side_effect = RuntimeError("identity unavailable")
+    unknown = (await _get(app, "/_apx/workspace-context")).json()
+    assert unknown["user_id"] is None and unknown["user"] == "unknown"
+    ws.current_user.me.side_effect = None
+    ws.current_user.me.return_value = SimpleNamespace(display_name="Not a verified ID")
+    assert (await _get(app, "/_apx/workspace-context")).json()["user_id"] is None
+
+
 def _declare(monkeypatch, *specs):
     from apx_agent._resources import ResourceSpec
 

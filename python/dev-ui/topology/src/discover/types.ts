@@ -34,6 +34,10 @@ export interface GraphResponse {
 
 // The /_apx/workspace-context fields the Agent panel shows.
 export interface AgentContext {
+  host: string;
+  user_id: string | null;
+  project_catalog: string | null;
+  project_id: string | null;
   used_catalogs: string[];
   app_url: string | null;
   experiment_url: string | null;
