@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -516,6 +517,64 @@ async def test_workspace_context_returns_shape_and_degrades_user_lookup(app: Fas
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("deployed", [True, False])
+async def test_workspace_context_links_the_app_and_its_experiment(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch, deployed: bool,
+) -> None:
+    # The agent page links out to the App and the MLflow experiment it writes traces to.
+    app.state.workspace_client = _FakeWorkspaceClient()
+    if deployed:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "my-agent")
+        monkeypatch.setenv("MLFLOW_EXPERIMENT_ID", "4242")
+        monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda **k: app.state.workspace_client)
+    else:
+        monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+        monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # On Apps the route runs as the caller (OBO) and fails closed without the forwarded token.
+        headers = {"X-Forwarded-Access-Token": "synthetic-test-credential"} if deployed else {}
+        response = await client.get("/_apx/workspace-context", headers=headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+
+    host = "https://example.cloud.databricks.com"
+    assert data["app_url"] == (f"{host}/apps/my-agent" if deployed else None)
+    assert data["experiment_url"] == (f"{host}/ml/experiments/4242" if deployed else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_config", [True, False])
+async def test_workspace_context_maps_resources_to_graph_nodes_and_runtime(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch, with_config: bool,
+) -> None:
+    # Discover draws the agent's "uses" edges from these node ids (workspace_graph.node_id scheme).
+    from apx_agent._resources import ResourceSpec
+
+    specs = [ResourceSpec("uc_table", "Main.Sales.Orders"), ResourceSpec("genie_space", "01efABC"),
+             ResourceSpec("serving_endpoint", "peer-agent"), ResourceSpec("sql_warehouse", "wh-1")]
+    monkeypatch.setattr("apx_agent._resources.collect_resource_specs", lambda agent: specs)
+    monkeypatch.setenv("APX_MODEL", "env-model")
+    monkeypatch.setenv("AGENT_SESSION_STORE", "team-sessions")
+    monkeypatch.delenv("AGENT_MEMORY_STORE", raising=False)
+    if not with_config:
+        app.state.agent_context = None
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        data = (await client.get("/_apx/workspace-context")).json()
+
+    assert data["resources"] == ([
+        {"kind": "uc_table", "identifier": "Main.Sales.Orders", "node_id": "table:main.sales.orders"},
+        {"kind": "genie_space", "identifier": "01efABC", "node_id": "genie:01efabc"},
+        {"kind": "serving_endpoint", "identifier": "peer-agent", "node_id": "serving:peer-agent"},
+        {"kind": "sql_warehouse", "identifier": "wh-1", "node_id": None},  # not a graph node type
+    ] if with_config else [])
+    assert data["model"] == ("fake-model" if with_config else "env-model")
+    assert data["session_store"] == "team-sessions"
+    assert data["memory_store"] is None
+
+
+@pytest.mark.asyncio
 async def test_memories_returns_recent_rows_and_degrades_on_store_failure(app: FastAPI) -> None:
     app.state.agent_context = _make_ctx(agent=_FakeAgent(memory_store=_MemoryStore()))
 
@@ -963,3 +1022,41 @@ async def test_w2b_create_tool_tolerates_extra_wizard_fields_at_boundary(client:
         "table": "orders", "catalog": "main", "schema": "default", "warehouse_id": "wh-1",
     })
     assert r.status_code == 400  # handler, not 422 → extras tolerated + body parsed
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_agent_page_sidebar_renders_workspace_links() -> None:
+    # Run the shipped sidebar renderer in node against a minimal DOM. Resources live on Discover.
+    import json
+    import subprocess
+
+    from apx_agent._ui_chat import _render_unified_shell
+
+    page = _render_unified_shell(None)
+    start = page.index("    // Rows are built with textContent")
+    script = page[start:page.index("    loadSidebar();\n", start)]
+    dom = """
+const nodes = {};
+global.document = {
+  getElementById: id => (nodes[id] = nodes[id] || {id, children: [], replaceChildren(...c) { this.children = c; }}),
+  createElement: tag => ({tag, children: [], append(...c) { this.children.push(...c); }}),
+};
+const view = id => document.getElementById(id).children.map(n => ({
+  tag: n.tag, text: n.textContent ?? n.children.map(c => c.textContent).join(" "), href: n.href ?? null}));
+"""
+    checks = """
+renderSidebarLinks({app_url: "https://h/apps/a", experiment_url: "https://h/ml/experiments/1"});
+const full = view("sb-links");
+document.getElementById("sb-links").children = [];
+renderSidebarLinks({app_url: null, experiment_url: null});
+console.log(JSON.stringify({full, empty: view("sb-links")}));
+"""
+    out = subprocess.run(["node", "-e", dom + script + checks], capture_output=True, text=True, check=True).stdout
+    result = json.loads(out)
+    assert result["full"] == [
+        {"tag": "div", "text": "Workspace", "href": None},
+        {"tag": "a", "text": "▣ Databricks App ↗", "href": "https://h/apps/a"},
+        {"tag": "a", "text": "◷ MLflow experiment ↗", "href": "https://h/ml/experiments/1"},
+    ]
+    assert result["empty"] == []
+    assert "sb-resources" not in page

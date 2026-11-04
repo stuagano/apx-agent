@@ -229,6 +229,7 @@ def _render_unified_shell(ctx: AgentContext | None, *, hidden_tabs: frozenset[st
         <div id="sb-identity" class="sb-identity">
           <div class="sb-user" style="color:var(--apx-border)">Loading…</div>
         </div>
+        <div id="sb-links"></div>
         <div class="sb-section">Data</div>
         <div class="sb-tree"><div id="cat-tree"></div></div>
       </div>
@@ -312,10 +313,40 @@ def _render_unified_shell(ctx: AgentContext | None, *, hidden_tabs: frozenset[st
             <div class="sb-user">${{d.user||''}}</div>`;
         }}
         loadCatalogTree(d.used_catalogs||[], d.used_schemas||[]);
+        renderSidebarLinks(d);
       }} catch(e) {{
         const id = document.getElementById("sb-identity");
         if (id) id.innerHTML = '<div class="sb-user">Unavailable</div>';
       }}
+    }}
+    // Rows are built with textContent: declared names are never parsed as markup.
+    function sbSection(id, title, rows) {{
+      const box = document.getElementById(id);
+      if (!box || !rows.length) return;
+      const head = document.createElement("div");
+      head.className = "sb-section";
+      head.textContent = title;
+      box.replaceChildren(head, ...rows);
+    }}
+    function sbRow(icon, label, href) {{
+      const row = document.createElement(href ? "a" : "div");
+      row.className = "sb-item";
+      if (href) {{ row.href = href; row.target = "_blank"; row.rel = "noopener"; }}
+      const ico = document.createElement("span");
+      ico.className = "sb-icon";
+      ico.textContent = icon;
+      const text = document.createElement("span");
+      text.className = "sb-label";
+      text.textContent = label;
+      text.title = label;
+      row.append(ico, text);
+      return row;
+    }}
+    function renderSidebarLinks(d) {{
+      const rows = [];
+      if (d.app_url) rows.push(sbRow("▣", "Databricks App ↗", d.app_url));
+      if (d.experiment_url) rows.push(sbRow("◷", "MLflow experiment ↗", d.experiment_url));
+      sbSection("sb-links", "Workspace", rows);
     }}
     loadSidebar();
     function loadCatalogTree(usedCats, usedSchemas) {{

@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { NAV_LINKS } from "../nav";
+import { AgentPanel } from "./AgentPanel";
 import { DetailPanel } from "./DetailPanel";
 import { DiscoverGraph } from "./DiscoverGraph";
-import { EDGE_LEGEND, NODE_COLORS, NODE_TYPES, type GraphNode, type GraphResponse } from "./types";
+import { EDGE_LEGEND, NODE_COLORS, NODE_TYPES, type AgentContext, type GraphNode, type GraphResponse } from "./types";
 
 const COLLAPSE_ABOVE = 2000; // Lattice: collapse schemas instead of virtualizing
 
@@ -22,6 +23,8 @@ export default function DiscoverApp() {
   const [impacted, setImpacted] = useState<ReadonlySet<string> | null>(null);
   const [impactError, setImpactError] = useState<string | null>(null);
   const [loadedScope, setLoadedScope] = useState("");
+  const [context, setContext] = useState<AgentContext | null>(null);
+  const [onlyAgent, setOnlyAgent] = useState(false);
 
   // Debounce: the input stays responsive, but dagre only re-runs once typing pauses.
   useEffect(() => {
@@ -55,7 +58,8 @@ export default function DiscoverApp() {
     fetch("/_apx/workspace-context")
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null)
-      .then((d: { used_catalogs?: string[] } | null) => {
+      .then((d: AgentContext | null) => {
+        setContext(d);
         const scope = (d?.used_catalogs ?? []).join(",");
         setCatalogs(scope);
         load(scope, false);
@@ -71,6 +75,9 @@ export default function DiscoverApp() {
 
   const { nodes, edges, collapsedCounts } = useMemo(() => {
     const all = graph?.nodes ?? [];
+    // "Only this agent's assets": its node and footprint, with schemas never collapsed over them.
+    const agentIds = onlyAgent && graph ? new Set([graph.agent.id, ...graph.agent.footprint]) : null;
+    const folded = agentIds ? new Set<string>() : collapsed;
     const q = query.trim().toLowerCase();
     const matches = (n: GraphNode) =>
       !q || n.name.toLowerCase().includes(q) || n.fqn.toLowerCase().includes(q);
@@ -79,7 +86,7 @@ export default function DiscoverApp() {
     const hiddenIds = new Set<string>();
     const revealedSchemas = new Set<string>();
     for (const e of graph?.edges ?? []) {
-      if (e.type === "contains" && collapsed.has(e.src)) {
+      if (e.type === "contains" && folded.has(e.src)) {
         const child = byNodeId.get(e.dst);
         // A search match inside a collapsed schema is shown, and keeps its schema visible.
         if (q && child && !hiddenTypes.has(child.type) && matches(child)) {
@@ -91,7 +98,7 @@ export default function DiscoverApp() {
       }
     }
     const visible = all.filter((n) =>
-      !hiddenTypes.has(n.type) && !hiddenIds.has(n.id)
+      !hiddenTypes.has(n.type) && !hiddenIds.has(n.id) && (!agentIds || agentIds.has(n.id))
       && (matches(n) || revealedSchemas.has(n.id)));
     const ids = new Set(visible.map((n) => n.id));
     return {
@@ -99,7 +106,7 @@ export default function DiscoverApp() {
       edges: (graph?.edges ?? []).filter((e) => ids.has(e.src) && ids.has(e.dst)),
       collapsedCounts: hiddenBySchema,
     };
-  }, [graph, hiddenTypes, collapsed, query]);
+  }, [graph, hiddenTypes, collapsed, query, onlyAgent]);
 
   const runImpact = (id: string) => {
     setImpactError(null);
@@ -148,6 +155,9 @@ export default function DiscoverApp() {
               <div className="apx-palette-title">Workspace graph</div>
               <div className="apx-palette-sub">Assets visible to your identity — the same graph your agent's tools query.</div>
             </div>
+            <AgentPanel overlay={graph?.agent ?? null} context={context} onlyAgent={onlyAgent}
+              onToggleOnly={() => setOnlyAgent((v) => !v)}
+              onSelectAgent={() => graph && selectNode(graph.agent.id)} />
             <input className="apx-dg-input" placeholder="Search name or fqn" aria-label="Search assets"
               value={queryInput} onChange={(e) => setQueryInput(e.target.value)} />
             <label className="apx-palette-sub" htmlFor="apx-dg-catalogs">Catalogs (comma-separated; empty = first 10)</label>

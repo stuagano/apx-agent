@@ -786,6 +786,62 @@ def _experiment_url(host: str | None, experiment_id: str | None) -> str | None:
     return f"{host}/ml/experiments/{experiment_id}"
 
 
+def _app_url(host: str | None, app_name: str | None) -> str | None:
+    """The App's page in the workspace UI (the same link ``apx agents deploy`` prints)."""
+    if not host or not app_name:
+        return None
+    from urllib.parse import quote
+
+    return f"{host}/apps/{quote(app_name, safe='')}"
+
+
+def _agent_resource_refs(ctx: AgentContext | None) -> list[dict[str, Any]]:
+    """The agent's declared resources, each with its workspace-graph node id (or None)."""
+    if ctx is None:
+        return []
+    try:
+        from ._resources import collect_resource_specs
+
+        specs = collect_resource_specs(ctx.agent)
+    except Exception:  # noqa: BLE001 — the context pages degrade to "no resources", never 500
+        logger.debug("collect_resource_specs failed", exc_info=True)
+        return []
+    from .workspace_graph.schema import resource_node_id
+
+    return [{"kind": s.kind, "identifier": s.identifier, "node_id": resource_node_id(s.kind, s.identifier)}
+            for s in specs]
+
+
+def _overlay_agent(payload: dict[str, Any], ctx: AgentContext | None) -> dict[str, Any]:
+    """Put this agent into a Discover graph payload: its node, ``uses`` edges, footprint.
+
+    Deployed, the apps connector already drew the App node (and its configured
+    resources); it becomes the agent. Locally a synthesized ``Agent`` node stands in.
+    Declared resources not in the graph (out of scope, or not a graph type) are ``unplaced``.
+    """
+    from .workspace_graph.schema import node_id
+
+    ids = {n["id"] for n in payload["nodes"]}
+    app_name = os.environ.get("DATABRICKS_APP_NAME")
+    agent_id = node_id("app", app_name) if app_name and node_id("app", app_name) in ids else "agent:self"
+    if agent_id == "agent:self":
+        name = ctx.config.name if ctx is not None else "This agent"
+        payload["nodes"].append({"id": agent_id, "type": "Agent", "name": name, "fqn": name, "props": {}})
+    drawn = {e["dst"] for e in payload["edges"] if e["src"] == agent_id and e["type"] == "uses"}
+    footprint: list[str] = []
+    unplaced: list[dict[str, Any]] = []
+    for ref in _agent_resource_refs(ctx):
+        target = ref["node_id"]
+        if target is None or target not in ids:
+            unplaced.append(ref)
+            continue
+        footprint.append(target)
+        if target not in drawn:
+            payload["edges"].append({"src": agent_id, "dst": target, "type": "uses"})
+            drawn.add(target)
+    return {"id": agent_id, "footprint": footprint, "unplaced": unplaced}
+
+
 def _lookup_experiment_name(experiment_id: str) -> str | None:
     try:
         from mlflow.tracking import MlflowClient
@@ -3429,15 +3485,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         except Exception:
             user_name = "unknown"
 
-        # Agent declared resources
-        resources: list[dict] = []
-        if ctx is not None:
-            try:
-                from ._resources import collect_resource_specs
-                for spec in collect_resource_specs(ctx.agent):
-                    resources.append({"kind": spec.kind, "identifier": spec.identifier})
-            except Exception:
-                pass
+        resources = _agent_resource_refs(ctx)
 
         # Catalogs + schemas the agent explicitly uses (extract from resource identifiers)
         uc_ids = [
@@ -3456,6 +3504,12 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "resources": resources,
             "used_catalogs": used_catalogs,
             "used_schemas": used_schemas,
+            "app_url": _app_url(host, os.environ.get("DATABRICKS_APP_NAME")),
+            "experiment_url": _experiment_url(host, os.environ.get("MLFLOW_EXPERIMENT_ID")),
+            # A durable host may run without an AgentContext; its model is the App's APX_MODEL.
+            "model": ctx.config.model if ctx is not None else os.environ.get("APX_MODEL"),
+            "session_store": os.environ.get("AGENT_SESSION_STORE"),
+            "memory_store": os.environ.get("AGENT_MEMORY_STORE"),
         }
 
     def _discover_scope(catalogs: str | None) -> list[str] | None:
@@ -3493,7 +3547,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         graph = await _asyncio.to_thread(
             builder.get_graph, ws, _discover_scope(catalogs), refresh=refresh
         )
-        return graph.to_json()
+        payload = graph.to_json()
+        payload["agent"] = _overlay_agent(payload, request.app.state.agent_context)
+        return payload
 
     @router.get("/_apx/discover/impact/{node_id:path}", response_model=DiscoverImpactResponse)
     async def discover_impact(request: Request, node_id: str, catalogs: str | None = None) -> Any:

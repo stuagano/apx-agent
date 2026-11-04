@@ -366,6 +366,8 @@ class ResourceRef(BaseModel):
 
     kind: str
     identifier: str
+    # Its workspace-graph node (workspace_graph.node_id), or None for kinds the graph lacks.
+    node_id: str | None
 
 
 class WorkspaceContextResponse(BaseModel):
@@ -381,6 +383,13 @@ class WorkspaceContextResponse(BaseModel):
     resources: list[ResourceRef]
     used_catalogs: list[str]
     used_schemas: list[str]
+    # Workspace deep links: this App's page (on Apps) and the MLflow experiment it traces to.
+    app_url: str | None
+    experiment_url: str | None
+    # What this agent runs with: its model and the managed stores bound to the App.
+    model: str | None
+    session_store: str | None
+    memory_store: str | None
 
 
 class GraphNodeModel(BaseModel):
@@ -397,11 +406,21 @@ class GraphEdgeModel(BaseModel):
     type: str
 
 
+class DiscoverAgentOverlay(BaseModel):
+    """This agent in the Discover graph: its node id (the App node when deployed),
+    the graph nodes it uses, and declared resources the loaded graph doesn't hold."""
+
+    id: str
+    footprint: list[str]
+    unplaced: list[ResourceRef]
+
+
 class DiscoverGraphResponse(BaseModel):
     nodes: list[GraphNodeModel]
     edges: list[GraphEdgeModel]
     warnings: list[str]
     built_at: str
+    agent: DiscoverAgentOverlay
 
 
 class DiscoverImpactResponse(BaseModel):
