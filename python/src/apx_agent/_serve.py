@@ -6,9 +6,38 @@ import os
 from pathlib import Path
 from typing import Any
 
+from starlette.datastructures import Headers
+
 
 _NOT_DURABLE = (
     "The native launcher requires target='durable_agent_server' on the root agent or in the project's settings")
+
+
+class _RelativeRedirects:
+    """Make same-host redirect Locations path-only.
+
+    The Apps proxy hands the app its loopback Host, so Starlette's absolute
+    trailing-slash redirect (``/_apx/agent/`` -> 307) pointed at localhost.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        host = scope["type"] == "http" and Headers(scope=scope).get("host")
+        if not host:
+            return await self.app(scope, receive, send)
+        own = f"{scope['scheme']}://{host}".encode()
+
+        async def _send(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                message["headers"] = [
+                    (k, v[len(own):] or b"/") if k == b"location" and v.startswith(own) else (k, v)
+                    for k, v in message["headers"]
+                ]
+            await send(message)
+
+        await self.app(scope, receive, _send)
 
 
 def create_app() -> Any:
@@ -39,12 +68,17 @@ def create_app() -> Any:
     return app
 
 
+def create_served_app() -> _RelativeRedirects:
+    """The Apps-served app: ``create_app`` behind the proxy-Host redirect fix."""
+    return _RelativeRedirects(create_app())
+
+
 def main() -> None:
     """Start the native app on the port assigned by Databricks Apps."""
     import uvicorn
 
     uvicorn.run(
-        "apx_agent._serve:create_app", factory=True, host="0.0.0.0",
+        "apx_agent._serve:create_served_app", factory=True, host="0.0.0.0",
         port=int(os.environ["DATABRICKS_APP_PORT"]), app_dir=str(Path.cwd()),
     )
 
