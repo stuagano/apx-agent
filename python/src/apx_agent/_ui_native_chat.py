@@ -60,6 +60,18 @@ NATIVE_CHAT_SCRIPT = r"""
 }
 </style>
 <script>
+// #978: a reload's earlier turns from the session checkpoint, as {role, text}. The saved run
+// restores its own turn, so the transcript stops before its last matching user message.
+function apxPriorTurns(messages, current) {
+  const text = m => m.type === 'human' && m.additional_kwargs?.apx_data_parts
+    ? JSON.stringify(m.additional_kwargs.apx_data_parts[0].data, null, 2)
+    : typeof m.content === 'string' ? m.content
+    : (Array.isArray(m.content) ? m.content : []).filter(p => p?.type === 'text').map(p => p.text).join('');
+  const turns = messages.filter(m => m.type === 'human' || m.type === 'ai')
+    .map(m => ({role: m.type === 'human' ? 'user' : 'assistant', text: text(m)})).filter(t => t.text);
+  const last = turns.map(t => t.role === 'user' && t.text === current).lastIndexOf(true);
+  return last >= 0 ? turns.slice(0, last) : turns;
+}
 function apxNativeChat({form, input, send, container, bubble, render}) {
   const key = '_apx_native_chat:' + location.pathname;
   let saved = JSON.parse(sessionStorage.getItem(key) || 'null');
@@ -573,7 +585,16 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     prepare();
     follow(true);
   }, true);
-  if (saved) { restoring = true; prepare(); follow(false); }
+  async function priorTurns() {
+    try {
+      const response = await fetch('/api/session/history?session_id=' + encodeURIComponent(session));
+      if (!response.ok) return;
+      const turns = apxPriorTurns((await response.json()).messages || [], requestText());
+      if (turns.length) document.getElementById('landing')?.remove();
+      turns.forEach(t => t.role === 'user' ? bubble('user', t.text) : render(bubble('assistant', ''), t.text));
+    } catch (_) { /* Earlier turns are best-effort; the saved run below still restores. */ }
+  }
+  if (saved) { restoring = true; priorTurns().then(() => { prepare(); follow(false); }); }
 }
 </script>
 """

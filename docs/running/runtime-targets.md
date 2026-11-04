@@ -133,6 +133,9 @@ server's own `/api/invocations`. If a project mounts its own UI at `/`, that UI
 keeps the root. Set `APX_DEV_UI=0` to drop the dev UI pages and `/_apx/chat`;
 `/` still serves.
 
+Reloading either chat page restores the session's earlier turns from the durable
+checkpoint (`GET /api/session/history`), when the agent has a session store.
+
 If any agent leaf declares `input_schema` or `output_schema`, the host instead
 serves the native workflow chat. It validates declared request JSON and displays
 SDK invocation replay and execution evidence. The root page remains available
