@@ -786,6 +786,15 @@ def _experiment_url(host: str | None, experiment_id: str | None) -> str | None:
     return f"{host}/ml/experiments/{experiment_id}"
 
 
+def _app_url(host: str | None, app_name: str | None) -> str | None:
+    """The App's page in the workspace UI (the same link ``apx agents deploy`` prints)."""
+    if not host or not app_name:
+        return None
+    from urllib.parse import quote
+
+    return f"{host}/apps/{quote(app_name, safe='')}"
+
+
 def _lookup_experiment_name(experiment_id: str) -> str | None:
     try:
         from mlflow.tracking import MlflowClient
@@ -3456,6 +3465,8 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             "resources": resources,
             "used_catalogs": used_catalogs,
             "used_schemas": used_schemas,
+            "app_url": _app_url(host, os.environ.get("DATABRICKS_APP_NAME")),
+            "experiment_url": _experiment_url(host, os.environ.get("MLFLOW_EXPERIMENT_ID")),
         }
 
     def _discover_scope(catalogs: str | None) -> list[str] | None:
