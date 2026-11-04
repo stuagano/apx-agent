@@ -1,5 +1,7 @@
 """Native chat mounts must retain the SDK invocation and identity boundary."""
 
+import shutil
+
 import pytest
 
 from apx_agent._ui_chat import NATIVE_PANEL_HIDE
@@ -228,3 +230,35 @@ def test_native_page_injections_land_in_the_real_head_and_body():
     assert html.rfind("<script", 0, script) < html.rfind("</script>", 0, script)  # not inside a script
     assert html.rfind("<script", 0, css) < html.rfind("</script>", 0, css) or html.rfind("<script", 0, css) == -1
     assert html[script + len(NATIVE_PANEL_OPEN_TOOLS):].strip() == "</body>\n</html>"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_prior_turns_rebuild_the_transcript_before_the_restored_run():
+    # #978: run the real apxPriorTurns from the shipped script in node.
+    import json
+    import re
+    import subprocess
+
+    from apx_agent._ui_native_chat import NATIVE_CHAT_SCRIPT
+
+    fn = re.search(r"function apxPriorTurns\(.*?\n}\n", NATIVE_CHAT_SCRIPT, re.S).group(0)
+    messages = [
+        {"type": "human", "content": "first"},
+        {"type": "ai", "content": "", "tool_calls": [{"name": "record"}]},
+        {"type": "tool", "content": "proof"},
+        {"type": "ai", "content": [{"type": "text", "text": "one"}]},
+        {"type": "human", "content": "Declared domain input",
+         "additional_kwargs": {"apx_data_parts": [{"kind": "data", "data": {"amount": 4}}]}},
+        {"type": "ai", "content": "two"},
+        {"type": "human", "content": "latest"},
+        {"type": "ai", "content": "three"},
+    ]
+    script = fn + f"const m = {json.dumps(messages)};" + """
+console.log(JSON.stringify([apxPriorTurns(m, 'latest'), apxPriorTurns(m, 'not sent'), apxPriorTurns([], 'x')]));"""
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout
+    restored, unmatched, empty = json.loads(out)
+    typed = json.dumps({"amount": 4}, indent=2)
+    assert restored == [{"role": "user", "text": "first"}, {"role": "assistant", "text": "one"},
+                        {"role": "user", "text": typed}, {"role": "assistant", "text": "two"}]
+    assert unmatched == restored + [{"role": "user", "text": "latest"}, {"role": "assistant", "text": "three"}]
+    assert empty == []

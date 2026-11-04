@@ -442,6 +442,47 @@ def test_native_http_auth_isolates_same_invocation_and_session_ids(execution: An
     assert len(principals) == 2 and principals[0] != principals[1]
 
 
+def test_session_history_reads_the_callers_checkpoint(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # #978: chat reload reads the transcript from the checkpointer the turn wrote, under the same
+    # SDK-namespaced session and user principal; another user's same session_id reads nothing.
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+    from fastapi.testclient import TestClient
+    from apx_agent import compile_agent
+
+    def record(value: str, principal: Dependencies.Principal) -> str:
+        """Record a value as the signed-in user (makes the App request-user auth)."""
+        return value
+
+    def user_client(auth: Any, mode: str) -> Any:
+        user = MagicMock()
+        user.current_user.me.return_value.id = auth.namespace("principal", "verified")
+        return user
+
+    monkeypatch.setattr(RequestAuthContext, "client_for", user_client)
+    _write_native_pyproject(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    app = compile_agent(LlmAgent(name="users", tools=[record]), target="durable_agent_server",
+                        model="test", service_ws=execution.ws, checkpointer=InMemorySaver())
+    monkeypatch.delenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL")
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "history-proof")
+    alice = {"X-Forwarded-User": "alice", "X-Forwarded-Access-Token": "synthetic-test-credential"}
+    bob = {"X-Forwarded-User": "bob", "X-Forwarded-Access-Token": "synthetic-test-credential"}
+    body = {"id": str(uuid.uuid4()), "session_id": "s1", "input": [{"role": "user", "content": "record"}]}
+    assert app.auth_policy.requires_user
+    with TestClient(app) as client:
+        assert client.post("/api/invocations", json=body, headers=alice).status_code == 200
+        history = client.get("/api/session/history", params={"session_id": "s1"}, headers=alice)
+        assert history.status_code == 200, history.text
+        messages = history.json()["messages"]
+        assert [m["type"] for m in messages] == ["human", "ai", "tool", "ai"]
+        assert messages[0]["content"] == "record" and messages[-1]["content"] == "Recorded proof"
+        assert "synthetic-test-credential" not in history.text
+        assert client.get("/api/session/history", params={"session_id": "s1"}, headers=bob).json()["messages"] == []
+        assert client.get("/api/session/history", params={"session_id": "s1"}).status_code == 401
+
+
 def test_declared_memory_is_not_silently_ignored() -> None:
     from apx_agent import compile_agent
 
