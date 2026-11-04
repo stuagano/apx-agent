@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from databricks.sdk import WorkspaceClient
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -3468,8 +3468,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         return HTMLResponse(_render_setup_ui(current, embed=embed))
 
     @router.get("/_apx/workspace-context", response_model=WorkspaceContextResponse)
-    async def workspace_context(request: Request) -> Any:
+    async def workspace_context(request: Request, response: Response) -> Any:
         """Return workspace identity + agent resource summary for the Context tab."""
+        response.headers["Cache-Control"] = "no-store"
         import asyncio as _asyncio
 
         from ._defaults import _ws_prefer_obo
@@ -3479,11 +3480,32 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
 
         # Workspace identity
         host = (getattr(getattr(ws, "config", None), "host", None) or "").rstrip("/")
+        user_id: str | None = None
         try:
             me = await _asyncio.to_thread(ws.current_user.me)
             user_name = getattr(me, "user_name", None) or getattr(me, "display_name", None) or "unknown"
+            verified_id = getattr(me, "id", None)
+            if isinstance(verified_id, str) and verified_id.strip():
+                user_id = verified_id.strip()
         except Exception:
             user_name = "unknown"
+
+        # Use the resolved deployment override before the project's declared catalog.
+        # Keep this separate from used_catalogs, which describes actual resource refs.
+        from ._ui_grounding import resolve_project_root
+        from .cli import _read_apx_agent_config
+
+        import hashlib
+
+        root = resolve_project_root()
+        project_id = hashlib.sha256(str(root.resolve()).encode()).hexdigest() if root else None
+        configured_catalog = os.environ.get("APX_CATALOG")
+        project_catalog = configured_catalog.strip() if configured_catalog else None
+        if not project_catalog or "$" in project_catalog:
+            declared = _read_apx_agent_config(root / "pyproject.toml").get("catalog") if root else None
+            project_catalog = declared.strip() if isinstance(declared, str) else None
+        if project_catalog and "$" in project_catalog:
+            project_catalog = None
 
         resources = _agent_resource_refs(ctx)
 
@@ -3501,6 +3523,9 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         return {
             "host": host,
             "user": user_name,
+            "user_id": user_id,
+            "project_catalog": project_catalog if project_catalog else None,
+            "project_id": project_id,
             "resources": resources,
             "used_catalogs": used_catalogs,
             "used_schemas": used_schemas,

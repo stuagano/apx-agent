@@ -37,3 +37,10 @@ def test_bundle_shows_this_agent_beside_the_graph():
                   "MLflow experiment", "Databricks App", "experiment_url", "app_url", "session_store",
                   "footprint", "unplaced"):
         assert wired in js, wired
+
+
+def test_bundle_wires_identity_scoped_reload_cache_and_refresh():
+    js = _bundle_js()
+    for wired in ("sessionStorage", "apx-discover:v1:", "user_id", "project_catalog", "project_id",
+                  "no-store", "Cached", "updated", "refresh"):
+        assert wired in js, wired
