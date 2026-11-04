@@ -119,6 +119,8 @@ def platform_client_for(service_ws: Any) -> ClientFor:
 @dataclass(frozen=True)
 class DurableHandlers:
     invoke: Callable[[Any, Any], Awaitable[dict[str, Any]]]
+    # (SDK-namespaced session_id, request auth) -> {"messages": [...]} from the turn's checkpoint.
+    history: Callable[[str, Any], dict[str, Any]]
 
 
 def _pending(graph: Any, config: dict[str, Any] | None) -> Any | None:
@@ -249,15 +251,32 @@ def compile_durable_handlers(
             raise ValueError("user_identity requires the SDK's active RequestAuthContext")
         return auth
 
+    def request_principal(auth: Any) -> str | None:
+        """The verified user a session's thread is keyed by; None for app-auth."""
+        user_ws = auth.client_for("user") if auth is not None else None
+        if user_ws is None:
+            return None
+        principal = user_ws.current_user.me().id
+        if not isinstance(principal, str) or not principal:
+            raise ValueError("user_identity could not resolve the authenticated principal")
+        return principal
+
+    def history(session_id: str, auth: Any) -> dict[str, Any]:
+        """The session's transcript, read from the checkpoint ``execute`` writes (#978)."""
+        if checkpointer is None:
+            return {"messages": []}
+        config = session_thread_config(getattr(agent, "_name", None), session_id, request_principal(auth))
+        saved = checkpointer.get_tuple(config)
+        messages = saved.checkpoint["channel_values"].get("messages", []) if saved is not None else []
+        return {"messages": [m.model_dump(mode="json") for m in messages]}
+
     def execute(value: Any, context: Any, auth: Any, emit_message: Callable[[Any], None] | None,
                 platform: dict[str, list[Any]]) -> dict[str, Any]:
         recovering = bool(getattr(context, "is_recovery", False))
         user_ws = auth.client_for("user") if auth is not None else None
+        principal = request_principal(auth)
         headers = None
-        if auth is not None and user_ws is not None:
-            principal = user_ws.current_user.me().id
-            if not isinstance(principal, str) or not principal:
-                raise ValueError("user_identity could not resolve the authenticated principal")
+        if principal is not None:
             # The SDK's per-request verdict is authoritative: a local context's
             # "user" client is the developer/app credential, never forward it.
             forward = has_delegates and not auth._local
@@ -364,7 +383,7 @@ def compile_durable_handlers(
             await context.emit({"type": "agent.message.completed", "message": result["messages"][-1]})
         return result
 
-    return DurableHandlers(invoke=invoke)
+    return DurableHandlers(invoke=invoke, history=history)
 
 
 def _dev_ui_enabled(*, typed: bool) -> bool:
@@ -438,6 +457,24 @@ def compile_to_durable_agent_server(
                                         project_root=project_root, platform_tools=startup.tools,
                                         session_state_client=session_state_client)
     app = DurableAgentServer(auth_policy=policy)
+
+    @app.get("/api/session/history", include_in_schema=False)
+    async def session_history(session_id: str, request: Request) -> Any:
+        """Chat reload: the caller's transcript, namespaced exactly as the SDK namespaces turns."""
+        from databricks_agentkit.runtime.auth import AuthError, RequestAuthContext
+        from fastapi.responses import JSONResponse
+
+        auth = None
+        try:
+            if policy.requires_user:
+                auth = RequestAuthContext.from_headers(request.headers)
+                session_id = auth.namespace("session", session_id)
+            return await asyncio.to_thread(handlers.history, session_id, auth)
+        except AuthError as exc:
+            return JSONResponse({"error": exc.payload()}, status_code=exc.status_code)
+        finally:
+            if auth is not None:
+                auth.close()
 
     @app.middleware("http")
     async def validate_invocation_input(request: Request, call_next: Any) -> Any:
