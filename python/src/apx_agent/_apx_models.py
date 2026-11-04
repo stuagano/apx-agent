@@ -383,6 +383,10 @@ class WorkspaceContextResponse(BaseModel):
     resources: list[ResourceRef]
     used_catalogs: list[str]
     used_schemas: list[str]
+    # Stable verified identity for tab-local metadata caching; never a display-name fallback.
+    user_id: str | None = None
+    project_catalog: str | None = None
+    project_id: str | None = None
     # Workspace deep links: this App's page (on Apps) and the MLflow experiment it traces to.
     app_url: str | None
     experiment_url: str | None

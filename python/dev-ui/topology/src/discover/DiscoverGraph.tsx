@@ -44,7 +44,13 @@ function Inner(props: DiscoverGraphProps) {
             <div className="apx-dg-node">
               <span className="apx-dg-type" style={{ color }}>{n.type}</span>
               <span className="apx-dg-name" title={n.fqn}>{n.name}</span>
-              {hidden !== undefined && <span className="apx-dg-collapsed">+{hidden}</span>}
+              {n.type === "Schema" && <button type="button" className="apx-dg-collapsed nodrag nopan"
+                aria-label={`${hidden !== undefined ? "Expand" : "Collapse"} schema ${n.name}`}
+                aria-expanded={hidden === undefined}
+                onClick={(e) => { e.stopPropagation(); onToggleSchema(n.id); }}
+                onDoubleClick={(e) => e.stopPropagation()}>
+                {hidden !== undefined ? `+${hidden}` : "−"}
+              </button>}
             </div>
           ),
         },
@@ -78,7 +84,7 @@ function Inner(props: DiscoverGraphProps) {
       };
     });
     return { rfNodes, rfEdges };
-  }, [nodes, edges, pos, selected, impacted, collapsedCounts]);
+  }, [nodes, edges, pos, selected, impacted, collapsedCounts, onToggleSchema]);
 
   return (
     <ReactFlow

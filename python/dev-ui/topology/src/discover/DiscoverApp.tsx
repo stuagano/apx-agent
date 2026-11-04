@@ -1,6 +1,6 @@
 // /_apx/discover — the caller's workspace graph (same data the agent tools see).
 // Left rail: search, type filters, catalog scope, Refresh. Canvas + detail panel.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { NAV_LINKS } from "../nav";
 import { AgentPanel } from "./AgentPanel";
@@ -8,7 +8,7 @@ import { DetailPanel } from "./DetailPanel";
 import { DiscoverGraph } from "./DiscoverGraph";
 import { EDGE_LEGEND, NODE_COLORS, NODE_TYPES, type AgentContext, type GraphNode, type GraphResponse } from "./types";
 
-const COLLAPSE_ABOVE = 2000; // Lattice: collapse schemas instead of virtualizing
+import { forgetGraph, graphKey, identityKey, normalizeScope, readGraph, readPreferences, writeStored } from "./cache";
 
 export default function DiscoverApp() {
   const [graph, setGraph] = useState<GraphResponse | null>(null);
@@ -25,6 +25,16 @@ export default function DiscoverApp() {
   const [loadedScope, setLoadedScope] = useState("");
   const [context, setContext] = useState<AgentContext | null>(null);
   const [onlyAgent, setOnlyAgent] = useState(false);
+  const [identity, setIdentity] = useState<string | null>(null);
+  const [cacheStatus, setCacheStatus] = useState<{ updated: number; cached: boolean } | null>(null);
+  const activeRequest = useRef<AbortController | null>(null);
+  const hydratedIdentity = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (identity && !loading) writeStored(`${identity}:preferences`, {
+      catalogs, queryInput, hiddenTypes: [...hiddenTypes], onlyAgent,
+    });
+  }, [identity, loading, catalogs, queryInput, hiddenTypes, onlyAgent]);
 
   // Debounce: the input stays responsive, but dagre only re-runs once typing pauses.
   useEffect(() => {
@@ -32,38 +42,72 @@ export default function DiscoverApp() {
     return () => clearTimeout(t);
   }, [queryInput]);
 
-  const load = useCallback((scope: string, refresh: boolean) => {
+  const load = useCallback(async (requestedScope: string | null, refresh: boolean) => {
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    const { signal } = controller;
     setLoading(true);
     setError(null);
-    setLoadedScope(scope.trim());
-    const q = new URLSearchParams();
-    if (scope.trim()) q.set("catalogs", scope.trim());
-    if (refresh) q.set("refresh", "1");
-    fetch(`/_apx/discover/graph.json?${q}`)
-      .then(async (r) => {
+    // Remove every previous identity's metadata before checking the current caller.
+    setGraph(null);
+    setContext(null);
+    setIdentity(null);
+    setSelected(null);
+    setImpacted(null);
+    setImpactError(null);
+    setCacheStatus(null);
+    try {
+      const response = await fetch("/_apx/workspace-context", { cache: "no-store", signal });
+      if (!response.ok) throw new Error(`Could not verify workspace identity (HTTP ${response.status}).`);
+      const d = await response.json() as AgentContext;
+      if (signal.aborted) return;
+      const key = identityKey(d); // No unknown/display-name identity may authorize cache reuse.
+      const prefs = key ? readPreferences(key) : null;
+      const scope = normalizeScope(requestedScope ?? prefs?.catalogs ?? d.project_catalog ?? d.used_catalogs.join(","));
+      setContext(d);
+      setIdentity(key);
+      setCatalogs(scope);
+      setLoadedScope(scope);
+      if (hydratedIdentity.current !== key) {
+        setQueryInput(prefs?.queryInput ?? "");
+        setHiddenTypes(new Set(prefs?.hiddenTypes ?? []));
+        setOnlyAgent(prefs?.onlyAgent ?? false);
+        hydratedIdentity.current = key;
+      }
+      const cacheKey = key ? graphKey(key, scope) : null;
+      if (refresh && cacheKey) forgetGraph(cacheKey);
+      const cached = !refresh && cacheKey ? readGraph(cacheKey) : null;
+      let g: GraphResponse;
+      let updated: number;
+      if (cached) {
+        g = cached.graph;
+        updated = cached.updated;
+      } else {
+        const q = new URLSearchParams();
+        if (scope) q.set("catalogs", scope);
+        if (refresh) q.set("refresh", "1");
+        const r = await fetch(`/_apx/discover/graph.json?${q}`, { cache: "no-store", signal });
         if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`);
-        return (await r.json()) as GraphResponse;
-      })
-      .then((g) => {
-        setGraph(g);
-        setImpacted(null);
-        setImpactError(null);
-        setCollapsed(new Set(g.nodes.length > COLLAPSE_ABOVE ? g.nodes.filter((n) => n.type === "Schema").map((n) => n.id) : []));
-      })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
+        g = await r.json() as GraphResponse;
+        updated = Date.now();
+        if (signal.aborted) return;
+        if (cacheKey) writeStored(cacheKey, { updated, graph: g });
+      }
+      if (signal.aborted) return;
+      setGraph(g);
+      setCacheStatus({ updated, cached: cached !== null });
+      setCollapsed(new Set(g.nodes.filter((n) => n.type === "Schema").map((n) => n.id)));
+    } catch (e: unknown) {
+      if (!signal.aborted) setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (!signal.aborted) setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    fetch("/_apx/workspace-context")
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null)
-      .then((d: AgentContext | null) => {
-        setContext(d);
-        const scope = (d?.used_catalogs ?? []).join(",");
-        setCatalogs(scope);
-        load(scope, false);
-      });
+    void load(null, false);
+    return () => activeRequest.current?.abort();
   }, [load]);
 
   const byId = useMemo(() => new Map((graph?.nodes ?? []).map((n) => [n.id, n])), [graph]);
@@ -188,6 +232,9 @@ export default function DiscoverApp() {
                 </div>
               ))}
             </details>
+            {cacheStatus && <div className="apx-dg-muted" role="status">
+              {cacheStatus.cached ? "Cached" : "Loaded"} · updated {new Date(cacheStatus.updated).toLocaleTimeString()}
+            </div>}
             {graph && <div className="apx-dg-muted">built {new Date(graph.built_at).toLocaleTimeString()}</div>}
           </aside>
           <div className="apx-workspace">
@@ -204,7 +251,7 @@ export default function DiscoverApp() {
                 <div className="apx-empty">
                   <div className="apx-empty-title">Could not load the workspace graph</div>
                   <div className="apx-empty-body">{error}</div>
-                  <button type="button" className="apx-btn" onClick={() => load(catalogs, false)}>Try again</button>
+                  <button type="button" className="apx-btn" onClick={() => load(null, false)}>Try again</button>
                 </div>
               ) : nodes.length === 0 ? (
                 <div className="apx-empty"><div className="apx-empty-title">No assets match</div>
