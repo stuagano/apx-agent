@@ -8315,7 +8315,12 @@ def _check_native_execution(
     deployed app must return a completed assistant message. When the deploy
     knows the managed session store, the session this invocation wrote is read
     back through the SDK saver. The bearer token is never logged. Never raises.
+    A composite binds the store for its session_keys state, never a graph
+    checkpointer (inspect_target), so only an LlmAgent's turn is read back.
     """
+    from ._agents import LlmAgent
+
+    checkpointed = smoke_agent is None or isinstance(smoke_agent, LlmAgent)
     import json as _json
     import urllib.error
     import urllib.request
@@ -8394,7 +8399,7 @@ def _check_native_execution(
                 schema.model_validate_json(encoded, strict=True)
             except Exception:
                 return _NativeExecutionSmoke(completed=False, detail="invocation did not return a valid declared typed output", readback=False)
-    if session_store is None:
+    if session_store is None or not checkpointed:
         return _NativeExecutionSmoke(completed=True, detail="assistant message returned", readback=False)
 
     checkpoint = body["output"].get("checkpoint")
@@ -10510,8 +10515,8 @@ def _deploy_apps_impl(
                 # turn separately, and read the managed session back when this
                 # deploy knows the store name.
                 log(f"# execution smoke: POST {app_url}/api/invocations")
-                # bound_session is the store inspect_target actually bound.
-                # A composite drops the auto-attached session, so don't read it back.
+                # bound_session is the store the App binds (project_session_store); the smoke
+                # reads a checkpoint back only for an LlmAgent, never a keyed composite.
                 smoke = _check_native_execution(
                     app_url,
                     profile=profile,
