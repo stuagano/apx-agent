@@ -232,7 +232,6 @@ def _render_unified_shell(ctx: AgentContext | None, *, hidden_tabs: frozenset[st
         <div id="sb-links"></div>
         <div class="sb-section">Data</div>
         <div class="sb-tree"><div id="cat-tree"></div></div>
-        <div id="sb-resources"></div>
       </div>
     </aside>
     <main><iframe id="dash-frame" src="{default_src}"></iframe></main>
@@ -315,7 +314,6 @@ def _render_unified_shell(ctx: AgentContext | None, *, hidden_tabs: frozenset[st
         }}
         loadCatalogTree(d.used_catalogs||[], d.used_schemas||[]);
         renderSidebarLinks(d);
-        renderOtherResources(d.resources||[]);
       }} catch(e) {{
         const id = document.getElementById("sb-identity");
         if (id) id.innerHTML = '<div class="sb-user">Unavailable</div>';
@@ -349,11 +347,6 @@ def _render_unified_shell(ctx: AgentContext | None, *, hidden_tabs: frozenset[st
       if (d.app_url) rows.push(sbRow("▣", "Databricks App ↗", d.app_url));
       if (d.experiment_url) rows.push(sbRow("◷", "MLflow experiment ↗", d.experiment_url));
       sbSection("sb-links", "Workspace", rows);
-    }}
-    function renderOtherResources(resources) {{
-      // UC tables/schemas/functions are in the Data tree above; list everything else.
-      const other = resources.filter(r => !["uc_table", "uc_schema", "uc_function"].includes(r.kind));
-      sbSection("sb-resources", "Resources", other.map(r => sbRow("•", r.kind + ": " + r.identifier)));
     }}
     loadSidebar();
     function loadCatalogTree(usedCats, usedSchemas) {{

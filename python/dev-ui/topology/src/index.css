@@ -782,6 +782,9 @@ a:focus-visible,
 .apx-dg-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .apx-dg-muted { color: var(--muted); font-size: 11px; }
 .apx-dg-legend { margin-top: 8px; }
+.apx-dg-agent { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin: 8px 0; }
+.apx-dg-agent .apx-btn { width: 100%; margin: 6px 0; }
+.apx-dg-agent-links { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
 .apx-dg-legend-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
 .apx-dg-line { width: 22px; display: inline-block; }
 .apx-dg-warnings { margin: 8px; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 6px;

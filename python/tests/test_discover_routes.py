@@ -54,7 +54,7 @@ async def test_graph_json_shape_and_params(app, stub_graph):
     r = await _get(app, "/_apx/discover/graph.json", params={"catalogs": "main, other ,", "refresh": "1"})
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"nodes", "edges", "warnings", "built_at"}
+    assert set(body) == {"nodes", "edges", "warnings", "built_at", "agent"}
     assert body["warnings"] == ["genie: denied"]
     assert body["edges"] == [{"src": "table:main.s.v", "dst": "table:main.s.t", "type": "derivedFrom"}]
     assert stub_graph == {"ws": "obo-client", "catalogs": ["main", "other"], "refresh": True}
@@ -125,3 +125,43 @@ async def test_discover_page_serves_built_spa(app):
     assert r.status_code == 200
     assert '<div id="root">' in r.text
     assert "apx-agent · discover" in r.text
+
+
+def _declare(monkeypatch, *specs):
+    from apx_agent._resources import ResourceSpec
+
+    monkeypatch.setattr("apx_agent._resources.collect_resource_specs",
+                        lambda agent: [ResourceSpec(k, i) for k, i in specs])
+
+
+@pytest.mark.asyncio
+async def test_graph_overlays_the_local_agent_and_its_footprint(app, stub_graph, monkeypatch):
+    # Local run: the agent isn't an App node, so Discover gets a synthesized Agent node.
+    monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+    _declare(monkeypatch, ("uc_table", "Main.S.T"), ("genie_space", "g1"), ("sql_warehouse", "wh-1"))
+    body = (await _get(app, "/_apx/discover/graph.json")).json()
+    assert {"id": "agent:self", "type": "Agent", "name": "disc", "fqn": "disc", "props": {}} in body["nodes"]
+    assert {"src": "agent:self", "dst": "table:main.s.t", "type": "uses"} in body["edges"]
+    assert body["agent"] == {
+        "id": "agent:self",
+        "footprint": ["table:main.s.t"],
+        # Not in this graph: outside the loaded scope, or a kind the graph doesn't hold.
+        "unplaced": [{"kind": "genie_space", "identifier": "g1", "node_id": "genie:g1"},
+                     {"kind": "sql_warehouse", "identifier": "wh-1", "node_id": None}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_graph_uses_the_deployed_app_node_as_the_agent(app, monkeypatch):
+    # Deployed: the apps connector already drew this App and its resource edges; reuse them.
+    t = Node("table:main.s.t", "Table", "t", "main.s.t")
+    a = Node("app:my-agent", "App", "disc", "my-agent")
+    graph = Graph([Fragment([t, a], [Edge(a.id, t.id, "uses")], [])])
+    monkeypatch.setattr(builder, "get_graph", lambda ws, catalogs, *, refresh=False: graph)
+    monkeypatch.setattr("apx_agent._defaults._ws_prefer_obo", lambda request: "obo-client")
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "my-agent")
+    _declare(monkeypatch, ("uc_table", "main.s.t"))
+    body = (await _get(app, "/_apx/discover/graph.json")).json()
+    assert [n["id"] for n in body["nodes"] if n["type"] in ("Agent", "App")] == ["app:my-agent"]
+    assert body["edges"] == [{"src": "app:my-agent", "dst": "table:main.s.t", "type": "uses"}]
+    assert body["agent"] == {"id": "app:my-agent", "footprint": ["table:main.s.t"], "unplaced": []}

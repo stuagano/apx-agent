@@ -66,3 +66,17 @@ class Fragment:
 def node_id(prefix: str, fqn: str) -> str:
     """Stable id; UC names are case-insensitive, so ids are lower-cased."""
     return f"{prefix}:{fqn.lower()}"
+
+
+# Declared ResourceSpec kind -> graph node prefix. Warehouses, connections, Lakebase
+# instances and jobs are not graph node types.
+_RESOURCE_PREFIX = {
+    "uc_table": "table", "uc_function": "function", "genie_space": "genie",
+    "serving_endpoint": "serving", "vector_search_index": "vsindex", "app": "app",
+}
+
+
+def resource_node_id(kind: str, identifier: str) -> str | None:
+    """The graph node a declared agent resource is, or None for kinds the graph doesn't hold."""
+    prefix = _RESOURCE_PREFIX.get(kind)
+    return node_id(prefix, identifier) if prefix else None

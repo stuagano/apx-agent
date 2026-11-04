@@ -28,3 +28,12 @@ def test_bundle_calls_graph_api_and_no_wire_api():
     assert "/_apx/discover/impact/" in js
     assert "/_apx/discover/wire" not in js
     assert "/_apx/discover/unwire" not in js
+
+
+def test_bundle_shows_this_agent_beside_the_graph():
+    # The built Discover page renders the agent overlay and the workspace-context runtime facts.
+    js = _bundle_js()
+    for wired in ("/_apx/workspace-context", "This agent", "Only this agent", "Not in this graph",
+                  "MLflow experiment", "Databricks App", "experiment_url", "app_url", "session_store",
+                  "footprint", "unplaced"):
+        assert wired in js, wired
