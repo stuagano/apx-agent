@@ -10096,6 +10096,11 @@ def _deploy_apps_impl(
 
         report = inspect_target(agent, target="durable_agent_server", config=effective_config)
         bound_session = report.session_store
+        if effective_config is not None and effective_config.target == "durable_agent_server":
+            # #1047: the store doctor and preflight probed (agent.toml wins for a keyed composite).
+            from ._agent_toml import project_session_store
+
+            bound_session = project_session_store(cwd, agent, effective_config)
         # Deploy-time imports have no memory-store credentials. The generated
         # server binds declared memory and fails closed at startup if unreachable.
         declared_memory = effective_config is not None and effective_config.memory is not None

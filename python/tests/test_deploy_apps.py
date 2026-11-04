@@ -1353,9 +1353,12 @@ def test_native_options_fail_before_workspace_access(scaffold: Path, monkeypatch
 
 
 @pytest.mark.parametrize("wrong_owner", [False, True])
-@pytest.mark.parametrize("generated,memory", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("generated,memory,composite", [
+    (False, False, False), (True, False, False), (True, True, False), (True, False, True),
+])
 def test_app_space_deploy_binds_sdk_owned_store(
     scaffold: Path, monkeypatch: pytest.MonkeyPatch, wrong_owner: bool, generated: bool, memory: bool,
+    composite: bool,
 ) -> None:
     from apx_agent import LlmAgent
     from databricks.sdk.service.apps import App, Space
@@ -1371,7 +1374,17 @@ def test_app_space_deploy_binds_sdk_owned_store(
         generate_project(AgentConfig(name="my-app", target="durable_agent_server",
                                     deploy={"space": "app-space"},
                                     memory={"type": "managed", "store_name": "agent-memory"} if memory else None,
-                                    session={"type": "managed", "store_name": "remote-sessions"}), scaffold)
+                                    **({} if composite else {"session": {"type": "managed", "store_name": "remote-sessions"}})),
+                         scaffold)
+    if composite:
+        # #1047: a keyed composite binds agent.toml's store, not the auto-derived apx-my-app-sessions.
+        (scaffold / "agent.py").write_text(
+            "from apx_agent import Agent, SequentialAgent\n"
+            "agent = SequentialAgent([Agent(name='a', tools=[])], name='my-app', session_keys=('intake',))\n")
+        (scaffold / "agent.toml").write_text(
+            'schema_version = 1\n\n[agent]\nframework = "langgraph"\nserver = "agentbricks"\n'
+            '\n[auth.user]\nrequired = true\nadditional_api_scopes = ["ai-gateway"]\n'
+            '\n[session_store]\nname = "team-sessions"\n')
     original_bundle = (scaffold / "databricks.yml").read_text()
     calls = _install_subprocess_mock(monkeypatch)
     monkeypatch.setattr("apx_agent.cli._load_finalized_agent",
@@ -1428,8 +1441,8 @@ def test_app_space_deploy_binds_sdk_owned_store(
 
         verify(Artifact(str(scaffold / ".build" / "agent.toml"), must_contain="[auth.user]"))
         native = AgentProject.load(scaffold / ".build")
-        assert native.user_auth.required == memory
-        assert native.user_auth.additional_api_scopes == (("ai-gateway",) if memory else ())
+        assert native.user_auth.required == (memory or composite)  # the composite's agent.toml declares it
+        assert native.user_auth.additional_api_scopes == (("ai-gateway",) if memory or composite else ())
     assert sum(call.args == ("selected",) for call in constructor.call_args_list) == 1
     grant.assert_not_called()
     saved = yaml.safe_load((scaffold / "databricks.yml").read_text())["resources"]["apps"]["my-app"]
@@ -1456,9 +1469,10 @@ def test_app_space_deploy_binds_sdk_owned_store(
         assert "resources" not in saved and "user_api_scopes" not in saved
         sdk.create_runtime_store.assert_called_once_with("my-app", "app-sp", app_name="my-app", retry_transient=True)
         if generated:
+            store = "team-sessions" if composite else "remote-sessions"
             sdk.create_session_store.assert_called_once_with(
-                "remote-sessions", description="apx-agent managed sessions", retry_transient=True)
-            sdk.grant_session_store_permission.assert_called_once_with("remote-sessions", "app-sp")
+                store, description="apx-agent managed sessions", retry_transient=True)
+            sdk.grant_session_store_permission.assert_called_once_with(store, "app-sp")
 
 
 def test_app_space_source_rejects_local_store_override(tmp_path: Path) -> None:

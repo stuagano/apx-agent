@@ -130,3 +130,6 @@ _validation_report.json
 # Local session scratch and daily summaries
 .ctk/
 daily-summaries/
+
+# Axon code-graph index (local MCP)
+.axon/
