@@ -11,13 +11,14 @@ to pick one; the agent's declaration selects it, checked in this order:
 
 | # | When | Path | Recorded as |
 |---|---|---|---|
-| 1 | `[tool.apx.deploy] backend = "apps_api"` | **Apps API.** APX calls the Databricks Apps API directly in seven get-or-create steps; no Agent Bricks CLI and no Bundle. Keeps the declared App name. | `apps_api` |
+| 1 | `[tool.apx.deploy] backend = "apps_api"` | **Apps API.** APX calls the Databricks Apps API directly in seven get-or-create steps; no Agent Bricks CLI and no Bundle. Keeps the declared App name. Requires `target = "durable_agent_server"` and `deploy.entrypoint`; any other target is rejected, not routed to another path. | `apps_api` |
 | 2 | `target` is `durable_agent_server` (the default when omitted) and no `deploy.space` | **Agent Bricks CLI.** APX compiles `.build/agent.toml` and `.build/app.yaml`, then runs `agentbricks deploy`. App names get the `agent-bricks-` prefix (30 characters max). An existing `databricks.yml` only supplies its build script and variables. | `agentbricks` |
 | 3 | anything else: `target = "responses_agent"`, or a durable agent with an explicit `deploy.space` | **Databricks Bundle.** `databricks bundle deploy` + `bundle run` against the project's `databricks.yml`, described below. | `databricks_bundle` |
 
 ```toml
 [tool.apx.deploy]
-backend = "apps_api"   # absent or "agentbricks" keeps path 2
+backend = "apps_api"     # absent or "agentbricks": path 2, or path 3 with deploy.space
+entrypoint = "my_agent"  # required: the module run as `python -m my_agent`
 ```
 
 Choose `apps_api` when the App name must not change — for example an `mcp-`
@@ -30,7 +31,7 @@ and the [Apps API deploy spec](../design/apps-api-deploy.md).
 The MLflow GenAI Agent Server path. `compile_to_responses_agent` produces a `ResponsesAgent` with `@invoke` / `@stream` decorated functions; `databricks bundle deploy + bundle run` pushes code and restarts the app. No container build. The deploy is a code push.
 
 ```bash
-apx-agent agents scaffold my_agent --target apps   # writes an editable project directory
+apx-agent agents scaffold my_agent --target apps --runtime responses_agent   # Bundle runtime; the default is Agent Bricks
 cd my_agent && uv sync
 apx-agent agents deploy --target apps              # builds wheel, auto-resolves MLflow
                                                    # experiment, bundle deploy + run
