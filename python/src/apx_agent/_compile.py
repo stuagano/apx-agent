@@ -405,6 +405,50 @@ def _authoritative_output_middleware(tool_name: str) -> Any:
     return _AuthoritativeOutputMiddleware()
 
 
+def _trim_to_window(messages: list[Any], fixed: list[Any], budget: int) -> list[Any]:
+    """Drop the oldest turns so ``fixed + kept`` fits ``budget`` approximate tokens.
+
+    A turn starts at a ``HumanMessage`` and carries its AI tool calls and their
+    ``ToolMessage`` results, so cutting only at turn starts never splits a pair.
+    System messages are always kept. The latest turn is kept even if it alone
+    is over budget. Tokens are estimated by langchain's
+    ``count_tokens_approximately`` (~4 chars per token plus per-message overhead).
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.messages.utils import count_tokens_approximately
+
+    system = [m for m in messages if isinstance(m, SystemMessage)]
+    rest = [m for m in messages if not isinstance(m, SystemMessage)]
+    starts = [0, *(i for i, m in enumerate(rest) if i and isinstance(m, HumanMessage))]
+    start = next(
+        (i for i in starts if count_tokens_approximately([*fixed, *system, *rest[i:]]) <= budget),
+        starts[-1],
+    )
+    return [*system, *rest[start:]]
+
+
+def _context_window_middleware(budget: int) -> Any:
+    """Trim what each model call sees to ``context_window_tokens`` (#1086).
+
+    Only the request sent to the model is overridden; graph state (and so the
+    checkpointed conversation history) keeps every message.
+    """
+    from langchain.agents.middleware import AgentMiddleware
+
+    def _trimmed(request: Any) -> Any:
+        fixed = [m for m in (request.system_message,) if m is not None]
+        return request.override(messages=_trim_to_window(request.messages, fixed, budget))
+
+    class _ContextWindowMiddleware(AgentMiddleware):
+        def wrap_model_call(self, request: Any, handler: Any) -> Any:
+            return handler(_trimmed(request))
+
+        async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+            return await handler(_trimmed(request))
+
+    return _ContextWindowMiddleware()
+
+
 def _compile_llm_agent(
     agent: LlmAgent,
     ctx: CompileContext,
@@ -464,6 +508,8 @@ def _compile_llm_agent(
         middleware.append(unavailable_middleware())
     if ctx.fixture_replay is not None:
         middleware.append(ctx.fixture_replay.middleware(ctx.step_path))
+    if agent._context_window_tokens is not None:
+        middleware.append(_context_window_middleware(agent._context_window_tokens))
     # Deferred loading (#767) still registers every author tool on create_agent
     # so ToolNode can execute a revealed call. Middleware hides those tools
     # from the model until tool_search writes their names into state.
