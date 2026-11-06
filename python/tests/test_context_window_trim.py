@@ -79,11 +79,13 @@ def _assert_pairs_intact(prompt: list[Any]) -> None:
     assert calls == results, f"split tool pair: calls={calls} results={results}"
 
 
-def _run(agent: LlmAgent, messages: list[Any]) -> tuple[Any, dict[str, Any]]:
+CONFIG = {"configurable": {"thread_id": "t1"}}
+
+
+def _run(agent: LlmAgent, messages: list[Any]) -> Any:
     graph = compile_to_langgraph(agent, ws=None, model="m", checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "t1"}}
-    graph.invoke({"messages": messages}, config)
-    return graph, config
+    graph.invoke({"messages": messages}, CONFIG)
+    return graph
 
 
 def test_over_budget_session_sends_prompt_under_budget(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,7 +94,7 @@ def test_over_budget_session_sends_prompt_under_budget(monkeypatch: pytest.Monke
     history = [*_history(20), HumanMessage(content="latest question")]
     assert count_tokens_approximately(history) > 5 * budget
 
-    graph, config = _run(LlmAgent(tools=[lookup], instructions=INSTRUCTIONS, context_window_tokens=budget), history)
+    graph = _run(LlmAgent(tools=[lookup], instructions=INSTRUCTIONS, context_window_tokens=budget), history)
 
     (prompt,) = SENT
     assert isinstance(prompt[0], SystemMessage) and prompt[0].content == INSTRUCTIONS
@@ -103,7 +105,7 @@ def test_over_budget_session_sends_prompt_under_budget(monkeypatch: pytest.Monke
     _assert_pairs_intact(prompt)
 
     # Persisted history is untouched: every original message plus the reply.
-    stored = graph.get_state(config).values["messages"]
+    stored = graph.get_state(CONFIG).values["messages"]
     assert [m.content for m in stored] == [*(m.content for m in history), "done"]
 
 
@@ -115,7 +117,7 @@ def test_tool_loop_inside_a_trimmed_window_keeps_pairs(monkeypatch: pytest.Monke
     ])
     history = [*_history(12), HumanMessage(content="latest question")]
 
-    graph, config = _run(LlmAgent(tools=[lookup], instructions=INSTRUCTIONS, context_window_tokens=budget), history)
+    graph = _run(LlmAgent(tools=[lookup], instructions=INSTRUCTIONS, context_window_tokens=budget), history)
 
     assert len(SENT) == 2
     for prompt in SENT:
@@ -124,7 +126,7 @@ def test_tool_loop_inside_a_trimmed_window_keeps_pairs(monkeypatch: pytest.Monke
         _assert_pairs_intact(prompt)
     # The second hop carries the live call and its result, after the latest question.
     assert [type(m) for m in SENT[1][-3:]] == [HumanMessage, AIMessage, ToolMessage]
-    assert len(graph.get_state(config).values["messages"]) == len(history) + 3
+    assert len(graph.get_state(CONFIG).values["messages"]) == len(history) + 3
 
 
 def test_unset_budget_sends_full_history(monkeypatch: pytest.MonkeyPatch) -> None:
