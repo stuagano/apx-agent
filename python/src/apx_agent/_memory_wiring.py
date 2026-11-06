@@ -284,6 +284,8 @@ def attach_declared_memory(
             setattr(agent, "_apx_memory_store", store)
             setattr(agent, "_apx_memory_principal", default_principal)
             setattr(agent, "_apx_memory_namespace", mcfg.namespace_default)
+            # Read at compile time to inject per-turn recall (#1087).
+            setattr(agent, "_apx_memory_config", mcfg)
             # Config path uses the dep-principal mechanism (proved in Phase 0 Task 0.2).
             # _use_dep_principal=True emits tools with a `principal: Dependencies.Principal`
             # dep param (added in Task 1.3, which runs before this task).

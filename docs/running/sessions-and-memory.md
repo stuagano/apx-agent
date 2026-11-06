@@ -263,6 +263,34 @@ def build_instructions(user_id: str, query: str) -> str:
 
 `store.add` / `recall` / `list` / `update` / `delete` for offline batch flows — seeding memories from external systems, cleaning up stale facts, etc.
 
+### Automatic recall each turn
+
+When an `LlmAgent` on the default LangGraph executor declares `memory=`, every model call recalls the caller's
+top memories for the latest user message and appends them to the system prompt
+as a `### Relevant memories` block (via `assemble_memory_context`). You don't
+wire anything by hand.
+
+- **Principal scoping** is the same as the declared `recall` tool: the
+  per-request OBO user (`X-Forwarded-User`) wins, else the local CLI-profile
+  identity. With no principal, nothing is recalled.
+- **Not persisted.** The block is added to the model request only. It never
+  enters graph state, the checkpointed thread, or saved conversation history.
+- **Fails soft.** If the store raises, the turn continues without memories and
+  a `memory auto-recall failed` warning is logged.
+
+```python
+agent = Agent(
+    instructions="...",
+    memory={
+        "type": "managed",
+        "store_name": "agent-memory",
+        "recall_k": 3,            # top-k per turn (default 5)
+        "recall_min_score": 0.6,  # drop memories scoring below this (default 0.0)
+        "auto_recall": False,     # off switch (default True); the recall tool still works
+    },
+)
+```
+
 ### Memory stores
 
 | Store | Best for |

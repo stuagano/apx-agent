@@ -201,6 +201,12 @@ class MemoryBackendConfig(_BackendConfig):
     validate_at_boot: bool = True
     extraction: MemoryExtractionPolicy | None = None
     """Explicit session-to-memory extraction policy. Absent means off."""
+    auto_recall: bool = True
+    """Recall the caller's top memories into the system prompt each turn (#1087)."""
+    recall_k: int = 5
+    """Top-k memories auto-recalled per turn."""
+    recall_min_score: float = 0.0
+    """Relevance threshold: auto-recalled memories scoring below it are dropped."""
 
     @model_validator(mode="after")
     def _validate_managed_store(self) -> "MemoryBackendConfig":

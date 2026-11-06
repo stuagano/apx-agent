@@ -449,6 +449,68 @@ def _context_window_middleware(budget: int) -> Any:
     return _ContextWindowMiddleware()
 
 
+def _memory_recall_middleware(agent: LlmAgent, ctx: CompileContext) -> Any | None:
+    """Inject the caller's recalled memories into the system prompt each turn (#1087).
+
+    Active when declared ``memory=`` attached a store and ``auto_recall`` is on.
+    The principal is resolved exactly like the declared ``recall`` tool: the
+    per-request OBO user (``X-Forwarded-User``) wins, else the attach-time
+    default. The block rides on the model request's system message only, so it
+    never enters graph state or the saved conversation history. A failed recall
+    is logged and the turn continues without memories.
+    """
+    store = getattr(agent, "_apx_memory_store", None)
+    cfg = getattr(agent, "_apx_memory_config", None)
+    if store is None or cfg is None or not cfg.auto_recall:
+        return None
+    request_principal = ctx.headers.user_id if ctx.headers else None
+    principal = request_principal or getattr(agent, "_apx_memory_principal", None)
+    if not principal:
+        return None
+
+    from langchain.agents.middleware import AgentMiddleware
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from ._memory import RecallOptions
+    from ._prompt_assembly import assemble_memory_context
+
+    def _block(query: str) -> str:
+        try:
+            return assemble_memory_context(
+                store,
+                RecallOptions(
+                    principal_id=principal,
+                    query=query,
+                    k=cfg.recall_k,
+                    namespace=cfg.namespace_default,
+                ),
+                min_score=cfg.recall_min_score,
+            )
+        except Exception as exc:  # a broken store must not fail the turn
+            logger.warning("memory auto-recall failed; continuing without memories: %s", exc)
+            return ""
+
+    def _with_memories(request: Any) -> Any:
+        queries = [m.text for m in request.messages if isinstance(m, HumanMessage)]
+        if not queries:
+            return request
+        block = _block(queries[-1])
+        if not block:
+            return request
+        base = request.system_message
+        text = block if base is None else f"{base.text}\n\n{block}"
+        return request.override(system_message=SystemMessage(content=text))
+
+    class _MemoryRecallMiddleware(AgentMiddleware):
+        def wrap_model_call(self, request: Any, handler: Any) -> Any:
+            return handler(_with_memories(request))
+
+        async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+            return await handler(_with_memories(request))
+
+    return _MemoryRecallMiddleware()
+
+
 def _compile_llm_agent(
     agent: LlmAgent,
     ctx: CompileContext,
@@ -508,6 +570,9 @@ def _compile_llm_agent(
         middleware.append(unavailable_middleware())
     if ctx.fixture_replay is not None:
         middleware.append(ctx.fixture_replay.middleware(ctx.step_path))
+    # Recall first (outer) so the context window budgets the memory block too.
+    if (recall := _memory_recall_middleware(agent, ctx)) is not None:
+        middleware.append(recall)
     if agent._context_window_tokens is not None:
         middleware.append(_context_window_middleware(agent._context_window_tokens))
     # Deferred loading (#767) still registers every author tool on create_agent
