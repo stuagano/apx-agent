@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -1911,7 +1912,7 @@ class TestLongTaskContinuation:
 class TestExistingAgentCard:
     """A card we did not author supplies instructions and tools (#834)."""
 
-    def _agent(self, **card_fields: object) -> RemoteDatabricksAgent:
+    def _agent(self, **card_fields: Any) -> RemoteDatabricksAgent:
         from apx_agent._models import AgentCard
 
         agent = make_plain_agent(base_url="https://billing.example.com")

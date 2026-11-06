@@ -15,6 +15,7 @@ from apx_agent.jobs_tools import (
     jobs_tools,
 )
 from apx_agent._inspection import _inspect_tool_fn
+from apx_agent._resources import get_resources
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +58,7 @@ class TestJobsToolkit:
         tools = jobs_tools(warehouse_id="wh-abc")
         # Only the find_jobs_for_table tool attaches a sql_warehouse resource
         find_jobs = next(t for t in tools if t.__name__ == "find_jobs_for_table")
-        specs = getattr(find_jobs, "_apx_resources", [])
+        specs = get_resources(find_jobs)
         kinds = {(s.kind, s.identifier) for s in specs}
         assert ("sql_warehouse", "wh-abc") in kinds
 
@@ -94,12 +95,12 @@ class TestJobsForTableToolFactory:
 
     def test_attaches_warehouse_resource_when_pinned(self):
         tool = jobs_for_table_tool(warehouse_id="wh-1")
-        specs = getattr(tool, "_apx_resources", [])
+        specs = get_resources(tool)
         assert any(s.kind == "sql_warehouse" and s.identifier == "wh-1" for s in specs)
 
     def test_no_warehouse_resource_when_auto_discover(self):
         tool = jobs_for_table_tool()
-        specs = getattr(tool, "_apx_resources", [])
+        specs = get_resources(tool)
         assert specs == [] or not any(s.kind == "sql_warehouse" for s in specs)
 
     def test_smoke_instantiation(self):

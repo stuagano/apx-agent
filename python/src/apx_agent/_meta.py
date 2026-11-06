@@ -17,6 +17,7 @@ import tomllib
 from dataclasses import dataclass
 from importlib import metadata as _metadata
 from pathlib import Path
+from typing import Any
 
 _DIST_NAME = "apx-agent"
 
@@ -79,7 +80,7 @@ def discover_framework_sha() -> DiscoveryResult:
     return DiscoveryResult(sha=sha, requested_ref=requested_ref, reason="")
 
 
-def _explain_missing_vcs(payload: dict[str, object]) -> str:
+def _explain_missing_vcs(payload: dict[str, Any]) -> str:  # parsed direct_url.json (PEP 610)
     dir_info = payload.get("dir_info")
     url = payload.get("url")
     url_str = url if isinstance(url, str) else ""

@@ -13,6 +13,7 @@ import pytest
 
 from apx_agent import InMemoryMemoryStore, make_memory_tools
 from apx_agent._memory import EmbeddingFn, MemoryFilter
+from apx_agent._tool import get_tool_metadata
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +86,7 @@ class TestBuild:
         """Every minted tool carries the @tool decorator's metadata."""
         tools = make_memory_tools(store=InMemoryMemoryStore())
         for t in tools:
-            assert getattr(t, "_apx_tool", None) is not None
+            assert get_tool_metadata(t) is not None
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ def _tools_of(source: str, target: str = "agent") -> list[str]:
     def find(value):
         if isinstance(value, ast.Call):
             fn = value.func
-            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else None
             if name in ("Agent", "LlmAgent"):
                 return value
             for a in value.args:
@@ -32,7 +32,7 @@ def _tools_of(source: str, target: str = "agent") -> list[str]:
         return None
 
     for stmt in tree.body:
-        if isinstance(stmt, ast.Assign) and getattr(stmt.targets[0], "id", None) == target:
+        if isinstance(stmt, ast.Assign) and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id == target:
             call = find(stmt.value)
             kw = next((k for k in call.keywords if k.arg == "tools"), None)
             return [e.id for e in kw.value.elts] if kw else None
@@ -46,7 +46,7 @@ def _instructions_of(source: str, target: str = "agent") -> str:
     def find(value):
         if isinstance(value, ast.Call):
             fn = value.func
-            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else None
             if name in ("Agent", "LlmAgent"):
                 return value
             for a in value.args:
@@ -56,7 +56,7 @@ def _instructions_of(source: str, target: str = "agent") -> str:
         return None
 
     for stmt in tree.body:
-        if isinstance(stmt, ast.Assign) and getattr(stmt.targets[0], "id", None) == target:
+        if isinstance(stmt, ast.Assign) and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id == target:
             call = find(stmt.value)
             kw = next((k for k in call.keywords if k.arg == "instructions"), None)
             return kw.value.value if kw else None

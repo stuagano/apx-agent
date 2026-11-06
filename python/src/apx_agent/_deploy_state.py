@@ -114,7 +114,7 @@ def save_deploy_state(
     ws: Any,
     state: ApxAppDeployState,
     *,
-    deployer: str = "",
+    deployer: str,
     action: str = "update",
 ) -> None:
     """Persist ``state`` to the workspace, appending an audit entry."""

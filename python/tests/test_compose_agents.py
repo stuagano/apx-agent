@@ -32,8 +32,11 @@ def _root_expr(source: str) -> str:
     """Return the source text of the root `agent =` value."""
     tree = ast.parse(source)
     for stmt in tree.body:
-        if isinstance(stmt, ast.Assign) and getattr(stmt.targets[0], "id", None) == "agent":
-            return ast.get_source_segment(source, stmt.value) or ""
+        target = stmt.targets[0] if isinstance(stmt, ast.Assign) else None
+        if isinstance(target, ast.Name) and target.id == "agent":
+            segment = ast.get_source_segment(source, stmt.value)
+            assert segment is not None  # parsed nodes always carry positions
+            return segment
     return ""
 
 

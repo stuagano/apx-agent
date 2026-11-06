@@ -26,6 +26,10 @@ from ._defaults import PrincipalDependency  # module-level — resolvable by get
 from ._memory import MemoryStore, RecallOptions, RecallResult
 from ._tool import tool
 
+# The default tool-name prefix is none: minted tools keep their bare names
+# (``recall`` / ``remember`` / ...), matching the config models' default.
+NO_TOOL_PREFIX = ""
+
 # Request-scoped principal for scoped backends (e.g. Managed Agent Memory),
 # whose id-only ``delete`` needs the caller's scope. The dep-path ``forget``
 # tool publishes its trusted principal here right before calling
@@ -89,7 +93,7 @@ def make_memory_tools(
     principal_id_resolver: Callable[[], str | None] | None = None,
     default_principal_id: str | None = None,
     namespace_default: str = "default",
-    tool_prefix: str = "",
+    tool_prefix: str = NO_TOOL_PREFIX,
     include: list[MemoryToolName] | None = None,
     _use_dep_principal: bool = False,
 ) -> list[Any]:

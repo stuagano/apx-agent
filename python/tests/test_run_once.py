@@ -29,12 +29,12 @@ from apx_agent import LlmAgent, run_once
 # ---------------------------------------------------------------------------
 
 
-def _make_response(text: str | None = "ok", role: str = "assistant"):
+def _make_response(text: str = "ok", role: str = "assistant"):
     """Build a fake ChatAgentResponse with one message."""
     import uuid
     from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
     return ChatAgentResponse(
-        messages=[ChatAgentMessage(id=str(uuid.uuid4()), role=role, content=text or "")]
+        messages=[ChatAgentMessage(id=str(uuid.uuid4()), role=role, content=text)]
     )
 
 
