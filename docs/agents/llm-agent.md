@@ -49,8 +49,24 @@ agent = Agent(
 | `output_key` | — | `str \| None` | Named shared-state slot for the final text, or JSON-compatible validated data when `output_schema` is set |
 | `sub_agents` | — | `list[str]` | URLs of remote agents auto-wrapped as `agent_tool` at startup |
 | `tool_loading` | — | `"eager"` \| `"deferred"` | How tools are advertised to the model. `"eager"` (default) binds every author tool on the first hop. `"deferred"` sends only a client-side `tool_search` tool first; matched tools bind for later hops. Not Anthropic's server-side tool-search beta. |
+| `context_window_tokens` | — | `int \| None` | Prompt budget in approximate tokens. When set, the oldest turns are dropped before each model call so the prompt fits (see below). `None` (default) sends the full history. |
 
 With `tool_loading="deferred"`, the first compiled model call advertises only `tool_search`. The model searches the agent's catalog by name/description; matching tools stay bound for later hops in that session. Loop `finish_loop` and Handoff `transfer_to_*` stay always visible — they are orchestration, not inventory.
+
+### Context window
+
+`context_window_tokens` turns on a sliding window. Before every model call — including each hop of a tool loop — the agent drops whole turns, oldest first, until the system instructions plus the remaining turns fit the budget.
+
+- A turn starts at a user message and carries its tool calls and their tool results, so a tool call is never sent without its result.
+- System instructions are always kept.
+- The latest turn is always kept, even when it alone exceeds the budget.
+- Only the prompt sent to the model is trimmed. The conversation history in graph state and the checkpointer keeps every message.
+
+Tokens are estimated with langchain's `count_tokens_approximately` (about 4 characters per token plus a small per-message overhead), not the model's tokenizer, so leave headroom below the model's real limit. There is no summarizing mode: trimmed turns are dropped, not summarized.
+
+```python
+agent = LlmAgent(instructions="...", tools=[...], context_window_tokens=8000)
+```
 
 ## Typed output
 
