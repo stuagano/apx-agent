@@ -107,8 +107,8 @@ def make_memory_tools(
     :data:`NO_PRINCIPAL` instead of raising — agents should degrade
     gracefully on missing identity.
 
-    ``forget`` is principal-agnostic — deletion is keyed by memory id,
-    not by principal — so it works even when no principal is available.
+    ``forget`` is scoped too: it deletes only a memory owned by the resolved
+    principal, and deletes nothing when no principal resolves (fail-closed).
 
     Args:
         store: The :class:`MemoryStore` instance to wrap. Required.
@@ -155,13 +155,16 @@ def make_memory_tools(
     def _scoped_forget(id: str, principal: str | None) -> str:
         """Delete a memory by id, but only within *principal*'s own scope.
 
-        ``store.delete()`` is keyed on id alone for the Delta / Lakebase /
+        ``store.delete()`` is keyed on id alone for the Lakebase /
         in-memory backends, so enforce ownership here: fetch the row and require
         its ``principal_id`` to match the caller. A missing id and a
         foreign-owned id return the SAME text so a caller can't probe which ids
         exist in another principal's scope. A falsy principal deletes nothing
-        (fail-closed). The managed backend already scopes get/delete server-side;
-        the same check is a harmless second gate there.
+        (fail-closed). Nothing is scoped server-side: the managed service's
+        GET-by-ID is not actor scoped either, and ``ManagedMemoryStore`` only
+        re-checks client-side against its own ``scope_resolver``. This check is
+        the gate that binds the delete to the caller's principal; removing it
+        would let one principal delete another principal's memories.
         """
         if not principal:
             return f"No memory with id {id}."

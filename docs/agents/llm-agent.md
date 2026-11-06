@@ -44,7 +44,8 @@ agent = Agent(
 | `temperature` | — | `float \| None` | Sampling temperature; `None` uses the model default |
 | `max_tokens` | — | `int \| None` | Max output tokens; `None` uses the model default |
 | `max_iterations` | — | `int \| None` | Safety cap on tool-calling loops; `None` (default) defers to LangGraph's recursion limit |
-| `memory` | — | `str` | Memory tier: `"off"`, `"inmemory"`, or `"persistent"` |
+| `memory` | — | `str \| MemoryBackendConfig \| Mapping` | One-word tier — `"off"` (default), `"inmemory"` (alias `"local"`), `"persistent"` (Lakebase), or `"managed"` — or an explicit backend config; `"lakebase"` needs the explicit form. See [sessions and memory](../running/sessions-and-memory.md) |
+| `session` | — | `SessionBackendConfig \| Mapping \| None` | Explicit session backend; overrides the session a one-word `memory` tier implies |
 | `output_schema` | — | `type[BaseModel] \| None` | Pydantic model class for strict validation of the final JSON answer; `None` keeps free-text output |
 | `output_key` | — | `str \| None` | Named shared-state slot for the final text, or JSON-compatible validated data when `output_schema` is set |
 | `sub_agents` | — | `list[str]` | URLs of remote agents auto-wrapped as `agent_tool` at startup |
