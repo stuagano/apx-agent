@@ -1296,6 +1296,42 @@ def test_trace_filters_by_agent_and_operation(
     assert fake_search.call_args.kwargs["max_results"] == 5
 
 
+def test_trace_filter_quotes_values_for_mlflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A quote in --agent must not break the MLflow filter (MLflow does no unescaping)."""
+    monkeypatch.chdir(tmp_path)
+    fake_search = MagicMock(return_value=[])
+
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", fake_search):
+        result = CliRunner().invoke(main, [
+            "traces", "list", "--experiment", "/e",
+            "--agent", "O'Brien", "--operation", "tool_call",
+        ])
+
+    assert result.exit_code == 0, result.output
+    assert fake_search.call_args.kwargs["filter_string"] == (
+        "attributes.`apx.agent.name` = \"O'Brien\""
+        " AND attributes.`apx.operation` = 'tool_call'"
+    )
+
+
+def test_trace_filter_rejects_value_with_both_quotes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    fake_search = MagicMock(return_value=[])
+
+    with patch("apx_agent._mlflow_tracing.search_traces_for_experiment", fake_search):
+        result = CliRunner().invoke(main, [
+            "traces", "list", "--experiment", "/e", "--agent", "a'b\"c",
+        ])
+
+    assert result.exit_code == 2, result.output
+    assert "cannot be expressed in an MLflow filter" in result.output
+    fake_search.assert_not_called()
+
+
 def test_trace_prints_rows_from_dataframe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

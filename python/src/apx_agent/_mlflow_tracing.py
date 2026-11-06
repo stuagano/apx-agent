@@ -97,6 +97,23 @@ def is_mlflow_available() -> bool:
     return True
 
 
+def mlflow_filter_literal(value: str) -> str:
+    """Quote ``value`` as a string literal for an MLflow search filter.
+
+    MLflow's filter parser strips the outer quotes and does no unescaping, so
+    SQL-style doubling (``''``) or backslash escapes would be matched
+    literally. The only safe form is a quote character absent from the value.
+    Raises ``ValueError`` when the value contains both quote characters.
+    """
+    if "'" not in value:
+        return f"'{value}'"
+    if '"' not in value:
+        return f'"{value}"'
+    raise ValueError(
+        f"{value!r} contains both ' and \" and cannot be expressed in an MLflow filter"
+    )
+
+
 def _resolve_experiment_id(experiment: str) -> str:
     """Resolve an experiment name/path (or id) to an experiment id.
 
