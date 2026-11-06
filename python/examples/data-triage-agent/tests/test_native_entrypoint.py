@@ -19,7 +19,10 @@ def test_app_is_durable_with_live_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
     monkeypatch.delenv("AGENTBRICKS_PROJECT_ROOT", raising=False)
     monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda **k: MagicMock())
-    setup = AsyncMock(return_value=None)
+    from apx_agent import _wiring
+
+    # Spy, not stub: the real setup_agent mounts /mcp at durable startup.
+    setup = AsyncMock(wraps=_wiring.setup_agent)
     monkeypatch.setattr("apx_agent._wiring.setup_agent", setup)
     fetch = AsyncMock(return_value=[])
     monkeypatch.setattr("apx_agent._agents.LlmAgent.fetch_remote_tools", fetch)
@@ -31,8 +34,11 @@ def test_app_is_durable_with_live_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(app, DurableAgentServer)
     paths = {r.path for r in app.routes}
     assert {"/readyz", "/api/version"} <= paths
-    assert any(p.startswith("/mcp") for p in paths)
     with TestClient(app) as client:
         setup.assert_awaited()             # mount startup ran under the durable lifespan
         fetch.assert_awaited()             # sub-agents materialized at durable startup
+        assert "/mcp" in {r.path for r in app.routes}  # mounted by setup_agent at startup
+        assert app.state.mcp_mount_error is None
+        card = client.get("/.well-known/agent.json").json()
+        assert card["mcpEndpoint"].endswith("/mcp")  # MCP server live, not 503
         assert client.get("/readyz").status_code == 200
