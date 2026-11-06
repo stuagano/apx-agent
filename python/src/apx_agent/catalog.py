@@ -138,7 +138,7 @@ def lineage_tool(
         try:
             result = ws.api_client.do(
                 "GET",
-                "/api/2.1/unity-catalog/lineage-tracking/table-lineage",
+                "/api/2.0/lineage-tracking/table-lineage",
                 query={"table_name": table_name},
             )
         except DatabricksError as e:

@@ -143,7 +143,7 @@ class TestLineageToolFactory:
         await tool(table_name="main.sales.orders", ws=ws)
         ws.api_client.do.assert_called_once_with(
             "GET",
-            "/api/2.1/unity-catalog/lineage-tracking/table-lineage",
+            "/api/2.0/lineage-tracking/table-lineage",
             query={"table_name": "main.sales.orders"},
         )
 
