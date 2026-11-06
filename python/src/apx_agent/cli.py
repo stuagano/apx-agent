@@ -12068,18 +12068,21 @@ def trace(
         k, v = kv.split("=", 1)
         parsed_tag_filters.append((k.strip(), v.strip()))
 
+    from ._mlflow_tracing import mlflow_filter_literal, search_traces_for_experiment
+
     filter_parts: list[str] = []
-    if agent_name:
-        filter_parts.append(f"attributes.`apx.agent.name` = '{agent_name}'")
-    if operation:
-        filter_parts.append(f"attributes.`apx.operation` = '{operation}'")
+    try:
+        if agent_name:
+            filter_parts.append(f"attributes.`apx.agent.name` = {mlflow_filter_literal(agent_name)}")
+        if operation:
+            filter_parts.append(f"attributes.`apx.operation` = {mlflow_filter_literal(operation)}")
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
     filter_string = " AND ".join(filter_parts) if filter_parts else None
 
     # Fetch more than requested when post-filters are active so we can still
     # return --limit rows after they trim the result set.
     fetch_limit = limit * 4 if (user_filter or min_latency_ms or error_only or parsed_tag_filters) else limit
-
-    from ._mlflow_tracing import search_traces_for_experiment
 
     try:
         raw = search_traces_for_experiment(
