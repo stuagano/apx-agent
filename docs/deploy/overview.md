@@ -4,7 +4,28 @@ apx-agent deploys agents to Databricks Apps (`--target apps`).
 
 New to the Apps/Agent Bricks runtime? Read [How the Agent Bricks platform works](agentbricks-platform.md) first — it explains the durable-agent model, the CLI, deploy, the hosting tiers (scale-to-zero vs dedicated-instance), and the identity model that everything below builds on.
 
-## Databricks Apps — `--target apps`
+## Which deploy path runs
+
+`apx-agent agents deploy --target apps` has three paths. You don't pass a flag
+to pick one; the agent's declaration selects it, checked in this order:
+
+| # | When | Path | Recorded as |
+|---|---|---|---|
+| 1 | `[tool.apx.deploy] backend = "apps_api"` | **Apps API.** APX calls the Databricks Apps API directly in seven get-or-create steps; no Agent Bricks CLI and no Bundle. Keeps the declared App name. | `apps_api` |
+| 2 | `target` is `durable_agent_server` (the default when omitted) and no `deploy.space` | **Agent Bricks CLI.** APX compiles `.build/agent.toml` and `.build/app.yaml`, then runs `agentbricks deploy`. App names get the `agent-bricks-` prefix (30 characters max). An existing `databricks.yml` only supplies its build script and variables. | `agentbricks` |
+| 3 | anything else: `target = "responses_agent"`, or a durable agent with an explicit `deploy.space` | **Databricks Bundle.** `databricks bundle deploy` + `bundle run` against the project's `databricks.yml`, described below. | `databricks_bundle` |
+
+```toml
+[tool.apx.deploy]
+backend = "apps_api"   # absent or "agentbricks" keeps path 2
+```
+
+Choose `apps_api` when the App name must not change — for example an `mcp-`
+name Databricks needs in order to discover the App as an MCP server. Details:
+[Deploy through the Agent Bricks CLI](../running/runtime-targets.md#deploy-through-the-agent-bricks-cli)
+and the [Apps API deploy spec](../design/apps-api-deploy.md).
+
+## Databricks Apps — Bundle path
 
 The MLflow GenAI Agent Server path. `compile_to_responses_agent` produces a `ResponsesAgent` with `@invoke` / `@stream` decorated functions; `databricks bundle deploy + bundle run` pushes code and restarts the app. No container build. The deploy is a code push.
 
