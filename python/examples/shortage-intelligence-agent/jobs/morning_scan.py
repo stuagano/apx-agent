@@ -13,13 +13,16 @@ import json
 import logging
 import os
 import sys
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from databricks.sdk import WorkspaceClient
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
+
+# Matches the agent_model variable default in databricks.yml; set AGENT_MODEL to override.
+_DEFAULT_AGENT_MODEL = "databricks-claude-sonnet-4-6"
 
 SCAN_PROMPT = (
     "Run the daily shortage intelligence scan. "
@@ -38,7 +41,7 @@ def run_agent_loop(ws: WorkspaceClient, query: str, max_iterations: int = 20) ->
     """
     host = ws.config.host.rstrip("/")
     token = ws.config.token
-    model_name = os.environ.get("AGENT_MODEL", "databricks-claude-sonnet-4-6")
+    model_name = os.environ.get("AGENT_MODEL", _DEFAULT_AGENT_MODEL)
     endpoint = f"{host}/serving-endpoints/{model_name}/invocations"
 
     # Import tools for dispatch in job context
@@ -82,7 +85,8 @@ def run_agent_loop(ws: WorkspaceClient, query: str, max_iterations: int = 20) ->
             messages.append(assistant_msg)
 
             if finish_reason != "tool_calls":
-                return assistant_msg.get("content") or ""
+                content = assistant_msg.get("content")
+                return "" if content is None else content
 
             tool_calls = assistant_msg.get("tool_calls", [])
             for tc in tool_calls:
@@ -141,14 +145,14 @@ def _build_tool_schemas(dispatch: dict[str, Any]) -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": name,
-                "description": (fn.__doc__ or "").split("\n")[0],
+                "description": ("" if fn.__doc__ is None else fn.__doc__).split("\n")[0],
                 "parameters": params,
             },
         })
     return schemas
 
 
-def deliver_to_slack(webhook_url: str, report_section: str, text: str) -> None:
+def deliver_to_slack(webhook_url: str | None, report_section: str, text: str) -> None:
     if not webhook_url:
         logger.info("No Slack webhook for %s — logging report instead:\n%s", report_section, text)
         return
@@ -160,7 +164,13 @@ def deliver_to_slack(webhook_url: str, report_section: str, text: str) -> None:
         logger.error("Slack delivery failed for %s: %s", report_section, e)
 
 
-def split_reports(full_output: str) -> tuple[str, str]:
+class _Reports(NamedTuple):
+    """The agent output split per audience (tuple-compatible: callers unpack)."""
+    sourcing: str
+    sales: str
+
+
+def split_reports(full_output: str) -> _Reports:
     """Split the agent output into sourcing and sales sections."""
     sourcing_marker = "## SOURCING TEAM REPORT"
     sales_marker = "## SALES TEAM REPORT"
@@ -177,13 +187,13 @@ def split_reports(full_output: str) -> tuple[str, str]:
         sourcing = full_output
         sales = full_output
 
-    return sourcing, sales
+    return _Reports(sourcing, sales)
 
 
 def main() -> None:
     ws = WorkspaceClient()
-    sourcing_webhook = os.environ.get("SLACK_WEBHOOK_SOURCING", "")
-    sales_webhook = os.environ.get("SLACK_WEBHOOK_SALES", "")
+    sourcing_webhook = os.environ.get("SLACK_WEBHOOK_SOURCING")
+    sales_webhook = os.environ.get("SLACK_WEBHOOK_SALES")
 
     logger.info("Starting morning shortage intelligence scan")
 

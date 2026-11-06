@@ -85,7 +85,7 @@ def test_to_openai_assistant_tool_use():
 
     msg = result["messages"][0]
     assert msg["role"] == "assistant"
-    assert "Let me check." in (msg["content"] or "")
+    assert msg["content"] is not None and "Let me check." in msg["content"]
     assert len(msg["tool_calls"]) == 1
     tc = msg["tool_calls"][0]
     assert tc["id"] == "tc_123"

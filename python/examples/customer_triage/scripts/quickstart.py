@@ -51,9 +51,15 @@ def _resolve_user() -> str:
     return "unknown-user"
 
 
+# The bundle's default target (databricks.yml: targets.dev has default: true).
+_DEFAULT_BUNDLE_TARGET = "dev"
+# MLflow's tracking URI for the Databricks workspace from the CLI profile.
+_DATABRICKS_TRACKING_URI = "databricks"
+
+
 def _resolve_target() -> str:
     """Bundle target — defaults to 'dev' to match databricks.yml."""
-    return os.environ.get("BUNDLE_TARGET", "dev")
+    return os.environ.get("BUNDLE_TARGET", _DEFAULT_BUNDLE_TARGET)
 
 
 def _ensure_experiment(path: str) -> str:
@@ -63,7 +69,7 @@ def _ensure_experiment(path: str) -> str:
     except ImportError as e:
         raise SystemExit("mlflow is required. Install with: uv sync") from e
 
-    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "databricks"))
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", _DATABRICKS_TRACKING_URI))
 
     client = mlflow.tracking.MlflowClient()
     existing = client.get_experiment_by_name(path)

@@ -54,7 +54,7 @@ def vector_search_demo(query: str, k: int = 10) -> list[dict]:
     return [s for s in scored[:k] if s["score"] > 0]
 
 
-def sql_search_demo(name: str, address: str = "") -> list[dict]:
+def sql_search_demo(name: str, address: str | None = None) -> list[dict]:
     """Return accounts whose name contains at least one non-trivial name token."""
     tokens = [t.strip(".,").lower() for t in name.split() if len(t.strip(".,")) > 1]
     results = []

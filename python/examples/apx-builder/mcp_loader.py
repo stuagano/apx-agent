@@ -5,6 +5,7 @@ import logging
 import threading
 from contextvars import copy_context
 from pathlib import Path
+from typing import NamedTuple
 
 from claude_agent_sdk import tool, create_sdk_mcp_server
 from databricks.sdk.errors import NotFound
@@ -20,6 +21,13 @@ _apx_tool_names = [
     "mcp__apx__get_app_status",
 ]
 _init_lock = threading.Lock()
+
+
+class McpServers(NamedTuple):
+    """The in-process MCP servers plus every tool name they expose."""
+
+    servers: dict
+    tool_names: list[str]
 
 
 def _upload_directory(args: dict) -> dict:
@@ -103,7 +111,7 @@ def _create_and_deploy_app(args: dict) -> dict:
             app = ws.apps.get(app_name)
             return {
                 "name": app_name,
-                "url": app.url or "",
+                "url": "" if app.url is None else app.url,
                 "status": "deployment triggered",
             }
         except Exception as exc:
@@ -129,7 +137,7 @@ def _get_app_status(args: dict) -> dict:
             active = app.active_deployment
             return {
                 "name": args["app_name"],
-                "url": app.url or "",
+                "url": "" if app.url is None else app.url,
                 "app_state": app.app_status.state.value if app.app_status else "UNKNOWN",
                 "deploy_state": active.status.state.value if active and active.status else "UNKNOWN",
             }
@@ -141,7 +149,7 @@ def _get_app_status(args: dict) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
 
-def get_mcp_servers() -> tuple[dict, list[str]]:
+def get_mcp_servers() -> McpServers:
     """Return (servers_dict, all_tool_names). Singleton loaded on first call."""
     global _apx_server
 
@@ -153,7 +161,4 @@ def get_mcp_servers() -> tuple[dict, list[str]]:
                     tools=[_manage_workspace_files, _create_and_deploy_app, _get_app_status],
                 )
 
-    return (
-        {"apx": _apx_server},
-        _apx_tool_names,
-    )
+    return McpServers({"apx": _apx_server}, _apx_tool_names)

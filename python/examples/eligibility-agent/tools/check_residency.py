@@ -15,6 +15,11 @@ from typing import Any
 from config import get_settings
 
 
+# An extracted field the document lacks reads as empty, so it fails the
+# address / state checks instead of raising.
+_NOT_EXTRACTED = ""
+
+
 def _normalize(s: str) -> str:
     return " ".join(s.lower().split()) if s else ""
 
@@ -44,22 +49,22 @@ def check_residency(parsed: dict[str, Any], household: dict[str, Any]) -> dict[s
     ext = residency_doc["extracted"]
     issues: list[str] = []
 
-    doc_addr = _normalize(ext.get("address_line", ""))
-    hh_addr = _normalize(household.get("residence_address", ""))
+    doc_addr = _normalize(ext.get("address_line", _NOT_EXTRACTED))
+    hh_addr = _normalize(household.get("residence_address", _NOT_EXTRACTED))
     address_match = doc_addr == hh_addr
     if not address_match:
         issues.append(
             f"address mismatch: doc='{ext.get('address_line')}' vs household='{household.get('residence_address')}'"
         )
 
-    csz = ext.get("city_state_zip", "")
+    csz = ext.get("city_state_zip", _NOT_EXTRACTED)
     state_match = f" {s.state_code} " in f" {csz} " or csz.endswith(f" {s.state_code}") or f" {s.state_code}," in csz
     if not state_match:
         issues.append(f"document state is not {s.state_code} (got '{csz}')")
 
     recency_ok = False
     try:
-        doc_date = datetime.fromisoformat(ext.get("document_date", "")).date()
+        doc_date = datetime.fromisoformat(ext.get("document_date", _NOT_EXTRACTED)).date()
         days_old = (date.today() - doc_date).days
         recency_ok = 0 <= days_old <= s.residency_recency_days
         if not recency_ok:

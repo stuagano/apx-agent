@@ -35,8 +35,8 @@ def _escape(value: str) -> str:
 def top_expensive_queries(
     lookback_days: int = 7,
     limit: int = 20,
-    warehouse_id: str = "",
-    executed_by: str = "",
+    warehouse_id: str | None = None,
+    executed_by: str | None = None,
     ws: Workspace = None,
 ) -> dict[str, Any]:
     """Return the slowest finished DBSQL queries in the lookback window.
@@ -51,9 +51,9 @@ def top_expensive_queries(
         f"start_time >= CURRENT_DATE - INTERVAL {days} DAYS",
         "execution_status = 'FINISHED'",
     ]
-    if warehouse_id.strip():
+    if warehouse_id is not None and warehouse_id.strip():
         filters.append(f"compute.warehouse_id = '{_escape(warehouse_id)}'")
-    if executed_by.strip():
+    if executed_by is not None and executed_by.strip():
         filters.append(f"executed_by = '{_escape(executed_by)}'")
     where = " AND ".join(filters)
     sql = f"""
@@ -200,7 +200,7 @@ LIMIT {lim}
 def top_expensive_job_runs(
     lookback_days: int = 7,
     limit: int = 20,
-    job_id: str = "",
+    job_id: str | None = None,
     ws: Workspace = None,
 ) -> dict[str, Any]:
     """Return the longest Lakeflow job runs in the lookback window.
@@ -214,7 +214,7 @@ def top_expensive_job_runs(
         f"r.period_start_time >= CURRENT_DATE - INTERVAL {days} DAYS",
         "r.run_duration_seconds IS NOT NULL",
     ]
-    if job_id.strip():
+    if job_id is not None and job_id.strip():
         filters.append(f"r.job_id = '{_escape(job_id)}'")
     where = " AND ".join(filters)
     sql = f"""

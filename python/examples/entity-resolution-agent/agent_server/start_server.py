@@ -23,7 +23,10 @@ from apx_agent import compile_to_responses_agent, mount_mcp_endpoints
 
 from agent import agent
 
-MODEL = os.environ.get("APX_MODEL", "databricks-claude-sonnet-4-6")
+# Default foundation model when APX_MODEL is unset: the value the scaffold's
+# app.yaml sets (apx_agent.cli._APPS_DEFAULT_MODEL). Override via APX_MODEL.
+DEFAULT_MODEL = "databricks-claude-sonnet-4-6"
+MODEL = os.environ.get("APX_MODEL", DEFAULT_MODEL)
 
 _invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL)
 

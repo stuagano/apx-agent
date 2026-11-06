@@ -20,12 +20,18 @@ def _is_abnormal(name: str) -> bool:
     return bool(_INITIAL_RE.search(name) or _ACRONYM_RE.search(name))
 
 
+def _demo_mode() -> bool:
+    """DEMO_MODE=true (any case) serves synthetic data; unset means live."""
+    value = os.environ.get("DEMO_MODE")
+    return value is not None and value.lower() == "true"
+
+
 def search_accounts(
     name: str,
-    address: str = "",
-    email: str = "",
-    tenant_id: str = "",
-    account_number: str = "",
+    address: str,
+    email: str,
+    tenant_id: str,
+    account_number: str,
     k: int = 10,
     ws: Any = None,
 ) -> dict[str, Any]:
@@ -34,7 +40,8 @@ def search_accounts(
     If SEARCH_SERVICE_URL is configured, calls the account-search-service API (recommended
     for production — search scales independently). Otherwise runs VS/SQL locally.
     """
-    service_url = os.environ.get("SEARCH_SERVICE_URL", "").rstrip("/")
+    raw_url = os.environ.get("SEARCH_SERVICE_URL")
+    service_url = None if raw_url is None else raw_url.rstrip("/")
     if service_url:
         return _call_search_service(service_url, name, address, email, tenant_id, k, ws)
     return _search_local(name, address, email, tenant_id, account_number, k, ws)
@@ -85,7 +92,7 @@ def _search_local(
     ws: Any,
 ) -> dict[str, Any]:
     """Local fallback — same logic as account-search-service, embedded here for single-app deploys."""
-    if os.environ.get("DEMO_MODE", "").lower() == "true":
+    if _demo_mode():
         from demo_data import vector_search_demo, sql_search_demo
         if _is_abnormal(name):
             candidates = sql_search_demo(name, address)
@@ -107,9 +114,9 @@ def _search_local(
 
 def _vector_search_local(name, address, email, k, tenant_id, ws):
     indexes = {
-        "full":        os.environ.get("VS_INDEX_FULL", ""),
-        "last_addr":   os.environ.get("VS_INDEX_LAST_ADDR", ""),
-        "first_email": os.environ.get("VS_INDEX_FIRST_EMAIL", ""),
+        "full":        os.environ.get("VS_INDEX_FULL"),
+        "last_addr":   os.environ.get("VS_INDEX_LAST_ADDR"),
+        "first_email": os.environ.get("VS_INDEX_FIRST_EMAIL"),
     }
     missing = [n for n, v in indexes.items() if not v]
     if missing:
@@ -135,13 +142,13 @@ def _vector_search_local(name, address, email, k, tenant_id, ws):
         col_names = [c.name for c in (raw.manifest.schema.columns or [])]
         for row in (raw.result.data_array or []):
             record = dict(zip(col_names, row))
-            acct_id = record.get("account_id", "")
+            acct_id = record["account_id"]
             score = float(record.get("score", 0.0))
             candidate = {
                 "account_id": acct_id,
-                "name": f"{record.get('first_name', '')} {record.get('last_name', '')}".strip(),
-                "address": record.get("service_address_line1", ""),
-                "account_number": record.get("account_number", ""),
+                "name": f"{record['first_name']} {record['last_name']}".strip(),
+                "address": record["service_address_line1"],
+                "account_number": record["account_number"],
                 "score": score,
             }
             if acct_id not in seen or score > seen[acct_id]["score"]:
@@ -152,7 +159,7 @@ def _vector_search_local(name, address, email, k, tenant_id, ws):
 
 
 def _sql_search_local(name, address, ws):
-    table = os.environ.get("UTILITY_ACCOUNT_TABLE", "")
+    table = os.environ.get("UTILITY_ACCOUNT_TABLE")
     if not table:
         return {"error": "UTILITY_ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
 

@@ -88,6 +88,11 @@ async def _crawl_agent(url: str) -> dict | None:
         return None
 
 
+# A2A cards mark skill and agent descriptions optional; an absent one reads as
+# empty, the same as an empty one.
+_NO_DESCRIPTION = ""
+
+
 def _card_from_a2a(
     a2a: dict,
     url: str,
@@ -95,7 +100,7 @@ def _card_from_a2a(
 ) -> AgentCard:
     name = a2a.get("name", "unknown")
     tools = [
-        AgentTool(name=s["name"], description=s.get("description", "")[:200])
+        AgentTool(name=s["name"], description=s.get("description", _NO_DESCRIPTION)[:200])
         for s in a2a.get("skills", [])
     ]
     supports_invoke = a2a.get("capabilities", {}).get("streaming", False)
@@ -103,7 +108,7 @@ def _card_from_a2a(
         id=name.replace("_", "-"),
         name=name,
         display_name=name.replace("_", " ").title(),
-        description=a2a.get("description", ""),
+        description=a2a.get("description", _NO_DESCRIPTION),
         status="live",
         url=url.rstrip("/"),
         tools=tools,

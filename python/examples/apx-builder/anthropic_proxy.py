@@ -25,6 +25,16 @@ router = APIRouter()
 _sdk_lock = threading.Lock()
 _sdk_client: WorkspaceClient | None = None
 
+# The SDK's authenticate() omits the Authorization header when it has no
+# credentials; forwarding an empty value lets Databricks reject the call with a
+# clear 401 instead of the proxy guessing.
+_NO_AUTH_HEADER = ""
+
+# Both wire formats (Anthropic /v1/messages and OpenAI chat/completions) treat
+# an absent string field and an empty one alike, so a missing text/id/name
+# field translates to an empty string on the other side.
+_ABSENT_WIRE_TEXT = ""
+
 
 def _get_sdk_auth_header(host: str) -> str:
     """Return 'Bearer <token>' using the app's own credentials, not the user's token."""
@@ -33,7 +43,7 @@ def _get_sdk_auth_header(host: str) -> str:
         if _sdk_client is None:
             _sdk_client = WorkspaceClient(host=host)
     headers = _sdk_client.config.authenticate()
-    return headers.get("Authorization", "")
+    return headers.get("Authorization", _NO_AUTH_HEADER)
 
 
 # Tool results accumulate in history on every subsequent call; trimming keeps input tokens
@@ -53,14 +63,14 @@ def _to_openai(body: dict) -> dict:
 
     if system := body.get("system"):
         text = system if isinstance(system, str) else " ".join(
-            b.get("text", "") for b in system if b.get("type") == "text"
+            b.get("text", _ABSENT_WIRE_TEXT) for b in system if b.get("type") == "text"
         )
         messages = [{"role": "system", "content": text}] + messages
 
     converted = []
     for msg in messages:
         role = msg["role"]
-        content = msg.get("content", "")
+        content = msg.get("content", _ABSENT_WIRE_TEXT)
 
         if isinstance(content, str):
             converted.append({"role": role, "content": content})
@@ -70,13 +80,13 @@ def _to_openai(body: dict) -> dict:
             text_parts, tool_calls = [], []
             for block in content:
                 if block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
+                    text_parts.append(block.get("text", _ABSENT_WIRE_TEXT))
                 elif block.get("type") == "tool_use":
                     tool_calls.append({
-                        "id": block.get("id", ""),
+                        "id": block.get("id", _ABSENT_WIRE_TEXT),
                         "type": "function",
                         "function": {
-                            "name": block.get("name", ""),
+                            "name": block.get("name", _ABSENT_WIRE_TEXT),
                             "arguments": json.dumps(block.get("input", {})),
                         },
                     })
@@ -87,14 +97,14 @@ def _to_openai(body: dict) -> dict:
 
         elif role == "user":
             tool_results = [b for b in content if b.get("type") == "tool_result"]
-            text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
+            text_parts = [b.get("text", _ABSENT_WIRE_TEXT) for b in content if b.get("type") == "text"]
             for tr in tool_results:
-                tr_content = tr.get("content", "")
+                tr_content = tr.get("content", _ABSENT_WIRE_TEXT)
                 if isinstance(tr_content, list):
-                    tr_content = "\n".join(b.get("text", "") for b in tr_content if b.get("type") == "text")
+                    tr_content = "\n".join(b.get("text", _ABSENT_WIRE_TEXT) for b in tr_content if b.get("type") == "text")
                 converted.append({
                     "role": "tool",
-                    "tool_call_id": tr.get("tool_use_id", ""),
+                    "tool_call_id": tr.get("tool_use_id", _ABSENT_WIRE_TEXT),
                     "content": _trim_tool_result(tr_content),
                 })
             if text_parts:
@@ -111,8 +121,8 @@ def _to_openai(body: dict) -> dict:
         {
             "type": "function",
             "function": {
-                "name": t.get("name", ""),
-                "description": t.get("description", ""),
+                "name": t.get("name", _ABSENT_WIRE_TEXT),
+                "description": t.get("description", _ABSENT_WIRE_TEXT),
                 "parameters": t.get("input_schema", {}),
             },
         }
@@ -140,8 +150,8 @@ def _to_anthropic(original: dict, oai: dict) -> dict:
             input_data = {}
         content.append({
             "type": "tool_use",
-            "id": tc.get("id", ""),
-            "name": tc.get("function", {}).get("name", ""),
+            "id": tc.get("id", _ABSENT_WIRE_TEXT),
+            "name": tc.get("function", {}).get("name", _ABSENT_WIRE_TEXT),
             "input": input_data,
         })
 
@@ -154,7 +164,7 @@ def _to_anthropic(original: dict, oai: dict) -> dict:
         "type": "message",
         "role": "assistant",
         "content": content,
-        "model": original.get("model", ""),
+        "model": original.get("model", _ABSENT_WIRE_TEXT),
         "stop_reason": stop_reason,
         "stop_sequence": None,
         "usage": {
@@ -169,12 +179,14 @@ def _to_anthropic(original: dict, oai: dict) -> dict:
 @router.post("/v1/messages")
 async def anthropic_proxy(request: Request) -> dict:
     """Translate Anthropic API calls to Databricks chat/completions."""
-    if not request.headers.get("x-api-key", "").strip():
+    api_key = request.headers.get("x-api-key")
+    if api_key is None or not api_key.strip():
         raise HTTPException(status_code=401, detail="x-api-key required")
 
-    host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
-    if not host:
+    host = os.environ.get("DATABRICKS_HOST")
+    if host is None or not host.rstrip("/"):
         raise HTTPException(status_code=500, detail="DATABRICKS_HOST not configured")
+    host = host.rstrip("/")
     if not host.startswith(("http://", "https://")):
         host = f"https://{host}"
 
