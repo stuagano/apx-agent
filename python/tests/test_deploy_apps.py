@@ -4621,6 +4621,47 @@ def test_space_scope_check_names_the_tool_missing_a_scope(monkeypatch: pytest.Mo
         "  - genie: needed by tool 'ask_genie'")
 
 
+@pytest.mark.parametrize(("server_url", "external"), [
+    ("https://mcp.example.com/sse", True),
+    ("https://ws.cloud.databricks.com/api/2.0/mcp/functions/main/tools", False),
+    ("https://my-mcp-123.aws.databricksapps.com/mcp", False),
+])
+def test_space_rejects_tools_that_call_outside_the_workspace(
+    monkeypatch: pytest.MonkeyPatch, server_url: str, external: bool,
+) -> None:
+    """#1068: App Space Beta has no public egress, so an external MCP tool fails at preflight, naming tool and host."""
+    import click
+    from types import SimpleNamespace
+
+    from databricks.sdk.errors import NotFound
+    from databricks.sdk.service.apps import Space
+
+    from apx_agent._app_space import validate_space_deployment
+    from apx_agent._apps_authorization import infer_operation_authorization
+    from apx_agent.mcp_consume import mcp_tool
+
+    client = MagicMock()
+    client.workspace_client.config.host = "https://ws.cloud.databricks.com"
+    client.workspace_client.apps.get_space.return_value = Space(name="app-space", effective_user_api_scopes=["ai-gateway"])
+    client.workspace_client.apps.get.side_effect = NotFound("no app yet")
+    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda profile: client)
+    doc = {"resources": {"apps": {"a": {"space": "app-space", "config": {
+        "env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]}}}}}
+    lookup = infer_operation_authorization(mcp_tool(server_url, "lookup", name="lookup", description="Look up."))
+    plan = SimpleNamespace(user_api_scopes=["ai-gateway"], service_resources=[], operations=(lookup,), model="m")
+    perms = SimpleNamespace(can_use_groups=[], can_manage_groups=[])
+    if not external:
+        assert validate_space_deployment(doc, bundle_key="a", app_name="x", profile="p", plan=plan, family_permissions=perms) is client
+        return
+    with pytest.raises(click.ClickException) as raised:
+        validate_space_deployment(doc, bundle_key="a", app_name="x", profile="p", plan=plan, family_permissions=perms)
+    assert raised.value.message == (
+        "App Space apps have no public internet egress; these tools call hosts outside the workspace:\n"
+        "  - tool 'lookup' calls mcp.example.com\n"
+        "See https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building")
+    client.workspace_client.apps.get_space.assert_not_called()
+
+
 def _capture_registry(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Record the env pairs merged into the bundle and the registry step call."""
     from apx_agent import cli
