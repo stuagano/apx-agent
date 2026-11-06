@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from apx_agent._mlflow_tracing import mlflow_filter_literal
+
 logger = logging.getLogger(__name__)
 
 try:  # mlflow is the `eval`/`align` extra
@@ -713,7 +715,7 @@ def align_judge(
     # include_spans=False returns span-less objects that MemAlign cannot read.
     # mlflow.get_trace() works on FEVM/private-link workspaces. Fixes #718.
     thin = search_traces_for_experiment(
-        experiment_id, filter_string=f"tag.{RUN_TAG} = '{run_id}'",
+        experiment_id, filter_string=f"tag.{RUN_TAG} = {mlflow_filter_literal(run_id)}",
         return_type="list", include_spans=False,
     )
     traces = []

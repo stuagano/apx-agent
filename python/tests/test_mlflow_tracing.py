@@ -608,3 +608,23 @@ class TestDistributedTracingHelpers:
         mock_set.assert_called_once_with({"mlflow-trace-context": "abc"})
         cm.__enter__.assert_called_once()
         cm.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize("value", ["plain", "O'Brien", 'say "hi"', "back\\", "x' OR 'a'='a"])
+def test_mlflow_filter_literal_round_trips_through_mlflow_parser(value: str) -> None:
+    """The real MLflow parser must recover the exact value from the literal."""
+    from mlflow.utils.search_utils import SearchTraceUtils
+
+    from apx_agent._mlflow_tracing import mlflow_filter_literal
+
+    parsed = SearchTraceUtils.parse_search_filter_for_search_traces(
+        f"tags.`k` = {mlflow_filter_literal(value)}"
+    )
+    assert parsed == [{"type": "tag", "key": "k", "comparator": "=", "value": value}]
+
+
+def test_mlflow_filter_literal_rejects_both_quote_chars() -> None:
+    from apx_agent._mlflow_tracing import mlflow_filter_literal
+
+    with pytest.raises(ValueError, match="cannot be expressed"):
+        mlflow_filter_literal("a'b\"c")

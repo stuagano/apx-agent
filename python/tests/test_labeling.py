@@ -442,6 +442,26 @@ def test_align_judge_aligns_and_updates_in_place(monkeypatch):
 
 
 @pytest.mark.unit
+def test_align_judge_quotes_run_id_in_trace_filter(monkeypatch):
+    """run_id embeds the user-supplied judge name; a quote must not break the filter."""
+    monkeypatch.setattr(_labeling, "_load_memalign", lambda **kw: "OPT")
+    search_kw: dict = {}
+
+    def fake_search(exp, **kw):
+        search_kw.update(kw)
+        return []
+
+    monkeypatch.setattr(_labeling, "search_traces_for_experiment", fake_search)
+    with pytest.raises(_labeling.LabelingError):
+        _labeling.align_judge(
+            experiment_id="123", judge_name="o'j", run_id="o'j-20260101T000000Z",
+            reflection_model="databricks:/m", embedding_model="databricks:/e",
+            retrieval_k=5, new_version=None,
+        )
+    assert search_kw["filter_string"] == 'tag.apx.label.run = "o\'j-20260101T000000Z"'
+
+
+@pytest.mark.unit
 def test_align_judge_no_sme_labels_raises_friendly(monkeypatch):
     # Unlabeled traces now fail in select_alignment_cohort before MemAlign.
     monkeypatch.setattr(_labeling, "_load_memalign", lambda **kw: "OPT")
