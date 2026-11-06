@@ -44,6 +44,19 @@ machine-to-machine OAuth access token (`Authorization: Bearer …`). Use
 `apps_inbound_oauth_headers(oauth_token=...)`. PAT cannot invoke an Apps URL
 (SSO). Do not send `DATABRICKS_TOKEN` at that URL.
 
+- **Getting a token.** U2M: `databricks auth login --host <workspace-url>
+  --profile <name>`, then `databricks auth token --profile <name>`. M2M: a
+  service principal's client credentials (`DATABRICKS_CLIENT_ID` +
+  `DATABRICKS_CLIENT_SECRET`), e.g. `WorkspaceClient().config.authenticate()`
+  in the Databricks SDK.
+- **Not an A2A hop.** This is how an external caller (eval, job, script)
+  reaches the Apps URL. It is separate from A2A agent-to-agent hops, which
+  forward the caller's identity per hop.
+- **The inbound SP is not the data principal.** An M2M caller's service
+  principal only gets the request through the Apps front door. Trust stays
+  per-hop user OBO; see
+  [../design/a2a-trust-model.md](../design/a2a-trust-model.md).
+
 ## App service principal and ACLs
 
 Each app has a dedicated service principal. Copy its application id from the

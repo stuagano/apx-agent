@@ -15,6 +15,8 @@ Covers:
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from apx_agent import extract_obo_headers
@@ -412,6 +414,19 @@ def test_apps_inbound_oauth_headers_sets_bearer() -> None:
     headers = apps_inbound_oauth_headers(oauth_token="eyJhbGciOi")
     assert headers == {"Authorization": "Bearer eyJhbGciOi"}
     assert "dapi" not in headers["Authorization"]
+
+
+def test_apps_inbound_oauth_headers_does_not_log_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#969: the inbound OAuth token never reaches the logs, even at DEBUG."""
+    from apx_agent import apps_inbound_oauth_headers
+
+    secret = "eyJ...secret"
+    caplog.set_level(logging.DEBUG)
+    headers = apps_inbound_oauth_headers(oauth_token=secret)
+    assert headers == {"Authorization": f"Bearer {secret}"}
+    assert secret not in caplog.text
 
 
 def test_reauthorize_hint_only_on_scope_denial() -> None:
