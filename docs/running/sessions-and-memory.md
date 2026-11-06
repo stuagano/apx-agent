@@ -36,14 +36,14 @@ Session lifecycle
 
 ### Session stores
 
-Three stores cover the main workloads:
+Two stores cover the main workloads:
 
 | Store | Best for | Latency |
 |-------|----------|---------|
 | `InMemoryConversationStore` | Tests, dev, single-process Apps | in-process |
 | `LakebaseConversationStore` | Durable, UC-governed history for chat UIs and high-frequency turns (Lakebase managed Postgres) | ~1–10 ms/turn |
 
-Custom stores satisfy the `ConversationStore` protocol (the abstract `create_conversation` / `get_conversation` / `append` / `list_items` / `update_conversation` / `delete_conversation` / `list_conversations` / `search` methods) — bring your own Redis, Memcached, etc.
+Custom stores satisfy the `ConversationStore` protocol (the abstract `create_conversation` / `get_conversation` / `append` / `list_items` / `update_conversation` / `set_session_state` / `delete_conversation` / `list_conversations` / `search` methods) — bring your own Redis, Memcached, etc.
 
 ### Wiring a session store
 
@@ -112,7 +112,7 @@ conversation_store = LakebaseConversationStore(engine=engine)
 
 `do_connect` fires before every new connection is opened from the pool, so the password is always a fresh token. `pool_recycle=1800` ensures connections are dropped and re-opened before the token expires — never keep a connection alive across the full TTL.
 
-See [`docs/lakebase-recipe.md`](lakebase-recipe.md) for provisioning, pgvector, pool tuning, and token rotation gotchas.
+See [`docs/running/lakebase-recipe.md`](lakebase-recipe.md) for provisioning, pgvector, pool tuning, and token rotation gotchas.
 
 Install the lakebase extra: `pip install 'apx-agent[lakebase]'`.
 
@@ -183,10 +183,10 @@ Sessions hold a single conversation. **MemoryStore** holds durable facts per pri
 ```
 Memory access patterns
 ┌─────────────────────────────────────────────┐
-│  store.add(principal_id, content, ...)      │  ← write a fact
-│  store.recall(principal_id, query, k=3)     │  ← semantic retrieval
-│  store.list(principal_id, namespace=...)    │  ← enumerate entries
-│  store.update(memory_id, ...)               │  ← revise a fact
+│  store.add({principal_id, content, ...})    │  ← write a fact
+│  store.recall(RecallOptions(...))           │  ← semantic retrieval
+│  store.list(MemoryFilter(...))              │  ← enumerate entries
+│  store.update(memory_id, patch)             │  ← revise a fact
 │  store.delete(memory_id)                    │  ← remove a fact
 └─────────────────────────────────────────────┘
 ```
@@ -194,7 +194,7 @@ Memory access patterns
 Long-term memory uses Lakebase pgvector or AgentKit managed memory, with `principal_id` + `namespace` scoping. Lakebase offers vector retrieval; managed memory uses BM25 full-text retrieval.
 
 ```python
-from apx_agent import LakebaseMemoryStore, make_memory_tools, assemble_memory_context
+from apx_agent import LakebaseMemoryStore, RecallOptions
 
 # Caller wires the embedding source — no SDK import inside the package.
 def embed(texts):
@@ -208,36 +208,40 @@ store = LakebaseMemoryStore(
     embedding_dim=1024,
 )
 
-# Write a fact
-store.add(
-    principal_id="user:alice",
-    content="Prefers email summaries on Mondays, not Slack pings.",
-    namespace="profile",
-    tags=["preference", "notification"],
-    importance=0.8,
-)
+# Write a fact — add() takes one mapping
+store.add({
+    "principal_id": "user:alice",
+    "content": "Prefers email summaries on Mondays, not Slack pings.",
+    "namespace": "profile",
+    "tags": ["preference", "notification"],
+    "importance": 0.8,
+})
 
-# Semantic recall
-hits = store.recall(
+# Semantic recall — recall() takes a RecallOptions
+hits = store.recall(RecallOptions(
     principal_id="user:alice",
     query="how should I notify alice?",
     namespace="profile",
     k=3,
-)
+))
 ```
 
 ### Three ways to use MemoryStore
 
 **1. As tools the LLM calls**
 
-`make_memory_tools(store, principal_id_resolver=...)` returns `recall` / `remember` / `forget` callables bound to the store. Add them to your agent's `tools` list and the LLM decides when to read or write memory.
+`make_memory_tools(store=store, principal_id_resolver=...)` returns `recall` / `remember` / `forget` callables bound to the store. Add them to your agent's `tools` list and the LLM decides when to read or write memory.
 
 ```python
 from apx_agent import Agent, make_memory_tools
 
+def current_principal() -> str | None:
+    """Zero-arg resolver, called on every tool call; None falls back to default_principal_id."""
+    ...  # e.g. "user:<name>" from the caller's request identity
+
 agent = Agent(
     instructions="...",
-    tools=[*make_memory_tools(store, principal_id_resolver=lambda ctx: ctx.user_id)],
+    tools=[*make_memory_tools(store=store, principal_id_resolver=current_principal)],
 )
 ```
 
@@ -261,25 +265,6 @@ def build_instructions(user_id: str, query: str) -> str:
 
 ### Memory stores
 
-### Session extraction
-
-A finished managed session becomes managed memory only when
-`memory={"type": "managed", "extraction": {"enabled": True}}` is declared on the agent and the session
-store is managed too. After the turn, distill that one session:
-
-```bash
-apx memory extract --session-id <completed-session-id> --actor-id <trusted-caller>
-apx memory extract --session-id <completed-session-id> --dry-run
-```
-
-The service reads the transcript and writes the returned entries into the
-declared memory store under the session's recorded actor. `--dry-run` returns
-the same entries without writing. The session is left as it was. A service
-failure exits non-zero and is not reported as a write. This is not
-`consolidate_memories`, which summarizes memories that already exist, and it
-does not start a cross-session memory pipeline.
-
-
 | Store | Best for |
 |-------|----------|
 | `InMemoryMemoryStore` | Tests, dev |
@@ -297,6 +282,24 @@ The store name is a workspace display name, not a UC three-part name. Legacy
 names are rejected; historical entries require an explicit export/import with a
 reviewed scope-to-actor mapping. Direct Python construction takes
 `ManagedMemoryStore(ws=workspace_client, store_name="agent-memory", scope_resolver=...)`.
+
+### Session extraction
+
+A finished managed session becomes managed memory only when
+`memory={"type": "managed", "extraction": {"enabled": True}}` is declared on the agent and the session
+store is managed too. After the turn, distill that one session:
+
+```bash
+apx-agent memory extract --session-id <completed-session-id> --actor-id <trusted-caller>
+apx-agent memory extract --session-id <completed-session-id> --dry-run
+```
+
+The service reads the transcript and writes the returned entries into the
+declared memory store under the session's recorded actor. `--dry-run` returns
+the same entries without writing. The session is left as it was. A service
+failure exits non-zero and is not reported as a write. This is not
+`consolidate_memories`, which summarizes memories that already exist, and it
+does not start a cross-session memory pipeline.
 
 ### Migrating Lakebase memory
 
@@ -335,13 +338,13 @@ separate declaration; see the [runtime guide](runtime-targets.md).
 
 ### Memory consolidation
 
-`consolidate_memories(store, principal_id, summarize_fn=...)` LLM-summarizes older or low-importance memories into a rollup row (with optional deletion of originals). Keeps the bank tractable as it grows.
+`consolidate_memories(store=..., principal_id=..., summarize_fn=...)` LLM-summarizes older or low-importance memories into a rollup row (with optional deletion of originals). Keeps the bank tractable as it grows.
 
 ---
 
 ## Example bank — few-shot retrieval
 
-Same shape as MemoryStore, different scope key: `agent_id` + `intent`. Stores per-agent input/output exemplars for in-context learning. `findSimilar` ranks by similarity of the *input* field — "examples whose inputs look like this query" — not by recency.
+Same shape as MemoryStore, different scope key: `agent_id` + `intent`. Stores per-agent input/output exemplars for in-context learning. `find_similar` ranks by similarity of the *input* field — "examples whose inputs look like this query" — not by recency.
 
 ```python
 from apx_agent import LakebaseExampleStore, make_example_tools

@@ -199,7 +199,7 @@ memory_service.add_session_to_memory(session)  # extract + store
 store.add({"principal_id": "user:alice", "content": "...", "namespace": "profile"})
 agent = Agent(
     instructions="...",
-    tools=[*make_memory_tools(store, principal_id_resolver=lambda: "user:alice")],
+    tools=[*make_memory_tools(store=store, principal_id_resolver=lambda: "user:alice")],
 )
 ```
 
