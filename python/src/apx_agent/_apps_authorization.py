@@ -64,6 +64,8 @@ class OperationAuthorization:
     # the App's own service principal — the only credential an App container
     # actually holds unless the name matches it.
     principal: str | None = None
+    # URL the tool calls directly from the app process (a remote MCP server).
+    remote_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -379,6 +381,7 @@ def infer_operation_authorization(fn: Callable[..., Any]) -> OperationAuthorizat
         principal=(
             metadata.service_principal_name if metadata is not None else None
         ),
+        remote_url=metadata.remote_url if metadata is not None else None,
     )
 
 

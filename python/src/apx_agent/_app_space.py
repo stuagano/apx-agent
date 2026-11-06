@@ -78,6 +78,25 @@ def _scope_owners(plan: Any, scope: str) -> list[str]:
     return owners
 
 
+_SPACE_EGRESS_DOCS = "https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building"
+
+
+def _reject_external_tools(plan: Any, workspace_host: str) -> None:
+    """App Space Beta has no public internet egress: refuse tools that call outside the workspace."""
+    from urllib.parse import urlparse
+
+    from ._apps_authorization import _is_apps_https_url
+    from .mcp_consume import _same_origin
+
+    lines = [f"  - tool {op.name!r} calls {urlparse(op.remote_url).hostname}" for op in plan.operations
+             if op.remote_url is not None and not _same_origin(op.remote_url, workspace_host)
+             and not _is_apps_https_url(op.remote_url)]
+    if lines:
+        raise click.ClickException(
+            "App Space apps have no public internet egress; these tools call hosts outside the workspace:\n"
+            + "\n".join(lines) + f"\nSee {_SPACE_EGRESS_DOCS}")
+
+
 def validate_space_deployment(
     doc: dict[str, Any], *, bundle_key: str, app_name: str, profile: str | None,
     plan: Any, family_permissions: Any,
@@ -97,6 +116,7 @@ def validate_space_deployment(
     from ._resources import resources_to_databricks_yml
 
     client = _AgentBricksApiClient(profile)
+    _reject_external_tools(plan, client.workspace_client.config.host)
     inherited = client.workspace_client.apps.get_space(space)
     # Some workspaces leave effective_user_api_scopes unset; the space's declared
     # scopes are then what it grants. When populated, effective is authoritative.
