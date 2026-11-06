@@ -52,6 +52,7 @@ def build_tool(
     execution: ExecutionIdentity | None = None,
     scope: "ToolScope | None" = None,
     secret_scopes: Iterable[str] | None = None,
+    remote_url: str | None = None,
 ) -> Callable[..., Any]:
     """Stamp a tool callable and declare the resources it governs.
 
@@ -83,6 +84,9 @@ def build_tool(
     if execution is not None:
         metadata = get_tool_metadata(call) or ToolMetadata()
         call._apx_tool = replace(metadata, execution=execution)  # type: ignore[attr-defined]
+    if remote_url is not None:
+        metadata = get_tool_metadata(call) or ToolMetadata()
+        call._apx_tool = replace(metadata, remote_url=remote_url)  # type: ignore[attr-defined]
     if scope is not None or secret_scopes is not None:
         from ._tool_scope import ToolScope, attach_scope, validate_tool_scope
 
