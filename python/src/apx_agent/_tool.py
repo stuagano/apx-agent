@@ -78,6 +78,9 @@ class ToolMetadata:
         effect: Declared tool effect metadata (read, write, update, or destructive).
         execution: Credential identity for the operation. ``None`` lets the
             Apps authorization compiler infer it from dependencies.
+        remote_url: URL the tool calls directly from the app process (a
+            remote MCP server). ``None`` when the tool only reaches the
+            workspace through governed resources.
     """
 
     uc_name: str | None = None
@@ -87,6 +90,7 @@ class ToolMetadata:
     effect: ToolEffect | None = None
     execution: ExecutionIdentity | None = None
     service_principal_name: str | None = None
+    remote_url: str | None = None
 
 
 # ---------------------------------------------------------------------------

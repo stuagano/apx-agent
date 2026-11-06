@@ -26,6 +26,11 @@ When deployed to Databricks Apps and called from a trusted Databricks surface (G
 
 ## New permissions require reauthorization
 
+Consent is a lifecycle, not a grant: the first browser open of the App URL
+is what mints the user's OBO token, so that first visit is the consent step.
+Adding a `user_api_scope` later requires every user to re-consent before
+their token carries it.
+
 Adding a `user_api_scope` or a new governed resource does not guarantee that
 an existing browser session will show a consent dialog. The caller's OBO token
 may still be an older grant. If a request fails with `Invalid scope` or
@@ -36,6 +41,8 @@ Genie (or clear the browser cookies) and open it again. Then retry the request.
 This is an OAuth/session lifecycle constraint, not a substitute for declaring
 the required scope in the bundle. The runtime surfaces the same recovery hint
 for SQL, Genie, and model-serving scope denials.
+Lakebase (Postgres) and the Files API run as the App service principal,
+not the user's OBO token, so they have no per-user consent lifecycle.
 
 ## Apps URL inbound auth
 

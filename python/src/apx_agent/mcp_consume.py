@@ -203,7 +203,7 @@ def _make_mcp_tool(
             f"Pass `arguments` as a dict matching the tool's input schema."
         ),
     )
-    return build_tool(_call_mcp, name=tool_name, description=_desc)
+    return build_tool(_call_mcp, name=tool_name, description=_desc, remote_url=server_url)
 
 
 def mcp_tool(
