@@ -1437,7 +1437,10 @@ _WORKSPACE_BOUND_KINDS = frozenset({
 
 
 def _resource_missing_in_workspace(kind: str, identifier: str, exc: Exception) -> str:
-    """Doctor detail when a host-bound resource is not readable here."""
+    """Doctor detail when a host-bound resource is not readable here.
+
+    Callers keep this a WARN: doctor runs as the local identity, so a 404 may mean no access, not another workspace.
+    """
     short = str(exc)[:120]
     if kind in _WORKSPACE_BOUND_KINDS:
         return (

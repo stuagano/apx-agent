@@ -539,7 +539,8 @@ class TestCheckDeclaredTools:
     def _project(self, tmp_path: Path, tools: str = "", *, config: str = "", kwargs: str = "") -> Path:
         (tmp_path / "pyproject.toml").write_text(f"[tool.apx.deploy]\nname='x'\n{config}")
         (tmp_path / "agent.py").write_text(
-            "from apx_agent import LlmAgent\n"
+            "from apx_agent import LlmAgent, ResourceSpec, build_tool\n"
+            "from apx_agent.foundation_model import foundation_model_tool\n"
             "from apx_agent.genie import genie_tool\n"
             "from apx_agent.vector_search import vector_search_tool\n"
             "from apx_agent.sql_tools import sql_tool\n"
@@ -643,6 +644,45 @@ class TestCheckDeclaredTools:
         assert checks[0].status is Status.WARN
         assert "bad-space" in checks[0].fix
         assert "OBO token cannot leave the app workspace" in checks[0].detail
+
+    # One row per host-bound kind (#968): (tool expr, row name, ws getter path, expected call kwargs/args).
+    _LAKEBASE = "build_tool(lambda q: q, name='lb', description='d', resources=[ResourceSpec('lakebase_instance', 'lb-x')])"
+    _WORKSPACE_BOUND = {
+        "sql_warehouse": ("sql_tool(warehouse_id='wh-x')", "SQL warehouse (wh-x)", "warehouses.get", "wh-x"),
+        "serving_endpoint": ("foundation_model_tool('ep-x')", "Serving endpoint (ep-x)", "serving_endpoints.get", "ep-x"),
+        "lakebase_instance": (_LAKEBASE, "Lakebase (lb-x)", "database.get_database_instance", "lb-x"),
+    }
+
+    def _probe(self, tmp_path, kind, *, side_effect=None):
+        tools, row, path, ident = self._WORKSPACE_BOUND[kind]
+        self._project(tmp_path, tools)
+        ws = MagicMock()
+        getter = ws
+        for attr in path.split("."):
+            getter = getattr(getter, attr)
+        getter.side_effect = side_effect
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
+        (check,) = [c for c in checks if c.name == row]
+        assert getter.call_count == 1
+        assert ident in (*getter.call_args.args, *getter.call_args.kwargs.values())
+        return check, ident
+
+    @pytest.mark.parametrize("kind", ["sql_warehouse", "serving_endpoint", "lakebase_instance"])
+    def test_workspace_bound_resource_404_names_it_and_obo_scope(self, tmp_path, kind):
+        check, ident = self._probe(tmp_path, kind, side_effect=RuntimeError("404 RESOURCE_DOES_NOT_EXIST"))
+        # WARN, not FAIL: doctor runs as the local identity, so a 404 can also mean "no access".
+        assert check.status is Status.WARN
+        assert ident in check.detail
+        assert ident in check.fix
+        assert "The forwarded OBO token cannot leave the app workspace" in check.detail
+
+    @pytest.mark.parametrize("kind", ["serving_endpoint", "lakebase_instance"])
+    def test_workspace_bound_resource_found_is_ok(self, tmp_path, kind):
+        check, _ = self._probe(tmp_path, kind)
+        assert check.status is Status.OK
+        assert check.fix is None
+        assert "OBO token" not in check.detail
 
     def test_session_warehouse_is_still_probed(self, tmp_path):
         self._project(tmp_path, kwargs=(
