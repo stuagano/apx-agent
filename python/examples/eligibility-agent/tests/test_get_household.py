@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pytest
+from apx_agent import ToolError
 
 from tools.get_household import get_household
 
@@ -25,5 +26,5 @@ def test_returns_household_dict(mock_fetch):
 @patch("tools.get_household._fetch_row")
 def test_raises_when_not_found(mock_fetch):
     mock_fetch.return_value = None
-    with pytest.raises(ValueError, match="no household found"):
+    with pytest.raises(ToolError, match="no household found"):
         get_household("A-MISSING", ws=None)
