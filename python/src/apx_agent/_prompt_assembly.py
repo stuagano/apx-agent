@@ -73,6 +73,7 @@ def assemble_memory_context(
     store: MemoryStore,
     opts: RecallOptions | Mapping[str, Any],
     header: str = DEFAULT_MEMORY_HEADER,
+    min_score: float = 0.0,
 ) -> str:
     """Render the top-k memory recall as a markdown block.
 
@@ -87,12 +88,13 @@ def assemble_memory_context(
             can be unpacked into one.
         header: Markdown header prepended to the block when non-empty.
             Defaults to ``"### Relevant memories"``.
+        min_score: Relevance threshold; results scoring below it are dropped.
 
     Returns:
         A markdown block (header + bullets) or ``""`` when no memories.
     """
     recall_opts = _coerce_recall_options(opts)
-    results = store.recall(recall_opts)
+    results = [r for r in store.recall(recall_opts) if r.score >= min_score]
     if len(results) == 0:
         return ""
     lines = [f"- {r.memory.content}" for r in results]
