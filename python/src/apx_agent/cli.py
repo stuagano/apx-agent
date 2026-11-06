@@ -992,7 +992,7 @@ def _describe_param(param: click.Parameter) -> dict[str, Any]:
     out: dict[str, Any] = {
         "name": param.name,
         "kind": "argument" if isinstance(param, click.Argument) else "option",
-        "flags": list(param.opts),
+        "flags": list(param.opts) + list(param.secondary_opts),
         "type": type_name,
         "required": bool(param.required),
         "is_flag": bool(getattr(param, "is_flag", False)),

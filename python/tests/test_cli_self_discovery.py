@@ -152,6 +152,12 @@ def _flags_for(*path: str) -> set[str]:
     return {f for param in node.get("params", []) for f in param["flags"]}
 
 
+def test_describe_cli_lists_the_negative_form_of_a_boolean_pair():
+    # quickstart.md documents `agents scaffold --no-interactive`; the manifest
+    # must not tell an agent that flag is missing.
+    assert {"--interactive", "--no-interactive"} <= _flags_for("agents", "scaffold")
+
+
 def test_json_alias_auto_added_to_format_commands():
     # Every command exposing --format with a json choice also exposes --json.
     for path in (("agents", "list"), ("agents", "describe"), ("uc", "tables"),
