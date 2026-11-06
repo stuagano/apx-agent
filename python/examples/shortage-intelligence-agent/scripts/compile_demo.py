@@ -125,11 +125,12 @@ def find_historical_patterns(
                  AS price_delta_pct,
                shortage_duration_days
         FROM {table}
-        WHERE component_id = '{component_id}'
+        WHERE component_id = :component_id
           AND event_date >= DATEADD(YEAR, -{lookback_years}, CURRENT_DATE())
         ORDER BY event_date DESC
         LIMIT 10
         """,
+        parameters=[{"name": "component_id", "value": component_id, "type": "STRING"}],
     )
     deltas = [float(r.get("price_delta_pct", 0)) for r in rows]
     return json.dumps({
@@ -237,10 +238,11 @@ def find_alternative_parts(
           ON  alt.package_type = ref.package_type
           AND alt.part_number != ref.part_number
           AND alt.manufacturer != ref.manufacturer
-        WHERE ref.part_number = '{component_id}'
+        WHERE ref.part_number = :component_id
           AND alt.in_stock = true
         LIMIT {max_results}
         """,
+        parameters=[{"name": "component_id", "value": component_id, "type": "STRING"}],
     )
     return json.dumps({
         "component_id": component_id,
