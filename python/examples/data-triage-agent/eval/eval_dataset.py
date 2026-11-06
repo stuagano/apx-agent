@@ -17,10 +17,10 @@ from mlflow.genai.scorers import (
     RelevanceToQuery,
 )
 
-APP_URL = os.environ.get(
-    "APP_URL",
-    "http://localhost:8000",
-)
+# The local dev server (`apx-agent dev`) listens on port 8000; set APP_URL to
+# evaluate a deployed app instead.
+_LOCAL_APP_URL = "http://localhost:8000"
+APP_URL = os.environ.get("APP_URL", _LOCAL_APP_URL)
 
 # ---------------------------------------------------------------------------
 # Predict function — calls /responses on the deployed agent
@@ -55,7 +55,7 @@ def make_predict(url: str, token: str):
                     try:
                         d = json.loads(line[6:])
                         if isinstance(d, dict):
-                            text = d.get("text", "")
+                            text = d.get("text")
                             if text:
                                 full_text += text
                     except (json.JSONDecodeError, TypeError, AttributeError):
@@ -69,8 +69,12 @@ def make_predict(url: str, token: str):
 # Eval dataset — 12 cases across all agent paths
 # ---------------------------------------------------------------------------
 
-CATALOG = os.environ.get("EVAL_CATALOG", "<your-catalog>")
-SCHEMA = os.environ.get("EVAL_SCHEMA", "<your-schema>")
+# Visible placeholders: the questions still read sensibly with EVAL_CATALOG /
+# EVAL_SCHEMA unset, and the placeholder shows which value to supply.
+_CATALOG_PLACEHOLDER = "<your-catalog>"
+_SCHEMA_PLACEHOLDER = "<your-schema>"
+CATALOG = os.environ.get("EVAL_CATALOG", _CATALOG_PLACEHOLDER)
+SCHEMA = os.environ.get("EVAL_SCHEMA", _SCHEMA_PLACEHOLDER)
 TABLE = f"{CATALOG}.{SCHEMA}.customers"
 
 eval_data = [
@@ -155,11 +159,15 @@ eval_data = [
 # Run evaluation
 # ---------------------------------------------------------------------------
 
+# Missing values read as empty: no Authorization header yields an empty token
+# (the app then rejects the call), and a trace without a question prints blank.
+_ABSENT = ""
+
 if __name__ == "__main__":
     from databricks.sdk import WorkspaceClient
 
     ws = WorkspaceClient()
-    token = ws.config.authenticate().get("Authorization", "").replace("Bearer ", "")
+    token = ws.config.authenticate().get("Authorization", _ABSENT).replace("Bearer ", "")
 
     experiment_name = "/Shared/data-triage-agent-eval"
     mlflow.set_experiment(experiment_name)
@@ -205,7 +213,7 @@ if __name__ == "__main__":
     passed = failed = errors = 0
     for t in reversed(traces):
         req = _json.loads(t.data.request) if isinstance(t.data.request, str) else t.data.request
-        question = req.get("question", "")
+        question = req.get("question", _ABSENT)
         status = t.info.status.name
 
         if status == "ERROR":

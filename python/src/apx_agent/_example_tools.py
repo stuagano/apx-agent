@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from ._example import ExampleResult, ExampleStore, FindSimilarOptions
+from ._memory_tools import NO_TOOL_PREFIX
 from ._tool import tool
 
 # ---------------------------------------------------------------------------
@@ -70,7 +71,7 @@ def make_example_tools(
     agent_id_resolver: Callable[[], str | None] | None = None,
     default_agent_id: str | None = None,
     intent_default: str | None = None,
-    tool_prefix: str = "",
+    tool_prefix: str = NO_TOOL_PREFIX,
     include: list[ExampleToolName] | None = None,
 ) -> list[Any]:
     """Build LLM-facing example tools that close over ``store``.

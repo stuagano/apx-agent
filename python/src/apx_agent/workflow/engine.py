@@ -29,7 +29,9 @@ class StepRecord:
     output: Any = None
     error: str | None = None
     duration_ms: int = 0
-    recorded_at: str = ""
+    # Every engine stamps this when it records the step; keyword-only so the
+    # required field can follow the defaulted ones without reordering them.
+    recorded_at: str = field(kw_only=True)
 
 
 @dataclass

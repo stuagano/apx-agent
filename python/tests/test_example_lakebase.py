@@ -22,7 +22,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
-pytest.importorskip("sqlalchemy")
+sa = pytest.importorskip("sqlalchemy")
 
 from apx_agent._example_lakebase import (  # noqa: E402
     LakebaseExampleStore,
@@ -56,7 +56,7 @@ class _FakeConn:
         self._engine = engine
 
     def execute(self, sql_obj: Any, params: dict[str, Any] | None = None):
-        sql_text = str(getattr(sql_obj, "text", sql_obj))
+        sql_text = str(sql_obj.text if isinstance(sql_obj, sa.TextClause) else sql_obj)
         self._engine.calls.append((sql_text, params or {}))
         return self._engine.next_result(sql_text)
 

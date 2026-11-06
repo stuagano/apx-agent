@@ -16,6 +16,17 @@ from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_litera
 
 Workspace = Dependencies.Workspace
 
+# Applicant, candidate and decision dicts are supplied by the LLM, so any field
+# may be absent. An absent field reads as the empty string: it has no tokens, so
+# it never matches, and it logs as an empty SQL literal.
+_ABSENT_FIELD = ""
+
+
+def _demo_mode() -> bool:
+    """True when DEMO_MODE is set to "true" (any case); unset means off."""
+    value = os.environ.get("DEMO_MODE")
+    return value is not None and value.lower() == "true"
+
 
 def _names_share_surname(name_a: str, name_b: str) -> bool:
     parts_a = name_a.lower().split()
@@ -64,23 +75,23 @@ def evaluate_candidates(
             }
         }
 
-    app_name = applicant.get("name", "")
-    app_address = applicant.get("address", "")
-    app_account = applicant.get("account_number", "")
+    app_name = applicant.get("name", _ABSENT_FIELD)
+    app_address = applicant.get("address", _ABSENT_FIELD)
+    app_account = applicant.get("account_number", _ABSENT_FIELD)
 
     best = candidates[0]
     score = float(best.get("score", 0.0))
 
     notes: list[str] = []
-    same_address = _addresses_match(app_address, best.get("address", ""))
-    same_surname = _names_share_surname(app_name, best.get("name", ""))
-    first_differs = _first_names_differ(app_name, best.get("name", ""))
-    account_match = bool(app_account and app_account == best.get("account_number", ""))
+    same_address = _addresses_match(app_address, best.get("address", _ABSENT_FIELD))
+    same_surname = _names_share_surname(app_name, best.get("name", _ABSENT_FIELD))
+    first_differs = _first_names_differ(app_name, best.get("name", _ABSENT_FIELD))
+    account_match = bool(app_account and app_account == best.get("account_number", _ABSENT_FIELD))
 
     # Exact name match: token overlap penalizes minor address differences
     # (e.g. "Apt 2") but an identical name at the same street number is
     # unambiguously the right record.
-    exact_name = app_name.strip().lower() == best.get("name", "").strip().lower()
+    exact_name = app_name.strip().lower() == best.get("name", _ABSENT_FIELD).strip().lower()
     if exact_name and same_address:
         score = max(score, 0.92)
         notes.append("exact name and address match")
@@ -132,22 +143,23 @@ def log_decision(
 
     decision: dict with keys: applicant_name, matched, account_id, category,
               rationale, confidence, candidates_reviewed"""
-    if os.environ.get("DEMO_MODE", "").lower() == "true":
+    if _demo_mode():
         return {"status": "logged (demo mode — no real write)", "decision": decision}
 
-    table = os.environ.get("AFR_DECISION_TABLE", "")
+    table = os.environ.get("AFR_DECISION_TABLE")
     if not table:
         return {"status": "skipped", "reason": "AFR_DECISION_TABLE not configured"}
 
+    account_id = decision.get("account_id")
     sql = f"""
         INSERT INTO {table}
         (applicant_name, matched, account_id, category, rationale, confidence, candidates_reviewed, decision_ts)
         VALUES (
-            '{sql_literal(decision.get("applicant_name", ""))}',
+            '{sql_literal(decision.get("applicant_name", _ABSENT_FIELD))}',
             {str(decision.get("matched", False)).upper()},
-            '{sql_literal(decision.get("account_id") or "")}',
-            '{sql_literal(decision.get("category", ""))}',
-            '{sql_literal(decision.get("rationale", ""))}',
+            '{sql_literal(_ABSENT_FIELD if account_id is None else account_id)}',
+            '{sql_literal(decision.get("category", _ABSENT_FIELD))}',
+            '{sql_literal(decision.get("rationale", _ABSENT_FIELD))}',
             {decision.get("confidence", 0.0)},
             {decision.get("candidates_reviewed", 0)},
             CURRENT_TIMESTAMP()

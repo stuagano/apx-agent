@@ -21,7 +21,8 @@ SESSION = "apx-862-855-sessions"
 
 @pytest.fixture(scope="module")
 def live_workspace():
-    if os.environ.get("APX_MANAGED_STATE_LIVE", "").strip() not in {"1", "true", "yes"}:
+    live = os.environ.get("APX_MANAGED_STATE_LIVE")
+    if live is None or live.strip() not in {"1", "true", "yes"}:
         pytest.skip(
             "APX-MANAGED-STATE UNVERIFIED: set APX_MANAGED_STATE_LIVE=1 to run "
             "the disposable store probe on the selected Databricks profile."
@@ -89,8 +90,11 @@ def test_live_managed_store_provision_crud_and_isolation(live_workspace) -> None
         assert actor_a.delete(added.id)
         assert actor_a.get(added.id) is None
 
-        with pytest.raises(Exception) as raised:
+        from databricks_agentbricks.errors import AgentCliError
+
+        # AgentKit normalizes every API failure to AgentCliError (wrap_api_error).
+        with pytest.raises(AgentCliError) as raised:
             client.memory_stores.get("apx-862-855-missing-store")
-        assert getattr(raised.value, "error_code", None) == "NOT_FOUND"
+        assert raised.value.error_code == "NOT_FOUND"
     finally:
         cleanup()

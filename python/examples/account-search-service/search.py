@@ -20,37 +20,48 @@ def _is_abnormal(name: str) -> bool:
     return bool(_INITIAL_RE.search(name) or _ACRONYM_RE.search(name))
 
 
-def normalize(name: str, address: str = "", account_number: str = "") -> dict[str, str]:
+def _demo_mode() -> bool:
+    """DEMO_MODE=true (any case) serves synthetic data; unset means live."""
+    value = os.environ.get("DEMO_MODE")
+    return value is not None and value.lower() == "true"
+
+
+def _query(*parts: str | None) -> str:
+    """Space-join query parts, an omitted (None) part reading as empty."""
+    return " ".join(part if part is not None else "" for part in parts).strip()
+
+
+def normalize(name: str, address: str | None = None, account_number: str | None = None) -> dict[str, str]:
     """Normalize applicant name and address; choose search strategy.
 
     Returns a dict with normalized fields and 'strategy': 'vector' | 'sql'.
     """
     return {
         "name": name.strip().title(),
-        "address": address.strip().title(),
-        "account_number": account_number.strip(),
+        "address": "" if address is None else address.strip().title(),
+        "account_number": "" if account_number is None else account_number.strip(),
         "strategy": "sql" if _is_abnormal(name) else "vector",
     }
 
 
 def vector_search(
     applicant_name: str,
-    address: str = "",
-    email: str = "",
+    address: str | None = None,
+    email: str | None = None,
     k: int = 10,
-    tenant_id: str = "",
+    tenant_id: str | None = None,
     ws: Any = None,
 ) -> dict[str, Any]:
     """Fan out across all three VS indexes; deduplicate by account_id keeping highest score."""
-    if os.environ.get("DEMO_MODE", "").lower() == "true":
+    if _demo_mode():
         from demo_data import vector_search_demo
-        candidates = vector_search_demo(f"{applicant_name} {address}".strip(), k)
+        candidates = vector_search_demo(_query(applicant_name, address), k)
         return {"candidates": candidates, "count": len(candidates), "source": "demo"}
 
     indexes = {
-        "full":        os.environ.get("VS_INDEX_FULL", ""),
-        "last_addr":   os.environ.get("VS_INDEX_LAST_ADDR", ""),
-        "first_email": os.environ.get("VS_INDEX_FIRST_EMAIL", ""),
+        "full":        os.environ.get("VS_INDEX_FULL"),
+        "last_addr":   os.environ.get("VS_INDEX_LAST_ADDR"),
+        "first_email": os.environ.get("VS_INDEX_FIRST_EMAIL"),
     }
     missing = [n for n, v in indexes.items() if not v]
     if missing:
@@ -61,9 +72,9 @@ def vector_search(
     first_name = parts[0] if len(parts) > 1 else applicant_name
 
     queries = {
-        "full":        f"{applicant_name} {address}".strip(),
-        "last_addr":   f"{last_name} {address}".strip(),
-        "first_email": f"{first_name} {email}".strip(),
+        "full":        _query(applicant_name, address),
+        "last_addr":   _query(last_name, address),
+        "first_email": _query(first_name, email),
     }
     filters = {"tenant_id": tenant_id} if tenant_id else {}
     columns = ["account_id", "first_name", "last_name", "service_address_line1", "account_number", "score"]
@@ -80,13 +91,13 @@ def vector_search(
         col_names = [c.name for c in (raw.manifest.schema.columns or [])]
         for row in (raw.result.data_array or []):
             record = dict(zip(col_names, row))
-            acct_id = record.get("account_id", "")
+            acct_id = record["account_id"]
             score = float(record.get("score", 0.0))
             candidate = {
                 "account_id": acct_id,
-                "name": f"{record.get('first_name', '')} {record.get('last_name', '')}".strip(),
-                "address": record.get("service_address_line1", ""),
-                "account_number": record.get("account_number", ""),
+                "name": f"{record['first_name']} {record['last_name']}".strip(),
+                "address": record["service_address_line1"],
+                "account_number": record["account_number"],
                 "score": score,
             }
             if acct_id not in seen or score > seen[acct_id]["score"]:
@@ -98,16 +109,16 @@ def vector_search(
 
 def sql_search(
     name: str,
-    address: str = "",
+    address: str | None = None,
     ws: Any = None,
 ) -> dict[str, Any]:
     """ILIKE fallback for names with initials or acronyms that embed poorly."""
-    if os.environ.get("DEMO_MODE", "").lower() == "true":
+    if _demo_mode():
         from demo_data import sql_search_demo
         candidates = sql_search_demo(name, address)
         return {"candidates": candidates, "count": len(candidates), "source": "demo"}
 
-    table = os.environ.get("UTILITY_ACCOUNT_TABLE", "")
+    table = os.environ.get("UTILITY_ACCOUNT_TABLE")
     if not table:
         return {"error": "UTILITY_ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
 
@@ -126,11 +137,11 @@ def sql_search(
 
 def search(
     name: str,
-    address: str = "",
-    email: str = "",
-    tenant_id: str = "",
+    address: str | None = None,
+    email: str | None = None,
+    tenant_id: str | None = None,
     k: int = 10,
-    account_number: str = "",
+    account_number: str | None = None,
     ws: Any = None,
 ) -> dict[str, Any]:
     """Top-level search: normalize, choose strategy, execute, return results."""

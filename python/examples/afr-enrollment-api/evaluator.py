@@ -12,6 +12,17 @@ from typing import Any
 from databricks_tools_core.sql import SQLExecutionError, execute_sql, sql_literal
 
 
+# A field a search result omits compares as empty: the SQL fallback returns
+# only account_id/name/address, so its rows carry no account_number.
+_ABSENT_FIELD = ""
+
+
+def _demo_mode() -> bool:
+    """DEMO_MODE=true (any case) skips the real write; unset means live."""
+    value = os.environ.get("DEMO_MODE")
+    return value is not None and value.lower() == "true"
+
+
 def _names_share_surname(name_a: str, name_b: str) -> bool:
     parts_a = name_a.lower().split()
     parts_b = name_b.lower().split()
@@ -49,17 +60,17 @@ def evaluate_candidates(
             }
         }
 
-    app_name = applicant.get("name", "")
-    app_address = applicant.get("address", "")
-    app_account = applicant.get("account_number", "")
+    app_name = applicant["name"]
+    app_address = applicant["address"]
+    app_account = applicant["account_number"]
 
     best = candidates[0]
     score = float(best.get("score", 0.0))
 
     notes: list[str] = []
-    same_address = _addresses_match(app_address, best.get("address", ""))
-    same_surname = _names_share_surname(app_name, best.get("name", ""))
-    account_match = bool(app_account and app_account == best.get("account_number", ""))
+    same_address = _addresses_match(app_address, best.get("address", _ABSENT_FIELD))
+    same_surname = _names_share_surname(app_name, best.get("name", _ABSENT_FIELD))
+    account_match = bool(app_account and app_account == best.get("account_number", _ABSENT_FIELD))
 
     if same_address and not same_surname:
         notes.append("familial match suspected: same address, different surname")
@@ -98,22 +109,23 @@ def log_decision(
 
     decision: dict with keys: applicant_name, matched, account_id, category,
               rationale, confidence, candidates_reviewed"""
-    if os.environ.get("DEMO_MODE", "").lower() == "true":
+    if _demo_mode():
         return {"status": "logged (demo mode — no real write)", "decision": decision}
 
-    table = os.environ.get("AFR_DECISION_TABLE", "")
+    table = os.environ.get("AFR_DECISION_TABLE")
     if not table:
         return {"status": "skipped", "reason": "AFR_DECISION_TABLE not configured"}
 
+    account_id = decision["account_id"]
     sql = f"""
         INSERT INTO {table}
         (applicant_name, matched, account_id, category, rationale, confidence, candidates_reviewed, decision_ts)
         VALUES (
-            '{sql_literal(decision.get("applicant_name", ""))}',
+            '{sql_literal(decision["applicant_name"])}',
             {str(decision.get("matched", False)).upper()},
-            '{sql_literal(decision.get("account_id") or "")}',
-            '{sql_literal(decision.get("category", ""))}',
-            '{sql_literal(decision.get("rationale", ""))}',
+            '{sql_literal("" if account_id is None else account_id)}',
+            '{sql_literal(decision["category"])}',
+            '{sql_literal(decision["rationale"])}',
             {decision.get("confidence", 0.0)},
             {decision.get("candidates_reviewed", 0)},
             CURRENT_TIMESTAMP()

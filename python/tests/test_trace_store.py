@@ -66,7 +66,7 @@ def _fake_tool_then_answer():
             return self
 
         def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
-            has_tool_result = any(getattr(m, "type", "") == "tool" for m in messages)
+            has_tool_result = any(m.type == "tool" for m in messages)
             if has_tool_result:
                 msg = AIMessage(content="the time is 12:00")
             else:

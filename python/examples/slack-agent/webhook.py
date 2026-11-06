@@ -31,6 +31,14 @@ router = APIRouter(prefix="/slack")
 _NONCE_TTL_S = 600.0
 _pending: dict[str, tuple[str, float]] = {}
 
+# Slack sends every one of these fields on a slash command; a missing one is
+# read as empty so the request takes the not-connected / generic-text path.
+_ABSENT_FORM_FIELD = ""
+
+# Local uvicorn port when PORT is unset (uvicorn's own default); the Apps
+# runtime serves on $DATABRICKS_APP_PORT per databricks.yml.
+_DEFAULT_LOCAL_PORT = "8000"
+
 
 def _purge_expired_nonces(now: float | None = None) -> None:
     """Drop expired OAuth nonces. Called on write and on lookup."""
@@ -58,7 +66,9 @@ def _pop_nonce(nonce: str) -> str | None:
     return slack_user_id
 
 
-def _verify_slack_signature(body: bytes, timestamp: str, signature: str, secret: str) -> bool:
+def _verify_slack_signature(
+    body: bytes, timestamp: str | None, signature: str | None, secret: str
+) -> bool:
     """Validate Slack's HMAC-SHA256 request signature.
 
     Slack signs requests with: HMAC-SHA256(signing_secret, "v0:{timestamp}:{body}")
@@ -69,6 +79,8 @@ def _verify_slack_signature(body: bytes, timestamp: str, signature: str, secret:
     except (ValueError, TypeError):
         return False
     if abs(time.time() - ts) > 300:
+        return False
+    if signature is None:
         return False
     basestring = f"v0:{timestamp}:{body.decode('utf-8')}"
     expected = "v0=" + hmac.new(secret.encode(), basestring.encode(), hashlib.sha256).hexdigest()
@@ -127,7 +139,7 @@ async def oauth_callback(
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Token exchange failed: {resp.text}")
 
-    access_token = resp.json().get("access_token", "")
+    access_token = resp.json().get("access_token")
     if not access_token:
         raise HTTPException(status_code=502, detail="No access_token in Databricks response")
 
@@ -160,17 +172,17 @@ async def slack_events(
       the result back to Slack via response_url (3-second deadline workaround).
     """
     body = await request.body()
-    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
-    signature = request.headers.get("X-Slack-Signature", "")
+    timestamp = request.headers.get("X-Slack-Request-Timestamp")
+    signature = request.headers.get("X-Slack-Signature")
 
     if not _verify_slack_signature(body, timestamp, signature, settings.slack_signing_secret):
         raise HTTPException(status_code=401, detail="Invalid Slack signature")
 
     form = await request.form()
-    user_id = str(form.get("user_id", ""))
-    text = str(form.get("text", "")).strip()
-    response_url = str(form.get("response_url", ""))
-    command = str(form.get("command", ""))
+    user_id = str(form.get("user_id", _ABSENT_FORM_FIELD))
+    text = str(form.get("text", _ABSENT_FORM_FIELD)).strip()
+    response_url = str(form.get("response_url", _ABSENT_FORM_FIELD))
+    command = str(form.get("command", _ABSENT_FORM_FIELD))
 
     if command == "/connect":
         install_url = f"{settings.app_url}/slack/install?user={user_id}"
@@ -216,7 +228,7 @@ async def _dispatch_to_agent(
     the token via Databricks OAuth and stored it; now we inject it into the
     request headers so the agent sees no difference.
     """
-    port = os.environ.get("PORT", "8000")
+    port = os.environ.get("PORT", _DEFAULT_LOCAL_PORT)
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             agent_resp = await client.post(

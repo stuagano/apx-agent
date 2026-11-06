@@ -11,7 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from databricks.sdk import WorkspaceClient
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -24,18 +24,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# Jira omits unset fields from webhook payloads; an absent field reads as
+# empty, the same as an empty one.
+_ABSENT = ""
+
+
 def _verify_signature(body: bytes, signature: str, secret: str) -> bool:
     expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
 
 
-def _extract_text(node: object) -> str:
+def _extract_text(node: Any) -> str:
     """Recursively extract plain text from Atlassian Document Format."""
     if isinstance(node, str):
         return node
     if isinstance(node, dict):
         if node.get("type") == "text":
-            return node.get("text", "")
+            return node.get("text", _ABSENT)
         parts = []
         for child in node.get("content", []):
             parts.append(_extract_text(child))
@@ -65,20 +70,20 @@ async def jira_webhook(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    event = payload.get("webhookEvent", "")
+    event = payload.get("webhookEvent", _ABSENT)
     issue = payload.get("issue", {})
     fields = issue.get("fields", {})
-    issuetype = fields.get("issuetype", {}).get("name", "")
+    issuetype = fields.get("issuetype", {}).get("name", _ABSENT)
 
     if event != "jira:issue_created" or issuetype != "Data Issue":
         return JSONResponse(status_code=200, content={"status": "ignored"})
 
-    issue_key = issue.get("key", "")
-    summary = fields.get("summary", "")
+    issue_key = issue.get("key", _ABSENT)
+    summary = fields.get("summary", _ABSENT)
     description_raw = fields.get("description")
     description = _extract_text(description_raw) if description_raw else ""
-    priority = (fields.get("priority") or {}).get("name", "")
-    reporter = (fields.get("reporter") or {}).get("displayName", "")
+    priority = (fields.get("priority") or {}).get("name", _ABSENT)
+    reporter = (fields.get("reporter") or {}).get("displayName", _ABSENT)
 
     python_params = ["--issue-key", issue_key, "--summary", summary]
     if description:

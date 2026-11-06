@@ -11,6 +11,10 @@ from typing import Any
 from config import get_settings
 
 
+# An address field the document lacks prints blank in the trail.
+_NOT_EXTRACTED = ""
+
+
 def build_reasoning_trail(
     application_id: str,
     parsed: dict[str, Any],
@@ -54,7 +58,7 @@ def build_reasoning_trail(
         elif dt == "w2":
             line = f"- W-2: {ext.get('employee_name', 'n/a')}, {ext.get('tax_year', 'n/a')} wages ${ext.get('annual_wages', 0):,.2f}"
         elif dt == "residency":
-            line = f"- Residency ({ext.get('document_type', 'document')}): {ext.get('address_line', '')}, {ext.get('city_state_zip', '')}, dated {ext.get('document_date', 'n/a')}"
+            line = f"- Residency ({ext.get('document_type', 'document')}): {ext.get('address_line', _NOT_EXTRACTED)}, {ext.get('city_state_zip', _NOT_EXTRACTED)}, dated {ext.get('document_date', 'n/a')}"
         elif dt == "enrollment_letter":
             line = f"- Enrollment letter: {ext.get('school_name', 'n/a')}, grade {ext.get('grade_level', 'n/a')}"
         else:

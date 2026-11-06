@@ -14,7 +14,7 @@ def search_tables(search_term: str, sql: Dependencies.Sql) -> list[dict]:
     return [
         {
             "identifier": f"{r['table_catalog']}.{r['table_schema']}.{r['table_name']}",
-            "comment": r.get("comment") or "",
+            "comment": "" if r.get("comment") is None else r["comment"],
         }
         for r in rows
     ]

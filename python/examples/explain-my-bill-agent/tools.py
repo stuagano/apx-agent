@@ -22,7 +22,7 @@ querying and what governance controls are in effect.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, NamedTuple
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem, StatementState
@@ -36,9 +36,17 @@ Headers = Dependencies.Headers
 # Config — override via environment variables
 # ---------------------------------------------------------------------------
 
-CATALOG = os.environ.get("DEMO_CATALOG", "my_catalog")
-SCHEMA = os.environ.get("DEMO_SCHEMA", "billing")
-WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID", "")
+# Placeholder location for local runs; app.yml / databricks.yml set the real
+# DEMO_CATALOG and DEMO_SCHEMA (see README "Expected Unity Catalog tables").
+DEFAULT_CATALOG = "my_catalog"
+DEFAULT_SCHEMA = "billing"
+# No warehouse is assumed: an unset WAREHOUSE_ID reaches the Statement
+# Execution API as an empty id and fails there with Databricks' own error.
+UNSET_WAREHOUSE_ID = ""
+
+CATALOG = os.environ.get("DEMO_CATALOG", DEFAULT_CATALOG)
+SCHEMA = os.environ.get("DEMO_SCHEMA", DEFAULT_SCHEMA)
+WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID", UNSET_WAREHOUSE_ID)
 
 # Expected tables: customers, ami_hourly_rollups, billing_history, rate_schedules
 _BILLING_TABLES = (
@@ -58,17 +66,22 @@ def _param(name: str, value: Any) -> StatementParameterListItem:
 # Identity helpers
 # ---------------------------------------------------------------------------
 
-def _identity(headers: Dependencies.Headers) -> tuple[str, str]:
+class _Identity(NamedTuple):
+    email: str
+    auth_method: str
+
+
+def _identity(headers: Dependencies.Headers) -> _Identity:
     """Return (email, auth_method) from injected Databricks Apps headers."""
     if headers and headers.user_email:
         method = "OBO (X-Forwarded-Access-Token)" if headers.token else "Databricks Apps SSO"
-        return headers.user_email, method
+        return _Identity(headers.user_email, method)
     try:
         ws = WorkspaceClient()
         me = ws.current_user.me()
-        return me.user_name or "local-dev", "Databricks CLI credential"
+        return _Identity(me.user_name or "local-dev", "Databricks CLI credential")
     except Exception:
-        return "local-dev", "local"
+        return _Identity("local-dev", "local")
 
 
 def get_session_context(headers: Headers) -> dict:
@@ -139,7 +152,9 @@ def _cast_numerics(row: dict) -> dict:
 # Tools
 # ---------------------------------------------------------------------------
 
-def get_customer_profile(ws: Client, customer_id: str = "", name: str = "") -> dict[str, Any]:
+def get_customer_profile(
+    ws: Client, customer_id: str | None = None, name: str | None = None
+) -> dict[str, Any]:
     """Look up a customer's account profile by ID or name.
     Returns address, rate plan, account status, and linked AMI device.
     Provide either customer_id (e.g. CUST-0001) or a partial name to search."""

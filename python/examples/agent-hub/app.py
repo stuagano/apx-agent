@@ -17,13 +17,17 @@ dist_dir = Path(__file__).resolve().parent / "__dist__"
 
 logger = logging.getLogger(__name__)
 
+# A crawled card without a name matches no registered agent, so it carries no
+# existing tags over.
+_NO_NAME = ""
+
 
 async def _auto_register() -> None:
     for url in _AUTO_REGISTER_URLS:
         try:
             a2a = await _crawl_agent(url)
             if a2a:
-                existing = _AGENTS.get(a2a.get("name", "").replace("_", "-"))
+                existing = _AGENTS.get(a2a.get("name", _NO_NAME).replace("_", "-"))
                 card = _card_from_a2a(
                     a2a,
                     url,

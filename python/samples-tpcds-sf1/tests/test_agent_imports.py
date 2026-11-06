@@ -7,4 +7,4 @@ def test_agent_importable() -> None:
     from agent import agent
 
     assert agent is not None
-    assert getattr(agent, "name", None) == "samples-tpcds-sf1"
+    assert agent.name == "samples-tpcds-sf1"

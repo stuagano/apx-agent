@@ -64,7 +64,8 @@ def run_investigation(query: str, ws: WorkspaceClient) -> str:
             messages.append(assistant_msg)
 
             if finish_reason != "tool_calls":
-                return assistant_msg.get("content") or ""
+                content = assistant_msg.get("content")
+                return "" if content is None else content
 
             tool_calls = assistant_msg.get("tool_calls", [])
             for tc in tool_calls:
@@ -110,6 +111,11 @@ def _dispatch_tool(name: str, args: dict[str, Any], ws: WorkspaceClient) -> Any:
         return {"error": str(e)}
 
 
+# JiraClient takes plain strings; unset credentials surface as a Jira error
+# when the comment is posted, not at startup.
+_JIRA_UNSET = ""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Investigate a Jira data issue ticket")
     parser.add_argument("--issue-key", required=True)
@@ -120,9 +126,9 @@ def main() -> None:
     args = parser.parse_args()
 
     ws = WorkspaceClient()
-    jira_base_url = os.environ.get("JIRA_BASE_URL", "")
-    jira_email = os.environ.get("JIRA_SERVICE_ACCOUNT_EMAIL", "")
-    jira_token = os.environ.get("JIRA_API_TOKEN", "")
+    jira_base_url = os.environ.get("JIRA_BASE_URL", _JIRA_UNSET)
+    jira_email = os.environ.get("JIRA_SERVICE_ACCOUNT_EMAIL", _JIRA_UNSET)
+    jira_token = os.environ.get("JIRA_API_TOKEN", _JIRA_UNSET)
     jira = JiraClient(jira_base_url, jira_email, jira_token)
 
     query = _extract_investigation_query(

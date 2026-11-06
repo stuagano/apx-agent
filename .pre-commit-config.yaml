@@ -36,8 +36,13 @@ repos:
             # All current src has violations — graduate file by file.
             python/src/apx_agent/
             # Vendored third-party code (claude-test-kit) — not house style.
+            # Lives at the repo root and at python/.ctk/ (the pytest pythonpath).
             |ctk/
+            |python/\.ctk/
             |caps/
+            # Vendored from databricks-solutions/ai-dev-kit (authors: Databricks;
+            # READMEs install from that repo) — upstream style, not house style.
+            |python/examples/databricks-(tools-core|mcp-server|skills)/
             # Externally-maintained adapters (upstream: companion repo).
             |adapters/
           )
@@ -76,8 +81,12 @@ repos:
             |python/tests/test_publish\.py$
             |python/tests/test_topology\.py$
             |ctk/
+            |python/\.ctk/
             |caps/
             |adapters/
+            # Vendored from databricks-solutions/ai-dev-kit (authors: Databricks;
+            # READMEs install from that repo) — upstream style, not house style.
+            |python/examples/databricks-(tools-core|mcp-server|skills)/
           )
 
       # Ban `str = ""` defaults — 22 violations, narrow backlog.
@@ -99,8 +108,12 @@ repos:
             |python/tests/test_instructions\.py$
             |python/tests/test_sql\.py$
             |ctk/
+            |python/\.ctk/
             |caps/
             |adapters/
+            # Vendored from databricks-solutions/ai-dev-kit (authors: Databricks;
+            # READMEs install from that repo) — upstream style, not house style.
+            |python/examples/databricks-(tools-core|mcp-server|skills)/
           )
 
       # Ban `os.environ.get("VAR", "literal")` — 0 remaining violations, no backlog.
@@ -113,6 +126,9 @@ repos:
           (?x)^(
             # Externally-maintained adapters (upstream: companion repo).
             adapters/
+            # Vendored from databricks-solutions/ai-dev-kit (authors: Databricks;
+            # READMEs install from that repo) — upstream style, not house style.
+            |python/examples/databricks-(tools-core|mcp-server|skills)/
           )
 
       # Ban `-> tuple[X, Y]` returns — 0 remaining violations, no backlog.
@@ -124,7 +140,11 @@ repos:
         exclude: |-
           (?x)^(
             ctk/
+            |python/\.ctk/
             |caps/
+            # Vendored from databricks-solutions/ai-dev-kit (authors: Databricks;
+            # READMEs install from that repo) — upstream style, not house style.
+            |python/examples/databricks-(tools-core|mcp-server|skills)/
           )
 
       # Ban unconditional @pytest.mark.skip — 0 existing violations, no backlog.

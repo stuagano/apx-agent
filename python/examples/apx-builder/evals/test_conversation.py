@@ -14,12 +14,31 @@ Usage:
 from __future__ import annotations
 
 import os
+from typing import NamedTuple
+
 import httpx
 import pytest
 
-APP_URL = os.environ.get("APP_URL", "").rstrip("/")
-DATABRICKS_HOST = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
-DATABRICKS_TOKEN = os.environ.get("DATABRICKS_TOKEN", "")
+
+def _env_url(name: str) -> str | None:
+    """Read a URL env var without its trailing slash; None when unset."""
+    value = os.environ.get(name)
+    return None if value is None else value.rstrip("/")
+
+
+APP_URL = _env_url("APP_URL")
+DATABRICKS_HOST = _env_url("DATABRICKS_HOST")
+DATABRICKS_TOKEN = os.environ.get("DATABRICKS_TOKEN")
+
+
+class _ChatReply(NamedTuple):
+    text: str
+    session_id: str | None
+
+
+class _Verdict(NamedTuple):
+    passed: bool
+    reason: str
 
 # Five discovery turns that exhaust all questions without triggering the build.
 # Turn 5 answers the lineage question; the agent should then ask for a name.
@@ -68,7 +87,7 @@ def _get_token() -> str:
     pytest.skip("No DATABRICKS_TOKEN and databricks CLI token unavailable")
 
 
-def _chat(messages: list[dict], session_id: str | None = None) -> tuple[str, str | None]:
+def _chat(messages: list[dict], session_id: str | None = None) -> _ChatReply:
     """Send a conversation to the app and return (response_text, session_id)."""
     token = _get_token()
     payload: dict = {"input": messages}
@@ -86,10 +105,10 @@ def _chat(messages: list[dict], session_id: str | None = None) -> tuple[str, str
         text = data["output"][0]["content"][0]["text"]
     except (KeyError, IndexError):
         text = str(data)
-    return text, data.get("session_id")
+    return _ChatReply(text, data.get("session_id"))
 
 
-def _judge(user_msg: str, agent_response: str, criterion: str) -> tuple[bool, str]:
+def _judge(user_msg: str, agent_response: str, criterion: str) -> _Verdict:
     """LLM-as-judge via Databricks chat completions. Returns (passed, reason)."""
     import time
 
@@ -122,9 +141,9 @@ def _judge(user_msg: str, agent_response: str, criterion: str) -> tuple[bool, st
         text = r.json()["choices"][0]["message"]["content"].strip()
         passed = "VERDICT: PASS" in text
         reason = text.split("REASON:", 1)[-1].strip() if "REASON:" in text else text
-        return passed, reason
+        return _Verdict(passed, reason)
     r.raise_for_status()
-    return False, "judge rate-limited after 5 retries"
+    return _Verdict(False, "judge rate-limited after 5 retries")
 
 
 @pytest.fixture(scope="module")

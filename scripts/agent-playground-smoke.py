@@ -61,7 +61,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +397,8 @@ def _run_apx_deploy(plan: Plan, log: Logger) -> subprocess.CompletedProcess[str]
     if proc.returncode != 0:
         # Stream the tail to stderr so the user sees the failure context.
         log.err("apx deploy failed — last 50 lines of combined output:")
-        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        # capture_output + text=True: both streams are always str.
+        combined = proc.stdout + "\n" + proc.stderr
         for line in combined.splitlines()[-50:]:
             print(line, file=sys.stderr)
         raise RuntimeError(
@@ -455,9 +456,9 @@ def _wait_for_ready(endpoint: str, profile: str, timeout: int, log: Logger) -> N
             )
         try:
             ep = ws.serving_endpoints.get(endpoint)
-            state = getattr(ep.state, "ready", None)
+            state = ep.state.ready if ep.state is not None else None
             last_state = str(state) if state is not None else "UNKNOWN"
-            config_update = getattr(ep.state, "config_update", None)
+            config_update = ep.state.config_update if ep.state is not None else None
             last_config_state = str(config_update) if config_update is not None else "UNKNOWN"
         except Exception as e:  # pragma: no cover — network blip
             log.warn(f"poll error (will retry): {e}")
@@ -485,9 +486,15 @@ def _wait_for_ready(endpoint: str, profile: str, timeout: int, log: Logger) -> N
 # ---------------------------------------------------------------------------
 
 
+class _Invocation(NamedTuple):
+    """Parsed invocations response plus its raw body text."""
+    body: dict[str, Any]
+    body_raw: str
+
+
 def _invoke_endpoint(
     endpoint: str, profile: str, prompt: str, log: Logger,
-) -> tuple[dict[str, Any], str]:
+) -> _Invocation:
     """POST to /serving-endpoints/<name>/invocations with the ChatAgent shape."""
     from databricks.sdk import WorkspaceClient
 
@@ -530,7 +537,11 @@ def _invoke_endpoint(
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Invocations returned non-JSON: {body_raw[:500]}") from e
 
-    return body, body_raw
+    return _Invocation(body, body_raw)
+
+
+# A content part without a "text" key contributes nothing to the joined reply.
+_NO_PART_TEXT = ""
 
 
 def _assert_response_shape(body: dict[str, Any]) -> str:
@@ -552,7 +563,7 @@ def _assert_response_shape(body: dict[str, Any]) -> str:
         # ChatAgent responses occasionally wrap content as list-of-parts.
         if isinstance(content, list):
             joined = "".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
+                part.get("text", _NO_PART_TEXT) if isinstance(part, dict) else str(part)
                 for part in content
             ).strip()
             if joined:
@@ -568,31 +579,37 @@ def _assert_response_shape(body: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _check_traces(experiment: str, profile: str, log: Logger) -> tuple[int, list[str]]:
+class _TraceCheck(NamedTuple):
+    """How many recent traces landed, and the apx.* span attrs they carry."""
+    count: int
+    apx_attrs: list[str]
+
+
+def _check_traces(experiment: str, profile: str, log: Logger) -> _TraceCheck:
     """Best-effort check that a trace landed with apx.* span attrs."""
     try:
         import mlflow
         from mlflow.tracking import MlflowClient
     except ImportError:
         log.warn("mlflow not installed — skipping trace assertions")
-        return 0, []
+        return _TraceCheck(0, [])
     # Point MLflow at the workspace using the same profile.
     os.environ.setdefault("DATABRICKS_CONFIG_PROFILE", profile)
     try:
         mlflow.set_tracking_uri("databricks")
     except Exception as e:
         log.warn(f"mlflow.set_tracking_uri failed: {e}")
-        return 0, []
+        return _TraceCheck(0, [])
 
     client = MlflowClient()
     try:
         exp = client.get_experiment_by_name(experiment)
     except Exception as e:
         log.warn(f"could not fetch experiment {experiment!r}: {e}")
-        return 0, []
+        return _TraceCheck(0, [])
     if exp is None:
         log.warn(f"experiment {experiment!r} not found")
-        return 0, []
+        return _TraceCheck(0, [])
 
     # Look back 10 minutes — covers slow trace flushes.
     since_ms = int((time.time() - 600) * 1000)
@@ -604,22 +621,22 @@ def _check_traces(experiment: str, profile: str, log: Logger) -> tuple[int, list
         )
     except Exception as e:
         log.warn(f"search_traces failed: {e}")
-        return 0, []
+        return _TraceCheck(0, [])
 
     if not traces:
         log.warn(f"no traces found in {experiment!r} since {since_ms}")
-        return 0, []
+        return _TraceCheck(0, [])
 
     apx_attrs: set[str] = set()
     for t in traces:
-        spans = getattr(t.data, "spans", None) or []
+        spans = t.data.spans or []
         for span in spans:
-            attrs = getattr(span, "attributes", None) or {}
+            attrs = span.attributes or {}
             for key in attrs:
                 if isinstance(key, str) and key.startswith("apx."):
                     apx_attrs.add(key)
 
-    return len(traces), sorted(apx_attrs)
+    return _TraceCheck(len(traces), sorted(apx_attrs))
 
 
 # ---------------------------------------------------------------------------
@@ -753,7 +770,8 @@ def _run_pipeline(plan: Plan, log: Logger, result: Result) -> int:
             logs_resp = ws.serving_endpoints.get_logs(
                 name=result.endpoint, served_model_name=result.endpoint,
             )
-            tail = (getattr(logs_resp, "logs", "") or "").splitlines()[-50:]
+            logs = logs_resp.logs
+            tail = (logs.splitlines() if logs is not None else [])[-50:]
             if tail:
                 log.err("Last 50 lines of build logs:")
                 for line in tail:

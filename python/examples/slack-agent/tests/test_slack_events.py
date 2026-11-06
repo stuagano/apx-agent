@@ -1,6 +1,8 @@
 import hashlib
 import hmac
 import time
+from typing import NamedTuple
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -30,10 +32,15 @@ def _sign(body: bytes, timestamp: str) -> str:
     return "v0=" + hmac.new(SECRET.encode(), basestring.encode(), hashlib.sha256).hexdigest()
 
 
-def _slash(command: str = "/whoami", user_id: str = "U123", text: str = "") -> tuple[bytes, dict]:
+class _SlashRequest(NamedTuple):
+    body: bytes
+    headers: dict
+
+
+def _slash(command: str = "/whoami", user_id: str = "U123", text: str | None = None) -> _SlashRequest:
     body = (
         f"command={command}&user_id={user_id}"
-        f"&text={text}&response_url=https://hooks.slack.com/resp/abc"
+        f"&text={'' if text is None else text}&response_url=https://hooks.slack.com/resp/abc"
     ).encode()
     ts = str(int(time.time()))
     headers = {
@@ -41,7 +48,7 @@ def _slash(command: str = "/whoami", user_id: str = "U123", text: str = "") -> t
         "X-Slack-Request-Timestamp": ts,
         "X-Slack-Signature": _sign(body, ts),
     }
-    return body, headers
+    return _SlashRequest(body, headers)
 
 
 @pytest.fixture(autouse=True)

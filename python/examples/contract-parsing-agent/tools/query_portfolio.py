@@ -14,9 +14,9 @@ Workspace = Dependencies.Client
 
 
 def query_portfolio(
-    counterparty: str = "",
-    contract_type: str = "",
-    pricing_model: str = "",
+    counterparty: str | None = None,
+    contract_type: str | None = None,
+    pricing_model: str | None = None,
     auto_renewal: bool | None = None,
     expires_within_days: int | None = None,
     ws: Workspace = None,

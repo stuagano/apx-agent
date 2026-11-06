@@ -20,6 +20,20 @@ Workspace = Dependencies.Workspace
 _INITIAL_RE = re.compile(r"\b[A-Z]\.\s*")
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,5}\b")
 
+# An omitted optional applicant field normalizes to the empty string — the
+# default account-search-service's request model declares for the same fields.
+_OMITTED = ""
+
+# Vector Search rows are read by column name; a column the index did not return
+# reads as the empty string (no tokens, never matches).
+_ABSENT_COLUMN = ""
+
+
+def _demo_mode() -> bool:
+    """True when DEMO_MODE is set to "true" (any case); unset means off."""
+    value = os.environ.get("DEMO_MODE")
+    return value is not None and value.lower() == "true"
+
 
 def _is_abnormal(name: str) -> bool:
     return bool(_INITIAL_RE.search(name) or _ACRONYM_RE.search(name))
@@ -27,8 +41,8 @@ def _is_abnormal(name: str) -> bool:
 
 def normalize_record(
     name: str,
-    address: str = "",
-    account_number: str = "",
+    address: str | None = None,
+    account_number: str | None = None,
     ws: Workspace = None,
 ) -> dict[str, Any]:
     """Normalize an AFR applicant record.
@@ -39,17 +53,17 @@ def normalize_record(
     account_number: utility account number (optional)"""
     return {
         "name": name.strip().title(),
-        "address": address.strip().title(),
-        "account_number": account_number.strip(),
+        "address": _OMITTED if address is None else address.strip().title(),
+        "account_number": _OMITTED if account_number is None else account_number.strip(),
         "strategy": "sql" if _is_abnormal(name) else "vector",
     }
 
 
 def search_accounts(
     applicant_name: str,
-    address: str = "",
-    email: str = "",
-    tenant_id: str = "",
+    address: str | None = None,
+    email: str | None = None,
+    tenant_id: str | None = None,
     k: int = 10,
     ws: Workspace = None,
 ) -> dict[str, Any]:
@@ -68,7 +82,11 @@ def search_accounts(
     email: optional — used for maiden name matching via first+email index
     tenant_id: optional — restricts search to one utility tenant
     k: candidates per VS index before deduplication"""
-    service_url = os.environ.get("SEARCH_SERVICE_URL", "").rstrip("/")
+    address = _OMITTED if address is None else address
+    email = _OMITTED if email is None else email
+    tenant_id = _OMITTED if tenant_id is None else tenant_id
+    raw_url = os.environ.get("SEARCH_SERVICE_URL")
+    service_url = None if raw_url is None else raw_url.rstrip("/")
     if service_url:
         return _call_search_service(service_url, applicant_name, address, email, tenant_id, k, ws)
     return _search_local(applicant_name, address, email, tenant_id, k, ws)
@@ -102,7 +120,7 @@ def _call_search_service(url, applicant_name, address, email, tenant_id, k, ws):
 
 def _search_local(applicant_name, address, email, tenant_id, k, ws):
     """Local search — same logic as account-search-service, embedded for single-app dev."""
-    if os.environ.get("DEMO_MODE", "").lower() == "true":
+    if _demo_mode():
         from demo_data import sql_search_demo, vector_search_demo
         if _is_abnormal(applicant_name):
             candidates = sql_search_demo(applicant_name, address)
@@ -111,9 +129,9 @@ def _search_local(applicant_name, address, email, tenant_id, k, ws):
         return {"candidates": candidates, "count": len(candidates), "source": "demo", "strategy": "vector"}
 
     indexes = {
-        "full":        os.environ.get("VS_INDEX_FULL", ""),
-        "last_addr":   os.environ.get("VS_INDEX_LAST_ADDR", ""),
-        "first_email": os.environ.get("VS_INDEX_FIRST_EMAIL", ""),
+        "full":        os.environ.get("VS_INDEX_FULL"),
+        "last_addr":   os.environ.get("VS_INDEX_LAST_ADDR"),
+        "first_email": os.environ.get("VS_INDEX_FIRST_EMAIL"),
     }
     missing = [n for n, v in indexes.items() if not v]
     if missing:
@@ -139,13 +157,13 @@ def _search_local(applicant_name, address, email, tenant_id, k, ws):
         col_names = [c.name for c in (raw.manifest.schema.columns or [])]
         for row in (raw.result.data_array or []):
             record = dict(zip(col_names, row))
-            acct_id = record.get("account_id", "")
+            acct_id = record.get("account_id", _ABSENT_COLUMN)
             score = float(record.get("score", 0.0))
             candidate = {
                 "account_id": acct_id,
-                "name": f"{record.get('first_name', '')} {record.get('last_name', '')}".strip(),
-                "address": record.get("service_address_line1", ""),
-                "account_number": record.get("account_number", ""),
+                "name": f"{record.get('first_name', _ABSENT_COLUMN)} {record.get('last_name', _ABSENT_COLUMN)}".strip(),
+                "address": record.get("service_address_line1", _ABSENT_COLUMN),
+                "account_number": record.get("account_number", _ABSENT_COLUMN),
                 "score": score,
             }
             if acct_id not in seen or score > seen[acct_id]["score"]:
@@ -156,12 +174,12 @@ def _search_local(applicant_name, address, email, tenant_id, k, ws):
 
 
 def _sql_fallback(name, address, ws):
-    if os.environ.get("DEMO_MODE", "").lower() == "true":
+    if _demo_mode():
         from demo_data import sql_search_demo
         candidates = sql_search_demo(name, address)
         return {"candidates": candidates, "count": len(candidates), "source": "demo", "strategy": "sql"}
 
-    table = os.environ.get("UTILITY_ACCOUNT_TABLE", "")
+    table = os.environ.get("UTILITY_ACCOUNT_TABLE")
     if not table:
         return {"error": "UTILITY_ACCOUNT_TABLE not configured", "candidates": [], "count": 0}
 

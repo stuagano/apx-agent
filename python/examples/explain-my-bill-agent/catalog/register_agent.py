@@ -36,11 +36,22 @@ import os
 
 from databricks.sdk import WorkspaceClient
 
-CATALOG = os.environ.get("DEMO_CATALOG", "my_catalog")
-SCHEMA = os.environ.get("DEMO_SCHEMA", "agents")
-APP_URL = os.environ.get("APP_URL", "https://mcp-explain-my-bill-<id>.aws.databricksapps.com")
-SECRET_SCOPE = os.environ.get("SECRET_SCOPE", "agent-catalog")
-SECRET_KEY = os.environ.get("SECRET_KEY", "explain-my-bill-token")
+# Defaults are the placeholder values from step 3 of the module docstring
+# (and the secret scope/key created in step 2); export the env vars to override.
+DEFAULT_CATALOG = "my_catalog"
+DEFAULT_SCHEMA = "agents"
+DEFAULT_APP_URL = "https://mcp-explain-my-bill-<id>.aws.databricksapps.com"
+DEFAULT_SECRET_SCOPE = "agent-catalog"
+DEFAULT_SECRET_KEY = "explain-my-bill-token"
+# No warehouse is assumed: an unset WAREHOUSE_ID reaches the Statement
+# Execution API as an empty id and fails there with Databricks' own error.
+UNSET_WAREHOUSE_ID = ""
+
+CATALOG = os.environ.get("DEMO_CATALOG", DEFAULT_CATALOG)
+SCHEMA = os.environ.get("DEMO_SCHEMA", DEFAULT_SCHEMA)
+APP_URL = os.environ.get("APP_URL", DEFAULT_APP_URL)
+SECRET_SCOPE = os.environ.get("SECRET_SCOPE", DEFAULT_SECRET_SCOPE)
+SECRET_KEY = os.environ.get("SECRET_KEY", DEFAULT_SECRET_KEY)
 
 # ---------------------------------------------------------------------------
 # UC function SQL
@@ -114,14 +125,14 @@ def main() -> None:
     print(f"Registering UC function: {CATALOG}.{SCHEMA}.ask_explain_my_bill")
     ws.statement_execution.execute_statement(
         statement=CREATE_FUNCTION_SQL,
-        warehouse_id=os.environ.get("WAREHOUSE_ID", ""),
+        warehouse_id=os.environ.get("WAREHOUSE_ID", UNSET_WAREHOUSE_ID),
     )
     print("  ✓ Function created")
 
     print("Granting EXECUTE to account users")
     ws.statement_execution.execute_statement(
         statement=GRANT_SQL,
-        warehouse_id=os.environ.get("WAREHOUSE_ID", ""),
+        warehouse_id=os.environ.get("WAREHOUSE_ID", UNSET_WAREHOUSE_ID),
     )
     print("  ✓ Permission granted")
 
