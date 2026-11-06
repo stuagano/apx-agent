@@ -64,6 +64,9 @@ def test_identity_passthrough_covers_apps_auth_gaps() -> None:
     text = _read("safety", "identity-passthrough.md")
     lowered = text.lower()
     assert "re-authorize" in lowered or "reauthorize" in lowered
+    assert "first browser open of the app url" in lowered
+    assert "requires every user to re-consent" in lowered
+    assert "no per-user consent lifecycle" in lowered
     assert "u2m" in lowered or "machine-to-machine" in lowered
     assert "pat cannot" in lowered
     assert "federation" in lowered
