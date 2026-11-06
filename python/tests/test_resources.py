@@ -613,6 +613,16 @@ def test_require_user_api_scopes_accepts_complete_current_apps_vocabulary() -> N
     )
 
 
+def test_require_user_api_scopes_round_trips_ai_functions() -> None:
+    from apx_agent import require_user_api_scopes
+    from apx_agent._resources import get_user_api_scopes
+
+    def ai_tool() -> None: ...
+
+    require_user_api_scopes(ai_tool, ["ai-functions"])
+    assert get_user_api_scopes(ai_tool) == ["ai-functions"]
+
+
 @pytest.mark.parametrize(
     "scope",
     [
