@@ -149,7 +149,7 @@ single-call path is unchanged.
 
 Episodes need completion detection and a structured XML schema, and AgentCore's
 reflections can aggregate across actors. That conflicts with the per-actor
-partition that apx memory relies on. No consumer has asked for it. Revisit it only
+partition that apx's memory relies on. No consumer has asked for it. Revisit it only
 for reflections scoped to a single actor.
 
 ## Test plan (for the implementation PR)
@@ -182,3 +182,33 @@ for reflections scoped to a single actor.
   field until a real agent needs one.
 - **`summary` auto-recall: opt-in,** via `recall_namespaces` (see decision 6).
 - **Transcript source for the Lakebase extractor:** left to #1089.
+
+## Implementation notes (where the code differs from the note)
+
+Shipped in the #1088 implementation PR. Each item follows the code.
+
+- **`recall_namespaces` is the full list, not an addition.** When declared it
+  replaces the default set (`namespace_default` + `facts` + `preferences`), so
+  opting `summary` in reads `["default", "facts", "preferences", "summary"]`.
+  One field then also covers dropping a namespace or adding `consolidated`.
+  `MemoryBackendConfig.recalled_namespaces()` is the single source.
+- **Recall is one query per namespace** (the `MemoryStore` protocol takes one
+  namespace); results are merged by score and capped at `recall_k`.
+- **Managed writes go through the AgentKit entry API in `_memory_extract.py`,**
+  which already holds the client; `ManagedMemoryStore.add` is unchanged. Those
+  writes pass `session_id`, are read back, and a mismatch raises.
+- **Managed: `strategies` alone turns extraction on.** No `extraction` block is
+  needed; an explicit `extraction: {enabled: false}` still turns it off.
+- **Managed prompts carry no JSON contract.** The service returns entries, not
+  JSON. Instead, a `summary` dry run must return exactly one entry, and every
+  entry must have content; otherwise it raises before any write. Re-extracting
+  a session deletes that session's earlier summary (listed by `session_id`)
+  before writing the new one.
+- **Lakebase / in-memory summary upsert** finds the session's summary by
+  `metadata.session_id` among the principal's `summary` rows.
+- **Lakebase / in-memory extractor** is `extract_agent_session(agent, model=,
+  transcript=, principal_id=, session_id=)`. It builds the model with the same
+  factory the compiled graph uses, and takes the transcript as a string until
+  #1089 decides where it comes from. The CLI path stays managed only.
+- **No new `doctor` row.** `doctor` already checks the agent's model endpoint;
+  it does not check it as the app service principal (gap, see the PR).

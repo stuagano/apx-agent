@@ -131,6 +131,8 @@ StoreType = Literal["inmemory", "lakebase", "managed"]
 RuntimeTarget = Literal["responses_agent", "durable_agent_server"]
 """``responses_agent`` is the MLflow ResponsesAgent runtime on Apps; ``durable_agent_server`` is the native default."""
 DeployBackend = Literal["agentbricks", "apps_api"]
+MemoryStrategy = Literal["facts", "preferences", "summary"]
+"""Typed memory strategy (#1088). The strategy name is the namespace its records land in."""
 
 # Default embedding endpoint for the "persistent" knob's Lakebase memory —
 # a Databricks Foundation Model API pay-per-token endpoint present in every
@@ -232,6 +234,40 @@ class MemoryBackendConfig(_BackendConfig):
     """Relevance threshold: auto-recalled memories scoring below it are dropped."""
     retention: MemoryRetention | None = None
     """Days to keep memories per namespace. Lakebase only: enforced by a delete pass at app start."""
+    strategies: list[MemoryStrategy] | None = None
+    """Typed extraction strategies (#1088). Each writes to the namespace of the same name."""
+    strategy_prompts: dict[MemoryStrategy, str] | None = None
+    """Replaces a strategy's built-in instructions. The output contract is fixed and always appended."""
+    recall_namespaces: list[str] | None = None
+    """Namespaces auto-recall searches. Absent: ``namespace_default`` plus the
+    declared ``facts`` / ``preferences`` strategies (``summary`` only when listed here)."""
+
+    def recalled_namespaces(self) -> list[str]:
+        """The namespaces auto-recall searches each turn, in order."""
+        if self.recall_namespaces is not None:
+            return list(self.recall_namespaces)
+        strategies = self.strategies if self.strategies is not None else []
+        recalled = [self.namespace_default]
+        recalled += [s for s in strategies if s != "summary" and s not in recalled]
+        return recalled
+
+    @model_validator(mode="after")
+    def _validate_strategies(self) -> "MemoryBackendConfig":
+        strategies = self.strategies if self.strategies is not None else []
+        if len(set(strategies)) != len(strategies):
+            raise ValueError(f"memory.strategies lists a strategy twice: {strategies}")
+        for name, prompt in (self.strategy_prompts or {}).items():
+            if name not in strategies:
+                raise ValueError(
+                    f"memory.strategy_prompts[{name!r}] names a strategy that is not in "
+                    f"memory.strategies {strategies}"
+                )
+            if not prompt.strip():
+                raise ValueError(f"memory.strategy_prompts[{name!r}] must be non-blank text")
+        if self.recall_namespaces is not None:
+            if not self.recall_namespaces or any(not n.strip() for n in self.recall_namespaces):
+                raise ValueError("memory.recall_namespaces must list non-blank namespaces")
+        return self
 
     @model_validator(mode="after")
     def _validate_managed_store(self) -> "MemoryBackendConfig":

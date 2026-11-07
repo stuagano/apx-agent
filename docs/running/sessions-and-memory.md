@@ -354,6 +354,45 @@ failure exits non-zero and is not reported as a write. This is not
 `consolidate_memories`, which summarizes memories that already exist, and it
 does not start a cross-session memory pipeline.
 
+### Memory strategies
+
+Declare which kinds of memory a session is distilled into. Each strategy is a
+namespace of the same name:
+
+| Strategy | Extracts | Records per session |
+|---|---|---|
+| `facts` | stated facts about the user and their work | 0 or more |
+| `preferences` | how the user wants things done | 0 or more |
+| `summary` | a recap of the session | exactly 1, replaced on re-extraction |
+
+```python
+memory={
+    "type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "agentdb",
+    "embedding_model": "databricks-gte-large-en", "embedding_dim": 1024,
+    "strategies": ["facts", "preferences", "summary"],
+    "strategy_prompts": {"preferences": "Only capture reporting-format preferences."},
+}
+```
+
+- `strategy_prompts` replaces a strategy's built-in instructions. The output
+  contract (a JSON array of strings; one JSON string for `summary`) is always
+  appended and cannot be changed. Output that does not parse raises and writes
+  nothing.
+- **Lakebase / in-memory:** `extract_agent_session(agent, model=..., transcript=...,
+  principal_id=..., session_id=...)` asks the agent's own model once per strategy.
+  It runs as the app service principal and writes every record under
+  `principal_id`, the session's user.
+- **Managed:** `apx-agent memory extract` runs one dry-run extraction per strategy
+  (`extraction.instructions`, if declared, then the strategy prompt), then apx
+  writes each entry at `/memories/<strategy>/` and reads it back.
+- **Recall:** auto-recall searches `namespace_default` plus `facts` and
+  `preferences`, merges by score, and keeps the top `recall_k`. `summary` is
+  recalled only when you list it: `"recall_namespaces": ["default", "facts", "preferences", "summary"]`.
+- **Retention** is per namespace, so `"retention": {"namespaces": {"summary": 30}}`
+  covers a strategy. `episodic` is not a strategy.
+
+When extraction runs automatically is not decided yet (#1089); call it yourself.
+
 ### Migrating Lakebase memory
 
 `inventory_memory_table` and `import_memories` in `apx_agent._state_migration`

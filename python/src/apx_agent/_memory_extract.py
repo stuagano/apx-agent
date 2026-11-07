@@ -10,13 +10,15 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ._memory_managed import validate_memory_store_name
+from ._memory import new_memory_id
+from ._memory_managed import _first_line, validate_memory_store_name
+from ._memory_strategies import strategy_prompt
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
     from databricks_agentkit.session_store import ExtractedMemory
 
-    from ._models import AgentConfig
+    from ._models import AgentConfig, MemoryBackendConfig
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +59,14 @@ def _entry_id(name: str) -> str:
 
 
 def extraction_enabled(config: AgentConfig) -> bool:
-    """True only for an explicit enabled managed-memory extraction policy."""
+    """True for managed memory with an enabled extraction policy, or with declared
+    strategies and no policy (an explicit ``enabled: false`` still wins)."""
     memory = config.memory
-    policy = None if memory is None else memory.extraction
-    return memory is not None and memory.type == "managed" and policy is not None and policy.enabled
+    if memory is None or memory.type != "managed":
+        return False
+    if memory.extraction is not None:
+        return memory.extraction.enabled
+    return bool(memory.strategies)
 
 
 def _require_store_name(value: str | None, label: str) -> str:
@@ -97,7 +103,7 @@ def extract_declared_session(
     """
     memory = config.memory
     session = config.session
-    if not extraction_enabled(config) or memory is None or memory.extraction is None:
+    if not extraction_enabled(config) or memory is None:
         raise ValueError(
             "Session extraction is off. Declare memory= "
             "type='managed' with extraction enabled (memory={'type': 'managed', "
@@ -113,7 +119,7 @@ def extract_declared_session(
     if actor_id is not None and (not isinstance(actor_id, str) or not actor_id.strip()):
         raise ValueError("actor_id must be the trusted caller, not blank")
 
-    instructions = memory.extraction.instructions
+    instructions = memory.extraction.instructions if memory.extraction is not None else None
     if instructions is not None and not instructions.strip():
         raise ValueError("memory.extraction.instructions must be non-blank text")
     memory_store = _require_store_name(memory.store_name, "memory store_name")
@@ -133,6 +139,16 @@ def extract_declared_session(
         raise ValueError(
             f"Session {session_id!r} belongs to actor {recorded_actor!r}, "
             f"not the trusted caller {actor_id!r}"
+        )
+
+    if memory.strategies:
+        entries = _extract_by_strategy(
+            client, managed_session, memory, memory_store=memory_store,
+            instructions=instructions, actor=recorded_actor, dry_run=dry_run,
+        )
+        return SessionExtractionResult(
+            session_store=session_store_name, session_id=session_id, memory_store=memory_store,
+            actor_id=recorded_actor, dry_run=dry_run, entries=tuple(entries),
         )
 
     extracted = managed_session.extract_memories(
@@ -169,6 +185,71 @@ def extract_declared_session(
         dry_run=dry_run,
         entries=entries,
     )
+
+
+def _extract_by_strategy(
+    client: Any,
+    managed_session: Any,
+    memory: MemoryBackendConfig,
+    *,
+    memory_store: str,
+    instructions: str | None,
+    actor: str,
+    dry_run: bool,
+) -> list[ExtractedSessionMemory]:
+    """M2 (#1088): one dry-run extraction per strategy, then apx writes each entry
+    at ``/memories/<strategy>/<id>`` so the namespace is exact. Every strategy is
+    extracted and checked before the first write; each write is read back."""
+    strategies = memory.strategies if memory.strategies is not None else []
+    planned: list[ExtractedSessionMemory] = []
+    for strategy in strategies:
+        prompt = "\n\n".join(p for p in (instructions, strategy_prompt(memory, strategy)) if p)
+        found = managed_session.extract_memories(
+            memory_store=memory_store, instructions=prompt, dry_run=True,
+        )
+        if strategy == "summary" and len(found) != 1:
+            raise ValueError(f"memory strategy 'summary' must yield exactly one entry, got {len(found)}")
+        for item in found:
+            if item.content is None or not item.content.strip():
+                raise ValueError(f"memory strategy {strategy!r} returned an entry with no content")
+            planned.append(ExtractedSessionMemory(
+                name=item.name, content=item.content, description=item.description,
+                path=f"/memories/{strategy}/", actor_id=actor,
+                session_id=managed_session.session_id, written=False,
+            ))
+    if dry_run:
+        return planned
+
+    resource = client.memory_stores.get(memory_store)
+    if any(p.path == "/memories/summary/" for p in planned):
+        # Re-extracting a session replaces its summary instead of adding a second.
+        for stale in resource.list(actor_id=actor, path_prefix="/memories/summary/",
+                                   session_id=managed_session.session_id, read_mask="*"):
+            if stale.actor_id == actor and stale.session_id == managed_session.session_id:
+                stale.delete()
+    written: list[ExtractedSessionMemory] = []
+    for entry in planned:
+        content = str(entry.content)
+        added = resource.add(
+            actor_id=actor, path=f"{entry.path}{new_memory_id()}", content=content,
+            description=_first_line(content), session_id=managed_session.session_id,
+        )
+        read_back = resource.get(added.id, read_mask="*")
+        if (
+            read_back.content != content
+            or read_back.actor_id != actor
+            or read_back.path != added.path
+            or read_back.session_id != managed_session.session_id
+        ):
+            raise ValueError(
+                f"Strategy extraction wrote {added.name!r} but the memory store "
+                "read-back did not match the session or actor"
+            )
+        written.append(ExtractedSessionMemory(
+            name=added.name, content=content, description=added.description, path=added.path,
+            actor_id=actor, session_id=managed_session.session_id, written=True,
+        ))
+    return written
 
 
 def extraction_payload(result: SessionExtractionResult) -> dict[str, Any]:

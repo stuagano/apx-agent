@@ -214,6 +214,7 @@ from ._memory_extract import (
     extract_declared_session,
     extraction_enabled,
 )
+from ._memory_strategies import extract_agent_session, extract_strategy_memories
 
 # Agent-facing memory / example tools (LLM-callable wrappers around the stores)
 from ._memory_tools import make_memory_tools
@@ -613,6 +614,8 @@ __all__ = [
     "SessionExtractionResult",
     "extract_declared_session",
     "extraction_enabled",
+    "extract_agent_session",
+    "extract_strategy_memories",
     # Agent-facing memory / example tools
     "make_memory_tools",
     "make_example_tools",

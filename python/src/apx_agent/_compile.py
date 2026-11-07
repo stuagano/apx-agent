@@ -482,9 +482,9 @@ def _memory_recall_middleware(agent: LlmAgent, ctx: CompileContext) -> Any | Non
                     principal_id=principal,
                     query=query,
                     k=cfg.recall_k,
-                    namespace=cfg.namespace_default,
                 ),
                 min_score=cfg.recall_min_score,
+                namespaces=cfg.recalled_namespaces(),
             )
         except Exception as exc:  # a broken store must not fail the turn
             logger.warning("memory auto-recall failed; continuing without memories: %s", exc)

@@ -8,7 +8,9 @@ Each assertion pins a fixed doc claim to the code it describes.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import re
 from pathlib import Path
 
 from apx_agent import (
@@ -19,8 +21,9 @@ from apx_agent import (
     consolidate_memories,
     make_memory_tools,
 )
+from apx_agent._memory_strategies import OUTPUT_CONTRACTS, strategy_system_prompt
 from apx_agent._memory_tools import make_memory_tools as _raw_make_memory_tools
-from apx_agent._models import _KNOB_TO_TYPE
+from apx_agent._models import _KNOB_TO_TYPE, MemoryBackendConfig
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 SESSIONS = (DOCS / "running" / "sessions-and-memory.md").read_text()
@@ -104,3 +107,25 @@ def test_forget_docstring_does_not_claim_server_side_scoping() -> None:
     assert "already scopes get/delete server-side" not in source
     assert "principal-agnostic" not in source
     assert "GET-by-ID is not actor scoped" in source
+
+
+def test_memory_strategies_example_is_the_real_config() -> None:
+    """#1088: the documented strategies block validates and does what the prose says."""
+    section = SESSIONS.split("### Memory strategies", 1)[1].split("\n### ", 1)[0]
+    block = re.search(r"```python\nmemory=(\{.*?\})\n```", section, re.S)
+    assert block is not None
+    cfg = MemoryBackendConfig.model_validate(ast.literal_eval(block.group(1)))
+    assert cfg.strategies == ["facts", "preferences", "summary"]
+    assert strategy_system_prompt(cfg, "preferences") == (
+        "Only capture reporting-format preferences.\n\n" + OUTPUT_CONTRACTS["preferences"]
+    )
+    assert cfg.recalled_namespaces() == ["default", "facts", "preferences"]
+
+    listed = re.search(r'"recall_namespaces": (\[.*?\])', section)
+    assert listed is not None
+    opted = cfg.model_copy(update={"recall_namespaces": ast.literal_eval(listed.group(1))})
+    assert "summary" in opted.recalled_namespaces()
+    retention = re.search(r'"retention": (\{.*?\}\})', section)
+    assert retention is not None
+    MemoryBackendConfig(type="lakebase", retention=ast.literal_eval(retention.group(1)))
+    assert "extract_agent_session(agent, model=..., transcript=...," in section
