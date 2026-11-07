@@ -4992,18 +4992,69 @@ def test_apps_api_space_package_check_skips_the_unshipped_lock(tmp_path: Path) -
         line for line in _PROXY_BYPASS_LINES if not line.startswith("uv.lock")]
 
 
-def test_default_durable_scaffold_outside_the_repo_trips_the_package_proxy_check(tmp_path: Path) -> None:
-    """#1069 finding: the scaffolded git+https apx-agent install bypasses the managed proxy.
+def test_default_durable_scaffold_outside_the_repo_passes_the_space_package_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1069: a space deploy ships the apx-agent wheel built from the scaffold's git URL, not the URL."""
+    from ctk import Artifact, verify
 
-    Recorded, not allowed: whether a git install works inside a space is unverified (owner-gated).
-    """
     from apx_agent import cli
+    from apx_agent._app_space import reject_package_bypasses
     from apx_agent._doctor import space_package_bypasses
 
     target = tmp_path / "demo"
     cli._scaffold_apps(target, "demo", force=True, catalog="", schema="", template="base",
                        ci=None, runtime="durable_agent_server")
-    lines = space_package_bypasses(target, lock=True)
-    assert len(lines) == 1
-    assert lines[0].startswith(
-        "pyproject.toml [project].dependencies: apx-agent[eval,agentbricks] @ git+https://github.com/stuagano/apx-agent.git@")
+    ref = cli._scaffold_install_ref()
+    git_dep = f"apx-agent[eval,agentbricks] @ git+https://github.com/stuagano/apx-agent.git@{ref}#subdirectory=python"
+    assert space_package_bypasses(target, lock=True) == [f"pyproject.toml [project].dependencies: {git_dep}"]
+    wheel_name = "apx_agent-1.2.3-py3-none-any.whl"
+    commands: list[list[str]] = []
+
+    def run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
+        commands.append(cmd)
+        if cmd[:2] == ["uv", "build"]:
+            out = Path(cmd[cmd.index("--out-dir") + 1])
+            out.mkdir()
+            (out / wheel_name).write_bytes(b"wheel")
+        if cmd == ["uv", "lock"]:
+            Path(kwargs["cwd"], "uv.lock").write_text(
+                f'[[package]]\nname = "apx-agent"\nsource = {{ path = "{wheel_name}" }}\n')
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    wheel = cli._build_git_apx_wheel(target)
+    assert wheel == target / wheel_name
+    clone = commands[0][-1]
+    assert commands[:3] == [
+        ["git", "clone", "--quiet", "https://github.com/stuagano/apx-agent.git", clone],
+        ["git", "-C", clone, "checkout", "--quiet", ref],
+        ["uv", "build", "--wheel", "--out-dir", commands[2][4], f"{clone}/python"],
+    ]
+    build = target / ".build"
+    build.mkdir()
+    cli._stage_build_manifest(build, wheel)
+
+    verify(
+        Artifact(str(build / "pyproject.toml"), min_bytes=100,
+                 must_contain=f'apx-agent = {{ path = "./{wheel_name}" }}', must_not_contain="@ git+https"),
+        Artifact(str(build / "pyproject.toml"), must_contain='"apx-agent[agentbricks,eval]"'),
+        Artifact(str(build / "uv.lock"), must_contain=wheel_name, must_not_contain="git"),
+        Artifact(str(build / wheel_name), min_bytes=5),
+    )
+    assert space_package_bypasses(build, lock=True) == []
+    reject_package_bypasses(build, lock=True)
+
+
+def test_space_package_check_still_refuses_a_staged_git_dependency(tmp_path: Path) -> None:
+    """Without the wheel the scaffold's manifest stages verbatim, and its git URL is refused."""
+    from apx_agent import cli
+    from apx_agent._app_space import reject_package_bypasses
+
+    target = tmp_path / "demo"
+    cli._scaffold_apps(target, "demo", force=True, catalog="", schema="", template="base",
+                       ci=None, runtime="durable_agent_server")
+    (target / ".build").mkdir()
+    cli._stage_build_manifest(target / ".build", None)
+    with pytest.raises(click.ClickException, match="git\\+https://github.com/stuagano/apx-agent.git"):
+        reject_package_bypasses(target / ".build", lock=True)

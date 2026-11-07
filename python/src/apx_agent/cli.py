@@ -7622,6 +7622,59 @@ def _ensure_apx_wheel(cwd: Path) -> Path | None:
     return wheel_target
 
 
+def _apx_git_requirement(pyproject_text: str) -> str | None:
+    """The ``apx-agent @ git+…`` entry in ``[project].dependencies`` (the outside-repo scaffold default)."""
+    import tomllib
+
+    from packaging.requirements import Requirement
+
+    for raw in tomllib.loads(pyproject_text).get("project", {}).get("dependencies", []):
+        req = Requirement(raw)
+        if req.name == "apx-agent" and req.url is not None and req.url.startswith("git+"):
+            return raw
+    return None
+
+
+def _build_git_apx_wheel(cwd: Path) -> Path | None:
+    """Build the apx-agent wheel from the git URL pinned in ``cwd/pyproject.toml`` (#1069).
+
+    App Space installs only through the managed package proxies, so a space deploy
+    ships this wheel and ``_stage_build_manifest`` re-points ``.build/`` at it.
+    Returns ``None`` when the project does not install apx-agent from git.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from packaging.requirements import Requirement
+
+    pyproject = cwd / "pyproject.toml"
+    raw = _apx_git_requirement(pyproject.read_text()) if pyproject.is_file() else None
+    if raw is None:
+        return None
+    url = urlparse(cast(str, Requirement(raw).url).removeprefix("git+"))
+    repo_path, _, rev = url.path.partition("@")
+    repo = url._replace(path=repo_path, fragment="").geturl()
+    subdirectory = parse_qs(url.fragment).get("subdirectory", ["."])[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        clone, out = Path(tmp) / "src", Path(tmp) / "dist"
+        commands = [["git", "clone", "--quiet", repo, str(clone)]]
+        if rev:
+            commands.append(["git", "-C", str(clone), "checkout", "--quiet", rev])
+        commands.append(["uv", "build", "--wheel", "--out-dir", str(out), str(clone / subdirectory)])
+        click.echo(f"  building apx-agent wheel from {repo}@{rev or 'HEAD'} for App Space", err=True)
+        for cmd in commands:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if proc.returncode != 0:
+                raise click.ClickException(
+                    f"`{' '.join(cmd)}` failed (exit {proc.returncode}) while building the apx-agent wheel "
+                    f"App Space requires instead of {raw!r}.\nstderr tail:\n{_tail_lines(proc.stderr or proc.stdout)}")
+        built = sorted(out.glob("apx_agent-*.whl"))
+        if len(built) != 1:
+            raise click.ClickException(f"`uv build --wheel` produced {len(built)} apx_agent wheels from {repo}@{rev}; expected one.")
+        for stale in cwd.glob("apx_agent-*.whl"):
+            stale.unlink()
+        return Path(shutil.copy2(built[0], cwd / built[0].name))
+
+
 def _run_bundle_artifacts(cwd: Path) -> None:
     """Execute the bundle's ``artifacts.default.build`` script before validate.
 
@@ -7699,7 +7752,8 @@ def _stage_build_manifest(
     - **wheel_path set** (editable/local install — inside the framework repo):
       the App container can't resolve ``..``, so rewrite the staged
       ``pyproject.toml`` to point at the bundled wheel and regenerate
-      ``uv.lock`` against it.
+      ``uv.lock`` against it. An App Space deploy of a git+https project
+      also lands here, with the wheel built from that git URL (#1069).
 
     Either way the staged ``uv.lock`` is sanitized to public PyPI so the
     container's ``uv sync`` doesn't hit the internal proxy.
@@ -7784,6 +7838,20 @@ def _stage_build_manifest(
             click.echo(
                 f"  rewrote .build/pyproject.toml: apx-agent -> {wheel_rel}", err=True,
             )
+    git_requirement = _apx_git_requirement(text)
+    if git_requirement is not None:
+        # A space deploy ships the wheel built from this git URL (#1069): drop the
+        # URL from the dependency and source apx-agent from the bundled wheel.
+        from packaging.requirements import Requirement
+
+        requirement = Requirement(git_requirement)
+        requirement.url = None
+        text = text.replace(git_requirement, str(requirement), 1)
+        new_block = f'apx-agent = {{ path = "{wheel_rel}" }}'
+        text, found = re.subn(r"^\[tool\.uv\.sources\][ \t]*$", f"[tool.uv.sources]\n{new_block}", text, count=1, flags=re.M)
+        if not found:
+            text = text.rstrip("\n") + f"\n\n[tool.uv.sources]\n{new_block}\n"
+        click.echo(f"  rewrote .build/pyproject.toml: apx-agent git URL -> {wheel_rel}", err=True)
 
     pyproject.write_text(text)
 
@@ -10196,6 +10264,8 @@ def _deploy_apps_impl(
         wheel_path: Path | None = None
         if auto_build_wheel:
             wheel_path = _ensure_apx_wheel(cwd)
+            if wheel_path is None and space_name is not None:
+                wheel_path = _build_git_apx_wheel(cwd)
             if wheel_path:
                 log(f"  built apx-agent wheel: {wheel_path}")
             if native_direct:
