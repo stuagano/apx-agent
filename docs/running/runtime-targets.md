@@ -355,6 +355,18 @@ dedicated-app resources, scopes, scaling and the keepalive job. No manual bundle
 cleanup is needed. The route reads inherited policy and refuses to move an
 existing app between spaces or widen its grants.
 
+An App Space app has no public internet egress, so preflight refuses, naming
+each tool and host, any declared URL the app process would call outside the
+workspace: `mcp_tool` / `mcp_toolkit` servers, `remote_agent_tool` and
+`sub_agents` URLs, and the spec URL an `openapi_tool` fetches at startup. A
+`*.databricksapps.com` URL passes only when `apps.get` resolves it to an App in
+this workspace; a peer App in another workspace is public internet from the
+space, and the forwarded user token is scoped to this workspace. `http_tool` and
+`openapi_tool` calls stay allowed because they egress from the SQL warehouse
+through a UC HTTP connection. Preflight cannot see a plain `@tool` function that
+opens its own HTTP client; such a tool deploys and then fails when it reaches
+outside the workspace, so route external calls through `http_tool` instead.
+
 Deployment first applies the bundle, verifies the app's space and LIQUID compute,
 then uses the Agent Bricks SDK to create or reuse its managed Runtime Store.
 The SDK checks app and service-principal ownership. For generated projects APX

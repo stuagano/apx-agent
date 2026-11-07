@@ -4577,7 +4577,7 @@ def test_space_scope_check_uses_declared_scopes_when_effective_unset(
     lookup = OperationAuthorization(name="lookup", execution_identity="user", requires_request_context=True,
                                     resources=(), user_api_scopes=("catalog.catalogs:read",))
     plan = SimpleNamespace(user_api_scopes=["ai-gateway", "catalog.catalogs:read"], service_resources=[],
-                           operations=(lookup,), model="m")
+                           operations=(lookup,), model="m", sub_agent_urls=())
     perms = SimpleNamespace(can_use_groups=[], can_manage_groups=[])
     if ok:
         client.workspace_client.apps.get_space.return_value = Space(
@@ -4615,7 +4615,7 @@ def test_space_scope_check_names_the_tool_missing_a_scope(monkeypatch: pytest.Mo
     background = OperationAuthorization(name="background", execution_identity="service", requires_request_context=False,
                                         resources=(), user_api_scopes=())
     plan = SimpleNamespace(user_api_scopes=["ai-gateway", "genie"], service_resources=[],
-                           operations=(ask, background), model="m")
+                           operations=(ask, background), model="m", sub_agent_urls=())
     perms = SimpleNamespace(can_use_groups=[], can_manage_groups=[])
     with pytest.raises(click.ClickException) as raised:
         validate_space_deployment(doc, bundle_key="a", app_name="mcp-x", profile="p", plan=plan, family_permissions=perms)
@@ -4624,45 +4624,150 @@ def test_space_scope_check_names_the_tool_missing_a_scope(monkeypatch: pytest.Mo
         "  - genie: needed by tool 'ask_genie'")
 
 
+_SPACE_WS = "https://ws.cloud.databricks.com"
+# An App in this workspace; apps.get resolves only this one.
+_SPACE_PEER = "https://peer-1234567890.aws.databricksapps.com"
+
+
+def _space_preflight(monkeypatch: pytest.MonkeyPatch, plan: Any) -> Any:
+    """Run App Space preflight against a fake workspace that holds one peer App."""
+    from types import SimpleNamespace
+
+    from databricks.sdk.errors import NotFound
+    from databricks.sdk.service.apps import App, Space
+
+    from apx_agent._app_space import validate_space_deployment
+
+    def get_app(name: str) -> App:
+        if name == "peer":
+            return App(name="peer", url=_SPACE_PEER)
+        raise NotFound(f"no app {name}")
+
+    client = MagicMock()
+    client.workspace_client.config.host = _SPACE_WS
+    client.workspace_client.apps.get_space.return_value = Space(name="app-space", effective_user_api_scopes=["ai-gateway"])
+    client.workspace_client.apps.get.side_effect = get_app
+    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda profile: client)
+    doc = {"resources": {"apps": {"a": {"space": "app-space", "config": {
+        "env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]}}}}}
+    perms = SimpleNamespace(can_use_groups=[], can_manage_groups=[])
+    assert validate_space_deployment(doc, bundle_key="a", app_name="x", profile="p", plan=plan,
+                                     family_permissions=perms) is client
+    return client
+
+
+def _space_refusal(monkeypatch: pytest.MonkeyPatch, plan: Any, *callers: str) -> None:
+    """Preflight refuses before reading the space, naming each caller and host."""
+    import click
+
+    with pytest.raises(click.ClickException) as raised:
+        _space_preflight(monkeypatch, plan)
+    assert raised.value.message == (
+        "App Space apps have no public internet egress; these tools call hosts outside the workspace:\n"
+        + "".join(f"  - {caller}\n" for caller in callers)
+        + "See https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building")
+
+
+def _space_plan(*tools: Any, sub_agent_urls: tuple[str, ...] = ()) -> Any:
+    from types import SimpleNamespace
+
+    from apx_agent._apps_authorization import infer_operation_authorization
+
+    return SimpleNamespace(user_api_scopes=["ai-gateway"], service_resources=[], model="m",
+                           operations=tuple(infer_operation_authorization(t) for t in tools),
+                           sub_agent_urls=sub_agent_urls)
+
+
 @pytest.mark.parametrize(("server_url", "external"), [
     ("https://mcp.example.com/sse", True),
-    ("https://ws.cloud.databricks.com/api/2.0/mcp/functions/main/tools", False),
-    ("https://my-mcp-123.aws.databricksapps.com/mcp", False),
+    (f"{_SPACE_WS}/api/2.0/mcp/functions/main/tools", False),
+    (f"{_SPACE_PEER}/mcp", False),
 ])
 def test_space_rejects_tools_that_call_outside_the_workspace(
     monkeypatch: pytest.MonkeyPatch, server_url: str, external: bool,
 ) -> None:
     """#1068: App Space Beta has no public egress, so an external MCP tool fails at preflight, naming tool and host."""
-    import click
-    from types import SimpleNamespace
-
-    from databricks.sdk.errors import NotFound
-    from databricks.sdk.service.apps import Space
-
-    from apx_agent._app_space import validate_space_deployment
-    from apx_agent._apps_authorization import infer_operation_authorization
     from apx_agent.mcp_consume import mcp_tool
 
-    client = MagicMock()
-    client.workspace_client.config.host = "https://ws.cloud.databricks.com"
-    client.workspace_client.apps.get_space.return_value = Space(name="app-space", effective_user_api_scopes=["ai-gateway"])
-    client.workspace_client.apps.get.side_effect = NotFound("no app yet")
-    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda profile: client)
-    doc = {"resources": {"apps": {"a": {"space": "app-space", "config": {
-        "env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]}}}}}
-    lookup = infer_operation_authorization(mcp_tool(server_url, "lookup", name="lookup", description="Look up."))
-    plan = SimpleNamespace(user_api_scopes=["ai-gateway"], service_resources=[], operations=(lookup,), model="m")
-    perms = SimpleNamespace(can_use_groups=[], can_manage_groups=[])
+    plan = _space_plan(mcp_tool(server_url, "lookup", name="lookup", description="Look up."))
     if not external:
-        assert validate_space_deployment(doc, bundle_key="a", app_name="x", profile="p", plan=plan, family_permissions=perms) is client
+        _space_preflight(monkeypatch, plan)
         return
-    with pytest.raises(click.ClickException) as raised:
-        validate_space_deployment(doc, bundle_key="a", app_name="x", profile="p", plan=plan, family_permissions=perms)
-    assert raised.value.message == (
-        "App Space apps have no public internet egress; these tools call hosts outside the workspace:\n"
-        "  - tool 'lookup' calls mcp.example.com\n"
-        "See https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building")
-    client.workspace_client.apps.get_space.assert_not_called()
+    _space_refusal(monkeypatch, plan, "tool 'lookup' calls mcp.example.com")
+
+
+@pytest.mark.parametrize(("url", "refused"), [
+    ("https://agents.example.com/billing", "tool 'billing' calls agents.example.com"),
+    (_SPACE_PEER, None),
+    (f"{_SPACE_WS}/serving-endpoints/billing", None),
+])
+def test_space_checks_remote_agent_tool_host(
+    monkeypatch: pytest.MonkeyPatch, url: str, refused: str | None,
+) -> None:
+    """#1080: a remote_agent_tool declares its URL, so an external peer is refused."""
+    from apx_agent._agent_tool import remote_agent_tool
+
+    plan = _space_plan(remote_agent_tool(url, name="billing", description="Billing."))
+    if refused is None:
+        _space_preflight(monkeypatch, plan)
+        return
+    _space_refusal(monkeypatch, plan, refused)
+
+
+def test_space_checks_sub_agent_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1080: sub_agents=[url] reach the plan; only the non-workspace hosts are refused."""
+    from apx_agent import LlmAgent
+    from apx_agent._apps_authorization import compile_authorization_plan
+
+    agent = LlmAgent(sub_agents=["https://agents.example.com/a", _SPACE_PEER, "endpoints/local"])
+    plan = compile_authorization_plan(agent, model="m")
+    assert plan.sub_agent_urls == ("https://agents.example.com/a", _SPACE_PEER)
+    _space_refusal(monkeypatch, plan, "sub-agent 'https://agents.example.com/a' calls agents.example.com")
+    _space_preflight(monkeypatch, _space_plan(sub_agent_urls=(_SPACE_PEER,)))
+
+
+@pytest.mark.parametrize(("spec", "refused"), [
+    ("https://specs.example.com/openapi.json", "tool 'getPet' calls specs.example.com"),
+    (f"{_SPACE_WS}/files/openapi.json", None),
+])
+def test_space_checks_openapi_spec_url(
+    monkeypatch: pytest.MonkeyPatch, spec: str, refused: str | None,
+) -> None:
+    """#1080: an openapi_tool URL spec is fetched from the App at startup; an external spec host is refused."""
+    import httpx
+
+    from apx_agent.http_tools import openapi_tool
+
+    doc = {"paths": {"/pet": {"get": {"operationId": "getPet"}}}}
+    monkeypatch.setattr(httpx, "get", lambda url, **kw: httpx.Response(
+        200, json=doc, request=httpx.Request("GET", url)))
+    plan = _space_plan(*openapi_tool(spec, "petstore"))
+    if refused is None:
+        _space_preflight(monkeypatch, plan)
+        return
+    _space_refusal(monkeypatch, plan, refused)
+
+
+def test_space_openapi_local_spec_and_http_tool_stay_allowed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """#1080: http_tool egress runs on the warehouse, and a local spec file fetches nothing from the App."""
+    from apx_agent.http_tools import http_tool, openapi_tool
+
+    spec = tmp_path / "openapi.json"
+    spec.write_text(json.dumps({"paths": {"/pet": {"get": {"operationId": "getPet"}}}}))
+    _space_preflight(monkeypatch, _space_plan(*openapi_tool(str(spec), "petstore"), http_tool("petstore", name="raw")))
+
+
+def test_space_refuses_apps_url_from_another_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1080: a *.databricksapps.com host passes only when apps.get resolves it to the same host here."""
+    from apx_agent.mcp_consume import mcp_tool
+
+    other = mcp_tool("https://other-9876543210.aws.databricksapps.com/mcp", "a", name="other", description="Other.")
+    spoof = mcp_tool("https://peer-5555555555.gcp.databricksapps.com/mcp", "b", name="spoof", description="Spoof.")
+    _space_refusal(monkeypatch, _space_plan(other, spoof),
+                   "tool 'other' calls other-9876543210.aws.databricksapps.com",
+                   "tool 'spoof' calls peer-5555555555.gcp.databricksapps.com")
 
 
 def _capture_registry(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:

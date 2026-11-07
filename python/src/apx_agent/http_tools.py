@@ -276,4 +276,12 @@ def openapi_tool(
                 )
             )
 
+    if spec.startswith(("http://", "https://")):
+        from dataclasses import replace
+
+        from ._tool import ToolMetadata, get_tool_metadata
+
+        # The spec is fetched from the app process at startup (App Space egress check).
+        for tool in tools:
+            tool._apx_tool = replace(get_tool_metadata(tool) or ToolMetadata(), remote_url=spec)
     return tools
