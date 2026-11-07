@@ -1381,7 +1381,14 @@ def check_space_prerequisites(cwd: Path, config: AgentConfig | None, *, online: 
     ]
     label, fix = "Space package proxy", f"Install from PyPI through the managed proxy; custom package repositories aren't supported: {_SPACE_DOCS}"
     try:
-        found = space_package_bypasses(cwd, lock=config.deploy.backend != "apps_api")
+        from .cli import _apx_git_requirement
+
+        pyproject = cwd / "pyproject.toml"
+        # Deploy builds this git dependency into a wheel and regenerates uv.lock from
+        # the rewritten pyproject (#1069), so neither ships; the preflight still scans .build/.
+        rewritten = _apx_git_requirement(pyproject.read_text()) if pyproject.is_file() else None
+        found = [line for line in space_package_bypasses(cwd, lock=config.deploy.backend != "apps_api" and rewritten is None)
+                 if line != f"pyproject.toml [project].dependencies: {rewritten}"]
     except (OSError, ValueError) as exc:
         checks.append(Check(label, Status.FAIL, f"could not read install inputs ({exc})", fix))
     else:

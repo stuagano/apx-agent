@@ -7856,10 +7856,9 @@ def _stage_build_manifest(
     pyproject.write_text(text)
 
     # Make sure the wheel is staged in .build/ alongside the pyproject.
-    target_wheel = build_dir / wheel_path.name
-    if not target_wheel.exists():
-        import shutil
-        shutil.copy2(wheel_path, target_wheel)
+    # Always copy: hatch-vcs dirty versions carry only a date, so a stale wheel
+    # from an earlier deploy can share the name while its code differs.
+    shutil.copy2(wheel_path, build_dir / wheel_path.name)
 
     # Regenerate uv.lock inside .build/ against the rewritten pyproject.
     # UV_FROZEN is unset only for this call: a frozen environment would make
