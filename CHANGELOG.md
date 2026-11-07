@@ -62,7 +62,7 @@ package-proxy limits.
 
 ### Fixed
 
-- **`doctor` no longer flags the scaffold's apx-agent git dependency for App Space projects; staged wheels are always refreshed.** *(Pending follow-up PR.)*
+- **`doctor` no longer flags the scaffold's apx-agent git dependency for App Space projects; staged wheels are always refreshed (#1111).**
 - **UC function inputs are validated.** Unknown parameter names and non-boolean BOOLEAN values are rejected before SQL. Dev UI diagnostics show only an explicit allow-list of settings and never invoke `_demo_mode` callbacks.
 - **Invalid native input is rejected before persistence.** `/api/invocations` answers 422 and does not reserve the invocation id.
 - **Apps slash-redirects no longer point at localhost.** Same-host `Location` headers are now path-only.
