@@ -189,15 +189,13 @@ account_memory_tools = make_memory_tools(
 To turn this into a multi-turn conversational agent, wire a `ConversationStore` at deploy time:
 
 ```python
-from apx_agent import compile_to_chat_agent, DeltaConversationStore
+from apx_agent import compile_to_chat_agent, LakebaseConversationStore
+from apx_agent._lakebase_engine import build_lakebase_engine
 from databricks.sdk import WorkspaceClient
 
 ws = WorkspaceClient()
-conversation_store = DeltaConversationStore(
-    table_prefix="main.agents.customer_triage_sessions",
-    ws=ws,
-    warehouse_id="wh-prod",
-)
+engine = build_lakebase_engine(ws=ws, database="agentdb", host="my-lakebase.db.databricks.com")
+conversation_store = LakebaseConversationStore(engine=engine)
 chat = compile_to_chat_agent(agent, model="...", conversation_store=conversation_store)
 ```
 

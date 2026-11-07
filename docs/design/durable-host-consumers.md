@@ -109,7 +109,7 @@ bodies still stop at `6cdcff86` (2026-10-06).
 |---|---|---|
 | #855 / #856 | Live disposable store probe on DEFAULT; opt-in `APX_MANAGED_STATE_LIVE=1` | Retention, grants, App-process startup; GitHub checklists |
 | #857 | Lakebase conversation history on in-repo examples | `platform-health` / `product-finder` are not in this repo |
-| #858 | `apx memory extract` / `_memory_extract.py` | GitHub text still says extraction is unshipped |
+| #858 | `apx-agent memory extract` / `_memory_extract.py` | GitHub text still says extraction is unshipped |
 | #864 | Consumer freeze + stop/start SNAPSHOT rollover | Session/invocation HTTP after worker loss (needs Apps OAuth, not PAT) |
 | #575 | Wait | UC Agent Services GA |
 | #909 | Agent Bricks forces `agent-bricks-*` | MCP `mcp-` discovery; workaround is App Space `apps_api` |
