@@ -75,6 +75,21 @@ def test_extract_cli_uses_the_installed_script_name() -> None:
     assert "\napx memory extract" not in SESSIONS
 
 
+def test_no_doc_uses_the_uninstalled_apx_memory_script() -> None:
+    """Only ``apx-agent`` is in [project.scripts]; ``apx memory`` does not exist."""
+    stale = [p for p in DOCS.rglob("*.md") if "apx memory " in p.read_text()]
+    assert stale == []
+
+
+def test_customer_triage_readme_imports_only_exported_names() -> None:
+    import apx_agent
+
+    readme = (DOCS.parent / "python" / "examples" / "customer_triage" / "README.md").read_text()
+    assert "DeltaConversationStore" not in readme
+    assert "from apx_agent import compile_to_chat_agent, LakebaseConversationStore" in readme
+    assert hasattr(apx_agent, "LakebaseConversationStore")
+
+
 def test_llm_agent_memory_row_lists_every_tier() -> None:
     row = next(line for line in LLM_AGENT.splitlines() if line.startswith("| `memory` |"))
     for tier in _KNOB_TO_TYPE:
