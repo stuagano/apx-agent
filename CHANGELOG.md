@@ -6,7 +6,44 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+## [0.7.3] — UNRELEASED
+
+Headline: declared agent memory does real work (context-window trim,
+auto-recall, typed extraction strategies, per-namespace retention), and App
+Space deploys are preflighted against the Beta's egress, partner-powered AI and
+package-proxy limits.
+
+**Upgrading from 0.7.2: no public API is removed, but these change behaviour.**
+
+- **Auto-recall is on whenever `memory=` is declared.** Each turn now appends
+  the caller's top 5 memories to the system prompt. Set `auto_recall=False` on
+  the memory config to keep the 0.7.2 behaviour (see Added).
+- **`LlmAgent(context_window_tokens=N)` is now enforced.** It was stored and
+  never read; the oldest whole turns are now dropped from the model request to
+  fit N (see Added).
+- **App Space deploys refuse more projects.** Preflight fails on a tool,
+  sub-agent or OpenAPI spec that calls outside the workspace, on
+  partner-powered AI turned off, and on install inputs that bypass the managed
+  package proxy (`git+` or direct-URL deps, non-PyPI `[tool.uv]` indexes, URL
+  lines in requirements.txt, VCS entries in `uv.lock`). Scaffolded projects
+  that pin apx-agent by `git+https` hit this (see Changed).
+- **UC function calls reject unknown parameter names and non-boolean BOOLEAN
+  values** before any SQL runs; before, they were ignored or coerced by
+  truthiness (see Fixed).
+- **Native `/api/invocations` returns 422 for invalid input** and does not
+  persist the invocation (see Fixed).
+- **Bundle canary promotion promotes the requested label**, not a newer
+  canary (see Added).
+
 ### Added
+
+- **Context-window trim (#1086).** `LlmAgent(context_window_tokens=N)` drops the oldest whole turns before each model call so the system prompt plus the remaining turns fit N tokens (approximate count). Turns are cut only at user messages, so a tool call is never sent without its result; system messages and the latest turn are always kept. Only the model request is trimmed; graph state and checkpointed history keep every message.
+- **Auto-recall (#1087).** With `memory=` declared, the caller's top-k memories for the latest user message are appended to the system message each turn, under the same principal scoping as the recall tool. The block is never written to state or history; a failing store logs a warning and the turn continues. Options: `auto_recall` (default on), `recall_k` (5), `recall_min_score` (0.0).
+- **Typed memory strategies (#1088).** `memory.strategies` declares `facts`, `preferences` and `summary` (each writes to the namespace of that name), and `strategy_prompts` overrides a strategy's instructions while its output contract stays fixed. Auto-recall covers the default namespace plus `facts` and `preferences`; `recall_namespaces` adds more (including `summary`) to that set rather than replacing it.
+- **`memory.extract_every_n_turns` (#1089).** Runs the declared strategies after every N user turns, off the request path, on a one-worker background executor as the app service principal. Records are written under the session's user and replace that session's earlier ones, so re-delivery never duplicates. Lakebase and in-memory only.
+- **Per-namespace memory retention (#1090, #1101).** `memory.retention = {default_days, namespaces: {ns: days}}`. Lakebase runs one delete pass at app start, durable servers included; `apx doctor` reports the declared retention. In-memory and managed stores reject the setting. `apx-agent memory purge` runs the pass on demand, so retention can run on a schedule.
+- **App release history and rollback.** `apx-agent releases history` lists an App's platform deployments and the active one; `releases rollback` restores an exact same-App packaged-source snapshot. Bundle canary promotion now selects the requested label.
+- **View result on native chat.** A View result button beside the run status opens the recorded answer and its evidence inline; exact JSON stays collapsed. Approval status is shown only when it was recorded.
 
 - **Discover shows this agent; the agent page links to the App and its MLflow experiment.** Discover (`/_apx/discover`) draws the agent in the workspace graph: the App node when deployed, otherwise an `Agent` node, with `uses` edges to every declared resource it finds, and an "Only this agent's assets" filter. A "This agent" panel shows the Databricks App and MLflow experiment links, the model, the bound session and memory stores, and the declared resources not in the loaded graph. `graph.json` gains an `agent` overlay (`id`, `footprint`, `unplaced`); `/_apx/workspace-context` gains `app_url`, `experiment_url`, `model`, `session_store`, `memory_store` and a `node_id` per resource. The `/_apx/agent` sidebar adds the two links.
 - **Chat reload keeps earlier turns on durable hosts (#978).** Reloading `/` or `/_apx/chat` now renders the session's earlier user and assistant turns above the restored run. They are read from `GET /api/session/history`, which reads the checkpoint the durable handler writes, under the same SDK-namespaced session and user principal, so one user never reads another's thread. Agents with no graph checkpointer (no bound session store, or keyed composites, which persist state instead) return no earlier turns. Under app-auth, sessions are keyed by session id alone, as `/api/invocations` already is.
@@ -14,11 +51,24 @@ All notable changes to apx-agent. Format loosely follows
 
 ### Changed
 
+- **App Space deploy refuses tools that call outside the workspace (#1068, #1080).** App Space Beta has no public internet egress. Remote MCP tools, `remote_agent_tool`, `sub_agents` URLs and URL-loaded `openapi_tool` specs are checked; a host passes only if it is the workspace or a Databricks App that `apps.get` resolves in this workspace. Plain `@tool` HTTP clients cannot be checked.
+- **App Space preflight checks partner-powered AI and the package proxy (#1069).** Deploy refuses when the workspace partner-powered AI setting is off (an unreadable setting warns), and lists each install input that bypasses the Databricks-managed package proxies. `apx doctor` reports both, plus manual rows for the account-level setting and Cross-Geo processing.
+- **`agents scaffold` ships the apx wheel for App Space deploys** instead of a `git+https` dependency, so a scaffolded project passes the package-proxy check. *(Pending: lands with the scaffold PR.)*
+- **One remote-hop OBO header rule (#1050).** `remote_agent_tool`, bound remote leaves and the dev-UI hub invoke route build their headers with one internal helper, `_obo.remote_hop_headers` (forwarded user token, `Authorization: Bearer`, `X-Forwarded-Host`). No public API change.
 - **An Apps API deploy prints the fix for a warning prerequisite**, as the other deploy paths already did. The six copies of deploy's check-and-stop loop are now one helper (#1051).
 - **A project's OKF bundle grounds a live-introspected DataAgent.** With `ws=` (e.g. `DataTemplate.build`), introspection still supplies the tables. The project's `.apx/okf` bundle for the same catalog.schema now also adds its descriptions, glossary and golden queries; previously they were dropped on this path. An explicit `tables=` override still skips the bundle. Without `ws=`, the bundle was already the default.
 
 ### Fixed
 
+- **UC function inputs are validated.** Unknown parameter names and non-boolean BOOLEAN values are rejected before SQL. Dev UI diagnostics show only an explicit allow-list of settings and never invoke `_demo_mode` callbacks.
+- **Invalid native input is rejected before persistence.** `/api/invocations` answers 422 and does not reserve the invocation id.
+- **Apps slash-redirects no longer point at localhost.** Same-host `Location` headers are now path-only.
+- **Discover stays scoped to the project across reloads.**
+- **`lineage_tool` calls the documented table-lineage endpoint (#983).**
+- **`describe-cli` lists the `--no-` form of boolean flag pairs.**
+- **Trace filters quote values for MLflow.** `traces list --agent/--operation` and `align_judge` no longer break on a quote in the value.
+- **Events timeline.** A restored run keeps its user row, a sequence's answer closes the timeline, rows read left-aligned, and the filter is styled.
+- **Examples.** The shortage `compile_demo` SQL binds `component_id`, and the afr-enrollment-api fallback escapes ILIKE terms.
 - **Deploy smoke no longer fails keyed composites.** A composite with `session_keys` and a bound session store saves state, not a graph checkpoint, so its turn returns no checkpoint coordinate. The execution smoke now reads a checkpoint back only for an `LlmAgent`; before, a working keyed-composite deploy was reported as failed (both the bundle and `apps_api` paths).
 - **`apx doctor` checks the settings the imported agent declares (#1049).** Doctor built its prerequisite, image and agent.toml rows from the pyproject plus the literal values it reads from `agent.py`. A setting given as a variable, such as `memory=MEM`, never reached those rows, so a managed memory store that deploy checks went unchecked. Doctor now merges the imported agent's settings the same way deploy does.
 - **`apx doctor --durable` checks the App that deploy deploys (#1048).** With a `databricks.yml`, the Deploy stage took the App name from `[tool.apx.deploy] app_name`, which names only an Apps API App, instead of the bundle's `name`. A valid bundle failed the `agent-bricks-` name check. A bundle that left out `name:` failed with `KeyError: 'name'`, and one with two Apps gave a misleading reason. The Deploy stage now uses deploy's own resolver.
@@ -31,6 +81,16 @@ All notable changes to apx-agent. Format loosely follows
 - **A readable Knowledge page.** The glossary comes first, and tables are listed under "Tables" (they were labelled "Views"). Each table is one collapsed row (name, overview, column count) that opens to its columns. A filter box narrows tables, columns and terms, and `backtick` spans render as code.
 - **Knowledge page with a bare bundle.** A bundle that has tables but no descriptions, glossary or functions yet (e.g. one just generated) no longer shows "No OKF knowledge bundle found". The page names the bundle and points to Grounding.
 - **Readable Discover warnings.** A partial workspace graph lists one line per cause, e.g. `functions, models, volumes in 33 schemas (…): <reason>`. It no longer prints one line per schema, and drops the SDK's request id and `Config:` dump. Note that a Databricks Apps user token cannot list functions, registered models or volumes, because no Apps user scope covers them.
+
+### Docs
+
+- Which of the three deploy paths `agents deploy` runs; the Apps URL inbound U2M/M2M client path (#969); the OBO consent lifecycle (#970).
+- Memory: a design note for typed strategies, the managed-scoping docstring, and sessions/memory drift (#1091); the customer_triage README names the `apx-agent` CLI and its real session store.
+
+### Tests
+
+- Flaky fixes: MLflow trace exports drain before the eval-sweep integration test; the data-triage entrypoint asserts `/mcp` after durable startup, not before.
+- New coverage: doctor's OBO workspace-scope row (#968), the ai-functions `user_api_scope` round-trip (#965), eligibility-agent's not-found `ToolError`. `pre-commit run --all-files` passes again.
 
 ## [0.7.2] — 2026-10-29
 
