@@ -1441,6 +1441,9 @@ def test_app_space_deploy_binds_sdk_owned_store(
 
         verify(Artifact(str(scaffold / ".build" / "agent.toml"), must_contain="[auth.user]"))
         native = AgentProject.load(scaffold / ".build")
+        if composite:
+            # The staged manifest, not only the provisioned store, carries agent.toml's store.
+            assert native.session_store == "team-sessions"
         assert native.user_auth.required == (memory or composite)  # the composite's agent.toml declares it
         assert native.user_auth.additional_api_scopes == (("ai-gateway",) if memory or composite else ())
     assert sum(call.args == ("selected",) for call in constructor.call_args_list) == 1

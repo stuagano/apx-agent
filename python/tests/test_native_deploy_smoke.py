@@ -98,3 +98,21 @@ def test_smoke_validates_canonical_nonobject_output(monkeypatch, text, valid):
     result = cli._check_native_execution("https://example", profile=None, session_store=None,
                                          smoke_agent=LlmAgent(output_schema=RootModel[list[int]]))
     assert result.completed is valid
+
+
+def test_keyed_composite_smoke_does_not_require_a_checkpoint(monkeypatch):
+    # A keyed composite binds the session store for allow-listed state, never a graph
+    # checkpointer, so its turn returns no checkpoint coordinate; that is not a failed deploy.
+    from apx_agent import SequentialAgent
+
+    monkeypatch.setattr(cli, "_run_databricks_cmd", lambda *a, **k: SimpleNamespace(returncode=0, stdout='{"access_token":"test"}'))
+    body = {"output": {"status": "completed", "messages": [{"type": "ai", "content": "pong"}]}}
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: io.BytesIO(json.dumps(body).encode()))
+    keyed = SequentialAgent([LlmAgent(name="a")], name="seq", session_keys=("intake",))
+    result = cli._check_native_execution("https://example", profile=None, session_store="team-sessions",
+                                         smoke_agent=keyed)
+    assert result.completed and not result.readback
+    # An LlmAgent with the same store still has to prove its checkpoint.
+    result = cli._check_native_execution("https://example", profile=None, session_store="team-sessions",
+                                         smoke_agent=LlmAgent(name="a"))
+    assert not result.completed and "checkpoint coordinate" in result.detail
