@@ -2862,7 +2862,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
             return JSONResponse({"ok": False, "error": f"Tool '{tool_name}' not found"}, status_code=404)
 
         # Forward OBO headers so workspace-scoped tools work the same way the
-        # runner invokes them.
+        # runner invokes them. Not a remote hop (#1050): this is an in-process
+        # ASGI loopback to this app's own /tools route, which never crosses the
+        # Apps ingress — so it passes the caller's headers through verbatim
+        # rather than using remote_hop_headers' synthesized Bearer.
         obo_headers = {
             "Authorization": request.headers.get("Authorization", ""),
             "X-Forwarded-Access-Token": request.headers.get("X-Forwarded-Access-Token", ""),
@@ -3828,7 +3831,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         from ._defaults import _ws_prefer_obo
         from ._hub_models import InvokeRequest
         from ._hub_store import HUB_STORE
-        from ._obo import extract_obo_headers
+        from ._obo import extract_obo_headers, remote_hop_headers
 
         # Resolve identity via _ws_prefer_obo (fails closed → 401 on deployed App without OBO)
         ws = _ws_prefer_obo(request)
@@ -3855,14 +3858,7 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         # Reuse the forwarding pattern from _agent_tool.py: extract OBO headers
         # and forward them to the downstream agent.
         token = (request.headers.get("X-Forwarded-Access-Token") or "").strip()
-        forwarded: dict[str, str] = {}
-        if token:
-            forwarded["X-Forwarded-Access-Token"] = token
-            # The Apps OAuth ingress authenticates on Authorization; with only
-            # X-Forwarded-Access-Token it 302s to login (live-proven app-to-app).
-            forwarded["Authorization"] = f"Bearer {token}"
-        if request.headers.get("X-Forwarded-Host"):
-            forwarded["X-Forwarded-Host"] = request.headers["X-Forwarded-Host"]
+        forwarded = remote_hop_headers(token, request.headers.get("X-Forwarded-Host"))
 
         # Same transport as a declared sub-agent: reads the peer's card and posts
         # the durable contract to a DurableAgentServer, else /invocations (#980).

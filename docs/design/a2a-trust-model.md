@@ -42,7 +42,7 @@ This model is not aspirational — it is what the runtime does today:
 
 - **OBO forwarded per hop, unconditionally when present.** When a compiled agent
   calls a remote sub-agent, the caller's token is forwarded as
-  `X-Forwarded-Access-Token` + `Authorization: Bearer` (`_agent_tool.py:238-252`).
+  `X-Forwarded-Access-Token` + `Authorization: Bearer` — one rule, `_obo.py` `remote_hop_headers`, used by every remote hop (#1050).
   The only gate is the absence of a user token (local dev / no user identity),
   which is the legitimate "no user in scope" case, not a misconfiguration.
 - **Fail-closed when OBO is absent in Apps.** In the Databricks Apps runtime, a

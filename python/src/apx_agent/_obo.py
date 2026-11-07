@@ -53,6 +53,7 @@ __all__ = [
     "extract_obo_headers",
     "make_obo_workspace_client",
     "reauthorize_hint",
+    "remote_hop_headers",
     "resolve_no_obo_or_raise",
     "scope_session_key",
 ]
@@ -93,6 +94,26 @@ def apps_inbound_oauth_headers(*, oauth_token: str) -> dict[str, str]:
             "PAT cannot invoke a Databricks Apps URL (SSO). Use U2M or M2M OAuth."
         )
     return {"Authorization": f"Bearer {oauth_token}"}
+
+def remote_hop_headers(token: str | None, host: str | None = None) -> dict[str, str]:
+    """The OBO headers to forward on a remote agent hop — the per-hop trust rule.
+
+    Per-hop user OBO is the A2A trust boundary (docs/design/a2a-trust-model.md):
+    the caller's user token rides to the callee, so the downstream hop runs
+    under the user's grants. The token goes as ``X-Forwarded-Access-Token`` and
+    as ``Authorization: Bearer`` — the Apps OAuth ingress authenticates on
+    ``Authorization`` and 302s to login with only the forwarded token
+    (live-proven app-to-app on ``*.databricksapps.com``). No token (local dev,
+    no user in scope) forwards no credentials. Does not log the token.
+    """
+    forwarded: dict[str, str] = {}
+    if token:
+        forwarded["X-Forwarded-Access-Token"] = token
+        forwarded["Authorization"] = f"Bearer {token}"
+    if host:
+        forwarded["X-Forwarded-Host"] = host
+    return forwarded
+
 
 # Scoping identity — always overwrite body with extract_obo_headers result (#615).
 _IDENTITY_CUSTOM_INPUT_KEYS = frozenset({"user_id", "user_email"})
