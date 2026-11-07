@@ -9,7 +9,7 @@ Subcommands:
   apx-agent uc publish                Publish @tool(uc=...) decorated tools to UC
   apx-agent agents publish            Register the deployed endpoint as a Supervisor sub-agent
   apx-agent uc mcp-config             Emit the Managed MCP client config snippet
-  apx-agent memory <cmd>              recall / remember / forget / list — MemoryStore CRUD
+  apx-agent memory <cmd>              recall / remember / forget / list / purge — MemoryStore CRUD
   apx-agent examples <cmd>            find / save / remove / list — ExampleStore CRUD
   apx-agent version                   Print the package version
 
@@ -16629,6 +16629,35 @@ def memory_extract_cmd(
         )
         return
     click.echo(json.dumps(payload, indent=2))
+
+
+@memory.command("purge")
+@click.option("--profile", default=None, envvar="DATABRICKS_CONFIG_PROFILE",
+              help="Databricks CLI profile.")
+def memory_purge_cmd(profile: str | None) -> None:
+    """Delete memories past the agent's declared memory.retention (Lakebase).
+
+    Runs the same delete pass an app runs at start, so retention can be
+    enforced on a schedule (e.g. a Databricks job) without a restart. Prints
+    the number of rows deleted. A failed delete exits non-zero.
+    """
+    from databricks.sdk import WorkspaceClient  # noqa: PLC0415
+
+    from ._memory_wiring import _build_memory_store  # noqa: PLC0415
+
+    config = _effective_config(Path.cwd())  # memory= is declared on the agent (3d)
+    memory = None if config is None else config.memory
+    if memory is None or memory.retention is None:
+        raise click.ClickException(
+            "No memory retention declared. Set retention in the agent's memory= setting "
+            "(type='lakebase'), e.g. retention={'default_days': 90}."
+        )
+    ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    store = _build_memory_store(memory, ws)
+    if store is None:
+        raise click.ClickException(f"Lakebase memory host {memory.host!r} is not set — cannot reach the memory table.")
+    deleted = store.purge_expired(memory.retention)
+    click.echo(json.dumps({"deleted": deleted, "table": store.table_name}))
 
 
 @memory.command("consolidate")
