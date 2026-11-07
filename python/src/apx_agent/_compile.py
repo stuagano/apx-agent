@@ -73,7 +73,7 @@ from ._tool_search import (
     is_deferred,
     make_tool_search_fn,
 )
-from ._obo import _header_lookup
+from ._obo import _header_lookup, remote_hop_headers
 from ._remote import RemoteDatabricksAgent, _RemoteLeafBinding
 from ._inspection import (
     _EmptyToolInput,
@@ -1744,17 +1744,10 @@ def _compile_bound_remote_leaf(
                 token = resolve()["Authorization"].removeprefix("Bearer ")
             authorization = f"Bearer {token}" if token else None
             host = getattr(headers, "host", None)
-        forwarded = {
-            key: value
-            for key, value in (
-                ("Authorization", authorization),
-                ("X-Forwarded-Access-Token", token),
-                ("X-Forwarded-Host", host),
-            )
-            if value
-        }
-        if token and "Authorization" not in forwarded:
-            forwarded["Authorization"] = f"Bearer {token}"
+        forwarded = remote_hop_headers(token, host)
+        if authorization:
+            # A caller-supplied Authorization rides through as-is.
+            forwarded["Authorization"] = authorization
         return forwarded
 
     async def _node(state: dict[str, Any]) -> dict[str, Any]:

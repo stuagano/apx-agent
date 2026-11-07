@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._defaults import Dependencies
 from ._models import Message
+from ._obo import remote_hop_headers
 from ._tool_factory import build_tool
 
 if TYPE_CHECKING:
@@ -246,14 +247,7 @@ def remote_agent_tool(
                 # Durable host: ask the SDK's request-user client now. A closed
                 # request context raises here — fail closed, nothing is sent.
                 token = headers.auth_headers()["Authorization"].removeprefix("Bearer ")
-            if token is not None:
-                forwarded["X-Forwarded-Access-Token"] = token
-                # The Apps OAuth ingress authenticates on Authorization; with
-                # only X-Forwarded-Access-Token it 302s to login (live-proven
-                # app-to-app on *.databricksapps.com).
-                forwarded["Authorization"] = f"Bearer {token}"
-            if headers.host is not None:
-                forwarded["X-Forwarded-Host"] = headers.host
+            forwarded = remote_hop_headers(token, headers.host)
         try:
             return await remote._run_with_incoming_headers(
                 [Message(role="user", content=content)], forwarded
