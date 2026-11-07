@@ -347,6 +347,27 @@ def attach_declared_memory(
     setattr(agent, "_apx_memory_attached", True)
 
 
+def purge_declared_memory(agent: Any) -> int | None:
+    """Run the declared-retention delete pass on the agent's memory store (#1090).
+
+    Called once at app start (the ``create_app`` lifespan), not at
+    ``finalize_agent`` — doctor and compile also finalize the agent and must
+    never delete rows. Returns rows deleted, or ``None`` when no retention is
+    declared or no store was built. A failed pass is logged and boot continues.
+    """
+    cfg = getattr(agent, "_apx_memory_config", None)
+    store = getattr(agent, "_apx_memory_store", None)
+    if cfg is None or cfg.retention is None or store is None:
+        return None
+    try:
+        deleted = store.purge_expired(cfg.retention)
+    except Exception as exc:
+        logger.warning("memory retention delete pass failed — expired rows kept until next start: %s", exc)
+        return None
+    logger.info("memory retention: deleted %d expired rows from %s", deleted, store.table_name)
+    return deleted
+
+
 def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
     """Build a ConversationStore from SessionBackendConfig. Returns None on failure.
 
@@ -650,6 +671,7 @@ __all__ = [
     "scaled_in_memory_error",
     "session_is_in_memory",
     "dispose_store_engine",
+    "purge_declared_memory",
     "resolve_checkpointer",
     "resolve_conversation_store",
 ]

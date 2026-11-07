@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -58,6 +59,8 @@ from ._memory import validate_table_name as _validate_table_name
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
+
+    from ._models import MemoryRetention
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +437,35 @@ class LakebaseMemoryStore:
             result = conn.execute(sql, {"id": memory_id})
         rowcount = getattr(result, "rowcount", -1)
         return rowcount is None or rowcount > 0
+
+    def purge_expired(self, retention: "MemoryRetention", now: float | None = None) -> int:
+        """Delete rows older than their namespace's declared retention (#1090).
+
+        Age is ``now - updated_at`` in seconds. A listed namespace uses its own
+        days; every other namespace uses ``default_days``, or is kept when that
+        is unset. Returns the number of rows deleted.
+        """
+        self._ensure_schema()
+        sa = _require_sqlalchemy()
+        current = time.time() if now is None else now
+        deleted = 0
+        with self.engine.begin() as conn:
+            for namespace, days in sorted(retention.namespaces.items()):
+                result = conn.execute(
+                    sa.text(f"DELETE FROM {self.table_name} WHERE namespace = :ns AND updated_at < :cutoff"),
+                    {"ns": namespace, "cutoff": current - days * 86400},
+                )
+                deleted += max(result.rowcount, 0)
+            if retention.default_days is not None:
+                params: dict[str, Any] = {"cutoff": current - retention.default_days * 86400}
+                where = "updated_at < :cutoff"
+                if retention.namespaces:
+                    names = sorted(retention.namespaces)
+                    params.update({f"ns{i}": n for i, n in enumerate(names)})
+                    where += " AND namespace NOT IN (" + ", ".join(f":ns{i}" for i in range(len(names))) + ")"
+                result = conn.execute(sa.text(f"DELETE FROM {self.table_name} WHERE {where}"), params)
+                deleted += max(result.rowcount, 0)
+        return deleted
 
     def list(self, filter: MemoryFilter) -> list[Memory]:
         """Return rows matching ``filter``, sorted by ``updated_at`` desc."""

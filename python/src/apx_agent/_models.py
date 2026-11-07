@@ -181,6 +181,29 @@ class MemoryExtractionPolicy(BaseModel):
         return self
 
 
+class MemoryRetention(BaseModel):
+    """Declared memory retention in days, keyed by namespace (#1090).
+
+    A row older than its namespace's limit (by ``updated_at``) is deleted by the
+    Lakebase delete pass. ``default_days`` covers namespaces not listed; when it
+    is absent, unlisted namespaces are kept. A future typed strategy maps to a
+    namespace, so its retention is declared here under that namespace.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    default_days: int | None = Field(default=None, gt=0)
+    namespaces: dict[str, int] = {}
+
+    @model_validator(mode="after")
+    def _declares_something(self) -> "MemoryRetention":
+        if self.default_days is None and not self.namespaces:
+            raise ValueError("memory.retention needs default_days or at least one namespace")
+        if any(days <= 0 for days in self.namespaces.values()):
+            raise ValueError("memory.retention.namespaces days must be positive")
+        return self
+
+
 class MemoryBackendConfig(_BackendConfig):
     """Declarative memory backend — maps to ``memory=``."""
 
@@ -207,9 +230,17 @@ class MemoryBackendConfig(_BackendConfig):
     """Top-k memories auto-recalled per turn."""
     recall_min_score: float = 0.0
     """Relevance threshold: auto-recalled memories scoring below it are dropped."""
+    retention: MemoryRetention | None = None
+    """Days to keep memories per namespace. Lakebase only: enforced by a delete pass at app start."""
 
     @model_validator(mode="after")
     def _validate_managed_store(self) -> "MemoryBackendConfig":
+        if self.retention is not None and self.type != "lakebase":
+            raise ValueError(
+                f"memory.retention requires type='lakebase'; type={self.type!r} cannot "
+                "enforce it (in-memory rows end with the process; the managed "
+                "platform states no retention)."
+            )
         if self.extraction is not None and self.type != "managed":
             raise ValueError(
                 "memory.extraction requires type='managed'; in-memory and "
