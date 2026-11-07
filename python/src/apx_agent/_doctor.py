@@ -1291,7 +1291,7 @@ def check_space_partner_ai(ws: Any) -> Check:
     Reads ``SettingsAPI.llm_proxy_partner_powered_workspace.get()``. A read error is a
     WARN: doctor and preflight run as the local identity, which may not be a workspace admin.
     """
-    from databricks.sdk.errors import DatabricksError
+    from databricks.sdk.errors.base import DatabricksError
 
     label = "Partner-powered AI (workspace)"
     try:
