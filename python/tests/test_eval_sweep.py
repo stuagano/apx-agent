@@ -257,6 +257,12 @@ def test_real_mlflow_evaluation_consumes_native_serialized_traces(monkeypatch, t
     monkeypatch.setattr(mlflow.tracking.fluent, "_active_experiment_id", None)
     # set_experiment also writes this environment variable for child processes.
     monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+    # Drain traces earlier tests left in MLflow's background exporter. Each
+    # export retries `from IPython import ...` (not installed) holding the
+    # global import lock, while evaluate() registers autolog import hooks
+    # holding MLflow's hook lock and imports openai: an ABBA deadlock that
+    # hung this test until the 90s timeout killed the xdist worker.
+    mlflow.flush_trace_async_logging()
     old_uri = mlflow.get_tracking_uri()
     mlflow.set_tracking_uri(f"sqlite:///{tmp_path / 'mlflow.db'}")
     try:
