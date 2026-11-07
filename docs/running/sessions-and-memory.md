@@ -311,6 +311,31 @@ names are rejected; historical entries require an explicit export/import with a
 reviewed scope-to-actor mapping. Direct Python construction takes
 `ManagedMemoryStore(ws=workspace_client, store_name="agent-memory", scope_resolver=...)`.
 
+### Memory retention
+
+Declare how long memories are kept, in days per namespace, plus an optional
+default for namespaces you don't list. Age is measured from a row's
+`updated_at`. With no `default_days`, unlisted namespaces are kept.
+
+```python
+memory={
+    "type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "agentdb",
+    "embedding_model": "databricks-gte-large-en", "embedding_dim": 1024,
+    "retention": {"default_days": 90, "namespaces": {"scratch": 7}},
+}
+```
+
+- **Lakebase** runs one delete pass each time the app starts. A failed pass is
+  logged and the app still boots. An app that never restarts never purges, so
+  redeploy or restart on a schedule if you need tighter enforcement.
+- **Managed** rejects `retention`: the platform states no retention, and apx
+  does not invent one.
+- **In-memory** rejects `retention`: rows end with the process.
+
+`apx-agent doctor` shows the declared retention as a `Memory retention` row
+(e.g. `scratch=7d, default=90d`). For a managed store it reports that the
+platform states no retention.
+
 ### Session extraction
 
 A finished managed session becomes managed memory only when

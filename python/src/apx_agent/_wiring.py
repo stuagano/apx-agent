@@ -1271,6 +1271,11 @@ def create_app(
             except Exception as exc:
                 logger.warning("Skipping /invocations mount: %s", exc)
 
+            from ._memory_wiring import purge_declared_memory  # noqa: PLC0415
+
+            # Declared memory retention (#1090): one delete pass per app start.
+            purge_declared_memory(ctx.agent)
+
             try:
                 from ._a2a import mount_a2a_route
 

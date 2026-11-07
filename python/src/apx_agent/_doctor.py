@@ -245,6 +245,9 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
         project.append(memory_check)
+    retention_check = check_memory_retention(cwd)
+    if retention_check is not None:
+        project.append(retention_check)
     abac_check = check_abac_compute_floor(cwd, auth_ok=auth.status is Status.OK)
     if abac_check is not None:
         project.append(abac_check)
@@ -1348,6 +1351,38 @@ def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:
                 engine.dispose()
 
     return Check(label, Status.SKIP, f"unknown type {mem.type!r}", None)
+
+
+def check_memory_retention(cwd: Path) -> Check | None:
+    """Report the declared memory retention (#1090). Offline: config only.
+
+    Lakebase shows the declared days (enforced by a delete pass at app start).
+    Managed reports that the platform states no retention — apx invents none.
+    In-memory has nothing to report (rows end with the process).
+    """
+    if not _is_apx_project(cwd):
+        return None
+    try:
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
+
+        cfg = effective_config_isolated(cwd)
+    except Exception:
+        return None
+    if cfg is None or cfg.memory is None:
+        return None
+    mem = cfg.memory
+    label = "Memory retention"
+    if mem.type == "managed":
+        return Check(label, Status.OK, "managed store: the platform states no retention; none applied", None)
+    if mem.type != "lakebase":
+        return None
+    retention = mem.retention
+    if retention is None:
+        return Check(label, Status.OK, "none declared: memories are kept until deleted", None)
+    parts = [f"{ns}={days}d" for ns, days in sorted(retention.namespaces.items())]
+    if retention.default_days is not None:
+        parts.append(f"default={retention.default_days}d")
+    return Check(label, Status.OK, f"{', '.join(parts)} (delete pass runs at app start)", None)
 
 
 def check_abac_compute_floor(cwd: Path, *, auth_ok: bool) -> Check | None:
