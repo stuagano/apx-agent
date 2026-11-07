@@ -187,11 +187,6 @@ for reflections scoped to a single actor.
 
 Shipped in the #1088 implementation PR. Each item follows the code.
 
-- **`recall_namespaces` is the full list, not an addition.** When declared it
-  replaces the default set (`namespace_default` + `facts` + `preferences`), so
-  opting `summary` in reads `["default", "facts", "preferences", "summary"]`.
-  One field then also covers dropping a namespace or adding `consolidated`.
-  `MemoryBackendConfig.recalled_namespaces()` is the single source.
 - **Recall is one query per namespace** (the `MemoryStore` protocol takes one
   namespace); results are merged by score and capped at `recall_k`.
 - **Managed writes go through the AgentKit entry API in `_memory_extract.py`,**

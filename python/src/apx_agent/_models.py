@@ -239,17 +239,15 @@ class MemoryBackendConfig(_BackendConfig):
     strategy_prompts: dict[MemoryStrategy, str] | None = None
     """Replaces a strategy's built-in instructions. The output contract is fixed and always appended."""
     recall_namespaces: list[str] | None = None
-    """Namespaces auto-recall searches. Absent: ``namespace_default`` plus the
-    declared ``facts`` / ``preferences`` strategies (``summary`` only when listed here)."""
+    """Extra namespaces auto-recall searches, added to the default set
+    (``namespace_default`` plus the declared strategies except ``summary``)."""
 
     def recalled_namespaces(self) -> list[str]:
         """The namespaces auto-recall searches each turn, in order."""
-        if self.recall_namespaces is not None:
-            return list(self.recall_namespaces)
         strategies = self.strategies if self.strategies is not None else []
-        recalled = [self.namespace_default]
-        recalled += [s for s in strategies if s != "summary" and s not in recalled]
-        return recalled
+        listed = self.recall_namespaces if self.recall_namespaces is not None else []
+        candidates = [self.namespace_default, *(s for s in strategies if s != "summary"), *listed]
+        return list(dict.fromkeys(candidates))
 
     @model_validator(mode="after")
     def _validate_strategies(self) -> "MemoryBackendConfig":

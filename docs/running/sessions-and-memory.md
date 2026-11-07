@@ -387,7 +387,8 @@ memory={
   writes each entry at `/memories/<strategy>/` and reads it back.
 - **Recall:** auto-recall searches `namespace_default` plus `facts` and
   `preferences`, merges by score, and keeps the top `recall_k`. `summary` is
-  recalled only when you list it: `"recall_namespaces": ["default", "facts", "preferences", "summary"]`.
+  recalled only when you list it: `"recall_namespaces": ["summary"]`. Listed
+  namespaces are added to that default set, never replace it.
 - **Retention** is per namespace, so `"retention": {"namespaces": {"summary": 30}}`
   covers a strategy. `episodic` is not a strategy.
 
