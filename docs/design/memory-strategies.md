@@ -1,6 +1,6 @@
 # Design: typed memory strategies (`facts`, `preferences`, `summary`)
 
-**Status:** proposed, needs a decision before code · **Date:** 2026-11-06 ·
+**Status:** accepted 2026-11-06 (owner approved the recommendations below) · **Date:** 2026-11-06 ·
 **Issue:** [#1088](https://github.com/stuagano/apx-agent/issues/1088) ·
 **Blocks:** [#1089](https://github.com/stuagano/apx-agent/issues/1089) (when extraction runs) ·
 **Interacts with:** [#1087](https://github.com/stuagano/apx-agent/issues/1087) auto-recall (shipped in #1094),
@@ -132,11 +132,14 @@ single-call path is unchanged.
 
 ### 6. Recall (#1087) and retention (#1090)
 
-- **Auto-recall:** with strategies declared, recall runs one query per strategy
-  namespace plus `namespace_default`, merges the results by score within the one
-  store, and keeps the top `recall_k` above `recall_min_score`. Scores are compared
-  only within a store (BM25 for managed, cosine for Lakebase). That makes it at
-  most 4 queries a turn. `consolidated` is not recalled unless it is listed.
+- **Auto-recall:** with strategies declared, recall covers `facts`, `preferences`
+  and `namespace_default`, merges the results by score within the one store, and
+  keeps the top `recall_k` above `recall_min_score`. Scores are compared only within
+  a store (BM25 for managed, cosine for Lakebase). `summary` is **not** recalled by
+  default: summaries match the latest user message poorly and lengthen the prompt.
+  An agent opts in by listing it in `recall_namespaces`. Prefer one store query over
+  a namespace list where the store supports it; otherwise one query per namespace
+  (at most 3 by default). `consolidated` is not recalled unless it is listed.
 - **Retention:** #1090 keys retention by namespace. Strategies are namespaces, so
   `{"summary": ...}` covers them and no strategy-specific field is added. Managed
   stores keep #1090's position: the platform does not state a retention period, so
@@ -161,20 +164,21 @@ for reflections scoped to a single actor.
 3. **Managed (fake AgentKit):** one dry-run call per strategy with the composed
    instructions, then writes at `/memories/<strategy>/`. A read-back mismatch
    raises. With no `strategies`, the call sequence matches today's.
-4. **Auto-recall:** the middleware queries each strategy namespace plus the
-   default, merges them, and caps the result at `recall_k`.
+4. **Auto-recall:** the middleware recalls `facts`, `preferences` and the default
+   (not `summary`), merges them, and caps the result at `recall_k`. Listing
+   `summary` in `recall_namespaces` adds it.
 5. **`*_reality_ctk.py`:** compile an agent with strategies, extract one fixture
    session, then read each namespace back with `store.list` (the read is non-empty
    and contains the expected content), plus a `ctk.verify` of the recalled prompt block.
 6. A docs-claims test pins the `sessions-and-memory.md` example to the real config.
 
-## Open questions for the owner
+## Resolved questions
 
-- Is M2 right for managed memory: N service extraction calls in exchange for an
-  exact namespace? We did not verify which `path` the service writes on its own.
-- Should a Lakebase extractor use the agent's own model only, or should
-  `extraction_model` be declared now?
-- Should `summary` be auto-recalled by default? It is a recap of past sessions and
-  is noisier than `facts` or `preferences`.
-- Where does the Lakebase extractor read the transcript from (ConversationStore
-  or session backend)? This is left to #1089.
+- **Managed memory: M2.** One dry-run extraction call per strategy (at most 3) in
+  exchange for an exact namespace. Extraction runs off the request path every few
+  turns, so the extra calls are cheap, and recall and retention both depend on the
+  namespace being right.
+- **Lakebase extractor model: the agent's own model only.** No `extraction_model`
+  field until a real agent needs one.
+- **`summary` auto-recall: opt-in,** via `recall_namespaces` (see decision 6).
+- **Transcript source for the Lakebase extractor:** left to #1089.
