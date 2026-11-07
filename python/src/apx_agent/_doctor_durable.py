@@ -467,6 +467,7 @@ def _stage_startup(loaded: _Loaded, surface: Callable[[], list[str]], stack: con
             from ._wiring import mount_mcp_endpoints
 
             mount_mcp_endpoints(app, loaded.agent)
+        app.state.apx_memory_purge = False  # a readiness probe never deletes memory rows
         client = stack.enter_context(TestClient(app))
         ready = client.get("/readyz")
         # Offline, app-auth MCP tools can't load (no network, no real client). Only

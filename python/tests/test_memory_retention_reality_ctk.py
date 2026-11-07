@@ -29,6 +29,7 @@ from apx_agent._memory import MemoryFilter  # noqa: E402
 from apx_agent._memory_lakebase import LakebaseMemoryStore  # noqa: E402
 from apx_agent._memory_wiring import purge_declared_memory  # noqa: E402
 from apx_agent._models import MemoryRetention  # noqa: E402
+from tests.test_runtime_targets import execution  # noqa: E402,F401
 
 NOW = time.time()
 DAY = 86400.0
@@ -42,8 +43,8 @@ ROWS = {
 }
 
 
-def _store() -> LakebaseMemoryStore:
-    engine = sa.create_engine("sqlite://", poolclass=sa.pool.StaticPool, connect_args={"check_same_thread": False})
+def _store(url: str = "sqlite://") -> LakebaseMemoryStore:
+    engine = sa.create_engine(url, poolclass=sa.pool.StaticPool, connect_args={"check_same_thread": False})
     with engine.begin() as conn:
         conn.execute(sa.text(
             "CREATE TABLE apx_memories (id TEXT PRIMARY KEY, principal_id TEXT, namespace TEXT, "
@@ -91,6 +92,89 @@ def test_app_start_runs_the_delete_pass() -> None:
             pass
     # Every seeded row is at least a day old against the real clock.
     assert _ids(store) == set()
+
+
+@pytest.mark.unit
+def test_durable_server_start_runs_the_delete_pass(execution, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # noqa: F811
+    """The Apps API deploy path (durable_agent_server) purges at startup too (#1101)."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from apx_agent._durable_agent import compile_to_durable_agent_server
+
+    (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "proof"\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    store = _store()
+    agent = execution.agent
+    agent._apx_memory_store = store
+    agent._apx_memory_config = MemoryBackendConfig(type="lakebase", retention={"namespaces": {"scratch": 7}})
+    app = compile_to_durable_agent_server(agent, model="test", service_ws=execution.ws, checkpointer=InMemorySaver())
+    assert _ids(store) == set(ROWS)  # compiling never deletes; only the server start does
+    with TestClient(app):
+        pass
+    assert _ids(store) == set(ROWS) - {"scratch-old"}
+
+
+@pytest.mark.unit
+def test_memory_purge_cli_deletes_expired_rows_and_reports_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from apx_agent.cli import main
+
+    store = _store()
+    cfg = AgentConfig(name="t", model="m", memory=MemoryBackendConfig(
+        type="lakebase", host="h", database="d", embedding_model="e", embedding_dim=1,
+        retention={"default_days": 90, "namespaces": {"scratch": 7}},
+    ))
+    monkeypatch.setattr("apx_agent.cli._effective_config", lambda cwd: cfg)
+    monkeypatch.setattr("apx_agent._memory_wiring._build_memory_store", lambda mcfg, ws: store)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", MagicMock())
+    result = CliRunner().invoke(main, ["memory", "purge"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {"deleted": 3, "table": "apx_memories"}
+    assert _ids(store) == {"scratch-fresh", "default-fresh"}
+
+
+@pytest.mark.unit
+def test_memory_purge_cli_without_declared_retention_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    from click.testing import CliRunner
+
+    from apx_agent.cli import main
+
+    monkeypatch.setattr("apx_agent.cli._effective_config",
+                        lambda cwd: AgentConfig(name="t", model="m", memory=MemoryBackendConfig(type="inmemory")))
+    result = CliRunner().invoke(main, ["memory", "purge"])
+    assert result.exit_code != 0
+    assert "No memory retention declared" in result.output
+
+
+@pytest.mark.unit
+def test_doctor_durable_startup_never_deletes_rows(tmp_path) -> None:
+    """doctor --durable enters the durable lifespan offline; it must not run the delete pass."""
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    db = tmp_path / "memories.db"
+    store = _store(f"sqlite:///{db}")
+    project = tmp_path / "keep"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "keep"\nversion = "0.1.0"\n\n[tool.apx.deploy]\nname = "keep"\n'
+    )
+    (project / "agent.py").write_text(
+        "import sqlalchemy as sa\n"
+        "from apx_agent import LlmAgent, MemoryBackendConfig\n"
+        "from apx_agent._memory_lakebase import LakebaseMemoryStore\n"
+        "agent = LlmAgent(name='keep', tools=[])\n"
+        f"agent._apx_memory_store = LakebaseMemoryStore(engine=sa.create_engine({f'sqlite:///{db}'!r}), "
+        "embedding_fn=lambda t: [[1.0] for _ in t], embedding_dim=1, auto_create=False)\n"
+        "agent._apx_memory_config = MemoryBackendConfig(type='lakebase', retention={'default_days': 1})\n"
+        "agent._apx_memory_attached = True\n"
+    )
+    checks = {c.name: c for c in check_durable_readiness(project)}
+    assert checks["Startup"].status is Status.OK, checks["Startup"].detail
+    assert _ids(store) == set(ROWS)
 
 
 @pytest.mark.unit

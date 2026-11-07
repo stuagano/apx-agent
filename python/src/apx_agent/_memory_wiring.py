@@ -350,7 +350,7 @@ def attach_declared_memory(
 def purge_declared_memory(agent: Any) -> int | None:
     """Run the declared-retention delete pass on the agent's memory store (#1090).
 
-    Called once at app start (the ``create_app`` lifespan), not at
+    Called once at app start (the ``create_app`` and durable-server lifespans), not at
     ``finalize_agent`` — doctor and compile also finalize the agent and must
     never delete rows. Returns rows deleted, or ``None`` when no retention is
     declared or no store was built. A failed pass is logged and boot continues.

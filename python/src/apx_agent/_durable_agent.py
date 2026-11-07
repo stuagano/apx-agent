@@ -554,6 +554,17 @@ def compile_to_durable_agent_server(
         app.include_router(build_root_chat_router())
 
     _chain_lifespan(app, _mount_root_chat)
+    # Declared memory retention (#1090/#1101): one delete pass per app start, as
+    # create_app does. doctor --durable sets this False before it starts the lifespan.
+    app.state.apx_memory_purge = True
+
+    async def _purge_memory() -> None:
+        if app.state.apx_memory_purge:
+            from ._memory_wiring import purge_declared_memory
+
+            purge_declared_memory(agent)
+
+    _chain_lifespan(app, _purge_memory)
     dev_ui = _dev_ui_enabled(typed=typed_workflow)
     if dev_ui:
         # Registered now, ahead of any project mount at "/", so the shell's Chat tab loads.

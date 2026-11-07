@@ -325,12 +325,23 @@ memory={
 }
 ```
 
-- **Lakebase** runs one delete pass each time the app starts. A failed pass is
-  logged and the app still boots. An app that never restarts never purges, so
-  redeploy or restart on a schedule if you need tighter enforcement.
+- **Lakebase** runs one delete pass each time the app starts, on both the
+  `create_app` host and a `durable_agent_server` app. A failed pass is logged
+  and the app still boots. An app that never restarts never purges on its own;
+  run `apx-agent memory purge` on a schedule (for example a Databricks job)
+  for tighter enforcement.
 - **Managed** rejects `retention`: the platform states no retention, and apx
   does not invent one.
 - **In-memory** rejects `retention`: rows end with the process.
+
+`apx-agent memory purge`, run in the project directory, loads the agent's
+declared `memory=`, runs the same delete pass, and prints
+`{"deleted": <rows>, "table": "<memory table>"}`. It exits non-zero when no
+retention is declared or the delete fails. `--profile` picks the Databricks
+CLI profile.
+
+`apx-agent doctor` (including `doctor --durable`, which starts the app offline)
+never runs the delete pass.
 
 `apx-agent doctor` shows the declared retention as a `Memory retention` row
 (e.g. `scratch=7d, default=90d`). For a managed store it reports that the
