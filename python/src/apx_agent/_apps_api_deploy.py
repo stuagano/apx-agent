@@ -89,6 +89,12 @@ def deploy_apps_api(
     log(f"# Apps API deploy {app_name}" + (f" (space {space})" if space else " (dedicated)"))
 
     build_dir = _stage(cwd, config, agent, plan, log)
+    _stage_lock(build_dir, auto_build_wheel, log)
+    if space:
+        from ._app_space import reject_package_bypasses
+
+        # Before any workspace mutation; the upload excludes uv.lock, so only what ships is checked.
+        reject_package_bypasses(build_dir, lock=False)
     _ensure_memory_store(workspace, config, log)
     app = _ensure_app(workspace, app_name=app_name, space=space, description=config.description or None, log=log)
     _apply_grants(workspace, app_name=app_name, space=space, profile=profile, plan=plan, family_permissions=family_permissions, log=log, resources=resources)
@@ -96,7 +102,6 @@ def deploy_apps_api(
                            session_store=session_store, bundle_target=bundle_target, auto_experiment=auto_experiment,
                            env_pairs=env_pairs, app=app, log=log)
     _write_app_yaml(build_dir, config.deploy.entrypoint, env)
-    _stage_lock(build_dir, auto_build_wheel, log)
     _upload_and_rollout(build_dir, app_name=app_name, profile=profile, workspace=workspace, log=log)
     return _verify(
         cwd=cwd, app_name=app_name, profile=profile, module=module, bundle_target=bundle_target,

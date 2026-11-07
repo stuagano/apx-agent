@@ -4837,3 +4837,173 @@ def test_bundle_deploy_no_run_skips_registry_step(
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["registry_recorded"] is False
     assert seen["steps"] == []
+
+
+# --- #1069: App Space partner-powered AI and package-proxy preflight ------------------------------
+
+def _partner_ai_preflight(monkeypatch: pytest.MonkeyPatch, setting: Any) -> None:
+    """Run space preflight with the workspace partner-powered AI setting returning ``setting``."""
+    from databricks.sdk.service.settings import BooleanMessage, LlmProxyPartnerPoweredWorkspace
+
+    from apx_agent._app_space import validate_space_deployment
+
+    client = MagicMock()
+    client.workspace_client.config.host = _SPACE_WS
+    client.workspace_client.apps.get.return_value = SimpleNamespace(space="app-space")
+    client.workspace_client.apps.get_space.return_value = SimpleNamespace(
+        effective_user_api_scopes=[], user_api_scopes=[], resources=[])
+    read = client.workspace_client.settings.llm_proxy_partner_powered_workspace.get
+    if isinstance(setting, Exception):
+        read.side_effect = setting
+    else:
+        read.return_value = LlmProxyPartnerPoweredWorkspace(boolean_val=BooleanMessage(value=setting))
+    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda profile: client)
+    doc = {"resources": {"apps": {"a": {"space": "app-space", "config": {"env": []}}}}}
+    plan = SimpleNamespace(user_api_scopes=[], service_resources=[], operations=(), model=None, sub_agent_urls=())
+    try:
+        validate_space_deployment(doc, bundle_key="a", app_name="x", profile="p", plan=plan,
+                                  family_permissions=SimpleNamespace(can_use_groups=[], can_manage_groups=[]))
+    finally:
+        read.assert_called_once_with()
+
+
+def test_space_preflight_refuses_partner_ai_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(click.ClickException) as raised:
+        _partner_ai_preflight(monkeypatch, False)
+    assert raised.value.message == (
+        "Partner-powered AI (workspace): turned off; App Space requires partner-powered AI features at account "
+        "and workspace level. Ask a workspace admin to turn it on: https://docs.databricks.com/aws/en/databricks-ai/partner-powered")
+
+
+def test_space_preflight_passes_partner_ai_turned_on(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    _partner_ai_preflight(monkeypatch, True)
+    assert "Partner-powered AI" not in capsys.readouterr().err
+
+
+def test_space_preflight_warns_when_partner_ai_unreadable(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """The deploying identity may not be a workspace admin: unverified is a warning, not a refusal."""
+    from databricks.sdk.errors import PermissionDenied
+
+    _partner_ai_preflight(monkeypatch, PermissionDenied("admins only"))
+    assert ("# WARNING: Partner-powered AI (workspace): could not read the workspace setting (PermissionDenied); "
+            "enablement is unverified.") in capsys.readouterr().err
+
+
+_PROXY_BYPASS_PYPROJECT = '''\
+[project]
+name = "agent"
+dependencies = [
+    "mlflow>=3",
+    "apx-agent[agentbricks] @ git+https://github.com/stuagano/apx-agent.git@abc#subdirectory=python",
+    "tool @ https://artifacts.example.com/tool-1.0-py3-none-any.whl",
+]
+
+[tool.uv]
+extra-index-url = ["https://artifacts.example.com/simple", "https://pypi.org/simple"]
+
+[[tool.uv.index]]
+name = "corp"
+url = "https://artifacts.example.com/corp/simple"
+
+[tool.uv.sources]
+helper = { git = "https://github.com/example/helper" }
+apx-agent = { path = "./apx_agent-0.7.2-py3-none-any.whl" }
+'''
+
+_PUBLIC_LOCK = '''\
+[[package]]
+name = "mlflow"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/mlflow.tar.gz" }
+
+[[package]]
+name = "staged"
+source = { registry = "https://pypi-proxy.dev.databricks.com/simple" }
+'''
+
+_PROXY_BYPASS_LOCK = _PUBLIC_LOCK + '''
+[[package]]
+name = "helper"
+source = { git = "https://github.com/example/helper#abc" }
+
+[[package]]
+name = "corp"
+source = { registry = "https://artifacts.example.com/corp/simple" }
+'''
+
+_PROXY_BYPASS_LINES = [
+    "pyproject.toml [project].dependencies: apx-agent[agentbricks] @ git+https://github.com/stuagano/apx-agent.git@abc#subdirectory=python",
+    "pyproject.toml [project].dependencies: tool @ https://artifacts.example.com/tool-1.0-py3-none-any.whl",
+    "pyproject.toml [tool.uv].extra-index-url: https://artifacts.example.com/simple",
+    "pyproject.toml [[tool.uv.index]]: https://artifacts.example.com/corp/simple",
+    "pyproject.toml [tool.uv.sources].helper: {'git': 'https://github.com/example/helper'}",
+    "requirements.txt:1: --index-url https://artifacts.example.com/simple",
+    "requirements.txt:3: -e git+https://github.com/example/helper#egg=helper",
+    "uv.lock:12: source = { git = \"https://github.com/example/helper#abc\" }",
+    "uv.lock:16: source = { registry = \"https://artifacts.example.com/corp/simple\" }",
+]
+
+
+def _write_install_inputs(source: Path, *, bypass: bool) -> None:
+    source.mkdir(parents=True, exist_ok=True)
+    if bypass:
+        (source / "pyproject.toml").write_text(_PROXY_BYPASS_PYPROJECT)
+        (source / "requirements.txt").write_text(
+            "--index-url https://artifacts.example.com/simple\nrequests==2.32.0  # pinned\n"
+            "-e git+https://github.com/example/helper#egg=helper\n-f ./wheels\n")
+        (source / "uv.lock").write_text(_PROXY_BYPASS_LOCK)
+    else:
+        (source / "pyproject.toml").write_text(
+            '[project]\nname = "agent"\ndependencies = ["apx-agent[agentbricks]", "mlflow>=3"]\n\n'
+            '[tool.uv.sources]\napx-agent = { path = "./apx_agent-0.7.2-py3-none-any.whl" }\n')
+        (source / "requirements.txt").write_text("requests==2.32.0  # pinned\n-f ./wheels\n")
+        (source / "uv.lock").write_text(_PUBLIC_LOCK)
+
+
+def test_space_source_refuses_install_inputs_that_bypass_the_package_proxy(tmp_path: Path) -> None:
+    from apx_agent._app_space import validate_space_source
+
+    _write_install_inputs(tmp_path / ".build", bypass=True)
+    with pytest.raises(click.ClickException) as raised:
+        validate_space_source(tmp_path, {"source_code_path": ".build"})
+    assert raised.value.message == (
+        "App Space installs packages only through Databricks-managed proxies; custom package repositories aren't "
+        "supported. These staged install inputs bypass them:\n"
+        + "".join(f"  - {line}\n" for line in _PROXY_BYPASS_LINES)
+        + "See https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building")
+
+
+def test_space_source_accepts_pypi_and_bundled_wheel_install_inputs(tmp_path: Path) -> None:
+    """Public PyPI, a wheel shipped in the source, and a lock staging re-points at PyPI all pass."""
+    from apx_agent._app_space import validate_space_source
+    from apx_agent._doctor import space_package_bypasses
+
+    _write_install_inputs(tmp_path / ".build", bypass=False)
+    validate_space_source(tmp_path, {"source_code_path": ".build"})
+    assert space_package_bypasses(tmp_path / ".build", lock=True) == []
+
+
+def test_apps_api_space_package_check_skips_the_unshipped_lock(tmp_path: Path) -> None:
+    """The Apps API upload excludes uv.lock, so only what it ships is checked."""
+    from apx_agent._doctor import space_package_bypasses
+
+    _write_install_inputs(tmp_path, bypass=True)
+    assert space_package_bypasses(tmp_path, lock=False) == [
+        line for line in _PROXY_BYPASS_LINES if not line.startswith("uv.lock")]
+
+
+def test_default_durable_scaffold_outside_the_repo_trips_the_package_proxy_check(tmp_path: Path) -> None:
+    """#1069 finding: the scaffolded git+https apx-agent install bypasses the managed proxy.
+
+    Recorded, not allowed: whether a git install works inside a space is unverified (owner-gated).
+    """
+    from apx_agent import cli
+    from apx_agent._doctor import space_package_bypasses
+
+    target = tmp_path / "demo"
+    cli._scaffold_apps(target, "demo", force=True, catalog="", schema="", template="base",
+                       ci=None, runtime="durable_agent_server")
+    lines = space_package_bypasses(target, lock=True)
+    assert len(lines) == 1
+    assert lines[0].startswith(
+        "pyproject.toml [project].dependencies: apx-agent[eval,agentbricks] @ git+https://github.com/stuagano/apx-agent.git@")

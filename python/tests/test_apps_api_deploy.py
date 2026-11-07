@@ -201,7 +201,7 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr("apx_agent.cli._grant_experiment_to_sp", lambda *a, **k: state["calls"].append("grant") or True)
     monkeypatch.setattr("apx_agent.cli._grant_trace_uc_tables_to_sp", lambda *a, **k: True)
     monkeypatch.setattr("apx_agent.cli._ensure_apx_wheel", lambda cwd: None)
-    monkeypatch.setattr("apx_agent.cli._stage_build_manifest", lambda build, wheel: (build / "pyproject.toml").write_text("ok\n"))
+    monkeypatch.setattr("apx_agent.cli._stage_build_manifest", lambda build, wheel: (build / "pyproject.toml").write_text("[project]\nname = \"proof\"\n"))
     monkeypatch.setattr("apx_agent.cli._poll_app_ready", lambda *a, **k: state["calls"].append("poll") or {"url": "https://proof"})
     monkeypatch.setattr("apx_agent.cli._check_readyz", lambda *a, **k: state["calls"].append("readyz") or (True, {"durable": True}))
     monkeypatch.setattr("apx_agent.cli._check_native_execution", lambda *a, **k: state["calls"].append("smoke") or SimpleNamespace(completed=True, detail="ok"))
@@ -350,6 +350,15 @@ def test_dedicated_update_mask_and_no_liquid_read(harness: dict[str, Any]) -> No
     # Dedicated still creates the runtime store and does not read the raw app payload.
     assert "runtime" in harness["state"]["calls"]
     harness["ws"].api_client.do.assert_not_called()
+
+
+def test_space_refuses_proxy_bypassing_install_before_mutation(harness: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1069: App Space installs only through managed proxies; a git+ dependency stops the deploy first."""
+    monkeypatch.setattr("apx_agent.cli._stage_build_manifest", lambda build, wheel: (build / "pyproject.toml").write_text(
+        '[project]\nname = "proof"\ndependencies = ["apx-agent @ git+https://github.com/stuagano/apx-agent.git@abc"]\n'))
+    with pytest.raises(click.ClickException, match="bypass them:\n  - pyproject.toml \\[project\\].dependencies: apx-agent @ git\\+"):
+        _deploy(harness, _config(space="app-space"), LlmAgent(name="proof"))
+    assert harness["state"]["calls"] == []
 
 
 def test_space_runs_scope_check_and_liquid_read(harness: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
