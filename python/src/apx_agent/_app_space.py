@@ -20,6 +20,21 @@ def validate_space_env(env: list[dict[str, Any]]) -> None:
         raise click.ClickException("Remove local/legacy Runtime Store and package-index overrides for App Space deployment.")
 
 
+def reject_package_bypasses(source: Path, *, lock: bool) -> None:
+    """App Space installs packages only through Databricks-managed proxies; refuse inputs that bypass them."""
+    from ._doctor import _SPACE_DOCS, space_package_bypasses
+
+    try:
+        found = space_package_bypasses(source, lock=lock)
+    except ValueError as exc:
+        raise click.ClickException(f"Could not read the staged install inputs in {source}: {exc}") from exc
+    if found:
+        raise click.ClickException(
+            "App Space installs packages only through Databricks-managed proxies; custom package repositories "
+            "aren't supported. These staged install inputs bypass them:\n"
+            + "\n".join(f"  - {line}" for line in found) + f"\nSee {_SPACE_DOCS}")
+
+
 def validate_space_source(cwd: Path, app: dict[str, Any]) -> None:
     """Source configuration must not replace the validated bundle binding."""
     import yaml
@@ -28,6 +43,7 @@ def validate_space_source(cwd: Path, app: dict[str, Any]) -> None:
     source = app.get("source_code_path")
     if not isinstance(source, str) or "${" in source:
         raise click.ClickException("App Space requires a literal source_code_path.")
+    reject_package_bypasses(cwd / source, lock=True)
     for name in ("app.yaml", "app.yml"):
         path = cwd / source / name
         if path.exists():
@@ -118,6 +134,17 @@ def _reject_external_tools(plan: Any, workspace_client: Any) -> None:
             + "\n".join(lines) + f"\nSee {_SPACE_EGRESS_DOCS}")
 
 
+def _require_partner_ai(workspace_client: Any) -> None:
+    """Fail when the workspace setting reads off; an unreadable setting is a warning, not a failure."""
+    from ._doctor import Status, check_space_partner_ai
+
+    check = check_space_partner_ai(workspace_client)
+    if check.status is Status.FAIL:
+        raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
+    if check.status is Status.WARN:
+        click.echo(f"# WARNING: {check.name}: {check.detail}. {check.fix}", err=True)
+
+
 def validate_space_deployment(
     doc: dict[str, Any], *, bundle_key: str, app_name: str, profile: str | None,
     plan: Any, family_permissions: Any,
@@ -138,6 +165,7 @@ def validate_space_deployment(
 
     client = _AgentBricksApiClient(profile)
     _reject_external_tools(plan, client.workspace_client)
+    _require_partner_ai(client.workspace_client)
     inherited = client.workspace_client.apps.get_space(space)
     # Some workspaces leave effective_user_api_scopes unset; the space's declared
     # scopes are then what it grants. When populated, effective is authoritative.

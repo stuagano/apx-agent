@@ -159,6 +159,73 @@ def test_agent_image_checks_declaration_and_lock(tmp_path, dependency, version, 
     assert result.status is expected
 
 
+def _space_rows(tmp_path, monkeypatch, *, online: bool, setting=None, dependency: str = "apx-agent[agentbricks]"):
+    from apx_agent import AgentConfig
+    from databricks.sdk.service.settings import BooleanMessage, LlmProxyPartnerPoweredWorkspace
+
+    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "native"\ndependencies = ["{dependency}"]\n')
+    ws = MagicMock()
+    read = ws.settings.llm_proxy_partner_powered_workspace.get
+    if isinstance(setting, Exception):
+        read.side_effect = setting
+    else:
+        read.return_value = LlmProxyPartnerPoweredWorkspace(boolean_val=BooleanMessage(value=setting))
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda: ws)
+    config = AgentConfig(name="native", target="durable_agent_server", deploy={"space": "agent-space"})
+    rows = {c.name: c for c in doctor.check_space_prerequisites(tmp_path, config, online=online)}
+    assert read.call_count == (1 if online else 0)
+    return rows
+
+
+def test_doctor_space_rows_report_what_can_and_cannot_be_read(tmp_path, monkeypatch):
+    """#1069: workspace partner AI is read; the account setting and Cross-Geo are named as manual checks."""
+    rows = _space_rows(tmp_path, monkeypatch, online=True, setting=True)
+    assert [(name, row.status) for name, row in rows.items()] == [
+        ("Partner-powered AI (workspace)", Status.OK),
+        ("Partner-powered AI (account)", Status.SKIP),
+        ("Cross-Geo processing", Status.SKIP),
+        ("Space package proxy", Status.OK),
+    ]
+    assert "not checked automatically" in rows["Partner-powered AI (account)"].detail
+    assert "databricks-ai/partner-powered" in rows["Partner-powered AI (account)"].fix
+    assert "not checked automatically" in rows["Cross-Geo processing"].detail
+    assert rows["Cross-Geo processing"].fix.endswith("databricks-geos#cross-geo-processing")
+    offline = _space_rows(tmp_path, monkeypatch, online=False)
+    assert offline["Partner-powered AI (workspace)"].status is Status.SKIP
+
+
+@pytest.mark.parametrize("setting,status", [(False, Status.FAIL), (None, Status.WARN)])
+def test_doctor_space_partner_ai_off_or_unset(tmp_path, monkeypatch, setting, status):
+    assert _space_rows(tmp_path, monkeypatch, online=True, setting=setting)["Partner-powered AI (workspace)"].status is status
+
+
+def test_doctor_space_partner_ai_permission_error_is_a_warning(tmp_path, monkeypatch):
+    from databricks.sdk.errors import PermissionDenied
+
+    row = _space_rows(tmp_path, monkeypatch, online=True, setting=PermissionDenied("admins only"))["Partner-powered AI (workspace)"]
+    assert row.status is Status.WARN
+    assert "PermissionDenied" in row.detail
+
+
+def test_doctor_space_package_proxy_names_each_bypass(tmp_path, monkeypatch):
+    dependency = "apx-agent[agentbricks] @ git+https://github.com/stuagano/apx-agent.git@abc#subdirectory=python"
+    row = _space_rows(tmp_path, monkeypatch, online=False, dependency=dependency)["Space package proxy"]
+    assert row.status is Status.FAIL
+    assert row.detail == f"install inputs bypass the managed package proxies:\n  - pyproject.toml [project].dependencies: {dependency}"
+
+
+def test_doctor_run_checks_includes_space_rows(tmp_path, monkeypatch):
+    from apx_agent import AgentConfig
+    from apx_agent._project_gen import generate_project
+
+    generate_project(AgentConfig(name="native", target="durable_agent_server", deploy={"space": "agent-space"}), tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(doctor, "check_databricks_auth", lambda: Check("Databricks auth", Status.OK, "test"))
+    checks = {c.name: c for _, group in doctor.run_checks(tmp_path, online=False) for c in group}
+    assert checks["Space package proxy"].status is Status.OK
+    assert checks["Cross-Geo processing"].status is Status.SKIP
+
+
 def test_check_is_frozen_dataclass():
     c = Check(name="X", status=Status.OK, detail="fine", fix=None)
     assert c.name == "X"

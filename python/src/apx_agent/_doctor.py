@@ -241,6 +241,7 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
         image_check = check_agent_image(cwd, agent_config)
         if image_check is not None:
             project.append(image_check)
+        project.extend(check_space_prerequisites(cwd, agent_config, online=online and auth.status is Status.OK))
         project.extend(agent_rows)
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
@@ -1276,6 +1277,118 @@ def check_agent_image(cwd: Path, config: AgentConfig | None) -> Check | None:
     except (OSError, ValueError, KeyError, StopIteration):
         return Check(label, Status.FAIL, "Could not verify the image dependency manifest/lock", fix)
     return Check(label, Status.OK, "Image declares AgentKit and locks a compatible version; installed image has not been executed")
+
+
+_SPACE_DOCS = "https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building"
+_PARTNER_AI_DOCS = "https://docs.databricks.com/aws/en/databricks-ai/partner-powered"
+_CROSS_GEO_DOCS = "https://docs.databricks.com/aws/en/resources/databricks-geos#cross-geo-processing"
+_VCS_PREFIXES = ("git+", "hg+", "svn+", "bzr+")
+
+
+def check_space_partner_ai(ws: Any) -> Check:
+    """App Space needs partner-powered AI features on; read the workspace-level setting.
+
+    Reads ``SettingsAPI.llm_proxy_partner_powered_workspace.get()``. A read error is a
+    WARN: doctor and preflight run as the local identity, which may not be a workspace admin.
+    """
+    from databricks.sdk.errors.base import DatabricksError
+
+    label = "Partner-powered AI (workspace)"
+    try:
+        value = ws.settings.llm_proxy_partner_powered_workspace.get().boolean_val.value
+    except DatabricksError as exc:
+        return Check(label, Status.WARN, f"could not read the workspace setting ({type(exc).__name__}); enablement is unverified",
+                     f"Ask a workspace admin to confirm it is on: {_PARTNER_AI_DOCS}")
+    if value is True:
+        return Check(label, Status.OK, "turned on for this workspace")
+    if value is False:
+        return Check(label, Status.FAIL, "turned off; App Space requires partner-powered AI features at account and workspace level",
+                     f"Ask a workspace admin to turn it on: {_PARTNER_AI_DOCS}")
+    return Check(label, Status.WARN, "the workspace setting returned no value; enablement is unverified",
+                 f"Ask a workspace admin to confirm it is on: {_PARTNER_AI_DOCS}")
+
+
+def _off_proxy(url: str) -> bool:
+    """A VCS URL, or a URL to a host other than public PyPI. ``file:`` URLs and paths are local."""
+    return url.startswith(_VCS_PREFIXES) or urlparse(url).hostname not in {None, *_PUBLIC_PYPI_HOSTS}
+
+
+def space_package_bypasses(source: Path, *, lock: bool) -> list[str]:
+    """Install inputs in the uploaded ``source`` that would not go through the managed package proxies.
+
+    Scans ``pyproject.toml`` (dependencies and ``[tool.uv]`` indexes/sources), ``requirements.txt``
+    and, when the deploy ships it, ``uv.lock``. Raises ``ValueError`` on an unparseable manifest.
+    """
+    import tomllib
+
+    from packaging.requirements import Requirement
+
+    found: list[str] = []
+    pyproject = source / "pyproject.toml"
+    if pyproject.is_file():
+        doc = tomllib.loads(pyproject.read_text())
+        for raw in doc.get("project", {}).get("dependencies", []):
+            url = Requirement(raw).url
+            if url is not None and _off_proxy(url):
+                found.append(f"pyproject.toml [project].dependencies: {raw}")
+        uv = doc.get("tool", {}).get("uv", {})
+        for key in ("index-url", "extra-index-url", "find-links"):
+            values = uv.get(key, [])
+            found += [f"pyproject.toml [tool.uv].{key}: {value}"
+                      for value in ([values] if isinstance(values, str) else values) if _off_proxy(value)]
+        found += [f"pyproject.toml [[tool.uv.index]]: {index['url']}" for index in uv.get("index", []) if _off_proxy(index["url"])]
+        for name, spec in uv.get("sources", {}).items():
+            found += [f"pyproject.toml [tool.uv.sources].{name}: {entry}" for entry in (spec if isinstance(spec, list) else [spec])
+                      if "git" in entry or ("url" in entry and _off_proxy(entry["url"]))]
+    requirements = source / "requirements.txt"
+    if requirements.is_file():
+        for number, line in enumerate(requirements.read_text().splitlines(), 1):
+            text = re.sub(r"(^|\s)#.*", "", line).strip()  # pip comments need leading space; URL fragments stay
+            if any(_off_proxy(token) for token in re.split(r"[\s=]+", text)):
+                found.append(f"requirements.txt:{number}: {text}")
+    lockfile = source / "uv.lock"
+    if lock and lockfile.is_file():
+        for number, line in enumerate(lockfile.read_text().splitlines(), 1):
+            # Staging rewrites pypi-proxy hosts to public PyPI (cli._sanitize_uv_lock).
+            hosts = [host for host in _LOCK_URL_RE.findall(line)
+                     if host not in _PUBLIC_PYPI_HOSTS and not _PYPI_PROXY_HOST_RE.fullmatch(host)]
+            if hosts or 'git = "' in line:
+                found.append(f"uv.lock:{number}: {line.strip()[:200]}")
+    return found
+
+
+def check_space_prerequisites(cwd: Path, config: AgentConfig | None, *, online: bool) -> list[Check]:
+    """App Space Beta workspace prerequisites apx can read, and the ones it cannot (#1069)."""
+    if config is None or config.deploy is None or config.deploy.space is None:
+        return []
+    if online:
+        try:
+            from ._defaults import _make_workspace_client
+
+            checks = [check_space_partner_ai(_make_workspace_client())]
+        except Exception as exc:  # reported, not raised: doctor keeps going
+            checks = [Check("Partner-powered AI (workspace)", Status.WARN, f"could not create a workspace client ({type(exc).__name__})",
+                            "Authenticate to the intended workspace and rerun doctor.")]
+    else:
+        checks = [Check("Partner-powered AI (workspace)", Status.SKIP, "offline; the workspace setting was not read",
+                        "Run doctor online with the intended workspace profile.")]
+    checks += [
+        Check("Partner-powered AI (account)", Status.SKIP,
+              "not checked automatically: AccountSettingsAPI.llm_proxy_partner_powered_account needs account-admin credentials",
+              f"Confirm it is on in the account console: {_PARTNER_AI_DOCS}"),
+        Check("Cross-Geo processing", Status.SKIP, "not checked automatically: the Databricks SDK exposes no setting to read it",
+              f"If your workspace's Geo requires it, confirm Cross-Geo processing is on: {_CROSS_GEO_DOCS}"),
+    ]
+    label, fix = "Space package proxy", f"Install from PyPI through the managed proxy; custom package repositories aren't supported: {_SPACE_DOCS}"
+    try:
+        found = space_package_bypasses(cwd, lock=config.deploy.backend != "apps_api")
+    except (OSError, ValueError) as exc:
+        checks.append(Check(label, Status.FAIL, f"could not read install inputs ({exc})", fix))
+    else:
+        detail = "install inputs bypass the managed package proxies:\n" + "\n".join(f"  - {line}" for line in found)
+        checks.append(Check(label, Status.FAIL, detail, fix) if found
+                      else Check(label, Status.OK, "install inputs resolve through PyPI; no VCS, direct-URL or custom-index entries"))
+    return checks
 
 
 def check_memory_backend(cwd: Path, *, auth_ok: bool) -> Check | None:

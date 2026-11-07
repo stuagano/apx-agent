@@ -367,6 +367,20 @@ through a UC HTTP connection. Preflight cannot see a plain `@tool` function that
 opens its own HTTP client; such a tool deploys and then fails when it reaches
 outside the workspace, so route external calls through `http_tool` instead.
 
+Preflight also reads the workspace's partner-powered AI features setting
+(`settings.llm_proxy_partner_powered_workspace`) and refuses when it is off; if
+the deploying identity cannot read it, deploy warns and continues. The
+account-level setting and Cross-Geo processing cannot be read with workspace
+credentials, so `apx-agent doctor` lists them as manual checks. Spaces install
+packages only through Databricks-managed proxies, so preflight refuses staged
+install inputs that bypass them, listing each one: VCS (`git+`) or direct-URL
+dependencies, `[tool.uv]` indexes or sources on hosts other than public PyPI,
+and the same in `requirements.txt` and the shipped `uv.lock`. A wheel shipped
+inside the source passes. A default `apx-agent agents scaffold` project outside
+the framework repo installs apx-agent from
+`git+https://github.com/...`, which this check refuses
+([#1069](https://github.com/stuagano/apx-agent/issues/1069)).
+
 Deployment first applies the bundle, verifies the app's space and LIQUID compute,
 then uses the Agent Bricks SDK to create or reuse its managed Runtime Store.
 The SDK checks app and service-principal ownership. For generated projects APX
