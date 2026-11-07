@@ -16605,7 +16605,7 @@ def memory_extract_cmd(
     from ._models import MemoryExtractionPolicy  # noqa: PLC0415
 
     memory = None if config is None else config.memory
-    if memory is None or (memory.extraction is None and not memory.strategies):
+    if config is None or memory is None or (memory.extraction is None and not memory.strategies):
         raise click.ClickException(
             "Session extraction is off. Enable extraction in the agent's memory= setting "
             "enabled=true, or declare strategies, under a type='managed' memory store."
