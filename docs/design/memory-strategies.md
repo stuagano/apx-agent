@@ -199,11 +199,38 @@ Shipped in the #1088 implementation PR. Each item follows the code.
   entry must have content; otherwise it raises before any write. Re-extracting
   a session deletes that session's earlier summary (listed by `session_id`)
   before writing the new one.
-- **Lakebase / in-memory summary upsert** finds the session's summary by
-  `metadata.session_id` among the principal's `summary` rows.
+- **Lakebase / in-memory session records** are found by `metadata.session_id`
+  among the principal's rows in each strategy namespace (see the #1089
+  replacement note below).
 - **Lakebase / in-memory extractor** is `extract_agent_session(agent, model=,
   transcript=, principal_id=, session_id=)`. It builds the model with the same
-  factory the compiled graph uses, and takes the transcript as a string until
-  #1089 decides where it comes from. The CLI path stays managed only.
+  factory the compiled graph uses and takes the transcript as a string; #1089
+  supplies it from graph state. The CLI path stays managed only.
+- **Transcript source (#1089): the turn's graph state, i.e. the checkpointer's
+  thread — not the ConversationStore.** `memory.extract_every_n_turns` adds an
+  `after_agent` middleware beside auto-recall in `_compile_llm_agent`; after the
+  turn, `state["messages"]` is the whole session on every default deploy path:
+  no `session=` gets the auto-injected `InMemorySaver`, `session.type="lakebase"`
+  gets a `PostgresSaver`, and a ConversationStore-only session replays its
+  history into the same state. The ConversationStore is absent when no
+  `session=` is declared (the default) and does not record the user, so it would
+  need a second code path and a principal lookup. The middleware already has the
+  request principal (resolved like auto-recall) and the run's `thread_id` as the
+  session id. A turn with no `thread_id` is skipped.
+- **Trigger:** due when the session's user-message count is a multiple of N
+  (derived from the transcript, so no counter to persist). The rendered
+  transcript is queued on a one-worker background executor; the turn returns at
+  once. Failures are retried (3 attempts) and logged, never raised into the turn.
+- **Re-extraction replaces the session's records in every strategy namespace,
+  not just `summary`.** Each trigger re-reads the whole session, so appending
+  `facts` / `preferences` would duplicate them every N turns. New records are
+  added and read back first, then the session's earlier ones are deleted, so a
+  re-delivered or part-failed run never loses or duplicates records.
+- **Not built:** an idle trigger (needs a per-session timer that survives
+  restarts and replicas: a durable last-activity record plus a sweeper), and
+  Lakebase extraction on `apx-agent memory extract` (the CLI cannot reach an
+  in-process session, and reading a `PostgresSaver` thread needs the
+  principal-scoped thread key). `extract_every_n_turns` is refused on managed
+  memory, which keeps the CLI path.
 - **No new `doctor` row.** `doctor` already checks the agent's model endpoint;
   it does not check it as the app service principal (gap, see the PR).

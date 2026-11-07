@@ -392,7 +392,16 @@ memory={
 - **Retention** is per namespace, so `"retention": {"namespaces": {"summary": 30}}`
   covers a strategy. `episodic` is not a strategy.
 
-When extraction runs automatically is not decided yet (#1089); call it yourself.
+**Automatic extraction (Lakebase / in-memory).** Add `"extract_every_n_turns": 3`
+to run the declared strategies after every third user turn of a session. The
+transcript is the session as the agent sees it after the turn (the checkpointer's
+thread), so the turn needs a `session_id` / `thread_id`. Extraction runs on a
+background worker and never blocks or fails the turn: a failure is retried up to
+three times and logged. Each run reads the whole session and replaces that
+session's earlier records, so a retry or the next trigger never duplicates them.
+Turns after the last multiple of N are not extracted until the next trigger;
+there is no idle trigger. Managed memory refuses the field; run
+`apx-agent memory extract` instead.
 
 ### Migrating Lakebase memory
 
