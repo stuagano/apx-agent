@@ -241,6 +241,9 @@ class MemoryBackendConfig(_BackendConfig):
     recall_namespaces: list[str] | None = None
     """Extra namespaces auto-recall searches, added to the default set
     (``namespace_default`` plus the declared strategies except ``summary``)."""
+    extract_every_n_turns: int | None = None
+    """Run the declared strategies off the request path after every N user turns of
+    a session (#1089). Lakebase / in-memory only. Absent means no automatic extraction."""
 
     def recalled_namespaces(self) -> list[str]:
         """The namespaces auto-recall searches each turn, in order."""
@@ -265,6 +268,16 @@ class MemoryBackendConfig(_BackendConfig):
         if self.recall_namespaces is not None:
             if not self.recall_namespaces or any(not n.strip() for n in self.recall_namespaces):
                 raise ValueError("memory.recall_namespaces must list non-blank namespaces")
+        if self.extract_every_n_turns is not None:
+            if self.extract_every_n_turns < 1:
+                raise ValueError("memory.extract_every_n_turns must be 1 or more")
+            if not strategies:
+                raise ValueError("memory.extract_every_n_turns needs memory.strategies: there is nothing to extract")
+            if self.type == "managed":
+                raise ValueError(
+                    "memory.extract_every_n_turns is for type='lakebase' or 'inmemory'; managed "
+                    "extraction runs with `apx-agent memory extract`."
+                )
         return self
 
     @model_validator(mode="after")

@@ -4,20 +4,29 @@ Each declared strategy (``facts``, ``preferences``, ``summary``) is a namespace.
 Its instructions can be replaced with ``memory.strategy_prompts``; its output
 contract cannot. The Lakebase / in-memory extractor asks the agent's own model
 once per strategy, parses every answer before writing anything, and writes each
-record under the session's user principal. ``summary`` is one record per
-session, replaced on re-extraction.
+record under the session's user principal. Re-extracting a session replaces
+that session's records in every strategy namespace, so ``summary`` stays one
+record per session and a re-delivered extraction never duplicates.
 
-When extraction runs, and where the transcript comes from, is #1089.
+When it runs (#1089): ``memory.extract_every_n_turns`` schedules
+:func:`schedule_session_extraction` from the compiled graph after every N user
+turns. The transcript is the turn's graph state (what the checkpointer holds),
+and the extraction runs on a background worker, retried, off the request path.
 """
 from __future__ import annotations
 
 import json
 import logging
+import time
+from collections.abc import Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from ._memory import Memory, MemoryFilter, MemoryStore
 
 if TYPE_CHECKING:
+    from langchain_core.messages import BaseMessage
+
     from ._agents import LlmAgent
     from ._models import MemoryBackendConfig, MemoryStrategy
 
@@ -118,37 +127,29 @@ def extract_strategy_memories(
 
     written: list[Memory] = []
     for strategy, contents in planned.items():
-        metadata = {"session_id": session_id, "strategy": strategy}
-        if strategy == "summary":
-            written.append(_upsert_summary(store, contents[0], principal_id, session_id))
-            continue
-        written += store.add_batch([
-            {"principal_id": principal_id, "namespace": strategy, "content": c, "metadata": metadata}
+        # Each run reads the whole session, so its records replace the session's
+        # earlier ones. Add first, read back, then delete: a failure part-way leaves
+        # a duplicate the next delivery removes, never a lost record.
+        stale = [
+            m for m in store.list(MemoryFilter(principal_id=principal_id, namespace=strategy, limit=10_000))
+            if m.metadata.get("session_id") == session_id
+        ]
+        added = store.add_batch([
+            {"principal_id": principal_id, "namespace": strategy, "content": c,
+             "metadata": {"session_id": session_id, "strategy": strategy}}
             for c in contents
         ])
+        for row, content in zip(added, contents, strict=True):
+            back = store.get(row.id)
+            if back is None or back.content != content or back.principal_id != principal_id:
+                raise ValueError(f"memory {row.id!r} ({strategy}) did not read back as written")
+        for old in stale:
+            store.delete(old.id)
+        written += added
     logger.info(
         "Extracted %d memories for session %s across strategies %s", len(written), session_id, strategies,
     )
     return written
-
-
-def _upsert_summary(store: MemoryStore, content: str, principal_id: str, session_id: str) -> Memory:
-    """One summary per session: replace the previous one instead of adding a second."""
-    existing = [
-        m for m in store.list(MemoryFilter(principal_id=principal_id, namespace="summary", limit=10_000))
-        if m.metadata.get("session_id") == session_id
-    ]
-    for stale in existing[1:]:
-        store.delete(stale.id)
-    if existing:
-        updated = store.update(existing[0].id, {"content": content})
-        if updated is None:
-            raise ValueError(f"summary {existing[0].id!r} vanished during re-extraction")
-        return updated
-    return store.add({
-        "principal_id": principal_id, "namespace": "summary", "content": content,
-        "metadata": {"session_id": session_id, "strategy": "summary"},
-    })
 
 
 def extract_agent_session(
@@ -178,12 +179,82 @@ def extract_agent_session(
     )
 
 
+# One worker: extractions run one at a time, so two triggers for the same session
+# never interleave their add / delete passes.
+_EXTRACTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="apx-memory-extract")
+_ATTEMPTS = 3
+_RETRY_DELAY_S = 2.0
+_ROLES = {"human": "user", "ai": "assistant"}
+
+
+def session_transcript(messages: Sequence[BaseMessage]) -> str:
+    """User and assistant text of a session, one ``role: text`` line per message."""
+    return "\n".join(
+        f"{_ROLES[m.type]}: {m.text}" for m in messages if m.type in _ROLES and m.text.strip()
+    )
+
+
+def schedule_session_extraction(
+    agent: LlmAgent,
+    *,
+    model: str,
+    messages: Sequence[BaseMessage],
+    principal_id: str,
+    session_id: str,
+) -> Future[list[Memory] | None] | None:
+    """Queue extraction when the session has just reached a multiple of
+    ``memory.extract_every_n_turns`` user turns. Returns at once; ``None`` when not due.
+
+    ``messages`` is the session so far (the graph state after the turn). The
+    extraction runs on a background worker as the app service principal and
+    writes under ``principal_id``; a failure is retried and logged, never raised
+    into the turn.
+    """
+    memory = getattr(agent, "_apx_memory_config", None)
+    every = memory.extract_every_n_turns if memory is not None else None
+    turns = sum(1 for m in messages if m.type == "human")
+    if every is None or turns == 0 or turns % every:
+        return None
+    return _EXTRACTOR.submit(
+        _deliver, agent, model=model, transcript=session_transcript(messages),
+        principal_id=principal_id, session_id=session_id,
+    )
+
+
+def _deliver(
+    agent: LlmAgent, *, model: str, transcript: str, principal_id: str, session_id: str,
+) -> list[Memory] | None:
+    """At-least-once: retry a failed extraction. Re-delivery is safe because each
+    run replaces the session's records. Returns ``None`` after the last failure."""
+    failure: Exception | None = None
+    for attempt in range(1, _ATTEMPTS + 1):
+        try:
+            return extract_agent_session(
+                agent, model=model, transcript=transcript, principal_id=principal_id, session_id=session_id,
+            )
+        except Exception as exc:  # the turn already returned; nothing to raise into
+            failure = exc
+            logger.warning(
+                "memory extraction for session %s failed (attempt %d/%d): %s",
+                session_id, attempt, _ATTEMPTS, exc,
+            )
+        if attempt < _ATTEMPTS:
+            time.sleep(_RETRY_DELAY_S * attempt)
+    logger.error(
+        "memory extraction for session %s gave up after %d attempts; no memories written",
+        session_id, _ATTEMPTS, exc_info=failure,
+    )
+    return None
+
+
 __all__ = [
     "BUILTIN_PROMPTS",
     "OUTPUT_CONTRACTS",
     "extract_agent_session",
     "extract_strategy_memories",
     "parse_strategy_output",
+    "schedule_session_extraction",
+    "session_transcript",
     "strategy_prompt",
     "strategy_system_prompt",
 ]
