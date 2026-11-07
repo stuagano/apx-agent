@@ -124,7 +124,7 @@ def test_memory_strategies_example_is_the_real_config() -> None:
     listed = re.search(r'"recall_namespaces": (\[.*?\])', section)
     assert listed is not None
     opted = cfg.model_copy(update={"recall_namespaces": ast.literal_eval(listed.group(1))})
-    assert "summary" in opted.recalled_namespaces()
+    assert opted.recalled_namespaces() == ["default", "facts", "preferences", "summary"]
     retention = re.search(r'"retention": (\{.*?\}\})', section)
     assert retention is not None
     MemoryBackendConfig(type="lakebase", retention=ast.literal_eval(retention.group(1)))

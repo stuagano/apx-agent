@@ -64,7 +64,13 @@ def test_recalled_namespaces_default_and_override() -> None:
     assert MemoryBackendConfig().recalled_namespaces() == ["default"]
     assert MemoryBackendConfig(strategies=ALL).recalled_namespaces() == ["default", "facts", "preferences"]
     listed = MemoryBackendConfig(strategies=ALL, recall_namespaces=["facts", "summary"])
-    assert listed.recalled_namespaces() == ["facts", "summary"]
+    assert listed.recalled_namespaces() == ["default", "facts", "preferences", "summary"]
+
+
+def test_recall_namespaces_adds_to_the_default_set() -> None:
+    """Listing ``summary`` adds it; the default namespace and strategies stay recalled."""
+    cfg = MemoryBackendConfig(strategies=ALL, recall_namespaces=["summary"])
+    assert cfg.recalled_namespaces() == ["default", "facts", "preferences", "summary"]
     with pytest.raises(ValidationError, match="non-blank"):
         MemoryBackendConfig(recall_namespaces=[" "])
 
@@ -328,6 +334,6 @@ def test_recall_merges_namespaces_caps_at_k_and_skips_summary() -> None:
     assert block.splitlines()[1:] == ["- fact", "- pref"]  # merged by score, top k
     assert "recap" not in block
 
-    listed = _cfg(recall_k=2, recall_namespaces=["facts", "preferences", "default", "summary"])
+    listed = _cfg(recall_k=2, recall_namespaces=["summary"])
     block = assemble_memory_context(store, opts, namespaces=listed.recalled_namespaces())
     assert block.splitlines()[1:] == ["- recap", "- fact"]

@@ -115,14 +115,14 @@ def test_fixture_session_lands_in_each_namespace_and_is_recalled(model: _Model) 
 
 @pytest.mark.unit
 def test_summary_is_recalled_only_when_listed(model: _Model) -> None:
-    agent = _agent(recall_namespaces=["facts", "summary"])
+    agent = _agent(recall_namespaces=["summary"])
     extract_agent_session(
         agent, model="agent-endpoint", transcript=FIXTURE_SESSION,
         principal_id="user:alice", session_id="session-1",
     )
     system = _system_of_turn(agent, model, "user:alice", "recap?")
-    expect(system, label="recalled prompt block").contains(f"- {SUMMARY}").contains(f"- {FACT}").verify()
-    assert PREFERENCE not in system
+    expect(system, label="recalled prompt block").contains(f"- {SUMMARY}").contains(f"- {FACT}") \
+        .contains(f"- {PREFERENCE}").verify()
 
 
 @pytest.mark.unit
