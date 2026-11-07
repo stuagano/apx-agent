@@ -207,11 +207,27 @@ def test_doctor_space_partner_ai_permission_error_is_a_warning(tmp_path, monkeyp
     assert "PermissionDenied" in row.detail
 
 
+_APX_GIT = "apx-agent[agentbricks] @ git+https://github.com/stuagano/apx-agent.git@abc#subdirectory=python"
+
+
 def test_doctor_space_package_proxy_names_each_bypass(tmp_path, monkeypatch):
-    dependency = "apx-agent[agentbricks] @ git+https://github.com/stuagano/apx-agent.git@abc#subdirectory=python"
-    row = _space_rows(tmp_path, monkeypatch, online=False, dependency=dependency)["Space package proxy"]
+    """Deploy rewrites only the apx-agent git dependency (#1069); every other bypass is still named."""
+    other = "helper @ git+https://github.com/example/helper.git@main"
+    (tmp_path / "requirements.txt").write_text("--index-url https://pkgs.example.com/simple\n")
+    row = _space_rows(tmp_path, monkeypatch, online=False, dependency=f'{_APX_GIT}", "{other}')["Space package proxy"]
     assert row.status is Status.FAIL
-    assert row.detail == f"install inputs bypass the managed package proxies:\n  - pyproject.toml [project].dependencies: {dependency}"
+    assert row.detail == ("install inputs bypass the managed package proxies:\n"
+                          f"  - pyproject.toml [project].dependencies: {other}\n"
+                          "  - requirements.txt:1: --index-url https://pkgs.example.com/simple")
+
+
+def test_doctor_space_package_proxy_passes_a_default_scaffold(tmp_path, monkeypatch):
+    """#1069: deploy builds the apx-agent git dependency into a wheel and regenerates uv.lock, so neither FAILs."""
+    (tmp_path / "uv.lock").write_text('[[package]]\nname = "apx-agent"\n'
+                                      'source = { git = "https://github.com/stuagano/apx-agent.git?subdirectory=python&rev=abc" }\n')
+    row = _space_rows(tmp_path, monkeypatch, online=False, dependency=_APX_GIT)["Space package proxy"]
+    assert row.status is Status.OK
+    assert row.detail == "install inputs resolve through PyPI; no VCS, direct-URL or custom-index entries"
 
 
 def test_doctor_run_checks_includes_space_rows(tmp_path, monkeypatch):

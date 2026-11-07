@@ -543,6 +543,26 @@ def test_git_wheel_rewrite_joins_an_existing_uv_sources_table(tmp_path: Path, mo
     assert doc["tool"]["uv"]["sources"] == {"apx-agent": {"path": f"./{wheel.name}"}, "helper": {"path": "./helper"}}
 
 
+def test_stage_build_manifest_replaces_a_stale_wheel_with_the_same_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """hatch-vcs dirty versions carry only a date, so a same-named wheel in .build/ may hold stale code."""
+    from apx_agent.cli import _stage_build_manifest
+
+    build = tmp_path / ".build"
+    build.mkdir()
+    wheel = tmp_path / "apx_agent-0.7.4.dev1+g1234.d20261107-py3-none-any.whl"
+    wheel.write_bytes(b"new wheel bytes")
+    (build / wheel.name).write_bytes(b"stale")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "proof"\nversion = "0"\n'
+        'dependencies = ["apx-agent @ git+https://github.com/stuagano/apx-agent.git@abc#subdirectory=python"]\n'
+    )
+    monkeypatch.setattr("apx_agent.cli.subprocess.run", lambda cmd, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr("apx_agent.cli._sanitize_uv_lock", lambda path: False)
+    monkeypatch.setattr("apx_agent.cli._warn_unknown_lock_mirrors", lambda path: None)
+    _stage_build_manifest(build, wheel)
+    assert (build / wheel.name).read_bytes() == b"new wheel bytes"
+
+
 def test_uv_lock_unsets_frozen_only_for_that_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apx_agent.cli import _stage_build_manifest
 
