@@ -11,7 +11,8 @@ or whitespace.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from ._example import ExampleStore, FindSimilarOptions
@@ -74,6 +75,7 @@ def assemble_memory_context(
     opts: RecallOptions | Mapping[str, Any],
     header: str = DEFAULT_MEMORY_HEADER,
     min_score: float = 0.0,
+    namespaces: Sequence[str] | None = None,
 ) -> str:
     """Render the top-k memory recall as a markdown block.
 
@@ -89,12 +91,19 @@ def assemble_memory_context(
         header: Markdown header prepended to the block when non-empty.
             Defaults to ``"### Relevant memories"``.
         min_score: Relevance threshold; results scoring below it are dropped.
+        namespaces: When given, recall once per namespace (``opts.namespace``
+            is replaced), merge by score, and keep the top ``opts.k``.
 
     Returns:
         A markdown block (header + bullets) or ``""`` when no memories.
     """
     recall_opts = _coerce_recall_options(opts)
-    results = [r for r in store.recall(recall_opts) if r.score >= min_score]
+    if namespaces is None:
+        recalled = store.recall(recall_opts)
+    else:
+        recalled = [r for ns in namespaces for r in store.recall(replace(recall_opts, namespace=ns))]
+        recalled = sorted(recalled, key=lambda r: r.score, reverse=True)[: recall_opts.k]
+    results = [r for r in recalled if r.score >= min_score]
     if len(results) == 0:
         return ""
     lines = [f"- {r.memory.content}" for r in results]

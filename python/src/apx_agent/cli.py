@@ -16591,8 +16591,10 @@ def memory_extract_cmd(
     """Distill one completed managed session into declared managed memory.
 
     Requires ``memory={"type": "managed", ...}`` on the agent with
-    extraction enabled in that ``memory`` setting, and a managed session
-    store. The session is not deleted or rewritten. A service failure exits
+    extraction enabled (or ``strategies`` declared) in that ``memory`` setting,
+    and a managed session store. With strategies, each one is a dry-run
+    extraction and apx writes the entries at ``/memories/<strategy>/``.
+    The session is not deleted or rewritten. A service failure exits
     non-zero and does not report the extraction as written.
     """
     from databricks.sdk import WorkspaceClient  # noqa: PLC0415
@@ -16600,15 +16602,20 @@ def memory_extract_cmd(
     from ._memory_extract import extraction_payload, extract_declared_session  # noqa: PLC0415
 
     config = _effective_config(Path.cwd())  # memory= is declared on the agent (3d)
-    if config is None or config.memory is None or config.memory.extraction is None:
+    from ._models import MemoryExtractionPolicy  # noqa: PLC0415
+
+    memory = None if config is None else config.memory
+    if memory is None or (memory.extraction is None and not memory.strategies):
         raise click.ClickException(
             "Session extraction is off. Enable extraction in the agent's memory= setting "
-            "enabled=true under a type='managed' memory store."
+            "enabled=true, or declare strategies, under a type='managed' memory store."
         )
     if instructions is not None:
         if not instructions.strip():
             raise click.ClickException("--instructions must be non-blank text")
-        config.memory.extraction.instructions = instructions
+        if memory.extraction is None:
+            memory.extraction = MemoryExtractionPolicy(enabled=True)
+        memory.extraction.instructions = instructions
     ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
     result = extract_declared_session(
         ws, config, session_id=session_id, actor_id=actor_id, dry_run=dry_run,
