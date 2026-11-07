@@ -265,7 +265,7 @@ def remote_agent_tool(
         async def _delegate(message: str, headers: Dependencies.Headers) -> str:
             return await _send(message, headers)
 
-        tool = build_tool(_delegate, name=name, description=description)
+        tool = build_tool(_delegate, name=name, description=description, remote_url=base_url)
         tool.__apx_sub_agent_url__ = base_url  # type: ignore[attr-defined]
         return tool
 
@@ -276,6 +276,6 @@ def remote_agent_tool(
         return await _send(_json.dumps(args, ensure_ascii=False), headers)
 
     _stamp_structured_signature(_structured_delegate, input_schema)
-    tool = build_tool(_structured_delegate, name=name, description=description)
+    tool = build_tool(_structured_delegate, name=name, description=description, remote_url=base_url)
     tool.__apx_sub_agent_url__ = base_url  # type: ignore[attr-defined]
     return tool

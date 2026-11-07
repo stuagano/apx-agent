@@ -64,7 +64,8 @@ class OperationAuthorization:
     # the App's own service principal — the only credential an App container
     # actually holds unless the name matches it.
     principal: str | None = None
-    # URL the tool calls directly from the app process (a remote MCP server).
+    # URL the app process calls directly: a remote MCP server, a remote
+    # sub-agent, or the spec an ``openapi_tool`` fetches at startup.
     remote_url: str | None = None
 
 
@@ -113,6 +114,8 @@ class AuthorizationPlan:
     # ``user_api_scopes`` includes ``ai-gateway`` when this is set; the model is
     # not a ``serving_endpoint`` resource.
     model: str | None = None
+    # Every ``http(s)`` ``sub_agents`` URL, called from the app process.
+    sub_agent_urls: tuple[str, ...] = ()
 
 
 _USER_DEPENDENCIES = frozenset({_get_user_client, _get_sql_runner})
@@ -437,10 +440,13 @@ def compile_authorization_plan(
         service_resources.update(operation.resources)
 
     app_dependencies: set[AppDependency] = set()
+    sub_agent_urls: set[str] = set()
     for raw in _iter_sub_agents(agent):
         resolved = resolve_env_var(raw)
         if not resolved:
             continue
+        if resolved.startswith(("http://", "https://")):
+            sub_agent_urls.add(resolved)
         if _is_apps_https_url(resolved):
             app_dependencies.add(AppDependency(resolved))
             continue
@@ -480,6 +486,7 @@ def compile_authorization_plan(
         )),
         agent_identity=agent_identity,
         model=model,
+        sub_agent_urls=tuple(sorted(sub_agent_urls)),
     )
 
 
