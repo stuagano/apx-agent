@@ -501,6 +501,48 @@ def test_doctor_routes_all_four_rows(tmp_path: Path, deploy: str, bundle: str | 
     assert needle in deploy_check.detail
 
 
+@pytest.mark.parametrize(("space", "built"), [("app-space", True), (None, False)])
+def test_stage_lock_builds_the_git_wheel_only_for_a_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, space: str | None, built: bool,
+) -> None:
+    """#1069: only an App Space deploy swaps the scaffold's git URL for a bundled wheel."""
+    from apx_agent._apps_api_deploy import _stage_lock
+
+    wheel = tmp_path / "apx_agent-1-py3-none-any.whl"
+    staged: list[Path | None] = []
+    monkeypatch.setattr("apx_agent.cli._ensure_apx_wheel", lambda cwd: None)
+    monkeypatch.setattr("apx_agent.cli._build_git_apx_wheel", lambda cwd: wheel)
+    monkeypatch.setattr("apx_agent.cli._stage_build_manifest", lambda build, w: (
+        staged.append(w), (build / "pyproject.toml").write_text("[project]\n")))
+    (tmp_path / ".build").mkdir()
+    _stage_lock(tmp_path / ".build", True, lambda line: None, space=space)
+    assert staged == [wheel if built else None]
+
+
+def test_git_wheel_rewrite_joins_an_existing_uv_sources_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bundled wheel source joins a declared [tool.uv.sources] table instead of a second header."""
+    import tomllib
+
+    from apx_agent.cli import _stage_build_manifest
+
+    build = tmp_path / ".build"
+    build.mkdir()
+    wheel = tmp_path / "apx_agent-1-py3-none-any.whl"
+    wheel.write_bytes(b"wheel")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "proof"\nversion = "0"\n'
+        'dependencies = ["apx-agent[eval] @ git+https://github.com/stuagano/apx-agent.git@abc#subdirectory=python"]\n'
+        '[tool.uv.sources]\nhelper = { path = "./helper" }\n'
+    )
+    monkeypatch.setattr("apx_agent.cli.subprocess.run", lambda cmd, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr("apx_agent.cli._sanitize_uv_lock", lambda path: False)
+    monkeypatch.setattr("apx_agent.cli._warn_unknown_lock_mirrors", lambda path: None)
+    _stage_build_manifest(build, wheel)
+    doc = tomllib.loads((build / "pyproject.toml").read_text())
+    assert doc["project"]["dependencies"] == ["apx-agent[eval]"]
+    assert doc["tool"]["uv"]["sources"] == {"apx-agent": {"path": f"./{wheel.name}"}, "helper": {"path": "./helper"}}
+
+
 def test_uv_lock_unsets_frozen_only_for_that_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apx_agent.cli import _stage_build_manifest
 
