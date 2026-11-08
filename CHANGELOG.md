@@ -6,7 +6,7 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
-## [0.7.3] — UNRELEASED
+## [0.7.3] — 2026-11-08
 
 Headline: declared agent memory does real work (context-window trim,
 auto-recall, typed extraction strategies, per-namespace retention), and App
@@ -26,7 +26,9 @@ package-proxy limits.
   partner-powered AI turned off, and on install inputs that bypass the managed
   package proxy (`git+` or direct-URL deps, non-PyPI `[tool.uv]` indexes, URL
   lines in requirements.txt, VCS entries in `uv.lock`). Scaffolded projects
-  that pin apx-agent by `git+https` hit this (see Changed).
+  that pin apx-agent by `git+https` would hit this, but App Space deploys now
+  build and ship the pinned apx-agent as a wheel automatically (#1110), so
+  those projects pass without any change (see Changed).
 - **UC function calls reject unknown parameter names and non-boolean BOOLEAN
   values** before any SQL runs; before, they were ignored or coerced by
   truthiness (see Fixed).
@@ -53,13 +55,14 @@ package-proxy limits.
 
 - **App Space deploy refuses tools that call outside the workspace (#1068, #1080).** App Space Beta has no public internet egress. Remote MCP tools, `remote_agent_tool`, `sub_agents` URLs and URL-loaded `openapi_tool` specs are checked; a host passes only if it is the workspace or a Databricks App that `apps.get` resolves in this workspace. Plain `@tool` HTTP clients cannot be checked.
 - **App Space preflight checks partner-powered AI and the package proxy (#1069).** Deploy refuses when the workspace partner-powered AI setting is off (an unreadable setting warns), and lists each install input that bypasses the Databricks-managed package proxies. `apx doctor` reports both, plus manual rows for the account-level setting and Cross-Geo processing.
-- **`agents scaffold` ships the apx wheel for App Space deploys** instead of a `git+https` dependency, so a scaffolded project passes the package-proxy check. *(Pending: lands with the scaffold PR.)*
+- **`agents scaffold` ships the apx wheel for App Space deploys** instead of a `git+https` dependency, so a scaffolded project passes the package-proxy check (#1110).
 - **One remote-hop OBO header rule (#1050).** `remote_agent_tool`, bound remote leaves and the dev-UI hub invoke route build their headers with one internal helper, `_obo.remote_hop_headers` (forwarded user token, `Authorization: Bearer`, `X-Forwarded-Host`). No public API change.
 - **An Apps API deploy prints the fix for a warning prerequisite**, as the other deploy paths already did. The six copies of deploy's check-and-stop loop are now one helper (#1051).
 - **A project's OKF bundle grounds a live-introspected DataAgent.** With `ws=` (e.g. `DataTemplate.build`), introspection still supplies the tables. The project's `.apx/okf` bundle for the same catalog.schema now also adds its descriptions, glossary and golden queries; previously they were dropped on this path. An explicit `tables=` override still skips the bundle. Without `ws=`, the bundle was already the default.
 
 ### Fixed
 
+- **`doctor` no longer flags the scaffold's apx-agent git dependency for App Space projects; staged wheels are always refreshed (#1111).**
 - **UC function inputs are validated.** Unknown parameter names and non-boolean BOOLEAN values are rejected before SQL. Dev UI diagnostics show only an explicit allow-list of settings and never invoke `_demo_mode` callbacks.
 - **Invalid native input is rejected before persistence.** `/api/invocations` answers 422 and does not reserve the invocation id.
 - **Apps slash-redirects no longer point at localhost.** Same-host `Location` headers are now path-only.
