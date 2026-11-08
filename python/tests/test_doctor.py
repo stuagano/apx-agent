@@ -182,6 +182,7 @@ def test_doctor_space_rows_report_what_can_and_cannot_be_read(tmp_path, monkeypa
     rows = _space_rows(tmp_path, monkeypatch, online=True, setting=True)
     assert [(name, row.status) for name, row in rows.items()] == [
         ("Partner-powered AI (workspace)", Status.OK),
+        ("App Space role", Status.SKIP),
         ("Partner-powered AI (account)", Status.SKIP),
         ("Cross-Geo processing", Status.SKIP),
         ("Space package proxy", Status.OK),
@@ -190,8 +191,10 @@ def test_doctor_space_rows_report_what_can_and_cannot_be_read(tmp_path, monkeypa
     assert "databricks-ai/partner-powered" in rows["Partner-powered AI (account)"].fix
     assert "not checked automatically" in rows["Cross-Geo processing"].detail
     assert rows["Cross-Geo processing"].fix.endswith("databricks-geos#cross-geo-processing")
+    assert rows["App Space role"].detail == "the agent did not import; its user-identity tools and hops were not inspected"
     offline = _space_rows(tmp_path, monkeypatch, online=False)
     assert offline["Partner-powered AI (workspace)"].status is Status.SKIP
+    assert offline["App Space role"].status is Status.SKIP
 
 
 @pytest.mark.parametrize("setting,status", [(False, Status.FAIL), (None, Status.WARN)])
@@ -205,6 +208,81 @@ def test_doctor_space_partner_ai_permission_error_is_a_warning(tmp_path, monkeyp
     row = _space_rows(tmp_path, monkeypatch, online=True, setting=PermissionDenied("admins only"))["Partner-powered AI (workspace)"]
     assert row.status is Status.WARN
     assert "PermissionDenied" in row.detail
+
+
+def _space_role_row(monkeypatch, read, *, user_tool: bool):
+    """#1070: doctor's App Space role row for a real agent, with ``get_space`` returning or raising ``read``."""
+    from apx_agent import Agent, AgentConfig, tool
+
+    @tool(execution="user")
+    def lookup() -> str:
+        return "ok"
+
+    @tool(execution="service")
+    def background() -> str:
+        return "ok"
+
+    ws = MagicMock()
+    if isinstance(read, Exception):
+        ws.apps.get_space.side_effect = read
+    else:
+        ws.apps.get_space.return_value = read
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda: ws)
+    agent = Agent(tools=[background, lookup] if user_tool else [background],
+                  sub_agents=["https://peer.cloud.databricksapps.com"] if user_tool else [])
+    config = AgentConfig(name="native", target="durable_agent_server", deploy={"space": "agent-space"})
+    rows = {c.name: c for c in doctor.check_space_prerequisites(Path("/nonexistent"), config, online=True, agent=agent)}
+    ws.apps.get_space.assert_called_once_with("agent-space")
+    return rows["App Space role"]
+
+
+def test_doctor_space_role_refuses_user_tools_and_hops(monkeypatch):
+    from databricks.sdk.service.apps import Space
+
+    row = _space_role_row(monkeypatch, Space(name="agent-space", assume_group_id="analysts"), user_tool=True)
+    assert row.status is Status.FAIL
+    assert row.detail == ("'agent-space' requires the role of group 'analysts', so these would run with the role's "
+                          "permissions, not the calling user's (OBO):\n"
+                          "  - tool 'lookup'\n"
+                          "  - sub-agent 'https://peer.cloud.databricksapps.com'")
+
+
+@pytest.mark.parametrize("group,user_tool", [("analysts", False), (None, True)])
+def test_doctor_space_role_passes_without_a_conflict(monkeypatch, group, user_tool):
+    from databricks.sdk.service.apps import Space
+
+    assert _space_role_row(monkeypatch, Space(name="agent-space", assume_group_id=group), user_tool=user_tool).status is Status.OK
+
+
+def test_doctor_space_role_plan_error_keeps_the_partner_ai_row(monkeypatch):
+    """A plan that does not compile fails the role row only; the partner-AI result survives."""
+    from apx_agent import Agent, AgentConfig, require_user_api_scopes, tool
+    from databricks.sdk.service.settings import BooleanMessage, LlmProxyPartnerPoweredWorkspace
+
+    @tool(execution="service")
+    def background() -> str:
+        return "ok"
+
+    require_user_api_scopes(background, ["sql"])
+    ws = MagicMock()
+    ws.settings.llm_proxy_partner_powered_workspace.get.return_value = LlmProxyPartnerPoweredWorkspace(
+        boolean_val=BooleanMessage(value=False))
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda: ws)
+    config = AgentConfig(name="native", target="durable_agent_server", deploy={"space": "agent-space"})
+    rows = {c.name: c for c in doctor.check_space_prerequisites(
+        Path("/nonexistent"), config, online=True, agent=Agent(tools=[background]))}
+    assert rows["Partner-powered AI (workspace)"].status is Status.FAIL
+    assert rows["App Space role"].status is Status.FAIL
+    assert rows["App Space role"].detail.startswith("the authorization plan did not compile: Tool 'background'")
+    ws.apps.get_space.assert_not_called()
+
+
+def test_doctor_space_role_unreadable_is_a_warning(monkeypatch):
+    from databricks.sdk.errors import PermissionDenied
+
+    row = _space_role_row(monkeypatch, PermissionDenied("space admins only"), user_tool=True)
+    assert row.status is Status.WARN
+    assert row.detail == "could not read 'agent-space' (PermissionDenied); whether it requires a role is unverified"
 
 
 _APX_GIT = "apx-agent[agentbricks] @ git+https://github.com/stuagano/apx-agent.git@abc#subdirectory=python"

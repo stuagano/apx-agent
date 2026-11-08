@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 from pathlib import Path
 
@@ -145,10 +146,18 @@ def _require_partner_ai(workspace_client: Any) -> None:
         click.echo(f"# WARNING: {check.name}: {check.detail}. {check.fix}", err=True)
 
 
+@dataclass(frozen=True)
+class SpacePreflight:
+    """The SDK client a space deploy continues with, and the group whose role the space assumes (None: no role)."""
+
+    client: Any
+    role: str | None
+
+
 def validate_space_deployment(
     doc: dict[str, Any], *, bundle_key: str, app_name: str, profile: str | None,
     plan: Any, family_permissions: Any,
-) -> Any:
+) -> SpacePreflight:
     """Read inherited policy; never migrate an app or widen a space's grants."""
     space = validate_space_bundle(doc, bundle_key=bundle_key)
     if not profile:
@@ -167,6 +176,13 @@ def validate_space_deployment(
     _reject_external_tools(plan, client.workspace_client)
     _require_partner_ai(client.workspace_client)
     inherited = client.workspace_client.apps.get_space(space)
+    # #1070: a role-required space acts with the role, so user-identity tools and hops are refused.
+    from ._apps_authorization import _obo_callers
+    from ._doctor import Status, check_space_role
+
+    role = check_space_role(space, inherited.assume_group_id, _obo_callers(plan))
+    if role.status is Status.FAIL:
+        raise click.ClickException(f"{role.name}: {role.detail}\n{role.fix}")
     # Some workspaces leave effective_user_api_scopes unset; the space's declared
     # scopes are then what it grants. When populated, effective is authoritative.
     granted = inherited.effective_user_api_scopes
@@ -188,7 +204,7 @@ def validate_space_deployment(
         existing = None
     if existing is not None and existing.space != space:
         raise click.ClickException("Refusing to move an existing app into a different App Space.")
-    return client
+    return SpacePreflight(client, inherited.assume_group_id)
 
 
 def runtime_store_env(

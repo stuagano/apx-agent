@@ -241,7 +241,7 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
         image_check = check_agent_image(cwd, agent_config)
         if image_check is not None:
             project.append(image_check)
-        project.extend(check_space_prerequisites(cwd, agent_config, online=online and auth.status is Status.OK))
+        project.extend(check_space_prerequisites(cwd, agent_config, online=online and auth.status is Status.OK, agent=agent))
         project.extend(agent_rows)
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
@@ -1308,6 +1308,45 @@ def check_space_partner_ai(ws: Any) -> Check:
                  f"Ask a workspace admin to confirm it is on: {_PARTNER_AI_DOCS}")
 
 
+def check_space_role(space: str, group: str | None, callers: list[str]) -> Check:
+    """A role-required App Space acts with the role, not the calling user: refuse user-identity tools and hops (#1070).
+
+    ``group`` is ``Space.assume_group_id``; ``callers`` are the plan's tools and
+    sub-agent hops that run as the user (per-hop OBO).
+    """
+    label = "App Space role"
+    if group is None:
+        return Check(label, Status.OK, f"{space!r} does not require a role; user-identity tools and hops run as the calling user (OBO)")
+    if not callers:
+        return Check(label, Status.OK, f"{space!r} requires the role of group {group!r}; no tools or sub-agent hops run as the user")
+    return Check(label, Status.FAIL,
+                 f"{space!r} requires the role of group {group!r}, so these would run with the role's permissions, "
+                 "not the calling user's (OBO):\n" + "\n".join(f"  - {caller}" for caller in callers),
+                 f"Deploy to an App Space that does not require a role, or run these as the app service principal: {_SPACE_DOCS}")
+
+
+def _space_role_row(ws: Any, space: str, agent: BaseAgent | None, config: AgentConfig) -> Check:
+    """Read the space's role; an unreadable space is a WARN, like the partner-powered AI setting."""
+    from databricks.sdk.errors.base import DatabricksError
+
+    from ._apps_authorization import _obo_callers, compile_authorization_plan
+
+    label = "App Space role"
+    if agent is None:
+        return Check(label, Status.SKIP, "the agent did not import; its user-identity tools and hops were not inspected",
+                     "Fix the agent import and rerun doctor.")
+    try:
+        plan = compile_authorization_plan(agent, model=config.model, agent_identity=config.identity)
+    except ValueError as exc:
+        return Check(label, Status.FAIL, f"the authorization plan did not compile: {exc}")
+    try:
+        group = ws.apps.get_space(space).assume_group_id
+    except DatabricksError as exc:
+        return Check(label, Status.WARN, f"could not read {space!r} ({type(exc).__name__}); whether it requires a role is unverified",
+                     f"Ask the space admin whether the space requires a role: {_SPACE_DOCS}")
+    return check_space_role(space, group, _obo_callers(plan))
+
+
 def _off_proxy(url: str) -> bool:
     """A VCS URL, or a URL to a host other than public PyPI. ``file:`` URLs and paths are local."""
     return url.startswith(_VCS_PREFIXES) or urlparse(url).hostname not in {None, *_PUBLIC_PYPI_HOSTS}
@@ -1357,21 +1396,25 @@ def space_package_bypasses(source: Path, *, lock: bool) -> list[str]:
     return found
 
 
-def check_space_prerequisites(cwd: Path, config: AgentConfig | None, *, online: bool) -> list[Check]:
-    """App Space Beta workspace prerequisites apx can read, and the ones it cannot (#1069)."""
+def check_space_prerequisites(
+    cwd: Path, config: AgentConfig | None, *, online: bool, agent: BaseAgent | None = None,
+) -> list[Check]:
+    """App Space Beta workspace prerequisites apx can read, and the ones it cannot (#1069, #1070)."""
     if config is None or config.deploy is None or config.deploy.space is None:
         return []
+    labels = ("Partner-powered AI (workspace)", "App Space role")
     if online:
         try:
             from ._defaults import _make_workspace_client
 
-            checks = [check_space_partner_ai(_make_workspace_client())]
+            ws = _make_workspace_client()
+            checks = [check_space_partner_ai(ws), _space_role_row(ws, config.deploy.space, agent, config)]
         except Exception as exc:  # reported, not raised: doctor keeps going
-            checks = [Check("Partner-powered AI (workspace)", Status.WARN, f"could not create a workspace client ({type(exc).__name__})",
-                            "Authenticate to the intended workspace and rerun doctor.")]
+            checks = [Check(label, Status.WARN, f"could not create a workspace client ({type(exc).__name__})",
+                            "Authenticate to the intended workspace and rerun doctor.") for label in labels]
     else:
-        checks = [Check("Partner-powered AI (workspace)", Status.SKIP, "offline; the workspace setting was not read",
-                        "Run doctor online with the intended workspace profile.")]
+        checks = [Check(label, Status.SKIP, "offline; the workspace was not read",
+                        "Run doctor online with the intended workspace profile.") for label in labels]
     checks += [
         Check("Partner-powered AI (account)", Status.SKIP,
               "not checked automatically: AccountSettingsAPI.llm_proxy_partner_powered_account needs account-admin credentials",

@@ -6,6 +6,14 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **App Space deploys refuse user-identity tools in a role-required space
+  (#1070).** A space that requires a role (`assume_group_id`) runs its apps with
+  that role's permissions, not the calling user's. Deploy now fails, naming each
+  tool and sub-agent hop that would run as the user (OBO). A role space with only
+  service-principal tools deploys, and the authorization summary names the role.
+  `apx-agent doctor` adds an `App Space role` row, which warns when the space
+  can't be read. See `docs/design/a2a-trust-model.md`.
+
 ## [0.7.3] — 2026-11-08
 
 Headline: declared agent memory does real work (context-window trim,

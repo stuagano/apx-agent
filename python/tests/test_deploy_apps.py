@@ -4652,7 +4652,7 @@ def _space_preflight(monkeypatch: pytest.MonkeyPatch, plan: Any) -> Any:
         "env": [{"name": "APX_APPS_HOST", "value": "agentbricks"}]}}}}}
     perms = SimpleNamespace(can_use_groups=[], can_manage_groups=[])
     assert validate_space_deployment(doc, bundle_key="a", app_name="x", profile="p", plan=plan,
-                                     family_permissions=perms) is client
+                                     family_permissions=perms).client is client
     return client
 
 
@@ -4839,6 +4839,58 @@ def test_bundle_deploy_no_run_skips_registry_step(
     assert seen["steps"] == []
 
 
+# --- #1070: a role-required App Space refuses tools and hops that run as the user ----------------
+
+def _role_preflight(monkeypatch: pytest.MonkeyPatch, group: str | None, *, user_tool: bool, sub_agent: bool) -> Any:
+    """Run space preflight against a space whose ``assume_group_id`` is ``group``."""
+    from databricks.sdk.errors import NotFound
+    from databricks.sdk.service.apps import App, Space
+
+    from apx_agent._app_space import validate_space_deployment
+    from apx_agent._apps_authorization import OperationAuthorization
+
+    def get_app(name: str) -> App:
+        if name == "peer":
+            return App(name="peer", url=_SPACE_PEER)
+        raise NotFound(f"no app {name}")
+
+    client = MagicMock()
+    client.workspace_client.config.host = _SPACE_WS
+    client.workspace_client.apps.get_space.return_value = Space(name="app-space", assume_group_id=group)
+    client.workspace_client.apps.get.side_effect = get_app
+    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda profile: client)
+    service = OperationAuthorization(name="background", execution_identity="service", requires_request_context=False,
+                                     resources=(), user_api_scopes=())
+    lookup = OperationAuthorization(name="lookup", execution_identity="user", requires_request_context=True,
+                                    resources=(), user_api_scopes=())
+    plan = SimpleNamespace(user_api_scopes=[], service_resources=[], model=None,
+                           operations=(service, lookup) if user_tool else (service,),
+                           sub_agent_urls=(_SPACE_PEER,) if sub_agent else ())
+    doc = {"resources": {"apps": {"a": {"space": "app-space", "config": {"env": []}}}}}
+    return validate_space_deployment(doc, bundle_key="a", app_name="x", profile="p", plan=plan,
+                                     family_permissions=SimpleNamespace(can_use_groups=[], can_manage_groups=[]))
+
+
+def test_space_preflight_refuses_user_tools_and_hops_when_the_space_requires_a_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(click.ClickException) as raised:
+        _role_preflight(monkeypatch, "analysts", user_tool=True, sub_agent=True)
+    assert raised.value.message == (
+        "App Space role: 'app-space' requires the role of group 'analysts', so these would run with the role's "
+        "permissions, not the calling user's (OBO):\n"
+        "  - tool 'lookup'\n"
+        f"  - sub-agent '{_SPACE_PEER}'\n"
+        "Deploy to an App Space that does not require a role, or run these as the app service principal: "
+        "https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building")
+
+
+def test_space_preflight_passes_a_role_space_without_user_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _role_preflight(monkeypatch, "analysts", user_tool=False, sub_agent=False).role == "analysts"
+
+
+def test_space_preflight_passes_user_tools_when_the_space_has_no_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _role_preflight(monkeypatch, None, user_tool=True, sub_agent=True).role is None
+
+
 # --- #1069: App Space partner-powered AI and package-proxy preflight ------------------------------
 
 def _partner_ai_preflight(monkeypatch: pytest.MonkeyPatch, setting: Any) -> None:
@@ -4851,7 +4903,7 @@ def _partner_ai_preflight(monkeypatch: pytest.MonkeyPatch, setting: Any) -> None
     client.workspace_client.config.host = _SPACE_WS
     client.workspace_client.apps.get.return_value = SimpleNamespace(space="app-space")
     client.workspace_client.apps.get_space.return_value = SimpleNamespace(
-        effective_user_api_scopes=[], user_api_scopes=[], resources=[])
+        effective_user_api_scopes=[], user_api_scopes=[], resources=[], assume_group_id=None)
     read = client.workspace_client.settings.llm_proxy_partner_powered_workspace.get
     if isinstance(setting, Exception):
         read.side_effect = setting
