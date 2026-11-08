@@ -6,7 +6,7 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
-## [0.7.3] — UNRELEASED
+## [0.7.3] — 2026-11-08
 
 Headline: declared agent memory does real work (context-window trim,
 auto-recall, typed extraction strategies, per-namespace retention), and App
