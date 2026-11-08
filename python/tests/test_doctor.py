@@ -254,6 +254,29 @@ def test_doctor_space_role_passes_without_a_conflict(monkeypatch, group, user_to
     assert _space_role_row(monkeypatch, Space(name="agent-space", assume_group_id=group), user_tool=user_tool).status is Status.OK
 
 
+def test_doctor_space_role_plan_error_keeps_the_partner_ai_row(monkeypatch):
+    """A plan that does not compile fails the role row only; the partner-AI result survives."""
+    from apx_agent import Agent, AgentConfig, require_user_api_scopes, tool
+    from databricks.sdk.service.settings import BooleanMessage, LlmProxyPartnerPoweredWorkspace
+
+    @tool(execution="service")
+    def background() -> str:
+        return "ok"
+
+    require_user_api_scopes(background, ["sql"])
+    ws = MagicMock()
+    ws.settings.llm_proxy_partner_powered_workspace.get.return_value = LlmProxyPartnerPoweredWorkspace(
+        boolean_val=BooleanMessage(value=False))
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda: ws)
+    config = AgentConfig(name="native", target="durable_agent_server", deploy={"space": "agent-space"})
+    rows = {c.name: c for c in doctor.check_space_prerequisites(
+        Path("/nonexistent"), config, online=True, agent=Agent(tools=[background]))}
+    assert rows["Partner-powered AI (workspace)"].status is Status.FAIL
+    assert rows["App Space role"].status is Status.FAIL
+    assert rows["App Space role"].detail.startswith("the authorization plan did not compile: Tool 'background'")
+    ws.apps.get_space.assert_not_called()
+
+
 def test_doctor_space_role_unreadable_is_a_warning(monkeypatch):
     from databricks.sdk.errors import PermissionDenied
 

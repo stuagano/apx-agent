@@ -1335,8 +1335,10 @@ def _space_role_row(ws: Any, space: str, agent: BaseAgent | None, config: AgentC
     if agent is None:
         return Check(label, Status.SKIP, "the agent did not import; its user-identity tools and hops were not inspected",
                      "Fix the agent import and rerun doctor.")
-    # A plan that does not compile raises ValueError; the agent.toml row reports it as FAIL.
-    plan = compile_authorization_plan(agent, model=config.model, agent_identity=config.identity)
+    try:
+        plan = compile_authorization_plan(agent, model=config.model, agent_identity=config.identity)
+    except ValueError as exc:
+        return Check(label, Status.FAIL, f"the authorization plan did not compile: {exc}")
     try:
         group = ws.apps.get_space(space).assume_group_id
     except DatabricksError as exc:
