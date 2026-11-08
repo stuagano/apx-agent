@@ -10193,16 +10193,20 @@ def _deploy_apps_impl(
         if "space" in override:
             raise click.ClickException("Declare App Space in the root app configuration, not a target override.")
     if space_name is not None:
+        from dataclasses import replace
+
         from ._app_space import validate_space_deployment, RUNTIME_STORE_VARIABLES
         if any(_bundle_var_value(vars, variable) is not None for variable in RUNTIME_STORE_VARIABLES.values()):
             raise click.ClickException("Runtime Store variables are SDK-owned; omit explicit overrides.")
         target_app = doc.get("targets", {}).get(bundle_target, {}).get("resources", {}).get("apps", {}).get(bundle_key, {})
         if target_app.get("name", resolved_app_name) != app_name or "${" in app_name:
             raise click.ClickException("App Space requires an explicit app name matching the selected bundle target.")
-        space_client = validate_space_deployment(
+        preflight = validate_space_deployment(
             doc, bundle_key=bundle_key, app_name=app_name, profile=profile,
             plan=authorization_plan, family_permissions=family_permissions,
         )
+        space_client = preflight.client
+        authorization_plan = replace(authorization_plan, space_role=preflight.role)
         auto_experiment = False
         log("# App Space: using inherited authorization and preconfigured tracing")
 

@@ -116,6 +116,9 @@ class AuthorizationPlan:
     model: str | None = None
     # Every ``http(s)`` ``sub_agents`` URL, called from the app process.
     sub_agent_urls: tuple[str, ...] = ()
+    # Group whose role a role-required App Space assumes for user authorization,
+    # read at deploy preflight. None when the deploy is not to such a space.
+    space_role: str | None = None
 
 
 _USER_DEPENDENCIES = frozenset({_get_user_client, _get_sql_runner})
@@ -193,6 +196,12 @@ def _agent_principal_lines(identity: str | None) -> list[str]:
     ]
 
 
+def _obo_callers(plan: AuthorizationPlan) -> list[str]:
+    """Tools and sub-agent hops that run as the calling user (per-hop OBO)."""
+    return [*(f"tool {op.name!r}" for op in plan.operations if op.execution_identity == "user"),
+            *(f"sub-agent {url!r}" for url in plan.sub_agent_urls)]
+
+
 def authorization_summary_lines(
     plan: AuthorizationPlan,
     resolved_dependencies: list[ResolvedAppDependency],
@@ -266,6 +275,14 @@ def authorization_summary_lines(
             ],
         ),
     )
+    if plan.space_role is not None:
+        # #1070: a role-required space acts with the role, not the user; deploy
+        # refuses user-identity tools and hops there, so none remain here.
+        sections += ((
+            "App Space role:",
+            [f"group {plan.space_role!r}: users act with this role's permissions; "
+             "no tools or sub-agent hops run as the user"],
+        ),)
     lines: list[str] = []
     for heading, entries in sections:
         lines.append(heading)

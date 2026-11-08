@@ -90,6 +90,29 @@ boundary and is degenerate under a shared SP. It stays a note on an OK check, no
 a failure — a topology apx-agent can't fully see from a local project must not
 redden doctor.
 
+## Role-required App Spaces: refused (#1070)
+
+An App Space can require a role (`Space.assume_group_id` in the Databricks SDK).
+Apps in such a space act with **that group's** permissions, not the signed-in
+user's: user tokens assume the role instead of the usual OBO downscoping. That is
+a third identity path, and it breaks the invariant above. A tool declared to run
+as the user, or a sub-agent hop that forwards the user's token, would silently
+run with the role's grants.
+
+**Decision: refuse, don't warn.** The App Space preflight
+(`_app_space.py`, `validate_space_deployment`) reads `assume_group_id` from the
+space it already reads for scopes. When a role is set and the plan has any tool
+with `execution_identity == "user"` or any `http(s)` sub-agent hop, deploy fails
+with an `App Space role:` error that names each one. A role-required space with
+only service-principal tools deploys, and the authorization summary adds an
+`App Space role:` section naming the group. A space without a role is unchanged.
+
+`apx-agent doctor` reports the same thing as the `App Space role` row
+(`check_space_prerequisites`, `_doctor.py`): FAIL on the conflict, OK otherwise,
+and WARN when it can't read the space, the same way it handles the
+partner-powered AI setting. Offline, or when the agent doesn't import, the row is
+a SKIP.
+
 ## Out of scope
 
 Platform-side SP semantics. This doc is about apx-agent not assuming a trust
