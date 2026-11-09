@@ -1,6 +1,6 @@
-"""genie_tool / genie_query_tool — wrap a Genie space as a registered apx-agent tool.
+"""genie_tool / genie_query_tool / genie_one_tool — Genie as a registered apx-agent tool.
 
-Two factories for two use cases:
+Three factories:
 
   * ``genie_tool(space_id)`` — returns the Genie space's *text answer* as a string.
     Use when the agent needs a narrative response ("what's our top-selling region?").
@@ -9,12 +9,17 @@ Two factories for two use cases:
     ``sql_results`` rows, ``generated_sql``, and ``genie_response``. Use when
     downstream agents need to operate on the data, not just read the answer.
 
+  * ``genie_one_tool()`` — asks Genie One (the workspace-wide Genie, not one space)
+    through its managed MCP and returns the finished answer as one tool call.
+
 Annotations are intentionally NOT deferred (no ``from __future__ import annotations``)
 so that ``UserClientDependency`` is resolved eagerly at function definition time and
 ``get_type_hints()`` in ``_inspection.py`` sees the real Annotated[...] type, not a string.
 """
 
+import asyncio
 import logging
+import time
 from typing import Any
 
 from databricks.sdk.errors.base import DatabricksError
@@ -216,3 +221,98 @@ def genie_query_tool(
     from ._tool_factory import build_tool
     return build_tool(_query_genie, name=name, description=_desc,
                       resources=[ResourceSpec("genie_space", space_id)])
+
+
+# ---------------------------------------------------------------------------
+# Factory 3: Genie One (workspace-wide), via its managed MCP
+# ---------------------------------------------------------------------------
+
+GENIE_ONE_MCP_PATH = "/api/2.0/mcp/genie"
+
+
+async def _genie_one_state(ws: Any, question: str, *, wait_s: float, poll_s: float) -> dict[str, Any]:
+    """``genie_ask``, then ``genie_poll_response`` until done or ``wait_s``; the last state.
+
+    Genie One's MCP answers a polling client asynchronously: ``genie_ask`` returns
+    ``in_progress`` plus IDs, and the answer arrives through ``genie_poll_response``
+    (typically 40-260s). Owning the loop here keeps it out of the model's step budget.
+    """
+    from .mcp_consume import _open_session
+
+    url = f"{ws.config.host.rstrip('/')}{GENIE_ONE_MCP_PATH}"
+    deadline = time.monotonic() + wait_s
+    async with _open_session(url, ws.config.authenticate(), "http") as session:
+        state = (await session.call_tool("genie_ask", {"question": question})).structuredContent or {}
+        while state.get("status") == "in_progress" and time.monotonic() < deadline:
+            await asyncio.sleep(poll_s)
+            ids = {"conversation_id": state["conversation_id"], "response_id": state["response_id"]}
+            state = (await session.call_tool("genie_poll_response", ids)).structuredContent or {}
+    return state
+
+
+def _genie_one_text(state: dict[str, Any], wait_s: float) -> str:
+    link = state.get("deep_link")
+    answer = state.get("final_answer")
+    if state.get("status") == "completed" and isinstance(answer, str) and answer.strip():
+        return f"{answer.strip()}\n\n[Explore in Databricks]({link})" if link else answer.strip()
+    follow = f" Follow the answer here: [Explore in Databricks]({link})." if link else ""
+    return f"Genie One did not finish within {wait_s:.0f}s (status: {state.get('status')}).{follow}"
+
+
+def genie_one_tool(
+    *,
+    name: str = "ask_genie_one",
+    description: str | None = None,
+    wait_s: float = 150.0,
+    poll_s: float = 4.0,
+) -> Any:
+    """Return a tool that asks Genie One a question and returns its finished answer.
+
+    Genie One is the workspace-wide Genie: it consults the Genie spaces and data
+    the calling user can see. Its managed MCP (``/api/2.0/mcp/genie``) is
+    asynchronous, so exposing its raw tools makes the model poll and can exhaust
+    an agent's step budget. This tool owns the ask-and-poll loop and makes it
+    one call, run as the calling user (OBO). It declares the ``genie`` user scope.
+
+    Answers typically take 40-260s. Past ``wait_s`` the tool returns Genie's deep
+    link so the user can follow the answer in the Databricks UI.
+
+    Args:
+        name: Tool name shown to the LLM. Defaults to ``"ask_genie_one"``.
+        description: Tool description shown to the LLM.
+        wait_s: Longest time to wait for an answer before returning the link.
+        poll_s: Seconds between polls (Genie One asks for 2-5s).
+
+    Example::
+
+        from apx_agent import Agent, genie_one_tool
+
+        agent = Agent(tools=[genie_one_tool()])
+    """
+    if wait_s <= 0 or poll_s <= 0:
+        raise ValueError("genie_one_tool() requires positive wait_s and poll_s")
+
+    from ._defaults import UserClientDependency
+    from ._resources import require_user_api_scopes
+    from ._tool_factory import build_tool
+
+    _desc = description or (
+        "Ask Genie One a natural-language question about the data and business context "
+        "in this workspace (definitions, balances, trends, what changed). Returns a grounded "
+        "answer with a link to explore it in Databricks. Answers can take a few minutes."
+    )
+
+    async def _ask_genie_one(question: str, ws: UserClientDependency) -> str:  # type: ignore[valid-type]
+        """Placeholder doc — overwritten below."""
+        try:
+            state = await _genie_one_state(ws, question, wait_s=wait_s, poll_s=poll_s)
+        except Exception as e:
+            hint = reauthorize_hint(e)
+            if hint is not None:
+                raise ToolError(str(hint)) from e
+            raise ToolError(f"Genie One question failed: {e}") from e
+        return _genie_one_text(state, wait_s)
+
+    tool = build_tool(_ask_genie_one, name=name, description=_desc)
+    require_user_api_scopes(tool, ["genie"])
+    return tool

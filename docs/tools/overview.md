@@ -134,6 +134,7 @@ These are pre-built tools for the Databricks platform. Each factory returns a re
 | `uc_function_tool(name)` | Execute a registered UC function with a `params` dictionary. UC types guide SQL literal conversion. | `DatabricksFunction` |
 | `uc_function_toolkit(schema)` | All agent-facing functions in a UC schema as tools | `DatabricksFunction` (×N) |
 | `genie_tool(space_id)` | Ask a natural-language question to a Genie space | `DatabricksGenieSpace` |
+| `genie_one_tool()` | Ask Genie One (workspace-wide Genie) via its managed MCP; asks and polls in one call, as the calling user, and returns the finished answer or a deep link after `wait_s` | `genie` user scope |
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
 | `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse | `DatabricksSQLWarehouse` |
 | `document_extract_tool(warehouse_id=..., volume=..., schema=...)` | Parse a UC volume file with `ai_parse_document` and extract a committed schema via `ai_extract` | `DatabricksSQLWarehouse` |

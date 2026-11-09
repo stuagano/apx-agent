@@ -86,7 +86,7 @@ from ._eval import (
 from ._eval_sweep import SweepResult, evaluate_sweep
 
 # Genie tool factories
-from .genie import genie_query_tool, genie_tool
+from .genie import genie_one_tool, genie_query_tool, genie_tool
 
 # Unity Catalog tool factories
 from .catalog import (
@@ -515,6 +515,7 @@ __all__ = [
     "evaluate_sweep",
     "SweepResult",
     # Tool factories
+    "genie_one_tool",
     "genie_query_tool",
     "genie_tool",
     "catalog_tool",
