@@ -35,6 +35,7 @@ URL patterns the platform hosts:
 |------|-----|
 | UC function | `https://<host>/api/2.0/mcp/functions/{catalog}/{schema}/{function}` |
 | Genie Agent | `https://<host>/api/2.0/mcp/genie/{space_id}` |
+| Genie One | `https://<host>/api/2.0/mcp/genie` — asynchronous (`genie_ask` then `genie_poll_response`, typically 40–260s); use `genie_one_tool()` so polling stays out of the model's step budget |
 | AI Search index | `https://<host>/api/2.0/mcp/vector-search/{catalog}/{schema}/{index}` (legacy-compatible path) |
 
 apx-agent generates these URLs and the corresponding client config from the agent's declared resources:
