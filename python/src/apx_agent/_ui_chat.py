@@ -1565,45 +1565,9 @@ function switchTab(name, btn) {{
   if (name === 'history') loadConversationHistory();
 }}
 
-// ── History tab ──
-let _convHistoryTimer = null;
-function loadConversationHistory() {{
-  if (_convHistoryTimer) clearTimeout(_convHistoryTimer);
-  _convHistoryTimer = setTimeout(_doLoadConversationHistory, 120);
-}}
-function _doLoadConversationHistory() {{
-  _convHistoryTimer = null;
-  fetch('/_apx/conversations').then(r => r.json()).then(convs => {{
-    const list = document.getElementById('conv-list');
-    if (!convs.length) {{
-      list.innerHTML = '<div class="empty-state">No conversations yet — send a message</div>';
-      return;
-    }}
-    list.innerHTML = convs.map(c => {{
-      const label = c.title || ('Conv ' + c.id.slice(-8));
-      const ts = c.updated_at ? new Date(c.updated_at).toLocaleDateString() : '';
-      const active = c.id === devThreadId ? ' active' : '';
-      return `<div class="conv-item${{active}}" data-id="${{c.id}}" onclick="switchConversation('${{c.id}}')">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start">
-          <div class="conv-title" style="flex:1">${{esc(label)}}</div>
-          <button onclick="event.stopPropagation();promoteToEval('${{c.id}}',${{JSON.stringify(label)}})"
-            title="Promote to Eval"
-            style="background:transparent;border:1px solid var(--apx-border);border-radius:3px;color:var(--apx-muted);font-size:9px;padding:1px 5px;cursor:pointer;flex-shrink:0;margin-left:4px">→ Eval</button>
-        </div>
-        ${{ts ? `<div class="conv-ts">${{ts}}</div>` : ''}}
-      </div>`;
-    }}).join('');
-  }}).catch(() => {{}});
-}}
-
-function newConversation() {{
-  devThreadId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
-  sessionStorage.setItem(_THREAD_KEY, devThreadId);
-  chat.innerHTML = '';
-  history.length = 0;  // reset request payload so a new conversation starts clean
-  loadConversationHistory();
-}}
-
+</script>
+<script src="/_apx/vendor/legacy-chat-history.js"></script>
+<script>
 // ── Approvals (ASK policy human-in-the-loop) ──
 // Backend: GET /_apx/approvals, POST /_apx/approvals/{{id}}/approve|deny (see _dev.py).
 // ASK policy is non-blocking/retry-based: a gated tool is refused for the turn,
@@ -3063,6 +3027,12 @@ inputEl.focus();
 
         page = page.replace('<script src="/_apx/vendor/marked.min.js"></script>', _inline_vendor())
         page = page.replace('<script src="/_apx/vendor/purify.min.js"></script>', '')
+        # Native pages remain self-contained; keep the history script at its original
+        # parser position so its classic-script globals share the page's state.
+        from pathlib import Path
+
+        history_js = (Path(__file__).parent / "_static" / "vendor" / "legacy-chat-history.js").read_text(encoding="utf-8")
+        page = page.replace('<script src="/_apx/vendor/legacy-chat-history.js"></script>', '<script>\n' + history_js + '</script>')
         # Durable hosts: the native transport takes over send, so the right panel keeps what
         # works there (Tools, MCP) and opens on Tools; deploy/setup have no backend either.
         page = page.replace('</head>', NATIVE_PANEL_HIDE + '</head>', 1)
