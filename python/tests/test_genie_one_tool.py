@@ -22,7 +22,7 @@ def _fake_session(monkeypatch, replies, *, error=None):
     states = iter(replies)
 
     class Session:
-        async def call_tool(self, name, args):
+        async def call_tool(self, name, args, **_):
             calls.append((name, args))
             if error is not None:
                 raise error

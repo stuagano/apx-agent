@@ -36,6 +36,20 @@ URL patterns the platform hosts:
 | UC function | `https://<host>/api/2.0/mcp/functions/{catalog}/{schema}/{function}` |
 | Genie Agent | `https://<host>/api/2.0/mcp/genie/{space_id}` |
 | Genie One | `https://<host>/api/2.0/mcp/genie` — asynchronous (`genie_ask` then `genie_poll_response`, typically 40–260s); use `genie_one_tool()` so polling stays out of the model's step budget |
+
+### Slow and asynchronous MCP tools
+
+`mcp_tool(...)` and `mcp_toolkit(...)` take `timeout_s=` (per request, default 30s) for tools that legitimately run long.
+
+For servers that answer a slow call with `status: "in_progress"` plus ids and expect polling, give `mcp_tool` the poll tool so the model makes one call:
+
+```python
+ask = mcp_tool(f"{host}/api/2.0/mcp/genie", "genie_ask",
+               poll_tool="genie_poll_response", poll_ids=("conversation_id", "response_id"),
+               wait_s=150)
+```
+
+The loop (`call_until_done`) polls every `poll_s` until the status changes or `wait_s` passes, then returns the last result. Some servers document a streaming mode when the client sends an MCP progress token; Genie One currently answers `in_progress` either way, so apx polls.
 | AI Search index | `https://<host>/api/2.0/mcp/vector-search/{catalog}/{schema}/{index}` (legacy-compatible path) |
 
 apx-agent generates these URLs and the corresponding client config from the agent's declared resources:
