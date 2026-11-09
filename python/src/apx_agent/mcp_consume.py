@@ -24,11 +24,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import Any
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+# Per-call ceiling for a remote MCP tool. Slow servers (Genie One, long scorers)
+# raise it per tool with ``timeout_s=``; nothing else is hard-coded (#1116).
+DEFAULT_TIMEOUT_S = 30.0
 
 
 def _slug(text: str) -> str:
@@ -58,13 +64,19 @@ def _run_sync(coro: Any) -> Any:
 
 
 @asynccontextmanager
-async def _open_session(server_url: str, headers: dict[str, str] | None, transport: str):
-    """Open an initialized MCP ``ClientSession`` over the chosen transport."""
+async def _open_session(
+    server_url: str, headers: dict[str, str] | None, transport: str, *, timeout_s: float = DEFAULT_TIMEOUT_S,
+):
+    """Open an initialized MCP ``ClientSession`` over the chosen transport.
+
+    ``timeout_s`` bounds each streamable-HTTP read (was a fixed 30s, #1116).
+    """
     from mcp import ClientSession
 
     if transport == "sse":
         from mcp.client.sse import sse_client
 
+        # SSE already waits 300s for events by default; timeout_s governs streamable HTTP.
         async with sse_client(server_url, headers=headers) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -74,7 +86,7 @@ async def _open_session(server_url: str, headers: dict[str, str] | None, transpo
         from mcp.client.streamable_http import streamable_http_client
 
         http_client = httpx.AsyncClient(
-            headers=headers, timeout=30.0, follow_redirects=True
+            headers=headers, timeout=timeout_s, follow_redirects=True
         )
         async with streamable_http_client(server_url, http_client=http_client) as (read, write, _):
             async with ClientSession(read, write) as session:
@@ -152,6 +164,37 @@ async def _list_remote_tools(
         return list((await session.list_tools()).tools)
 
 
+async def call_until_done(
+    session: Any,
+    tool: str,
+    arguments: dict[str, Any],
+    *,
+    poll_tool: str,
+    poll_ids: tuple[str, ...],
+    wait_s: float,
+    poll_s: float,
+    pending: str = "in_progress",
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> Any:
+    """Call an async MCP tool and poll until its result stops being ``pending``.
+
+    For servers that answer a slow call with ``structuredContent.status ==
+    pending`` plus ids (e.g. Genie One's ``genie_ask`` → ``genie_poll_response``),
+    this keeps the polling in code: one tool call for the model, however many
+    polls the server needs. ``poll_ids`` are copied from the latest result into
+    each ``poll_tool`` call. Stops after ``wait_s`` and returns the last result,
+    still ``pending``, so the caller can report it (#1116).
+    """
+    read = timedelta(seconds=timeout_s)
+    deadline = time.monotonic() + wait_s
+    result = await session.call_tool(tool, arguments, read_timeout_seconds=read)
+    while (result.structuredContent or {}).get("status") == pending and time.monotonic() < deadline:
+        await asyncio.sleep(poll_s)
+        state = result.structuredContent
+        result = await session.call_tool(poll_tool, {k: state[k] for k in poll_ids}, read_timeout_seconds=read)
+    return result
+
+
 def _make_mcp_tool(
     server_url: str,
     remote_name: str,
@@ -160,6 +203,8 @@ def _make_mcp_tool(
     headers: dict[str, str] | None,
     transport: str,
     name: str | None,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    poll: dict[str, Any] | None = None,
 ) -> Any:
     """Wrap one remote MCP tool as a local apx-agent tool."""
     from ._defaults import UserClientDependency
@@ -188,8 +233,14 @@ def _make_mcp_tool(
     ) -> dict[str, Any]:
         """Placeholder doc — overwritten by build_tool below."""
         try:
-            async with _open_session(server_url, _call_headers(ws), transport) as session:
-                result = await session.call_tool(remote_name, arguments or {})
+            async with _open_session(server_url, _call_headers(ws), transport, timeout_s=timeout_s) as session:
+                if poll is None:
+                    result = await session.call_tool(
+                        remote_name, arguments or {}, read_timeout_seconds=timedelta(seconds=timeout_s),
+                    )
+                else:
+                    result = await call_until_done(session, remote_name, arguments or {},
+                                                   timeout_s=timeout_s, **poll)
         except Exception as e:  # noqa: BLE001
             logger.warning("mcp_tool %s on %s failed: %s", remote_name, server_url, e)
             return {"error": str(e)}
@@ -214,6 +265,11 @@ def mcp_tool(
     transport: str = "http",
     name: str | None = None,
     description: str | None = None,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    poll_tool: str | None = None,
+    poll_ids: tuple[str, ...] = (),
+    wait_s: float = 150.0,
+    poll_s: float = 4.0,
 ) -> Any:
     """Wrap a single named tool on a remote MCP server as a local agent tool.
 
@@ -229,6 +285,13 @@ def mcp_tool(
             ``tool_name``.
         description: LLM-facing description. When omitted, the remote tool's
             advertised description is fetched at factory time (best-effort).
+        timeout_s: Per-request ceiling in seconds (default 30). Raise it for slow tools.
+        poll_tool: For an async server that answers ``status: "in_progress"`` plus
+            ids, the tool to poll until done (see ``call_until_done``). The model
+            then makes one call however long the server takes.
+        poll_ids: Result fields passed to ``poll_tool`` on each poll.
+        wait_s: Longest total wait when polling; the last pending result is returned.
+        poll_s: Seconds between polls.
 
     Returns:
         An apx-agent tool callable.
@@ -236,6 +299,8 @@ def mcp_tool(
     from ._tool_config import _check_allowlist
 
     _check_allowlist(None, "mcp_tool", {"server_url": server_url})
+    if poll_tool is not None and (not poll_ids or wait_s <= 0 or poll_s <= 0):
+        raise ValueError("mcp_tool(poll_tool=...) needs poll_ids and positive wait_s and poll_s")
     _desc = description
     if _desc is None:
         try:
@@ -251,6 +316,9 @@ def mcp_tool(
     return _make_mcp_tool(
         server_url, tool_name,
         description=_desc or "", headers=headers, transport=transport, name=name,
+        timeout_s=timeout_s,
+        poll=None if poll_tool is None else {"poll_tool": poll_tool, "poll_ids": poll_ids,
+                                             "wait_s": wait_s, "poll_s": poll_s},
     )
 
 
@@ -260,6 +328,7 @@ def mcp_toolkit(
     headers: dict[str, str] | None = None,
     include: list[str] | None = None,
     transport: str = "http",
+    timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> list[Any]:
     """Discover every tool on a remote MCP server and wrap each as a local tool.
 
@@ -274,6 +343,7 @@ def mcp_toolkit(
         include: When provided, keep only tools whose name contains one of
             these substrings.
         transport: ``"http"`` (default) or ``"sse"``.
+        timeout_s: Per-call ceiling for every wrapped tool (see ``mcp_tool``).
 
     Returns:
         A list of apx-agent tool callables — splat into ``Agent(tools=[...])``.
@@ -290,7 +360,7 @@ def mcp_toolkit(
             _make_mcp_tool(
                 server_url, t.name,
                 description=_mark_remote_description(t.description) or "",
-                headers=headers, transport=transport, name=None,
+                headers=headers, transport=transport, name=None, timeout_s=timeout_s,
             )
         )
     return out

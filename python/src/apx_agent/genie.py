@@ -17,9 +17,7 @@ so that ``UserClientDependency`` is resolved eagerly at function definition time
 ``get_type_hints()`` in ``_inspection.py`` sees the real Annotated[...] type, not a string.
 """
 
-import asyncio
 import logging
-import time
 from typing import Any
 
 from databricks.sdk.errors.base import DatabricksError
@@ -237,17 +235,15 @@ async def _genie_one_state(ws: Any, question: str, *, wait_s: float, poll_s: flo
     ``in_progress`` plus IDs, and the answer arrives through ``genie_poll_response``
     (typically 40-260s). Owning the loop here keeps it out of the model's step budget.
     """
-    from .mcp_consume import _open_session
+    from .mcp_consume import _open_session, call_until_done
 
     url = f"{ws.config.host.rstrip('/')}{GENIE_ONE_MCP_PATH}"
-    deadline = time.monotonic() + wait_s
     async with _open_session(url, ws.config.authenticate(), "http") as session:
-        state = (await session.call_tool("genie_ask", {"question": question})).structuredContent or {}
-        while state.get("status") == "in_progress" and time.monotonic() < deadline:
-            await asyncio.sleep(poll_s)
-            ids = {"conversation_id": state["conversation_id"], "response_id": state["response_id"]}
-            state = (await session.call_tool("genie_poll_response", ids)).structuredContent or {}
-    return state
+        result = await call_until_done(
+            session, "genie_ask", {"question": question}, poll_tool="genie_poll_response",
+            poll_ids=("conversation_id", "response_id"), wait_s=wait_s, poll_s=poll_s,
+        )
+    return result.structuredContent or {}
 
 
 def _genie_one_text(state: dict[str, Any], wait_s: float) -> str:
