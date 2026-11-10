@@ -46,10 +46,12 @@ Cancellation semantics (Python can't kill threads):
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import logging
 import threading
+import time
 from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -266,6 +268,8 @@ def cancellable(
 
     def _decorate(target: _F) -> _F:
         cooperative = _accepts_cancel_token(target)
+        if inspect.iscoroutinefunction(target):
+            return _decorate_async(target, cooperative)  # type: ignore[return-value]
 
         @functools.wraps(target)
         def _wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -323,6 +327,38 @@ def cancellable(
                     registry.unregister(token)
 
         return _wrapper  # type: ignore[return-value]
+
+    def _decorate_async(target: Callable[..., Any], cooperative: bool) -> Callable[..., Any]:
+        """Async tools: run the coroutine as a task; cancelling it really stops the work."""
+
+        @functools.wraps(target)
+        async def _async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            token = CancelToken()
+            if registry is not None:
+                registry.register(token)
+            if cooperative:
+                kwargs.setdefault("cancel_token", token)
+            task = asyncio.ensure_future(target(*args, **kwargs))
+            deadline = (time.monotonic() + timeout_s) if timeout_s is not None else None
+            name = getattr(target, "__name__", "tool")
+            try:
+                while True:
+                    done, _ = await asyncio.wait({task}, timeout=poll_interval_s)
+                    if done:
+                        return task.result()
+                    if deadline is not None and time.monotonic() >= deadline:
+                        token.cancel(f"timed out after {timeout_s}s")
+                    if token.is_cancelled:
+                        _fire_canceller(canceller, target)
+                        raise ToolCancelled(name, token.reason or "cancelled")
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                if registry is not None:
+                    registry.unregister(token)
+
+        return _async_wrapper
 
     if fn is not None:
         # Bare @cancellable form

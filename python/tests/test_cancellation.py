@@ -407,3 +407,119 @@ def test_governance_reject_without_registry_still_raises():
     guard = GovernanceGuard(_scripted_governance("reject", reason="nope"), agent_name="t")
     with pytest.raises(PermissionError, match="nope"):
         guard.for_tool()("tool", {})
+
+
+# ---------------------------------------------------------------------------
+# Async tools (#1116): the deadline and cancel apply to coroutines too
+# ---------------------------------------------------------------------------
+
+def test_async_tool_stays_a_coroutine_function_and_returns_its_result():
+    import asyncio
+    import inspect
+
+    reg = CancellationRegistry()
+
+    @cancellable(registry=reg, timeout_s=5, poll_interval_s=_POLL_S)
+    async def fetch(x: int) -> str:
+        """Fetch x."""
+        await asyncio.sleep(0)
+        return f"got {x}"
+
+    # The compile path branches on this: a sync wrapper would hand the model a coroutine object.
+    assert inspect.iscoroutinefunction(fetch)
+    assert fetch.__name__ == "fetch" and fetch.__doc__ == "Fetch x."
+    assert asyncio.run(fetch(3)) == "got 3"
+    assert reg.active_count == 0
+
+
+def test_async_timeout_raises_and_actually_cancels_the_work():
+    import asyncio
+
+    cancelled = []
+
+    @cancellable(timeout_s=0.05, poll_interval_s=_POLL_S)
+    async def stuck() -> str:
+        try:
+            await asyncio.sleep(_JOIN_TIMEOUT_S)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return "never"
+
+    with pytest.raises(ToolCancelled) as exc_info:
+        asyncio.run(stuck())
+    assert "timed out" in exc_info.value.reason and exc_info.value.tool_name == "stuck"
+    assert cancelled == [True]  # unlike a thread, the coroutine is really stopped
+
+
+def test_async_registry_cancel_mid_flight_fires_canceller_and_releases():
+    import asyncio
+
+    reg = CancellationRegistry()
+    fired = []
+
+    @cancellable(registry=reg, canceller=lambda: fired.append(True), poll_interval_s=_POLL_S)
+    async def long_tool() -> str:
+        await asyncio.sleep(_JOIN_TIMEOUT_S)
+        return "finished"
+
+    async def scenario() -> BaseException:
+        task = asyncio.ensure_future(long_tool())
+        while reg.active_count == 0:  # gate: in-flight before cancelling
+            await asyncio.sleep(0)
+        assert reg.cancel_all("operator kill") == 1
+        try:
+            await task
+        except BaseException as exc:  # noqa: BLE001 — captured for assertion
+            return exc
+        raise AssertionError("expected ToolCancelled")
+
+    err = asyncio.run(scenario())
+    assert isinstance(err, ToolCancelled) and err.reason == "operator kill"
+    assert fired == [True] and reg.active_count == 0
+
+
+def test_async_exceptions_propagate_and_cooperative_token_is_injected():
+    import asyncio
+
+    @cancellable(poll_interval_s=_POLL_S)
+    async def boom() -> str:
+        raise ValueError("bad input")
+
+    with pytest.raises(ValueError, match="bad input"):
+        asyncio.run(boom())
+
+    @cancellable(poll_interval_s=_POLL_S)
+    async def coop(cancel_token: CancelToken | None = None) -> str:
+        return "token" if isinstance(cancel_token, CancelToken) else "none"
+
+    assert asyncio.run(coop()) == "token"
+
+
+def test_async_cancellable_compiles_to_a_coroutine_tool_whose_timeout_is_contained():
+    """Through the real compile seam: async tool → coroutine StructuredTool; its timeout raises
+    ToolCancelled, which the governance middleware turns into an error ToolMessage (not a 500)."""
+    import asyncio
+
+    from langchain_core.messages import ToolMessage
+
+    from apx_agent._compile import CompileContext, _governance_exception_middleware, _make_langchain_tool
+
+    @cancellable(timeout_s=0.05, poll_interval_s=_POLL_S)
+    async def slow_scan(table: str) -> str:
+        """Scan a table."""
+        await asyncio.sleep(_JOIN_TIMEOUT_S)
+        return "never"
+
+    lc_tool = _make_langchain_tool(slow_scan, CompileContext(service_ws=None, user_ws=None, model="any"))
+    assert lc_tool.coroutine is not None
+
+    class _Request:
+        tool_call = {"id": "call-1"}
+
+    async def handler(_request: Any) -> Any:
+        return await lc_tool.ainvoke({"table": "t"})
+
+    message = asyncio.run(_governance_exception_middleware().awrap_tool_call(_Request(), handler))
+    assert isinstance(message, ToolMessage) and message.status == "error"
+    assert "timed out after 0.05s" in message.content
