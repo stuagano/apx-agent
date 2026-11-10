@@ -1,0 +1,12 @@
+schema_version = 1
+
+[agent]
+framework = "openai"  # label only: the CLI accepts langgraph|openai; the agent is Strands
+server = "agentbricks"
+deployment_name = "strands-support"
+
+[session_store]
+name = "strands-support-sessions"
+
+[tracing]
+experiment_name = "/Shared/agentbricks_traces/strands-support"

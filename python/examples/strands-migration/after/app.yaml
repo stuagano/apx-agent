@@ -1,0 +1,7 @@
+command: ["uv", "run", "start-server"]
+# `agentbricks deploy` rewrites this file with the store and index settings it injects
+# (AGENT_SESSION_STORE, runtime-store Lakebase settings, PyPI index). Don't commit those.
+# Demo-only switch, off by default. Uncomment to run the crash-recovery test:
+# env:
+#   - name: AGENT_ENABLE_CRASH_TEST
+#     value: "1"
