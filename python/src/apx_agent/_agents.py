@@ -251,6 +251,13 @@ class LlmAgent(BaseAgent):
     field adds none); a step that can do neither is refused at compile time.
     ``output_replies_path`` (requires ``output_message_path``) names a list of 1-4
     short strings the native chat page offers as quick-reply buttons under that answer.
+    ``output_table_path`` (requires ``output_message_path``) names a list of flat
+    records shown as a markdown table under that answer (at most 8 columns and 50 rows).
+    ``output_slots_path`` (requires ``output_message_path``) names a ``{slot: value | null}``
+    object of at most 16 entries, shown above the answer as a Slot/Value table with
+    ``—`` for missing slots. Both go into the answer text, so every client sees them;
+    cells are escaped so they never render as links, images or HTML, and any other
+    shape adds nothing.
     Native outputs retain exact JSON and verified DataParts in the reserved
     ``apx_native_artifacts`` state map, indexed by output key (or leaf name).
     The compiled producer validates strictly before publishing JSON-compatible
@@ -313,6 +320,8 @@ class LlmAgent(BaseAgent):
         output_status_path: tuple[str, ...] | None = None,
         output_message_path: tuple[str, ...] | None = None,
         output_replies_path: tuple[str, ...] | None = None,
+        output_table_path: tuple[str, ...] | None = None,
+        output_slots_path: tuple[str, ...] | None = None,
         **settings: Unpack[AgentSettings],
     ) -> None:
         # tools is optional (#449): an orchestrator whose only capabilities are
@@ -351,15 +360,18 @@ class LlmAgent(BaseAgent):
         if output_tool is not None and (output_schema is None or output_tool not in {fn.__name__ for fn in self._tool_fns}):
             raise ValueError("output_tool requires an output_schema and a declared Python tool name")
         for label, path in (("output_status_path", output_status_path), ("output_message_path", output_message_path),
-                            ("output_replies_path", output_replies_path)):
+                            ("output_replies_path", output_replies_path), ("output_table_path", output_table_path),
+                            ("output_slots_path", output_slots_path)):
             if path is not None and (
                 output_schema is None or not isinstance(path, tuple) or not 1 <= len(path) <= 8
                 or any(not isinstance(key, str) or not 1 <= len(key) <= 64 or not key.isascii() or not key.isidentifier()
                        for key in path)
             ):
                 raise ValueError(f"{label} requires an output_schema and 1-8 safe JSON field names of at most 64 characters")
-        if output_replies_path is not None and output_message_path is None:
-            raise ValueError("output_replies_path requires output_message_path")
+        for label, path in (("output_replies_path", output_replies_path), ("output_table_path", output_table_path),
+                            ("output_slots_path", output_slots_path)):
+            if path is not None and output_message_path is None:
+                raise ValueError(f"{label} requires output_message_path")
         self._input_schema = input_schema
         self._input_key = input_key
         self._input_preparation = input_preparation
@@ -367,6 +379,8 @@ class LlmAgent(BaseAgent):
         self._output_status_path = output_status_path
         self._output_message_path = output_message_path
         self._output_replies_path = output_replies_path
+        self._output_table_path = output_table_path
+        self._output_slots_path = output_slots_path
         if timeout_s is not None:
             if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or not math.isfinite(timeout_s) or timeout_s <= 0:
                 raise ValueError("timeout_s must be a positive finite number")

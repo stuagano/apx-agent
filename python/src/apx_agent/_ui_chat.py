@@ -1022,7 +1022,7 @@ def _render_agent_ui(ctx: AgentContext | None, *, embed: bool = False, native: b
   .msg.assistant.streaming::after {{ content: "▋"; animation: blink .7s step-end infinite; }}
   .msg.system {{ align-self: center; font-size: 13px; color: var(--apx-muted); font-style: italic; padding: 20px 0; }}
   /* --- Rendered assistant markdown (tables, code, lists, headings) --- */
-  .msg.assistant table {{ border-collapse: collapse; margin: 8px 0; font-size: 12px; width: 100%; }}
+  .msg.assistant table {{ display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 8px 0; font-size: 12px; }}
   .msg.assistant th, .msg.assistant td {{ border: 1px solid var(--apx-border); padding: 5px 9px; text-align: left; }}
   .msg.assistant th {{ background: var(--apx-panel); color: var(--apx-text); font-weight: 600; }}
   .msg.assistant tr:nth-child(even) td {{ background: var(--apx-bg); }}

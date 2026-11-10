@@ -499,3 +499,100 @@ def test_unusable_replies_are_not_offered(monkeypatch, replies):
 def test_replies_need_a_message_path():
     with pytest.raises(ValueError, match="output_replies_path"):
         Agent(name="s", output_schema=Answer, output_replies_path=("replies",))
+
+
+# --- Declared rich answers (#1120): a table and a slot summary, as markdown in the answer text.
+
+class Report(BaseModel):
+    text: str
+    rows: list[dict[str, Any]] = []
+    slots: dict[str, Any] = {}
+
+
+def _answer(monkeypatch, output: dict, **kw) -> AIMessage:
+    _model(monkeypatch, [AIMessage(content=json.dumps(output))])
+    step = Agent(name="report", output_schema=Report, output_key="report", output_message_path=("text",), **kw)
+    return compile_to_langgraph(SequentialAgent([step], name="pipeline"), ws=MagicMock(), model="fake").invoke(
+        {"messages": [HumanMessage(content="go")]})["messages"][-1]
+
+
+def test_a_declared_table_renders_under_the_answer(monkeypatch):
+    last = _answer(monkeypatch, {"text": "Two matches.", "rows": [{"name": "Acme", "rate": 4.8},
+                                                                  {"name": "Beta", "region": "West"}]},
+                   output_table_path=("rows",))
+    assert last.content == ("Two matches.\n\n"
+                            "| name | rate | region |\n| --- | --- | --- |\n"
+                            "| Acme | 4.8 |  |\n| Beta |  | West |")
+
+
+def test_a_long_wide_table_is_capped(monkeypatch):
+    rows = [{f"c{j}": i for j in range(10)} for i in range(53)]
+    last = _answer(monkeypatch, {"text": "Many.", "rows": rows}, output_table_path=("rows",))
+    lines = last.content.split("\n")
+    assert lines[2] == "| c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7 |"
+    assert lines[4] == "| 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |"
+    assert lines[-2] == "| 49 | 49 | 49 | 49 | 49 | 49 | 49 | 49 |"
+    assert lines[-1] == "… 3 more rows"
+
+
+@pytest.mark.parametrize("rows", [[], [{"a": {"nested": 1}}], [{"a": [1]}]])
+def test_a_table_that_is_not_flat_records_adds_nothing(monkeypatch, rows):
+    last = _answer(monkeypatch, {"text": "Done.", "rows": rows}, output_table_path=("rows",))
+    assert last.content == "Done."
+
+
+def test_table_cells_render_as_literal_text(monkeypatch):
+    # Model-written cells must never become images, links or HTML in a rendered answer.
+    row = {"<b>": "![a](http://x)", "html": "<img src=x>", "pipe": "a|b", "lines": "one\ntwo", "long": "x" * 100,
+           "web": "WWW.x.io", "mail": "a@b.io", "plain": "4.8 at 10:30"}
+    last = _answer(monkeypatch, {"text": "Odd.", "rows": [row]}, output_table_path=("rows",))
+    header, _, cells = last.content.split("\n")[2:]
+    assert header == r"| \<b\> | html | pipe | lines | long | web | mail | plain |"
+    assert cells == (r"| \!\[a\]\(http\://x\) | \<img src=x\> | a\|b | one two | " + "x" * 80
+                     + r" | WWW\.x.io | a\@b.io | 4.8 at 10:30 |")
+
+
+class IntakeReport(Report):
+    replies: list[str] = []
+
+
+def test_a_slot_summary_shows_what_is_known_above_the_question(monkeypatch):
+    _model(monkeypatch, [AIMessage(content=json.dumps({
+        "text": "Which start date?", "slots": {"region": "West", "start": None, "owner": ""},
+        "replies": ["Today", "Next week"]}))])
+    step = Agent(name="intake", output_schema=IntakeReport, output_key="intake", output_message_path=("text",),
+                 output_slots_path=("slots",), output_replies_path=("replies",))
+    last = compile_to_langgraph(SequentialAgent([step], name="pipeline"), ws=MagicMock(), model="fake").invoke(
+        {"messages": [HumanMessage(content="go")]})["messages"][-1]
+    assert last.content == ("| Slot | Value |\n| --- | --- |\n| region | West |\n| start | — |\n| owner | — |\n\n"
+                            "Which start date?")
+    assert last.additional_kwargs["apx_replies"] == ["Today", "Next week"]
+
+
+@pytest.mark.parametrize("slots", [{}, {"a": {"b": 1}}, {f"s{i}": i for i in range(17)}])
+def test_unusable_slots_add_nothing(monkeypatch, slots):
+    last = _answer(monkeypatch, {"text": "Done.", "slots": slots}, output_slots_path=("slots",))
+    assert last.content == "Done."
+
+
+@pytest.mark.parametrize("path", ["output_table_path", "output_slots_path"])
+def test_rich_paths_need_a_message_path_and_a_schema(path):
+    with pytest.raises(ValueError, match=f"{path} requires output_message_path"):
+        Agent(name="s", output_schema=Report, **{path: ("rows",)})
+    with pytest.raises(ValueError, match=f"{path} requires an output_schema"):
+        Agent(name="s", **{path: ("rows",)})
+
+
+class HaltingIntake(Report):
+    status: str
+
+
+def test_a_halting_intake_shows_its_slots(monkeypatch):
+    _model(monkeypatch, [AIMessage(content=json.dumps({
+        "status": "needs_input", "text": "Which region?", "slots": {"region": None}}))])
+    intake = Agent(name="intake", output_schema=HaltingIntake, output_key="intake", output_status_path=("status",),
+                   output_message_path=("text",), output_slots_path=("slots",))
+    seq = SequentialAgent([intake, Agent(name="downstream")], name="pipeline", halt_statuses=("needs_input",))
+    last = compile_to_langgraph(seq, ws=MagicMock(), model="fake").invoke(
+        {"messages": [HumanMessage(content="go")]})["messages"][-1]
+    assert last.content == "| Slot | Value |\n| --- | --- |\n| region | — |\n\nWhich region?"

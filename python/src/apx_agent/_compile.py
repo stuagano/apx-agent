@@ -840,6 +840,14 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
             if (isinstance(replies, list) and 1 <= len(replies) <= 4
                     and all(isinstance(r, str) and 1 <= len(r.strip()) <= 40 for r in replies)):
                 extra["apx_replies"] = [r.strip() for r in replies]
+            table_path = getattr(sub, "_output_table_path", None)
+            table = _records_table(_state_path(state, key, table_path)) if table_path else None
+            if table:
+                text = text + "\n\n" + table
+            slots_path = getattr(sub, "_output_slots_path", None)
+            slots = _slots_table(_state_path(state, key, slots_path)) if slots_path else None
+            if slots:
+                text = slots + "\n\n" + text
             return {"messages": [AIMessage(content=text, additional_kwargs={"apx_answer": True, **extra})]}
         return emit
 
@@ -1859,6 +1867,37 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
 # Public API
 # ---------------------------------------------------------------------------
 
+
+_CELL_TYPES = (str, int, float, bool, type(None))
+
+
+def _markdown_table(header: list[str], rows: list[list[Any]]) -> str:
+    def cell(value: Any) -> str:
+        # Model-written text stays literal: no image, link or HTML can render from a cell.
+        text = " ".join(("" if value is None else str(value)).split())[:80]
+        text = re.sub(r"([\\`*_\[\]()<>|!#~@])", r"\\\1", text)
+        # Break GFM autolinks too (scheme://, www., email); other ':' and '.' stay readable.
+        return re.sub(r"(?i)\bwww\.", lambda m: m.group()[:3] + "\\.", text.replace("://", "\\://"))
+
+    lines = [header, ["---"] * len(header), *rows]
+    return "\n".join("| " + " | ".join(cell(v) for v in line) + " |" for line in lines)
+
+
+def _records_table(value: Any) -> str | None:
+    """A declared ``output_table_path`` value (a list of flat records) as a markdown table."""
+    if (not isinstance(value, list) or not value
+            or not all(isinstance(r, dict) and all(isinstance(v, _CELL_TYPES) for v in r.values()) for r in value)):
+        return None
+    columns = list(dict.fromkeys(k for r in value for k in r))[:8]
+    table = _markdown_table(columns, [[r.get(c) for c in columns] for r in value[:50]])
+    return table + f"\n… {len(value) - 50} more rows" if len(value) > 50 else table
+
+
+def _slots_table(value: Any) -> str | None:
+    """A declared ``output_slots_path`` value (``{slot: value | null}``) as a Slot/Value table; ``—`` marks missing."""
+    if not isinstance(value, dict) or not 1 <= len(value) <= 16 or not all(isinstance(v, _CELL_TYPES) for v in value.values()):
+        return None
+    return _markdown_table(["Slot", "Value"], [[k, "—" if v is None or v == "" else v] for k, v in value.items()])
 
 def compile_to_langgraph(
     agent: BaseAgent,

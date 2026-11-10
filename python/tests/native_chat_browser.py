@@ -912,3 +912,24 @@ def test_native_eval_runs_a_case_over_the_durable_contract():
         assert posts[0]["background"] is True
         assert judged[0]["response"] == "Options: hold, +5"  # the declared answer, not step chatter
         browser.close()
+
+
+def test_native_declared_table_and_slots_render_in_the_answer_bubble(browser_chat):
+    # The exact content the compiled answer builder emits (#1120), including hostile cells.
+    page, posts, reads, state, event = browser_chat
+    content = ("| Slot | Value |\n| --- | --- |\n| region | West |\n| start | — |\n\nWhich start date?\n\n"
+               "| name | note |\n| --- | --- |\n"
+               r"| Acme | \!\[a\]\(http\://x\) |" "\n" r"| Beta | \<img src=x onerror=window.injected=1\> |" "\n"
+               r"| Gamma | www\.x.io a\@b.io |")
+    state["output"]["messages"] = [{"type": "ai", "content": content, "additional_kwargs": {"apx_answer": True}}]
+    submit(page)
+    tables = page.locator(".msg.assistant table")
+    expect(tables).to_have_count(2)
+    expect(tables.first).to_be_visible()
+    expect(tables.first.locator("td").nth(3)).to_have_text("—")
+    expect(tables.last).to_contain_text("![a](http://x)")
+    expect(tables.last).to_contain_text("<img src=x onerror=window.injected=1>")
+    expect(tables.last).to_contain_text("www.x.io a@b.io")
+    assert page.locator(".msg.assistant img, .msg.assistant table a").count() == 0
+    assert page.evaluate("window.injected") is None
+    assert tables.first.evaluate("t => getComputedStyle(t).overflowX") == "auto"
