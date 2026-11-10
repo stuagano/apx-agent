@@ -129,6 +129,25 @@ audit context to a service tool without converting its Databricks credentials
 to OBO. `Dependencies.Progress` and `Dependencies.State` select neither
 identity.
 
+### Slow tools — a deadline of their own
+
+Give a long-running tool its own wall-clock limit with `@cancellable(timeout_s=...)`, stacked under `@tool`. It works for sync and `async def` tools. Past the limit the call raises `ToolCancelled`, which apx returns to the model as an error tool message (`Error: … timed out after 300s`) — the turn continues and the agent can explain, never a 500. Report progress while it runs with `Dependencies.Progress`.
+
+```python
+from apx_agent import Dependencies, cancellable, tool
+
+@tool
+@cancellable(timeout_s=300)
+async def sweep_scenarios(bank: str, progress: Dependencies.Progress) -> str:
+    """Score every rate scenario for BANK."""
+    for i, option in enumerate(OPTIONS):
+        progress(f"scored {i + 1}/{len(OPTIONS)}")
+        await score(bank, option)
+    return summary()
+```
+
+For an `async def` tool the coroutine is really cancelled at the deadline. A sync tool runs in a worker thread that Python cannot kill; pass `canceller=` (e.g. a SQL statement cancel) to stop the remote work. For remote MCP tools use `mcp_tool(..., timeout_s=)` and, for servers that answer `in_progress`, `poll_tool=` (see [MCP](mcp.md)).
+
 ### Share state within an invocation
 
 `Dependencies.State` is a dict-like, per-invocation view that lets tools pass
