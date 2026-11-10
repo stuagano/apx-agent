@@ -4,10 +4,13 @@ Real Chromium DOM/network assertions against rendered pages and the frozen SDK w
 contract. The separate SDK contract suite covers the real runtime, not these routes.
 """
 
+import datetime
+import enum
 import json
 import os
 import uuid
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 import pytest
@@ -20,7 +23,7 @@ from apx_agent._ui_root_chat import render_root_chat
 from tests.test_native_invocation_contract import native, headers  # noqa: F401
 from tests.test_runtime_targets import execution  # noqa: F401
 from tests.test_dev_ui_routes import _make_ctx
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from apx_agent._native_input import native_data_part
 
 
@@ -1004,28 +1007,22 @@ def test_native_step_without_an_input_schema_shows_no_input(browser_chat):
 
 # --- A generated form for flat typed-input schemas (#1124). It writes the JSON the textarea sends.
 
-import datetime as _dt
-import enum as _enum
-from typing import Literal as _Literal
-
-from pydantic import Field as _Field
-
-
-class _Tier(str, _enum.Enum):
+class Tier(str, enum.Enum):
     gold = "gold"
     silver = "silver"
 
 
 class FormInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    name: str = _Field(title="Customer <b>name</b>", description='Legal <img src=x onerror="window.injected=1">')
+    name: str = Field(title="Customer <b>name</b>", description='Legal <img src=x onerror="window.injected=1">')
     amount: int
     rate: float | None = None
     active: bool = True
-    tier: _Tier
-    kind: _Literal["a", "b"] = "a"
-    as_of: _dt.date
-    at: _dt.datetime | None = None
+    tier: Tier
+    kind: Literal["a", "b"] = "a"
+    as_of: datetime.date
+    at: datetime.datetime | None = None
+    notify: bool | None = None
 
 
 class NestedInput(BaseModel):
@@ -1106,3 +1103,42 @@ def test_native_form_keeps_every_digit_of_a_large_integer(browser_chat):
     _with_schema(page, state, BrowserInput)
     page.locator(".native-input-form").get_by_label("Amount", exact=True).fill("9007199254740993")
     assert page.locator("form textarea").input_value() == '{"amount": 9007199254740993}'
+
+
+def test_native_form_optional_boolean_can_be_left_unset(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _with_schema(page, state, FormInput)
+    notify = page.locator(".native-input-form").get_by_label("Notify", exact=True)
+    assert notify.evaluate("s => [...s.options].map(o => o.value)") == ["", "true", "false"]
+    assert "notify" not in json.loads(page.locator("form textarea").input_value())
+    notify.select_option("false")
+    assert json.loads(page.locator("form textarea").input_value())["notify"] is False
+
+
+@pytest.mark.parametrize("typed", ['{"amount": "4"}', '{"amount": 9007199254740993}', '{"amount": 4, "bogus": 1}'])
+def test_native_form_never_rewrites_json_it_cannot_show(browser_chat, typed):
+    # A string for a number, an unsafe integer, or an unknown key: the form steps aside, the JSON is sent as typed.
+    page, posts, reads, state, event = browser_chat
+    _with_schema(page, state, BrowserInput)
+    page.locator("form textarea").fill(typed)
+    form = page.locator(".native-input-form")
+    expect(form).to_have_attribute("disabled", "")
+    expect(form).to_contain_text("The JSON below has values this form can't show")
+    assert page.locator("form textarea").input_value() == typed
+    page.locator("form textarea").fill('{"amount": 4}')
+    expect(form).not_to_have_attribute("disabled", "")
+
+
+def test_native_form_enter_submits_and_marks_required(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _with_schema(page, state, BrowserInput)
+    form = page.locator(".native-input-form")
+    expect(form.locator(".native-required")).to_have_count(2)
+    form.get_by_label("Amount", exact=True).fill("4")
+    form.get_by_label("As Of", exact=True).fill("2026-10-22")
+    form.get_by_label("As Of", exact=True).press("Enter")
+    expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
+    assert len(posts) == 1
+    # After a send both views start over together.
+    expect(form.get_by_label("Amount", exact=True)).to_have_value("")
+    assert page.locator("form textarea").input_value() == ""
