@@ -65,6 +65,9 @@ __THEME__
   .assistant a { color: var(--apx-accent); }
   .assistant pre { overflow-x: auto; background: var(--apx-bg); padding: 8px;
                    border-radius: 6px; border: 1px solid var(--apx-border); }
+  .assistant table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+  .assistant th, .assistant td { border: 1px solid var(--apx-border); padding: 4px 8px; text-align: left; }
+  .assistant th { font-weight: 600; background: var(--apx-bg); }
   .assistant p:first-child { margin-top: 0; }
   .assistant p:last-child { margin-bottom: 0; }
   .err { align-self: center; color: var(--apx-err); font-size: 13px; }
