@@ -531,11 +531,11 @@ def test_a_long_wide_table_is_capped(monkeypatch):
     lines = last.content.split("\n")
     assert lines[2] == "| c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7 |"
     assert lines[4] == "| 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |"
-    assert lines[-2] == "| 49 | 49 | 49 | 49 | 49 | 49 | 49 | 49 |"
-    assert lines[-1] == "… 3 more rows"
+    # A blank line ends the GFM table, so the note doesn't render as a row.
+    assert lines[-3:] == ["| 49 | 49 | 49 | 49 | 49 | 49 | 49 | 49 |", "", "… 3 more rows"]
 
 
-@pytest.mark.parametrize("rows", [[], [{"a": {"nested": 1}}], [{"a": [1]}]])
+@pytest.mark.parametrize("rows", [[], [{}], [{"a": {"nested": 1}}], [{"a": [1]}]])
 def test_a_table_that_is_not_flat_records_adds_nothing(monkeypatch, rows):
     last = _answer(monkeypatch, {"text": "Done.", "rows": rows}, output_table_path=("rows",))
     assert last.content == "Done."

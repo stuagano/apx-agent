@@ -820,7 +820,8 @@ def _compile_sequential_agent(agent: SequentialAgent, ctx: CompileContext) -> An
         return value
 
     def _halt_message(sub: BaseAgent) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
-        """End a halted sequence with the step's declared human message (e.g. its question)."""
+        """The declared answer a person reads when this step ends the sequence (halted or last):
+        its message, plus any declared slot summary, table and quick replies."""
         key, path = getattr(sub, "_output_key", None), getattr(sub, "_output_message_path", None)
         if not key or not path:
             return None
@@ -1889,8 +1890,11 @@ def _records_table(value: Any) -> str | None:
             or not all(isinstance(r, dict) and all(isinstance(v, _CELL_TYPES) for v in r.values()) for r in value)):
         return None
     columns = list(dict.fromkeys(k for r in value for k in r))[:8]
+    if not columns:
+        return None
     table = _markdown_table(columns, [[r.get(c) for c in columns] for r in value[:50]])
-    return table + f"\n… {len(value) - 50} more rows" if len(value) > 50 else table
+    # The blank line ends the GFM table, so the note isn't parsed as another row.
+    return table + f"\n\n… {len(value) - 50} more rows" if len(value) > 50 else table
 
 
 def _slots_table(value: Any) -> str | None:

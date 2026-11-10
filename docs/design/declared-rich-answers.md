@@ -67,19 +67,22 @@ message text and the replies, it appends to `content`:
 
 **Table** (`output_table_path`): the value must be a list of 1+ objects whose
 values are scalars or null. Columns are the union of keys in first-seen order,
-capped at 8. Rows are capped at 50, with a trailing `… N more rows` line.
+capped at 8. Rows are capped at 50, followed by a blank line and a `… N more rows` note (the
+blank line ends the GFM table, so the note doesn't render as a row). Records with
+no keys at all add nothing.
 It renders as a GitHub markdown table under a blank line. A value of any other
 shape adds nothing, matching how a malformed `replies` is ignored today.
 
-**Slot summary** (`output_slots_path`): the value must be an object of at most 16
+**Slot summary** (`output_slots_path`): the value must be an object of 1-16
 entries whose values are scalars or null. It renders as a two-column `Slot | Value`
 markdown table. A null or empty-string value shows as `—` (missing). The table
 goes **above** the question, so the person reads "here's what I have" before "here's
 what I need". Any other shape adds nothing.
 
 **Cell escaping** applies to keys and values alike. Each cell is converted with
-`str()`, newlines become spaces, the text is cut to 80 characters, and every
-markdown-active character (`\ ` * _ [ ] ( ) < > | ! # ~ @`) is backslash-escaped.
+`str()`, all whitespace runs (newlines and tabs included) collapse to one space,
+the text is cut to 80 characters, and every markdown-active character
+(``\ ` * _ [ ] ( ) < > | ! # ~ @``) is backslash-escaped.
 GFM autolinks get broken too: `://` becomes `\://` and `www.` becomes `www\.`.
 Without that, marked turns a bare URL inside an escaped cell into a link; the
 real-browser test caught this. Other `:` and `.` stay as they are, so decimals and
@@ -90,8 +93,12 @@ DOMPurify still runs on the page as a second layer.
 
 **No new wire fields and no new page JS.** Both native chat hosts already render
 the answer with `marked`+`DOMPurify` into `.msg.assistant`. `/_apx/chat`
-(`_ui_chat.py`) styles `.msg.assistant table`; the root page (`_ui_root_chat.py`)
-doesn't yet, so it gets the same few CSS rules. `apx_answer`, `apx_replies` and
+(`_ui_chat.py`) styles `.msg.assistant table`. The root page (`_ui_root_chat.py`)
+had no table rules, so it now has equivalent ones under its own `.assistant`
+class. On both pages, bubble tables are `display: block; max-width: 100%;
+overflow-x: auto`. The old `width: 100%` on `/_apx/chat` is gone, because with
+`display: block` it would stretch narrow tables, so every markdown table there now
+sizes to its content. `apx_answer`, `apx_replies` and
 `apx_data_parts` are unchanged.
 
 ## Not in this slice
@@ -119,8 +126,13 @@ doesn't yet, so it gets the same few CSS rules. `apx_answer`, `apx_replies` and
     renders literally;
   - a new path without `output_message_path` raises; a new path without `output_schema` raises.
 - Real browser (`tests/native_chat_browser.py` + headless Chromium, whose fixture
-  already runs each test on both `/_apx/chat` and the root page): the exact escaped
-  content the builder emits, with a slot summary and a table holding hostile cells. Assert there's no `pageerror`, a
+  already runs each test on both `/_apx/chat` and the root page). The answer content
+  comes from the real table and slot renderers, with hostile cells and a 51-row
+  overflow. The test asserts two tables, 50 body rows, the note outside the table,
+  no `<img>`/`<a>` from a cell, and `overflow-x: auto`. That test (and the unit
+  seam) replaced the `examples/` halt-then-table fixture the issue mentioned: the
+  halt flow is covered at the compiled-sequence seam, and the browser test covers
+  rendering. Assert there's no `pageerror`, a
   `<table>` is visible inside the assistant bubble, and no `<img>` or `<a>` comes
   from a cell.
 - `make check` + `pre-commit run --all-files`.

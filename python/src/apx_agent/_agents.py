@@ -359,17 +359,17 @@ class LlmAgent(BaseAgent):
             raise ValueError("input_preparation requires a callable and declared input_schema")
         if output_tool is not None and (output_schema is None or output_tool not in {fn.__name__ for fn in self._tool_fns}):
             raise ValueError("output_tool requires an output_schema and a declared Python tool name")
+        decorations = (("output_replies_path", output_replies_path), ("output_table_path", output_table_path),
+                       ("output_slots_path", output_slots_path))
         for label, path in (("output_status_path", output_status_path), ("output_message_path", output_message_path),
-                            ("output_replies_path", output_replies_path), ("output_table_path", output_table_path),
-                            ("output_slots_path", output_slots_path)):
+                            *decorations):
             if path is not None and (
                 output_schema is None or not isinstance(path, tuple) or not 1 <= len(path) <= 8
                 or any(not isinstance(key, str) or not 1 <= len(key) <= 64 or not key.isascii() or not key.isidentifier()
                        for key in path)
             ):
                 raise ValueError(f"{label} requires an output_schema and 1-8 safe JSON field names of at most 64 characters")
-        for label, path in (("output_replies_path", output_replies_path), ("output_table_path", output_table_path),
-                            ("output_slots_path", output_slots_path)):
+        for label, path in decorations:
             if path is not None and output_message_path is None:
                 raise ValueError(f"{label} requires output_message_path")
         self._input_schema = input_schema
