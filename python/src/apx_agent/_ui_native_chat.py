@@ -42,6 +42,11 @@ def native_input_router(agent: Any) -> APIRouter:
 NATIVE_CHAT_SCRIPT = r"""
 <style>
 .native-execution-card {border: 1px solid var(--apx-border); border-radius: 8px; padding: 12px; margin: 8px 0; overflow-wrap: anywhere;}
+.native-input-form {display: grid; gap: 6px; margin: 0 0 8px; padding: 8px 12px; border: 1px solid var(--apx-border); border-radius: 8px;}
+.native-input-form .native-field {display: grid; grid-template-columns: minmax(8em, 14em) 1fr; gap: 2px 8px; align-items: center;}
+.native-input-form small {grid-column: 2; color: var(--apx-muted);}
+.native-input-form .native-required, .native-input-form-notice {color: var(--apx-muted);}
+.native-input-form[disabled] .native-field {opacity: .5;}
 .native-event, .native-output, .native-input-schema pre {white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto;}
 .native-validation {color: var(--apx-err);}
 .native-status-row {display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 12px 0;}
@@ -99,10 +104,144 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       form.before(details);
       input.placeholder = 'Enter a JSON object matching the declared schema';
       input.setAttribute('aria-label', 'Declared request JSON');
+      const fields = flatFields(schema);
+      if (fields) form.before(inputForm(fields));
     }
     ready = true;
     send.disabled = busy || Boolean(saved && !saved.terminal);
   }).catch(() => { validation.textContent = 'Input declaration unavailable. Reload to check before submitting.'; });
+  // A flat declared schema gets a generated form (#1124). It only writes the JSON the textarea sends,
+  // so strict server validation stays the one source of truth; anything nested keeps the JSON box.
+  function flatFields(schema) {
+    const props = schema.properties, defs = schema.$defs || {};
+    if (schema.type !== 'object' || !props || typeof props !== 'object') return null;
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    const fields = [];
+    for (const [name, raw] of Object.entries(props)) {
+      let prop = raw;
+      const options = Array.isArray(prop?.anyOf) ? prop.anyOf : null;
+      // pydantic's optional form: anyOf [T, {type: null}].
+      if (options) prop = options.length === 2 && options.some(p => p?.type === 'null') ? options.find(p => p?.type !== 'null') : null;
+      if (typeof prop?.$ref === 'string') prop = prop.$ref.startsWith('#/$defs/') ? defs[prop.$ref.slice(8)] : null;
+      if (!prop || typeof prop !== 'object') return null;
+      const kind = Array.isArray(prop.enum) ? (prop.enum.every(v => typeof v === 'string') ? 'enum' : null)
+        : prop.type === 'string' ? ({date: 'date', 'date-time': 'datetime-local'}[prop.format] || 'text')
+        : ['integer', 'number', 'boolean'].includes(prop.type) ? prop.type : null;
+      if (!kind) return null;
+      // A $ref'd enum has no field title, and its own title is a type name, so fall back to the field name.
+      const title = typeof raw.title === 'string' ? raw.title
+        : name.split('_').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+      const description = [raw.description, prop.description].find(t => typeof t === 'string');
+      fields.push({name, kind, title, description, options: prop.enum, required: required.has(name), initial: raw.default ?? prop.default});
+    }
+    return fields.length ? fields : null;
+  }
+  let resetInputForm = () => {};
+  function inputForm(fields) {
+    const box = document.createElement('fieldset');
+    box.className = 'native-input-form';
+    const legend = document.createElement('legend');
+    legend.textContent = 'Request';
+    const notice = document.createElement('p');
+    notice.className = 'native-input-form-notice';
+    notice.hidden = true;
+    notice.textContent = "The JSON below has values this form can't show; it will be sent as typed.";
+    box.append(legend, notice);
+    const controls = {};
+    // A checkbox can't say "unset", so a boolean without a true/false default is a three-way choice.
+    const choices = field => field.kind === 'enum' ? field.options
+      : field.kind === 'boolean' && typeof field.initial !== 'boolean' ? ['true', 'false'] : null;
+    fields.forEach((field, i) => {
+      const row = document.createElement('div');
+      row.className = 'native-field';
+      const label = document.createElement('label');
+      label.htmlFor = 'native-field-' + i;
+      label.textContent = field.title;
+      // The marker sits beside the label, so the control's accessible name stays the field title.
+      const cell = document.createElement('div');
+      cell.appendChild(label);
+      if (field.required) {
+        const mark = document.createElement('span');
+        mark.className = 'native-required';
+        mark.setAttribute('aria-hidden', 'true');
+        mark.textContent = ' *';
+        cell.appendChild(mark);
+      }
+      let control;
+      const options = choices(field);
+      if (options) {
+        control = document.createElement('select');
+        // No preselection without a default: a required choice must be made.
+        (field.initial === undefined || field.initial === null ? ['', ...options] : options).forEach(value => {
+          const option = document.createElement('option');
+          option.value = option.textContent = value;
+          control.appendChild(option);
+        });
+      } else {
+        control = document.createElement('input');
+        control.type = {integer: 'number', number: 'number', boolean: 'checkbox'}[field.kind] || field.kind;
+        if (field.kind === 'integer') control.step = '1';
+        if (field.kind === 'number') control.step = 'any';
+      }
+      control.id = label.htmlFor;
+      if (field.required && control.type !== 'checkbox') control.required = true;
+      control.addEventListener(options || control.type === 'checkbox' ? 'change' : 'input', write);
+      // The form sits outside the chat <form>, so Enter in a field submits it explicitly.
+      control.addEventListener('keydown', e => { if (e.key === 'Enter' && control.tagName === 'INPUT') { e.preventDefault(); form.requestSubmit(); } });
+      controls[field.name] = control;
+      row.append(cell, control);
+      if (field.description) {
+        const hint = document.createElement('small');
+        hint.id = control.id + '-hint';
+        hint.textContent = field.description;
+        control.setAttribute('aria-describedby', hint.id);
+        row.appendChild(hint);
+      }
+      box.appendChild(row);
+    });
+    const show = (field, value) => {
+      const control = controls[field.name];
+      if (control.type === 'checkbox') control.checked = value === true;
+      else control.value = value === undefined || value === null ? '' : String(value);
+    };
+    // Blank fields are omitted (defaults apply; a missing required one is reported by the server).
+    // Number text goes on the wire as typed, so large integers keep every digit.
+    function wire() {
+      return '{' + fields.flatMap(field => {
+        const control = controls[field.name], key = JSON.stringify(field.name) + ': ';
+        if (control.type === 'checkbox') return [key + control.checked];
+        if (control.value === '') return [];
+        const raw = field.kind === 'boolean' || (['integer', 'number'].includes(field.kind)
+          && /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(control.value));
+        return [key + (raw ? control.value : JSON.stringify(control.value))];
+      }).join(', ') + '}';
+    }
+    function write() { input.value = wire(); }
+    // Can the form show this value exactly? If not, it must never rewrite the person's JSON.
+    const fits = (field, value) => value === null ? !field.required
+      : field.kind === 'boolean' ? typeof value === 'boolean'
+      : field.kind === 'integer' ? Number.isSafeInteger(value)
+      : field.kind === 'number' ? typeof value === 'number' && (!Number.isInteger(value) || Number.isSafeInteger(value))
+      : field.kind === 'enum' ? field.options.includes(value) : typeof value === 'string';
+    input.addEventListener('input', () => {
+      let value;
+      try { value = JSON.parse(input.value); } catch (_) { return; }  // Mid-typing: leave the form as it is.
+      const own = value && typeof value === 'object' && !Array.isArray(value);
+      const ok = own && Object.keys(value).every(k => fields.some(f => f.name === k))
+        && fields.every(f => !Object.hasOwn(value, f.name) || fits(f, value[f.name]));
+      box.disabled = !ok;
+      notice.hidden = ok;
+      if (ok) fields.forEach(field => show(field, Object.hasOwn(value, field.name) ? value[field.name] : undefined));
+    });
+    resetInputForm = () => {
+      fields.forEach(field => show(field, field.initial));
+      box.disabled = false;
+      notice.hidden = true;
+      if (wire() !== '{}') write();
+    };
+    resetInputForm();
+    return box;
+  }
   const persist = () => sessionStorage.setItem(key, JSON.stringify(saved));
   const requestText = () => saved.userText ?? (saved.request.input.apx_data_parts
     ? JSON.stringify(saved.request.input.apx_data_parts[0].data, null, 2) : saved.request.input.messages[0].content);
@@ -618,6 +757,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     restoring = false;
     persist();
     input.value = '';
+    resetInputForm();  // both views start over after a send
     prepare();
     follow(true);
   }, true);

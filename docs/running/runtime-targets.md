@@ -147,6 +147,21 @@ and the Eval tab stay off, because typed leaves reject plain chat messages; tool
 replay (the Tools page's Run) still works. Input discovery and validation
 remain available at `/api/input-schema` and `/api/input-validation`, including
 for Python-only declarations without discovered project configuration.
+When the declared input schema is flat, both chat pages also show a generated
+form. A flat schema is an object whose fields are strings, integers, numbers,
+booleans or string enums, including date and date-time formats and pydantic's
+optional `anyOf [T, null]`. Other string formats get a plain text field. The
+form writes the JSON the request box sends, and editing JSON in the box updates
+the form. When the JSON holds something the form can't show exactly (an unknown
+key, a wrong type, an integer beyond 2^53), the form greys out and the JSON is
+sent as typed. The form never rewrites it.
+
+Blank fields are omitted, so a missing required field gets the server's "Field
+required" instead of a silent `""`. Number text is sent exactly as typed. An
+optional boolean without a default is a blank/true/false choice. Date-time
+fields use the browser's `datetime-local` picker, which sends a time without a
+zone offset. Validation stays on the server. A schema with nested objects,
+arrays or unions keeps the JSON box only.
 
 Declarations that omit `target` mean `durable_agent_server`. A written
 `target = "responses_agent"` stays on the compatibility contract. Re-scaffolding

@@ -6,6 +6,14 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Generated form for flat typed-input schemas (#1124).** A typed entry agent
+  whose input schema is flat (strings, numbers, booleans, string enums, dates)
+  now gets a labelled form above the chat's JSON box. The form uses number
+  inputs, checkboxes, dropdowns and native date pickers, and marks required
+  fields. It fills in the JSON the box sends, and typing JSON updates the form,
+  so validation is unchanged and stays on the server. Nested, array and union
+  schemas keep the JSON box.
+
 - **Native step cards show each step's input (#1123).** Above the output, a card
   now has a collapsible **Input** section with the payload the step received. The
   page resolves it by sha from the request it sent or an earlier step's output, so
