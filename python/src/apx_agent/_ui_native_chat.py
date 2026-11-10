@@ -290,6 +290,34 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       view.append(label, tree(bySha[card.dataset.sha]));
       card.insertBefore(view, card.querySelector('.native-step-record'));
     });
+    // A step's input is the request this run sent or an earlier step's output; both are on the page.
+    // The sent input lives only in the exact request wire; parse a copy for display.
+    let sent = [];
+    try { sent = JSON.parse(saved?.requestWire || '{}').input?.apx_data_parts || []; } catch (_) { /* Not a typed request. */ }
+    sent.forEach(part => {
+      const sha = part?.metadata?.sha256;
+      if (typeof sha === 'string') bySha[sha] = part.data;
+    });
+    cards.querySelectorAll('.native-execution-card[data-input-sha]').forEach(card => {
+      if (card.querySelector('.native-step-input')) return;
+      const sha = card.dataset.inputSha, label = 'Input · ' + card.dataset.inputSchema;
+      let view;
+      if (sha in bySha) {
+        view = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = label;
+        view.append(summary, tree(bySha[sha]));
+      } else {
+        // Rebuilt server-side (input_preparation): only its digest is recorded where the page can read it.
+        view = document.createElement('div');
+        const digest = document.createElement('span');
+        digest.textContent = sha.slice(0, 8) + '…';
+        digest.title = sha;
+        view.append(label + ' — prepared on the server ', digest);
+      }
+      view.className = 'native-step-input';
+      card.insertBefore(view, card.querySelector('.native-step-output') || card.querySelector('.native-step-record'));
+    });
   }
   // The Events tab timeline, fed from the durable stream (rows are textContent-only; see addEvent).
   function timeline(event) {
@@ -326,6 +354,12 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     const sha = event.output_artifact?.sha256;
     if (typeof sha === 'string' && /^[a-f0-9]{64}$/.test(sha)) card.dataset.sha = sha;
     card.dataset.schema = safe(event.output_schema);
+    // The step's input is resolved the same way, from the sent request or an earlier step's output (#1123).
+    const inputSha = event.input_artifact?.sha256;
+    if (typeof inputSha === 'string' && /^[a-f0-9]{64}$/.test(inputSha)) {
+      card.dataset.inputSha = inputSha;
+      card.dataset.inputSchema = safe(event.input_schema);
+    }
     const record = document.createElement('details');
     record.className = 'native-step-record';
     const recordLabel = document.createElement('summary');

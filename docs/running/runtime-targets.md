@@ -981,6 +981,12 @@ actual `child_invocation_id`, `parent_invocation_id`, and `readback_verified=tru
 Local steps have no child ID. Names/statuses are bounded to 128 safe characters;
 missing or unsupported values are null, never inferred.
 
+The native chat page draws one card per step event. It shows the step's input and
+output payloads by matching each artifact sha against data the page already holds:
+the request it sent and the run's recorded `apx_data_parts`. Events stay digest-only.
+An input the page can't match (one rebuilt by `input_preparation`) shows as
+"prepared on the server" with its sha.
+
 Native application events carry persisted `recorded_at` (UTC) and
 `timestamp_source="application_emit"`. The installed SDK does not expose event
 or record timestamps; APX records the server emission time before persistence.
