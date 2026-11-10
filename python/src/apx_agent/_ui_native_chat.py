@@ -275,20 +275,50 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     details.append(summary, output);
     resultPanel.appendChild(details);
   }
+  // Data parts by sha: how a step card finds the payloads its event names by digest.
+  const indexParts = (parts, bySha) => parts.forEach(part => {
+    const sha = part?.metadata?.sha256;
+    if (typeof sha === 'string') bySha[sha] = part.data;
+  });
+  const disclosure = (className, label, value) => {
+    const view = document.createElement('details');
+    view.className = className;
+    const summary = document.createElement('summary');
+    summary.textContent = label;
+    view.append(summary, tree(value));
+    return view;
+  };
   function attachOutputs(messages) {
     const bySha = {};
-    messages.forEach(m => (m.additional_kwargs?.apx_data_parts || []).forEach(part => {
-      const sha = part?.metadata?.sha256;
-      if (typeof sha === 'string') bySha[sha] = part.data;
-    }));
+    messages.forEach(m => indexParts(m.additional_kwargs?.apx_data_parts || [], bySha));
     cards.querySelectorAll('.native-execution-card[data-sha]').forEach(card => {
       if (!(card.dataset.sha in bySha) || card.querySelector('.native-step-output')) return;
-      const view = document.createElement('details');
-      view.className = 'native-step-output';
-      const label = document.createElement('summary');
-      label.textContent = 'Output · ' + card.dataset.schema;
-      view.append(label, tree(bySha[card.dataset.sha]));
-      card.insertBefore(view, card.querySelector('.native-step-record'));
+      card.insertBefore(disclosure('native-step-output', 'Output · ' + card.dataset.schema, bySha[card.dataset.sha]),
+        card.querySelector('.native-step-record'));
+    });
+    attachInputs(bySha);
+  }
+  // A step's input is the request this run sent or an earlier step's output; both are on the page (#1123).
+  function attachInputs(bySha) {
+    let sent = [];
+    // The sent input lives only in the exact request wire; parse a copy for display.
+    try { sent = JSON.parse(saved?.requestWire || '{}').input?.apx_data_parts || []; } catch (_) { /* Not a typed request. */ }
+    indexParts(sent, bySha);
+    cards.querySelectorAll('.native-execution-card[data-input-sha]').forEach(card => {
+      if (card.querySelector('.native-step-input')) return;
+      const sha = card.dataset.inputSha, label = 'Input · ' + card.dataset.inputSchema;
+      let view;
+      if (sha in bySha) view = disclosure('native-step-input', label, bySha[sha]);
+      else {
+        // Only the digest is on this page (e.g. an input rebuilt by input_preparation); say no more than that.
+        view = document.createElement('div');
+        view.className = 'native-step-input';
+        const digest = document.createElement('span');
+        digest.textContent = sha.slice(0, 8) + '…';
+        digest.title = sha;
+        view.append(label + ' — not on this page ', digest);
+      }
+      card.insertBefore(view, card.querySelector('.native-step-output') || card.querySelector('.native-step-record'));
     });
   }
   // The Events tab timeline, fed from the durable stream (rows are textContent-only; see addEvent).
@@ -326,6 +356,12 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     const sha = event.output_artifact?.sha256;
     if (typeof sha === 'string' && /^[a-f0-9]{64}$/.test(sha)) card.dataset.sha = sha;
     card.dataset.schema = safe(event.output_schema);
+    // A declared input (schema + digest) is resolved the same way, from the sent request or an earlier output.
+    const inputSha = event.input_artifact?.sha256;
+    if (typeof inputSha === 'string' && /^[a-f0-9]{64}$/.test(inputSha) && safe(event.input_schema) !== 'unavailable') {
+      card.dataset.inputSha = inputSha;
+      card.dataset.inputSchema = safe(event.input_schema);
+    }
     const record = document.createElement('details');
     record.className = 'native-step-record';
     const recordLabel = document.createElement('summary');

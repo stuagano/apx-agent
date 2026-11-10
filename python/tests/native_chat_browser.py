@@ -937,3 +937,66 @@ def test_native_declared_table_and_slots_render_in_the_answer_bubble(browser_cha
     assert page.locator(".msg.assistant img, .msg.assistant table a").count() == 0
     assert page.evaluate("window.injected") is None
     assert tables.first.evaluate("t => getComputedStyle(t).overflowX") == "auto"
+
+
+# --- Step cards show the input each step received (#1123), resolved by sha from data the page holds.
+
+def _step(event, location="local", **kw):
+    event.clear()
+    event.update(type="agent.step.completed", step="score", location=location, invocation_id="parent-id",
+                 transport_sender="fleet", transport_status="completed", schema_validated=True,
+                 output_schema="Score", output_artifact={"artifact_id": "out", "sha256": "b" * 64}, **kw)
+
+
+def test_native_step_input_resolves_from_the_sent_request(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    state["input_schema"] = BrowserInput.model_json_schema()
+    page.reload()  # The page reads the declared schema on load.
+    sent = native_data_part(BrowserInput, {"amount": 5, "as_of": "2026-11-10"})
+    _step(event, input_schema="BrowserInput", input_artifact=dict(sent["metadata"]))
+    submit(page, '{"amount": 5, "as_of": "2026-11-10"}')
+    card = page.locator(".native-execution-card")
+    view = card.locator("details.native-step-input")
+    expect(view.locator("summary")).to_have_text("Input · BrowserInput")
+    assert view.get_attribute("open") is None  # collapsed until someone looks
+    view.locator("summary").click()
+    expect(view).to_contain_text("amount 5")
+    page.reload()
+    expect(page.locator(".native-execution-card details.native-step-input")).to_contain_text("amount 5")
+
+
+@pytest.mark.parametrize("location", ["local", "remote"])
+def test_native_step_input_resolves_from_an_earlier_output(browser_chat, location):
+    # A remote sub-agent's input is what the parent sent it: an earlier output on this page.
+    page, posts, reads, state, event = browser_chat
+    attack = '<img src=x onerror="window.injected=1">'
+    _step(event, location, input_schema="Quote", input_artifact={"artifact_id": "q", "sha256": "c" * 64})
+    state["output"]["messages"][0]["additional_kwargs"] = {"apx_data_parts": [
+        {"kind": "data", "data": {"rate": 4.8, "note": attack}, "metadata": {"artifact_id": "q", "sha256": "c" * 64}},
+        {"kind": "data", "data": {"score": 7}, "metadata": {"artifact_id": "out", "sha256": "b" * 64}}]}
+    submit(page)
+    card = page.locator(".native-execution-card")
+    expect(card.locator("details.native-step-input")).to_contain_text("rate 4.8")
+    expect(card.locator("details.native-step-input")).to_contain_text(attack)
+    summaries = card.locator("details.native-step-input > summary, details.native-step-output > summary")
+    expect(summaries).to_have_text(["Input · Quote", "Output · Score"])
+    assert card.locator("img, [onerror]").count() == 0
+    assert page.evaluate("window.injected") is None
+
+
+def test_native_step_input_that_is_not_on_the_page_says_so(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _step(event, input_schema="Prepared", input_artifact={"artifact_id": "p", "sha256": "a" * 64})
+    submit(page)
+    note = page.locator(".native-execution-card .native-step-input")
+    expect(note).to_have_text("Input · Prepared — not on this page aaaaaaaa…")
+    assert note.locator("span").get_attribute("title") == "a" * 64
+
+
+def test_native_step_without_an_input_schema_shows_no_input(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _step(event, input_artifact={"artifact_id": "x", "sha256": "c" * 64})
+    submit(page)
+    expect(page.locator(".native-execution-card")).to_have_count(1)
+    expect(page.locator(".native-status")).to_have_text("Completed")  # attachment has run
+    expect(page.locator(".native-execution-card .native-step-input")).to_have_count(0)

@@ -6,6 +6,13 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Native step cards show each step's input (#1123).** Above the output, a card
+  now has a collapsible **Input** section with the payload the step received. The
+  page resolves it by sha from the request it sent or an earlier step's output, so
+  remote sub-agent hand-offs are readable without opening the child App. An input
+  rebuilt by `input_preparation` shows "not on this page" with its sha. No
+  server or wire change.
+
 - **App Space deploys refuse user-identity tools in a role-required space
   (#1070).** A space that requires a role (`assume_group_id`) runs its apps with
   that role's permissions, not the calling user's. Deploy now fails, naming each
