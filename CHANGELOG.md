@@ -10,7 +10,7 @@ All notable changes to apx-agent. Format loosely follows
   now has a collapsible **Input** section with the payload the step received. The
   page resolves it by sha from the request it sent or an earlier step's output, so
   remote sub-agent hand-offs are readable without opening the child App. An input
-  rebuilt by `input_preparation` shows "prepared on the server" with its sha. No
+  rebuilt by `input_preparation` shows "not on this page" with its sha. No
   server or wire change.
 
 - **App Space deploys refuse user-identity tools in a role-required space

@@ -985,7 +985,7 @@ The native chat page draws one card per step event. It shows the step's input an
 output payloads by matching each artifact sha against data the page already holds:
 the request it sent and the run's recorded `apx_data_parts`. Events stay digest-only.
 An input the page can't match (one rebuilt by `input_preparation`) shows as
-"prepared on the server" with its sha.
+"not on this page" with its sha.
 
 Native application events carry persisted `recorded_at` (UTC) and
 `timestamp_source="application_emit"`. The installed SDK does not expose event
