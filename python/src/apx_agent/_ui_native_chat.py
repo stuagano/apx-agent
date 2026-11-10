@@ -42,6 +42,9 @@ def native_input_router(agent: Any) -> APIRouter:
 NATIVE_CHAT_SCRIPT = r"""
 <style>
 .native-execution-card {border: 1px solid var(--apx-border); border-radius: 8px; padding: 12px; margin: 8px 0; overflow-wrap: anywhere;}
+.native-input-form {display: grid; gap: 6px; margin: 0 0 8px; padding: 8px 12px; border: 1px solid var(--apx-border); border-radius: 8px;}
+.native-input-form .native-field {display: grid; grid-template-columns: minmax(8em, 14em) 1fr; gap: 2px 8px; align-items: center;}
+.native-input-form small {grid-column: 2; color: var(--apx-muted);}
 .native-event, .native-output, .native-input-schema pre {white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto;}
 .native-validation {color: var(--apx-err);}
 .native-status-row {display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 12px 0;}
@@ -99,10 +102,108 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       form.before(details);
       input.placeholder = 'Enter a JSON object matching the declared schema';
       input.setAttribute('aria-label', 'Declared request JSON');
+      const fields = flatFields(schema);
+      if (fields) form.before(inputForm(fields));
     }
     ready = true;
     send.disabled = busy || Boolean(saved && !saved.terminal);
   }).catch(() => { validation.textContent = 'Input declaration unavailable. Reload to check before submitting.'; });
+  // A flat declared schema gets a generated form (#1124). It only writes the JSON the textarea sends,
+  // so strict server validation stays the one source of truth; anything nested keeps the JSON box.
+  function flatFields(schema) {
+    const props = schema.properties, defs = schema.$defs || {};
+    if (schema.type !== 'object' || !props || typeof props !== 'object') return null;
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    const fields = [];
+    for (const [name, raw] of Object.entries(props)) {
+      let prop = raw;
+      const options = Array.isArray(prop?.anyOf) ? prop.anyOf : null;
+      // pydantic's optional form: anyOf [T, {type: null}].
+      if (options) prop = options.length === 2 && options.some(p => p?.type === 'null') ? options.find(p => p?.type !== 'null') : null;
+      if (typeof prop?.$ref === 'string') prop = prop.$ref.startsWith('#/$defs/') ? defs[prop.$ref.slice(8)] : null;
+      if (!prop || typeof prop !== 'object') return null;
+      const kind = Array.isArray(prop.enum) ? (prop.enum.every(v => typeof v === 'string') ? 'enum' : null)
+        : prop.type === 'string' ? ({date: 'date', 'date-time': 'datetime-local'}[prop.format] || 'text')
+        : ['integer', 'number', 'boolean'].includes(prop.type) ? prop.type : null;
+      if (!kind) return null;
+      // A $ref'd enum has no field title, and its own title is a type name, so fall back to the field name.
+      const title = typeof raw.title === 'string' ? raw.title
+        : name.split('_').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+      const description = [raw.description, prop.description].find(t => typeof t === 'string');
+      fields.push({name, kind, title, description, options: prop.enum, required: required.has(name), value: raw.default ?? prop.default});
+    }
+    return fields.length && fields.length <= 32 ? fields : null;
+  }
+  function inputForm(fields) {
+    const box = document.createElement('fieldset');
+    box.className = 'native-input-form';
+    const legend = document.createElement('legend');
+    legend.textContent = 'Request';
+    box.appendChild(legend);
+    const controls = {};
+    fields.forEach((field, i) => {
+      const row = document.createElement('div');
+      row.className = 'native-field';
+      const label = document.createElement('label');
+      label.htmlFor = 'native-field-' + i;
+      label.textContent = field.title;
+      let control;
+      if (field.kind === 'enum') {
+        control = document.createElement('select');
+        // No preselection without a default: a required enum must be chosen.
+        (field.value === undefined || field.value === null ? ['', ...field.options] : field.options).forEach(value => {
+          const option = document.createElement('option');
+          option.value = option.textContent = value;
+          control.appendChild(option);
+        });
+      } else {
+        control = document.createElement('input');
+        control.type = {integer: 'number', number: 'number', boolean: 'checkbox'}[field.kind] || field.kind;
+        if (field.kind === 'integer') control.step = '1';
+        if (field.kind === 'number') control.step = 'any';
+      }
+      control.id = label.htmlFor;
+      if (field.kind === 'boolean') control.checked = field.value === true;
+      else if (field.value !== undefined && field.value !== null) control.value = String(field.value);
+      if (field.required && field.kind !== 'boolean') control.required = true;
+      control.addEventListener(field.kind === 'boolean' || field.kind === 'enum' ? 'change' : 'input', write);
+      controls[field.name] = control;
+      row.append(label, control);
+      if (field.description) {
+        const hint = document.createElement('small');
+        hint.id = control.id + '-hint';
+        hint.textContent = field.description;
+        control.setAttribute('aria-describedby', hint.id);
+        row.appendChild(hint);
+      }
+      box.appendChild(row);
+    });
+    // Blank fields are omitted (defaults apply; a missing required one is reported by the server).
+    // Number text goes on the wire as typed, so large integers keep every digit.
+    function wire() {
+      return '{' + fields.flatMap(field => {
+        const control = controls[field.name], key = JSON.stringify(field.name) + ': ';
+        if (field.kind === 'boolean') return [key + control.checked];
+        if (control.value === '') return [];
+        const numeric = ['integer', 'number'].includes(field.kind) && /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(control.value);
+        return [key + (numeric ? control.value : JSON.stringify(control.value))];
+      }).join(', ') + '}';
+    }
+    function write() { input.value = wire(); }
+    // Typing JSON in the box updates the form, so either can be edited.
+    input.addEventListener('input', () => {
+      let value;
+      try { value = JSON.parse(input.value); } catch (_) { return; }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      fields.forEach(field => {
+        const control = controls[field.name], item = value[field.name];
+        if (field.kind === 'boolean') control.checked = item === true;
+        else control.value = item === undefined || item === null || typeof item === 'object' ? '' : String(item);
+      });
+    });
+    if (wire() !== '{}') write();
+    return box;
+  }
   const persist = () => sessionStorage.setItem(key, JSON.stringify(saved));
   const requestText = () => saved.userText ?? (saved.request.input.apx_data_parts
     ? JSON.stringify(saved.request.input.apx_data_parts[0].data, null, 2) : saved.request.input.messages[0].content);

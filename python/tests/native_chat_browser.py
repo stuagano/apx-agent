@@ -1000,3 +1000,109 @@ def test_native_step_without_an_input_schema_shows_no_input(browser_chat):
     expect(page.locator(".native-execution-card")).to_have_count(1)
     expect(page.locator(".native-status")).to_have_text("Completed")  # attachment has run
     expect(page.locator(".native-execution-card .native-step-input")).to_have_count(0)
+
+
+# --- A generated form for flat typed-input schemas (#1124). It writes the JSON the textarea sends.
+
+import datetime as _dt
+import enum as _enum
+from typing import Literal as _Literal
+
+from pydantic import Field as _Field
+
+
+class _Tier(str, _enum.Enum):
+    gold = "gold"
+    silver = "silver"
+
+
+class FormInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = _Field(title="Customer <b>name</b>", description='Legal <img src=x onerror="window.injected=1">')
+    amount: int
+    rate: float | None = None
+    active: bool = True
+    tier: _Tier
+    kind: _Literal["a", "b"] = "a"
+    as_of: _dt.date
+    at: _dt.datetime | None = None
+
+
+class NestedInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[int]
+
+
+def _with_schema(page, state, model):
+    state["input_schema"] = model.model_json_schema()
+    page.reload()  # The page reads the declared schema on load.
+
+
+def test_native_flat_schema_renders_a_labelled_form(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _with_schema(page, state, FormInput)
+    form = page.locator(".native-input-form")
+    expect(form).to_be_visible()
+    expect(form.get_by_label("Customer <b>name</b>", exact=True)).to_have_attribute("type", "text")
+    expect(form).to_contain_text('Legal <img src=x onerror="window.injected=1">')
+    expect(form.get_by_label("Amount", exact=True)).to_have_attribute("type", "number")
+    expect(form.get_by_label("Amount", exact=True)).to_have_attribute("step", "1")
+    expect(form.get_by_label("Rate", exact=True)).to_have_attribute("step", "any")
+    expect(form.get_by_label("Active", exact=True)).to_be_checked()
+    tier = form.get_by_role("combobox", name="Tier", exact=True)
+    assert tier.evaluate("s => [...s.options].map(o => o.value)") == ["", "gold", "silver"]
+    expect(form.get_by_label("Kind", exact=True)).to_have_value("a")
+    expect(form.get_by_label("As Of", exact=True)).to_have_attribute("type", "date")
+    expect(form.get_by_label("At", exact=True)).to_have_attribute("type", "datetime-local")
+    for required in ["Customer <b>name</b>", "Amount", "Tier", "As Of"]:
+        expect(form.get_by_label(required, exact=True)).to_have_attribute("required", "")
+    expect(form.get_by_label("Rate", exact=True)).not_to_have_attribute("required", "")
+    assert form.locator("img, b, [onerror]").count() == 0
+    assert page.evaluate("window.injected") is None
+
+
+def test_native_form_sends_the_declared_json(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _with_schema(page, state, BrowserInput)
+    form = page.locator(".native-input-form")
+    form.get_by_label("Amount", exact=True).fill("4")
+    form.get_by_label("As Of", exact=True).fill("2026-10-22")
+    assert json.loads(page.locator("form textarea").input_value()) == {"amount": 4, "as_of": "2026-10-22"}
+    page.locator("button[type=submit]").click()
+    expect(page.locator(".msg.assistant")).to_have_text("Recorded proof")
+    payload = {"amount": 4, "as_of": "2026-10-22"}
+    assert posts[0]["input"] == {"messages": [], "apx_data_parts": [native_data_part(BrowserInput, payload)]}
+
+
+def test_native_form_blank_required_field_is_reported_by_the_server(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _with_schema(page, state, BrowserInput)
+    page.locator(".native-input-form").get_by_label("Amount", exact=True).fill("4")
+    assert json.loads(page.locator("form textarea").input_value()) == {"amount": 4}  # blanks are omitted
+    page.locator("button[type=submit]").click()
+    expect(page.locator(".native-validation")).to_contain_text("as_of")
+    assert posts == []
+
+
+def test_native_form_follows_json_typed_in_the_textarea(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _with_schema(page, state, BrowserInput)
+    page.locator("form textarea").fill('{"amount": 9, "as_of": "2026-01-02"}')
+    form = page.locator(".native-input-form")
+    expect(form.get_by_label("Amount", exact=True)).to_have_value("9")
+    expect(form.get_by_label("As Of", exact=True)).to_have_value("2026-01-02")
+
+
+def test_native_nested_schema_keeps_the_json_box(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _with_schema(page, state, NestedInput)
+    expect(page.locator(".native-input-schema")).to_contain_text("items")
+    expect(page.locator(".native-input-form")).to_have_count(0)
+    expect(page.locator("form textarea")).to_be_visible()
+
+
+def test_native_form_keeps_every_digit_of_a_large_integer(browser_chat):
+    page, posts, reads, state, event = browser_chat
+    _with_schema(page, state, BrowserInput)
+    page.locator(".native-input-form").get_by_label("Amount", exact=True).fill("9007199254740993")
+    assert page.locator("form textarea").input_value() == '{"amount": 9007199254740993}'
