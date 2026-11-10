@@ -73,3 +73,17 @@ if missing.
 For the A2A trust boundary across agent hops, see
 [`docs/design/a2a-trust-model.md`](docs/design/a2a-trust-model.md): trust is
 per-hop user OBO; SP-to-SP CAN_USE is infra reachability, not access control.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `stuagano/apx-agent` (public). See `docs/agent-skills/issue-tracker.md`.
+
+### Triage labels
+
+The five default roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agent-skills/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root, created lazily. See `docs/agent-skills/domain.md`.
