@@ -109,6 +109,18 @@ def run_agentbricks_dev(project: Path, config: AgentConfig, *, port: int) -> int
         app_yaml.unlink(missing_ok=True)
 
 
+def refuse_root_manifest(cwd: Path, deployment: str) -> None:
+    """Deploy generates the manifest in ``.build``; refuse an authored root one.
+
+    An APX-marker ``app.yaml`` is left by a killed ``agents run`` and never staged, so it is tolerated.
+    """
+    for filename in ("app.yaml", "app.yml"):
+        path = cwd / filename
+        stale_run = filename == "app.yaml" and path.is_file() and not path.is_symlink() and path.read_text().startswith(MARKER)
+        if (path.exists() or path.is_symlink()) and not stale_run:
+            raise click.ClickException(f"{deployment} generates {filename} in .build; refusing to ignore an existing root manifest.")
+
+
 def stage_native_source(cwd: Path, *, include: tuple[str, ...] = ()) -> None:
     """Stage generated project sources; rebuild only an APX-owned staging tree.
 

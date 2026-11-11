@@ -144,12 +144,10 @@ def preflight_apps_api(cwd: Path, config: Any, agent: Any) -> str:
 
 def _stage(cwd: Path, config: Any, agent: Any, plan: AuthorizationPlan, log: Callable[[str], None]) -> Path:
     from ._agent_toml import stage_agent_toml
-    from ._agentbricks_deploy import stage_native_source
+    from ._agentbricks_deploy import refuse_root_manifest, stage_native_source
     from ._durable_agent import build_native_manifest
 
-    for filename in ("app.yaml", "app.yml"):
-        if (cwd / filename).exists() or (cwd / filename).is_symlink():
-            raise click.ClickException(f"Apps API deployment generates {filename} in .build; refusing to ignore an existing root manifest.")
+    refuse_root_manifest(cwd, "Apps API deployment")
     stage_native_source(cwd, include=tuple(config.deploy.include))
     source = cwd / ".build"
     if not source.is_dir() or not source.resolve().is_relative_to(cwd.resolve()):

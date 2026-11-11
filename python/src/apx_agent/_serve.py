@@ -42,6 +42,7 @@ class _RelativeRedirects:
 
 def create_app() -> Any:
     """Compile the current project's declared native runtime at server startup."""
+    from ._agents import LlmAgent
     from ._defaults import _make_workspace_client
     from ._inspection import _load_agent_config
     from ._runtime_targets import compile_agent
@@ -60,8 +61,17 @@ def create_app() -> Any:
     if config.target != "durable_agent_server":
         raise ValueError(_NOT_DURABLE)
     model = os.environ.get("APX_MODEL", config.model)
+    checkpointer = None
+    if (os.environ.get("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL") == "true" and isinstance(agent, LlmAgent)
+            and config.session is not None and config.session.type == "managed"):
+        # agentbricks dev keeps sessions in-process; a declared store binds only at deploy (#1145).
+        # ponytail: in-memory runtime store too, so recovery has nothing to replay from locally.
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        config = config.model_copy(update={"session": None, "recovery": False})
+        checkpointer = InMemorySaver()
     app = compile_agent(
-        agent, config=config, model=model,
+        agent, config=config, model=model, checkpointer=checkpointer,
         service_ws=ws, session_store=os.environ.get("AGENT_SESSION_STORE"), project_root=Path.cwd(),
     )
     app.state.workspace_client = ws

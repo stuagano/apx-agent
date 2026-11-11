@@ -4296,11 +4296,11 @@ def _echo_scaffold_next_steps(
     default=None,
     help=(
         "Deployment destination: 'apps' generates a native Agent Bricks project. "
-        "Use --runtime responses_agent for the compatibility Bundle and dev UI."
+        "--runtime responses_agent (deprecated) keeps the compatibility Bundle and dev UI."
     ),
 )
 @click.option("--runtime", type=click.Choice(["durable_agent_server", "responses_agent"]), default=None,
-              help="Apps runtime: durable_agent_server for new projects; existing projects retain their runtime.")
+              help="Apps runtime: durable_agent_server for new projects; responses_agent is deprecated. Existing projects retain their runtime.")
 @click.option("--force", is_flag=True, help="Overwrite existing files.")
 @click.option(
     "--here", is_flag=True,
@@ -9901,6 +9901,10 @@ def _deploy_apps_impl(
         effective_config, preloaded_agent = _config_from_project_or_agent(cwd, module)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    if effective_config is not None:
+        from ._runtime_targets import warn_if_deprecated_target
+
+        warn_if_deprecated_target(effective_config.target)
     native_smoke_input = None
     if smoke_input is not None and (effective_config is None or effective_config.target != "durable_agent_server"):
         raise click.ClickException("--smoke-input is only supported for native Apps deployments.")
@@ -9982,11 +9986,9 @@ def _deploy_apps_impl(
     _preflight_apps(cwd, native=native_direct, durable=effective_config is not None
                     and effective_config.target == "durable_agent_server")
     if native_direct:
-        from ._agentbricks_deploy import compile_native_app
+        from ._agentbricks_deploy import compile_native_app, refuse_root_manifest
         assert effective_config is not None
-        for filename in ("app.yaml", "app.yml"):
-            if (cwd / filename).exists() or (cwd / filename).is_symlink():
-                raise click.ClickException(f"Native APX deployment generates {filename} in .build; refusing to ignore an existing root manifest.")
+        refuse_root_manifest(cwd, "Native APX deployment")
         app = compile_native_app(effective_config)
         doc: dict[str, Any] = {}
         bundle_key, resolved_app_name = effective_config.name, app["name"]
