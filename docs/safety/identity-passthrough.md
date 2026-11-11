@@ -59,10 +59,57 @@ machine-to-machine OAuth access token (`Authorization: Bearer …`). Use
 - **Not an A2A hop.** This is how an external caller (eval, job, script)
   reaches the Apps URL. It is separate from A2A agent-to-agent hops, which
   forward the caller's identity per hop.
-- **The inbound SP is not the data principal.** An M2M caller's service
-  principal only gets the request through the Apps front door. Trust stays
-  per-hop user OBO; see
+- **The caller is the data principal, user or service principal.** The Apps
+  proxy forwards a token for *whoever called*, in `X-Forwarded-Access-Token`,
+  with `X-Forwarded-User` = the user, or `<sp-id>@<workspace-id>` for a service
+  principal. The durable target treats both the same way: tools that run on
+  behalf of the caller run under that principal's Unity Catalog grants, and its
+  runs are isolated from other callers
+  (`test_native_service_principal_caller_is_its_own_request_principal`).
+  `CAN_USE` on the App only lets the caller through the front door; it grants
+  nothing in UC. Across A2A hops trust stays per-hop user OBO; see
   [../design/a2a-trust-model.md](../design/a2a-trust-model.md).
+
+### What the app receives
+
+Observed on a deployed App, calling it with a user token and with a service
+principal's M2M token:
+
+| | User caller | Service-principal caller |
+|---|---|---|
+| `X-Forwarded-Access-Token` | yes | yes |
+| Token `sub` / who it acts as downstream | the user | the service principal |
+| Token scopes | **downscoped** to the App's `user_api_scopes` (an `all-apis` CLI token arrives with only the declared scopes) | same |
+| Caller's `Authorization` header | stripped before the app | stripped before the app |
+| No `CAN_USE` on the App | — | **HTTP 401** (not 403) |
+
+Declare the scopes the tools need (for example `sql`) in `user_api_scopes`;
+the forwarded token carries nothing else.
+
+### Per-tenant principals through token federation
+
+A multi-tenant caller (a gateway or another service, outside Databricks) can
+reach the App as a **service principal per tenant** without storing any
+Databricks secret:
+
+1. Create one service principal per tenant, granted only that tenant's catalog.
+2. On each, add a [service principal federation policy](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-federation-policy)
+   that trusts your identity provider's issuer, requires an audience such as
+   `databricks`, and matches a tenant claim (`subject_claim: "tenant_id"`,
+   `subject: "<tenant>"`).
+3. The caller [exchanges](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-federation-exchange)
+   the end user's identity-provider JWT at `/oidc/v1/token` with
+   `client_id=<tenant service principal>`, then calls the App with the
+   resulting token.
+
+The exchange succeeds only if the JWT is signed by that issuer, carries the
+audience, and its tenant claim matches that service principal's policy. A JWT
+for tenant B presented for tenant A's service principal is rejected
+(`TOKEN_SUBJECT_INVALID`), as is a wrong audience (`TOKEN_AUDIENCE_INVALID`)
+or an edited token (`TOKEN_INVALID`). Isolation is then enforced by UC grants,
+not by app code. Trade-offs: access is per tenant, not per user. The docs
+recommend `sub` as the subject claim, so matching a tenant claim is a
+deliberate exception. Each service principal allows at most 20 federation policies.
 
 ## App service principal and ACLs
 
@@ -79,10 +126,12 @@ for a blocked scope.
 
 ## M2M federation
 
-Workload identity federation without a client secret is unsupported. The app
-principal path is injected `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`
-(`auth_type="oauth-m2m"`). Do not fall back to `DATABRICKS_TOKEN` for that
-principal.
+This is about the **app's own** principal. Workload identity federation without
+a client secret is unsupported for it: the app principal path is injected
+`DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET` (`auth_type="oauth-m2m"`).
+Do not fall back to `DATABRICKS_TOKEN` for that principal. Callers *into* the
+App can use federation; see
+[per-tenant principals](#per-tenant-principals-through-token-federation).
 
 ## Scope limit: cross-app model calls
 

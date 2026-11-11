@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+.env
+.pytest_cache/
+# written by `agentbricks deploy` (contains workspace and service-principal IDs)
+.agentbricks/deploy-*

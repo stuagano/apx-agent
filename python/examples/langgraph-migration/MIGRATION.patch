@@ -1,0 +1,18 @@
+--- before/rca/graph.py
++++ after/rca/graph.py
+@@ -16,6 +16,7 @@
+     "globex": {"forecast_accuracy": 0.91, "fill_rate": 0.81, "inventory_turns": 3.2},
+ }
+ THRESHOLDS = {"forecast_accuracy": 0.8, "fill_rate": 0.9, "inventory_turns": 5.0}
++BEFORE_ANALYZE = lambda: None  # test hook; the runtime adapter sets it
+ 
+ 
+ class RcaState(TypedDict):
+@@ -34,6 +35,7 @@
+ 
+ 
+ def analyze(state: RcaState) -> dict:
++    BEFORE_ANALYZE()
+     prompt = (
+         f"Tenant {state['tenant']} KPIs: {state['kpis']}. Thresholds: {THRESHOLDS}. "
+         f"Anomalous: {state['anomalies']}. Give a 3-bullet root-cause hypothesis."
