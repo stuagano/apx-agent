@@ -19,6 +19,14 @@ composition or policy wiring, or when you need to move between supported serving
 compiler currently supports `responses_agent` and `durable_agent_server`;
 the compatibility checks below define their limits.
 
+> **Deprecated: `responses_agent`.** `durable_agent_server` is APX's only
+> runtime going forward ([ADR 0001](../adr/0001-build-on-agent-bricks.md)).
+> `responses_agent` still works unchanged, but compiling or deploying it emits a
+> `FutureWarning`, and it will be removed after one release. Move to
+> `target = "durable_agent_server"` with a `managed` session.
+> The bundled coworker gallery templates still declare `responses_agent` with
+> Lakebase sessions; they move when the Lakebase stores are deprecated (#1135).
+
 ## Deploy custom agents through Agent Bricks
 
 **Declare the agent in APX; let Agent Bricks manage its deployment.** APX
@@ -122,7 +130,7 @@ select that deployment explicitly.
 
 Apps is the deployment destination. The server determines how requests execute.
 New Apps projects default to `durable_agent_server`. To create a compatibility
-project with MLflow AgentServer and Bundle deployment, run
+project with MLflow AgentServer and Bundle deployment (deprecated), run
 `apx-agent agents scaffold my-agent --runtime responses_agent`.
 
 A `durable_agent_server` App with ordinary text agents serves apx's chat at `/` and,
@@ -170,8 +178,8 @@ runtime change.
 
 This is a breaking change for existing projects that omit `target` and declare a
 `lakebase` or `inmemory` session. They fail to load with an error that
-names the fix: add `target = "responses_agent"` to keep that session backend, or
-switch to `session.type = "managed"`.
+names the fix: switch to `session.type = "managed"`, or add the deprecated
+`target = "responses_agent"` to keep that session backend.
 Re-scaffolding with `--force` preserves the existing runtime and refuses a
 runtime change. Gallery declarations with an explicit target also retain it
 unless `--runtime` is supplied. Unsupported state/runtime combinations fail
