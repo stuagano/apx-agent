@@ -12,7 +12,7 @@ to pick one; the agent's declaration selects it, checked in this order:
 | # | When | Path | Recorded as |
 |---|---|---|---|
 | 1 | `[tool.apx.deploy] backend = "apps_api"` | **Apps API.** APX calls the Databricks Apps API directly in seven get-or-create steps; no Agent Bricks CLI and no Bundle. Keeps the declared App name. Requires `target = "durable_agent_server"` and `deploy.entrypoint`; any other target is rejected, not routed to another path. | `apps_api` |
-| 2 | `target` is `durable_agent_server` (the default when omitted) and no `deploy.space` | **Agent Bricks CLI.** APX compiles `.build/agent.toml` and `.build/app.yaml`, then runs `agentbricks deploy`. App names get the `agent-bricks-` prefix (30 characters max). An existing `databricks.yml` only supplies its build script and variables. | `agentbricks` |
+| 2 | `target` is `durable_agent_server` (the default when omitted) and no `deploy.space` | **Agent Bricks CLI.** APX stages the project's `agent.toml`, `app.yaml` and `server.py` into `.build/`, then runs `agentbricks deploy`. App names get the `agent-bricks-` prefix (30 characters max). An existing `databricks.yml` only supplies its build script and variables. | `agentbricks` |
 | 3 | anything else: `target = "responses_agent"`, or a durable agent with an explicit `deploy.space` | **Databricks Bundle.** `databricks bundle deploy` + `bundle run` against the project's `databricks.yml`, described below. | `databricks_bundle` |
 
 ```toml

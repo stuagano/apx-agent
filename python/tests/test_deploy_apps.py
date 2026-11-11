@@ -1114,12 +1114,13 @@ def test_native_deploy_hands_rollout_to_agentbricks(
         # AgentBricks' upload omits uv.lock and Apps installs nothing from a bare
         # pyproject.toml, so the native command must install deps itself (uv run).
         assert runtime["command"] == (["python", "-m", "agent_server.start_host"] if legacy_bundle
-                                      else ["uv", "run", "python", "-m", "apx_agent._serve"])
+                                      else ["uv", "run", "python", "server.py"])
         values = {entry["name"]: entry["value"] for entry in runtime["env"]}
         assert values["APX_MODEL"] == ("resolved-model" if legacy_bundle else "declared-model")
         if not legacy_bundle:
             from ctk import Artifact, verify
             verify(Artifact(str(source / "agent.py"), must_contain="LlmAgent"))
+            verify(Artifact(str(source / "server.py"), must_contain="DurableAgentServer("))
             assert values["EPHEMERAL"] == "synthetic-secret"
             assert (source / "pyproject.toml").is_file()
             assert "APX_APPS_HOST" not in values

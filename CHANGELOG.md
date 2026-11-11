@@ -6,6 +6,19 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Generated durable projects pass the real `agentbricks doctor` (#1133, ADR 0001).**
+  `generate_project` and `agents scaffold` now write a standard Agent Bricks
+  project: `agent.toml`, `.agentbricks/project.toml`, an APX-generated
+  `server.py` that constructs `DurableAgentServer` and takes its LangGraph
+  checkpointer from AgentKit, and an `app.yaml` that runs it. The project also
+  declares `databricks-agentbricks[langgraph]`. A conformance test runs the real
+  doctor on every template (base, data, coworker). **Breaking:** deploy no
+  longer generates `agent.toml` or `app.yaml`. Run
+  `apx-agent agents migrate-agent-toml` once in an older durable project, and
+  copy `server.py` and `app.yaml` from a fresh scaffold into an older native
+  project. Generation now imports the agent to compile `agent.toml`, so an
+  invalid declaration fails at generate time, and `$ENV` bindings must resolve
+  then, as they already must for `agents run` and deploy.
 - **`agents run` serves a declared managed session in-process (#1145).** Under
   `agentbricks dev` (`DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL=true`) the
   launcher replaces a declared managed session with an in-process checkpointer,

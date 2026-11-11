@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, fields
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from ._agents import BaseAgent, LlmAgent
@@ -194,6 +195,8 @@ def compile_agent(
     service_ws: Any | None = None,
     session_store: str | None = None,
     project_root: Path | None = None,
+    build_server: Callable[[Any, Any], Any] | None = None,
+    build_saver: Callable[[str], Any] | None = None,
 ) -> Any:
     """Compile one declaration into a peer host target, rejecting unmet needs.
 
@@ -254,4 +257,4 @@ def compile_agent(
     return compile_to_durable_agent_server(agent, model=model, service_ws=service_ws, checkpointer=checkpointer,
                                            session_store=report.session_store, require_user=report.user_identity_required,
                                            recovery=report.recovery_enabled, project_root=project_root,
-                                           config=config)
+                                           config=config, build_server=build_server, build_saver=build_saver)

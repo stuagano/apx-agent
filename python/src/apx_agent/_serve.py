@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from starlette.datastructures import Headers
@@ -40,8 +41,13 @@ class _RelativeRedirects:
         await self.app(scope, receive, _send)
 
 
-def create_app() -> Any:
-    """Compile the current project's declared native runtime at server startup."""
+def create_app(*, build_server: Callable[[Any, Any], Any] | None = None,
+               build_saver: Callable[[str], Any] | None = None) -> Any:
+    """Compile the current project's declared native runtime at server startup.
+
+    A generated ``server.py`` passes the two hooks so the project source itself
+    constructs ``DurableAgentServer`` and builds AgentKit's checkpointer.
+    """
     from ._agents import LlmAgent
     from ._defaults import _make_workspace_client
     from ._inspection import _load_agent_config
@@ -73,6 +79,7 @@ def create_app() -> Any:
     app = compile_agent(
         agent, config=config, model=model, checkpointer=checkpointer,
         service_ws=ws, session_store=os.environ.get("AGENT_SESSION_STORE"), project_root=Path.cwd(),
+        build_server=build_server, build_saver=build_saver,
     )
     app.state.workspace_client = ws
     return app
@@ -81,6 +88,13 @@ def create_app() -> Any:
 def create_served_app() -> _RelativeRedirects:
     """The Apps-served app: ``create_app`` behind the proxy-Host redirect fix."""
     return _RelativeRedirects(create_app())
+
+
+def serve(app: Any) -> None:
+    """Serve a project-constructed app (``server.py``) on the Databricks Apps port."""
+    import uvicorn
+
+    uvicorn.run(_RelativeRedirects(app), host="0.0.0.0", port=int(os.environ["DATABRICKS_APP_PORT"]))
 
 
 def main() -> None:

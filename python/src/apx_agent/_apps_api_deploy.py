@@ -145,7 +145,6 @@ def preflight_apps_api(cwd: Path, config: Any, agent: Any) -> str:
 def _stage(cwd: Path, config: Any, agent: Any, plan: AuthorizationPlan, log: Callable[[str], None]) -> Path:
     from ._agent_toml import stage_agent_toml
     from ._agentbricks_deploy import refuse_root_manifest, stage_native_source
-    from ._durable_agent import build_native_manifest
 
     refuse_root_manifest(cwd, "Apps API deployment")
     stage_native_source(cwd, include=tuple(config.deploy.include))
@@ -153,7 +152,7 @@ def _stage(cwd: Path, config: Any, agent: Any, plan: AuthorizationPlan, log: Cal
     if not source.is_dir() or not source.resolve().is_relative_to(cwd.resolve()):
         raise click.ClickException("The Apps API path requires a staged source directory inside the project.")
     try:
-        stage_agent_toml(cwd, source, lambda: build_native_manifest(config=config, authorization_plan=plan, agent=agent), log)
+        stage_agent_toml(cwd, source, log)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     return source

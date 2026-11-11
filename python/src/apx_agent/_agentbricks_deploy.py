@@ -74,8 +74,9 @@ def compile_native_app(config: AgentConfig) -> dict[str, Any]:
         "source_code_path": ".build",
         # AgentBricks' upload omits uv.lock and Apps installs nothing from a bare
         # pyproject.toml, so `uv run` installs the deps at start, as AgentBricks'
-        # own templates do (`uv run start-server`).
-        "config": {"command": ["uv", "run", "python", "-m", "apx_agent._serve"], "env": env},
+        # own templates do (`uv run start-server`). server.py is the generated
+        # project entrypoint that constructs DurableAgentServer.
+        "config": {"command": ["uv", "run", "python", "server.py"], "env": env},
     }
     bounds = declared_replica_bounds(config)
     if bounds is not None:
@@ -87,14 +88,16 @@ def compile_native_app(config: AgentConfig) -> dict[str, Any]:
 def run_agentbricks_dev(project: Path, config: AgentConfig, *, port: int) -> int:
     """Serve the project on ``agentbricks dev``: the deployed command and env, run locally.
 
-    ``agentbricks dev`` reads ``app.yaml``. The project root carries none (deploy
-    stages it in ``.build``), so write the compiled one for the run and remove it after.
+    ``agentbricks dev`` reads ``app.yaml``. Write the compiled one for the run, then
+    restore the project's generated ``app.yaml`` (deploy stages it), or remove it if
+    the project had none.
     """
     import yaml
 
     app_yaml = project / "app.yaml"
     if app_yaml.is_symlink() or (app_yaml.exists() and not app_yaml.read_text().startswith(MARKER)):
         raise click.ClickException("Refusing to overwrite an authored app.yaml; run `agentbricks dev` directly.")
+    previous = app_yaml.read_text() if app_yaml.exists() else None
     runtime = compile_native_app(config)["config"]
     # Deploy writes the agent-resolved model; here the server resolves it from the declaration.
     runtime["env"] = [entry for entry in runtime["env"] if entry["name"] != "APX_MODEL"]
@@ -106,7 +109,10 @@ def run_agentbricks_dev(project: Path, config: AgentConfig, *, port: int) -> int
             check=False,
         ).returncode
     finally:
-        app_yaml.unlink(missing_ok=True)
+        if previous is None:
+            app_yaml.unlink(missing_ok=True)
+        else:
+            app_yaml.write_text(previous)
 
 
 def refuse_root_manifest(cwd: Path, deployment: str) -> None:
@@ -130,8 +136,8 @@ def stage_native_source(cwd: Path, *, include: tuple[str, ...] = ()) -> None:
     source = cwd / ".build"
     ownership = source / ".apx-native-build"
     inputs = [cwd / name for name in (
-        "agent.py", "tools.py", "tools", "sub_agents", "agent_server", "scripts", "README.md",
-        ".apx-agent", ".apx", "skills",
+        "agent.py", "server.py", "tools.py", "tools", "sub_agents", "agent_server", "scripts", "README.md",
+        ".apx-agent", ".apx", ".agentbricks", "skills",
     )]
     inputs.extend(cwd.glob("apx_agent-*.whl"))
     extra = [_included_path(cwd, rel) for rel in include]

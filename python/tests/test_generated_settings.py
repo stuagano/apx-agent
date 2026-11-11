@@ -59,8 +59,7 @@ _SPECS = {
     "responses": {"name": "resp", "model": "m", "target": "responses_agent",
                   "session": {"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "resp"}},
     "policies": {"name": "pol", "model": "m",
-                 "service_policies": {"local_mode": "mirror", "native_mode": "off"},
-                 "bindings": {"wh": "warehouse-id"}},
+                 "service_policies": {"local_mode": "mirror", "native_mode": "off"}},
 }
 
 

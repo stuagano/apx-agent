@@ -76,6 +76,8 @@ def test_python_only_native_deploy_does_not_need_pyproject_table(
     (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(name='p', tools=[])\n")
     (tmp_path / "agent.toml").write_text(
         'schema_version = 1\n\n[agent]\nframework = "openai"\nserver = "agentbricks"\n')
+    (tmp_path / "app.yaml").write_text(  # generated at scaffold; deploy refreshes its env
+        "command: [uv, run, python, server.py]\nenv:\n- {name: APX_MODEL, value: stale-model}\n")
     seen: list[Any] = []
 
     def fake_compile(config: Any) -> dict[str, str]:
@@ -292,6 +294,8 @@ def test_mixed_native_deploy_pins_the_merged_model(tmp_path: Path, monkeypatch: 
     (tmp_path / "agent.py").write_text("from apx_agent import Agent\nagent = Agent(target='durable_agent_server')\n")
     (tmp_path / "agent.toml").write_text(
         'schema_version = 1\n\n[agent]\nframework = "openai"\nserver = "agentbricks"\n')
+    (tmp_path / "app.yaml").write_text(  # generated at scaffold; deploy refreshes its env
+        "command: [uv, run, python, server.py]\nenv:\n- {name: APX_MODEL, value: stale-model}\n")
     apps: list[Any] = []
     rechecked: list[Any] = []
 

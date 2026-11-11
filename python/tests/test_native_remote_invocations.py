@@ -329,13 +329,13 @@ def test_native_ingress_rejects_invalid_domain_input_before_child(two_hosts, cha
 
 def test_native_binding_roundtrips_generated_configuration(tmp_path):
     import tomllib
-    from apx_agent._project_gen import generate_project
+    from apx_agent._project_gen import _build_pyproject
 
+    # The pyproject serialization; this parent has no "specialist" leaf, so it can't be imported.
     config = AgentConfig(name="parent", bindings={"specialist": {
         "transport": "native", "url": "$SPECIALIST_URL", "timeout_s": 12,
     }})
-    generate_project(config, tmp_path)
-    generated = tomllib.loads((tmp_path / "pyproject.toml").read_text())["tool"]["apx"]["deploy"]
+    generated = tomllib.loads(_build_pyproject(config))["tool"]["apx"]["deploy"]
     assert AgentConfig.model_validate({"name": "parent", "bindings": generated["bindings"]}).bindings == config.bindings
 
 
