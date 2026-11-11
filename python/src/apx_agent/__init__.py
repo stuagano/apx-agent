@@ -4,6 +4,7 @@
 from ._agents import (
     BaseAgent,
     HandoffAgent,
+    GraphAgent,
     KeywordRouter,
     LlmAgent,
     LoopAgent,
@@ -444,6 +445,7 @@ __all__ = [
     "DataAgentProbe",
     "DataTemplate",
     "HandoffAgent",
+    "GraphAgent",
     "KeywordRouter",
     "LlmAgent",
     "LoopAgent",
