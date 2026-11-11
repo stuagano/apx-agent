@@ -87,7 +87,8 @@ def test_before_tool_fires_for_tool_calls_inside_the_users_graph(fake_ws: MagicM
     assert hooks == [("lookup", {"key": "acme"})]
 
 
-def test_a_raising_before_tool_blocks_the_tool(fake_ws: MagicMock) -> None:
+def test_a_blocked_tool_becomes_an_error_result_inside_the_users_tool_node(fake_ws: MagicMock) -> None:
+    """Same containment an LlmAgent gets: the turn continues and the model can read why."""
     calls: list[Any] = []
 
     def deny(name: str, args: dict[str, Any]) -> None:
@@ -97,9 +98,69 @@ def test_a_raising_before_tool_blocks_the_tool(fake_ws: MagicMock) -> None:
     graph = compile_to_langgraph(GraphAgent(build=build, tools=[_lookup_tool(calls)], before_tool=deny),
                                  ws=fake_ws, model="m")
 
-    with pytest.raises(PermissionError, match="lookup is not allowed"):
-        graph.invoke({"messages": [HumanMessage(content="go")]})
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})["messages"][-1]
+
     assert calls == []
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert result.content == "Error: lookup is not allowed"
+
+
+def test_a_tool_error_from_the_tool_body_is_contained(fake_ws: MagicMock) -> None:
+    from apx_agent import ToolError
+
+    def lookup(key: str) -> str:
+        """Look up a value for a key."""
+        raise ToolError(f"no table for {key}")
+
+    build, _ = _calling("lookup", {"key": "acme"})
+    graph = compile_to_langgraph(GraphAgent(build=build, tools=[lookup]), ws=fake_ws, model="m")
+
+    result = graph.invoke({"messages": [HumanMessage(content="go")]})["messages"][-1]
+
+    assert (result.status, result.content) == ("error", "Error: no table for acme")
+
+
+def test_a_genuine_bug_in_a_tool_still_fails_loud(fake_ws: MagicMock) -> None:
+    def lookup(key: str) -> str:
+        """Look up a value for a key."""
+        raise TypeError("bug")
+
+    build, _ = _calling("lookup", {"key": "acme"})
+    graph = compile_to_langgraph(GraphAgent(build=build, tools=[lookup]), ws=fake_ws, model="m")
+
+    with pytest.raises(TypeError, match="bug"):
+        graph.invoke({"messages": [HumanMessage(content="go")]})
+
+
+def test_after_tool_sees_the_tools_output(fake_ws: MagicMock) -> None:
+    seen: list[Any] = []
+    build, _ = _calling("lookup", {"key": "acme"})
+    agent = GraphAgent(build=build, tools=[_lookup_tool([])],
+                       after_tool=lambda name, args, output: seen.append((name, args, output)))
+
+    compile_to_langgraph(agent, ws=fake_ws, model="m").invoke({"messages": [HumanMessage(content="go")]})
+
+    assert seen == [("lookup", {"key": "acme"}, "value-for-acme")]
+
+
+def test_an_async_tool_is_hooked_and_contained(fake_ws: MagicMock) -> None:
+    import asyncio
+
+    hooks: list[str] = []
+
+    async def lookup(key: str) -> str:
+        """Look up a value for a key."""
+        raise PermissionError("blocked")
+
+    build, _ = _calling("lookup", {"key": "acme"})
+    agent = GraphAgent(build=build, tools=[lookup], before_tool=lambda name, args: hooks.append(name))
+    graph = compile_to_langgraph(agent, ws=fake_ws, model="m")
+
+    result = asyncio.run(graph.ainvoke({"messages": [HumanMessage(content="go")]}))["messages"][-1]
+
+    assert hooks == ["lookup"]
+    assert (result.status, result.content) == ("error", "Error: blocked")
 
 
 def test_build_receives_the_compile_checkpointer(fake_ws: MagicMock) -> None:
