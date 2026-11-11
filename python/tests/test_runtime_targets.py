@@ -1096,32 +1096,9 @@ def test_packaged_launcher_serves_native_invocations_without_generated_server(ex
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
     monkeypatch.setenv("APX_APPS_HOST", "python")
     monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "unrelated.toml"))
-    sessions: dict[str, Any] = {}
-    items: dict[str, list[Any]] = {}
-    from databricks.sdk.errors import NotFound
-
-    def rest(method: str, path: str, *, body: Any = None, query: Any = None) -> Any:
-        root = "/api/2.0/agents/session-stores/apx-proof-sessions/sessions"
-        if not path.startswith(root):
-            raise AssertionError(path)
-        if method == "POST" and path == root:
-            session_id = query["session_id"]
-            sessions[session_id] = {"session_id": session_id, **body}
-            items.setdefault(session_id, [])
-            return dict(sessions[session_id])
-        session_id = path.removeprefix(root + "/").split("/")[0]
-        if session_id not in sessions:
-            raise NotFound("session missing")
-        if method == "GET" and path.endswith("/items"):
-            return {"session_items": list(items[session_id])}
-        if method == "GET" and path == root + "/" + session_id:
-            return dict(sessions[session_id])
-        if method == "POST" and path.endswith("/items:append"):
-            items[session_id].extend(body["items"])
-            return {}
-        raise AssertionError(f"{method} {path}")
-
-    execution.ws.api_client.do.side_effect = rest
+    # #1145: agentbricks dev keeps sessions in-process; the declared store
+    # (apx-proof-sessions, unprovisioned before the first deploy) is never called.
+    execution.ws.api_client.do.side_effect = AssertionError("local dev must not call the managed session store")
     app = create_app()
     with TestClient(app) as client:
         assert client.get("/readyz").status_code == 200
@@ -1132,6 +1109,7 @@ def test_packaged_launcher_serves_native_invocations_without_generated_server(ex
         assert response.status_code == 200, response.text
         assert response.json()["output"]["messages"][-1]["content"] == "Recorded proof"
     assert execution.effects == ["proof"]
+    execution.ws.api_client.do.assert_not_called()
 
 
 def test_packaged_launcher_preserves_remote_session_binding(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1150,6 +1128,7 @@ def test_packaged_launcher_preserves_remote_session_binding(execution: Any, monk
     monkeypatch.setenv("APX_PYPROJECT", str(tmp_path / "pyproject.toml"))
     monkeypatch.setenv("APX_MODEL", "bound-model")
     monkeypatch.setenv("AGENT_SESSION_STORE", "remote-sessions")
+    monkeypatch.delenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", raising=False)  # deployed, not agentbricks dev
     native_app = SimpleNamespace(state=SimpleNamespace())
     compiler = MagicMock(return_value=native_app)
     monkeypatch.setattr("apx_agent._runtime_targets.compile_agent", compiler)
@@ -1159,6 +1138,7 @@ def test_packaged_launcher_preserves_remote_session_binding(execution: Any, monk
     assert kwargs["config"].model_dump() == config.model_dump()
     assert (kwargs["model"], kwargs["service_ws"], kwargs["session_store"], kwargs["project_root"]) == (
         "bound-model", execution.ws, "remote-sessions", Path.cwd())
+    assert kwargs["checkpointer"] is None  # #1145: deployed runs bind the store, never an in-process saver
     sys.modules.pop("agent", None)  # the generated agent.py was imported as `agent`; don't leak it
 
 

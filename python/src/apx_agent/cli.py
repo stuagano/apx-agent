@@ -9986,11 +9986,9 @@ def _deploy_apps_impl(
     _preflight_apps(cwd, native=native_direct, durable=effective_config is not None
                     and effective_config.target == "durable_agent_server")
     if native_direct:
-        from ._agentbricks_deploy import compile_native_app
+        from ._agentbricks_deploy import compile_native_app, refuse_root_manifest
         assert effective_config is not None
-        for filename in ("app.yaml", "app.yml"):
-            if (cwd / filename).exists() or (cwd / filename).is_symlink():
-                raise click.ClickException(f"Native APX deployment generates {filename} in .build; refusing to ignore an existing root manifest.")
+        refuse_root_manifest(cwd, "Native APX deployment")
         app = compile_native_app(effective_config)
         doc: dict[str, Any] = {}
         bundle_key, resolved_app_name = effective_config.name, app["name"]
