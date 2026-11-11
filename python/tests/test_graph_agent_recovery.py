@@ -105,3 +105,54 @@ def test_graph_agent_supports_recovery_on_the_durable_target(checkpoints: Any) -
                             checkpointer=checkpoints(), requirements=RuntimeRequirements(recovery=True))
 
     report.require_compatible()
+
+
+def test_a_policy_ask_interrupts_the_users_graph_and_resume_runs_the_tool(
+    execution: Any, checkpoints: Any,
+) -> None:
+    from langgraph.graph import MessagesState
+    from langgraph.prebuilt import ToolNode
+
+    from apx_agent import FunctionPolicy, PolicyAction, PolicyGate, PolicyResult
+
+    effects: list[str] = []
+
+    def record(value: str) -> str:
+        """Record a value."""
+        effects.append(value)
+        return f"recorded {value}"
+
+    def build(tools: list[Any], checkpointer: Any) -> Any:
+        def plan(_state: MessagesState) -> dict[str, Any]:
+            call = {"name": "record", "args": {"value": "proof"}, "id": "call-1"}
+            return {"messages": [AIMessage(content="", tool_calls=[call])]}
+
+        graph = StateGraph(MessagesState)
+        graph.add_node("plan", plan)
+        graph.add_node("tools", ToolNode(tools))
+        graph.add_edge(START, "plan")
+        graph.add_edge("plan", "tools")
+        graph.add_edge("tools", END)
+        return graph.compile(checkpointer=checkpointer)
+
+    gate = PolicyGate([FunctionPolicy(lambda event: PolicyResult(action=PolicyAction.ASK, reason="approval required"))])
+    agent = GraphAgent(build=build, tools=[record], name="proof", before_tool=gate)
+
+    first = asyncio.run(_handlers(agent, execution, checkpoints).invoke(PAYLOAD, context()))
+    assert first["status"] == "interrupted"
+    assert first["approval_required"]["tool_name"] == "record"
+    assert effects == []
+
+    resumed = asyncio.run(_handlers(agent, execution, checkpoints).invoke({"resume": "approve"},
+                                                                          context("approval-two")))
+    assert resumed["status"] == "completed"
+    assert effects == ["proof"]
+    assert resumed["messages"][-1]["content"] == "recorded proof"
+
+
+def test_a_checkpointed_graph_agent_reports_approvals_as_supported(checkpoints: Any) -> None:
+    runs = {"compute": 0, "detect": 0, "analyze": 0}
+    report = inspect_target(_rca_agent(runs, fail_analyze_once=False), target="durable_agent_server",
+                            checkpointer=checkpoints())
+
+    assert report.capabilities["approvals"].supported

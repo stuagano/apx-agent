@@ -134,7 +134,7 @@ def inspect_target(
         "sessions": effective_session is not None or any(getattr(node, "session_config", None) is not None for node in nodes),
     }
     responses = target == "responses_agent"
-    checkpointed = (checkpointer is not None or session_store is not None) and isinstance(agent, LlmAgent)
+    checkpointed = (checkpointer is not None or session_store is not None) and isinstance(agent, (LlmAgent, GraphAgent))
     # A composite's allow-listed session state (composite-session-keys.md) satisfies sessions, not approvals.
     session_state_bound = session_store is not None and bool(getattr(agent, "_session_keys", ()))
     memory_bound = (
@@ -170,7 +170,7 @@ def inspect_target(
     )
     capabilities = {
         "user_identity": TargetCapability(responses or not raw_request_required, "The durable target supports SDK request-user clients, SQL and principal dependencies, and per-hop user OBO to sub-agents; raw headers and Request remain unsupported."),
-        "approvals": TargetCapability(checkpointed, "Approvals require an LlmAgent checkpoint binding and stable session; native request-user sessions are isolated by the SDK and authenticated principal."),
+        "approvals": TargetCapability(checkpointed, "Approvals require an LlmAgent or GraphAgent checkpoint binding and stable session; native request-user sessions are isolated by the SDK and authenticated principal."),
         "sessions": TargetCapability(checkpointed or session_state_bound or (responses and conversation_store is not None), "An explicit checkpoint/history binding is required; restart persistence depends on the selected store."),
         "long_term_memory": TargetCapability(memory_bound, "Bind a reachable declared store; managed memory uses AgentKit workspace memory stores and trusted caller actor IDs."),
         "recovery": TargetCapability(recovery_supported, "Opt-in recovery requires a managed Session Store, service identity and an unwrapped LlmAgent or a GraphAgent. Tools and callbacks must tolerate replay of uncommitted work; request-user recovery is unsupported by the SDK."),

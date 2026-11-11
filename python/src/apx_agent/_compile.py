@@ -1826,6 +1826,58 @@ def _compile_bound_remote_leaf(
     return graph.compile()
 
 
+def _hooked_and_contained(tool: Any, agent: GraphAgent) -> Any:
+    """Run the agent's tool hooks inside the tool and contain governance errors there.
+
+    A callback raising in ``on_tool_start`` escapes the tool's own error handling, so a
+    blocked call would abort the author's ToolNode. Inside the tool, the same exceptions
+    ``_governance_exception_middleware`` contains become an error ToolMessage in any
+    ToolNode; interrupts (approvals) and genuine bugs still propagate. Hooks are read at
+    call time, so config guards composed onto ``agent._before_tool`` apply.
+    """
+    from langchain_core.tools import ToolException
+
+    from ._callbacks import _run_hook
+    from ._cancellation import ToolCancelled
+    from ._errors import ToolError
+
+    contained = (PermissionError, ToolCancelled, ToolError)
+    inner, inner_async = tool.func, tool.coroutine
+
+    def before(arguments: dict[str, Any]) -> None:
+        if agent._before_tool is not None:
+            _run_hook(agent._before_tool, tool.name, arguments)
+
+    def after(arguments: dict[str, Any], output: Any) -> None:
+        if agent._after_tool is not None:
+            _run_hook(agent._after_tool, tool.name, arguments, output)
+
+    if inner is not None:
+        def run(**arguments: Any) -> Any:
+            try:
+                before(arguments)
+                output = inner(**arguments)
+            except contained as exc:
+                raise ToolException(f"Error: {exc}") from exc
+            after(arguments, output)
+            return output
+
+        tool.func = run
+    if inner_async is not None:
+        async def arun(**arguments: Any) -> Any:
+            try:
+                before(arguments)
+                output = await inner_async(**arguments)
+            except contained as exc:
+                raise ToolException(f"Error: {exc}") from exc
+            after(arguments, output)
+            return output
+
+        tool.coroutine = arun
+    tool.handle_tool_error = True  # ToolException -> ToolMessage(status="error", content=message)
+    return tool
+
+
 def _bound_tools(graph: Any) -> list[Any]:
     """Every tool bound in a compiled graph's tool nodes, descending into subgraphs."""
     from langgraph.prebuilt import ToolNode
@@ -1844,9 +1896,9 @@ def _compile_graph_agent(agent: GraphAgent, ctx: CompileContext) -> Any:
     """Build the author's graph from apx-governed tools; tool hooks ride its callbacks."""
     from langgraph.pregel import Pregel
 
-    from ._callbacks import build_callback_handler
+    from ._callbacks import _AgentCallbackHandler
 
-    tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
+    tools = [_hooked_and_contained(_make_langchain_tool(fn, ctx), agent) for fn in agent._tool_fns]
     graph = agent._build(tools, ctx.checkpointer)
     if not isinstance(graph, Pregel):
         # Only a compiled graph can be inspected for ungoverned tools, so anything else fails closed.
@@ -1863,10 +1915,11 @@ def _compile_graph_agent(agent: GraphAgent, ctx: CompileContext) -> Any:
             "GraphAgent(tools=[...]) and build with the tools build() receives, or name them in "
             "ungoverned=[...] to opt out explicitly."
         )
-    # Callbacks propagate to every nested run, so the hooks see tool calls inside the
-    # author's own ToolNode without touching their nodes.
-    handler = build_callback_handler(agent)
-    return graph if handler is None else graph.with_config(callbacks=[handler])
+    # The hooks run inside each governed tool; this handler only adds the same tool-call audit
+    # attributes an LlmAgent's does (callbacks reach the author's own ToolNode).
+    if agent._before_tool is None and agent._after_tool is None:
+        return graph
+    return graph.with_config(callbacks=[_AgentCallbackHandler()])
 
 
 def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
