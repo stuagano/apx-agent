@@ -129,3 +129,96 @@ def test_graph_agent_tools_are_visible_to_tool_discovery() -> None:
     build, _ = _calling("lookup", {"key": "acme"})
 
     assert list(_iter_tool_fns(GraphAgent(build=build, tools=[lookup]))) == [lookup]
+
+
+# --- Fail closed on tools that bypass apx (#1037, part C) -----------------------------------
+
+
+def _raw_tool(name: str) -> Any:
+    from langchain_core.tools import StructuredTool
+
+    return StructuredTool.from_function(lambda key: key, name=name, description="raw, not governed")
+
+
+def _graph_with(tool_node_tools: list[Any], *, nested: bool = False) -> Any:
+    def build(tools: list[Any], checkpointer: Any) -> Any:
+        inner = StateGraph(MessagesState)
+        inner.add_node("tools", ToolNode([*tools, *tool_node_tools]))
+        inner.add_edge(START, "tools")
+        inner.add_edge("tools", END)
+        if not nested:
+            return inner.compile(checkpointer=checkpointer)
+        outer = StateGraph(MessagesState)
+        outer.add_node("sub", inner.compile())
+        outer.add_edge(START, "sub")
+        outer.add_edge("sub", END)
+        return outer.compile(checkpointer=checkpointer)
+
+    return build
+
+
+def test_a_tool_bound_outside_tools_is_refused(fake_ws: MagicMock) -> None:
+    agent = GraphAgent(build=_graph_with([_raw_tool("delete_everything")]), tools=[_lookup_tool([])])
+
+    with pytest.raises(ValueError, match="'delete_everything'.*not passed through tools="):
+        compile_to_langgraph(agent, ws=fake_ws, model="m")
+
+
+def test_a_tool_hidden_in_a_nested_subgraph_is_refused(fake_ws: MagicMock) -> None:
+    agent = GraphAgent(build=_graph_with([_raw_tool("sneaky")], nested=True), tools=[])
+
+    with pytest.raises(ValueError, match="'sneaky'"):
+        compile_to_langgraph(agent, ws=fake_ws, model="m")
+
+
+def test_a_raw_tool_reusing_a_governed_name_is_still_refused(fake_ws: MagicMock) -> None:
+    """Identity, not name: a raw `lookup` next to the governed one bypasses apx."""
+
+    def build(tools: list[Any], checkpointer: Any) -> Any:
+        graph = StateGraph(MessagesState)
+        graph.add_node("tools", ToolNode([_raw_tool("lookup")]))
+        graph.add_edge(START, "tools")
+        graph.add_edge("tools", END)
+        return graph.compile()
+
+    with pytest.raises(ValueError, match="'lookup'"):
+        compile_to_langgraph(GraphAgent(build=build, tools=[_lookup_tool([])]), ws=fake_ws, model="m")
+
+
+def test_an_explicit_ungoverned_opt_out_is_allowed(fake_ws: MagicMock) -> None:
+    agent = GraphAgent(build=_graph_with([_raw_tool("local_math")]), tools=[_lookup_tool([])],
+                       ungoverned=["local_math"])
+
+    compile_to_langgraph(agent, ws=fake_ws, model="m")
+
+
+def test_governed_tools_in_a_create_agent_graph_are_accepted(fake_ws: MagicMock) -> None:
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+
+    class Model(FakeMessagesListChatModel):
+        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+            return self
+
+    agent = GraphAgent(build=lambda tools, checkpointer: create_agent(model=Model(responses=[]), tools=tools),
+                       tools=[_lookup_tool([])])
+
+    compile_to_langgraph(agent, ws=fake_ws, model="m")
+
+
+def test_an_opaque_runnable_is_refused_because_it_cannot_be_inspected(fake_ws: MagicMock) -> None:
+    from langchain_core.runnables import RunnableLambda
+
+    def build(tools: list[Any], checkpointer: Any) -> Any:
+        graph = _calling("lookup", {})[0](tools, checkpointer)
+        return RunnableLambda(graph.invoke)  # hides the graph's nodes
+
+    agent = GraphAgent(build=build, tools=[_lookup_tool([])])
+
+    with pytest.raises(TypeError, match="must return a compiled LangGraph graph"):
+        compile_to_langgraph(agent, ws=fake_ws, model="m")
+
+
+def test_ungoverned_must_be_a_list_of_tool_names() -> None:
+    with pytest.raises(TypeError, match="ungoverned= must be a list of tool names"):
+        GraphAgent(build=_graph_with([]), ungoverned="local_math")  # type: ignore[arg-type]
