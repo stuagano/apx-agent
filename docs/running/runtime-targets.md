@@ -1062,6 +1062,22 @@ above.
   single-worker form: durable state was never lost; what was gated was a live
   worker to act on it. A multi-replica deployment would instead have a surviving
   replica's scan loop pick it up without a redeploy.)
+- **With two replicas, recovery needs no redeploy, but the dead replica stays
+  dead.** Observed separately, on a 2-instance `DurableAgentServer` running a
+  hand-written LangGraph graph
+  ([`python/examples/langgraph-migration`](../../python/examples/langgraph-migration/)):
+  an invocation killed by `os._exit` before its last node was picked up by the
+  **surviving** replica's scan loop, with no redeploy. Because the graph
+  checkpointed each node to the Session Store, attempt 2 resumed at the
+  unfinished node instead of replaying the input (event log: `run.started →
+  compute_kpis → detect → [killed] → run.started → analyze → run.completed`).
+  The killed replica, however, **did not come back**: for 9+ minutes every
+  request routed to it (by `X-Routing-Key`, or with no key) returned HTTP 502,
+  while the app still reported `RUNNING`. Only a redeploy restored it. So the
+  model holds for the *work* (no durable state lost, recovery automatic), not
+  for the *capacity*. Run at least two replicas, send a stable `X-Routing-Key`
+  per session, and treat a 502 from one routing key as a signal to redeploy,
+  since the app status won't show it.
 
 Operational note: `databricks apps deploy` build steps can fail transiently
 with an opaque `[BUILD][ERROR] Unexpected error ... contact support`; a plain

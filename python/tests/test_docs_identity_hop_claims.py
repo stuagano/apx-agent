@@ -75,7 +75,10 @@ def test_identity_passthrough_covers_apps_auth_gaps() -> None:
     assert "allowedappsuserapiscopes" in lowered.replace("_", "").replace(" ", "")
     assert "databricks auth token" in lowered
     assert "separate from a2a agent-to-agent hops" in lowered
-    assert "not the data principal" in lowered
+    # The Apps proxy forwards a token for whoever calls (user or SP); CAN_USE is still not access.
+    flat = " ".join(lowered.split())
+    assert "the caller is the data principal" in flat
+    assert "grants nothing in uc" in flat
     assert "a2a-trust-model.md" in lowered
 
 

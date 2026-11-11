@@ -134,6 +134,21 @@ def test_native_principal_reads_and_saved_state_exclude_credentials(native):
     assert not native.app._request_auth
 
 
+def test_native_service_principal_caller_is_its_own_request_principal(native):
+    """Apps ingress forwards a service-principal caller like a user: ``X-Forwarded-User`` is
+    ``<sp-id>@<workspace-id>`` and the forwarded token belongs to the SP. It runs tools as
+    itself and its runs are isolated from users (docs/safety/identity-passthrough.md)."""
+    service_principal = "1234567890123456@9876543210987654"  # <sp-id>@<workspace-id>, synthetic
+    body = request_body()
+    path = f"/api/invocations/{body['id']}"
+    assert native.client.post("/api/invocations", json=body,
+                              headers=headers(service_principal)).status_code == 200
+    assert native.client.get(path, headers=headers(service_principal)).status_code == 200
+    assert native.client.get(path, headers=headers()).status_code == 404
+    assert native.client.post("/api/invocations", json=request_body(), headers=headers()).status_code == 200
+    assert len(set(native.principals)) == 2
+
+
 @pytest.mark.parametrize("native", [False, True], indirect=True, ids=["ordinary", "authoritative"])
 def test_native_approval_is_interrupted_output_inside_completed_invocation(native):
     native.agent._before_tool = PolicyGate([
