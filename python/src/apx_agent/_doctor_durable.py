@@ -500,6 +500,15 @@ def _call_delegate(fn: Any, headers: Any) -> None:
     asyncio.run(fn(headers=headers, **kwargs))
 
 
+def _typed_entry(agent: Any) -> bool:
+    """Whether the agent's entry declares typed input (the offline probe carries only text)."""
+    from ._agents import GraphAgent, LlmAgent
+    from ._native_input import input_leaf
+
+    leaf = input_leaf(agent)
+    return isinstance(leaf, (LlmAgent, GraphAgent)) and leaf._input_schema is not None
+
+
 def _invocation() -> dict[str, Any]:
     import uuid
 
@@ -528,6 +537,12 @@ def _stage_request(loaded: _Loaded, started: _Started, harness: _Harness) -> Che
             os.environ["DATABRICKS_HOST"] = "https://apx-doctor.invalid"
             body = _invocation()
             response = started.client.post("/api/invocations", json=body, headers=headers)
+            if _typed_entry(loaded.agent) and response.status_code == 422 and _durable_agent.TYPED_INPUT_REQUIRED in response.text:
+                # The probe has no real data part; a schema-valid dummy would still not be data the
+                # agent can run on. Prove admission is enforced and say the agent was not run.
+                return Check("Request", Status.WARN,
+                             "typed input enforced: the untyped probe was rejected (422) as declared; the agent "
+                             "itself was not run offline (a real call needs a data part matching input_schema)")
             if response.status_code != 200:
                 return Check("Request", Status.FAIL, f"/api/invocations {response.status_code}: {response.text[:200]}")
             saved = started.client.get(f"/api/invocations/{body['id']}", headers=headers)
@@ -713,7 +728,8 @@ def check_durable_readiness(project: Path) -> list[Check]:
                                      + (f"; platform MCP tools not probed offline: {', '.join(started.not_probed)}" if started.not_probed else "")))
                 results.append(_stage_request(loaded, started, harness))
             results = _close_lifespan(stack, results)
-        if len(results) == 4 and all(c.status is Status.OK for c in results):
+        # A typed agent's Request is a WARN (admission proven, agent not run), which doesn't block Deploy.
+        if len(results) == 4 and all(c.status in (Status.OK, Status.WARN) for c in results):
             results.append(_stage_deploy(loaded))
     # Appended after _cascade: it only keeps STAGES rows, so an agent.toml row inside
     # `results` would be dropped (and would break the all-OK `len(results) == 4` gate).

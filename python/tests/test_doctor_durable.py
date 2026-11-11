@@ -958,3 +958,40 @@ def test_bundle_with_two_apps_fails_like_deploy(tmp_path: Path) -> None:
     deploy = _by_name(check_durable_readiness(root))["Deploy"]
     assert deploy.status is Status.FAIL
     assert "multiple apps" in deploy.detail
+
+
+_TYPED_SCHEMA = (
+    "from pydantic import BaseModel, ConfigDict\n"
+    "class Order(BaseModel):\n"
+    "    model_config = ConfigDict(extra='forbid')\n"
+    "    tenant: str\n"
+)
+TYPED_GRAPH_AGENT = _TYPED_SCHEMA + (
+    "from langgraph.graph import END, START, MessagesState, StateGraph\n"
+    "from apx_agent import GraphAgent\n"
+    "def build(tools, checkpointer):\n"
+    "    graph = StateGraph(MessagesState)\n"
+    "    graph.add_node('noop', lambda state: {'messages': []})\n"
+    "    graph.add_edge(START, 'noop'); graph.add_edge('noop', END)\n"
+    "    return graph.compile(checkpointer=checkpointer)\n"
+    "agent = GraphAgent(build=build, name='{name}', input_schema=Order, input=lambda data: {{}})\n"
+)
+TYPED_LLM_AGENT = _TYPED_SCHEMA + (
+    "from apx_agent import LlmAgent\n"
+    "agent = LlmAgent(name='{name}', tools=[], input_schema=Order, input_key='order')\n"
+)
+
+
+@pytest.mark.parametrize("source", [TYPED_GRAPH_AGENT, TYPED_LLM_AGENT], ids=["graph_agent", "llm_agent"])
+def test_typed_input_agent_request_is_a_warning_not_a_failure(tmp_path: Path, source: str) -> None:
+    """The offline probe has no real data part: doctor proves typed admission is enforced, and says
+    the agent itself was not run, instead of failing a correctly-typed agent."""
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "typed", source.replace("{name}", "typed"))))
+
+    assert checks["Request"].status is Status.WARN, checks["Request"].detail
+    assert "typed input" in checks["Request"].detail
+    assert "not run" in checks["Request"].detail
+    assert "blocked by Request" not in checks["Deploy"].detail
+    assert not [c for c in checks.values() if c.status is Status.FAIL]
