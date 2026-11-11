@@ -1,0 +1,13 @@
+schema_version = 1
+
+[agent]
+framework = "langgraph"
+server = "agentbricks"
+
+[session_store]
+name = "apx-data-inspector-sessions"
+
+[auth.user]
+required = true
+additional_api_scopes = ["ai-gateway", "catalog.catalogs:read", "catalog.schemas:read", "catalog.tables:read"]
+

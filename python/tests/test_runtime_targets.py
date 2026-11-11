@@ -1020,12 +1020,13 @@ def test_local_run_uses_declared_native_target(execution: Any, monkeypatch: pyte
                                 session={"type": "managed", "store_name": "remote-sessions"}), tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("apx_agent.cli._preflight_databricks_auth", lambda: None)
+    generated = (tmp_path / "app.yaml").read_text()  # #1133: the project carries its app.yaml
     calls: list[list[str]] = []
 
     def agentbricks(command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         calls.append(command)
         # agentbricks dev reads the deployed command + env from the project's app.yaml.
-        verify(Artifact(str(tmp_path / "app.yaml"), min_bytes=64, must_contain="apx_agent._serve",
+        verify(Artifact(str(tmp_path / "app.yaml"), min_bytes=64, must_contain="server.py",
                         must_not_contain="APX_MODEL"))
         return subprocess.CompletedProcess(command, 3)
 
@@ -1034,7 +1035,7 @@ def test_local_run_uses_declared_native_target(execution: Any, monkeypatch: pyte
     assert result.exit_code == 3, result.output  # agentbricks dev's exit code is ours
     assert calls[0][1:] == ["-m", "databricks_agentbricks.cli.app", "dev",
                             "--source", str(tmp_path), "--app-port", "8123"]
-    assert not (tmp_path / "app.yaml").exists()
+    assert (tmp_path / "app.yaml").read_text() == generated  # restored for deploy, not deleted
     assert not (tmp_path / "agent_server").exists()
     reloaded = CliRunner().invoke(main, ["agents", "run", "--reload"])
     assert reloaded.exit_code != 0 and "not supported on the Agent Bricks dev runtime" in reloaded.output

@@ -219,10 +219,14 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 def _deploy(box: dict[str, Any], config: AgentConfig, agent: Any, *, profile: str | None = "chosen", smoke_input: Path | None = None,
             registry_tables: Any = None, register_uc: bool = False, json_output: bool = False) -> None:
+    from apx_agent._agent_toml import write_agent_toml
     from apx_agent._apps_api_deploy import deploy_apps_api
 
+    plan = AuthorizationPlan((), (), (), ("sql",), ())
+    if not (box["project"] / "agent.toml").exists():  # authored at scaffold; deploy only stages it
+        write_agent_toml(box["project"], config, plan, agent)
     deploy_apps_api(
-        cwd=box["project"], agent=agent, config=config, plan=AuthorizationPlan((), (), (), ("sql",), ()),
+        cwd=box["project"], agent=agent, config=config, plan=plan,
         family_permissions=SimpleNamespace(can_use_groups=(), can_manage_groups=()), workspace=box["ws"],
         profile=profile, bundle_target="dev", app_name="proof", auto_experiment=True, auto_build_wheel=False,
         readyz_gate=True, register_uc=register_uc, uc_name=None, module="agent:agent", no_run=False, vars=(),

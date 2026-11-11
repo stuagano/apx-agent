@@ -138,19 +138,17 @@ def test_authored_file_staged_byte_for_byte_replacing_stale_generated(tmp_path: 
     build = tmp_path / ".build"
     build.mkdir()
     (build / "agent.toml").write_text(GENERATED)  # stale output from an older deploy
-    logs: list[str] = []
-    staged = stage_agent_toml(tmp_path, build, lambda: GENERATED, logs.append)
+    staged = stage_agent_toml(tmp_path, build, print)
     assert staged.read_bytes() == (tmp_path / "agent.toml").read_bytes()
-    assert not any("deprecated" in line for line in logs)
 
 
-def test_no_authored_file_generates_and_warns(tmp_path: Path) -> None:
+def test_deploy_never_generates_a_missing_agent_toml(tmp_path: Path) -> None:
+    # ADR 0001: scaffold writes agent.toml; deploy only stages it.
     build = tmp_path / ".build"
     build.mkdir()
-    logs: list[str] = []
-    staged = stage_agent_toml(tmp_path, build, lambda: GENERATED, logs.append)
-    assert staged.read_text() == GENERATED
-    assert any("migrate-agent-toml" in line for line in logs)
+    with pytest.raises(ValueError, match="migrate-agent-toml"):
+        stage_agent_toml(tmp_path, build, print)
+    assert not (build / "agent.toml").exists()
 
 
 def test_symlinked_manifest_refused(tmp_path: Path) -> None:
@@ -158,7 +156,7 @@ def test_symlinked_manifest_refused(tmp_path: Path) -> None:
     (tmp_path / "agent.toml").symlink_to(tmp_path / "real.toml")
     (tmp_path / ".build").mkdir()
     with pytest.raises(ValueError, match="symlink"):
-        stage_agent_toml(tmp_path, tmp_path / ".build", lambda: GENERATED, print)
+        stage_agent_toml(tmp_path, tmp_path / ".build", print)
 
 
 def test_doctor_project_group_reports_agent_toml(tmp_path: Path, monkeypatch) -> None:
@@ -249,7 +247,7 @@ def test_plain_agent_needs_no_declared_scopes(tmp_path: Path) -> None:
 
 def test_missing_agent_toml_is_the_one_warning(tmp_path: Path) -> None:
     assert _all_checks(tmp_path, Agent(name="a", tools=[_noop]), None) == [
-        Check("agent.toml", Status.WARN, "no agent.toml; deploy generates one (deprecated)",
+        Check("agent.toml", Status.WARN, "no agent.toml; a durable deploy needs one",
               "Run `apx-agent agents migrate-agent-toml` to write an authored agent.toml.")]
 
 
@@ -271,6 +269,8 @@ def test_mismatched_agent_toml_stops_deploy_before_staging(
     (tmp_path / "agent.py").write_text(
         "from apx_agent import Agent\nagent = Agent(name='p', target='durable_agent_server', tools=[])\n")
     (tmp_path / "agent.toml").write_text(BARE.replace("langgraph", "openai"))
+    if not deploy:  # the agentbricks CLI backend deploys the generated app.yaml
+        (tmp_path / "app.yaml").write_text("command: [uv, run, python, server.py]\n")
 
     def reached(*a: Any, **k: Any) -> Any:
         raise AssertionError("staging/deploy reached with a mismatched agent.toml")
@@ -390,22 +390,6 @@ def test_migrate_load_failure_is_a_click_error(tmp_path: Path, monkeypatch: pyte
     result = CliRunner().invoke(main, ["agents", "migrate-agent-toml"])
     assert result.exit_code == 1 and isinstance(result.exception, SystemExit), result.exception
     assert "not_a_real_module_xyz" in result.output and not (tmp_path / "agent.toml").exists()
-
-
-def test_generate_refuses_an_authored_file_in_the_staged_source(tmp_path: Path) -> None:
-    build = tmp_path / ".build"
-    build.mkdir()
-    (build / "agent.toml").write_text(BASE)  # authored, not APX-generated
-    with pytest.raises(ValueError, match="Refusing to overwrite an authored agent.toml"):
-        stage_agent_toml(tmp_path, build, lambda: GENERATED, print)
-    assert (build / "agent.toml").read_text() == BASE
-
-
-def test_generate_replaces_a_stale_generated_file(tmp_path: Path) -> None:
-    build = tmp_path / ".build"
-    build.mkdir()
-    (build / "agent.toml").write_text(GENERATED + "# stale\n")
-    assert stage_agent_toml(tmp_path, build, lambda: GENERATED, print).read_text() == GENERATED
 
 
 def test_python_only_managed_memory_needs_a_bound_store(tmp_path: Path) -> None:

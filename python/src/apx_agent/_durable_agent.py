@@ -410,11 +410,16 @@ def compile_to_durable_agent_server(
     recovery: bool = False,
     project_root: Path | None = None,
     config: AgentConfig | None = None,
+    build_server: Callable[[Any, Any], Any] | None = None,
+    build_saver: Callable[[str], Any] | None = None,
 ) -> Any:
     """Create the optional SDK server without importing ResponsesAgent.
 
     ``project_root`` holds the agent.toml that ``platform_tools()`` references
     resolve against; an agent with references and no agent.toml does not compile.
+    A generated project's ``server.py`` passes ``build_server(auth_policy, invoke)``,
+    which constructs the ``DurableAgentServer`` and registers invoke, and
+    ``build_saver(store)``, AgentKit's LangGraph checkpointer for a bound store.
     """
     from ._runtime_targets import RuntimeRequirements, inspect_target
 
@@ -440,9 +445,12 @@ def compile_to_durable_agent_server(
     elif session_store is not None:
         if service_ws is None:
             raise ValueError("session_store requires an explicit service_ws runtime binding")
-        from databricks_agentkit.langgraph.session_store import DatabricksSessionStoreSaver
+        if build_saver is not None:
+            checkpointer = build_saver(session_store)
+        else:
+            from databricks_agentkit.langgraph.session_store import DatabricksSessionStoreSaver
 
-        checkpointer = DatabricksSessionStoreSaver(session_store, workspace_client=service_ws)
+            checkpointer = DatabricksSessionStoreSaver(session_store, workspace_client=service_ws)
     from databricks_agentkit.runtime.auth import InvocationAuthPolicy
 
     report = inspect_target(agent, target="durable_agent_server", checkpointer=checkpointer)
@@ -456,7 +464,11 @@ def compile_to_durable_agent_server(
                                         checkpointer=checkpointer, require_user=policy.requires_user, recovery=recovery,
                                         project_root=project_root, platform_tools=startup.tools,
                                         session_state_client=session_state_client)
-    app = DurableAgentServer(auth_policy=policy)
+    if build_server is None:
+        app = DurableAgentServer(auth_policy=policy)
+        app.invoke(handlers.invoke)
+    else:
+        app = build_server(policy, handlers.invoke)
 
     @app.get("/api/session/history", include_in_schema=False)
     async def session_history(session_id: str, request: Request) -> Any:
@@ -517,7 +529,6 @@ def compile_to_durable_agent_server(
 
     # Per-id startup materialization failures, for offline doctor (by id, not message).
     app.state.apx_platform_tool_failures = startup.failures
-    app.invoke(handlers.invoke)
     if recovery:
         app.recover(handlers.invoke)
 
