@@ -36,7 +36,7 @@ def test_installed_cli_rollout_preserves_native_contract(
     from databricks_agentbricks.clients.api_client_provider import ApiClientProvider
     from databricks_agentbricks.clients.apps_client import AppsClient
     from databricks_agentbricks.services.deployment import tool_access_provisioner as tool_access
-    from databricks_agentbricks.services.deployment.provisioners import AppProvisioner
+    from databricks_agentbricks.services.deployment.app_provisioner import AppProvisioner
 
     monkeypatch.setattr(errors, "_OUTPUT_MODE", errors._OUTPUT_MODE)
 

@@ -225,8 +225,11 @@ def test_native_execution_failure_remains_persisted_500(native, monkeypatch):
     body = request_body()
     response = native.client.post("/api/invocations", json=body, headers=headers())
     assert response.status_code == 500
-    assert response.json() == {"detail": "agent invocation failed"}
+    # AgentKit 0.9 contract: structured error, message redacted of credentials, not masked.
+    error = {"code": "AGENT_ERROR", "type": "ValueError", "message": "private-runtime-failure"}
+    assert response.json() == {"id": body["id"], "status": "failed", "error": error}
+    assert "contract-credential-sentinel" not in response.text
     saved = native.client.get(f"/api/invocations/{body['id']}", headers=headers())
-    assert saved.json() == {"id": body["id"], "status": "failed", "error": "agent invocation failed"}
+    assert saved.json() == response.json()
     assert len(native.app._runtime.runtime_store.states) == 1
     assert native.effects == []

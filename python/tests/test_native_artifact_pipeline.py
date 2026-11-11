@@ -572,7 +572,8 @@ def test_skipped_tool_and_failed_or_unknown_readback_never_publish_remote_succes
         chain.root._apx_remote_leaf_bindings = {**bindings, "calibrate": replace(bindings["calibrate"], timeout_s=0.01)}
     body = chain_request()
     response = chain.clients["fleet"].post("/api/invocations", json=body, headers=headers())
-    assert response.status_code == 500
+    # A failed child readback is an upstream error (502) under AgentKit 0.9.
+    assert response.status_code == (502 if failure == "readback_fail" else 500)
     events = chain_events(chain, body["id"])
     assert not any(event["type"] == "agent.step.completed" and event["location"] == "remote" for event in events)
     if failure == "skip":
