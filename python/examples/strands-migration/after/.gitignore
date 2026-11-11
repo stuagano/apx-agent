@@ -1,4 +1,5 @@
 .venv/
 __pycache__/
 .env
-.agentbricks/
+# written by `agentbricks deploy` (contains workspace and service-principal IDs)
+.agentbricks/deploy-*
