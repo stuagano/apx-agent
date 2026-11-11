@@ -1071,10 +1071,10 @@ def test_generated_host_uses_declaration_without_environment_override(monkeypatc
 
     monkeypatch.setattr("os.execvp", launch)
     source = tmp_path / "agent_server" / "start_host.py"
-    namespace: dict[str, Any] = {"__name__": "selector"}
-    exec(compile(source.read_text(), str(source), "exec"), namespace)
+    # Run it as `python -m agent_server.start_host` does: as __main__, without calling main() ourselves (#1154).
+    namespace: dict[str, Any] = {"__name__": "__main__"}
     with pytest.raises(SystemExit) as result:
-        namespace["main"]()
+        exec(compile(source.read_text(), str(source), "exec"), namespace)
     assert result.value.code == 0
     assert commands[0] == ["uvicorn", "agent_server.start_server:app", "--host", "0.0.0.0", "--port", "8000"]
 
