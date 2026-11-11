@@ -25,7 +25,7 @@ the compatibility checks below define their limits.
 > `FutureWarning`, and it will be removed after one release. Move to
 > `target = "durable_agent_server"` with a `managed` session.
 > The bundled coworker gallery templates still declare `responses_agent` with
-> Lakebase sessions; they move when the Lakebase stores are deprecated (#1135).
+> deprecated Lakebase sessions (#1135); they move to managed stores in a later change.
 
 ## Deploy custom agents through Agent Bricks
 
