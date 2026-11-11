@@ -1524,3 +1524,50 @@ class KeywordRouter(BaseAgent):
             tools.extend(await agent.fetch_remote_tools())
         tools.extend(await self._default.fetch_remote_tools())
         return tools
+
+
+class GraphAgent(BaseAgent):
+    """Host a hand-written LangGraph graph, with apx governing its tools (#1037).
+
+    ``build(tools, checkpointer)`` is your existing graph factory. apx calls it at compile
+    time with ``tools`` already wrapped the way an ``LlmAgent``'s are (injected
+    ``Dependencies``, request identity) and the run's checkpointer. ``before_tool`` /
+    ``after_tool`` fire for every tool call inside your graph.
+
+    Example::
+
+        def build(tools, checkpointer):
+            return build_rca_graph(tools=tools, checkpointer=checkpointer)
+
+        agent = GraphAgent(build=build, tools=[query_kpis, write_findings])
+    """
+
+    def __init__(
+        self,
+        build: Callable[[list[Any], Any], Any],
+        tools: list[_ToolFn] | None = None,
+        *,
+        before_tool: BeforeToolHook | None = None,
+        after_tool: AfterToolHook | None = None,
+        **settings: Unpack[CompositeSettings],
+    ) -> None:
+        if not callable(build):
+            raise TypeError("GraphAgent build must be callable: build(tools, checkpointer) -> compiled graph")
+        self._set_settings(settings)
+        self._build = build
+        self._tool_fns = [] if tools is None else list(tools)
+        self._before_tool = before_tool
+        self._after_tool = after_tool
+
+    async def run(self, messages: list[Message], request: Request) -> str:
+        from ._compile_run import run_via_compile
+
+        return await run_via_compile(self, messages, request, instructions="")
+
+    async def stream(
+        self, messages: list[Message], request: Request
+    ) -> AsyncGenerator[str, None]:
+        from ._compile_run import stream_via_compile
+
+        async for chunk in stream_via_compile(self, messages, request, instructions=""):
+            yield chunk
