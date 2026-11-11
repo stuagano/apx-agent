@@ -44,6 +44,7 @@ except ImportError:  # pragma: no cover — let downstream code raise on use
 
 from ._agents import (
     BaseAgent,
+    GraphAgent,
     HandoffAgent,
     KeywordRouter,
     LlmAgent,
@@ -1825,6 +1826,25 @@ def _compile_bound_remote_leaf(
     return graph.compile()
 
 
+def _compile_graph_agent(agent: GraphAgent, ctx: CompileContext) -> Any:
+    """Build the author's graph from apx-governed tools; tool hooks ride its callbacks."""
+    from langchain_core.runnables import Runnable
+
+    from ._callbacks import build_callback_handler
+
+    tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
+    graph = agent._build(tools, ctx.checkpointer)
+    if not isinstance(graph, Runnable):
+        raise TypeError(
+            f"GraphAgent build must return a compiled LangGraph graph (got {type(graph).__name__}); "
+            "call .compile() on your StateGraph."
+        )
+    # Callbacks propagate to every nested run, so the hooks see tool calls inside the
+    # author's own ToolNode without touching their nodes.
+    handler = build_callback_handler(agent)
+    return graph if handler is None else graph.with_config(callbacks=[handler])
+
+
 def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
     """Dispatch to the right per-agent compiler."""
     if isinstance(agent, (ParallelAgent, LoopAgent, HandoffAgent)) and (ctx.escalate_failures or _has_step_policy(agent)):
@@ -1857,10 +1877,12 @@ def _compile_any(agent: BaseAgent, ctx: CompileContext) -> Any:
         return _compile_keyword_router(agent, ctx)
     if isinstance(agent, HandoffAgent):
         return _compile_handoff_agent(agent, ctx)
+    if isinstance(agent, GraphAgent):
+        return _compile_graph_agent(agent, ctx)
     raise NotImplementedError(
         f"compile_to_langgraph: agent type {type(agent).__name__!r} not supported. "
         f"Supported: LlmAgent, SequentialAgent, ParallelAgent, LoopAgent, "
-        f"RouterAgent, KeywordRouter, HandoffAgent."
+        f"RouterAgent, KeywordRouter, HandoffAgent, GraphAgent."
     )
 
 
@@ -1961,14 +1983,14 @@ def compile_to_langgraph(
         )
         result = graph.invoke({"messages": [HumanMessage(content=prompt)]})
     """
-    if checkpointer is not None and not isinstance(agent, LlmAgent):
+    if checkpointer is not None and not isinstance(agent, (LlmAgent, GraphAgent)):
         # Scope: thread-scoped short-term memory is wired only on the LlmAgent
-        # (create_agent) path for now. Composite agents (Sequential/Parallel/
-        # Loop/Router/Handoff) would need the saver threaded into each
-        # graph.compile() site — deferred until something needs it.
+        # (create_agent) path and GraphAgent (the saver goes to the author's build()).
+        # Composite agents (Sequential/Parallel/Loop/Router/Handoff) would need the
+        # saver threaded into each graph.compile() site — deferred until something needs it.
         raise NotImplementedError(
             "checkpointer (short-term memory) is currently supported only for "
-            f"LlmAgent, not {type(agent).__name__}."
+            f"LlmAgent and GraphAgent, not {type(agent).__name__}."
         )
     ctx = CompileContext(
         service_ws=service_ws,
