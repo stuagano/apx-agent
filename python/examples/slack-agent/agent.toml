@@ -1,0 +1,13 @@
+schema_version = 1
+
+[agent]
+framework = "langgraph"
+server = "agentbricks"
+
+[session_store]
+name = "apx-slack-agent-sessions"
+
+[auth.user]
+required = true
+additional_api_scopes = ["ai-gateway"]
+

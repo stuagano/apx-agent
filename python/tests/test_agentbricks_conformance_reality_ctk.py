@@ -114,3 +114,24 @@ def test_generated_server_builds_the_app_through_agentkit(tmp_path: Path, monkey
     assert isinstance(app, DurableAgentServer)
     assert app._invoke_hook is not None
     assert stores == ["apx-base-sessions"]
+
+
+EXAMPLES = sorted(p.parent for p in (Path(__file__).parents[1] / "examples").glob("*/agent.toml"))
+
+
+@pytest.mark.parametrize("example", EXAMPLES, ids=[p.name for p in EXAMPLES])
+def test_shipped_example_agent_toml_passes_agentbricks_doctor(example: Path) -> None:
+    # Durable examples carry an authored agent.toml (deploy stages it, never generates it).
+    # They host through a Bundle, so only the manifest checks apply.
+    statuses = _doctor(example)["statuses"]
+    assert statuses["agent_manifest"] == statuses["agentbricks_server"] == "pass", statuses
+    assert set(tomllib.loads((example / "agent.toml").read_text())) <= {
+        "schema_version", "agent", "auth", "session_store", "memory_store"}
+
+
+def test_every_durable_example_ships_an_agent_toml() -> None:
+    # A Bundle-hosted durable example without agent.toml can no longer deploy.
+    examples = Path(__file__).parents[1] / "examples"
+    missing = sorted(p.parent.name for p in examples.glob("*/databricks.yml")
+                     if (p.parent / "agent.py").is_file() and not (p.parent / "agent.toml").is_file())
+    assert missing == [], missing

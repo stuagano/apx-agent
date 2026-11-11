@@ -18,7 +18,13 @@ All notable changes to apx-agent. Format loosely follows
   copy `server.py` and `app.yaml` from a fresh scaffold into an older native
   project. Generation now imports the agent to compile `agent.toml`, so an
   invalid declaration fails at generate time, and `$ENV` bindings must resolve
-  then, as they already must for `agents run` and deploy.
+  then, as they already must for `agents run` and deploy. The 16 durable
+  examples now ship an authored `agent.toml` (written with
+  `migrate-agent-toml`), and the conformance test runs the real doctor's
+  manifest checks on each.
+  For the `agentbricks` backend, deploy now requires the root `app.yaml`
+  (#1145's tolerance below still applies to `apps_api`).
+
 - **`agents run` serves a declared managed session in-process (#1145).** Under
   `agentbricks dev` (`DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL=true`) the
   launcher replaces a declared managed session with an in-process checkpointer,
