@@ -242,7 +242,10 @@ def test_managed_native_smoke_reads_real_sdk_checkpoint(two_hosts, monkeypatch):
 def test_native_invalid_specialist_output_fails_both_records(two_hosts):
     two_hosts.controls["invalid"] = True
     body = domain_request()
-    assert two_hosts.parent.post("/api/invocations", json=body, headers=headers()).status_code == 500
+    # The child fails; AgentKit 0.9 reports the failed hop as an upstream error.
+    response = two_hosts.parent.post("/api/invocations", json=body, headers=headers())
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "UPSTREAM_ERROR"
     child_body = json.loads(next(r.content for r in two_hosts.sent if r.method == "POST"))
     for client, identifier in [(two_hosts.parent, body["id"]), (two_hosts.child, child_body["id"])]:
         assert client.get(f"/api/invocations/{identifier}", headers=headers()).json()["status"] == "failed"

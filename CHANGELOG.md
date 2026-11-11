@@ -6,6 +6,13 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **`databricks-agentbricks` bumped to 0.9.0.** The `agentbricks` extra now
+  pins `>=0.9.0,<0.10`. Durable agents adopt AgentKit 0.9's error contract: a
+  failed invocation returns `{"id", "status": "failed", "error": {"code",
+  "type", "message"}}` in place of `{"detail": "agent invocation failed"}`. The
+  message is the exception text with credentials and tracebacks redacted. A
+  failed remote sub-agent hop now returns 502 `UPSTREAM_ERROR` rather than 500.
+
 - **Generated form for flat typed-input schemas (#1124).** A typed entry agent
   whose input schema is flat (strings, numbers, booleans, string enums, dates)
   now gets a labelled form above the chat's JSON box. The form uses number

@@ -142,10 +142,10 @@ def test_doctor_checks_settings_agent_py_declares_non_literally(tmp_path, monkey
     assert "agent-memory" in checks["Managed memory"].detail
 
 @pytest.mark.parametrize("dependency,version,expected", [
-    ("apx-agent[langgraph]", "0.5.0", Status.FAIL),
-    ("apx-agent[eval,agentbricks]", "0.5.0", Status.OK),
-    ("apx-agent[langgraph,agentbricks]", "0.4.0", Status.FAIL),
-    ("apx-agent[langgraph,agentbricks]", "0.5.0", Status.OK),
+    ("apx-agent[langgraph]", "0.9.0", Status.FAIL),
+    ("apx-agent[eval,agentbricks]", "0.9.0", Status.OK),
+    ("apx-agent[langgraph,agentbricks]", "0.8.0", Status.FAIL),
+    ("apx-agent[langgraph,agentbricks]", "0.9.0", Status.OK),
     ("apx-agent[langgraph,agentbricks]", None, Status.WARN),
 ])
 def test_agent_image_checks_declaration_and_lock(tmp_path, dependency, version, expected):

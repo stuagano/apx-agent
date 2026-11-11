@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 STAGES = ("Config", "Compile", "Startup", "Request", "Deploy")
 SENTINEL = "apx-doctor-sentinel-token"
 PEER_URL = "https://apx-doctor-peer.invalid"
-SDK_FIX = 'uv run --with "databricks-agentbricks>=0.5.0,<0.6" apx-agent doctor --durable --offline'
+SDK_FIX = 'uv run --with "databricks-agentbricks>=0.9.0,<0.10" apx-agent doctor --durable --offline'
 AGENT_MODULE_FIX = ("The native durable runtime imports `agent:agent` (as _serve.create_app does): "
                     "expose the agent as `agent` in agent.py at the project root.")
 
