@@ -129,7 +129,7 @@ class GatewayConfig(BaseModel):
 
 StoreType = Literal["inmemory", "lakebase", "managed"]
 RuntimeTarget = Literal["responses_agent", "durable_agent_server"]
-"""``responses_agent`` is the MLflow ResponsesAgent runtime on Apps; ``durable_agent_server`` is the native default."""
+"""``durable_agent_server`` is the native default; ``responses_agent`` (MLflow ResponsesAgent on Apps) is deprecated (ADR 0001)."""
 DeployBackend = Literal["agentbricks", "apps_api"]
 MemoryStrategy = Literal["facts", "preferences", "summary"]
 """Typed memory strategy (#1088). The strategy name is the namespace its records land in."""
@@ -783,8 +783,8 @@ class AgentConfig(BaseModel):
     name: str
     target: RuntimeTarget = "durable_agent_server"
     """Compilation contract. Omitted ``target`` means the native durable
-    server; set ``responses_agent`` for the MLflow ResponsesAgent runtime
-    (hosted on Databricks Apps, as the ``samples-*`` apps are)."""
+    server. ``responses_agent`` (the MLflow ResponsesAgent runtime) is
+    deprecated and will be removed after one release."""
     host: Literal["apps"] | None = None
     """Where the compiled agent executes: Databricks Apps (Model Serving was removed)."""
 
@@ -968,8 +968,8 @@ class AgentConfig(BaseModel):
                 # with a non-managed session lands here; name the one-line fix.
                 raise ValueError(
                     f"Declared durable sessions require type='managed' (got {self.session.type!r}); "
-                    "add target = \"responses_agent\" to keep this session backend, or switch "
-                    "to session.type = \"managed\". Explicit checkpointers remain available "
+                    "switch to session.type = \"managed\", or add target = \"responses_agent\" "
+                    "(deprecated) to keep this session backend. Explicit checkpointers remain available "
                     "through compile_agent"
                 )
             # Agent Bricks provisions this store. Customers override the name;

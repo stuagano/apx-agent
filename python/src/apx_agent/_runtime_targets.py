@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
 from ._agents import BaseAgent, LlmAgent
 from ._models import AgentConfig, RuntimeTarget
+
+
+def warn_if_deprecated_target(target: str | None) -> None:
+    """Warn that ``responses_agent`` is deprecated (ADR 0001); behaviour is unchanged."""
+    if target == "responses_agent":
+        # FutureWarning shows by default; the default filter prints it once per call site.
+        warnings.warn(
+            "target='responses_agent' is deprecated and will be removed after one release; "
+            "use target='durable_agent_server' (docs/running/runtime-targets.md).",
+            FutureWarning,
+            stacklevel=3,
+        )
 
 
 @dataclass(frozen=True)
@@ -192,6 +205,7 @@ def compile_agent(
     """
     if target is None:
         target = config.target if config is not None else "durable_agent_server"
+    warn_if_deprecated_target(target)
     model = model if model is not None else (config.model if config is not None else None)
     if not model:
         raise ValueError("compile_agent requires model or AgentConfig.model")

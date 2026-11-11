@@ -6,6 +6,13 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **`responses_agent` runtime target is deprecated (#1134).** Per ADR 0001,
+  `durable_agent_server` is APX's only runtime. Compiling (`compile_agent`) or
+  deploying (`agents deploy --target apps`) an agent whose target resolves to
+  `responses_agent` now emits a `FutureWarning` pointing to
+  `durable_agent_server`. Behaviour is otherwise unchanged. The target will be
+  removed after one release.
+
 - **apx's Lakebase stores are deprecated (#1135, ADR 0001).** Memory, session
   and checkpointer stores of `type="lakebase"` keep working but log a
   deprecation warning once per process, and `apx-agent doctor` reports a

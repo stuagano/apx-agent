@@ -103,6 +103,23 @@ def test_responses_target_executes_existing_tool(execution: Any) -> None:
     assert "Recorded proof" in result.model_dump_json()
 
 
+@pytest.mark.parametrize("target", ["responses_agent", "durable_agent_server"])
+def test_only_responses_target_warns_deprecated(execution: Any, target: str) -> None:
+    """ADR 0001: responses_agent is deprecated; the durable target compiles silently."""
+    import warnings
+
+    from apx_agent import compile_agent
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        compile_agent(execution.agent, target=target, model="test", service_ws=execution.ws)
+    deprecations = [w for w in caught if issubclass(w.category, FutureWarning) and "responses_agent" in str(w.message)]
+    assert len(deprecations) == (1 if target == "responses_agent" else 0)
+    if deprecations:
+        assert "durable_agent_server" in str(deprecations[0].message)
+        assert deprecations[0].filename == __file__  # stacklevel points at the caller
+
+
 def test_responses_target_resolves_declared_session(execution: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apx_agent import AgentConfig, compile_agent
 
