@@ -6,6 +6,16 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **`agents run` serves a declared managed session in-process (#1145).** Under
+  `agentbricks dev` (`DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL=true`) the
+  launcher replaces a declared managed session with an in-process checkpointer,
+  as `agentbricks dev` does for its own bindings. A store that isn't provisioned
+  yet no longer turns every local turn into a 502 `session store not found`.
+  Local history is lost on restart, and recovery is off locally. Deployed runs
+  still bind the declared store. `agents deploy` now also tolerates the
+  APX-marker root `app.yaml` that a killed `agents run` leaves behind; an
+  authored root manifest is still refused.
+
 - **`responses_agent` runtime target is deprecated (#1134).** Per ADR 0001,
   `durable_agent_server` is APX's only runtime. Compiling (`compile_agent`) or
   deploying (`agents deploy --target apps`) an agent whose target resolves to

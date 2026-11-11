@@ -267,3 +267,18 @@ def test_native_prefix_error_points_mcp_names_at_apps_api() -> None:
     # An mcp- name cannot use the Agent Bricks CLI; the error names the path that keeps it.
     with pytest.raises(click.ClickException, match='backend = "apps_api"'):
         validate_native_app({}, app_name="mcp-data-triage", profile="chosen", no_run=False)
+
+
+def test_deploy_tolerates_stale_run_manifest_only(tmp_path: Path) -> None:
+    """#1145: a killed `agents run` leaves its APX-marker app.yaml; an authored one still refuses."""
+    from apx_agent._agentbricks_deploy import MARKER, refuse_root_manifest
+
+    (tmp_path / "app.yaml").write_text(MARKER + "\ncommand: [python]\n")
+    refuse_root_manifest(tmp_path, "Native APX deployment")
+    (tmp_path / "app.yaml").write_text("command: [python]\n")
+    with pytest.raises(click.ClickException, match="existing root manifest"):
+        refuse_root_manifest(tmp_path, "Native APX deployment")
+    (tmp_path / "app.yaml").unlink()
+    (tmp_path / "app.yml").write_text(MARKER + "\n")  # apx never writes app.yml
+    with pytest.raises(click.ClickException, match="app.yml"):
+        refuse_root_manifest(tmp_path, "Native APX deployment")
