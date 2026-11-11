@@ -73,3 +73,61 @@ def test_staging_a_real_example_ships_the_authored_file(tmp_path: Path) -> None:
     staged = stage_agent_toml(project, project / ".build", lambda: "generated", print)
     verify(Artifact(str(staged), min_bytes=40, must_contain="[session_store]"))
     assert staged.read_text() == authored
+
+
+# ADR 0001 decision 5: [[tools]] auth is authored in agent.toml and the platform
+# enforces it; apx reads it back, never writes it, and keeps ToolScope for Python tools.
+_AUTHORED_TOOLS = '''schema_version = 1
+
+[agent]
+framework = "langgraph"
+server = "agentbricks"
+
+[[tools]]
+id = "lookup"
+auth = "user"
+source = { kind = "uc_function", function = "main.s.lookup" }
+
+[[tools]]
+id = "search"
+auth = "app"
+source = { kind = "mcp", service = "main.s.search" }
+'''
+
+
+def test_authored_tool_auth_survives_an_sdk_load(tmp_path: Path) -> None:
+    path = tmp_path / "agent.toml"
+    path.write_text(_AUTHORED_TOOLS)
+    verify(Artifact(str(path), min_bytes=100, must_contain='auth = "user"'))
+    project = load_agent_toml(tmp_path)
+    assert project is not None
+    assert {t.id: t.auth for t in project.tools} == {"lookup": "user", "search": "app"}
+
+
+def test_tool_scope_on_a_platform_tool_is_refused() -> None:
+    from apx_agent._platform_tools import platform_tools
+    from apx_agent._tool_scope import ToolScope, attach_scope
+
+    with pytest.raises(ValueError, match="agent.toml downscope"):
+        attach_scope(platform_tools("lookup")[0], ToolScope(catalogs=("main",)))
+
+
+# The upstream agent.toml schema's top-level keys (databricks-agentbricks 0.9.0).
+_UPSTREAM_KEYS = {"schema_version", "agent", "auth", "memory_store", "session_store", "tools"}
+
+
+
+def test_generated_manifest_has_no_apx_only_keys(tmp_path: Path) -> None:
+    config = AgentConfig.model_validate({
+        "name": "p", "model": "m", "target": "durable_agent_server",
+        "memory": {"type": "managed", "store_name": "mem"},
+    })
+    generated = build_native_manifest(config=config, authorization_plan=_plan(("sql",)), agent=LlmAgent())
+    path = tmp_path / "agent.toml"
+    path.write_text(generated)
+    verify(Artifact(str(path), min_bytes=100, must_contain="[memory_store]"))
+    doc = tomllib.loads(generated)
+    assert set(doc) <= _UPSTREAM_KEYS
+    assert "tools" not in doc  # apx never writes [[tools]]
+    assert not [k for table in doc.values() if isinstance(table, dict) for k in table if "apx" in k.lower()]
+    assert load_agent_toml(tmp_path) is not None
