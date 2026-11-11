@@ -16,6 +16,16 @@ All notable changes to apx-agent. Format loosely follows
   stores with [docs/running/managed-stores.md](docs/running/managed-stores.md);
   history is not migrated.
 
+- **`apx-agent agents run` serves durable projects on `agentbricks dev` (#1137).**
+  A project whose declared runtime is `durable_agent_server` now runs through the
+  real `agentbricks dev`, with the same command and environment the deployed App
+  uses: local MLflow tracing, local Runtime Store, and the project's own `.venv`.
+  `/api/invocations` and the `/_apx` dev pages come from one `DurableAgentServer`
+  process. apx writes an APX-owned `app.yaml` at the project root for the run and
+  removes it on exit. The command refuses an authored `app.yaml`, and it rejects
+  `--reload` and `--host` because the Agent Bricks dev runtime has neither. Other
+  projects and `--module` still run on uvicorn as before.
+
 - **`databricks-agentbricks` bumped to 0.9.0.** The `agentbricks` extra now
   pins `>=0.9.0,<0.10`. Durable agents adopt AgentKit 0.9's error contract: a
   failed invocation returns `{"id", "status": "failed", "error": {"code",

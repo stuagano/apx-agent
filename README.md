@@ -162,10 +162,10 @@ Running `databricks apps create --space` by itself only makes an empty app that 
 **4. Run locally**
 
 ```bash
-uv run apx-agent agents run --reload
+uv run apx-agent agents run
 ```
 
-FastAPI starts on `:8000`; chat at `/_apx/agent`, view traces at `/_apx/traces`, inspect and edit live tool source at `/_apx/tools` (also the Tools tab of Chat and the Edit page's right-panel Tools sub-tab). Author new tools via the **New Tool** modal on Edit. `agent.py` edits are picked up on restart — pass `--reload` (off by default) for auto-reload during local dev.
+`agentbricks dev` starts the agent on `:8000`; chat at `/_apx/agent`, view traces at `/_apx/traces`, inspect and edit live tool source at `/_apx/tools` (also the Tools tab of Chat and the Edit page's right-panel Tools sub-tab). Author new tools via the **New Tool** modal on Edit. `agent.py` edits are picked up on restart. The Agent Bricks dev runtime has no `--reload`.
 
 > **Something not working?** Run `uv run apx-agent doctor` — checks Python, uv, Databricks CLI, auth, and project layout. Prints a `Fix:` line for anything wrong.
 

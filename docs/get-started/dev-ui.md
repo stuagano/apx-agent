@@ -140,7 +140,7 @@ topology = annotate_topology(
 ```
 
 ### `/_apx/edit` — Edit agent source
-Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file to disk; the running agent is compiled at startup, so a save here — like any source change — takes effect on the next restart. Auto-reload on source changes happens only when you start the server with `apx-agent agents run --reload` (the `--reload` flag is off by default).
+Loads the agent's `agent_router.py` (or equivalent entry module) into a browser editor with a preview-diff endpoint. Save writes the file to disk; the running agent is compiled at startup, so a save here — like any source change — takes effect on the next restart. Durable projects run on `agentbricks dev`, which has no auto-reload, so restart `apx-agent agents run` to pick up a change.
 
 Tool authoring also lives here: the **New Tool** modal scaffolds a tool into the source — including a natural-language generator (`POST /_apx/tools/suggest`) that drafts the tool from a description. The right panel has a **Tools** sub-tab that embeds the `/_apx/tools` inspector.
 

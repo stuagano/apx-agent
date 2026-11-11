@@ -5778,7 +5778,7 @@ def _find_runnable_agents(cwd: Path) -> list[tuple[str, Path]]:
 @click.option("--host", default="127.0.0.1", help="Host. Default: 127.0.0.1.")
 @click.option("--reload", is_flag=True, help="Enable auto-reload for dev.")
 def run(spec: str | None, module: str | None, port: int, host: str, reload: bool) -> None:
-    """Run the agent locally via uvicorn against the FastAPI app.
+    """Run the agent locally: durable projects on `agentbricks dev`, others via uvicorn.
 
     SPEC can be a project directory, a .yaml spec name (stem or full path), or
     'list' to pick interactively from all available agents in this directory.
@@ -5826,15 +5826,20 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
         if project_dir != cwd:
             os.chdir(project_dir)
 
-    factory = False
     if module is None:
         module = _run_module_for_layout(Path.cwd())
         from ._inspection import _load_agent_config
 
         runtime_config = _load_agent_config(pyproject_path=Path.cwd() / "pyproject.toml")
         if runtime_config is not None and runtime_config.target == "durable_agent_server":
-            module = "apx_agent._serve:create_app"
-            factory = True
+            # ADR 0001: the durable runtime runs on `agentbricks dev`; /_apx mounts on that app.
+            if reload or host != "127.0.0.1":
+                raise click.ClickException("--reload and --host are not supported on the Agent Bricks dev runtime.")
+            _preflight_databricks_auth()
+            from ._agentbricks_deploy import run_agentbricks_dev
+
+            click.echo("serving on agentbricks dev (from the declared durable runtime)", err=True)
+            raise SystemExit(run_agentbricks_dev(Path.cwd(), runtime_config, port=port))
         click.echo(f"serving {module} (from the project layout)", err=True)
         if module != "app:app":  # the Apps launcher reads APX_MODEL
             model = os.environ.get("APX_MODEL", runtime_config.model if runtime_config is not None else _APPS_DEFAULT_MODEL)
@@ -5876,8 +5881,7 @@ def run(spec: str | None, module: str | None, port: int, host: str, reload: bool
     # --reload subprocess, which a bare sys.path.insert here would not.
     _probe_import(module)
     port = _find_free_port(port, host=host)
-    uvicorn.run(module, host=host, port=port, reload=reload, app_dir=str(Path.cwd()),
-                factory=factory)
+    uvicorn.run(module, host=host, port=port, reload=reload, app_dir=str(Path.cwd()))
 
 
 # ---------------------------------------------------------------------------

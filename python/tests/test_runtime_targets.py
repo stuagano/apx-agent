@@ -992,8 +992,9 @@ def test_generated_entrypoint_selects_native_target(execution: Any, monkeypatch:
 
 
 def test_local_run_uses_declared_native_target(execution: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    import sys
+    import subprocess
     from click.testing import CliRunner
+    from ctk import Artifact, verify
     from apx_agent import AgentConfig
     from apx_agent._project_gen import generate_project
     from apx_agent.cli import main
@@ -1001,17 +1002,29 @@ def test_local_run_uses_declared_native_target(execution: Any, monkeypatch: pyte
     generate_project(AgentConfig(name="local", target="durable_agent_server",
                                 session={"type": "managed", "store_name": "remote-sessions"}), tmp_path)
     monkeypatch.chdir(tmp_path)
-    uvicorn = MagicMock()
-    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
     monkeypatch.setattr("apx_agent.cli._preflight_databricks_auth", lambda: None)
-    monkeypatch.setattr("apx_agent.cli._probe_import", lambda _: None)
-    result = CliRunner().invoke(main, ["agents", "run", "--reload"])
-    assert result.exit_code == 0, result.output
-    assert uvicorn.run.call_args.args[0] == "apx_agent._serve:create_app"
-    assert uvicorn.run.call_args.kwargs["factory"] is True
-    assert uvicorn.run.call_args.kwargs["reload"] is True
-    assert uvicorn.run.call_args.kwargs["app_dir"] == str(tmp_path)
+    calls: list[list[str]] = []
+
+    def agentbricks(command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        # agentbricks dev reads the deployed command + env from the project's app.yaml.
+        verify(Artifact(str(tmp_path / "app.yaml"), min_bytes=64, must_contain="apx_agent._serve",
+                        must_not_contain="APX_MODEL"))
+        return subprocess.CompletedProcess(command, 3)
+
+    monkeypatch.setattr("apx_agent._agentbricks_deploy.subprocess.run", agentbricks)
+    result = CliRunner().invoke(main, ["agents", "run", "--port", "8123"])
+    assert result.exit_code == 3, result.output  # agentbricks dev's exit code is ours
+    assert calls[0][1:] == ["-m", "databricks_agentbricks.cli.app", "dev",
+                            "--source", str(tmp_path), "--app-port", "8123"]
+    assert not (tmp_path / "app.yaml").exists()
     assert not (tmp_path / "agent_server").exists()
+    reloaded = CliRunner().invoke(main, ["agents", "run", "--reload"])
+    assert reloaded.exit_code != 0 and "not supported on the Agent Bricks dev runtime" in reloaded.output
+    (tmp_path / "app.yaml").write_text("command: [python, app.py]\n")
+    authored = CliRunner().invoke(main, ["agents", "run"])
+    assert authored.exit_code != 0 and "authored app.yaml" in authored.output
+    assert len(calls) == 1
     from apx_agent._inspection import static_agent_setting
 
     # 3b-3b: the declared session lives on agent.py's root constructor.
