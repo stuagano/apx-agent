@@ -104,8 +104,8 @@ for Genie, Vector Search, SQL, and `build_tool(scope=ToolScope(...))` governance
 Legacy `[[tool.apx.tools]]` entries are rejected, not merged with Python tools.
 Remove them after migrating their arguments and governance to Python. There is
 no per-tool TOML schema or directory loader. Non-tool agent and
-deployment settings are unaffected; `.build/agent.toml` is still generated as
-the native runtime contract and is not hand-authored.
+deployment settings are unaffected; `agent.toml` holds the Agent Bricks
+settings, not tool definitions.
 
 Python factories attach resource metadata just as before. A toolkit returns a
 list of callables; expand that list when composing the agent. Explicit imports

@@ -268,8 +268,8 @@ search_docs = vector_search_tool("main.docs.embeddings", name="search_docs")
 Import `ask_data` and `search_docs` explicitly in `agent.py` and include them in
 `Agent(tools=[ask_data, search_docs])` or a data agent's `extra_tools`. Legacy
 `[[tool.apx.tools]]` tables are rejected; remove them after migration. Non-tool
-APX settings stay in `pyproject.toml`. `.build/agent.toml` remains generated
-runtime output, not an authoring surface.
+APX settings stay in `pyproject.toml`. `agent.toml` holds the Agent Bricks
+settings, not tool definitions.
 
 See [Python-native tool layout](../tools/overview.md#python-native-tool-layout)
 for the directory structure and preservation of tool resources, identity, and

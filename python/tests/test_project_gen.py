@@ -801,9 +801,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_generate_project_emits_declared_binding_without_transport_in_agent_py(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A declared internal leaf is configured in TOML but stays logical in code."""
+    # Generation loads the agent to compile agent.toml, so the binding resolves as at run/deploy.
+    monkeypatch.setenv("PRICING_APP_URL", "https://pricing-1.aws.databricksapps.com")
     config = AgentConfig(
         name="declared-graph",
         model="model",
@@ -1063,12 +1065,11 @@ def test_native_tools_collision_preserves_authored_files(tmp_path: Path, collisi
 
 
 def test_native_tools_over_scope_fails_during_import(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    generate_project(AgentConfig(name="scope", tools=[{
-        "type": "uc_function", "function_name": "other.sales.lookup",
-        "scope": {"catalogs": ["main"]},
-    }]), tmp_path)
-    with pytest.raises(ValueError, match="over-scoped"):
-        _exec_generated_project(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="over-scoped"):  # generation imports the agent
+        generate_project(AgentConfig(name="scope", tools=[{
+            "type": "uc_function", "function_name": "other.sales.lookup",
+            "scope": {"catalogs": ["main"]},
+        }]), tmp_path)
 
 
 def test_native_tools_toolkit_and_static_python_import(
@@ -1096,11 +1097,10 @@ def test_native_tools_toolkit_and_static_python_import(
 
 
 def test_native_tools_duplicate_names_fail_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    generate_project(AgentConfig(name="duplicates", tools=[
-        {"type": "sql", "name": "same"}, {"type": "sql", "name": "same"},
-    ]), tmp_path)
-    with pytest.raises(ValueError, match="duplicate tool name"):
-        _exec_generated_project(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="duplicate tool name"):  # generation imports the agent
+        generate_project(AgentConfig(name="duplicates", tools=[
+            {"type": "sql", "name": "same"}, {"type": "sql", "name": "same"},
+        ]), tmp_path)
 
 
 @pytest.mark.parametrize("field", ["tools", "skills"])
@@ -1139,10 +1139,9 @@ def test_native_tools_extra_tools_and_tools_are_both_composed(
 def test_native_tools_template_builtin_name_collision_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    generate_project(AgentConfig(name="duplicates", tools=[{"type": "sql"}],
-        template={"name": "data", "catalog": "main", "schema": "sales"}), tmp_path)
-    with pytest.raises(ValueError, match="duplicate tool name"):
-        _exec_generated_project(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="duplicate tool name"):  # generation imports the agent
+        generate_project(AgentConfig(name="duplicates", tools=[{"type": "sql"}],
+            template={"name": "data", "catalog": "main", "schema": "sales"}), tmp_path)
 
 
 def test_native_tools_broken_symlink_collision_is_rejected(tmp_path: Path) -> None:
@@ -1191,9 +1190,8 @@ def test_python_and_legacy_tools_both_deny_over_scoped_declaration(
 
     denied = [{"type": "uc_function", "function_name": "other.sales.lookup",
                "scope": {"catalogs": ["main"]}}]
-    generate_project(AgentConfig(name="denied", tools=denied), tmp_path)
-    with pytest.raises(ValueError, match="over-scoped"):
-        _exec_generated_project(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="over-scoped"):  # generation imports the agent
+        generate_project(AgentConfig(name="denied", tools=denied), tmp_path)
     with pytest.raises(ValueError, match="over-scoped"):
         load_config_tools(denied)
 

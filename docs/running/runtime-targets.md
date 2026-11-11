@@ -215,13 +215,16 @@ or enable request-user recovery.
 ### Deploy through the Agent Bricks CLI
 
 Native agents deploy through the installed `agentbricks` CLI by default.
-Keep using `apx-agent agents deploy --target apps --profile <profile>`. New native
-projects need no customer-authored YAML: edit `agent.py` and `pyproject.toml`.
-There is no generated `agent_server/` directory. APX supplies the launcher as
-part of its installed package, so launcher fixes arrive with APX upgrades.
-APX stages the source and dependencies, compiles authentication and managed store
-declarations into `.build/agent.toml`, and writes the native command and
-environment to `.build/app.yaml`. These are generated deployment artifacts.
+Keep using `apx-agent agents deploy --target apps --profile <profile>`. A new
+native project is a standard Agent Bricks project, so `agentbricks doctor .`
+passes on it as generated (ADR 0001). Scaffolding writes `agent.toml`
+(authentication and managed store bindings, yours to edit afterwards) and
+`.agentbricks/project.toml`, plus two APX-generated files: `server.py`, which
+constructs `DurableAgentServer` and takes its checkpointer from AgentKit, and
+`app.yaml`, which runs it. The runtime logic stays in the installed APX package,
+so fixes arrive with APX upgrades. Deploy never generates `agent.toml` or
+`app.yaml`. It stages the project's copies into `.build/` and resolves
+deploy-time environment into the staged `app.yaml`.
 APX then invokes `agentbricks deploy` using the same Python environment and
 explicit profile. This path does not generate, validate, deploy or run a Bundle.
 Agent Bricks owns the runtime store, declared store grants, tracing
@@ -556,10 +559,9 @@ sessions and consumers have been accounted for.
 Agent Bricks settings (framework, server, memory and session store bindings,
 `[auth.user]`, tools) live in the project's `agent.toml`. apx reads it with the
 SDK's `AgentProject.load`, checks it against the Python agent, and stages it
-into `.build/` unchanged. It generates an `agent.toml` only when the project
-has none, which is deprecated; migrate with
-`apx-agent agents migrate-agent-toml`, which writes the file through the SDK and
-refuses to overwrite an existing one.
+into `.build/` unchanged. Deploy refuses a durable project without one; an
+older project writes it once with `apx-agent agents migrate-agent-toml`, which
+writes the file through the SDK and refuses to overwrite an existing one.
 
 Reference the tools `agent.toml` declares with `platform_tools(*ids)`. No ids
 means every declared tool; ids select specific ones:
@@ -595,10 +597,12 @@ checked: the SDK accepts scopes only when `required = true`.
 
 Declare `target: durable_agent_server` in your agent specification. New native
 projects contain `agent.py` and `pyproject.toml`, plus any declared skills or
-custom sources. They include `apx-agent[eval,agentbricks]` in their
-dependencies. Local `agents run` and the compiled deployment command use the same
-packaged ASGI factory. Deployment starts it with `python -m apx_agent._serve`;
-the runtime declaration selects DurableAgentServer without `APX_APPS_HOST`.
+custom sources, and the Agent Bricks files above. They depend on
+`apx-agent[eval,agentbricks]` and `databricks-agentbricks[langgraph]`. Local
+`agents run` and the deployed `server.py` compile the agent through the same
+packaged factory (`apx_agent._serve.create_app`). Deployment starts it with
+`uv run python server.py`; the runtime declaration selects DurableAgentServer
+without `APX_APPS_HOST`.
 Project discovery reads that declaration before legacy filename conventions.
 
 Omitting `target` preserves the existing Responses-compatible Apps entrypoint.

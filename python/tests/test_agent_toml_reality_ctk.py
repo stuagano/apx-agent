@@ -70,7 +70,7 @@ def test_staging_a_real_example_ships_the_authored_file(tmp_path: Path) -> None:
     authored = 'schema_version = 1\n\n[agent]\nframework = "langgraph"\nserver = "agentbricks"\n\n[session_store]\nname = "s"\n'
     (project / "agent.toml").write_text(authored)
     (project / ".build").mkdir()
-    staged = stage_agent_toml(project, project / ".build", lambda: "generated", print)
+    staged = stage_agent_toml(project, project / ".build", print)
     verify(Artifact(str(staged), min_bytes=40, must_contain="[session_store]"))
     assert staged.read_text() == authored
 
