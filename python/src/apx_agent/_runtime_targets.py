@@ -8,7 +8,7 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
-from ._agents import BaseAgent, LlmAgent
+from ._agents import BaseAgent, GraphAgent, LlmAgent
 from ._models import AgentConfig, RuntimeTarget
 
 
@@ -88,10 +88,11 @@ def inspect_target(
     # composite agent still errors below (it's a real caller mistake).
     # A composite that declares session_keys binds the managed store for its allow-listed
     # state (composite-session-keys.md); it still never gets a graph checkpointer.
-    effective_session = session if isinstance(agent, LlmAgent) or getattr(agent, "_session_keys", ()) else None
+    # GraphAgent is one checkpointed graph, like LlmAgent; it binds the managed store the same way.
+    effective_session = session if isinstance(agent, (LlmAgent, GraphAgent)) or getattr(agent, "_session_keys", ()) else None
     # A composite can't declare session=, so its config session is only the auto-derived
     # default; the App's bound store (AGENT_SESSION_STORE) wins over that guess.
-    derived_only = (not isinstance(agent, LlmAgent) and getattr(agent, "_session_keys", ())
+    derived_only = (not isinstance(agent, (LlmAgent, GraphAgent)) and getattr(agent, "_session_keys", ())
                     and not (config is not None and "session" in config.model_fields_set))
     if effective_session is not None and effective_session.type == "managed" and checkpointer is None:
         if session_store is not None and session_store != effective_session.store_name and not derived_only:
@@ -107,8 +108,8 @@ def inspect_target(
             raise ValueError("session_store must be a non-empty managed store name")
         if target != "durable_agent_server" or checkpointer is not None:
             raise ValueError("session_store requires durable_agent_server and cannot be combined with checkpointer")
-        if not isinstance(agent, LlmAgent) and not getattr(agent, "_session_keys", ()):
-            raise ValueError("session_store currently requires LlmAgent (or a composite declaring session_keys)")
+        if not isinstance(agent, (LlmAgent, GraphAgent)) and not getattr(agent, "_session_keys", ()):
+            raise ValueError("session_store currently requires LlmAgent, GraphAgent, or a composite declaring session_keys")
     from ._apps_authorization import infer_operation_authorization
     from ._resources import _iter_tool_fns, _iter_sub_agents
     from ._topology import _iter_child_agents

@@ -1534,28 +1534,58 @@ class GraphAgent(BaseAgent):
     ``Dependencies``, request identity) and the run's checkpointer. ``before_tool`` /
     ``after_tool`` fire for every tool call inside your graph.
 
+    The graph keeps its own state shape (it must have a ``messages`` channel). Typed caller
+    input is validated against ``input_schema`` and ``input(data)`` maps it onto the graph's
+    own keys; ``output(state)`` maps the final state to the response's ``output``.
+
     Example::
 
         def build(tools, checkpointer):
             return build_rca_graph(tools=tools, checkpointer=checkpointer)
 
-        agent = GraphAgent(build=build, tools=[query_kpis, write_findings])
+        agent = GraphAgent(
+            build=build, tools=[query_kpis, write_findings], name="rca",
+            input_schema=RcaInput, input=lambda data: {"tenant": data["tenant"]},
+            output=lambda state: {"anomalies": state["anomalies"]},
+        )
     """
+
+    # Typed input is admitted into this domain slot, then mapped onto the graph's own keys.
+    INPUT_KEY = "graph_input"
 
     def __init__(
         self,
         build: Callable[[list[Any], Any], Any],
         tools: list[_ToolFn] | None = None,
         *,
+        name: str | None = None,
+        input_schema: type[BaseModel] | None = None,
+        input: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        output: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         before_tool: BeforeToolHook | None = None,
         after_tool: AfterToolHook | None = None,
         **settings: Unpack[CompositeSettings],
     ) -> None:
         if not callable(build):
             raise TypeError("GraphAgent build must be callable: build(tools, checkpointer) -> compiled graph")
+        if (input is None) != (input_schema is None):
+            raise ValueError("input= requires input_schema (and input_schema requires input=)")
+        if input is not None and not callable(input):
+            raise TypeError("input= must be callable: input(data) -> graph state keys")
+        if output is not None and not callable(output):
+            raise TypeError("output= must be callable: output(state) -> response output")
+        from ._native_input import validate_input_declaration
+
+        input_key = None if input_schema is None else self.INPUT_KEY
+        validate_input_declaration(input_schema, input_key)
         self._set_settings(settings)
         self._build = build
         self._tool_fns = [] if tools is None else list(tools)
+        self._name = name
+        self._input_schema = input_schema
+        self._input_key = input_key
+        self._input_map = input
+        self._output_map = output
         self._before_tool = before_tool
         self._after_tool = after_tool
 
