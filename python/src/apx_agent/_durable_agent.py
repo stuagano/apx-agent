@@ -133,6 +133,10 @@ def _pending(graph: Any, config: dict[str, Any] | None) -> Any | None:
 from ._native_input import typed_entry_step  # noqa: E402,F401  (re-export)
 
 
+# Shared with the durable doctor, which recognizes this admission rejection for typed agents.
+TYPED_INPUT_REQUIRED = "Native typed input requires its declared schema and one fresh data artifact"
+
+
 def _validate_native_input(value: Any, agent: BaseAgent, *, checkpointed: bool,
                            recovery: bool, session_id: str | None) -> dict[str, Any]:
     """Pure input contract shared by HTTP admission and direct/recovered execution."""
@@ -164,7 +168,7 @@ def _validate_native_input(value: Any, agent: BaseAgent, *, checkpointed: bool,
     parts = value.get("apx_data_parts")
     if parts is not None or schema is not None:
         if schema is None or not isinstance(parts, list) or len(parts) != 1 or resume is not None or recovery:
-            raise ValueError("Native typed input requires its declared schema and one fresh data artifact")
+            raise ValueError(TYPED_INPUT_REQUIRED)
         part = parts[0]
         if not isinstance(part, dict):
             raise ValueError("Native typed input requires a data artifact")
