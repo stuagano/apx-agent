@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 from fastapi import Request
 
-from ._agents import BaseAgent, LlmAgent
+from ._agents import BaseAgent, GraphAgent, LlmAgent
 from ._compile import compile_to_langgraph
 from ._graph_turn import run_graph_turn
 from ._platform_tools import ClientFor, platform_tool_leaves
@@ -218,8 +218,8 @@ def compile_durable_handlers(
                             requirements=RuntimeRequirements(recovery=recovery, user_identity=require_user))
     report.require_compatible()
     require_user = require_user or report.user_identity_required
-    if checkpointer is not None and not isinstance(agent, LlmAgent):
-        raise ValueError("Checkpoint sessions currently require LlmAgent")
+    if checkpointer is not None and not isinstance(agent, (LlmAgent, GraphAgent)):
+        raise ValueError("Checkpoint sessions currently require LlmAgent or GraphAgent")
 
     from ._resources import _iter_sub_agents, _iter_tool_fns
 
@@ -330,6 +330,8 @@ def compile_durable_handlers(
         if turn.approval_required is not None:
             return {"status": "interrupted", "messages": [], "approval_required": turn.approval_required}
         result = {"status": "completed", "messages": [m.model_dump(mode="json") for m in turn.messages]}
+        if isinstance(agent, GraphAgent) and agent._output_map is not None:
+            result["output"] = agent._output_map(turn.values)
         if config is not None:
             # The SDK namespaces sessions before dispatch; callers cannot reconstruct this key.
             result["checkpoint"] = {"thread_id": config["configurable"]["thread_id"]}
