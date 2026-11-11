@@ -18,6 +18,16 @@ class GraphTurn:
     approval_required: Any | None
     resumed: bool
     state: dict[str, Any] = field(default_factory=dict)  # the final keyed state channel
+    values: dict[str, Any] = field(default_factory=dict)  # the graph's full final state
+
+
+def _mapped_graph_input(agent: Any, domain_input: dict[str, Any]) -> dict[str, Any]:
+    """A GraphAgent's typed input, mapped onto the author's own state keys (#1037)."""
+    from ._agents import GraphAgent
+
+    if not isinstance(agent, GraphAgent) or agent._input_map is None or agent.INPUT_KEY not in domain_input:
+        return {}
+    return agent._input_map(domain_input[agent.INPUT_KEY])
 
 
 def run_graph_turn(
@@ -107,6 +117,7 @@ def run_graph_turn(
             graph_input = {"messages": messages}
             if domain_input is not None:
                 graph_input["state"] = domain_input
+                graph_input.update(_mapped_graph_input(agent, domain_input))
         if continuing and snapshot is not None and not snapshot.next:
             result = snapshot.values
         elif emit_message is None:
@@ -141,4 +152,4 @@ def run_graph_turn(
             strict=invocation_id is not None, usd_cap=usd_cap, model=budget_model,
         )
     return GraphTurn(messages=new_messages, approval_required=None, resumed=resume is not None,
-                     state=dict(result.get("state") or {}))
+                     state=dict(result.get("state") or {}), values=dict(result))
