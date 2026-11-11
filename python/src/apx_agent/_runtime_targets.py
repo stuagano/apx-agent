@@ -162,17 +162,18 @@ def inspect_target(
         and type(checkpointer).__name__ == "DatabricksSessionStoreSaver"
     )
     needs_user = requirements.user_identity or declared["user_identity"] or declared["long_term_memory"]
+    # A GraphAgent's graph is the author's own, so the LlmAgent node-wrapper/timeout limits don't apply.
     recovery_supported = (
-        not responses and durable_checkpoint and isinstance(agent, LlmAgent)
-        and not needs_user and not _agent_needs_node_wrap(agent)
-        and agent._timeout_s is None
+        not responses and durable_checkpoint and not needs_user
+        and (isinstance(agent, GraphAgent) or (
+            isinstance(agent, LlmAgent) and not _agent_needs_node_wrap(agent) and agent._timeout_s is None))
     )
     capabilities = {
         "user_identity": TargetCapability(responses or not raw_request_required, "The durable target supports SDK request-user clients, SQL and principal dependencies, and per-hop user OBO to sub-agents; raw headers and Request remain unsupported."),
         "approvals": TargetCapability(checkpointed, "Approvals require an LlmAgent checkpoint binding and stable session; native request-user sessions are isolated by the SDK and authenticated principal."),
         "sessions": TargetCapability(checkpointed or session_state_bound or (responses and conversation_store is not None), "An explicit checkpoint/history binding is required; restart persistence depends on the selected store."),
         "long_term_memory": TargetCapability(memory_bound, "Bind a reachable declared store; managed memory uses AgentKit workspace memory stores and trusted caller actor IDs."),
-        "recovery": TargetCapability(recovery_supported, "Opt-in recovery requires a managed Session Store, service identity and an unwrapped LlmAgent. Tools and callbacks must tolerate replay of uncommitted work; request-user recovery is unsupported by the SDK."),
+        "recovery": TargetCapability(recovery_supported, "Opt-in recovery requires a managed Session Store, service identity and an unwrapped LlmAgent or a GraphAgent. Tools and callbacks must tolerate replay of uncommitted work; request-user recovery is unsupported by the SDK."),
         "streaming": TargetCapability(True, "Native events are persisted: incremental message deltas normally, or a validated final message when output checks require buffering."),
     }
     recovery_enabled = requirements.recovery or (config is not None and config.recovery)

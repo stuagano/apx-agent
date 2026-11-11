@@ -1538,6 +1538,10 @@ class GraphAgent(BaseAgent):
     input is validated against ``input_schema`` and ``input(data)`` maps it onto the graph's
     own keys; ``output(state)`` maps the final state to the response's ``output``.
 
+    Compile refuses a graph whose tool nodes (including nested subgraphs) bind a tool that
+    isn't one of the governed objects ``build`` received; name a deliberate exception in
+    ``ungoverned=[...]``. A node that calls a raw function directly can't be detected.
+
     Example::
 
         def build(tools, checkpointer):
@@ -1562,6 +1566,7 @@ class GraphAgent(BaseAgent):
         input_schema: type[BaseModel] | None = None,
         input: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         output: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        ungoverned: list[str] | None = None,
         before_tool: BeforeToolHook | None = None,
         after_tool: AfterToolHook | None = None,
         **settings: Unpack[CompositeSettings],
@@ -1574,6 +1579,9 @@ class GraphAgent(BaseAgent):
             raise TypeError("input= must be callable: input(data) -> graph state keys")
         if output is not None and not callable(output):
             raise TypeError("output= must be callable: output(state) -> response output")
+        if ungoverned is not None and (not isinstance(ungoverned, list)
+                                       or not all(isinstance(n, str) and n for n in ungoverned)):
+            raise TypeError("ungoverned= must be a list of tool names")
         from ._native_input import validate_input_declaration
 
         input_key = None if input_schema is None else self.INPUT_KEY
@@ -1586,6 +1594,7 @@ class GraphAgent(BaseAgent):
         self._input_key = input_key
         self._input_map = input
         self._output_map = output
+        self._ungoverned = frozenset(ungoverned or ())
         self._before_tool = before_tool
         self._after_tool = after_tool
 

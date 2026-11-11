@@ -1826,18 +1826,42 @@ def _compile_bound_remote_leaf(
     return graph.compile()
 
 
+def _bound_tools(graph: Any) -> list[Any]:
+    """Every tool bound in a compiled graph's tool nodes, descending into subgraphs."""
+    from langgraph.prebuilt import ToolNode
+    from langgraph.pregel import Pregel
+
+    found: list[Any] = []
+    for node in graph.nodes.values():
+        if isinstance(node.bound, ToolNode):
+            found.extend(node.bound.tools_by_name.values())
+        elif isinstance(node.bound, Pregel):
+            found.extend(_bound_tools(node.bound))
+    return found
+
+
 def _compile_graph_agent(agent: GraphAgent, ctx: CompileContext) -> Any:
     """Build the author's graph from apx-governed tools; tool hooks ride its callbacks."""
-    from langchain_core.runnables import Runnable
+    from langgraph.pregel import Pregel
 
     from ._callbacks import build_callback_handler
 
     tools = [_make_langchain_tool(fn, ctx) for fn in agent._tool_fns]
     graph = agent._build(tools, ctx.checkpointer)
-    if not isinstance(graph, Runnable):
+    if not isinstance(graph, Pregel):
+        # Only a compiled graph can be inspected for ungoverned tools, so anything else fails closed.
         raise TypeError(
             f"GraphAgent build must return a compiled LangGraph graph (got {type(graph).__name__}); "
-            "call .compile() on your StateGraph."
+            "call .compile() on your StateGraph and return it unwrapped."
+        )
+    governed = {id(tool) for tool in tools}
+    ungoverned = sorted({t.name for t in _bound_tools(graph) if id(t) not in governed} - agent._ungoverned)
+    if ungoverned:
+        raise ValueError(
+            f"GraphAgent {agent._name or ''}: tool(s) {', '.join(map(repr, ungoverned))} are bound in the "
+            "graph but were not passed through tools=, so apx can't govern them. Pass them in "
+            "GraphAgent(tools=[...]) and build with the tools build() receives, or name them in "
+            "ungoverned=[...] to opt out explicitly."
         )
     # Callbacks propagate to every nested run, so the hooks see tool calls inside the
     # author's own ToolNode without touching their nodes.

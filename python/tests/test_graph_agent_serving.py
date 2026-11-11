@@ -167,13 +167,3 @@ def test_a_deployed_managed_session_store_binds_to_a_graph_agent() -> None:
 
     report.require_compatible()
 
-
-def test_recovery_is_refused_until_graph_agent_recovery_is_proven() -> None:
-    """Part C adds the crash-recovery reality test; until then recovery fails closed."""
-    from apx_agent._runtime_targets import RuntimeRequirements, inspect_target
-
-    report = inspect_target(GraphAgent(build=_rca_build, name="rca"), target="durable_agent_server",
-                            checkpointer=InMemorySaver(), requirements=RuntimeRequirements(recovery=True))
-
-    with pytest.raises(ValueError, match="cannot satisfy requirements: recovery"):
-        report.require_compatible()
