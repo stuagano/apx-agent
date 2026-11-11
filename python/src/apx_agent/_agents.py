@@ -223,6 +223,53 @@ class BaseAgent:
         return []
 
 
+def _analyze_tools(fns: list[_ToolFn]) -> list[Any]:
+    """(fn, plain params, dependency names, input model) per tool, shared by LlmAgent and GraphAgent."""
+    analyzed: list[Any] = []
+    for fn in fns:
+        signature = _inspect_tool_fn(fn)
+        analyzed.append((fn, signature.plain_params, signature.dep_param_names,
+                         _make_input_model(fn, signature.plain_params)))
+    return analyzed
+
+
+def _tool_descriptors(analyzed: list[Any]) -> list[AgentTool]:
+    """The card / MCP descriptors for analyzed tools (injected Dependencies stay hidden)."""
+    from ._tool_scope import get_scope  # noqa: PLC0415
+
+    return [
+        AgentTool(
+            name=fn.__name__,
+            description=(fn.__doc__ or "").strip(),
+            input_schema=_schema_for_model(input_model),
+            output_schema=_schema_for_return(fn),
+            callers=scope.callers if (scope := get_scope(fn)) else (),
+        )
+        for fn, _, _, input_model in analyzed
+    ]
+
+
+def _tool_router(analyzed: list[Any]) -> APIRouter:
+    """A POST /tools/<name> route per analyzed tool, with its ToolScope caller check."""
+    from fastapi import Depends  # noqa: PLC0415
+
+    from ._tool_scope import caller_dependency  # noqa: PLC0415
+
+    router = APIRouter()
+    for fn, _plain_params, dep_names, input_model in analyzed:
+        check = caller_dependency(fn)
+        router.add_api_route(
+            f"/tools/{fn.__name__}",
+            _make_route_handler(fn, input_model, dep_names),
+            methods=["POST"],
+            operation_id=fn.__name__,
+            summary=fn.__doc__ or fn.__name__,
+            response_model=None,
+            dependencies=[Depends(check)] if check else None,
+        )
+    return router
+
+
 class LlmAgent(BaseAgent):
     """LLM-powered agent with tool calling via Mosaic AI Model Serving.
 
@@ -454,13 +501,7 @@ class LlmAgent(BaseAgent):
         self.memory_config, self.session_config = memory_config, session_config
 
         # Pre-analyze all functions at construction time
-        self._analyzed: list[tuple[_ToolFn, dict[str, Any], list[str], type[BaseModel] | None]] = []
-        for fn in self._tool_fns:
-            signature = _inspect_tool_fn(fn)
-            plain_params = signature.plain_params
-            dep_names = signature.dep_param_names
-            input_model = _make_input_model(fn, plain_params)
-            self._analyzed.append((fn, plain_params, dep_names, input_model))
+        self._analyzed = _analyze_tools(self._tool_fns)
         # Monotonic counter bumped whenever the runtime callable tool set changes.
         self._tools_version = 0
 
@@ -543,24 +584,7 @@ class LlmAgent(BaseAgent):
 
     def build_router(self) -> APIRouter:
         """Build an APIRouter with a POST route for each tool."""
-        from fastapi import Depends  # noqa: PLC0415
-
-        from ._tool_scope import caller_dependency  # noqa: PLC0415
-
-        router = APIRouter()
-        for fn, plain_params, dep_names, input_model in self._analyzed:
-            handler = _make_route_handler(fn, input_model, dep_names)
-            check = caller_dependency(fn)
-            router.add_api_route(
-                f"/tools/{fn.__name__}",
-                handler,
-                methods=["POST"],
-                operation_id=fn.__name__,
-                summary=fn.__doc__ or fn.__name__,
-                response_model=None,
-                dependencies=[Depends(check)] if check else None,
-            )
-        return router
+        return _tool_router(self._analyzed)
 
     def get_tool_routers(self) -> list[APIRouter]:
         return [self.build_router()]
@@ -616,18 +640,7 @@ class LlmAgent(BaseAgent):
         return removed
 
     def collect_tools(self) -> list[AgentTool]:
-        from ._tool_scope import get_scope  # noqa: PLC0415
-
-        return [
-            AgentTool(
-                name=fn.__name__,
-                description=(fn.__doc__ or "").strip(),
-                input_schema=_schema_for_model(input_model),
-                output_schema=_schema_for_return(fn),
-                callers=scope.callers if (scope := get_scope(fn)) else (),
-            )
-            for fn, _, _, input_model in self._analyzed
-        ]
+        return _tool_descriptors(self._analyzed)
 
     async def fetch_remote_tools(self) -> list[AgentTool]:
         """Fetch agent cards from sub-agent URLs and build tools from them.
@@ -1589,6 +1602,7 @@ class GraphAgent(BaseAgent):
         self._set_settings(settings)
         self._build = build
         self._tool_fns = [] if tools is None else list(tools)
+        self._analyzed = _analyze_tools(self._tool_fns)
         self._name = name
         self._input_schema = input_schema
         self._input_key = input_key
@@ -1610,3 +1624,9 @@ class GraphAgent(BaseAgent):
 
         async for chunk in stream_via_compile(self, messages, request, instructions=""):
             yield chunk
+
+    def collect_tools(self) -> list[AgentTool]:
+        return _tool_descriptors(self._analyzed)
+
+    def get_tool_routers(self) -> list[APIRouter]:
+        return [_tool_router(self._analyzed)]
