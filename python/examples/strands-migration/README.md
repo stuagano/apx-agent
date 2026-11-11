@@ -84,8 +84,19 @@ injects. Don't commit the rewritten file. Set `AGENT_ENABLE_CRASH_TEST=1` there 
 ### Step 2: Deploy
 
 ```bash
+uv run agentbricks doctor .        # expect 6/8 — see below
 uv run agentbricks --profile <profile> deploy strands-support --source . --instances 2
 ```
+
+`agentbricks doctor` reports **6/8, and that's expected**. Strands isn't an Agent Bricks framework (only
+LangGraph and the OpenAI Agents SDK are), so two checks can't honestly pass:
+
+- `agentbricks_dependency` wants the `[openai]` extra, which installs the OpenAI Agents SDK this agent never uses.
+- `framework_adapter` wants a `databricks_agentkit.openai.*` call, and the only fitting one,
+  `databricks_agentkit.openai.configure_tracing()`, would swap Strands autologging for OpenAI autologging.
+
+Every other check passes, and `deploy` doesn't depend on doctor. Faking the two failures would make the example less
+correct, so this example is the documented exception to ADR 0001's "doctor must pass".
 
 ### Step 3: Verify
 
@@ -135,6 +146,8 @@ strands-migration/
 
 - **`deploy` rejects `framework = "strands"`.** The CLI accepts only `langgraph` or `openai`. `agent.toml` uses
   `openai` as a label; nothing else changes.
+- **`doctor` fails `agentbricks_dependency` and `framework_adapter`.** Expected for Strands; see Part 3, Step 2.
+  If `project_metadata` fails, commit `.agentbricks/project.toml` and ignore only `.agentbricks/deploy-*`.
 - **Intermittent HTTP 500, `TypeError: can only concatenate str (not "list") to str`.** FMAPI can stream
   `delta.content` as a list of parts. `FMAPIModel` in `runtime/model.py` flattens it; keep it in every migration.
 - **Tools run twice after a crash.** Strands has no per-step checkpoint, so `recover()` replays the whole turn.

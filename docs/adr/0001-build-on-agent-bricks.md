@@ -13,7 +13,7 @@ Parallel paths drift. Moving from 0.5 to 0.9 broke apx tests in three places (#1
 
 ## Decision
 
-1. **apx compiles to a standard Agent Bricks project.** Every apx agent emits a valid `agent.toml` and a `DurableAgentServer` entrypoint. The real `agentbricks doctor` must pass on it, and `agentbricks deploy` must ship it unchanged. A conformance test enforces this.
+1. **apx compiles to a standard Agent Bricks project.** Every apx agent emits a valid `agent.toml` and a `DurableAgentServer` entrypoint. The real `agentbricks doctor` must pass on it, and `agentbricks deploy` must ship it unchanged. A conformance test enforces this. The rule covers agents apx generates. Hand-written examples for frameworks Agent Bricks doesn't support (for example `python/examples/strands-migration`) must pass every doctor check except the two framework ones, `agentbricks_dependency` and `framework_adapter`, which can only pass by installing or calling a framework the agent doesn't use.
 2. **apx extensions never add keys to `agent.toml`.** Composition, `sub_agents` / A2A, typed contracts, grounding, templates, fleet operations and governance checks live in apx's own declaration. They compile to generated code and library calls on `DurableAgentServer`.
 3. **`DurableAgentServer` is the only runtime.** The `responses_agent` target is deprecated now and will be removed after one release.
 4. **Managed stores are the only durable backend for new agents.** `inmemory` stays for local dev and tests. apx's Lakebase memory, conversation and checkpoint stores, and its own memory extraction and consolidation, are deprecated in favour of managed stores and `agentbricks memory pipeline`. Memory still defaults to `off`, and Lakebase is never required.
