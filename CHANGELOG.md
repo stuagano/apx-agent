@@ -6,6 +6,16 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **apx's Lakebase stores are deprecated (#1135, ADR 0001).** Memory, session
+  and checkpointer stores of `type="lakebase"` keep working but log a
+  deprecation warning once per process, and `apx-agent doctor` reports a
+  `Lakebase stores` WARN. Scaffolds no longer emit a Lakebase session or the
+  `lakebase` extra; `agents scaffold --lakebase` is rejected and
+  `--no-lakebase` does nothing. apx's own memory extraction and consolidation
+  are deprecated in favour of `agentbricks memory pipeline`. Move to managed
+  stores with [docs/running/managed-stores.md](docs/running/managed-stores.md);
+  history is not migrated.
+
 - **`databricks-agentbricks` bumped to 0.9.0.** The `agentbricks` extra now
   pins `>=0.9.0,<0.10`. Durable agents adopt AgentKit 0.9's error contract: a
   failed invocation returns `{"id", "status": "failed", "error": {"code",

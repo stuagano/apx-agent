@@ -1,5 +1,7 @@
 # Lakebase recipe — provisioning + pgvector + apx-agent wiring
 
+> **Deprecated.** apx's Lakebase stores are deprecated in favour of managed stores ([ADR 0001](../adr/0001-build-on-agent-bricks.md)). New agents should follow [managed-stores.md](managed-stores.md).
+
 End-to-end recipe for running apx-agent's session, memory, and few-shot example stores on Databricks Lakebase (managed Postgres) with pgvector. Every snippet here is copy-paste-adapt: real CLI invocations, real DDL, real wiring code that matches the actual store APIs in `python/src/apx_agent/_conversation_lakebase.py`, `_memory_lakebase.py`, and `_example_lakebase.py`.
 
 ## 1. Why Lakebase for agent state

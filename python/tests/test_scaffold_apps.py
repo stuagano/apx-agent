@@ -277,7 +277,7 @@ def test_scaffold_apps_pyproject_is_valid_toml(tmp_path: Path) -> None:
 
     requirements = [Requirement(dep) for dep in deps]
     apx = next(dep for dep in requirements if dep.name == "apx-agent")
-    assert apx.extras == {"eval", "lakebase"}
+    assert apx.extras == {"eval"}  # no Lakebase extra (ADR 0001, #1135)
     assert not any(dep.name == "mlflow" for dep in requirements)
 
     agent_cfg = parsed["tool"]["apx"]["deploy"]  # 3b-3c: registration keys live in [tool.apx.deploy]
@@ -325,123 +325,56 @@ def test_scaffold_apps_base_omits_uc_registration_config(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# Test 3b: session backend defaults to Lakebase, --no-lakebase opts out
+# Test 3b: scaffolds never emit Lakebase (ADR 0001, #1135)
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_apps_defaults_to_lakebase_session(tmp_path: Path) -> None:
-    """A default scaffold writes an active ``[tool.apx.agent.session]`` lakebase block."""
+def test_scaffold_apps_emits_no_lakebase_session(tmp_path: Path) -> None:
+    """A default scaffold writes no session store and no Lakebase extra."""
     runner = CliRunner()
     result = runner.invoke(
         main,
         [
-            "agents",
-            "scaffold",
-            "--runtime",
-            "responses_agent",
-            "my_agent",
-            "--target",
-            "apps",
-            "--template",
-            "data",
-            "--catalog",
-            "samples",
-            "--schema",
-            "tpch",
-            "--dir",
-            str(tmp_path),
+            "agents", "scaffold", "--runtime", "responses_agent", "my_agent",
+            "--target", "apps", "--template", "data",
+            "--catalog", "samples", "--schema", "tpch", "--dir", str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.output
-
-    content = (tmp_path / "my_agent" / "pyproject.toml").read_text()
-    parsed = tomllib.loads(content)
     from apx_agent._inspection import static_agent_setting
 
-    session = static_agent_setting(tmp_path / "my_agent" / "agent.py", "session")  # 3b-3c: on the agent
-    assert session["type"] == "lakebase"
-    assert session["host"] == "${LAKEBASE_HOST}"  # endpoint from env
-    assert session["database"] == "my_agent"  # per-agent database (name slug)
-    assert any("[eval,lakebase]" in dep for dep in parsed["project"]["dependencies"])
+    root = tmp_path / "my_agent"
+    assert static_agent_setting(root / "agent.py", "session") is None
+    assert "lakebase" not in (root / "agent.py").read_text().lower()
+    assert "lakebase" not in (root / "pyproject.toml").read_text().lower()
+    assert "Lakebase" not in result.output
 
 
-def test_scaffold_apps_no_lakebase_omits_session_block(tmp_path: Path) -> None:
-    """``--no-lakebase`` leaves no session block — falls back to in-memory sessions."""
-    runner = CliRunner()
-    result = runner.invoke(
+def test_scaffold_apps_rejects_lakebase_flag(tmp_path: Path) -> None:
+    """``--lakebase`` is refused with the move to managed stores; nothing is written."""
+    result = CliRunner().invoke(
         main,
-        [
-            "agents",
-            "scaffold",
-            "--runtime",
-            "responses_agent",
-            "my_agent",
-            "--target",
-            "apps",
-            "--dir",
-            str(tmp_path),
-            "--no-lakebase",
-        ],
+        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent",
+         "--target", "apps", "--dir", str(tmp_path), "--lakebase"],
     )
-    assert result.exit_code == 0, result.output
-
-    content = (tmp_path / "my_agent" / "pyproject.toml").read_text()
-    parsed = tomllib.loads(content)
-    assert "session" not in parsed.get("tool", {}).get("apx", {}).get("agent", {})
-    assert any("apx-agent[eval]" in dep for dep in parsed["project"]["dependencies"])
+    assert result.exit_code == 2
+    assert "type='managed'" in result.output
+    assert not (tmp_path / "my_agent").exists()
 
 
-def test_scaffold_apps_echoes_lakebase_guidance(tmp_path: Path) -> None:
-    """The default scaffold tells the user how to make Lakebase sessions durable."""
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "agents",
-            "scaffold",
-            "--runtime",
-            "responses_agent",
-            "my_agent",
-            "--target",
-            "apps",
-            "--template",
-            "data",
-            "--catalog",
-            "samples",
-            "--schema",
-            "tpch",
-            "--dir",
-            str(tmp_path),
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert "durable on Lakebase" in result.output
-    assert "LAKEBASE_HOST" in result.output  # the env var to set
-
-
-def test_scaffold_apps_no_lakebase_skips_guidance(
+def test_scaffold_apps_no_lakebase_is_accepted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--no-lakebase`` prints no Lakebase session guidance."""
+    """``--no-lakebase`` still parses (old scripts keep working) and changes nothing."""
     monkeypatch.setattr("apx_agent.cli._make_ws_for_scaffold", lambda profile: None)
-    runner = CliRunner()
-    result = runner.invoke(
+    result = CliRunner().invoke(
         main,
-        [
-            "agents",
-            "scaffold",
-            "--runtime",
-            "responses_agent",
-            "my_agent",
-            "--target",
-            "apps",
-            "--dir",
-            str(tmp_path),
-            "--no-lakebase",
-        ],
+        ["agents", "scaffold", "--runtime", "responses_agent", "my_agent",
+         "--target", "apps", "--dir", str(tmp_path), "--no-lakebase"],
     )
     assert result.exit_code == 0, result.output
-    assert "durable on Lakebase" not in result.output
+    parsed = tomllib.loads((tmp_path / "my_agent" / "pyproject.toml").read_text())
+    assert any("apx-agent[eval]" in dep for dep in parsed["project"]["dependencies"])
 
 
 # ---------------------------------------------------------------------------

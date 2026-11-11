@@ -1567,11 +1567,9 @@ if __name__ == "__main__":
 
 
 _SCAFFOLD_MEMORY_HINT = '''
-# Uncomment to enable persistent memory on Lakebase (set LAKEBASE_HOST; tables auto-create),
+# Uncomment to enable persistent memory on a managed memory store,
 # passing it as an argument to the agent constructor above:
-# memory={"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "<APP_NAME_SLUG>",
-#         "table_name": "<CATALOG>.<SCHEMA>.apx_<APP_NAME_SLUG>_memory",
-#         "embedding_model": "databricks-bge-large-en", "embedding_dim": 1024}
+# memory={"type": "managed", "store_name": "agent-memory"}
 '''
 
 # Spliced into databricks.yml's `variables:`/`config.env:` blocks only when
@@ -2117,23 +2115,6 @@ def _ws_is_connected(ws) -> bool:
         return True
     except Exception:
         return False
-
-
-def _echo_lakebase_guidance() -> None:
-    """Tell the user how to make the durable Lakebase session store live.
-
-    The scaffold points ``host`` at the ``LAKEBASE_HOST`` env var. Until that's
-    set to an existing Lakebase endpoint, sessions run non-durable in-memory —
-    say so, and never fail the scaffold.
-    """
-    click.echo()
-    click.echo("Sessions: durable on Lakebase once you point host at an endpoint.")
-    click.echo(
-        "      Set LAKEBASE_HOST to your Lakebase database's endpoint DNS "
-        "(project endpoint or instance DNS)."
-    )
-    click.echo("      Per-agent tables auto-create on first use; until then, sessions are in-memory.")
-    click.echo("      (--no-lakebase next time to omit the session block entirely)")
 
 
 def _list_databricks_profiles() -> list[tuple[str, str, bool]]:
@@ -3899,7 +3880,7 @@ def _scaffold_apps(
     target: Path, name: str, force: bool, catalog: str, schema: str,
     table: str | None = None, template: str = "data",
     persona: str | None = None, objective: str | None = None,
-    join_key: str | None = None, lakebase: bool = True,
+    join_key: str | None = None,
     instructions: str | None = None,
     ci: CiProvider | None = "github",
     trace_warehouse_default: str | None = None,
@@ -3945,9 +3926,6 @@ def _scaffold_apps(
             "# `uv lock --upgrade-package apx-agent && uv sync`. See docs/upgrade.md.\n"
         )
 
-    if lakebase and runtime == "responses_agent":
-        apx_dep = apx_dep.replace("apx-agent[eval]", "apx-agent[eval,lakebase]", 1)
-
     persona_arg = f", persona={repr(persona)}" if persona else ""
     objective_arg = f", objective={repr(objective)}" if objective else ""
     join_key_arg = f", join_key={repr(join_key)}" if join_key else ""
@@ -3992,8 +3970,6 @@ def _scaffold_apps(
         ', target="responses_agent", model="databricks-claude-sonnet-4-6", '
         'description="An apx-agent on Databricks Apps.", '
         'examples=["Show me a few sample rows from the data you can access", "What questions can you answer?"]'
-        + (f', session={{"type": "lakebase", "host": "${{LAKEBASE_HOST}}", "database": "{name_slug}"}}'
-           if lakebase else "")
     )
     registration = catalog_schema_config_block + registered_model_config_block
     deploy_block = f"[tool.apx.deploy]\n{registration}\n" if registration else ""
@@ -4027,10 +4003,8 @@ def _scaffold_apps(
             .replace("<DEPLOY_BLOCK>", deploy_block)
         )
 
-    # Enable a durable Lakebase session store by default (--no-lakebase opts out to
-    # non-durable in-memory sessions). Session persistence needs only an instance +
-    # database, so it's emitted regardless of whether a UC catalog/schema resolved.
-    # The commented memory block is added only when a UC catalog/schema is known.
+    # No session store is emitted (ADR 0001: no new Lakebase stores). The commented
+    # memory block is added only when a UC catalog/schema is known.
     pyproject = _sub(_SCAFFOLD_APPS_PYPROJECT)
 
     from ._project_gen import _START_HOST_CONTENT, _START_SERVER_CONTENT
@@ -4373,9 +4347,8 @@ def _echo_scaffold_next_steps(
               help="Shorthand for --template data.")
 @click.option(
     "--lakebase/--no-lakebase", "lakebase", default=None,
-    help="ResponsesAgent compatibility only: enable a durable Lakebase session store (shared 'apx-agent' "
-    "instance, per-agent database, created by `uv run quickstart`). Use "
-    "--no-lakebase for non-durable in-memory sessions.",
+    help="Deprecated (ADR 0001): scaffolds no longer emit Lakebase stores. --lakebase is "
+    "rejected; --no-lakebase is accepted and does nothing. Declare a managed session store instead.",
 )
 @click.option(
     "--interactive/--no-interactive", "interactive", default=None,
@@ -4421,6 +4394,10 @@ def scaffold(
 
     Pass ``--deploy`` to receipt-gate an Apps deploy after scaffold.
     """
+    if lakebase:
+        from ._memory_wiring import LAKEBASE_DEPRECATION  # noqa: PLC0415
+
+        raise click.UsageError(f"--lakebase: {LAKEBASE_DEPRECATION}")
     target = Path(directory) / name
 
     # Auto-redirect into the framework's python/ subdir when the user is
@@ -4547,8 +4524,6 @@ def scaffold(
     if scaffold_target == "model-serving" and scaffold_runtime != "responses_agent":
         raise click.UsageError("Model Serving requires --runtime responses_agent.")
     if scaffold_runtime == "durable_agent_server":
-        if lakebase:
-            raise click.UsageError("--lakebase requires --runtime responses_agent. Native sessions use a declared managed store.")
         if ci_provider not in (None, "none"):
             raise click.UsageError("Bundle CI templates require --runtime responses_agent; native scaffolds omit them.")
 
@@ -4606,7 +4581,6 @@ def scaffold(
 
     if scaffold_target == "apps":
         native = scaffold_runtime == "durable_agent_server"
-        lakebase = False if native else (True if lakebase is None else lakebase)
         ci_provider = ci_provider or ("none" if native else "github")
         ci: CiProvider | None = None
         if ci_provider in ("github", "gitlab"):
@@ -4615,7 +4589,7 @@ def scaffold(
         _scaffold_apps(
             target, project_name, force, catalog, schema, table,
             template=scaffold_template, persona=persona, objective=objective,
-            join_key=join_key, lakebase=lakebase, instructions=instructions, ci=ci,
+            join_key=join_key, instructions=instructions, ci=ci,
             trace_warehouse_default=trace_warehouse_default,
             profile=profile, runtime=scaffold_runtime,
         )
@@ -4626,9 +4600,6 @@ def scaffold(
         name, target, scaffold_target,
         catalog=catalog, schema=schema, profile=profile, deploy=deploy,
     )
-
-    if scaffold_target == "apps" and lakebase:
-        _echo_lakebase_guidance()
 
 
 # ---------------------------------------------------------------------------
