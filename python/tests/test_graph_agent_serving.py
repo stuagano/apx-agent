@@ -23,7 +23,7 @@ from langgraph.graph.message import add_messages  # noqa: E402
 from langgraph.prebuilt import ToolNode  # noqa: E402
 from pydantic import BaseModel, ConfigDict  # noqa: E402
 
-from apx_agent import GraphAgent, compile_agent  # noqa: E402
+from apx_agent import Dependencies, GraphAgent, compile_agent  # noqa: E402
 from apx_agent._native_input import native_data_part  # noqa: E402
 
 THRESHOLD = 0.8
@@ -167,3 +167,56 @@ def test_a_deployed_managed_session_store_binds_to_a_graph_agent() -> None:
 
     report.require_compatible()
 
+
+
+# --- Card / MCP / route descriptors (#1037, part C3) ---------------------------------------
+
+
+def _record_with_dependency(effects: list[str]):
+    def record(value: str, ws: Dependencies.Workspace) -> str:
+        """Record a value."""
+        effects.append(value)
+        return f"recorded {value}"
+
+    return record
+
+
+def test_graph_agent_tools_are_described_without_injected_dependencies() -> None:
+    [tool] = GraphAgent(build=_tool_build, tools=[_record_with_dependency([])]).collect_tools()
+
+    assert (tool.name, tool.description) == ("record", "Record a value.")
+    assert set(tool.input_schema["properties"]) == {"value"}  # Dependencies stay hidden
+
+
+def test_the_agent_card_lists_a_graph_agents_tools(serve: Any) -> None:
+    client = serve(GraphAgent(build=_tool_build, tools=[_record_with_dependency([])], name="proof"))
+
+    card = client.get("/.well-known/agent.json")
+
+    assert card.status_code == 200
+    [skill] = [s for s in card.json()["skills"] if s["name"] == "record"]
+    assert set(skill["inputSchema"]["properties"]) == {"value"}
+
+
+def test_a_graph_agents_tool_router_matches_an_llm_agents() -> None:
+    """Hosts that mount per-tool routes (setup_agent) get the same POST /tools/<name> as LlmAgent.
+
+    The durable target mounts none for either agent type; it serves invocations, card and MCP.
+    """
+    from fastapi import FastAPI
+
+    effects: list[str] = []
+
+    def record(value: str) -> str:
+        """Record a value."""
+        effects.append(value)
+        return f"recorded {value}"
+
+    app = FastAPI()
+    for router in GraphAgent(build=_tool_build, tools=[record]).get_tool_routers():
+        app.include_router(router)
+
+    response = TestClient(app).post("/tools/record", json={"value": "route"})
+
+    assert response.status_code == 200, response.text
+    assert effects == ["route"]
