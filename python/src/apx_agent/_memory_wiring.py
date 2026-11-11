@@ -21,6 +21,7 @@ that maps user dependencies to ``ctx.user_ws`` and service dependencies to
 """
 from __future__ import annotations
 
+import functools
 import logging
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -28,6 +29,17 @@ if TYPE_CHECKING:
     from ._models import AgentConfig
 
 logger = logging.getLogger(__name__)
+
+LAKEBASE_DEPRECATION = (
+    "apx's Lakebase stores are deprecated (ADR 0001): declare type='managed' instead. "
+    "History is not migrated. See docs/running/managed-stores.md."
+)
+
+
+@functools.cache
+def _warn_lakebase_deprecated(kind: str) -> None:
+    """Warn once per process per store kind; the store still builds."""
+    logger.warning("%s type='lakebase': %s", kind, LAKEBASE_DEPRECATION)
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +61,7 @@ def _build_memory_store(cfg: Any, ws: Any | None) -> Any:
         return InMemoryMemoryStore()
 
     if cfg.type == "lakebase":
+        _warn_lakebase_deprecated("memory")
         if ws is None:
             return None
         if not cfg.host:
@@ -385,6 +398,7 @@ def _build_conversation_store(cfg: Any, ws: Any | None) -> Any | None:
         return InMemoryConversationStore()
 
     if cfg.type == "lakebase":
+        _warn_lakebase_deprecated("session")
         if ws is None:
             logger.warning(
                 "session= type='lakebase' requires ws; "
@@ -543,6 +557,7 @@ def _lakebase_checkpointer_target(
     host = _resolve_env_var(scfg.host) if scfg.host else None
     if ws is None or not host or not scfg.database:
         return None
+    _warn_lakebase_deprecated("checkpointer")
     return _CheckpointerTarget(host=host, database=scfg.database)
 
 

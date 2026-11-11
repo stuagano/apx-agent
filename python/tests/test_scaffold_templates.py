@@ -27,6 +27,7 @@ def _effective(root: Path):
 
 
 # Effective settings each responses_agent scaffold produced on main before 3b-3c (captured, not guessed).
+# Since #1135 the default ("-True") variants no longer emit a Lakebase session.
 _BEFORE = {
  "base-False": {
   "catalog": None,
@@ -55,13 +56,7 @@ _BEFORE = {
   "name": "orders",
   "registered_model": None,
   "schema": None,
-  "session": {
-   "auto_create": True,
-   "database": "orders",
-   "host": "${LAKEBASE_HOST}",
-   "type": "lakebase",
-   "validate_at_boot": True
-  },
+  "session": None,
   "target": "responses_agent"
  },
  "coworker-False": {
@@ -91,13 +86,7 @@ _BEFORE = {
   "name": "orders",
   "registered_model": "main.sales.orders",
   "schema": "sales",
-  "session": {
-   "auto_create": True,
-   "database": "orders",
-   "host": "${LAKEBASE_HOST}",
-   "type": "lakebase",
-   "validate_at_boot": True
-  },
+  "session": None,
   "target": "responses_agent"
  },
  "data-False": {
@@ -127,13 +116,7 @@ _BEFORE = {
   "name": "orders",
   "registered_model": "main.sales.orders",
   "schema": "sales",
-  "session": {
-   "auto_create": True,
-   "database": "orders",
-   "host": "${LAKEBASE_HOST}",
-   "type": "lakebase",
-   "validate_at_boot": True
-  },
+  "session": None,
   "target": "responses_agent"
  }
 }
@@ -191,7 +174,7 @@ def test_final_prompt_after_finalize_matches_main(tmp_path: Path, monkeypatch, t
     monkeypatch.setattr(cli, "_make_ws_for_scaffold", lambda profile: None)
     root = tmp_path / "orders"
     cli._scaffold_apps(root, "orders", False, "main" if template != "base" else "", "sales" if template != "base" else "",
-                       template=template, instructions=instructions, lakebase=False, runtime="responses_agent")
+                       template=template, instructions=instructions, runtime="responses_agent")
     monkeypatch.chdir(root)
     agent, config = _effective(root)
     finalize_agent(agent, config, pyproject_path=str(root / "pyproject.toml"))

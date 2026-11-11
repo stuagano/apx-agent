@@ -249,6 +249,9 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
     retention_check = check_memory_retention(cwd)
     if retention_check is not None:
         project.append(retention_check)
+    lakebase_check = check_lakebase_deprecated(cwd)
+    if lakebase_check is not None:
+        project.append(lakebase_check)
     abac_check = check_abac_compute_floor(cwd, auth_ok=auth.status is Status.OK)
     if abac_check is not None:
         project.append(abac_check)
@@ -1546,6 +1549,31 @@ def check_memory_retention(cwd: Path) -> Check | None:
     if retention.default_days is not None:
         parts.append(f"default={retention.default_days}d")
     return Check(label, Status.OK, f"{', '.join(parts)} (delete pass runs at app start)", None)
+
+
+def check_lakebase_deprecated(cwd: Path) -> Check | None:
+    """WARN when memory= or session= declares apx's deprecated Lakebase stores (ADR 0001).
+
+    Offline: config only. The agent keeps working; the check names the move.
+    """
+    if not _is_apx_project(cwd):
+        return None
+    try:
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
+
+        cfg = effective_config_isolated(cwd)
+    except Exception:
+        return None
+    if cfg is None:
+        return None
+    from ._memory_wiring import LAKEBASE_DEPRECATION  # noqa: PLC0415
+
+    kinds = [k for k, c in (("memory", cfg.memory), ("session", cfg.session))
+             if c is not None and c.type == "lakebase"]
+    if not kinds:
+        return None
+    return Check("Lakebase stores", Status.WARN,
+                 f"{' and '.join(kinds)} type='lakebase' is deprecated", LAKEBASE_DEPRECATION)
 
 
 def check_abac_compute_floor(cwd: Path, *, auth_ok: bool) -> Check | None:
