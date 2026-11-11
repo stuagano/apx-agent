@@ -152,7 +152,7 @@ result = run_once(agent, "What tables exist?")
 From the CLI, use `apx-agent agents run` for the local development server:
 
 ```bash
-uv run apx-agent agents run --reload    # starts FastAPI on :8000 with hot reload
+uv run apx-agent agents run    # serves on :8000 through agentbricks dev
 ```
 
 Open `http://localhost:8000` for the dev UI — Chat, Traces, Topology, and Eval tabs. See [../get-started/dev-ui.md](../get-started/dev-ui.md) for the full dev UI reference.

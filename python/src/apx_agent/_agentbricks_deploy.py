@@ -84,6 +84,31 @@ def compile_native_app(config: AgentConfig) -> dict[str, Any]:
     return app
 
 
+def run_agentbricks_dev(project: Path, config: AgentConfig, *, port: int) -> int:
+    """Serve the project on ``agentbricks dev``: the deployed command and env, run locally.
+
+    ``agentbricks dev`` reads ``app.yaml``. The project root carries none (deploy
+    stages it in ``.build``), so write the compiled one for the run and remove it after.
+    """
+    import yaml
+
+    app_yaml = project / "app.yaml"
+    if app_yaml.is_symlink() or (app_yaml.exists() and not app_yaml.read_text().startswith(MARKER)):
+        raise click.ClickException("Refusing to overwrite an authored app.yaml; run `agentbricks dev` directly.")
+    runtime = compile_native_app(config)["config"]
+    # Deploy writes the agent-resolved model; here the server resolves it from the declaration.
+    runtime["env"] = [entry for entry in runtime["env"] if entry["name"] != "APX_MODEL"]
+    app_yaml.write_text(MARKER + "\n" + yaml.safe_dump(runtime, sort_keys=False))
+    try:
+        return subprocess.run(
+            [sys.executable, "-m", "databricks_agentbricks.cli.app", "dev",
+             "--source", str(project), "--app-port", str(port)],
+            check=False,
+        ).returncode
+    finally:
+        app_yaml.unlink(missing_ok=True)
+
+
 def stage_native_source(cwd: Path, *, include: tuple[str, ...] = ()) -> None:
     """Stage generated project sources; rebuild only an APX-owned staging tree.
 

@@ -147,7 +147,7 @@ it finishes.
 
 ```bash
 cd my-agent && uv sync
-uv run apx-agent agents run --reload
+uv run apx-agent agents run
 ```
 
 FastAPI starts on `:8000` with file-watch reload; leave it running in one terminal and edit `agent.py` in your IDE in the other.
@@ -234,7 +234,7 @@ agent = Agent(
 )
 ```
 
-Run it the same way: `uv run apx-agent agents run --reload`.
+Run it the same way: `uv run apx-agent agents run`.
 
 > **If you know ADK or OpenAI Agents SDK:** `Agent(name, instructions, tools)` maps directly — same shape, same idea. `run_once(agent, "prompt")` is the no-HTTP runner. See [migration.md](migration.md) for the full mapping.
 
