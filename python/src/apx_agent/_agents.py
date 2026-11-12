@@ -1544,6 +1544,10 @@ class GraphAgent(BaseAgent):
     ``Dependencies``, request identity) and the run's checkpointer. ``before_tool`` /
     ``after_tool`` fire for every tool call inside your graph.
 
+    Declare a third ``model`` parameter, ``build(tools, checkpointer, model)``, to receive the
+    agent's configured chat model (``APX_MODEL``), built the way an ``LlmAgent``'s is; bind
+    ``tools`` onto it with ``model.bind_tools(tools)``. Without it, the graph owns its model.
+
     The graph keeps its own state shape (it must have a ``messages`` channel). Typed caller
     input is validated against ``input_schema`` and ``input(data)`` maps it onto the graph's
     own keys; ``output(state)`` maps the final state to the response's ``output``.
@@ -1573,7 +1577,7 @@ class GraphAgent(BaseAgent):
 
     def __init__(
         self,
-        build: Callable[[list[Any], Any], Any],
+        build: Callable[..., Any],
         tools: list[_ToolFn] | None = None,
         *,
         name: str | None = None,
@@ -1587,7 +1591,7 @@ class GraphAgent(BaseAgent):
         **settings: Unpack[CompositeSettings],
     ) -> None:
         if not callable(build):
-            raise TypeError("GraphAgent build must be callable: build(tools, checkpointer) -> compiled graph")
+            raise TypeError("GraphAgent build must be callable: build(tools, checkpointer[, model]) -> compiled graph")
         if (input is None) != (input_schema is None):
             raise ValueError("input= requires input_schema (and input_schema requires input=)")
         if input is not None and not callable(input):

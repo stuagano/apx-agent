@@ -1023,3 +1023,26 @@ def test_isolation_keeps_a_project_local_venv_and_sibling_paths(tmp_path: Path) 
         sys.path[:] = [p for p in sys.path if p not in (str(site), str(sibling))]
         for name in ("apx_t_ownmod", "apx_t_venvpkg", "apx_t_siblingpkg"):
             sys.modules.pop(name, None)
+
+
+MODEL_GRAPH_AGENT = (
+    "from langgraph.graph import END, START, MessagesState, StateGraph\n"
+    "from apx_agent import GraphAgent\n"
+    "def build(tools, checkpointer, model):\n"
+    "    graph = StateGraph(MessagesState)\n"
+    "    graph.add_node('chat', lambda state: {'messages': [model.invoke(state['messages'])]})\n"
+    "    graph.add_edge(START, 'chat'); graph.add_edge('chat', END)\n"
+    "    return graph.compile(checkpointer=checkpointer)\n"
+    "agent = GraphAgent(build=build, name='{name}')\n"
+)
+
+
+def test_untyped_graph_agent_using_the_apx_model_passes_the_request_probe(tmp_path: Path) -> None:
+    """#1164: a messages-only graph that runs the model apx hands to build() is fully exercised
+    offline, because that model is the one the doctor scripts."""
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "modelgraph", MODEL_GRAPH_AGENT.replace("{name}", "modelgraph"))))
+
+    assert checks["Request"].status is Status.OK, checks["Request"].detail
+    assert "invocation ok" in checks["Request"].detail
