@@ -9955,7 +9955,44 @@ def _deploy_apps(
         )
 
 
-def _deploy_apps_impl(
+def _request_user_required(cwd: Path) -> bool:
+    """Whether agent.toml makes every request carry a request user (``[auth.user] required``)."""
+    from ._agent_toml import load_agent_toml
+
+    project = load_agent_toml(cwd)
+    return project is not None and bool(project.user_auth.required)
+
+
+@contextlib.contextmanager
+def _env_flags_for_local_load(env_pairs: tuple[str, ...]) -> Iterator[None]:
+    """Expose ``--env`` values to this process while the deploy runs.
+
+    The deploy imports and finalizes the agent locally, which resolves ``$VAR``
+    bindings. Without this, a binding resolves against the shell instead of the
+    value the App receives. Previous values are restored afterwards.
+    """
+    previous: dict[str, str | None] = {}
+    for value in env_pairs:
+        name, content = _parse_env_flag(value)
+        previous.setdefault(name, os.environ.get(name))
+        os.environ[name] = content
+    try:
+        yield
+    finally:
+        for name, old in previous.items():
+            if old is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old
+
+
+def _deploy_apps_impl(*, env_pairs: tuple[str, ...] = (), **kwargs: Any) -> str:
+    """Run ``_deploy_apps_body`` with ``--env`` values visible to the local agent load."""
+    with _env_flags_for_local_load(env_pairs):
+        return _deploy_apps_body(env_pairs=env_pairs, **kwargs)
+
+
+def _deploy_apps_body(
     *,
     cwd: Path,
     module: str,
@@ -10232,8 +10269,18 @@ def _deploy_apps_impl(
         require_workspace_scope_allowlist(workspace, authorization_plan)
 
     if native_cli:
-        if authorization_plan.service_resources or authorization_plan.app_dependencies:
+        if authorization_plan.service_resources:
             raise click.ClickException("Agent Bricks deployment cannot yet represent this agent's service-resource grants.")
+        if authorization_plan.app_dependencies:
+            # Bound peers are trusted per hop through the request user's OBO token
+            # (AppDependency). Agent Bricks can't grant this App CAN_USE on a peer, so
+            # the native path needs every request to carry a user.
+            if not _request_user_required(cwd):
+                raise click.ClickException(
+                    "Agent Bricks deployment can't grant this App access to the apps it binds. "
+                    "Set [auth.user] required = true in agent.toml so every hop runs as the request user.")
+            log(f"  app dependencies: {len(authorization_plan.app_dependencies)} bound app(s), "
+                "each hop as the request user (no App CAN_USE grant)")
         if family_permissions.can_use_groups or family_permissions.can_manage_groups:
             raise click.ClickException("Agent Bricks deployment cannot yet reconcile APX app-family group grants.")
         extra_scopes = set(app.get("user_api_scopes", [])) - set(authorization_plan.user_api_scopes)
@@ -10352,7 +10399,8 @@ def _deploy_apps_impl(
                 log(f"  built apx-agent wheel: {wheel_path}")
             if native_direct:
                 from ._agentbricks_deploy import stage_native_source
-                stage_native_source(cwd)
+                declared = effective_config.deploy if effective_config is not None else None
+                stage_native_source(cwd, include=tuple(declared.include) if declared is not None else ())
             else:
                 _run_bundle_artifacts(cwd)
             log("  populated .build/")

@@ -69,6 +69,22 @@ A2A card location. Missing, ambiguous, blank, or malformed bindings fail
 startup. This makes a deployment mistake explicit rather than silently running
 the wrong leaf.
 
+### Deploy a bound root
+
+Deploy each bound peer first, then pass its URL to the root's deploy with
+`--env`. The same value resolves the binding during the deploy's local load and
+reaches the App:
+
+```sh
+apx-agent agents deploy --profile <profile> --env PRICING_APP_URL=https://<pricing-app-url>
+```
+
+On the native Agent Bricks path, set `[auth.user] required = true` in the root's
+`agent.toml`. Each bound hop then runs as the request user. Agent Bricks can't
+grant the root App access to its peers, so a root without a required request
+user is refused. If the root imports code outside the standard project files,
+list it in `[tool.apx.deploy] include`.
+
 ## One root, three ingress protocols
 
 The finalized root is shared by:
