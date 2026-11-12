@@ -505,8 +505,8 @@ class DeployConfig(_BackendConfig):
 
     ``backend`` selects the durable deploy path. Absent or ``agentbricks`` keeps
     today's Agent Bricks CLI. ``apps_api`` uses the Apps API path and requires
-    ``entrypoint``. ``include`` lists extra source paths that path copies into
-    the staged tree; it is empty unless declared."""
+    ``entrypoint``. ``include`` lists extra source paths either durable deploy
+    copies into the staged tree; it is empty unless declared."""
 
     instances: StrictInt | None = Field(default=None, ge=1, le=5)
     autoscale: AutoscaleConfig | None = None
@@ -516,7 +516,7 @@ class DeployConfig(_BackendConfig):
     entrypoint: str | None = None
     """Module run as ``python -m <entrypoint>``. Required for ``backend = apps_api``."""
     include: list[str] = Field(default_factory=list)
-    """Extra project-relative paths staged by the Apps API deploy. Not a glob."""
+    """Extra project-relative paths staged by the Agent Bricks or Apps API deploy. Not a glob."""
     env: dict[str, str] = Field(default_factory=dict)
     """Literal env merged into the Apps API ``app.yaml``. Empty unless declared."""
     resources: list[DeployResourceConfig] = Field(default_factory=list)
@@ -577,8 +577,8 @@ class DeployConfig(_BackendConfig):
         if self.backend == "apps_api":
             if self.entrypoint is None:
                 raise ValueError("backend='apps_api' requires deploy.entrypoint")
-        elif self.entrypoint is not None or self.include or self.env:
-            raise ValueError("deploy.entrypoint, deploy.include, and deploy.env require backend='apps_api'")
+        elif self.entrypoint is not None or self.env:
+            raise ValueError("deploy.entrypoint and deploy.env require backend='apps_api'")
         return self
 
 

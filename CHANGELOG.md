@@ -6,6 +6,14 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **A root with named `bindings=` deploys on the native Agent Bricks path.** A root
+  that binds other apps was refused with "cannot yet represent this agent's
+  service-resource grants". It now deploys when `[auth.user] required = true`, since
+  every bound hop runs as the request user; without it, the refusal says to set it.
+  `--env` values also resolve `$VAR` bindings during the deploy's local load, so the
+  binding gets the URL the App receives instead of failing as blank. Native staging
+  now copies `[tool.apx.deploy] include` paths too; before, a project importing its
+  own package outside the standard files deployed without it and crashed on import.
 - **Two chat pages, not three.** `/` is the user chat and `/_apx/agent` the builder
   console. Opening `/_apx/chat` on its own now redirects to `/_apx/agent#chat`, keeping
   its query string. The console's Chat tab frames `/_apx/chat?shell=1`, and the topology

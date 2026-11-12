@@ -87,7 +87,8 @@ app_name = "mcp-orders"   # optional; Apps API App name, when it differs from na
 host = "apps"             # apps
 space = "shared-space"    # an App Space picks compute; without one:
 # instances = 2           #   fixed count, or [tool.apx.deploy.autoscale] min/max, 1-5
-backend = "agentbricks"   # | apps_api (+ entrypoint, include, env)
+backend = "agentbricks"   # | apps_api (+ entrypoint, env)
+# include = ["domain"]    #   extra source paths staged by either backend
 ```
 
 `[tool.apx.deploy]` also holds the registration and publishing keys:
