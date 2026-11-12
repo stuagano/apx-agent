@@ -1037,12 +1037,22 @@ MODEL_GRAPH_AGENT = (
 )
 
 
-def test_untyped_graph_agent_using_the_apx_model_passes_the_request_probe(tmp_path: Path) -> None:
+ASYNC_MODEL_GRAPH_AGENT = MODEL_GRAPH_AGENT.replace(
+    "    graph.add_node('chat', lambda state: {'messages': [model.invoke(state['messages'])]})\n",
+    "    async def chat(state):\n"
+    "        return {'messages': [await model.ainvoke(state['messages'])]}\n"
+    "    graph.add_node('chat', chat)\n",
+)
+
+
+@pytest.mark.parametrize("source", [MODEL_GRAPH_AGENT, ASYNC_MODEL_GRAPH_AGENT], ids=["sync_node", "async_node"])
+def test_untyped_graph_agent_using_the_apx_model_passes_the_request_probe(tmp_path: Path, source: str) -> None:
     """#1164: a messages-only graph that runs the model apx hands to build() is fully exercised
-    offline, because that model is the one the doctor scripts."""
+    offline, because that model is the one the doctor scripts. #1162: an `async def` node runs too."""
     from apx_agent._doctor_durable import check_durable_readiness
 
-    checks = _by_name(check_durable_readiness(_project(tmp_path, "modelgraph", MODEL_GRAPH_AGENT.replace("{name}", "modelgraph"))))
+    assert source.count("async def") == (source is ASYNC_MODEL_GRAPH_AGENT)
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "modelgraph", source.replace("{name}", "modelgraph"))))
 
     assert checks["Request"].status is Status.OK, checks["Request"].detail
     assert "invocation ok" in checks["Request"].detail
