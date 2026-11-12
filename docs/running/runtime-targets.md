@@ -133,12 +133,13 @@ New Apps projects default to `durable_agent_server`. To create a compatibility
 project with MLflow AgentServer and Bundle deployment (deprecated), run
 `apx-agent agents scaffold my-agent --runtime responses_agent`.
 
-A `durable_agent_server` App with ordinary text agents serves apx's chat at `/` and,
-with the dev UI, at `/_apx/chat` (the dev shell's Chat tab, with its Tools and
-MCP panel), plus the apx dev UI (Discover, Topology, Edit, Eval, Probe
-and the rest) under `/_apx/*`, in the dark Du Bois theme. Chat turns go to the
+A `durable_agent_server` App with ordinary text agents serves two chat pages: `/` for
+users and, with the dev UI, the builder console at `/_apx/agent`, whose Chat tab (with
+its Tools and MCP panel) sits beside Discover, Topology, Edit, Eval, Probe and the rest,
+in the dark Du Bois theme. The tab frames `/_apx/chat?shell=1`; opening `/_apx/chat` on
+its own redirects to `/_apx/agent#chat`. Chat turns go to the
 server's own `/api/invocations`. If a project mounts its own UI at `/`, that UI
-keeps the root. Set `APX_DEV_UI=0` to drop the dev UI pages and `/_apx/chat`;
+keeps the root. Set `APX_DEV_UI=0` to drop the dev UI pages, including the console;
 `/` still serves.
 
 Reloading either chat page restores the session's earlier turns from the durable
@@ -150,7 +151,7 @@ SDK invocation replay and execution evidence. The root page remains available
 (unless the project supplies its own). The developer surfaces are enabled locally
 and opt-in on Apps with `APX_DEV_UI=1`: the `/_apx/agent` shell, Topology,
 Discover and the other read-only pages mount, and the shell's Chat tab is the
-native workflow chat at `/_apx/chat`. The free-text Eval actions (`/_apx/eval*`)
+native workflow chat. The free-text Eval actions (`/_apx/eval*`)
 and the Eval tab stay off, because typed leaves reject plain chat messages; tool
 replay (the Tools page's Run) still works. Input discovery and validation
 remain available at `/api/input-schema` and `/api/input-validation`, including

@@ -17,7 +17,7 @@ from ._ui_theme import apx_theme_style
 _UNSET_ENV = ""  # optional UI env vars (catalog, warehouse) resolve to empty when not set
 
 _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
-    ("chat", "Chat", "/_apx/chat"),
+    ("chat", "Chat", "/_apx/chat?shell=1"),  # the marker keeps the shell's own load from redirecting
     ("edit", "Edit", "/_apx/edit"),
     ("tools", "Tools", "/_apx/tools"),
     ("eval", "Eval", "/_apx/eval"),
@@ -29,6 +29,21 @@ _UNIFIED_TABS: tuple[tuple[str, str, str], ...] = (
     ("knowledge", "Knowledge", "/_apx/knowledge"),
     ("probe", "Probe", "/_apx/probe"),
 )
+
+
+def standalone_chat_redirect(request: Any) -> Any:
+    """Send a standalone /_apx/chat to the builder console's Chat tab; None for a framed load.
+
+    Two chat pages, not three: "/" for users, /_apx/agent for builders. The shell's Chat tab
+    marks its load with ?shell=1 and the topology dock with ?embed=1.
+    """
+    from fastapi.responses import RedirectResponse
+
+    params = request.query_params
+    if params.get("shell") == "1" or params.get("embed") == "1":
+        return None
+    query = f"?{request.url.query}" if request.url.query else ""  # e.g. ?token= for the dev token
+    return RedirectResponse(f"/_apx/agent{query}#chat")
 
 
 # History/Trace/Eval read the conversation store and the legacy send hooks, which the durable

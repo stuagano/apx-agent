@@ -767,7 +767,7 @@ def test_reload_does_not_show_inaccessible_cached_content(browser_chat, failure)
     assert posts[1]["input"] == {"messages": [{"role": "user", "content": "new user question"}]}
 
 
-@pytest.mark.parametrize("surface", ["/", "/_apx/chat"])
+@pytest.mark.parametrize("surface", ["/", "/_apx/chat?shell=1"])
 def test_browser_real_native_host(request, monkeypatch, surface):
     monkeypatch.setenv("APX_DEV_UI", "1")
     # The dev page loads /_apx/workspace-context; give the fake client real strings (as
