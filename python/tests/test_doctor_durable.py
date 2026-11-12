@@ -1037,12 +1037,60 @@ MODEL_GRAPH_AGENT = (
 )
 
 
-def test_untyped_graph_agent_using_the_apx_model_passes_the_request_probe(tmp_path: Path) -> None:
+ASYNC_MODEL_GRAPH_AGENT = MODEL_GRAPH_AGENT.replace(
+    "    graph.add_node('chat', lambda state: {'messages': [model.invoke(state['messages'])]})\n",
+    "    async def chat(state):\n"
+    "        return {'messages': [await model.ainvoke(state['messages'])]}\n"
+    "    graph.add_node('chat', chat)\n",
+)
+
+
+@pytest.mark.parametrize("source", [MODEL_GRAPH_AGENT, ASYNC_MODEL_GRAPH_AGENT], ids=["sync_node", "async_node"])
+def test_untyped_graph_agent_using_the_apx_model_passes_the_request_probe(tmp_path: Path, source: str) -> None:
     """#1164: a messages-only graph that runs the model apx hands to build() is fully exercised
-    offline, because that model is the one the doctor scripts."""
+    offline, because that model is the one the doctor scripts. #1162: an `async def` node runs too."""
     from apx_agent._doctor_durable import check_durable_readiness
 
-    checks = _by_name(check_durable_readiness(_project(tmp_path, "modelgraph", MODEL_GRAPH_AGENT.replace("{name}", "modelgraph"))))
+    assert source.count("async def") == (source is ASYNC_MODEL_GRAPH_AGENT)
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "modelgraph", source.replace("{name}", "modelgraph"))))
 
     assert checks["Request"].status is Status.OK, checks["Request"].detail
     assert "invocation ok" in checks["Request"].detail
+
+
+CONTEXT_GRAPH_AGENT = (
+    "from dataclasses import dataclass\n"
+    "from langchain_core.messages import AIMessage\n"
+    "from langgraph.graph import END, START, MessagesState, StateGraph\n"
+    "from langgraph.runtime import Runtime\n"
+    "from apx_agent import GraphAgent\n"
+    "@dataclass\n"
+    "class Ctx:\n"
+    "    greeting: str = 'unset'\n"
+    "def reply(state: MessagesState, runtime: Runtime[Ctx]):\n"
+    "    if runtime.context is None or runtime.context.greeting != 'from-factory':\n"
+    "        raise RuntimeError(f'runtime context not passed: {runtime.context!r}')\n"
+    "    return {'messages': [AIMessage(content=runtime.context.greeting)]}\n"
+    "def build(tools, checkpointer):\n"
+    "    graph = StateGraph(MessagesState, context_schema=Ctx)\n"
+    "    graph.add_node('reply', reply)\n"
+    "    graph.add_edge(START, 'reply'); graph.add_edge('reply', END)\n"
+    "    return graph.compile(checkpointer=checkpointer)\n"
+    "agent = GraphAgent(build=build, name='{name}', context=lambda: Ctx(greeting='from-factory'))\n"
+)
+
+
+def test_graph_agent_context_factory_reaches_the_graph_runtime(tmp_path: Path) -> None:
+    """#1163: a graph with a context_schema gets the GraphAgent's context= on every turn."""
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    checks = _by_name(check_durable_readiness(_project(tmp_path, "ctxgraph", CONTEXT_GRAPH_AGENT.replace("{name}", "ctxgraph"))))
+
+    assert checks["Request"].status is Status.OK, checks["Request"].detail
+
+
+def test_graph_agent_context_must_be_callable() -> None:
+    from apx_agent import GraphAgent
+
+    with pytest.raises(TypeError, match="context="):
+        GraphAgent(build=lambda tools, checkpointer: None, context="not callable")  # type: ignore[arg-type]
