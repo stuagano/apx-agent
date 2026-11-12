@@ -42,6 +42,11 @@ def native_input_router(agent: Any) -> APIRouter:
 NATIVE_CHAT_SCRIPT = r"""
 <style>
 .native-execution-card {border: 1px solid var(--apx-border); border-radius: 8px; padding: 12px; margin: 8px 0; overflow-wrap: anywhere;}
+.native-step-contract, .native-step-handoff {color: var(--apx-muted); margin-top: 4px;}
+/* Consecutive steps read as a chain. */
+.native-execution-card + .native-execution-card {position: relative; margin-top: 22px;}
+.native-execution-card + .native-execution-card::before {content: '↓'; position: absolute; top: -21px; left: 16px; color: var(--apx-muted);}
+.native-input-schema > summary {display: inline-block; border: 1px solid var(--apx-border); border-radius: 999px; padding: 2px 10px; cursor: pointer;}
 .native-input-form {display: grid; gap: 6px; margin: 0 0 8px; padding: 8px 12px; border: 1px solid var(--apx-border); border-radius: 8px;}
 .native-input-form .native-field {display: grid; grid-template-columns: minmax(8em, 14em) 1fr; gap: 2px 8px; align-items: center;}
 .native-input-form small {grid-column: 2; color: var(--apx-muted);}
@@ -85,7 +90,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
   let restoring = false;
   let answered = false; // the Events timeline already has this run's assistant row
   let answer, status, eventLog, controls, cards, resultButton, resultPanel;
-  let schema, ready = false;
+  let schema, ready = false, stepSerial = 0;
   const validation = document.createElement('div');
   validation.className = 'native-validation';
   validation.setAttribute('role', 'alert');
@@ -97,7 +102,7 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
       const details = document.createElement('details');
       details.className = 'native-input-schema';
       const title = document.createElement('summary');
-      title.textContent = 'Required request JSON — declared input schema';
+      title.textContent = 'Input: ' + (typeof schema.title === 'string' ? schema.title.slice(0, 80) : 'declared JSON') + ' — view schema';
       const pre = document.createElement('pre');
       pre.textContent = JSON.stringify(schema, null, 2);
       details.append(title, pre);
@@ -539,10 +544,45 @@ function apxNativeChat({form, input, send, container, bubble, render}) {
     } catch (_) {}
     const remote = unknown || event.location === 'remote';
     head.textContent = [(transport === 'completed' && !unknown ? '✓ ' : '? ') + safe(event.step),
-      ...(domain === 'unavailable' ? [] : [domain.replaceAll('_', ' ')]),
-      ...(remote ? [childApp ? '→ ' + childApp : 'remote'] : [])].join(' · ');
-    // The label is derived from the event's URL, so the full host always travels with it.
-    if (childHost) head.title = 'ran in ' + childHost;
+      ...(domain === 'unavailable' ? [] : [domain.replaceAll('_', ' ')])].join(' · ');
+    card.id = 'native-step-' + (++stepSerial);
+    if (known(event.step)) card.dataset.step = event.step;
+    // The contract on every card: declared schemas in and out, and whether they were checked.
+    const contract = document.createElement('div');
+    contract.className = 'native-step-contract';
+    const inSchema = safe(event.input_schema), outSchema = safe(event.output_schema);
+    contract.textContent = [
+      ...(known(inSchema) || known(outSchema) ? ['in: ' + (known(inSchema) ? inSchema : '—') + ' → out: ' + (known(outSchema) ? outSchema : '—')] : []),
+      ...[['validated', event.schema_validated], ['readback', event.readback_verified]]
+        .filter(([, v]) => typeof v === 'boolean').map(([label, v]) => label + (v ? ' ✓' : ' ✗'))].join(' · ');
+    // The handoff: which step this one follows, and which app it was handed to.
+    const handoff = document.createElement('div');
+    handoff.className = 'native-step-handoff';
+    if (known(correlation.logical_predecessor)) {
+      const prior = [...cards.querySelectorAll('.native-execution-card[data-step]')].reverse()
+        .find(c => c.dataset.step === correlation.logical_predecessor);
+      handoff.append('after ');
+      if (prior) {
+        const a = document.createElement('a');
+        a.href = '#' + prior.id;
+        a.textContent = correlation.logical_predecessor;
+        handoff.append(a);
+      } else handoff.append(correlation.logical_predecessor);
+    }
+    if (remote) {
+      if (handoff.childNodes.length) handoff.append(' · ');
+      handoff.append((known(correlation.transport_sender) ? correlation.transport_sender + ' ' : '') + '→ ');
+      if (childHref) {
+        const a = document.createElement('a');
+        a.href = childHref;
+        a.textContent = childApp;
+        // The label is derived from the event's URL, so the full host always travels with it.
+        a.title = 'ran in ' + childHost;
+        handoff.append(a);
+      } else handoff.append('unnamed app');
+      handoff.append(' (remote invocation)');
+    }
+    head.after(...[contract, handoff].filter(line => line.childNodes.length));
     if (!known(event.step)) missing.push('step');
     if (transport !== 'completed') addRow('transport ' + transport);
     const timestamp = typeof event.recorded_at === 'string' && event.recorded_at.length <= 64 &&
