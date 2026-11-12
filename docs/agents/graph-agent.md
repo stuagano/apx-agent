@@ -46,6 +46,7 @@ agent = GraphAgent(
 | `input_schema` + `input=` | Typed caller input, validated, mapped onto your graph's own keys |
 | `output=` | The response's `output`, from your graph's final state |
 | `name=` | Session threads keyed by agent, user and session; crash recovery that resumes at the unfinished node |
+| `session_budget={"tokens": N, "usd": D}` | A cumulative per-session cap, enforced at turn boundaries as on `LlmAgent` |
 | Nothing | The agent card and MCP list your tools (plus `/tools/<name>` routes on hosts that mount them; the durable target mounts none) |
 
 ## Rules
@@ -57,6 +58,9 @@ agent = GraphAgent(
   that reuses a governed tool's name is refused too. For a deliberate exception, name it in
   `ungoverned=["local_math"]`. A node that calls a raw function directly, outside a `ToolNode`, can't be detected.
 - **Compile `build` with the `checkpointer` argument.** Sessions, approvals and recovery depend on it.
+- **A `session_budget` needs a `state: dict` key in the graph's state schema.** apx keeps the session's running
+  total there. Compile refuses a budgeted graph without it, because otherwise the cap would silently never
+  accumulate.
 - **Recovery is at-least-once.** A crashed run resumes at the unfinished node, so make that node's side effects
   idempotent.
 
