@@ -40,6 +40,7 @@ agent = GraphAgent(
 | You write | apx provides |
 |---|---|
 | `build(tools, checkpointer)` returning a compiled graph | Called at compile time with governed `tools` and the run's checkpointer |
+| A third `model` parameter: `build(tools, checkpointer, model)` | The agent's configured chat model (`APX_MODEL`), built as an `LlmAgent`'s is; the offline doctor scripts it |
 | Plain tool functions in `tools=[...]` | Injected `Dependencies` (hidden from the model), request identity, `ToolScope` limits |
 | `before_tool` / `after_tool` / a `PolicyGate` | Hooks run inside every tool call in your `ToolNode`; `ASK` pauses for approval and resumes |
 | Nothing | `PermissionError`, `ToolCancelled` and `ToolError` become an error tool result (`Error: …`), so the turn continues; genuine bugs still fail loud |

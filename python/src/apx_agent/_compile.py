@@ -1899,7 +1899,10 @@ def _compile_graph_agent(agent: GraphAgent, ctx: CompileContext) -> Any:
     from ._callbacks import _AgentCallbackHandler
 
     tools = [_hooked_and_contained(_make_langchain_tool(fn, ctx), agent) for fn in agent._tool_fns]
-    graph = agent._build(tools, ctx.checkpointer)
+    # A build that declares `model` gets the agent's configured model (APX_MODEL), built the way an
+    # LlmAgent's is; two-argument builds keep owning their model.
+    wants_model = "model" in inspect.signature(agent._build).parameters
+    graph = agent._build(tools, ctx.checkpointer, **({"model": _build_chat_databricks(ctx.model)} if wants_model else {}))
     if not isinstance(graph, Pregel):
         # Only a compiled graph can be inspected for ungoverned tools, so anything else fails closed.
         raise TypeError(

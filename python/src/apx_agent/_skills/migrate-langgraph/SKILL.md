@@ -19,6 +19,9 @@ Reference implementation: `python/examples/langgraph-migration/after-apx/` in th
    `build(tools, checkpointer)` that returns the compiled graph, compiled with the `checkpointer` argument
    (recovery and sessions depend on it). Keep every node, edge and reducer as they are. Done when one function
    returns the compiled graph for given tools and checkpointer.
+   If the graph creates its own chat model, add a third `model` parameter, `build(tools, checkpointer, model)`,
+   and use it in place of the graph's own model (`model.bind_tools(tools)` where it bound tools). apx passes the
+   agent's configured model (`APX_MODEL`), and `--check` can then run the graph offline with a scripted model.
 2. **Governed tools.** List every tool the graph binds: `ToolNode([...])`, `create_agent(tools=...)`,
    `.bind_tools(...)`, including inside subgraphs. Make each a plain Python function with typed parameters and a
    docstring, pass them as `GraphAgent(tools=[...])`, and have `build` bind the `tools` it receives. A tool that
