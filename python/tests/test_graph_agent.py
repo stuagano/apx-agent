@@ -338,3 +338,33 @@ async def test_async_nodes_still_run_natively_on_the_async_path(fake_ws: MagicMo
     result = await graph.ainvoke({"messages": [HumanMessage(content="hi")]}, {"configurable": {"who": "bob"}})
 
     assert result["messages"][-1].content == "async ok bob"
+
+
+async def test_context_factory_reaches_the_graph_on_the_executor_path(fake_ws: MagicMock) -> None:
+    """#1163: GraphAgent.run()/dev turns go through LangGraphExecutor's astream/ainvoke, not run_graph_turn."""
+    from dataclasses import dataclass
+
+    from langgraph.runtime import Runtime
+
+    from apx_agent._executor import TurnComplete
+    from apx_agent._langgraph_executor import LangGraphExecutor
+
+    @dataclass
+    class Ctx:
+        greeting: str = "unset"
+
+    def reply(state: MessagesState, runtime: Runtime[Ctx]) -> dict[str, Any]:
+        return {"messages": [AIMessage(content="no context" if runtime.context is None else runtime.context.greeting)]}
+
+    def build(tools: list[Any], checkpointer: Any) -> Any:
+        graph = StateGraph(MessagesState, context_schema=Ctx)
+        graph.add_node("reply", reply)
+        graph.add_edge(START, "reply")
+        graph.add_edge("reply", END)
+        return graph.compile(checkpointer=checkpointer)
+
+    agent = GraphAgent(build=build, context=lambda: Ctx(greeting="from-factory"))
+    events = [e async for e in LangGraphExecutor(agent, ws=fake_ws, model="m").run_turn(
+        [{"role": "user", "content": "hi"}], [], "", None)]
+
+    assert [e.response for e in events if isinstance(e, TurnComplete)] == ["from-factory"]

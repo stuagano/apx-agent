@@ -285,6 +285,7 @@ class LangGraphExecutor:
             objects ending with :class:`~apx_agent._executor.TurnComplete`.
         """
         from ._agents import _has_step_policy, _has_typed_output
+        from ._graph_turn import _graph_context
 
         protected_run = _has_typed_output(self._agent) or _has_step_policy(self._agent)
         resolved_model = (config.model if config and config.model else None) or self._model or ""
@@ -304,6 +305,7 @@ class LangGraphExecutor:
         try:
             compiled = self._get_compiled(resolved_model)
             lc_messages = _to_langchain_messages(messages, system_prompt=system_prompt)
+            graph_context = _graph_context(self._agent)
 
             # Try streaming first.  If astream raises (e.g. the graph is a
             # synchronous-only stub in a test), fall back to ainvoke.
@@ -313,7 +315,7 @@ class LangGraphExecutor:
 
             try:
                 async for chunk in compiled.astream(
-                    {"messages": lc_messages}, stream_mode="updates", config=lg_config
+                    {"messages": lc_messages}, stream_mode="updates", config=lg_config, **graph_context
                 ):
                     for text in _texts_from_chunk(chunk):
                         collected_texts.append(text)
@@ -338,7 +340,7 @@ class LangGraphExecutor:
                 # astream raised (graph is a sync-only stub or the provider
                 # doesn't support streaming) — fall back to ainvoke once.
                 result = await compiled.ainvoke(
-                    {"messages": lc_messages}, config=lg_config
+                    {"messages": lc_messages}, config=lg_config, **graph_context
                 )
                 final_text = _final_text_from_messages(result.get("messages", []))
                 yield TurnComplete(response=final_text)

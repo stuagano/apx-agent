@@ -46,6 +46,7 @@ agent = GraphAgent(
 | Nothing | `PermissionError`, `ToolCancelled` and `ToolError` become an error tool result (`Error: …`), so the turn continues; genuine bugs still fail loud |
 | `input_schema` + `input=` | Typed caller input, validated, mapped onto your graph's own keys |
 | `output=` | The response's `output`, from your graph's final state |
+| `context=` (a zero-argument factory, e.g. `context=Context`) | Your graph's LangGraph runtime context (`context_schema`), built once per turn |
 | `name=` | Session threads keyed by agent, user and session; crash recovery that resumes at the unfinished node |
 | `session_budget={"tokens": N, "usd": D}` | A cumulative per-session cap, enforced at turn boundaries as on `LlmAgent` |
 | Nothing | The agent card and MCP list your tools (plus `/tools/<name>` routes on hosts that mount them; the durable target mounts none) |
