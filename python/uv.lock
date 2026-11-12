@@ -291,7 +291,7 @@ requires-dist = [
     { name = "langgraph", specifier = ">=1.1.0" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'lakebase'", specifier = ">=2.0" },
-    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0,<2" },
     { name = "mlflow", extras = ["databricks"], marker = "extra == 'align'", specifier = ">=3.14,<3.15" },
     { name = "mlflow", extras = ["databricks"], marker = "extra == 'all'", specifier = ">=3.14,<3.15" },
     { name = "mlflow", extras = ["databricks"], marker = "extra == 'eval'", specifier = ">=3.14,<3.15" },
