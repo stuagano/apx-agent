@@ -223,6 +223,29 @@ class BaseAgent:
         return []
 
 
+def _validated_session_budget(session_budget: Mapping[str, Any] | None) -> dict[str, int | float] | None:
+    """A cumulative per-session ``tokens`` and/or ``usd`` cap (#768, #836), validated; None = uncapped."""
+    if session_budget is None:
+        return None
+    extra = set(session_budget) - {"tokens", "usd"}
+    if extra or not session_budget:
+        raise ValueError(f"session_budget supports 'tokens' and/or 'usd', got {sorted(session_budget)}")
+    stored: dict[str, int | float] = {}
+    if "tokens" in session_budget:
+        tokens = session_budget["tokens"]
+        # bool is an int subclass — reject it explicitly. A non-positive cap
+        # would refuse every turn; a non-int crashes the first comparison.
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+            raise ValueError(f"session_budget['tokens'] must be a positive int, got {tokens!r}")
+        stored["tokens"] = tokens
+    if "usd" in session_budget:
+        usd = session_budget["usd"]
+        if isinstance(usd, bool) or not isinstance(usd, (int, float)) or not math.isfinite(usd) or usd <= 0:
+            raise ValueError(f"session_budget['usd'] must be a positive finite number, got {usd!r}")
+        stored["usd"] = float(usd)
+    return stored
+
+
 def _analyze_tools(fns: list[_ToolFn]) -> list[Any]:
     """(fn, plain params, dependency names, input model) per tool, shared by LlmAgent and GraphAgent."""
     analyzed: list[Any] = []
@@ -435,33 +458,7 @@ class LlmAgent(BaseAgent):
         # Cumulative per-session token and/or usd cap (#768, #836). Enforced at
         # the served-turn boundary against the checkpointer-persisted running
         # total (see _budget.py). None = uncapped.
-        if session_budget is not None:
-            allowed = {"tokens", "usd"}
-            extra = set(session_budget) - allowed
-            if extra or not session_budget:
-                raise ValueError(
-                    f"session_budget supports 'tokens' and/or 'usd', got "
-                    f"{sorted(session_budget)}"
-                )
-            stored: dict[str, int | float] = {}
-            if "tokens" in session_budget:
-                tokens = session_budget["tokens"]
-                # bool is an int subclass — reject it explicitly. A non-positive cap
-                # would refuse every turn; a non-int crashes the first comparison.
-                if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
-                    raise ValueError(
-                        f"session_budget['tokens'] must be a positive int, got {tokens!r}"
-                    )
-                stored["tokens"] = tokens
-            if "usd" in session_budget:
-                usd = session_budget["usd"]
-                if isinstance(usd, bool) or not isinstance(usd, (int, float)) or not math.isfinite(usd) or usd <= 0:
-                    raise ValueError(
-                        f"session_budget['usd'] must be a positive finite number, got {usd!r}"
-                    )
-                stored["usd"] = float(usd)
-            session_budget = stored
-        self._session_budget = session_budget
+        self._session_budget = _validated_session_budget(session_budget)
         # Deferred tool loading (#767): "eager" binds every author tool on the
         # first compiled hop (today's behavior). "deferred" advertises only
         # tool_search until a match writes names into state["bound_tools"].
@@ -1555,6 +1552,10 @@ class GraphAgent(BaseAgent):
     isn't one of the governed objects ``build`` received; name a deliberate exception in
     ``ungoverned=[...]``. A node that calls a raw function directly can't be detected.
 
+    ``session_budget={"tokens": N, "usd": D}`` caps a session's cumulative spend, as on
+    ``LlmAgent``; apx keeps the running total in the graph's ``state: dict`` channel, which the
+    graph must then declare.
+
     Example::
 
         def build(tools, checkpointer):
@@ -1580,6 +1581,7 @@ class GraphAgent(BaseAgent):
         input: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         output: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         ungoverned: list[str] | None = None,
+        session_budget: dict[str, int | float] | None = None,
         before_tool: BeforeToolHook | None = None,
         after_tool: AfterToolHook | None = None,
         **settings: Unpack[CompositeSettings],
@@ -1609,6 +1611,7 @@ class GraphAgent(BaseAgent):
         self._input_map = input
         self._output_map = output
         self._ungoverned = frozenset(ungoverned or ())
+        self._session_budget = _validated_session_budget(session_budget)
         self._before_tool = before_tool
         self._after_tool = after_tool
 

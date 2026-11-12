@@ -1906,6 +1906,13 @@ def _compile_graph_agent(agent: GraphAgent, ctx: CompileContext) -> Any:
             f"GraphAgent build must return a compiled LangGraph graph (got {type(graph).__name__}); "
             "call .compile() on your StateGraph and return it unwrapped."
         )
+    if agent._session_budget is not None and "state" not in graph.channels:
+        # The running total is persisted with update_state(..., {"state": ...}); without the channel
+        # that write fails and is only logged, so the cap would silently never accumulate.
+        raise ValueError(
+            f"GraphAgent {agent._name or ''}: session_budget needs a `state: dict` channel in the graph's "
+            "state schema, where apx keeps the session's running total."
+        )
     governed = {id(tool) for tool in tools}
     ungoverned = sorted({t.name for t in _bound_tools(graph) if id(t) not in governed} - agent._ungoverned)
     if ungoverned:
