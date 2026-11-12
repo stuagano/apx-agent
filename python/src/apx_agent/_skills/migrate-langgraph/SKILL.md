@@ -32,6 +32,9 @@ Reference implementation: `python/examples/langgraph-migration/after-apx/` in th
    an ID) become `input_schema` (a pydantic model with `extra="forbid"`) plus `input=lambda data: {...}` mapping
    onto the graph's own keys. Results callers read beyond messages become `output=lambda state: {...}`. Done when
    every field of the old endpoint's request and response maps to `input`, `output`, or messages.
+   If the graph declares a `context_schema` (it reads `runtime.context` or `get_runtime(...)`), pass
+   `context=` a zero-argument factory such as `context=Context`; apx builds it once per turn. Take caller
+   identity from tool `Dependencies`, not from the request.
 4. **`agent.py`.** At the project root, define `agent = GraphAgent(build=..., tools=[...], name="...")` plus
    `input_schema` / `input` / `output` from step 3. Use a short kebab-case `name` (it becomes the app name).
 5. **`pyproject.toml`.** Add dependencies `apx-agent[agentbricks]` and `databricks-agentbricks[langgraph]>=0.9.0,<0.10`

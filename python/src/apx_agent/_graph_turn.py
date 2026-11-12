@@ -30,6 +30,15 @@ def _mapped_graph_input(agent: Any, domain_input: dict[str, Any]) -> dict[str, A
     return agent._input_map(domain_input[agent.INPUT_KEY])
 
 
+def _graph_context(agent: Any) -> dict[str, Any]:
+    """A GraphAgent's LangGraph runtime context for this turn, as invoke/stream kwargs (#1163)."""
+    from ._agents import GraphAgent
+
+    if not isinstance(agent, GraphAgent) or agent._context is None:
+        return {}
+    return {"context": agent._context()}
+
+
 def run_graph_turn(
     graph: Any,
     agent: Any,
@@ -121,12 +130,12 @@ def run_graph_turn(
         if continuing and snapshot is not None and not snapshot.next:
             result = snapshot.values
         elif emit_message is None:
-            result = graph.invoke(graph_input, **({"config": config} if config else {}))
+            result = graph.invoke(graph_input, **({"config": config} if config else {}), **_graph_context(agent))
         else:
             result = None
             for mode, value in graph.stream(
                 graph_input, stream_mode=["messages", "values"],
-                **({"config": config} if config else {}),
+                **({"config": config} if config else {}), **_graph_context(agent),
             ):
                 if mode == "messages":
                     emit_message(value[0])
