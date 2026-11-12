@@ -297,3 +297,44 @@ def test_a_graph_agent_with_no_declared_memory_logs_no_memory_warning(caplog: py
         attach_declared_memory(agent, AgentConfig(name="rca"), None)
 
     assert "memory=/example=" not in caplog.text
+
+
+def _async_graph(checkpointer: Any = None) -> Any:
+    # The common LangGraph template style: an `async def` node that reads the runtime config.
+    from langchain_core.runnables import RunnableConfig
+
+    async def reply(state: MessagesState, config: RunnableConfig) -> dict[str, Any]:
+        return {"messages": [AIMessage(content=f"async ok {config['configurable'].get('who', '?')}")]}
+
+    inner = StateGraph(MessagesState)
+    inner.add_node("reply", reply)
+    inner.add_edge(START, "reply")
+    inner.add_edge("reply", END)
+    outer = StateGraph(MessagesState)
+    outer.add_node("sub", inner.compile())  # nested: the bridge must reach subgraph nodes too
+    outer.add_edge(START, "sub")
+    outer.add_edge("sub", END)
+    return outer.compile(checkpointer=checkpointer)
+
+
+def test_async_nodes_run_on_the_sync_turn_path(fake_ws: MagicMock) -> None:
+    """#1162: apx drives turns with sync graph.invoke / graph.stream, so async-only nodes get a bridge."""
+    graph = compile_to_langgraph(GraphAgent(build=lambda tools, checkpointer: _async_graph(checkpointer)),
+                                 ws=fake_ws, model="m")
+    config = {"configurable": {"who": "alice"}}
+
+    result = graph.invoke({"messages": [HumanMessage(content="hi")]}, config)
+    streamed = [v for mode, v in graph.stream({"messages": [HumanMessage(content="hi")]}, config,
+                                               stream_mode=["values"]) if mode == "values"]
+
+    assert result["messages"][-1].content == "async ok alice"
+    assert streamed[-1]["messages"][-1].content == "async ok alice"
+
+
+async def test_async_nodes_still_run_natively_on_the_async_path(fake_ws: MagicMock) -> None:
+    graph = compile_to_langgraph(GraphAgent(build=lambda tools, checkpointer: _async_graph(checkpointer)),
+                                 ws=fake_ws, model="m")
+
+    result = await graph.ainvoke({"messages": [HumanMessage(content="hi")]}, {"configurable": {"who": "bob"}})
+
+    assert result["messages"][-1].content == "async ok bob"
