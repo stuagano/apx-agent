@@ -11,7 +11,11 @@ limits, guards, approvals, error containment), crash recovery, and serving on Da
 **Done** = `apx-agent agents migrate-langgraph . --check` exits 0. Its Request row may be WARN for an agent that
 takes typed input; that is expected.
 
-Reference implementation: `python/examples/langgraph-migration/after-apx/` in the apx-agent repo.
+Reference implementation: `python/examples/langgraph-migration/after-apx/` in the apx-agent repo (its graph binds
+no tools; step 2 shows the tools pattern).
+
+Run every command from the project's own environment (`uv run apx-agent ...`): `--check` imports `agent.py`
+in-process, so apx-agent must be installed in the same environment as the graph's dependencies.
 
 ## Steps
 
@@ -27,7 +31,20 @@ Reference implementation: `python/examples/langgraph-migration/after-apx/` in th
    docstring, pass them as `GraphAgent(tools=[...])`, and have `build` bind the `tools` it receives. A tool that
    needs a workspace or SQL client declares a `Dependencies.Workspace` / `Dependencies.Sql` parameter; apx injects
    it per request. A tool you deliberately keep outside governance goes in `ungoverned=["name"]`. Done when every
-   bound tool is one of the received `tools` or named in `ungoverned`.
+   bound tool is one of the received `tools` or named in `ungoverned`. The received tools are new wrapped objects:
+   bind those same objects everywhere the graph used its own, both in the tool node and on the model:
+
+   ```python
+   def build_graph(tools, checkpointer, model):
+       async def call_model(state):
+           return {"messages": [await model.bind_tools(tools).ainvoke(state["messages"])]}
+
+       builder = StateGraph(State)
+       builder.add_node("call_model", call_model)
+       builder.add_node("tools", ToolNode(tools))
+       ...
+       return builder.compile(checkpointer=checkpointer)
+   ```
 3. **State and I/O.** The graph state needs a `messages` channel. Caller-supplied keys beyond messages (a tenant,
    an ID) become `input_schema` (a pydantic model with `extra="forbid"`) plus `input=lambda data: {...}` mapping
    onto the graph's own keys. Results callers read beyond messages become `output=lambda state: {...}`. Done when
@@ -36,15 +53,22 @@ Reference implementation: `python/examples/langgraph-migration/after-apx/` in th
    `context=` a zero-argument factory such as `context=Context`; apx builds it once per turn. Take caller
    identity from tool `Dependencies`, not from the request.
 4. **`agent.py`.** At the project root, define `agent = GraphAgent(build=..., tools=[...], name="...")` plus
-   `input_schema` / `input` / `output` from step 3. Use a short kebab-case `name` (it becomes the app name).
+   `input_schema` / `input` / `output` / `context` from step 3. Use a short kebab-case `name`, the same value as
+   step 5's `[tool.apx.deploy] name`.
 5. **`pyproject.toml`.** Add dependencies `apx-agent[agentbricks]` and `databricks-agentbricks[langgraph]>=0.9.0,<0.10`
    (Agent Bricks' doctor requires the second explicitly). apx settings live under `[tool.apx.deploy]`, e.g.
-   `name = "<name>"`.
+   `name = "<name>"`. That `name` is the one deploy uses for the app (native deploy prefixes it with
+   `agent-bricks-`); `GraphAgent(name=)` keys session threads. Keep them identical.
 6. **Entrypoint.** The old HTTP server is replaced: `--check` writes `server.py`, `app.yaml`, `agent.toml` and
    `.agentbricks/project.toml`, keeping any of those you already wrote. Stop starting the old server; keep its
-   module if other code imports it.
+   module if other code imports it. A project served only by LangGraph Server (`langgraph.json`, no server of its
+   own) has nothing to stop: leave `langgraph.json` in place so `langgraph dev` keeps working.
 7. **Check.** Run `apx-agent agents migrate-langgraph . --check`. Fix the first failing row, re-run, and repeat
    until it exits 0.
+
+Before deploying, `uv.lock` must resolve from public PyPI with no absolute paths. A local path dependency on
+apx-agent (`[tool.uv.sources]`) or a corporate index writes `file:///...` or proxy URLs into it: depend on a
+released apx-agent, relock against public PyPI, and confirm `grep -c 'file://' uv.lock` is 0.
 
 Report the files you changed, the final `--check` output, and the decisions below.
 
