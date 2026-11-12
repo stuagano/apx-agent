@@ -283,3 +283,17 @@ def test_an_opaque_runnable_is_refused_because_it_cannot_be_inspected(fake_ws: M
 def test_ungoverned_must_be_a_list_of_tool_names() -> None:
     with pytest.raises(TypeError, match="ungoverned= must be a list of tool names"):
         GraphAgent(build=_graph_with([]), ungoverned="local_math")  # type: ignore[arg-type]
+
+
+def test_a_graph_agent_with_no_declared_memory_logs_no_memory_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """The 'memory=/example= declared' warning is only for a root that declared them."""
+    import logging
+
+    from apx_agent._memory_wiring import attach_declared_memory
+    from apx_agent._models import AgentConfig
+
+    agent = GraphAgent(build=_calling("lookup", {})[0], tools=[])
+    with caplog.at_level(logging.WARNING):
+        attach_declared_memory(agent, AgentConfig(name="rca"), None)
+
+    assert "memory=/example=" not in caplog.text

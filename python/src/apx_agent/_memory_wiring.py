@@ -224,6 +224,9 @@ def attach_declared_memory(
     """
     if getattr(agent, "_apx_memory_attached", False):
         return
+    # Nothing declared → nothing to attach (and nothing to warn about), like attach_declared_vector_search.
+    if config.memory is None and getattr(agent, "memory_config", None) is None and config.example is None:
+        return
 
     register = getattr(agent, "_register_tool", None)
     if register is None:
