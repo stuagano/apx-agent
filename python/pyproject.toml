@@ -15,7 +15,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "databricks-sdk>=0.74.0",
     "httpx>=0.27.0",
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",  # mcp 2.x removes Server.list_tools and breaks databricks_langchain imports
     "databricks-openai>=0.15.0",
     # langchain 1.2.x imports ExecutionInfo from langgraph.runtime —
     # only present in langgraph >= 1.1.0.
