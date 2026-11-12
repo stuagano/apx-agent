@@ -100,6 +100,7 @@ from ._ui_chat import (
     _render_agent_ui,
     _render_unified_shell,
     _build_apx_openapi_spec,
+    standalone_chat_redirect,
 )
 from ._ui_edit import (
     _find_agent_router_path,
@@ -2190,13 +2191,10 @@ def build_dev_ui_router(api_prefix: str = "/api") -> APIRouter:
         return HTMLResponse(_render_unified_shell(ctx, hidden_tabs=frozenset({"eval"}) if typed else frozenset()))
 
     @router.get("/_apx/chat", include_in_schema=False)
-    async def chat_dev_ui(request: Request) -> HTMLResponse:
-        """Bare chat content — loaded by the unified shell's Chat tab.
-
-        Older bookmarks of /_apx/agent (which used to point at the chat
-        page) now land on the shell. The shell's default tab is Chat, so
-        the user-visible behaviour is unchanged.
-        """
+    async def chat_dev_ui(request: Request) -> Response:
+        """Bare chat content — loaded by the unified shell's Chat tab; opened alone it redirects there."""
+        if redirect := standalone_chat_redirect(request):
+            return redirect
         ctx: AgentContext | None = request.app.state.agent_context
         return HTMLResponse(
             _render_agent_ui(ctx, embed=request.query_params.get("embed") == "1")

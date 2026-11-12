@@ -106,7 +106,7 @@ async def test_chat_landing_route_renders_workflow_examples_once_and_escapes_tex
     app.include_router(build_dev_ui_router())
 
     async with _client(app) as ac:
-        resp = await ac.get("/_apx/chat")
+        resp = await ac.get("/_apx/chat?shell=1")
 
     assert resp.status_code == 200
     assert resp.text.count("What is the position?") == 1

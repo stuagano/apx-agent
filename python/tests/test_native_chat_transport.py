@@ -77,7 +77,7 @@ def test_native_untyped_discovery_does_not_accept_typed_payload():
 @pytest.mark.parametrize("native", [True], indirect=True)
 def test_native_dev_chat_enablement(enabled, native):
     host = native
-    response = host.client.get("/_apx/chat")
+    response = host.client.get("/_apx/chat?shell=1")
     assert response.status_code == (200 if enabled == "1" else 404)
     if enabled == "1":
         assert "apxNativeChat" in response.text
@@ -114,7 +114,7 @@ def test_typed_chat_without_config_preserves_declaration_and_project_root(
             assert root.json() == {"project": "own root"}
         else:
             assert "apxNativeChat" in root.text
-        chat = client.get("/_apx/chat")
+        chat = client.get("/_apx/chat?shell=1")
         assert chat.status_code == 200 and "apxNativeChat" in chat.text
         assert "native-execution-cards" in chat.text
         assert client.get("/_apx/api/ui/config").status_code == 404
@@ -157,8 +157,12 @@ def test_typed_native_host_mounts_dev_ui_with_native_chat(execution, monkeypatch
         assert shell.status_code == 200, shell.text
         assert client.get("/_apx/discover").status_code == 200
         assert client.get("/_apx/topology.json").status_code == 200
-        chat = client.get("/_apx/chat")
+        chat = client.get("/_apx/chat?shell=1")
         assert chat.status_code == 200 and "apxNativeChat" in chat.text
+        # Two chat pages: opened on its own, /_apx/chat goes to the console's Chat tab.
+        bare = client.get("/_apx/chat?token=t", follow_redirects=False)
+        assert bare.status_code == 307 and bare.headers["location"] == "/_apx/agent?token=t#chat"
+        assert 'data-src="/_apx/chat?shell=1"' in shell.text
         # The right panel shows what works on a durable host (Tools, MCP) and opens on Tools;
         # History/Trace/Events/Eval read stores and hooks the durable transport doesn't feed.
         assert 'id="right-panel"' in chat.text and "#right-panel," not in chat.text
@@ -214,7 +218,7 @@ def test_durable_dev_chat_survives_a_project_ui_at_root(execution, monkeypatch, 
     app.mount("/", StaticFiles(directory=tmp_path / "dist", html=True))
     with TestClient(app) as client:
         assert "project ui" in client.get("/").text
-        chat = client.get("/_apx/chat")
+        chat = client.get("/_apx/chat?shell=1")
         assert chat.status_code == 200 and "apxNativeChat" in chat.text
 
 

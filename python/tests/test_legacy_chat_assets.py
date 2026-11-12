@@ -23,7 +23,7 @@ async def test_history_asset_is_served_and_wired_in_original_order():
     app.state.agent_context = None
     app.include_router(build_dev_ui_router())
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
-        page = await client.get("/_apx/chat")
+        page = await client.get("/_apx/chat?shell=1")
         response = await client.get("/_apx/vendor/legacy-chat-history.js")
         missing = await client.get("/_apx/vendor/missing-chat.js")
         traversal = await client.get("/_apx/vendor/%2e%2e%2f_ui_chat.py")

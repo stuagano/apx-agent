@@ -6,6 +6,10 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Two chat pages, not three.** `/` is the user chat and `/_apx/agent` the builder
+  console. Opening `/_apx/chat` on its own now redirects to `/_apx/agent#chat`, keeping
+  its query string. The console's Chat tab frames `/_apx/chat?shell=1`, and the topology
+  dock keeps `?embed=1`.
 - **Generated durable projects pass the real `agentbricks doctor` (#1133, ADR 0001).**
   `generate_project` and `agents scaffold` now write a standard Agent Bricks
   project: `agent.toml`, `.agentbricks/project.toml`, an APX-generated
