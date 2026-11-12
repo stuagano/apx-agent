@@ -4793,6 +4793,95 @@ def migrate_agent_toml(module: str) -> None:
     click.echo(f"wrote {path}")
 
 
+_MIGRATE_LANGGRAPH_PROMPT = (
+    "Use the skill at apx-migrate/SKILL.md to wrap this project's existing LangGraph graph in an apx "
+    "GraphAgent. Keep the graph unchanged, route every tool through GraphAgent(tools=...), and finish when "
+    "`apx-agent agents migrate-langgraph . --check` exits 0. Report the decisions the skill lists."
+)
+
+
+@agents.command("migrate-langgraph")
+@click.argument("directory", default=".", type=click.Path(file_okay=False, path_type=Path))
+@click.option("--check", is_flag=True,
+              help="Verify the migration: load and compile the GraphAgent, write the entrypoint, run both doctors.")
+def migrate_langgraph(directory: Path, check: bool) -> None:
+    """Move an existing LangGraph app onto an apx GraphAgent (#1037).
+
+    Without --check, writes apx-migrate/SKILL.md for a coding agent and prints the prompt; the graph
+    itself is never rewritten by apx. With --check, verifies the result and exits 1 on any failure.
+    """
+    root = directory.resolve()
+    if not (root / "pyproject.toml").is_file():
+        raise click.ClickException(f"No pyproject.toml in {root}: run this in the existing LangGraph project.")
+    if check:
+        sys.exit(_check_langgraph_migration(root))
+    skill = root / "apx-migrate" / "SKILL.md"
+    if skill.is_symlink():
+        raise click.ClickException(f"Refusing to write a symlinked {skill}")
+    if skill.exists():
+        click.echo(f"kept existing {skill}")
+    else:
+        from importlib.resources import files
+
+        skill.parent.mkdir(exist_ok=True)
+        skill.write_text((files("apx_agent") / "_skills" / "migrate-langgraph" / "SKILL.md").read_text())
+        click.echo(f"wrote {skill}")
+    click.echo("\nPaste this prompt into your coding agent:\n")
+    click.echo(_MIGRATE_LANGGRAPH_PROMPT)
+
+
+def _check_langgraph_migration(root: Path) -> int:
+    """Load and compile the project's GraphAgent, write its entrypoint, then run both doctors; 0 if all pass."""
+    from ._agents import GraphAgent
+    from ._compile import compile_to_langgraph
+    from ._doctor import Status
+    from ._doctor_durable import check_durable_readiness
+    from ._project_gen import _load_project_agent, write_agentbricks_project
+
+    def row(status: str, name: str, detail: str) -> None:
+        click.echo(f"{status:<5}{name}: {detail}")
+
+    agent = _load_project_agent(root)
+    if not isinstance(agent, GraphAgent):
+        raise click.ClickException(
+            f"agent.py defines a {type(agent).__name__}; a LangGraph migration targets a GraphAgent "
+            "(see apx-migrate/SKILL.md)")
+    row("ok", "agent", f"GraphAgent {agent._name}")
+    try:
+        # build() runs here: the offline request below never runs a typed agent, so this is where an
+        # ungoverned tool or a non-graph return is caught.
+        compile_to_langgraph(agent, ws=None, model="apx-migrate-check")
+    except (TypeError, ValueError) as exc:
+        raise click.ClickException(f"compile: {exc}") from exc
+    row("ok", "compile", "build() returned a compiled graph and every bound tool is governed")
+    try:
+        write_agentbricks_project(root)
+    except ValueError as exc:
+        raise click.ClickException(f"project files: {exc}") from exc
+    row("ok", "project files", "server.py, app.yaml, agent.toml, .agentbricks/project.toml (existing files kept)")
+
+    failed = False
+    for check in check_durable_readiness(root):
+        row(check.status.value, check.name, check.detail)
+        failed = failed or check.status is Status.FAIL
+
+    cli = Path(sys.executable).parent / "agentbricks"
+    if not cli.exists():
+        row("fail", "agentbricks doctor", "the agentbricks CLI is not installed; install apx-agent[agentbricks]")
+        return 1
+    proc = subprocess.run([str(cli), "--output", "json", "doctor", str(root)], capture_output=True, text=True,
+                          env={**os.environ, "AGENTBRICKS_DISABLE_AGENT_HINT": "1"}, check=False)
+    try:
+        checks = json.loads(proc.stdout)["checks"]
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(f"agentbricks doctor gave no report: {proc.stderr[-500:]}") from exc
+    bad = [c for c in checks if c["status"] != "pass"]
+    for c in bad:
+        row("fail", f"agentbricks doctor {c['id']}", c["detail"])
+    row("fail" if bad else "ok", "agentbricks doctor", f"{len(checks) - len(bad)}/{len(checks)} checks pass")
+    return 1 if failed or bad else 0
+
+
 @agents.command("migrate-config")
 def migrate_config() -> None:
     """Move [tool.apx.agent] to [tool.apx.deploy] and the Python agent (safe to re-run)."""

@@ -139,11 +139,18 @@ langgraph-migration/
     └── tests/test_recovery.py # offline checkpoint-resume tests
 ```
 
-## When to use apx instead
+## The apx version
 
-This example uses Agent Bricks directly, with no apx code. apx can't host a hand-written graph yet; that's
-tracked in [#1037](https://github.com/stuagano/apx-agent/issues/1037) (`GraphAgent`: the same graph, plus
-apx tool governance, budgets and A2A).
+`after/` uses Agent Bricks directly, with no apx code. [`after-apx/`](after-apx/) is the same, unchanged graph
+(`after-apx/rca/graph.py` is byte-identical to `before/`) as an apx `GraphAgent`. All the wiring is in
+`agent.py`, and apx adds governed tools, recovery, approvals and A2A on top. To get there from your own project:
+
+```bash
+apx-agent agents migrate-langgraph .          # writes apx-migrate/SKILL.md for your coding agent
+apx-agent agents migrate-langgraph . --check  # verifies it: compile, entrypoint, both doctors
+```
+
+See [GraphAgent](../../../docs/agents/graph-agent.md).
 
 ## Troubleshooting
 

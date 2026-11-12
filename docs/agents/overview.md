@@ -67,6 +67,11 @@ Use routing when one message should go to one of several specialists.
 | `RouterAgent` | One routing decision, then the branch runs independently |
 | `HandoffAgent` | Control should transfer fully to the specialist mid-conversation |
 
+### Existing LangGraph graphs
+
+`GraphAgent` hosts a graph you already wrote, unchanged, and governs the tools it calls. See
+[graph-agent.md](graph-agent.md).
+
 ## Choosing an agent type
 
 ```
@@ -80,6 +85,9 @@ Need to combine multiple agents?
   ├─ Iterative refinement loop     → LoopAgent
   ├─ LLM picks the target once     → RouterAgent or HandoffAgent
   └─ LLM decides when to delegate  → agent_tool
+
+Already have a hand-written LangGraph graph?
+  └─ Yes → GraphAgent (keep the graph; apx governs its tools)
 ```
 
 **RouterAgent vs HandoffAgent:** both pick a target with one LLM decision. Use `RouterAgent` when the branch returns and routing is done. Use `HandoffAgent` when the conversation should transfer to the specialist and the original agent exits.
@@ -114,6 +122,7 @@ All agent types propagate the calling user's OAuth token through every tool call
 ## Further reading
 
 - [llm-agent.md](llm-agent.md) — `Agent` / `LlmAgent` full reference
+- [graph-agent.md](graph-agent.md) — `GraphAgent`: host an existing LangGraph graph
 - [composition.md](composition.md) — Sequential, Parallel, Loop, agent_tool
 - [routing.md](routing.md) — RouterAgent, HandoffAgent
 - [data-agent.md](data-agent.md) — DataAgent reference

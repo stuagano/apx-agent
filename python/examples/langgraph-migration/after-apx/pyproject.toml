@@ -1,0 +1,14 @@
+[project]
+name = "langgraph-rca-apx"
+version = "0.1.0"
+description = "Worked example: an existing LangGraph graph, unchanged, as an apx GraphAgent"
+requires-python = ">=3.11"
+dependencies = [
+    "apx-agent[agentbricks]",
+    "databricks-agentbricks[langgraph]>=0.9.0,<0.10",
+    "langgraph>=1.1",
+    "databricks-langchain>=0.19",
+]
+
+[tool.apx.deploy]
+name = "langgraph-rca"
