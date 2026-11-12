@@ -658,9 +658,25 @@ async def test_unified_shell_has_a_tools_tab(app: FastAPI):
 
 
 @pytest.mark.asyncio
+async def test_standalone_chat_redirects_to_the_console_chat_tab(app: FastAPI):
+    """Two chat pages, not three: only the shell's and topology dock's framed loads render."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        bare = await ac.get("/_apx/chat")
+        with_token = await ac.get("/_apx/chat?token=t")
+        shell = await ac.get("/_apx/agent")
+        framed = await ac.get("/_apx/chat?shell=1")
+        dock = await ac.get("/_apx/chat?embed=1")
+    assert bare.status_code == 307 and bare.headers["location"] == "/_apx/agent#chat"
+    assert with_token.headers["location"] == "/_apx/agent?token=t#chat"
+    assert 'data-src="/_apx/chat?shell=1"' in shell.text
+    assert framed.status_code == 200 and 'id="tab-tools"' in framed.text
+    assert dock.status_code == 200 and 'class="apx-embed"' in dock.text
+
+
+@pytest.mark.asyncio
 async def test_chat_tools_tab_embeds_the_live_inspector(app: FastAPI):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        r = await ac.get("/_apx/chat")
+        r = await ac.get("/_apx/chat?shell=1")
     assert r.status_code == 200
     assert 'id="tab-tools"' in r.text
     assert 'id="tools-embed"' in r.text

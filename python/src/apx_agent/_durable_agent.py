@@ -555,8 +555,8 @@ def compile_to_durable_agent_server(
         getattr(leaf, "_input_schema", None) is not None or getattr(leaf, "_output_schema", None) is not None
         for leaf in _collect_guardrail_targets(agent)
     )
-    from fastapi.responses import HTMLResponse
-    from ._ui_chat import _render_agent_ui
+    from fastapi.responses import HTMLResponse, Response
+    from ._ui_chat import _render_agent_ui, standalone_chat_redirect
     from ._ui_root_chat import build_root_chat_router
 
     # apx's own chat on the durable transport: "/" for users and, with the dev UI,
@@ -586,7 +586,9 @@ def compile_to_durable_agent_server(
     if dev_ui:
         # Registered now, ahead of any project mount at "/", so the shell's Chat tab loads.
         @app.get("/_apx/chat", include_in_schema=False)
-        async def native_chat(request: Request) -> HTMLResponse:
+        async def native_chat(request: Request) -> Response:
+            if redirect := standalone_chat_redirect(request):
+                return redirect
             return HTMLResponse(_render_agent_ui(
                 getattr(app.state, "agent_context", None),
                 embed=request.query_params.get("embed") == "1", native=True,

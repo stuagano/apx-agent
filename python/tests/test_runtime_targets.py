@@ -717,7 +717,7 @@ def test_native_server_exposes_invoke_readback_replay_and_native_chat(
         assert ("GET", "/health") in started
         assert ("GET", "/") in started
         assert ("GET", "/_apx/chat") in started
-        for path in ("/", "/_apx/chat"):  # apx's own chat on the durable transport
+        for path in ("/", "/_apx/chat?shell=1"):  # apx's own chat on the durable transport
             page = client.get(path).text
             assert "apxNativeChat" in page and "/_apx/assets/agentkit/" not in page
         assert ("POST", "/invocations") not in started
@@ -746,7 +746,7 @@ def test_native_server_mounts_apx_chat_and_dev_ui(
     with TestClient(app) as client:
         root = client.get("/")
         assert root.status_code == 200 and "apxNativeChat" in root.text
-        chat = client.get("/_apx/chat")
+        chat = client.get("/_apx/chat?shell=1")
         if dev_ui == "1":
             # apx's chat (Du Bois) with its right panel (history, tools, MCP), not AgentKit's.
             assert chat.status_code == 200 and "apxNativeChat" in chat.text
