@@ -24,6 +24,7 @@ Requires ``langgraph`` (included in apx-agent's required dependencies).
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import json
 import logging
@@ -240,20 +241,7 @@ def _make_langchain_tool(fn: Any, ctx: CompileContext) -> Any:
             # and a coroutine-only StructuredTool raises "does not support sync
             # invocation". Bridge to the coroutine here so async tools (sql_tool,
             # genie_tool, uc_function_tool, ...) work in the sync path too.
-            import asyncio
-
-            async def _call() -> Any:
-                return await fn(**kwargs, **resolved_deps)
-
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                return asyncio.run(_call())
-            # Already inside a running loop — run the coroutine in a worker thread.
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                return ex.submit(lambda: asyncio.run(_call())).result()
+            return _run_coroutine_sync(lambda: fn(**kwargs, **resolved_deps))
 
         _async_wrapper.__name__ = _sync_bridge.__name__ = fn.__name__
         _async_wrapper.__doc__ = _sync_bridge.__doc__ = fn.__doc__
@@ -1878,6 +1866,41 @@ def _hooked_and_contained(tool: Any, agent: GraphAgent) -> Any:
     return tool
 
 
+def _run_coroutine_sync(make_coro: Callable[[], Any]) -> Any:
+    """Run a coroutine to completion from sync code, off-thread if a loop is already running."""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(make_coro())
+    import concurrent.futures
+
+    # The worker gets the caller's contextvars, so LangGraph's get_runtime()/get_config() still resolve.
+    ctx = contextvars.copy_context()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(ctx.run, lambda: asyncio.run(make_coro())).result()
+
+
+def _bridge_async_nodes(graph: Any) -> None:
+    """Give async-only nodes a sync entrypoint (#1162), descending into subgraphs.
+
+    apx drives turns with sync ``graph.invoke`` / ``graph.stream``; an ``async def`` node has only
+    ``afunc``, and LangGraph refuses to call it synchronously. The async path keeps the native coroutine.
+    """
+    from langgraph._internal._runnable import RunnableCallable
+    from langgraph.pregel import Pregel
+
+    for node in graph.nodes.values():
+        bound = node.bound
+        if isinstance(bound, Pregel):
+            _bridge_async_nodes(bound)
+        elif isinstance(bound, RunnableCallable) and bound.func is None and bound.afunc is not None:
+            afunc = bound.afunc
+            # kwargs (config, runtime, store, ...) were resolved from afunc's signature; pass them through.
+            bound.func = lambda *args, _afunc=afunc, **kwargs: _run_coroutine_sync(lambda: _afunc(*args, **kwargs))
+
+
 def _bound_tools(graph: Any) -> list[Any]:
     """Every tool bound in a compiled graph's tool nodes, descending into subgraphs."""
     from langgraph.prebuilt import ToolNode
@@ -1909,6 +1932,7 @@ def _compile_graph_agent(agent: GraphAgent, ctx: CompileContext) -> Any:
             f"GraphAgent build must return a compiled LangGraph graph (got {type(graph).__name__}); "
             "call .compile() on your StateGraph and return it unwrapped."
         )
+    _bridge_async_nodes(graph)
     if agent._session_budget is not None and "state" not in graph.channels:
         # The running total is persisted with update_state(..., {"state": ...}); without the channel
         # that write fails and is only logged, so the cap would silently never accumulate.

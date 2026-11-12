@@ -362,6 +362,7 @@ def test_native_typed_submission_requires_complete_declared_input(browser_chat):
     state["input_schema"] = BrowserInput.model_json_schema()
     page.reload()
     expect(page.locator(".native-input-schema")).to_contain_text("as_of")
+    expect(page.locator(".native-input-schema > summary")).to_have_text("Input: BrowserInput — view schema")
     submit(page, '{"amount":4}')
     expect(page.locator(".native-validation")).to_contain_text("as_of")
     assert posts == []
@@ -482,6 +483,11 @@ def test_native_execution_card_separates_status_and_provenance(browser_chat):
     submit(page)
     card = page.locator(".native-execution-card")
     expect(card).to_have_count(1)
+    # The contract and the handoff read on the card itself, without opening Details.
+    expect(card.locator(".native-step-contract")).to_have_text("in: CalibrateInput → out: PricingDecision · validated ✓ · readback ✓")
+    expect(card.locator(".native-step-handoff")).to_have_text("after intelligence · fleet → calibrate (remote invocation)")
+    handoff = card.locator(".native-step-handoff").get_by_role("link", name="calibrate", exact=True)
+    assert handoff.get_attribute("href") == "https://calibrate.example/api/invocations/child-id"
     record = card.locator("details.native-step-record")
     for text in ["sender fleet", "predecessor intelligence", "input CalibrateInput aaaaaaaa…", "output PricingDecision bbbbbbbb…",
                  "2026-10-22 18:00:00 UTC", "schema validated ✓", "readback verified ✓",
@@ -508,7 +514,9 @@ def test_native_execution_card_is_one_readable_line(browser_chat):
                  output_artifact={"artifact_id": "output-actual", "sha256": "b" * 64})
     submit(page)
     card = page.locator(".native-execution-card")
-    expect(card.locator(".native-step-summary")).to_have_text("✓ calibrate · not ready · remote")
+    expect(card.locator(".native-step-summary")).to_have_text("✓ calibrate · not ready")
+    expect(card.locator(".native-step-contract")).to_have_text("validated ✓")
+    expect(card.locator(".native-step-handoff")).to_have_text("→ unnamed app (remote invocation)")
     expect(card.locator("details.native-step-record")).not_to_have_attribute("open", "")
     expect(card.get_by_text("schema validated ✓")).to_be_hidden()
     expect(card).to_contain_text("output bbbbbbbb…")  # still in the record
@@ -521,16 +529,45 @@ def test_native_step_line_omits_local_and_names_the_remote_app(browser_chat):
                  transport_status="completed", domain_status="ready")
     submit(page)
     expect(page.locator(".native-step-summary")).to_have_text("✓ quote · ready")
+    expect(page.locator(".native-step-handoff")).to_have_count(0)  # a local first step hands nothing off
     event.clear()
     event.update(type="agent.step.completed", step="price", location="remote", invocation_id="parent-id",
                  transport_status="completed", domain_status="recommended", child_invocation_id="child-id",
                  child_invocation_url="https://pricing-app-prod-1234567890.aws.databricksapps.com/api/invocations/child-id")
     submit(page)
-    expect(page.locator(".native-step-summary").last).to_have_text("✓ price · recommended · → pricing-app-prod")
+    expect(page.locator(".native-step-summary").last).to_have_text("✓ price · recommended")
+    expect(page.locator(".native-step-handoff").last).to_have_text("→ pricing-app-prod (remote invocation)")
     host = "pricing-app-prod-1234567890.aws.databricksapps.com"
     # The short label is derived from the event's URL, so the full host is always shown with it.
-    expect(page.locator(".native-step-summary").last).to_have_attribute("title", "ran in " + host)
+    expect(page.locator(".native-step-handoff a").last).to_have_attribute("title", "ran in " + host)
     expect(page.locator("details.native-step-record").last).to_contain_text("ran in " + host)
+
+
+def test_native_step_cards_read_as_a_chain_of_contracts(browser_chat):
+    # Each card names its contract and links the step it follows, so a run reads as a chain.
+    page, posts, reads, state, event = browser_chat
+    stream = [
+        {"type": "agent.step.completed", "step": "intake", "location": "local", "transport_status": "completed",
+         "schema_validated": True, "input_schema": "Request", "output_schema": "Quote"},
+        {"type": "agent.step.completed", "step": "price", "location": "local", "transport_status": "completed",
+         "logical_predecessor": "intake", "schema_validated": False, "input_schema": "Quote", "output_schema": "Price"},
+        {"type": "agent.step.completed", "step": "audit", "location": "local", "transport_status": "completed",
+         "logical_predecessor": "elsewhere"},
+    ]
+    body = "".join(f"id: {i}\nevent: {e['type']}\ndata: {json.dumps(e)}\n\n" for i, e in enumerate(stream, 1))
+    page.route("**/events?after=*", lambda route: route.fulfill(content_type="text/event-stream", body=body))
+    submit(page)
+    cards = page.locator(".native-execution-card")
+    expect(cards).to_have_count(3)
+    expect(page.locator(".native-step-contract")).to_have_text(["in: Request → out: Quote · validated ✓",
+                                                                "in: Quote → out: Price · validated ✗"])
+    link = cards.nth(1).locator(".native-step-handoff a")
+    expect(link).to_have_text("intake")
+    assert link.get_attribute("href") == "#" + cards.nth(0).get_attribute("id")
+    # A predecessor that is not on the page is named, never linked.
+    expect(cards.nth(2).locator(".native-step-handoff")).to_have_text("after elsewhere")
+    expect(cards.nth(2).locator(".native-step-handoff a")).to_have_count(0)
+    expect(cards.nth(2).locator(".native-step-contract")).to_have_count(0)
 
 
 def test_native_record_table_ignores_inherited_keys(browser_chat):

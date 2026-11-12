@@ -1552,6 +1552,10 @@ class GraphAgent(BaseAgent):
     input is validated against ``input_schema`` and ``input(data)`` maps it onto the graph's
     own keys; ``output(state)`` maps the final state to the response's ``output``.
 
+    A graph with a ``context_schema`` gets its LangGraph runtime context from ``context()``, called
+    once per turn (e.g. ``context=Context``). Take caller identity from tool ``Dependencies``, not
+    from the request body.
+
     Compile refuses a graph whose tool nodes (including nested subgraphs) bind a tool that
     isn't one of the governed objects ``build`` received; name a deliberate exception in
     ``ungoverned=[...]``. A node that calls a raw function directly can't be detected.
@@ -1584,6 +1588,7 @@ class GraphAgent(BaseAgent):
         input_schema: type[BaseModel] | None = None,
         input: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         output: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        context: Callable[[], Any] | None = None,
         ungoverned: list[str] | None = None,
         session_budget: dict[str, int | float] | None = None,
         before_tool: BeforeToolHook | None = None,
@@ -1598,6 +1603,8 @@ class GraphAgent(BaseAgent):
             raise TypeError("input= must be callable: input(data) -> graph state keys")
         if output is not None and not callable(output):
             raise TypeError("output= must be callable: output(state) -> response output")
+        if context is not None and not callable(context):
+            raise TypeError("context= must be callable: context() -> the graph's runtime context")
         if ungoverned is not None and (not isinstance(ungoverned, list)
                                        or not all(isinstance(n, str) and n for n in ungoverned)):
             raise TypeError("ungoverned= must be a list of tool names")
@@ -1614,6 +1621,7 @@ class GraphAgent(BaseAgent):
         self._input_key = input_key
         self._input_map = input
         self._output_map = output
+        self._context = context
         self._ungoverned = frozenset(ungoverned or ())
         self._session_budget = _validated_session_budget(session_budget)
         self._before_tool = before_tool
