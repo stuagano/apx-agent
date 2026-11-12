@@ -247,8 +247,13 @@ def _isolated(project: Path) -> Iterator[_Harness]:
             sys.path[:] = path
             sys.dont_write_bytecode = bytecode
             for name in set(sys.modules) - modules:
-                mod = sys.modules[name]
-                if str(getattr(mod, "__file__", None)).startswith(str(project)):
+                file = getattr(sys.modules[name], "__file__", None)
+                if file is None:
+                    continue
+                # Only the project's own modules: a project-local venv (uv's default
+                # .venv) holds packages such as numpy that cannot be imported twice.
+                path = Path(file).resolve()
+                if path.is_relative_to(project.resolve()) and "site-packages" not in path.parts:
                     del sys.modules[name]
 
 

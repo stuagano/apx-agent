@@ -995,3 +995,31 @@ def test_typed_input_agent_request_is_a_warning_not_a_failure(tmp_path: Path, so
     assert "not run" in checks["Request"].detail
     assert "blocked by Request" not in checks["Deploy"].detail
     assert not [c for c in checks.values() if c.status is Status.FAIL]
+
+
+def test_isolation_keeps_a_project_local_venv_and_sibling_paths(tmp_path: Path) -> None:
+    # uv's default venv lives at <project>/.venv; unloading its packages (numpy)
+    # on exit breaks the next re-import ("cannot load module more than once").
+    from apx_agent._doctor_durable import _isolated
+
+    project = tmp_path / "proj"
+    site = project / ".venv" / "lib" / "python3" / "site-packages"
+    sibling = tmp_path / "proj-venv"
+    for d in (site, sibling):
+        d.mkdir(parents=True)
+    (site / "apx_t_venvpkg.py").write_text("")
+    (sibling / "apx_t_siblingpkg.py").write_text("")
+    (project / "apx_t_ownmod.py").write_text("")
+    sys.path[:0] = [str(site), str(sibling)]
+    try:
+        with _isolated(project):
+            import apx_t_ownmod  # noqa: F401
+            import apx_t_siblingpkg  # noqa: F401
+            import apx_t_venvpkg  # noqa: F401
+        assert "apx_t_ownmod" not in sys.modules
+        assert "apx_t_venvpkg" in sys.modules
+        assert "apx_t_siblingpkg" in sys.modules
+    finally:
+        sys.path[:] = [p for p in sys.path if p not in (str(site), str(sibling))]
+        for name in ("apx_t_ownmod", "apx_t_venvpkg", "apx_t_siblingpkg"):
+            sys.modules.pop(name, None)
