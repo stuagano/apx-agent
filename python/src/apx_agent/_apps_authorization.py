@@ -88,6 +88,9 @@ class ResolvedAppDependency:
     id: str
     name: str
     url: str
+    # The peer App's configured user API scopes. A forwarded user token must carry
+    # them for the peer to accept the caller (otherwise 401 MCP_USER_AUTH_REQUIRED).
+    user_api_scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

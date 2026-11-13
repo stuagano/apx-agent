@@ -69,6 +69,37 @@ A2A card location. Missing, ambiguous, blank, or malformed bindings fail
 startup. This makes a deployment mistake explicit rather than silently running
 the wrong leaf.
 
+### Native bindings for typed peers
+
+A string binding uses the A2A transport. It carries a typed step's output, but it
+can't deliver a typed input artifact to a native (`durable_agent_server`) peer; the
+peer answers 422. Bind a typed peer with `NativeBinding` instead:
+
+```python
+from apx_agent import Agent, NativeBinding, SequentialAgent
+
+calibrate = Agent(name="calibrate", input_schema=PricingRequest, input_key="request",
+                  output_schema=Decision, output_key="pricing")
+root = SequentialAgent(
+    [intelligence, calibrate, compound],
+    bindings={
+        "calibrate": NativeBinding(transport="native", url="$CALIBRATE_APP_URL", timeout_s=300),
+        "compound": NativeBinding(transport="native", url="$COMPOUND_APP_URL", timeout_s=300),
+    },
+)
+```
+
+The dict form `{"transport": "native", "url": "...", "timeout_s": 300}` is
+equivalent. A native binding:
+
+- binds a sequential leaf, and its URL is the peer App's base URL;
+- needs the bound leaf to declare both `input_schema` and `output_schema`;
+- sends one validated data artifact per hop, as the request user, and reads the
+  child invocation back before the next step runs.
+
+The native durable deploy refuses a string binding to a leaf that declares
+`input_schema`.
+
 ### Deploy a bound root
 
 Deploy each bound peer first, then pass its URL to the root's deploy with
@@ -84,6 +115,11 @@ On the native Agent Bricks path, set `[auth.user] required = true` in the root's
 grant the root App access to its peers, so a root without a required request
 user is refused. If the root imports code outside the standard project files,
 list it in `[tool.apx.deploy] include`.
+
+The root's forwarded token must also carry every user API scope its peers
+declare; otherwise a peer refuses the hop with 401 `MCP_USER_AUTH_REQUIRED`.
+The native deploy reads each bound peer's configured scopes and refuses a root
+whose `[auth.user] additional_api_scopes` leave one out, naming the scopes to add.
 
 ## One root, three ingress protocols
 

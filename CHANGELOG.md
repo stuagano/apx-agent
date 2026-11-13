@@ -6,6 +6,13 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **`NativeBinding` is public API, and native deploys catch two runtime failures early
+  (#1182, #1183).** `from apx_agent import NativeBinding` replaces the private
+  `apx_agent._models` import, and the multi-agent docs cover it: sequential leaves, an
+  App base URL, and both schemas on the bound leaf. The native durable deploy now
+  refuses a string binding to a leaf that declares `input_schema` (a native peer
+  answered 422), and refuses a root whose `[auth.user] additional_api_scopes` leave
+  out a scope a bound peer declares (the peer answered 401 `MCP_USER_AUTH_REQUIRED`).
 - **A root with named `bindings=` deploys on the native Agent Bricks path.** A root
   that binds other apps was refused with "cannot yet represent this agent's
   service-resource grants". It now deploys when `[auth.user] required = true`, since

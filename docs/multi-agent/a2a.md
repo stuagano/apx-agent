@@ -43,6 +43,10 @@ about roles and control rather than transport.
 
 ## Structured step payloads
 
+To send a typed input to a native durable peer, use a `NativeBinding` (see
+[Native bindings for typed peers](overview.md#native-bindings-for-typed-peers)).
+The rest of this section describes the A2A transport that string bindings use.
+
 A leaf with [`output_schema`](../agents/llm-agent.md#typed-output) publishes its
 validated JSON object as a structured data part alongside the existing text
 answer. A bound remote leaf with `output_schema` validates that object directly

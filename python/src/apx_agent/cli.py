@@ -9014,7 +9014,9 @@ def _resolve_app_dependencies(
                 f"Exact workspace App match for dependency {index} is missing "
                 "an immutable id, name, or URL."
             )
-        resolved.append(ResolvedAppDependency(app_id, app_name, app_url))
+        declared = vars(match).get("user_api_scopes") or ()  # absent on older SDK App objects
+        scopes = tuple(scope for scope in declared if isinstance(scope, str))
+        resolved.append(ResolvedAppDependency(app_id, app_name, app_url, user_api_scopes=scopes))
     return resolved
 
 
@@ -9984,6 +9986,39 @@ def _deploy_apps(
         )
 
 
+def _require_native_peer_contracts(
+    cwd: Path, agent: Any, plan: "AuthorizationPlan", peers: list["ResolvedAppDependency"],
+) -> None:
+    """Refuse native hops that can only fail at runtime (#1182, #1183).
+
+    A string binding uses the generic A2A transport, which can't deliver a typed
+    artifact to a native peer (422). A forwarded user token without a peer's
+    configured user scopes is refused by that peer (401 MCP_USER_AUTH_REQUIRED).
+    """
+    from ._agent_toml import load_agent_toml
+    from ._agents import LlmAgent
+    from ._wiring import _collect_guardrail_targets
+
+    bindings = vars(agent).get("_apx_remote_leaf_bindings") or {}
+    typed = sorted(
+        name for leaf in _collect_guardrail_targets(agent)
+        if isinstance(leaf, LlmAgent) and (name := leaf._name) is not None and name in bindings
+        and bindings[name].transport != "native" and leaf._input_schema is not None
+    )
+    if typed:
+        raise click.ClickException(
+            f"Bound leaf {', '.join(typed)} declares input_schema but uses a string binding, "
+            "which can't deliver a typed artifact to a native peer. "
+            'Bind it with NativeBinding(transport="native", url=...).')
+    project = load_agent_toml(cwd)
+    requested = set(plan.user_api_scopes) | set(project.user_auth.additional_api_scopes if project is not None else ())
+    missing = sorted({scope for peer in peers for scope in peer.user_api_scopes} - requested)
+    if missing:
+        raise click.ClickException(
+            f"Bound apps need user API scopes this root doesn't request: {', '.join(missing)}. "
+            "Add them to [auth.user] additional_api_scopes in agent.toml so the caller's token reaches each peer.")
+
+
 def _request_user_required(cwd: Path) -> bool:
     """Whether agent.toml makes every request carry a request user (``[auth.user] required``)."""
     from ._agent_toml import load_agent_toml
@@ -10373,6 +10408,8 @@ def _deploy_apps_body(
         authorization_plan,
         resolved_dependencies,
     )
+    if native_cli:
+        _require_native_peer_contracts(cwd, agent, authorization_plan, resolved_dependencies)
     explicit_resource_lines = [] if native_direct else _explicit_apps_resource_summary_lines(cwd, bundle_key)
 
     log("# Apps authorization summary")
