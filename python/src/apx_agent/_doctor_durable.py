@@ -554,10 +554,10 @@ def _stage_request(loaded: _Loaded, started: _Started, harness: _Harness) -> Che
             if saved.status_code != 200:
                 return Check("Request", Status.FAIL, f"GET /api/invocations/<id> {saved.status_code}: {saved.text[:200]}")
             deployed_seen = list(seen)
-            # Local context: the same headers arrive, but durable must forward nothing.
+            # Local verdict inside an App: the "user" client is the App's SP, so durable
+            # must forward nothing. (Outside an App it is the developer's profile, #1178.)
             seen.clear()
             os.environ["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL"] = "true"
-            os.environ.pop("DATABRICKS_APP_NAME", None)
             local_response = started.client.post("/api/invocations", json=_invocation(), headers=headers)
             if local_response.status_code != 200:
                 return Check("Request", Status.FAIL,
@@ -572,7 +572,7 @@ def _stage_request(loaded: _Loaded, started: _Started, harness: _Harness) -> Che
                          f"(observed (local, forward) = {deployed_seen[-1] if deployed_seen else 'no call'}, "
                          f"expected (False, {bool(delegates)}))")
         if any(forward for _, forward in local_seen):
-            return Check("Request", Status.FAIL, "durable would forward credentials from a local context "
+            return Check("Request", Status.FAIL, "durable would forward credentials from a local context inside an App "
                          f"(observed (local, forward) = {local_seen[-1]})")
         # The scripted model never calls tools, so drive each delegate with the
         # forward decisions durable made above: True when deployed, never when local.
@@ -594,7 +594,7 @@ def _stage_request(loaded: _Loaded, started: _Started, harness: _Harness) -> Che
         os.environ.pop("DATABRICKS_APP_NAME", None)
         os.environ["DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL"] = "true"
     return Check("Request", Status.OK,
-                 f"invocation ok; {len(delegates)} delegate(s) forwards caller token; local forwards none; not persisted")
+                 f"invocation ok; {len(delegates)} delegate(s) forwards caller token; local inside an App forwards none; not persisted")
 
 
 def _cascade(results: list[Check]) -> list[Check]:

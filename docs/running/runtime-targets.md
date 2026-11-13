@@ -447,7 +447,7 @@ It reports five stages in order, and the first failure skips the rest:
 1. **Config**: the declaration is valid for `durable_agent_server`, and `agent:agent` imports.
 2. **Compile**: no unsatisfied runtime capabilities.
 3. **Startup**: the lifespan starts, `/readyz` reports the runtime store, and a mounted `/mcp` goes live.
-4. **Request**: a real `POST /api/invocations` succeeds. Sub-agents receive the caller's token only from a deployed context, local contexts forward nothing, and the token is never persisted.
+4. **Request**: a real `POST /api/invocations` succeeds. Sub-agents receive the caller's token from a deployed context, a local verdict inside an App forwards nothing (under `agentbricks dev` they get the developer's profile), and the token is never persisted.
 5. **Deploy**: the native deploy preflight accepts `databricks.yml`. This stage is skipped if the project has no bundle.
 
 Two advisories always run:
