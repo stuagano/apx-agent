@@ -5111,3 +5111,31 @@ def test_space_package_check_still_refuses_a_staged_git_dependency(tmp_path: Pat
     cli._stage_build_manifest(target / ".build", None)
     with pytest.raises(click.ClickException, match="git\\+https://github.com/stuagano/apx-agent.git"):
         reject_package_bypasses(target / ".build", lock=True)
+
+
+def test_staging_refuses_a_local_file_dependency_the_app_cannot_resolve(tmp_path: Path) -> None:
+    """#1175: `apx-agent @ file:///abs/path` in [project].dependencies is not a [tool.uv.sources] path, so no
+    wheel is built and it would ship verbatim; the App's `uv run` cannot resolve a path on the developer's machine."""
+    from apx_agent import cli
+
+    project = tmp_path / "proj"
+    (project / ".build").mkdir(parents=True)
+    (project / "pyproject.toml").write_text(textwrap.dedent("""\
+        [project]
+        name = "proj"
+        version = "0.1.0"
+        dependencies = ["apx-agent[agentbricks] @ file:///Users/someone/apx-agent/python", "httpx"]
+    """))
+
+    with pytest.raises(click.ClickException, match=r"(?s)apx-agent\[agentbricks\] @ file:///Users/someone.*tool\.uv\.sources"):
+        cli._stage_build_manifest(project / ".build", None)
+    assert not (project / ".build" / "pyproject.toml").exists()
+
+
+def test_local_file_dependencies_covers_optional_dependencies() -> None:
+    from apx_agent.cli import _local_file_dependencies
+
+    doc = {"project": {"dependencies": ["httpx", "a @ file:./a.whl"],
+                       "optional-dependencies": {"dev": ["b @ file:///abs/b", "pytest"]}}}
+
+    assert _local_file_dependencies(doc) == ["a @ file:./a.whl", "b @ file:///abs/b"]

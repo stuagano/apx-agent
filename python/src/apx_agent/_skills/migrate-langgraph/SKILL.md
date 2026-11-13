@@ -26,6 +26,9 @@ in-process, so apx-agent must be installed in the same environment as the graph'
    If the graph creates its own chat model, add a third `model` parameter, `build(tools, checkpointer, model)`,
    and use it in place of the graph's own model (`model.bind_tools(tools)` where it bound tools). apx passes the
    agent's configured model (`APX_MODEL`), and `--check` can then run the graph offline with a scripted model.
+   Nodes that used the model move inside `build`. Keep the module-level export `langgraph.json` names, built
+   with the project's own tools and `model=None`, and have the node fall back to the graph's own loader when
+   `model` is None (`model or load_chat_model(...)`), so `langgraph dev` behaves as before.
 2. **Governed tools.** List every tool the graph binds: `ToolNode([...])`, `create_agent(tools=...)`,
    `.bind_tools(...)`, including inside subgraphs. Make each a plain Python function with typed parameters and a
    docstring, pass them as `GraphAgent(tools=[...])`, and have `build` bind the `tools` it receives. A tool that
@@ -50,25 +53,28 @@ in-process, so apx-agent must be installed in the same environment as the graph'
    onto the graph's own keys. Results callers read beyond messages become `output=lambda state: {...}`. Done when
    every field of the old endpoint's request and response maps to `input`, `output`, or messages.
    If the graph declares a `context_schema` (it reads `runtime.context` or `get_runtime(...)`), pass
-   `context=` a zero-argument factory such as `context=Context`; apx builds it once per turn. Take caller
-   identity from tool `Dependencies`, not from the request.
+   `context=` a zero-argument factory such as `context=Context`; apx builds it once per turn. Tools that call
+   `get_runtime(Context)` get the same context, so they need `context=` too. Take caller identity from tool
+   `Dependencies`, not from the request.
 4. **`agent.py`.** At the project root, define `agent = GraphAgent(build=..., tools=[...], name="...")` plus
    `input_schema` / `input` / `output` / `context` from step 3. Use a short kebab-case `name`, the same value as
    step 5's `[tool.apx.deploy] name`.
 5. **`pyproject.toml`.** Add dependencies `apx-agent[agentbricks]` and `databricks-agentbricks[langgraph]>=0.9.0,<0.10`
-   (Agent Bricks' doctor requires the second explicitly). apx settings live under `[tool.apx.deploy]`, e.g.
+   (Agent Bricks' doctor requires the second explicitly). To use a local apx-agent checkout, keep the plain
+   `apx-agent[agentbricks]` requirement and add `[tool.uv.sources] apx-agent = { path = "<checkout>/python",
+   editable = true }`; deploy builds a wheel from it. Never write `apx-agent @ file:///...` in `dependencies`:
+   it ships unchanged and the App cannot install it (the Deploy row fails). apx settings live under `[tool.apx.deploy]`, e.g.
    `name = "<name>"`. That `name` is the one deploy uses for the app (native deploy prefixes it with
    `agent-bricks-`); `GraphAgent(name=)` keys session threads. Keep them identical.
 6. **Entrypoint.** The old HTTP server is replaced: `--check` writes `server.py`, `app.yaml`, `agent.toml` and
    `.agentbricks/project.toml`, keeping any of those you already wrote. Stop starting the old server; keep its
    module if other code imports it. A project served only by LangGraph Server (`langgraph.json`, no server of its
-   own) has nothing to stop: leave `langgraph.json` in place so `langgraph dev` keeps working.
+   own) has nothing to stop: leave `langgraph.json` in place so `langgraph dev` keeps working. Commit the generated
+   files with the rest of the migration: deploy stages `server.py` and `.agentbricks/` from the project, and
+   `--check` never overwrites a file that already exists.
 7. **Check.** Run `apx-agent agents migrate-langgraph . --check`. Fix the first failing row, re-run, and repeat
-   until it exits 0.
-
-Before deploying, `uv.lock` must resolve from public PyPI with no absolute paths. A local path dependency on
-apx-agent (`[tool.uv.sources]`) or a corporate index writes `file:///...` or proxy URLs into it: depend on a
-released apx-agent, relock against public PyPI, and confirm `grep -c 'file://' uv.lock` is 0.
+   until it exits 0. The Request row runs one turn against a scripted model that makes no tool calls, so a green
+   check proves the graph serves, not that tool bodies work; say so in your report.
 
 Report the files you changed, the final `--check` output, and the decisions below.
 
@@ -82,3 +88,5 @@ Surface these; each needs a person, not a default.
 - **Side effects.** Recovery is at-least-once: make writes and notifications idempotent (e.g. `MERGE` on a run ID).
 - **History.** Existing checkpoints and transcripts start fresh in the managed Session Store; copying them is a
   separate job.
+- **Model.** Unless `GraphAgent(model=...)` or `[tool.apx.deploy] model` names an endpoint, apx serves its default
+  model, not the one the graph chose before. Report the old model and ask which Databricks endpoint to use.
