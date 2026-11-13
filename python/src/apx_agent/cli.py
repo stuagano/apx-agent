@@ -4832,11 +4832,15 @@ def migrate_langgraph(directory: Path, check: bool) -> None:
 
 def _check_langgraph_migration(root: Path) -> int:
     """Load and compile the project's GraphAgent, write its entrypoint, then run both doctors; 0 if all pass."""
+    import inspect
+
     from ._agents import GraphAgent
     from ._compile import compile_to_langgraph
     from ._doctor import Status
     from ._doctor_durable import check_durable_readiness
+    from ._inspection import _load_agent_config
     from ._project_gen import _load_project_agent, write_agentbricks_project
+    from ._settings import resolve_settings
 
     def row(status: str, name: str, detail: str) -> None:
         click.echo(f"{status:<5}{name}: {detail}")
@@ -4859,6 +4863,11 @@ def _check_langgraph_migration(root: Path) -> int:
     except ValueError as exc:
         raise click.ClickException(f"project files: {exc}") from exc
     row("ok", "project files", "server.py, app.yaml, agent.toml, .agentbricks/project.toml (existing files kept)")
+    config = resolve_settings(agent, _load_agent_config(pyproject_path=root / "pyproject.toml"))
+    if "model" in inspect.signature(agent._build).parameters and "model" not in config.model_fields_set:
+        # #1174: build() would silently swap the graph's own model for apx's default endpoint.
+        row("warn", "model", f"build() receives apx's default model {config.model}; set GraphAgent(model=...) "
+                             "or [tool.apx.deploy] model to the endpoint the graph used")
 
     failed = False
     for check in check_durable_readiness(root):
