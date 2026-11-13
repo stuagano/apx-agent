@@ -75,6 +75,33 @@ def test_check_passes_the_golden_example(tmp_path: Path) -> None:
     assert "typed input enforced" in result.output  # the honest Request WARN, not a failure
 
 
+def _agent_taking_model(project: Path, extra: str) -> None:
+    agent_py = project / "agent.py"
+    agent_py.write_text(agent_py.read_text().replace(
+        "build=lambda tools, checkpointer: build_graph(checkpointer),",
+        f"build=lambda tools, checkpointer, model: build_graph(checkpointer),{extra}"))
+
+
+def test_check_warns_when_a_model_taking_build_gets_the_apx_default(tmp_path: Path) -> None:
+    project = _golden(tmp_path)
+    _agent_taking_model(project, "")
+
+    result = _migrate(str(project), "--check")
+
+    assert result.exit_code == 0, result.output  # a warning, not a failure
+    assert "warn model: build() receives apx's default model" in result.output
+
+
+def test_check_is_quiet_about_a_declared_model(tmp_path: Path) -> None:
+    project = _golden(tmp_path)
+    _agent_taking_model(project, ' model="databricks-claude-sonnet-4-6",')
+
+    result = _migrate(str(project), "--check")
+
+    assert result.exit_code == 0, result.output
+    assert "warn model" not in result.output
+
+
 def test_check_fails_on_a_tool_that_bypasses_apx(tmp_path: Path) -> None:
     project = _golden(tmp_path)
     (project / "agent.py").write_text(
