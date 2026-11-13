@@ -65,9 +65,14 @@ This model is not aspirational — it is what the runtime does today:
 holds the request-user token; apx never copies it. Each sub-agent call asks
 `request_auth.client_for("user").config.authenticate()` at call time and hands the
 result to the outbound call, which forwards it as `X-Forwarded-Access-Token` +
-`Authorization: Bearer` on the direct-HTTP transport. Local dev forwards nothing,
-a closed request context fails closed, and request-user invocations are never
-recovered in the background.
+`Authorization: Bearer` on the direct-HTTP transport. Under `agentbricks dev`
+(outside an App) the SDK ignores request headers and its "user" client is the
+developer's own profile, so that credential is what bound peers receive (#1178).
+A local verdict inside an App forwards nothing, because there the "user" client
+is the App's service principal. A closed request context fails closed, and
+request-user invocations are never recovered in the background. A peer that
+redirects the hop to sign-in fails with "redirected to sign-in", naming the
+missing credential.
 
 Databricks Apps peers (`apps/<name>`) use the Apps SDK transport only when no
 request-user token is present. The SDK's `BearerAuth` hook authenticates that

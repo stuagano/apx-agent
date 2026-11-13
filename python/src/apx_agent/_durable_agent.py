@@ -281,9 +281,11 @@ def compile_durable_handlers(
         principal = request_principal(auth)
         headers = None
         if principal is not None:
-            # The SDK's per-request verdict is authoritative: a local context's
-            # "user" client is the developer/app credential, never forward it.
-            forward = has_delegates and not auth._local
+            # The SDK's per-request verdict is authoritative. A local context's
+            # "user" client is the ambient credential: inside an App that is the
+            # App's SP, never forwarded; outside one (`agentbricks dev`) it is the
+            # developer's own profile, forwarded so bound peers can be tested (#1178).
+            forward = has_delegates and (not auth._local or not os.environ.get("DATABRICKS_APP_NAME"))
             headers = durable_request_headers(auth, principal=principal, forward=forward)
         validated = _validate_native_input(value, agent, checkpointed=checkpointer is not None,
                                            recovery=recovery, session_id=context.session_id)

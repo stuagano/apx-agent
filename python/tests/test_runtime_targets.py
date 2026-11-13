@@ -1383,7 +1383,7 @@ def test_durable_concurrent_users_forward_only_their_own_token(execution: Any, p
     assert all(h["Authorization"] == f"Bearer {h['X-Forwarded-Access-Token']}" for h in peer.captured)
 
 
-def test_durable_local_dev_forwards_no_credentials(execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_durable_local_verdict_inside_app_forwards_no_credentials(execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from apx_agent._durable_agent import compile_durable_handlers
 
     monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
@@ -1392,6 +1392,26 @@ def test_durable_local_dev_forwards_no_credentials(execution: Any, peer: Any, mo
     handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
     asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, _user_context("x", local=True)))
     assert peer.captured == [{}]
+
+
+def test_durable_local_dev_outside_app_forwards_developer_credential(
+        execution: Any, peer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``agentbricks dev`` (#1178): no App container, so the SDK's local "user"
+    client is the developer's own profile. Bound peers get that credential; the
+    request's own headers are still ignored, as the SDK does locally."""
+    from databricks_agentkit.runtime.auth import RequestAuthContext
+
+    from apx_agent._durable_agent import compile_durable_handlers
+
+    monkeypatch.delenv("DATABRICKS_APP_NAME")
+    monkeypatch.setenv("DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LOCAL", "true")
+    monkeypatch.setattr("databricks_agentkit.runtime.workspace.workspace_client", lambda: _FakeUserClient(
+        host="h", token="developer-profile", auth_type="pat"))
+    auth = RequestAuthContext.from_headers({"X-Forwarded-User": "mallory", "X-Forwarded-Access-Token": "tok-M"})
+    context = SimpleNamespace(request_auth=auth, session_id=None, is_recovery=False, invocation_id=str(uuid.uuid4()))
+    handlers = compile_durable_handlers(peer.agent, model="test", service_ws=execution.ws, require_user=True)
+    asyncio.run(handlers.invoke({"messages": [{"role": "user", "content": "go"}]}, context))
+    assert peer.captured == [{"X-Forwarded-Access-Token": "developer-profile", "Authorization": "Bearer developer-profile"}]
 
 
 def _ambient_app_credential(monkeypatch: pytest.MonkeyPatch) -> None:

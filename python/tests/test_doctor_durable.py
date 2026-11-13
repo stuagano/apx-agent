@@ -264,7 +264,7 @@ def test_good_project_passes_stages_0_to_3(tmp_path: Path) -> None:
     for stage in ("Config", "Compile", "Startup", "Request"):
         assert checks[stage].status is Status.OK, (stage, checks[stage].detail)
     assert "forwards caller token" in checks["Request"].detail
-    assert "local forwards none" in checks["Request"].detail
+    assert "local inside an App forwards none" in checks["Request"].detail
     assert "DATABRICKS_APP_NAME" not in os.environ
 
 
@@ -645,7 +645,8 @@ def test_local_forward_regression_fails_request(tmp_path: Path, monkeypatch: pyt
 
     # Revert durable's local verdict: forward whenever there are delegates.
     _mutate(monkeypatch, _durable_agent, "compile_durable_handlers",
-            "forward = has_delegates and not auth._local", "forward = has_delegates")
+            "forward = has_delegates and (not auth._local or not os.environ.get(\"DATABRICKS_APP_NAME\"))",
+            "forward = has_delegates")
     request = _by_name(check_durable_readiness(_project(tmp_path, "localfwd", DELEGATE_AGENT.format(name="localfwd"))))["Request"]
     assert request.status is Status.FAIL
     assert "durable would forward credentials from a local context" in request.detail

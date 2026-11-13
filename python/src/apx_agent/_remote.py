@@ -153,6 +153,17 @@ _APPS_HOST_SUFFIXES = (".databricksapps.com",)
 _WELL_KNOWN_CARD_PATH = "/.well-known/agent.json"
 
 
+def _reply_error(name: str, status: int, body: str, *, stream: bool = False) -> RuntimeError:
+    """A non-2xx peer reply. A 3xx is the Apps proxy sending the hop to sign-in:
+    no user credential reached the peer (#1178). The redirect URL is not echoed."""
+    what = "stream returned" if stream else "returned"
+    if status < 400:
+        return RuntimeError(f"Remote agent {name} {what} {status}: redirected to sign-in, so no user "
+                            "credential reached the peer. Call the root as a signed-in user, or run it "
+                            "under `agentbricks dev` with a workspace profile.")
+    return RuntimeError(f"Remote agent {name} {what} {status}: {body}")
+
+
 def _normalize_card_url(url: str) -> str:
     """Accept a base URL or a full card URL; return the full card URL.
 
@@ -960,10 +971,8 @@ class RemoteDatabricksAgent(BaseAgent):
                 json=payload,
                 headers={"Content-Type": "application/json", **headers},
             )
-        if resp.status_code >= 400:
-            raise RuntimeError(
-                f"Remote agent {self.name} returned {resp.status_code}: {resp.text}"
-            )
+        if resp.status_code >= 300:
+            raise _reply_error(self.name, resp.status_code, resp.text)
 
         data = resp.json()
         self._last_http_url = url
@@ -990,8 +999,8 @@ class RemoteDatabricksAgent(BaseAgent):
         payload = {"id": str(uuid.uuid4()), "session_id": uuid.uuid4().hex, "input": user_turns}
         async with AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(url, json=payload, headers={"Content-Type": "application/json", **headers})
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Remote agent {self.name} returned {resp.status_code}: {resp.text}")
+        if resp.status_code >= 300:
+            raise _reply_error(self.name, resp.status_code, resp.text)
         self._last_http_url = url
         return _durable_reply(resp.json())
 
@@ -1083,11 +1092,9 @@ class RemoteDatabricksAgent(BaseAgent):
                     **headers,
                 },
             ) as resp:
-                if resp.status_code >= 400:
+                if resp.status_code >= 300:
                     body = await resp.aread()
-                    raise RuntimeError(
-                        f"Remote agent {self.name} stream returned {resp.status_code}: {body.decode()}"
-                    )
+                    raise _reply_error(self.name, resp.status_code, body.decode(), stream=True)
 
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
