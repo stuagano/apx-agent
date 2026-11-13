@@ -620,6 +620,15 @@ def _stage_deploy(loaded: _Loaded) -> Check:
     from ._agentbricks_deploy import validate_cli_deployment
     from .cli import _resolve_app_name
 
+    import tomllib
+
+    from .cli import _local_file_dependencies
+
+    local = _local_file_dependencies(tomllib.loads((loaded.project / "pyproject.toml").read_text()))
+    if local:
+        return Check("Deploy", Status.FAIL, "local file: dependencies would ship and fail to install on the App: " + "; ".join(local),
+                     "Declare a local checkout in [tool.uv.sources] (path = ..., editable = true) and depend on the plain name; "
+                     "deploy builds a wheel from it.")
     declared = loaded.config.deploy
     if declared is not None and declared.backend == "apps_api":
         # Rows 3 and 4 are declaration-driven. A missing databricks.yml is expected

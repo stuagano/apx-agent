@@ -1094,3 +1094,19 @@ def test_graph_agent_context_must_be_callable() -> None:
 
     with pytest.raises(TypeError, match="context="):
         GraphAgent(build=lambda tools, checkpointer: None, context="not callable")  # type: ignore[arg-type]
+
+
+def test_deploy_row_fails_on_a_local_file_dependency(tmp_path: Path) -> None:
+    """#1175: a green --check must not hide a dependency the App cannot install."""
+    from apx_agent._doctor_durable import check_durable_readiness
+
+    root = _project(tmp_path, "filedep", LLM_AGENT.format(name="filedep"))
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text().replace(
+        '[project]\n', '[project]\ndependencies = ["apx-agent @ file:///Users/someone/apx-agent/python"]\n', 1))
+
+    deploy = _by_name(check_durable_readiness(root))["Deploy"]
+
+    assert deploy.status is Status.FAIL, deploy.detail
+    assert "file:///Users/someone/apx-agent/python" in deploy.detail
+    assert deploy.fix is not None and "[tool.uv.sources]" in deploy.fix

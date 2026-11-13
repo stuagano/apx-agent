@@ -7806,6 +7806,13 @@ def _run_bundle_artifacts(cwd: Path) -> None:
 
 
 
+def _local_file_dependencies(doc: dict[str, Any]) -> list[str]:
+    """``[project]`` requirements pinned to a local ``file:`` URL, which no App container can resolve (#1175)."""
+    project = doc.get("project", {})
+    requirements = [*project.get("dependencies", []), *(r for group in project.get("optional-dependencies", {}).values() for r in group)]
+    return [r for r in requirements if re.search(r"@\s*file:", r)]
+
+
 def _stage_build_manifest(
     build_dir: Path, wheel_path: Path | None,
 ) -> None:
@@ -7836,6 +7843,19 @@ def _stage_build_manifest(
     container's ``uv sync`` doesn't hit the internal proxy.
     """
     import shutil
+    import tomllib
+
+    source = build_dir.parent / "pyproject.toml"
+    local = _local_file_dependencies(tomllib.loads(source.read_text())) if source.is_file() else []
+    if local:
+        # Only a [tool.uv.sources] path gets a wheel built and the manifest rewritten (_ensure_apx_wheel).
+        raise click.ClickException(
+            "pyproject.toml pins dependencies to local file: URLs the App cannot resolve: "
+            + "; ".join(local)
+            + ". Declare a local checkout in [tool.uv.sources] instead "
+            "(e.g. apx-agent = { path = \"/path/to/apx-agent/python\", editable = true }) and depend on the "
+            "plain name; deploy builds a wheel from it."
+        )
 
     if wheel_path is None:
         # git+https / PyPI install: stage source manifest verbatim. The deps
