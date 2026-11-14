@@ -131,8 +131,6 @@ StoreType = Literal["inmemory", "lakebase", "managed"]
 RuntimeTarget = Literal["responses_agent", "durable_agent_server"]
 """``durable_agent_server`` is the native default; ``responses_agent`` (MLflow ResponsesAgent on Apps) is deprecated (ADR 0001)."""
 DeployBackend = Literal["agentbricks", "apps_api"]
-MemoryStrategy = Literal["facts", "preferences", "summary"]
-"""Typed memory strategy (#1088). The strategy name is the namespace its records land in."""
 
 # Default embedding endpoint for the "persistent" knob's Lakebase memory —
 # a Databricks Foundation Model API pay-per-token endpoint present in every
@@ -161,26 +159,13 @@ class _BackendConfig(BaseModel):
         return data
 
 
-class MemoryExtractionPolicy(BaseModel):
-    """Declared session-to-memory extraction. Off unless this table exists.
-
-    The service distills one finished managed session into the bound memory
-    store. It is not consolidation of memories that already exist, and it does
-    not run by itself at the end of a turn.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    """Must be true before any extraction call is made."""
-    instructions: str | None = None
-    """Approved distillation instructions sent with every extraction."""
-
-    @model_validator(mode="after")
-    def _instructions_are_text(self) -> "MemoryExtractionPolicy":
-        if self.instructions is not None and not self.instructions.strip():
-            raise ValueError("memory.extraction.instructions must be non-blank text")
-        return self
+REMOVED_EXTRACTION_KEYS = frozenset({"extraction", "strategies", "strategy_prompts", "extract_every_n_turns"})
+MEMORY_PIPELINE_HINT = (
+    "Distill sessions into memory with an Agent Bricks memory pipeline: "
+    "`agentbricks memory pipeline create --session-store <sessions> --memory-store <memory> "
+    "--instructions @memory-instructions.md --trigger scheduled`. "
+    "See docs/running/managed-stores.md#memory-pipeline."
+)
 
 
 class MemoryRetention(BaseModel):
@@ -224,8 +209,6 @@ class MemoryBackendConfig(_BackendConfig):
     tool_prefix: str = ""
     include: list[str] | None = None
     validate_at_boot: bool = True
-    extraction: MemoryExtractionPolicy | None = None
-    """Explicit session-to-memory extraction policy. Absent means off."""
     auto_recall: bool = True
     """Recall the caller's top memories into the system prompt each turn (#1087)."""
     recall_k: int = 5
@@ -234,50 +217,29 @@ class MemoryBackendConfig(_BackendConfig):
     """Relevance threshold: auto-recalled memories scoring below it are dropped."""
     retention: MemoryRetention | None = None
     """Days to keep memories per namespace. Lakebase only: enforced by a delete pass at app start."""
-    strategies: list[MemoryStrategy] | None = None
-    """Typed extraction strategies (#1088). Each writes to the namespace of the same name."""
-    strategy_prompts: dict[MemoryStrategy, str] | None = None
-    """Replaces a strategy's built-in instructions. The output contract is fixed and always appended."""
     recall_namespaces: list[str] | None = None
-    """Extra namespaces auto-recall searches, added to the default set
-    (``namespace_default`` plus the declared strategies except ``summary``)."""
-    extract_every_n_turns: int | None = None
-    """Run the declared strategies off the request path after every N user turns of
-    a session (#1089). Lakebase / in-memory only. Absent means no automatic extraction."""
+    """Extra namespaces auto-recall searches, added after ``namespace_default``."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_extraction(cls, data: Any) -> Any:
+        if isinstance(data, dict) and (removed := sorted(REMOVED_EXTRACTION_KEYS & data.keys())):
+            raise ValueError(
+                f"memory.{', memory.'.join(removed)} {'was' if len(removed) == 1 else 'were'} removed "
+                f"(ADR 0001). {MEMORY_PIPELINE_HINT}"
+            )
+        return data
 
     def recalled_namespaces(self) -> list[str]:
         """The namespaces auto-recall searches each turn, in order."""
-        strategies = self.strategies if self.strategies is not None else []
         listed = self.recall_namespaces if self.recall_namespaces is not None else []
-        candidates = [self.namespace_default, *(s for s in strategies if s != "summary"), *listed]
-        return list(dict.fromkeys(candidates))
+        return list(dict.fromkeys([self.namespace_default, *listed]))
 
     @model_validator(mode="after")
-    def _validate_strategies(self) -> "MemoryBackendConfig":
-        strategies = self.strategies if self.strategies is not None else []
-        if len(set(strategies)) != len(strategies):
-            raise ValueError(f"memory.strategies lists a strategy twice: {strategies}")
-        for name, prompt in (self.strategy_prompts or {}).items():
-            if name not in strategies:
-                raise ValueError(
-                    f"memory.strategy_prompts[{name!r}] names a strategy that is not in "
-                    f"memory.strategies {strategies}"
-                )
-            if not prompt.strip():
-                raise ValueError(f"memory.strategy_prompts[{name!r}] must be non-blank text")
+    def _validate_recall_namespaces(self) -> "MemoryBackendConfig":
         if self.recall_namespaces is not None:
             if not self.recall_namespaces or any(not n.strip() for n in self.recall_namespaces):
                 raise ValueError("memory.recall_namespaces must list non-blank namespaces")
-        if self.extract_every_n_turns is not None:
-            if self.extract_every_n_turns < 1:
-                raise ValueError("memory.extract_every_n_turns must be 1 or more")
-            if not strategies:
-                raise ValueError("memory.extract_every_n_turns needs memory.strategies: there is nothing to extract")
-            if self.type == "managed":
-                raise ValueError(
-                    "memory.extract_every_n_turns is for type='lakebase' or 'inmemory'; managed "
-                    "extraction runs with `apx-agent memory extract`."
-                )
         return self
 
     @model_validator(mode="after")
@@ -287,11 +249,6 @@ class MemoryBackendConfig(_BackendConfig):
                 f"memory.retention requires type='lakebase'; type={self.type!r} cannot "
                 "enforce it (in-memory rows end with the process; the managed "
                 "platform states no retention)."
-            )
-        if self.extraction is not None and self.type != "managed":
-            raise ValueError(
-                "memory.extraction requires type='managed'; in-memory and "
-                "Lakebase stores keep their own write path."
             )
         if self.type == "managed" and self.store_name is not None:
             from ._memory_managed import validate_memory_store_name  # noqa: PLC0415

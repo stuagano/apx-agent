@@ -1,6 +1,6 @@
 # Design: typed memory strategies (`facts`, `preferences`, `summary`)
 
-**Status:** accepted 2026-11-06 (owner approved the recommendations below) · **Date:** 2026-11-06 ·
+**Status:** superseded 2026-11-13: removed in favour of `agentbricks memory pipeline` (ADR 0001) · was accepted 2026-11-06 · **Date:** 2026-11-06 ·
 **Issue:** [#1088](https://github.com/stuagano/apx-agent/issues/1088) ·
 **Blocks:** [#1089](https://github.com/stuagano/apx-agent/issues/1089) (when extraction runs) ·
 **Interacts with:** [#1087](https://github.com/stuagano/apx-agent/issues/1087) auto-recall (shipped in #1094),

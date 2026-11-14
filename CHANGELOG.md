@@ -6,6 +6,19 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Breaking: apx no longer extracts or consolidates memory; use an Agent Bricks
+  memory pipeline (#858, ADR 0001).** `apx-agent memory extract`,
+  `apx-agent memory consolidate`, `consolidate_memories`, `extract_declared_session`,
+  `extract_agent_session` and `extract_strategy_memories` are removed, along with
+  `memory.extraction`, `memory.strategies`, `memory.strategy_prompts` and
+  `memory.extract_every_n_turns`. A config that still sets one fails to load and
+  names the replacement:
+  `agentbricks memory pipeline create --session-store <s> --memory-store <m>`.
+  Write strategy prompts into the pipeline's `--instructions`. A scheduled pipeline
+  runs about every 24 hours, not every N turns. `apx-agent doctor` adds a
+  `Memory pipeline` row that warns when the agent's managed stores have no
+  pipeline. See [docs/running/managed-stores.md](docs/running/managed-stores.md#memory-pipeline).
+
 - **`NativeBinding` is public API, and native deploys catch two runtime failures early
   (#1182, #1183).** `from apx_agent import NativeBinding` replaces the private
   `apx_agent._models` import, and the multi-agent docs cover it: sequential leaves, an
