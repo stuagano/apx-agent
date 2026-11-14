@@ -8,8 +8,6 @@
 # Typical tables: sf_opportunities, sf_accounts, ns_invoices, ns_payments
 
 name: quote-to-cash-coworker
-# Lakebase session = compatibility contract; omitted target is durable.
-target: responses_agent
 description: >
   Reconciles closed deals (Salesforce) against invoices and collections (NetSuite).
   Identifies revenue leakage, billing discrepancies, and past-due accounts.
@@ -34,27 +32,15 @@ template:
     Identify revenue leakage between closed deals and invoiced amounts.
     Surface unbilled deals, billing-rate discrepancies, and past-due accounts
     where the CRM shows a healthy relationship.
-  memory: persistent
+  memory: managed
   warehouse_id: $WAREHOUSE_ID
   include_functions: true
 
 memory:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: qtc_coworker
-  table_name: $CATALOG.$SCHEMA.apx_qtc_coworker_memory
-  embedding_model: databricks-bge-large-en
-  embedding_dim: 1024
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 session:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: qtc_coworker
-  table_name: $CATALOG.$SCHEMA.apx_qtc_coworker_sessions
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 guardrails:
   injection_detection: true

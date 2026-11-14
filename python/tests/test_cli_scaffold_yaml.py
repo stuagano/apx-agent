@@ -52,7 +52,7 @@ def test_scaffold_coworker_by_declared_gallery_name(tmp_path):
     # <name>.yaml — the gallery pick routes through _materialize_agent).
     runner = CliRunner()
     result = runner.invoke(main, [
-        "agents", "scaffold", "my-payroll-agent", "--runtime", "responses_agent",
+        "agents", "scaffold", "my-payroll-agent",
         "--coworker", "payroll-coworker",
         "--no-interactive",
         "--dir", str(tmp_path),
