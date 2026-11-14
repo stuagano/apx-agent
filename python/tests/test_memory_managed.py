@@ -148,3 +148,30 @@ def test_invalid_and_legacy_store_names_fail_before_network(name: str) -> None:
     with pytest.raises(ValueError, match="explicit data migration"):
         MemoryBackendConfig(type="managed", store_name=name)
     assert not api.calls
+
+
+def test_provision_grants_each_service_principal_through_agentkit() -> None:
+    """#1129: a shared store grants other agents' principals without hand-written SDK calls."""
+    from unittest.mock import MagicMock, call, patch
+
+    client = MagicMock()
+    store = client.memory_stores.get.return_value
+    store.name = "memory-stores/abc123"
+    with patch("databricks_agentkit.AgentKitClient", return_value=client):
+        out = provision_managed_memory(MagicMock(), "agent-memory", grant_service_principals=["sp-a", "sp-b"])
+    assert store.grant_permission.call_args_list == [
+        call("sp-a", permission="WRITE", principal_type="SERVICE_PRINCIPAL"),
+        call("sp-b", permission="WRITE", principal_type="SERVICE_PRINCIPAL"),
+    ]
+    client.memory_stores.create.assert_not_called()
+    assert "Granted WRITE to service principal sp-b." in out
+    assert "agentbricks memory stores permissions list memory-stores/abc123" in out
+
+
+def test_provision_without_grants_grants_nothing() -> None:
+    from unittest.mock import MagicMock, patch
+
+    client = MagicMock()
+    with patch("databricks_agentkit.AgentKitClient", return_value=client):
+        provision_managed_memory(MagicMock(), "agent-memory")
+    client.memory_stores.get.return_value.grant_permission.assert_not_called()

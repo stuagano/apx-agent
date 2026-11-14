@@ -167,23 +167,39 @@ _: type[MemoryStore] = ManagedMemoryStore
 
 
 def provision_managed_memory(
-    ws: WorkspaceClient, store_name: str, *, description: str = "apx-agent managed agent memory",
+    ws: WorkspaceClient,
+    store_name: str,
+    *,
+    description: str = "apx-agent managed agent memory",
+    grant_service_principals: Sequence[str] = (),
 ) -> str:
-    """Explicit provisioning: create only on 404, never on permission errors."""
+    """Explicit provisioning: create only on 404, never on permission errors.
+
+    A memory store is shared: each id in ``grant_service_principals`` (an agent's
+    service principal application ID) gets WRITE through AgentKit (#1129).
+    """
     from databricks_agentkit import AgentKitClient  # noqa: PLC0415
 
     validate_memory_store_name(store_name)
     client = AgentKitClient(workspace_client=ws)
     try:
-        client.memory_stores.get(store_name)
+        store = client.memory_stores.get(store_name)
     except Exception as exc:
         if not _is_not_found(exc):
             raise
-        client.memory_stores.create(store_name, description=description)
-        status = f"Created memory store {store_name}."
+        store = client.memory_stores.create(store_name, description=description)
+        lines = [f"Created memory store {store_name}."]
     else:
-        status = f"Memory store {store_name} already exists."
-    return status + "\nGrant the serving principal access with memory_store.grant_permission(principal_id)."
+        lines = [f"Memory store {store_name} already exists."]
+    for principal in grant_service_principals:
+        store.grant_permission(principal, permission="WRITE", principal_type="SERVICE_PRINCIPAL")
+        lines.append(f"Granted WRITE to service principal {principal}.")
+    lines += [
+        "Share it with another agent: agentbricks memory stores permissions grant "
+        f"{store.name} --service-principal <application-id> --permission write",
+        f"See who shares it: agentbricks memory stores permissions list {store.name}",
+    ]
+    return "\n".join(lines)
 
 
 __all__ = ["ApiCaller", "ManagedMemoryStore", "provision_managed_memory"]
