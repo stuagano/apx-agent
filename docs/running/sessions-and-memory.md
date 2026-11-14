@@ -347,72 +347,33 @@ never runs the delete pass.
 (e.g. `scratch=7d, default=90d`). For a managed store it reports that the
 platform states no retention.
 
-### Session extraction
+### Memory pipeline
 
-A finished managed session becomes managed memory only when
-`memory={"type": "managed", "extraction": {"enabled": True}}` is declared on the agent and the session
-store is managed too. After the turn, distill that one session:
+apx does not distill sessions into memory itself. An Agent Bricks memory
+pipeline does: it reads a managed session store and writes facts, preferences
+and workflows into a managed memory store, under each session's actor. Each run
+distills new sessions, merges the results by topic, then merges overlapping
+entries and splits oversized ones.
 
 ```bash
-apx-agent memory extract --session-id <completed-session-id> --actor-id <trusted-caller>
-apx-agent memory extract --session-id <completed-session-id> --dry-run
+agentbricks memory pipeline create \
+  --session-store apx-my-agent-sessions --memory-store apx-my-agent-memory \
+  --instructions @memory-instructions.md --trigger scheduled
 ```
 
-The service reads the transcript and writes the returned entries into the
-declared memory store under the session's recorded actor. `--dry-run` returns
-the same entries without writing. The session is left as it was. A service
-failure exits non-zero and is not reported as a write. This is not
-`consolidate_memories`, which summarizes memories that already exist, and it
-does not start a cross-session memory pipeline.
+- Both stores must be managed: declare `memory={"type": "managed"}` and
+  `session={"type": "managed"}` on the agent.
+- `--instructions` steers what to keep and skip, as free text. Describe the
+  kinds of memory you want there; there are no typed strategies.
+- `--trigger scheduled` runs about every 24 hours; the default `manual` runs
+  only on `agentbricks memory pipeline run <name>`. For something the agent must
+  remember at once, let it save it with the memory tools.
+- `apx-agent doctor` shows a `Memory pipeline` row and warns when the agent's
+  managed stores have no pipeline.
 
-### Memory strategies
-
-Declare which kinds of memory a session is distilled into. Each strategy is a
-namespace of the same name:
-
-| Strategy | Extracts | Records per session |
-|---|---|---|
-| `facts` | stated facts about the user and their work | 0 or more |
-| `preferences` | how the user wants things done | 0 or more |
-| `summary` | a recap of the session | exactly 1, replaced on re-extraction |
-
-```python
-memory={
-    "type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "agentdb",
-    "embedding_model": "databricks-gte-large-en", "embedding_dim": 1024,
-    "strategies": ["facts", "preferences", "summary"],
-    "strategy_prompts": {"preferences": "Only capture reporting-format preferences."},
-}
-```
-
-- `strategy_prompts` replaces a strategy's built-in instructions. The output
-  contract (a JSON array of strings; one JSON string for `summary`) is always
-  appended and cannot be changed. Output that does not parse raises and writes
-  nothing.
-- **Lakebase / in-memory:** `extract_agent_session(agent, model=..., transcript=...,
-  principal_id=..., session_id=...)` asks the agent's own model once per strategy.
-  It runs as the app service principal and writes every record under
-  `principal_id`, the session's user.
-- **Managed:** `apx-agent memory extract` runs one dry-run extraction per strategy
-  (`extraction.instructions`, if declared, then the strategy prompt), then apx
-  writes each entry at `/memories/<strategy>/` and reads it back.
-- **Recall:** auto-recall searches `namespace_default` plus `facts` and
-  `preferences`, merges by score, and keeps the top `recall_k`. `summary` is
-  recalled only when you list it: `"recall_namespaces": ["summary"]`. Listed
-  namespaces are added to that default set, never replace it.
-- **Retention** is per namespace, so `"retention": {"namespaces": {"summary": 30}}`
-  covers a strategy. `episodic` is not a strategy.
-
-**Automatic extraction (Lakebase / in-memory).** Add `"extract_every_n_turns": 3`
-to run the declared strategies after every third user turn of a session. The
-transcript is the session as the agent sees it after the turn (the checkpointer's
-thread), so the turn needs a `session_id` / `thread_id`. Extraction runs on a
-background worker and never blocks or fails the turn: a failure is retried up to
-three times and logged. Each run reads the whole session and replaces that
-session's earlier records, so a retry or the next trigger never duplicates them.
-Turns after the last multiple of N are not extracted until the next trigger;
-there is no idle trigger. Managed memory refuses the field; run
-`apx-agent memory extract` instead.
+`memory.extraction`, `memory.strategies`, `memory.strategy_prompts` and
+`memory.extract_every_n_turns` were removed (ADR 0001). A config that still
+sets one fails to load with the command above.
 
 ### Migrating Lakebase memory
 
@@ -448,10 +409,6 @@ boundaries: any principal with store access can reach every actor. Use separate
 stores for strict isolation. Retrieval is BM25, capped at 100 results; tags,
 importance and metadata are not persisted or filtered. Managed sessions are a
 separate declaration; see the [runtime guide](runtime-targets.md).
-
-### Memory consolidation
-
-`consolidate_memories(store=..., principal_id=..., summarize_fn=...)` LLM-summarizes older or low-importance memories into a rollup row (with optional deletion of originals). Keeps the bank tractable as it grows.
 
 ---
 

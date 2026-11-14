@@ -40,7 +40,29 @@ confirm the WARN row is gone.
   database until you drop them.
 - **Retention.** Managed memory rejects `retention`, because the platform
   doesn't state a retention period.
-- **Extraction and consolidation.** apx's own memory extraction and
-  consolidation are deprecated too. Use `agentbricks memory pipeline` instead.
+- **Extraction and consolidation.** apx's own memory extraction, strategies
+  and consolidation were removed. An Agent Bricks memory pipeline distills a
+  managed session store into a managed memory store instead; see
+  [Memory pipeline](#memory-pipeline).
+
+## Memory pipeline
+
+1. Move memory and session to managed stores (above).
+2. Write what you had in `memory.strategy_prompts` or
+   `memory.extraction.instructions` into one instructions file. The pipeline
+   takes free text, not typed `facts` / `preferences` / `summary` records.
+3. Remove `extraction`, `strategies`, `strategy_prompts` and
+   `extract_every_n_turns` from `memory=`.
+4. Create the pipeline, then run `apx-agent doctor` to confirm the
+   `Memory pipeline` row is OK:
+
+   ```bash
+   agentbricks memory pipeline create \
+     --session-store <sessions> --memory-store <memory> \
+     --instructions @memory-instructions.md --trigger scheduled
+   ```
+
+A scheduled pipeline runs about every 24 hours, not every N turns. Entries are
+organized by topic under each actor, not in one namespace per strategy.
 
 For per-store behaviour, see [sessions-and-memory.md](sessions-and-memory.md).
