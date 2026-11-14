@@ -16232,10 +16232,14 @@ def memory() -> None:
               help="Databricks CLI profile.")
 @click.option("--description", default="apx-agent managed agent memory",
               help="Description recorded on the memory store.")
+@click.option("--grant-service-principal", "grant_service_principals", multiple=True,
+              help="Agent service principal application ID to grant WRITE. Repeat to share "
+                   "the store with several agents.")
 def memory_provision_cmd(
     store_name: str,
     profile: str | None,
     description: str,
+    grant_service_principals: tuple[str, ...],
 ) -> None:
     """Create a workspace-scoped Databricks Managed Agent Memory store.
 
@@ -16249,7 +16253,9 @@ def memory_provision_cmd(
     from ._memory_managed import provision_managed_memory  # noqa: PLC0415
 
     ws = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
-    click.echo(provision_managed_memory(ws, store_name, description=description))
+    click.echo(provision_managed_memory(
+        ws, store_name, description=description, grant_service_principals=grant_service_principals,
+    ))
 
 
 @memory.command("recall")
