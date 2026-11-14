@@ -1689,6 +1689,26 @@ def test_trace_grants_skip_without_uc_destination():
     assert "not bound to a Unity Catalog trace location" in check.detail
 
 
+def test_trace_grants_schema_only_destination_uses_mlflow_default_prefix():
+    # A two-part destination is MLflow's schema-level location: tables use the
+    # default ``mlflow_experiment_trace`` prefix, and there's no annotations table.
+    fqn = "main.obs.mlflow_experiment_trace"
+    held = {(f"{fqn}_{s}", "sp-123"): {"SELECT", "MODIFY"} for s in ("otel_spans", "otel_logs", "otel_metrics")}
+    ws = _trace_ws(destination="main.obs", held=held)
+    check = doctor._trace_table_grant_check("my-app", "exp-1", ws)
+    assert check.status is Status.OK, check.detail
+    assert "all 3 trace tables" in check.detail
+
+
+def test_trace_grants_unreadable_app_is_not_reported_as_undeployed():
+    from databricks.sdk.errors import PermissionDenied
+
+    ws = _trace_ws()
+    ws.apps.get.side_effect = PermissionDenied("no CAN_VIEW")
+    with pytest.raises(PermissionDenied):
+        doctor._trace_table_grant_check("my-app", "exp-1", ws)
+
+
 def test_trace_grants_offline_doctor_never_calls_the_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("MLFLOW_EXPERIMENT_ID", "exp-1")
     (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "b"\n')

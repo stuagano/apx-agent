@@ -820,12 +820,20 @@ def _trace_table_grant_check(app_name: str, experiment_id: str, ws: Any) -> Chec
     tags = ws.experiments.get_experiment(experiment_id=experiment_id).experiment.tags or []
     destination = next((t.value for t in tags if t.key == _TRACE_DESTINATION_TAG), None)
     parts = destination.split(".") if destination else []
-    if len(parts) != 3:
+    if len(parts) == 2:
+        # MLflow's schema-level location: default table prefix, no annotations table.
+        catalog, schema = parts
+        prefix, suffixes = "mlflow_experiment_trace", _TRACE_TABLE_SUFFIXES[:3]
+    elif len(parts) == 3:
+        catalog, schema, prefix = parts
+        suffixes = _TRACE_TABLE_SUFFIXES
+    else:
         return Check(label, Status.SKIP, f"experiment {experiment_id} is not bound to a Unity Catalog trace location", None)
-    catalog, schema, prefix = parts
+    from databricks.sdk.errors import NotFound  # noqa: PLC0415
+
     try:
         sp_id = ws.apps.get(app_name).service_principal_client_id
-    except Exception:
+    except NotFound:
         sp_id = None
     if not sp_id:
         return Check(label, Status.SKIP, f"{app_name!r} has no service principal yet (deploy the app first)", None)
@@ -836,7 +844,7 @@ def _trace_table_grant_check(app_name: str, experiment_id: str, ws: Any) -> Chec
     failed: list[str] = []
     fixes: list[str] = []
     absent: list[str] = []
-    for suffix in _TRACE_TABLE_SUFFIXES:
+    for suffix in suffixes:
         table = f"{catalog}.{schema}.{prefix}_{suffix}"
         if not ws.tables.exists(full_name=table).table_exists:
             absent.append(table.rsplit(".", 1)[1])
@@ -858,7 +866,7 @@ def _trace_table_grant_check(app_name: str, experiment_id: str, ws: Any) -> Chec
             f"tables not created yet: {', '.join(absent)}",
             "MLflow creates each table on its first trace. Re-run apx-agent doctor after the first traced request.",
         )
-    return Check(label, Status.OK, f"app SP {sp_id} has SELECT and MODIFY on all {len(_TRACE_TABLE_SUFFIXES)} trace tables", None)
+    return Check(label, Status.OK, f"app SP {sp_id} has SELECT and MODIFY on all {len(suffixes)} trace tables", None)
 
 
 def check_trace_table_grants(cwd: Path, *, auth_ok: bool, online: bool) -> Check | None:
