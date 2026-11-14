@@ -198,3 +198,16 @@ def _no_live_agent_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "_resolve_deploy_registry",
                         lambda profile, cfg: RegistryTables("c.apx.agent_registry", "c.apx.agent_tools"))
     monkeypatch.setattr(cli, "_deploy_registry_step", lambda **k: None)
+
+
+@pytest.fixture(autouse=True)
+def _restore_mlflow_experiment_id():
+    """#1190: ``mlflow.set_experiment`` (and apx's dev tracing handler) write
+    ``MLFLOW_EXPERIMENT_ID`` into ``os.environ``. Put it back after every test so a
+    leaked id never changes a later test on the same xdist worker."""
+    before = os.environ.get("MLFLOW_EXPERIMENT_ID")
+    yield
+    if before is None:
+        os.environ.pop("MLFLOW_EXPERIMENT_ID", None)
+    else:
+        os.environ["MLFLOW_EXPERIMENT_ID"] = before
