@@ -26,6 +26,21 @@ os.environ.setdefault("MLFLOW_TRACKING_URI", Path(tempfile.mkdtemp(prefix="apx-m
 os.environ.setdefault("APX_AGENT_MLFLOW_AUTOLOG", "0")
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: Any, nextitem: Any) -> Any:
+    """mlflow.set_experiment writes MLFLOW_EXPERIMENT_ID into os.environ; undo it
+    after each test so it never leaks to the next one on the worker (#1190).
+
+    A hook, not a fixture: it runs after every fixture's teardown, including a
+    monkeypatch that recorded MLflow's write as the "original" value."""
+    before = os.environ.get("MLFLOW_EXPERIMENT_ID")
+    yield
+    if before is None:
+        os.environ.pop("MLFLOW_EXPERIMENT_ID", None)
+    else:
+        os.environ["MLFLOW_EXPERIMENT_ID"] = before
+
+
 # ---------------------------------------------------------------------------
 # Fake dependency for simulating Dependencies.Client / UserClient
 # ---------------------------------------------------------------------------
