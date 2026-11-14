@@ -8,9 +8,7 @@ Each assertion pins a fixed doc claim to the code it describes.
 
 from __future__ import annotations
 
-import ast
 import inspect
-import re
 from pathlib import Path
 
 from apx_agent import (
@@ -18,10 +16,8 @@ from apx_agent import (
     LlmAgent,
     MemoryFilter,
     RecallOptions,
-    consolidate_memories,
     make_memory_tools,
 )
-from apx_agent._memory_strategies import OUTPUT_CONTRACTS, strategy_system_prompt
 from apx_agent._memory_tools import make_memory_tools as _raw_make_memory_tools
 from apx_agent._models import _KNOB_TO_TYPE, MemoryBackendConfig
 
@@ -61,21 +57,17 @@ def test_memory_tool_factory_is_keyword_only_with_zero_arg_resolver() -> None:
     assert [t.__name__ for t in tools] == ["recall", "remember", "forget"]
 
 
-def test_consolidate_memories_is_keyword_only() -> None:
-    params = inspect.signature(consolidate_memories).parameters
-    for name in ("store", "principal_id", "summarize_fn"):
-        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
-    assert "consolidate_memories(store=..., principal_id=..., summarize_fn=...)" in SESSIONS
-
-
 def test_session_store_count_matches_table() -> None:
     assert "Two stores cover the main workloads:" in SESSIONS
     assert "Three stores" not in SESSIONS
 
 
-def test_extract_cli_uses_the_installed_script_name() -> None:
-    assert "apx-agent memory extract --session-id" in SESSIONS
-    assert "\napx memory extract" not in SESSIONS
+def test_memory_pipeline_is_how_sessions_become_memory() -> None:
+    """#858 / ADR 0001: apx no longer extracts; the doc points at the pipeline."""
+    section = SESSIONS.split("### Memory pipeline", 1)[1].split("\n### ", 1)[0]
+    assert "agentbricks memory pipeline create" in section
+    assert "apx-agent memory extract" not in SESSIONS
+    assert "consolidate_memories" not in SESSIONS
 
 
 def test_no_doc_uses_the_uninstalled_apx_memory_script() -> None:
@@ -109,23 +101,6 @@ def test_forget_docstring_does_not_claim_server_side_scoping() -> None:
     assert "GET-by-ID is not actor scoped" in source
 
 
-def test_memory_strategies_example_is_the_real_config() -> None:
-    """#1088: the documented strategies block validates and does what the prose says."""
-    section = SESSIONS.split("### Memory strategies", 1)[1].split("\n### ", 1)[0]
-    block = re.search(r"```python\nmemory=(\{.*?\})\n```", section, re.S)
-    assert block is not None
-    cfg = MemoryBackendConfig.model_validate(ast.literal_eval(block.group(1)))
-    assert cfg.strategies == ["facts", "preferences", "summary"]
-    assert strategy_system_prompt(cfg, "preferences") == (
-        "Only capture reporting-format preferences.\n\n" + OUTPUT_CONTRACTS["preferences"]
-    )
-    assert cfg.recalled_namespaces() == ["default", "facts", "preferences"]
-
-    listed = re.search(r'"recall_namespaces": (\[.*?\])', section)
-    assert listed is not None
-    opted = cfg.model_copy(update={"recall_namespaces": ast.literal_eval(listed.group(1))})
-    assert opted.recalled_namespaces() == ["default", "facts", "preferences", "summary"]
-    retention = re.search(r'"retention": (\{.*?\}\})', section)
-    assert retention is not None
-    MemoryBackendConfig(type="lakebase", retention=ast.literal_eval(retention.group(1)))
-    assert "extract_agent_session(agent, model=..., transcript=...," in section
+def test_documented_retention_and_recall_namespaces_still_validate() -> None:
+    assert MemoryBackendConfig(recall_namespaces=["summary"]).recalled_namespaces() == ["default", "summary"]
+    MemoryBackendConfig(type="lakebase", retention={"namespaces": {"summary": 30}})

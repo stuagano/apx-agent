@@ -305,9 +305,10 @@ is rejected.
 
 ### 5. Session-to-memory extraction
 
-Installed: `Session.extract_memories(memory_store=, instructions=, dry_run=)`.
-APX does not call it. #858 owns adoption. Do not treat ConversationStore
-history or MemoryStore `add` as a substitute.
+An Agent Bricks memory pipeline (`agentbricks memory pipeline`) distills a
+managed session store into a managed memory store. APX does not extract or
+consolidate memory itself (#858, ADR 0001); `apx-agent doctor` warns when the
+agent's managed stores have no pipeline.
 
 ## Actor isolation versus authorization
 

@@ -249,6 +249,9 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
     retention_check = check_memory_retention(cwd)
     if retention_check is not None:
         project.append(retention_check)
+    pipeline_check = check_memory_pipeline(cwd, auth_ok=online and auth.status is Status.OK)
+    if pipeline_check is not None:
+        project.append(pipeline_check)
     lakebase_check = check_lakebase_deprecated(cwd)
     if lakebase_check is not None:
         project.append(lakebase_check)
@@ -1665,6 +1668,62 @@ def check_memory_retention(cwd: Path) -> Check | None:
     if retention.default_days is not None:
         parts.append(f"default={retention.default_days}d")
     return Check(label, Status.OK, f"{', '.join(parts)} (delete pass runs at app start)", None)
+
+
+def _memory_pipeline_pairs(ws: Any) -> set[tuple[str, str]]:
+    """Every (session store, memory store) pair a memory pipeline connects, by store name."""
+    pairs: set[tuple[str, str]] = set()
+    token = None
+    while True:
+        query = {"page_token": token} if token else {}
+        page = ws.api_client.do("GET", "/api/2.0/agents/memory-pipelines", query=query)
+        for item in page.get("memory_pipelines", []):
+            pairs.add((str(item.get("session_store")).rsplit("/", 1)[-1],
+                       str(item.get("memory_store")).rsplit("/", 1)[-1]))
+        token = page.get("next_page_token")
+        if not token:
+            return pairs
+
+
+def check_memory_pipeline(cwd: Path, *, auth_ok: bool) -> Check | None:
+    """WARN when managed session and memory stores have no memory pipeline (ADR 0001).
+
+    Without one, nothing distills sessions into long-term memory: only what the
+    agent saves with its memory tools is remembered.
+    """
+    if not _is_apx_project(cwd):
+        return None
+    try:
+        from ._doctor_durable import effective_config_isolated  # noqa: PLC0415
+
+        cfg = effective_config_isolated(cwd)
+    except Exception:
+        return None
+    if cfg is None or cfg.memory is None or cfg.session is None:
+        return None
+    if cfg.memory.type != "managed" or cfg.session.type != "managed":
+        return None
+    memory, session = cfg.memory.store_name, cfg.session.store_name
+    if not memory or not session:
+        return None
+    label = "Memory pipeline"
+    if not auth_ok:
+        return Check(label, Status.SKIP, "skipped (offline or auth unavailable)", None)
+    try:
+        from ._defaults import _make_workspace_client  # noqa: PLC0415
+
+        pairs = _memory_pipeline_pairs(_make_workspace_client())
+    except Exception as exc:
+        return Check(label, Status.SKIP, f"could not list memory pipelines ({str(exc)[:120]})", None)
+    if (session, memory) in pairs:
+        return Check(label, Status.OK, f"{session} -> {memory}", None)
+    return Check(
+        label, Status.WARN,
+        f"no memory pipeline from session store {session!r} to memory store {memory!r}: "
+        "sessions are not distilled into long-term memory",
+        f"agentbricks memory pipeline create --session-store {session} --memory-store {memory} "
+        "--instructions @memory-instructions.md --trigger scheduled",
+    )
 
 
 def check_lakebase_deprecated(cwd: Path) -> Check | None:

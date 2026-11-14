@@ -210,13 +210,6 @@ from ._example import (
 from ._memory_lakebase import LakebaseMemoryStore
 from ._example_lakebase import LakebaseExampleStore
 from ._memory_managed import ApiCaller, ManagedMemoryStore, provision_managed_memory
-from ._memory_extract import (
-    ExtractedSessionMemory,
-    SessionExtractionResult,
-    extract_declared_session,
-    extraction_enabled,
-)
-from ._memory_strategies import extract_agent_session, extract_strategy_memories
 
 # Agent-facing memory / example tools (LLM-callable wrappers around the stores)
 from ._memory_tools import make_memory_tools
@@ -227,12 +220,6 @@ from ._prompt_assembly import (
     assemble_context,
     assemble_example_context,
     assemble_memory_context,
-)
-
-# Memory consolidation — LLM-summarize older memories into a rollup row
-from ._memory_consolidate import (
-    ConsolidateResult,
-    consolidate_memories,
 )
 
 # Databricks Managed MCP integration
@@ -615,12 +602,6 @@ __all__ = [
     "ManagedMemoryStore",
     "ApiCaller",
     "provision_managed_memory",
-    "ExtractedSessionMemory",
-    "SessionExtractionResult",
-    "extract_declared_session",
-    "extraction_enabled",
-    "extract_agent_session",
-    "extract_strategy_memories",
     # Agent-facing memory / example tools
     "make_memory_tools",
     "make_example_tools",
@@ -628,9 +609,6 @@ __all__ = [
     "assemble_context",
     "assemble_example_context",
     "assemble_memory_context",
-    # Memory consolidation
-    "ConsolidateResult",
-    "consolidate_memories",
     # Managed MCP
     "ManagedMCPEndpoint",
     "managed_mcp_urls",

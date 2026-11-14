@@ -500,49 +500,6 @@ def _memory_recall_middleware(agent: LlmAgent, ctx: CompileContext) -> Any | Non
     return _MemoryRecallMiddleware()
 
 
-def _memory_extract_middleware(agent: LlmAgent, ctx: CompileContext) -> Any | None:
-    """Queue strategy extraction after every N user turns (#1089).
-
-    Active when declared ``memory=`` attached a store and sets
-    ``extract_every_n_turns``. After the turn, the graph state holds the whole
-    session (the checkpointer's thread), so that is the transcript; the session
-    id is the run's ``thread_id``. The principal is resolved like auto-recall.
-    Scheduling returns at once; the extraction itself runs off the request path.
-    """
-    store = getattr(agent, "_apx_memory_store", None)
-    cfg = getattr(agent, "_apx_memory_config", None)
-    if store is None or cfg is None or cfg.extract_every_n_turns is None:
-        return None
-    request_principal = ctx.headers.user_id if ctx.headers else None
-    principal = request_principal or getattr(agent, "_apx_memory_principal", None)
-    if not principal:
-        return None
-
-    from langchain.agents.middleware import AgentMiddleware
-    from langgraph.config import get_config
-
-    from ._memory_strategies import schedule_session_extraction
-
-    def _schedule(state: Any) -> None:
-        session_id = get_config().get("configurable", {}).get("thread_id")
-        if not session_id:
-            logger.debug("memory extraction skipped: the turn ran without a thread_id (no session)")
-            return
-        schedule_session_extraction(
-            agent, model=ctx.model, messages=state["messages"],
-            principal_id=principal, session_id=str(session_id),
-        )
-
-    class _MemoryExtractMiddleware(AgentMiddleware):
-        def after_agent(self, state: Any, runtime: Any) -> None:
-            _schedule(state)
-
-        async def aafter_agent(self, state: Any, runtime: Any) -> None:
-            _schedule(state)
-
-    return _MemoryExtractMiddleware()
-
-
 def _compile_llm_agent(
     agent: LlmAgent,
     ctx: CompileContext,
@@ -605,8 +562,6 @@ def _compile_llm_agent(
     # Recall first (outer) so the context window budgets the memory block too.
     if (recall := _memory_recall_middleware(agent, ctx)) is not None:
         middleware.append(recall)
-    if (extract := _memory_extract_middleware(agent, ctx)) is not None:
-        middleware.append(extract)
     if agent._context_window_tokens is not None:
         middleware.append(_context_window_middleware(agent._context_window_tokens))
     # Deferred loading (#767) still registers every author tool on create_agent
