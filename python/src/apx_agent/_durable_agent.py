@@ -573,6 +573,15 @@ def compile_to_durable_agent_server(
         app.include_router(build_root_chat_router())
 
     _chain_lifespan(app, _mount_root_chat)
+
+    async def _autolog() -> None:
+        # LLM and tool spans, as create_app and the Apps mount get (#1185). Without
+        # it a durable turn records only its one graph.invoke span.
+        from ._mlflow_tracing import autolog_if_env
+
+        autolog_if_env()
+
+    _chain_lifespan(app, _autolog)
     # Declared memory retention (#1090/#1101): one delete pass per app start, as
     # create_app does. doctor --durable sets this False before it starts the lifespan.
     app.state.apx_memory_purge = True
