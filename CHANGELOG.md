@@ -6,6 +6,14 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Coworker gallery templates scaffold durable agents with managed stores (#1141).**
+  The six gallery coworkers and the `docs/coworkers/` copies (plus
+  `financial-reporting`) no longer declare `target: responses_agent` or Lakebase
+  memory and sessions. They use `type: managed` for both, so a scaffolded coworker
+  runs on `durable_agent_server`. Memory retrieval changes from pgvector search to
+  managed full-text search; the per-template tables and embedding settings are gone.
+  An Agent Bricks memory pipeline can distill sessions into that memory.
+
 - **Breaking: apx no longer extracts or consolidates memory; use an Agent Bricks
   memory pipeline (#858, ADR 0001).** `apx-agent memory extract`,
   `apx-agent memory consolidate`, `consolidate_memories`, `extract_declared_session`,

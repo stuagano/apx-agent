@@ -9,8 +9,6 @@
 # Typical tables: snow_cases, snow_assets, sap_contracts, sap_warranty, sap_inventory
 
 name: warranty-entitlement-coworker
-# Lakebase session = compatibility contract; omitted target is durable.
-target: responses_agent
 description: >
   Reconciles service requests (ServiceNow) against warranty contracts and parts
   inventory (SAP). Determines coverage, part availability, and customer cost
@@ -36,27 +34,15 @@ template:
     Determine repair coverage, part availability, and customer cost by joining
     service request details against warranty contracts and parts inventory.
     Eliminate the manual two-screen lookup support reps do today.
-  memory: persistent
+  memory: managed
   warehouse_id: $WAREHOUSE_ID
   include_functions: true
 
 memory:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: warranty_coworker
-  table_name: $CATALOG.$SCHEMA.apx_warranty_coworker_memory
-  embedding_model: databricks-bge-large-en
-  embedding_dim: 1024
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 session:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: warranty_coworker
-  table_name: $CATALOG.$SCHEMA.apx_warranty_coworker_sessions
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 guardrails:
   injection_detection: true
