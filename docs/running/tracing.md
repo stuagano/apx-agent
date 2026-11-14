@@ -86,6 +86,8 @@ apx-agent enables `mlflow.langchain.autolog()` by default when MLflow is install
 
 For production lakehouse traces, bind the MLflow experiment to a Unity Catalog trace location so MLflow writes the standard OTEL trace tables there. Data-agent scaffolds do this in `uv run quickstart` with `trace_location=UnityCatalog(catalog_name=..., schema_name=..., table_prefix=...)`. When `MLFLOW_TRACING_SQL_WAREHOUSE_ID` is set, quickstart also applies the generated `.apx/sql/apx_agent_timeline.sql` read model. APX's `apx.*` attributes then become queryable dimensions on standard MLflow trace data instead of a separate trace transport.
 
+The deployed app's service principal writes those tables, so it needs `USE CATALOG`, `USE SCHEMA`, and `SELECT, MODIFY` on each `<table_prefix>_otel_*` table. Deploy grants them when `MLFLOW_TRACING_SQL_WAREHOUSE_ID` is set; `ALL_PRIVILEGES` is not enough. `apx-agent doctor` checks the table grants and prints the `GRANT` statement for any gap.
+
 Langfuse and other OTEL-native trace sources should use the same standard shape: emit OTEL spans, land them in Databricks/Delta through the supported ingestion path, and surface/query them through MLflow and UC tables. ZeroBus fits APX-native lifecycle events that are not already MLflow spans.
 
 To force autologging off:

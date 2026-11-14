@@ -115,16 +115,21 @@ def registry_grants(table: str, *, sp_client_id: str | None) -> list[Grant]:
     return grants
 
 
-def _held(ws: "WorkspaceClient", grant: Grant) -> frozenset[str]:
-    """Privileges ``grant.principal`` already holds on the securable (incl. inherited)."""
-    response = ws.grants.get_effective(grant.securable, grant.name, principal=grant.principal)
-    held = {
+def held_privileges(ws: "WorkspaceClient", securable: str, name: str, principal: str) -> frozenset[str]:
+    """Privilege names ``principal`` holds on the securable, as UC reports them (incl. inherited)."""
+    response = ws.grants.get_effective(securable, name, principal=principal)
+    return frozenset(
         privilege.privilege.value
         for assignment in response.privilege_assignments or []
         for privilege in assignment.privileges or []
         if privilege.privilege is not None
-    }
-    return grant.privileges if "ALL_PRIVILEGES" in held else frozenset(held)
+    )
+
+
+def _held(ws: "WorkspaceClient", grant: Grant) -> frozenset[str]:
+    """Privileges ``grant.principal`` already holds; ALL_PRIVILEGES counts as all of them."""
+    held = held_privileges(ws, grant.securable, grant.name, grant.principal)
+    return grant.privileges if "ALL_PRIVILEGES" in held else held
 
 
 def provision_registry(

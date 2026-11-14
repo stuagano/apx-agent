@@ -258,6 +258,9 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
     uc_check = check_uc_data_source(cwd, auth_ok=auth.status is Status.OK)
     if uc_check is not None:
         project.append(uc_check)
+    trace_grants_check = check_trace_table_grants(cwd, auth_ok=auth.status is Status.OK, online=online)
+    if trace_grants_check is not None:
+        project.append(trace_grants_check)
     provenance_check = check_deploy_provenance(
         cwd, auth_ok=auth.status is Status.OK
     )
@@ -785,6 +788,111 @@ def check_uc_data_source(cwd: Path, *, auth_ok: bool) -> Check | None:
             label, Status.WARN,
             f"could not verify schema ({msg})",
             "Schema lookup failed — check auth and Unity Catalog grants.",
+        )
+
+
+_TRACE_DESTINATION_TAG = "mlflow.experiment.databricksTraceDestinationPath"
+_TRACE_TABLE_SUFFIXES = ("otel_spans", "otel_logs", "otel_metrics", "otel_annotations")
+_TRACE_PRIVILEGES = frozenset({"SELECT", "MODIFY"})
+
+
+def _local_experiment_id() -> str | None:
+    """MLFLOW_EXPERIMENT_ID from the environment, else the project's .env (as deploy reads it)."""
+    from_env = os.environ.get("MLFLOW_EXPERIMENT_ID")
+    if from_env:
+        return from_env
+    env_file = Path.cwd() / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("MLFLOW_EXPERIMENT_ID="):
+                value = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if value:
+                    return value
+    return None
+
+
+def _trace_table_grant_check(app_name: str, experiment_id: str, ws: Any) -> Check:
+    """The app SP needs SELECT and MODIFY (named explicitly; ALL_PRIVILEGES is not enough)
+    on each ``<prefix>_otel_*`` table of the experiment's UC trace destination."""
+    from ._registry import held_privileges  # noqa: PLC0415
+
+    label = "UC trace table grants"
+    tags = ws.experiments.get_experiment(experiment_id=experiment_id).experiment.tags or []
+    destination = next((t.value for t in tags if t.key == _TRACE_DESTINATION_TAG), None)
+    parts = destination.split(".") if destination else []
+    if len(parts) != 3:
+        return Check(label, Status.SKIP, f"experiment {experiment_id} is not bound to a Unity Catalog trace location", None)
+    catalog, schema, prefix = parts
+    try:
+        sp_id = ws.apps.get(app_name).service_principal_client_id
+    except Exception:
+        sp_id = None
+    if not sp_id:
+        return Check(label, Status.SKIP, f"{app_name!r} has no service principal yet (deploy the app first)", None)
+
+    def quoted(name: str) -> str:
+        return ".".join(f"`{part}`" for part in name.split("."))
+
+    failed: list[str] = []
+    fixes: list[str] = []
+    absent: list[str] = []
+    for suffix in _TRACE_TABLE_SUFFIXES:
+        table = f"{catalog}.{schema}.{prefix}_{suffix}"
+        if not ws.tables.exists(full_name=table).table_exists:
+            absent.append(table.rsplit(".", 1)[1])
+            continue
+        missing = sorted(_TRACE_PRIVILEGES - held_privileges(ws, "TABLE", table, sp_id))
+        if missing:
+            failed.append(f"{table.rsplit('.', 1)[1]} lacks {', '.join(missing)}")
+            fixes.append(f"GRANT SELECT, MODIFY ON TABLE {quoted(table)} TO `{sp_id}`")
+    if failed:
+        return Check(
+            label, Status.FAIL,
+            f"app SP {sp_id} is missing trace privileges: {'; '.join(failed)} — traces will be dropped",
+            "Redeploy with MLFLOW_TRACING_SQL_WAREHOUSE_ID set so apx grants them, or run:\n    "
+            + "\n    ".join(fixes),
+        )
+    if absent:
+        return Check(
+            label, Status.WARN,
+            f"tables not created yet: {', '.join(absent)}",
+            "MLflow creates each table on its first trace. Re-run apx-agent doctor after the first traced request.",
+        )
+    return Check(label, Status.OK, f"app SP {sp_id} has SELECT and MODIFY on all {len(_TRACE_TABLE_SUFFIXES)} trace tables", None)
+
+
+def check_trace_table_grants(cwd: Path, *, auth_ok: bool, online: bool) -> Check | None:
+    """Verify the app SP can write UC trace tables; None when no experiment is local to check."""
+    if not _is_apx_project(cwd):
+        return None
+    experiment_id = _local_experiment_id()
+    if experiment_id is None:
+        return None
+    from ._inspection import _load_agent_config  # noqa: PLC0415
+
+    try:
+        cfg = _load_agent_config(pyproject_path=cwd / "pyproject.toml")
+    except (ValueError, OSError):
+        return None  # the agent-configuration check reports the parse failure
+    if cfg is None:
+        return None
+    label = "UC trace table grants"
+    if not auth_ok or not online:
+        reason = "fix Databricks auth first" if not auth_ok else "run doctor --online to verify grants"
+        return Check(label, Status.SKIP, f"skipped — {reason}", None)
+    from ._defaults import _make_workspace_client  # noqa: PLC0415
+
+    try:
+        ws = _make_workspace_client()
+    except Exception as exc:
+        return Check(label, Status.SKIP, f"workspace client unavailable ({str(exc)[:120]})", None)
+    try:
+        return _trace_table_grant_check(cfg.name, experiment_id, ws)
+    except Exception as exc:
+        return Check(
+            label, Status.WARN,
+            f"could not verify trace table grants ({str(exc)[:120]})",
+            f"Confirm experiment {experiment_id} exists and this identity can read it.",
         )
 
 
