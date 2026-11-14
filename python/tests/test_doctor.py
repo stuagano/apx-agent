@@ -1612,3 +1612,120 @@ def test_declared_tools_agent_table_hint_is_migrate_config_not_tools(tmp_path):
     assert check.status is doctor.Status.FAIL
     assert "migrate-config" in check.detail
     assert check.fix is None  # the rejection message names its own next step
+
+
+# --- UC trace table grants (apx writes traces as the app SP) ---------------
+
+_TRACE_TABLES = ("otel_spans", "otel_logs", "otel_metrics", "otel_annotations")
+
+
+def _trace_ws(*, destination="main.obs.apx_demo", sp_id="sp-123", held=None, missing=()):
+    """Fake workspace. ``held`` maps (table, sp) to privilege names; ``missing`` lists absent tables."""
+    from types import SimpleNamespace
+
+    held = held or {}
+    tags = [] if destination is None else [
+        SimpleNamespace(key="mlflow.experiment.databricksTraceDestinationPath", value=destination),
+    ]
+    ws = MagicMock()
+    ws.experiments.get_experiment.return_value = SimpleNamespace(experiment=SimpleNamespace(tags=tags))
+    ws.apps.get.return_value = SimpleNamespace(service_principal_client_id=sp_id)
+    ws.tables.exists.side_effect = lambda full_name: SimpleNamespace(
+        table_exists=not any(full_name.endswith(m) for m in missing)
+    )
+
+    def get_effective(securable_type, full_name, *, principal):
+        privs = held.get((full_name, principal), set())
+        return SimpleNamespace(privilege_assignments=[SimpleNamespace(
+            principal=principal,
+            privileges=[SimpleNamespace(privilege=SimpleNamespace(value=p)) for p in privs],
+        )])
+
+    ws.grants.get_effective.side_effect = get_effective
+    return ws
+
+
+def _all_granted(sp="sp-123", prefix="main.obs.apx_demo"):
+    return {(f"{prefix}_{s}", sp): {"SELECT", "MODIFY"} for s in _TRACE_TABLES}
+
+
+def test_trace_grants_ok_when_every_table_has_select_and_modify():
+    ws = _trace_ws(held=_all_granted())
+    check = doctor._trace_table_grant_check("my-app", "exp-1", ws)
+    assert check.status is Status.OK
+    ws.grants.get_effective.assert_any_call("TABLE", "main.obs.apx_demo_otel_spans", principal="sp-123")
+
+
+def test_trace_grants_fail_when_modify_missing_and_name_the_fix():
+    held = _all_granted()
+    held[("main.obs.apx_demo_otel_spans", "sp-123")] = {"SELECT"}
+    check = doctor._trace_table_grant_check("my-app", "exp-1", _trace_ws(held=held))
+    assert check.status is Status.FAIL
+    assert "apx_demo_otel_spans" in check.detail
+    assert "MODIFY" in check.detail
+    assert "MLFLOW_TRACING_SQL_WAREHOUSE_ID" in check.fix
+    assert "GRANT SELECT, MODIFY ON TABLE `main`.`obs`.`apx_demo_otel_spans` TO `sp-123`" in check.fix
+
+
+def test_trace_grants_all_privileges_alone_is_insufficient():
+    held = {(f"main.obs.apx_demo_{s}", "sp-123"): {"ALL_PRIVILEGES"} for s in _TRACE_TABLES}
+    check = doctor._trace_table_grant_check("my-app", "exp-1", _trace_ws(held=held))
+    assert check.status is Status.FAIL
+    assert "SELECT" in check.detail and "MODIFY" in check.detail
+
+
+def test_trace_grants_warn_when_a_table_does_not_exist_yet():
+    check = doctor._trace_table_grant_check(
+        "my-app", "exp-1", _trace_ws(held=_all_granted(), missing=("otel_logs",)),
+    )
+    assert check.status is Status.WARN
+    assert "apx_demo_otel_logs" in check.detail
+    assert "first trace" in check.fix
+
+
+def test_trace_grants_skip_without_uc_destination():
+    check = doctor._trace_table_grant_check("my-app", "exp-1", _trace_ws(destination=None))
+    assert check.status is Status.SKIP
+    assert "not bound to a Unity Catalog trace location" in check.detail
+
+
+def test_trace_grants_schema_only_destination_uses_mlflow_default_prefix():
+    # A two-part destination is MLflow's schema-level location: tables use the
+    # default ``mlflow_experiment_trace`` prefix, and there's no annotations table.
+    fqn = "main.obs.mlflow_experiment_trace"
+    held = {(f"{fqn}_{s}", "sp-123"): {"SELECT", "MODIFY"} for s in ("otel_spans", "otel_logs", "otel_metrics")}
+    ws = _trace_ws(destination="main.obs", held=held)
+    check = doctor._trace_table_grant_check("my-app", "exp-1", ws)
+    assert check.status is Status.OK, check.detail
+    assert "all 3 trace tables" in check.detail
+
+
+def test_trace_grants_unreadable_app_is_not_reported_as_undeployed():
+    from databricks.sdk.errors import PermissionDenied
+
+    ws = _trace_ws()
+    ws.apps.get.side_effect = PermissionDenied("no CAN_VIEW")
+    with pytest.raises(PermissionDenied):
+        doctor._trace_table_grant_check("my-app", "exp-1", ws)
+
+
+def test_trace_grants_offline_doctor_never_calls_the_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("MLFLOW_EXPERIMENT_ID", "exp-1")
+    (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "b"\n')
+    ws_factory = MagicMock()
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", ws_factory)
+    check = doctor.check_trace_table_grants(tmp_path, auth_ok=True, online=False)
+    assert check.status is Status.SKIP
+    assert "--online" in check.detail
+    ws_factory.assert_not_called()
+
+
+def test_trace_grants_lookup_error_is_a_warning_not_a_crash(tmp_path, monkeypatch):
+    monkeypatch.setenv("MLFLOW_EXPERIMENT_ID", "exp-1")
+    (tmp_path / "pyproject.toml").write_text('[tool.apx.deploy]\nname = "b"\n')
+    ws = _trace_ws()
+    ws.experiments.get_experiment.side_effect = RuntimeError("experiment not found")
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda: ws)
+    check = doctor.check_trace_table_grants(tmp_path, auth_ok=True, online=True)
+    assert check.status is Status.WARN
+    assert "experiment not found" in check.detail
