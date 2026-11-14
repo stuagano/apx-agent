@@ -186,9 +186,9 @@ runtime change. Gallery declarations with an explicit target also retain it
 unless `--runtime` is supplied. Unsupported state/runtime combinations fail
 validation rather than silently switching runtimes.
 
-The legacy `--lakebase` quickstart and `--ci github|gitlab` Bundle templates
-require `--runtime responses_agent`. Native projects omit these defaults;
-declare managed stores as shown below when persistence is needed.
+The `--ci github|gitlab` Bundle templates require `--runtime responses_agent`.
+Native projects omit these defaults; declare managed stores as shown below
+when persistence is needed.
 
 The native durable integration supports request-user clients, declared APX
 memory and persisted message streaming. Service-identity LlmAgents can opt into
