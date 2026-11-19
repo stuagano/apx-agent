@@ -8,7 +8,7 @@ into an `apx-agent` end-to-end.
 | Mode | Entry point | Infra required | Use case |
 |---|---|---|---|
 | **Local-only** | `app.py` | none — pure Python | Confirm the memory wiring round-trips in a single process. No LLM endpoint, no workspace. |
-| **Databricks Apps** | `agent_server/` + `databricks.yml` | Databricks workspace + serving endpoint | Real deploy. Bundle pushes the agent to a Databricks App; `bundle run` restarts it. No container build queue. |
+| **Databricks Apps** | `agent_server/` + `databricks.yml` | Databricks workspace + serving endpoint | Real deploy. `agents deploy --target apps --profile <profile>` creates or updates the App through the Apps API and rolls it out. No container build queue. |
 
 Both modes share the same `Agent`, the same memory + example stores, the
 same `make_memory_tools` callables, and the same `assemble_context`
@@ -22,12 +22,12 @@ module locally or behind a FastAPI route inside an App.
   prints the round-trip to stdout. No LLM, no infra.
 - `agent.py` — the same `Agent` + memory/example-store wiring, shared with the
   local demo.
-- `agent_server/start_server.py` — FastAPI entry point, plus
-  `compile_to_responses_agent` and the `@invoke()`/`@stream()` registrations for
-  the Databricks Apps target. Databricks Apps runs this file via uvicorn.
+- `agent_server/start_server.py` — compiles `agent` with
+  `compile_agent(..., target="durable_agent_server")`, which serves it on
+  `DurableAgentServer`. Databricks Apps runs this file via uvicorn.
 - `databricks.yml` — Asset Bundle config. Declares the App + the
   serving-endpoint resource the App connects to.
-- `pyproject.toml` — apps-shape dependencies (apx-agent, mlflow, fastapi, uvicorn).
+- `pyproject.toml` — apps-shape dependencies (apx-agent with the `agentbricks` extra, mlflow, fastapi, uvicorn).
 - `scripts/quickstart.py` — one-shot setup. Creates an MLflow experiment and
   writes `.env`. Run via `uv run quickstart`.
 - `.env.example` — environment template.
@@ -64,24 +64,24 @@ final stored memory count for alice: 6
 
 ```bash
 cd python/examples/memory_demo
-apx-agent agents deploy --target apps
+apx-agent agents deploy --target apps --profile <profile>
 ```
 
-One command. `apx-agent agents deploy --target apps` does it all:
+The App runs as a `DurableAgentServer`. `[tool.apx.deploy]` in `pyproject.toml`
+selects the Apps API backend (`backend = "apps_api"`, `entrypoint = "agent_server"`),
+which keeps the `memory-demo` app name instead of requiring an `agent-bricks-`
+prefix. The Apps API deploy needs an explicit `--profile`, and `--no-run`,
+`--var` and `--secret-env` are not supported. `apx-agent agents deploy --target apps`:
 
-1. Builds the apx-agent wheel from the parent source tree
-2. Stages `.build/` (source + wheel), rewrites the staged `pyproject.toml`
-   to use the wheel path
-3. Regenerates `.build/uv.lock` against the rewritten pyproject
-4. Auto-resolves an MLflow experiment id (creates `/Users/<you>/memory-demo-dev`
+1. Stages `.build/` (source + wheel) and its `uv.lock`
+2. Auto-resolves an MLflow experiment id (creates `/Users/<you>/memory-demo-dev`
    if missing, reuses if present)
-5. `databricks bundle validate + deploy + run`
-6. Polls `databricks apps get memory-demo` until `app_status=RUNNING`
-   and `compute_status=ACTIVE`
+3. Creates or reuses the App, applies grants, generates `app.yaml`
+   (`python -m agent_server`), then uploads and rolls out
+4. Verifies the rollout (App state and the `/readyz` gate)
 
-The App reads `X-Forwarded-Access-Token` from each request and threads it
-into the compiled `ResponsesAgent` so tool calls run as the calling user,
-not the App's service principal.
+The App reads `X-Forwarded-Access-Token` from each request, so tool calls run
+as the calling user, not the App's service principal.
 
 ## What was added vs. a plain agent
 
@@ -104,9 +104,8 @@ not the App's service principal.
 4. A `_demo()` entry point in `app.py` prints (a) the assembled system prompt,
    (b) a mid-turn `recall` tool call, and (c) an after-response `remember`
    tool call that persists a new fact.
-5. The Apps target adds `compile_to_responses_agent(agent, model=...)` plus
-   `@invoke()` / `@stream()` functions registered with
-   `mlflow.genai.agent_server`.
+5. The Apps target compiles the same `agent` onto `DurableAgentServer` with
+   `compile_agent(agent, target="durable_agent_server", ...)`.
 
 ## Swapping in durable stores
 

@@ -5,7 +5,7 @@ that the Databricks Apps target deploys (from ``agent.py``) and runs a
 reproducible round-trip in stdout (no LLM endpoint required).
 
 The Apps deploy path uses the same ``agent`` symbol, wrapped by
-``agent_server/start_server.py`` for the MLflow GenAI runtime.
+``agent_server/start_server.py`` for the DurableAgentServer runtime.
 
 Run::
 

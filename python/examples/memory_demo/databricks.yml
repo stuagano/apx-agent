@@ -54,7 +54,7 @@ resources:
       name: memory-demo
       description: |
         apx-agent memory_demo — InMemoryMemoryStore + few-shot examples,
-        compiled to ResponsesAgent and served via Databricks Apps.
+        served on DurableAgentServer via Databricks Apps.
       source_code_path: ./.build
 
       # App-level resources: the App's service principal gets ambient
