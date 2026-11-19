@@ -49,7 +49,7 @@ lakebase = [
 ]
 all = ["apx-agent[eval,uc,lakebase,align]"]
 # Host integration is opt-in; ordinary imports and ResponsesAgent do not need it.
-agentbricks = ["databricks-agentbricks[langgraph]>=0.9.0,<0.10"]
+agentbricks = ["databricks-agentbricks[langgraph]>=0.9.0,<0.11"]
 
 [dependency-groups]
 dev = [
