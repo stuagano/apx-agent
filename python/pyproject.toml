@@ -28,6 +28,8 @@ dependencies = [
     # silently strips comments on every write (#527).
     "ruamel.yaml>=0.18.0",
     "sqlglot>=30.12.0",
+    # Optional usage tracking of deployed apps; DBDEMOS_TRACKER_DISABLED=1 turns it off.
+    "dbdemos-tracker==0.1.11",
 ]
 
 [project.optional-dependencies]
@@ -47,7 +49,7 @@ lakebase = [
 ]
 all = ["apx-agent[eval,uc,lakebase,align]"]
 # Host integration is opt-in; ordinary imports and ResponsesAgent do not need it.
-agentbricks = ["databricks-agentbricks[langgraph]>=0.9.0,<0.10"]
+agentbricks = ["databricks-agentbricks[langgraph]>=0.9.0,<0.11"]
 
 [dependency-groups]
 dev = [

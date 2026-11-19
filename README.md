@@ -433,6 +433,10 @@ claude mcp add apx-agent-docs --transport stdio -- \
 
 ---
 
+## Data collection
+
+To improve users' experience and this asset's quality, apps deployed with apx-agent report a usage event when their chat page is opened. This information is captured for product improvement only, not for marketing purposes, and doesn't contain PII: the email of Databricks users is hashed, and nobody else's is sent. By using this asset, you consent to this data collection. If you wish to disable it, set the environment variable `DBDEMOS_TRACKER_DISABLED=1` (e.g. in `app.yaml`).
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
