@@ -931,6 +931,22 @@ def _schedule_registration(
     app.add_middleware(_RegisterOnceMiddleware)
 
 
+def _add_usage_tracker(app: FastAPI) -> None:
+    """Count views of the deployed app's chat page with dbdemos-tracker.
+
+    Only inside Databricks Apps; skipped with ``DBDEMOS_TRACKER_DISABLED=1``.
+    The library hashes @databricks.com emails and sends no one else's.
+    """
+    if os.environ.get("DBDEMOS_TRACKER_DISABLED") == "1" or not os.environ.get("DATABRICKS_APP_NAME"):
+        return
+    try:
+        from dbdemos_tracker import Tracker
+
+        Tracker.add_tracker_fastapi(app, "apx-agent", patterns=[r"^/$"])
+    except Exception as exc:
+        logger.warning("dbdemos usage tracker not registered: %s", exc)
+
+
 def _mount_protocol_routes(app: FastAPI) -> None:
     """Mount discovery + health + MCP routes."""
     protocol_router = APIRouter()
@@ -1342,7 +1358,9 @@ def create_app(
                     except Exception:
                         pass
 
-    return FastAPI(lifespan=lifespan)
+    app = FastAPI(lifespan=lifespan)
+    _add_usage_tracker(app)
+    return app
 
 
 # ---------------------------------------------------------------------------
@@ -1417,6 +1435,7 @@ def mount_mcp_endpoints(
     # Mount the route shells immediately. They read from app.state — which
     # gets populated in the lifespan startup event below.
     _mount_protocol_routes(app)
+    _add_usage_tracker(app)
 
     # End-user chat at / — ships in every runtime, including Apps.
     from ._ui_root_chat import build_root_chat_router
@@ -1515,6 +1534,7 @@ def mount_durable_protocol(
     The native compiler owns chat selection; setup only supplies protocol context.
     """
     app.state._apx_protocol_only = True
+    _add_usage_tracker(app)
     _state_key = "_apx_durable_protocol_state"
 
     async def _startup() -> None:

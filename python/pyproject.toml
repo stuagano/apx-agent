@@ -28,6 +28,8 @@ dependencies = [
     # silently strips comments on every write (#527).
     "ruamel.yaml>=0.18.0",
     "sqlglot>=30.12.0",
+    # Optional usage tracking of deployed apps; DBDEMOS_TRACKER_DISABLED=1 turns it off.
+    "dbdemos-tracker==0.1.11",
 ]
 
 [project.optional-dependencies]
