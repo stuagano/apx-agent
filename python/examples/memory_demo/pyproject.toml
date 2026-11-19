@@ -1,10 +1,12 @@
 [project]
 name = "memory-demo"
 version = "0.1.0"
-description = "apx-agent memory_demo — InMemory stores + ResponsesAgent + Databricks Apps."
+description = "apx-agent memory_demo — InMemory stores + DurableAgentServer + Databricks Apps."
 requires-python = ">=3.11"
 dependencies = [
-    "apx-agent[eval]",
+    # [agentbricks] provides DurableAgentServer, the Apps host
+    # (agent_server/start_server.py); [eval] keeps the local app.py runtime.
+    "apx-agent[eval,agentbricks]",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
@@ -29,3 +31,5 @@ target = "apps"
 bundle_name = "memory-demo"
 app_name = "memory-demo"
 name = "memory_demo"
+backend = "apps_api"
+entrypoint = "agent_server"

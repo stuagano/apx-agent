@@ -98,6 +98,15 @@ strictly. Numeric strings do not become numbers, and Markdown fences or prose
 around JSON are rejected. The model's field constraints and extra-field policy
 apply. Validation proves the declared shape, not the factual accuracy of evidence.
 
+Typed step contracts (`output_schema` and `input_schema`, including their data
+parts and `--smoke-input`) stay strict by design: a contract must validate in
+Pydantic strict JSON mode. A `@model_validator(mode="wrap")`, even a pass-through
+one, moves its nested fields onto the strict Python path, where ISO date and UUID
+strings are rejected. A failure names each field location and Pydantic error
+type, for example `candidate.basis.0.as_of [datetime_type]`, without echoing the
+submitted values. For a contract that cannot validate strictly, hand off a
+strict-safe model and run the domain model's own validation in the producer.
+
 On success, `output_key` receives JSON-compatible data; it does not contain a
 Pydantic instance. `run()` still returns a string containing the validated JSON,
 and typed `stream()` output is buffered until validation. `output_key` is optional

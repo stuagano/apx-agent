@@ -186,9 +186,9 @@ runtime change. Gallery declarations with an explicit target also retain it
 unless `--runtime` is supplied. Unsupported state/runtime combinations fail
 validation rather than silently switching runtimes.
 
-The legacy `--lakebase` quickstart and `--ci github|gitlab` Bundle templates
-require `--runtime responses_agent`. Native projects omit these defaults;
-declare managed stores as shown below when persistence is needed.
+The `--ci github|gitlab` Bundle templates require `--runtime responses_agent`.
+Native projects omit these defaults; declare managed stores as shown below
+when persistence is needed.
 
 The native durable integration supports request-user clients, declared APX
 memory and persisted message streaming. Service-identity LlmAgents can opt into
@@ -776,11 +776,14 @@ memory:
 Install `apx-agent[agentbricks]`, then explicitly provision the store:
 
 ```bash
-apx-agent memory provision --store orders-memory --profile <profile>
+apx-agent memory provision --store orders-memory --profile <profile> \
+  --grant-service-principal <app-sp-application-id>
 ```
 
-Grant the app service principal access using AgentKit's
-`memory_store.grant_permission(principal_id)`. The compiler binds the existing
+`--grant-service-principal` grants WRITE through AgentKit; repeat it for each
+agent that shares the store. The command also prints the
+`agentbricks memory stores permissions grant` and `list` commands for later
+changes. The compiler binds the existing
 store with its explicit workspace client; it never creates one during a request.
 Local execution uses the same remote store when given that workspace client.
 

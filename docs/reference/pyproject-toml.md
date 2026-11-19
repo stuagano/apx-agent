@@ -192,7 +192,8 @@ the same `store_name` so a fleet accumulates and recalls common institutional
 memory. That is why memory has its own standalone provisioning path —
 `apx-agent memory provision --store <name>` (and `provision_managed_memory`,
 create-only-on-404) — separate from any agent's deploy. Create the store first,
-grant the agents' service principals access, then declare `store_name` in each.
+grant the agents' service principals access (`--grant-service-principal <id>`,
+repeatable), then declare `store_name` in each.
 This asymmetry with sessions is intentional, not an inconsistency: shared
 lifetime (memory, provisioned independently) vs. per-agent lifetime (session,
 provisioned at deploy).

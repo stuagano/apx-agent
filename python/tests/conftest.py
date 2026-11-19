@@ -24,6 +24,8 @@ os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 os.environ.setdefault("MLFLOW_TRACKING_URI", Path(tempfile.mkdtemp(prefix="apx-mlflow-")).as_uri())
 # create_app autolog leaves leftover threads that kill 3.11 xdist workers.
 os.environ.setdefault("APX_AGENT_MLFLOW_AUTOLOG", "0")
+# Many tests set DATABRICKS_APP_NAME; never send dbdemos usage events from tests.
+os.environ["DBDEMOS_TRACKER_DISABLED"] = "1"
 
 
 # ---------------------------------------------------------------------------
@@ -198,3 +200,13 @@ def _no_live_agent_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "_resolve_deploy_registry",
                         lambda profile, cfg: RegistryTables("c.apx.agent_registry", "c.apx.agent_tools"))
     monkeypatch.setattr(cli, "_deploy_registry_step", lambda **k: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_mlflow_experiment_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1190: ``mlflow.set_experiment`` (and apx's dev tracing handler) write
+    ``MLFLOW_EXPERIMENT_ID`` into ``os.environ``. Every test starts without it, and
+    monkeypatch puts back the pre-test value afterwards, so a leaked id never changes
+    a later test on the same xdist worker, even one leaked at import or by a
+    module-scoped fixture."""
+    monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
