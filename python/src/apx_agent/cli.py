@@ -8460,7 +8460,9 @@ def _prepare_native_smoke_input(agent: Any, path: Path | None, *, readyz_gate: b
         if len(raw) > 65536:
             raise ValueError("input exceeds 64 KiB")
         part = native_data_part(schema, json.loads(raw))
-    except (OSError, ValueError, RecursionError):
+    except ValueError as exc:
+        raise click.ClickException(f"Invalid --smoke-input: {exc}") from None
+    except (OSError, RecursionError):
         raise click.ClickException("Invalid --smoke-input: expected a JSON domain object matching input_schema within the native 64 KiB limit.") from None
     return {"messages": [], "apx_data_parts": [part]}
 

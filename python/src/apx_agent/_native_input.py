@@ -8,7 +8,7 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ._a2a_models import data_parts
 
@@ -49,6 +49,11 @@ def native_data_part(schema: type[BaseModel], payload: Any, part: dict[str, Any]
     encoded = _bounded_json(payload)
     try:
         schema.model_validate_json(encoded, strict=True)
+    except ValidationError as exc:
+        # Field locations and error types only: messages and inputs can echo submitted values.
+        fields = "; ".join(f"{'.'.join(map(str, e['loc'])) or '<root>'} [{e['type']}]"
+                           for e in exc.errors(include_url=False)[:16])
+        raise ValueError(f"Native domain input violates its declared schema: {fields}") from None
     except Exception:
         raise ValueError("Native domain input violates its declared schema") from None
     digest = hashlib.sha256(encoded.encode()).hexdigest()
