@@ -38,8 +38,6 @@
 # Typical tables: billing_invoices, gl_journal_entries, gl_accounts
 
 name: financial-reporting-coworker
-# Lakebase session = compatibility contract; omitted target is durable.
-target: responses_agent
 description: >
   Reconciles billed amounts (billing system) against posted revenue (general
   ledger). Answers finance's reporting questions by running SQL against governed
@@ -68,27 +66,15 @@ template:
     Surface unposted invoices, billing-vs-ledger variances, and timing
     differences, and return the periodic report figures finance consumes today
     as spreadsheets — computed live from the governed source of truth.
-  memory: persistent
+  memory: managed
   warehouse_id: $WAREHOUSE_ID
   include_functions: true
 
 memory:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: finrep_coworker
-  table_name: $CATALOG.$SCHEMA.apx_finrep_coworker_memory
-  embedding_model: databricks-bge-large-en
-  embedding_dim: 1024
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 session:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: finrep_coworker
-  table_name: $CATALOG.$SCHEMA.apx_finrep_coworker_sessions
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 guardrails:
   injection_detection: true

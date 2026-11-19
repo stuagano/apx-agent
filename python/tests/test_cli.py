@@ -4141,7 +4141,7 @@ def test_coworker_gallery_pick_materializes_full_project(tmp_path: Path) -> None
         result = runner.invoke(
             main,
             [
-                "agents", "scaffold", "my-payroll", "--runtime", "responses_agent",
+                "agents", "scaffold", "my-payroll",
                 "--coworker", "payroll",
                 "--catalog", "main", "--schema", "payroll_demo",
                 "--dir", str(tmp_path),
@@ -8067,7 +8067,7 @@ def test_scaffold_deploy_receipt_gated(tmp_path: Path) -> None:
         result = CliRunner().invoke(
             main,
             [
-                "agents", "scaffold", "my-payroll", "--runtime", "responses_agent",
+                "agents", "scaffold", "my-payroll",
                 "--coworker", "payroll",
                 "--catalog", "main", "--schema", "payroll_demo",
                 "--dir", str(tmp_path),

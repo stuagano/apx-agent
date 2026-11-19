@@ -7,8 +7,6 @@
 # Typical tables: kronos_timesheets, workday_payroll_runs, workday_employees
 
 name: payroll-coworker
-# Lakebase session = compatibility contract; omitted target is durable.
-target: responses_agent
 description: >
   Reconciles hours worked (Kronos) against paychecks issued (Workday).
   Flags discrepancies, overtime anomalies, and pay rule violations.
@@ -32,27 +30,15 @@ template:
   objective: >
     Surface mismatches between hours worked and paychecks issued.
     Identify pay rule violations, missing punches, and overtime discrepancies.
-  memory: persistent
+  memory: managed
   warehouse_id: $WAREHOUSE_ID
   include_functions: true
 
 memory:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: payroll_coworker
-  table_name: $CATALOG.$SCHEMA.apx_payroll_coworker_memory
-  embedding_model: databricks-bge-large-en
-  embedding_dim: 1024
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 session:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: payroll_coworker
-  table_name: $CATALOG.$SCHEMA.apx_payroll_coworker_sessions
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 guardrails:
   injection_detection: true

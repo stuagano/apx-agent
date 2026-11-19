@@ -8,8 +8,6 @@
 # Typical tables: erp_purchase_orders, erp_invoices, tms_shipments, tms_carrier_invoices
 
 name: order-status-coworker
-# Lakebase session = compatibility contract; omitted target is durable.
-target: responses_agent
 description: >
   Joins order and billing records (Oracle ERP) against live shipment tracking (TMS).
   Surfaces dock-date risk, carrier invoice mismatches, and three-way match exceptions.
@@ -34,27 +32,15 @@ template:
     Surface dock-date risk, carrier invoice discrepancies, and three-way match
     exceptions by joining order records against live freight tracking.
     Replace the two-screen lookup between ERP and TMS that operations teams do today.
-  memory: persistent
+  memory: managed
   warehouse_id: $WAREHOUSE_ID
   include_functions: true
 
 memory:
-  type: lakebase
-  host: ${LAKEBASE_HOST}
-  database: apx_order_status_coworker
-  table_name: $CATALOG.$SCHEMA.apx_order_status_coworker_memory
-  embedding_model: databricks-bge-large-en
-  embedding_dim: 1024
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 session:
-  type: lakebase
-  host: ${LAKEBASE_HOST}
-  database: apx_order_status_coworker
-  table_name: $CATALOG.$SCHEMA.apx_order_status_coworker_sessions
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 guardrails:
   injection_detection: true

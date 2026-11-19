@@ -24,8 +24,8 @@ the compatibility checks below define their limits.
 > `responses_agent` still works unchanged, but compiling or deploying it emits a
 > `FutureWarning`, and it will be removed after one release. Move to
 > `target = "durable_agent_server"` with a `managed` session.
-> The bundled coworker gallery templates still declare `responses_agent` with
-> deprecated Lakebase sessions (#1135); they move to managed stores in a later change.
+> The bundled coworker gallery templates use `durable_agent_server` with managed
+> memory and session stores (#1141).
 
 ## Deploy custom agents through Agent Bricks
 
