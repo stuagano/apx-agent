@@ -24,6 +24,8 @@ os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 os.environ.setdefault("MLFLOW_TRACKING_URI", Path(tempfile.mkdtemp(prefix="apx-mlflow-")).as_uri())
 # create_app autolog leaves leftover threads that kill 3.11 xdist workers.
 os.environ.setdefault("APX_AGENT_MLFLOW_AUTOLOG", "0")
+# Many tests set DATABRICKS_APP_NAME; never send dbdemos usage events from tests.
+os.environ["DBDEMOS_TRACKER_DISABLED"] = "1"
 
 
 # ---------------------------------------------------------------------------
