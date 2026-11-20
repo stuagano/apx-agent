@@ -63,6 +63,14 @@ pre-commit run --all-files          # lint suite (.pre-commit-config.yaml)
 
 `make check` is the read-after-write gate; run it before claiming a change works.
 
+For managed-memory permission/unsupported-service evidence, use the read-only
+`scripts/managed_memory_failure_probe.py` with explicit `--profile`, `--store`,
+and `--scenario denied|unsupported` (under `uv run --project python --frozen python`).
+Only JSON `verified=true` plus exit 0 counts for that scenario. NOT_FOUND,
+healthy stores, unauthenticated requests, and mocked SDK transports do not prove
+live permission denial or unsupported service. Do not change workspace settings
+or grants just to force a failure; record unavailable targets as blocked.
+
 ## Platform alignment (local only)
 
 Before building auth / identity / deploy surfaces, check
