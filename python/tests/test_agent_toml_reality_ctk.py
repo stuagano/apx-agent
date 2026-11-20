@@ -40,6 +40,52 @@ def test_second_run_refuses_and_leaves_file_untouched(tmp_path: Path) -> None:
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("deploy", [None, {"backend": "apps_api", "entrypoint": "app"}, {"space": "shared-space"}],
+                         ids=["agentbricks", "apps-api", "app-space"])
+def test_upstream_prompt_bindings_survive_regeneration_and_staging(tmp_path: Path, deploy: dict | None) -> None:
+    import subprocess
+    import sys
+
+    from apx_agent._agent_toml import stage_agent_toml
+    from apx_agent._project_gen import generate_project
+
+    config = AgentConfig(name="prompt-proof", model="test-model", target="durable_agent_server", deploy=deploy)
+    generate_project(config, tmp_path)
+    # Exercise the real upstream editor, not a hand-invented prompt table.
+    # A subprocess contains the CLI's global Click customizations. Bind is local-only.
+    for prompt, options in [("main.prompts.writer", []), ("main.prompts.reviewer", ["--key", "judge"])]:
+        result = subprocess.run(
+            [sys.executable, "-m", "databricks_agentbricks.cli.app", "experimental", "prompts", "bind",
+             prompt, "--source", str(tmp_path), *options],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    manifest = tmp_path / "agent.toml"
+    manifest.write_text(manifest.read_text() + "\n# Keep this authored binding configuration.\n")
+    bound = manifest.read_bytes()
+    expected = {"writer": "main.prompts.writer", "judge": "main.prompts.reviewer"}
+    project = load_agent_toml(tmp_path)
+    assert project is not None
+    assert project.prompts == expected
+    with pytest.raises(FileExistsError):
+        write_agent_toml(tmp_path, config, _plan(()), LlmAgent())
+    assert manifest.read_bytes() == bound
+
+    # Re-materializing a project must not replace its authored agent.toml with
+    # build_native_manifest's fresh (unbound) output, even on repeated runs.
+    for _ in range(2):
+        generate_project(config, tmp_path)
+        assert manifest.read_bytes() == bound
+        staged_source = tmp_path / ".build"
+        staged_source.mkdir(exist_ok=True)
+        staged = stage_agent_toml(tmp_path, staged_source, print)
+        verify(Artifact(str(staged), min_bytes=100, must_contain="[experimental.prompts]"))
+        assert staged.read_bytes() == bound
+        staged_project = load_agent_toml(staged_source)
+        assert staged_project is not None
+        assert staged_project.prompts == expected
+
+
 def _tables(text: str) -> dict:
     doc = tomllib.loads(text)
     return {k: doc.get(k) for k in ("auth", "memory_store", "session_store")}
