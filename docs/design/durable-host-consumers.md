@@ -1,6 +1,6 @@
 # Durable host consumers (#864)
 
-**Status:** inventory frozen; live HTTP continuity blocked on Apps OAuth · **Date:** 2026-10-21 ·
+**Status:** inventory frozen; live acceptance split into six blocked follow-ups · **Date:** 2026-11-20 ·
 **Issue:** [#864](https://github.com/stuagano/apx-agent/issues/864) ·
 **Parent:** [#862](https://github.com/stuagano/apx-agent/issues/862)
 
@@ -28,7 +28,9 @@ event replay. There is no cancel / disconnect / reconnect route
 ([runtime-targets](../running/runtime-targets.md)).
 
 Request-user recovery stays rejected. Service-identity recovery is opt-in
-(`recovery = true`) and has **local** tests only.
+(`recovery = true`). Local APX recovery tests and later deployed lifecycle
+observations are distinct evidence; neither closes all six acceptance items
+below.
 
 ## ChatAgent / Model Serving (keep until those products move)
 
@@ -54,18 +56,62 @@ and `/readyz` on the compatibility host. Explicit `target = "responses_agent"`
 scaffolds still generate `agent_server/start_server.py` → `create_app` in
 `_wiring.py`.
 
-## Live #864 gaps (not closed by this inventory)
+## Live #864 acceptance ledger (apx-fgj)
 
-- Worker-loss / process replacement on a real App Space app **with a
-  session/invocation round-trip**
-- Streaming disconnect / reconnect / cancellation as a user-visible contract
-- Downstream OBO after worker replacement
-- Approval resume after replacement with only the authorized principal
-- Removing ChatAgent routes from `_wiring.create_app` once every remaining
-  caller uses `/api/invocations`
+On **2026-11-20**, apx-fgj used its acceptance option to split each unproven
+live item into its own bead with a named blocker. **No new deployed run was
+performed**: this assignment forbids deploys and operations on running workers.
+These are open follow-ups in Beadhive hive `apx`, each linked to apx-fgj by
+`discovered-from`; splitting the work does not establish live equivalence or
+close the platform's remaining acceptance. The old probe's Apps OAuth failure
+below is historical, not a claim that OAuth is unavailable today.
 
-Do not treat `test_durable_recovery.py` or a `/readyz` `durable: true` deploy
-as those proofs. Do not retry parked app `agent-bricks-stu-dur-1002` (#863).
+| Live item | Follow-up bead | Blocker / boundary | Required deployed proof |
+|---|---|---|---|
+| Session/invocation round-trip after worker loss | `apx-h0f` | No operator-authorized disposable App, fault-injection run, or Apps OAuth context supplied for this assignment | Same invocation and session read back over HTTP and managed storage across real worker loss; original/recovery attempts and replacement mechanism recorded |
+| Replay-safe external effects | `apx-aub` | No authorized disposable effect sink or crash-window probe; uncommitted work is at-least-once | Kill after an external write but before its tool-result checkpoint; independent sink and checkpoint readback prove stable-key deduplication or reconciliation, with retry counts and residual limits |
+| Authorized approval continuation after replacement | `apx-ab7` | No authorized App and distinct OAuth principals; request-user automatic recovery remains unsupported | Pending approval survives without effects; wrong principal is denied, authorized fresh continuation succeeds once, duplicate resume cannot repeat the effect; retain original and new resume invocation IDs in the same session |
+| Trace correlation after real replacement | `apx-pzd` | No authorized fault-injection App with readable MLflow traces; the invocation-tag join has local tests only | Read back initial/recovered trace IDs and actual invocation record; separate roots join on `apx.invocation.id`, recovered trace has `apx.recovery=true` |
+| Disconnect/reconnect/cancellation contract | `apx-4ag` | No authorized OAuth SSE/replacement probe; native cancellation API is absent | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries; explicitly document that disconnect is not cancellation or rollback and cancellation remains unsupported unless independently proven |
+| Native downstream delegation with caller identity | `apx-gar` | Request-user recovery cannot reconstruct transient credentials; no authorized two-App/OAuth/UC audit probe supplied | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
+
+### Existing evidence and its limits
+
+The [observed deployed lifecycle](../running/runtime-targets.md#observed-deployed-lifecycle)
+records later live hard-worker-death observations: a single worker needed a
+redeploy before a replacement scan loop replayed the original input; a separate
+two-replica hand-written LangGraph deployment resumed an unfinished node via the
+surviving replica. Neither observation establishes automatic restoration of dead
+replica capacity. These observations supersede a blanket "local tests only"
+claim about durable execution, but do not supply the full per-item acceptance
+record above (notably APX HTTP/session round-trip, external crash-window effects,
+principal-scoped approvals, trace joins, stream lifecycle, and downstream OBO).
+Do not infer those proofs or invent missing run dates, invocation IDs or traces.
+
+`test_durable_recovery.py` reconstructs handlers/savers against a local REST fake.
+It covers committed-tool recovery, approval pause/resume, budgets and invocation
+trace tags, not a deployed worker replacement or authorization across principals.
+A `/readyz` `durable: true` result or replay of persisted events is not crash
+recovery proof. Request-user crash recovery remains rejected; do not silently
+switch to app/service credentials to make a probe succeed.
+
+### Evidence and retirement gate
+
+Each follow-up must link a dated, committed, sanitized run record here: App and
+workspace, code/SDK versions, identity mode, store bindings, fault boundary and
+replacement trigger, session/invocation/attempt IDs, and independent HTTP plus
+store/effect/audit readback appropriate to the item. Record observed failures and
+unsupported capabilities as well as successes. Never commit tokens or secrets.
+Obtain operator authorization before provisioning, fault injection or teardown;
+these beads are not permission to operate on production.
+
+**No custom runtime machinery is removed by apx-fgj.** ChatAgent consumers and
+compatibility routes above, policy/approval/audit wiring and the legacy
+cancellation wrapper stay in place. Retirement requires a recorded equivalence
+proof for each migrated consumer, including identity and governance behavior;
+these open beads and historical lifecycle observations are not that proof.
+Do not retry parked app `agent-bricks-stu-dur-1002` (#863), or reuse the torn-down
+`agent-bricks-864probe` as though it still exists.
 
 ## Disposable Apps probe (`agent-bricks-864probe`, 2026-10-21)
 
@@ -110,7 +156,7 @@ bodies still stop at `6cdcff86` (2026-10-06).
 | #855 / #856 | Live disposable store probe on DEFAULT; opt-in `APX_MANAGED_STATE_LIVE=1` | Retention, grants, App-process startup; GitHub checklists |
 | #857 | Lakebase conversation history on in-repo examples | `platform-health` / `product-finder` are not in this repo |
 | #858 | `apx-agent memory extract` / `_memory_extract.py` | GitHub text still says extraction is unshipped |
-| #864 | Consumer freeze + stop/start SNAPSHOT rollover | Session/invocation HTTP after worker loss (needs Apps OAuth, not PAT) |
+| #864 | Consumer freeze, historical OAuth probe, and later [deployed lifecycle observations](../running/runtime-targets.md#observed-deployed-lifecycle) | Six open live acceptance beads in the [apx-fgj ledger](#live-864-acceptance-ledger-apx-fgj); no consumer equivalence proof |
 | #575 | Wait | UC Agent Services GA |
 | #909 | Agent Bricks forces `agent-bricks-*` | MCP `mcp-` discovery; workaround is App Space `apps_api` |
 | #911 | Doctor names services that need a UI guardrail check | Attachment is UI-only |
