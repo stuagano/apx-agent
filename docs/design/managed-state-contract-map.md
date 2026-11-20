@@ -479,6 +479,62 @@ python/tests/test_managed_state_live_reality_ctk.py`.
 `grant_permission`, retention, and measured DBU were not part of this probe.
 No App deploy and no idle/wake run.
 
+### Failure-path probe: 2026-11-20
+
+Residual #856 / bead `apx-nxc`. Packages: `databricks-agentbricks` **0.10.0**,
+`databricks-sdk` **0.146.0**. This entry supplements, rather than rewrites, the
+historical 0.4.0 contract above. All calls were read-only. No deployment,
+provisioning, entry mutation, grant change, or store deletion was performed.
+
+**Live denial and unsupported-service behavior remain UNVERIFIED.** Both
+configured workspaces expose memory-store listing. Direct AgentKit metadata
+GETs of sentinel `apx-nxc-missing-store` returned `AgentCliError(NOT_FOUND)`.
+That is not permission-denied or unsupported-service evidence. The existing
+restricted `isaac-mcp-…people-mcp` profile also returned an absent entry through
+APX, not `PERMISSION_DENIED`. Store metadata listing is not proof of entry
+read/write access.
+
+Read back the strict probe's JSON results (sentinel store above, sentinel entry
+`apx-nxc-missing-entry`, `ManagedMemoryStore.get`):
+
+| UTC timestamp | Profile / workspace | Requested scenario | Adapter observation | `verified` / exit |
+|---|---|---|---|---|
+| 2026-11-20T19:34:42.448363+00:00 | `fevm-stable` / `fevm-serverless-stable-7def3z` | denied | `None`; no exception escapes the NOT_FOUND mapping | `false` / 1 |
+| 2026-11-20T19:34:44.310687+00:00 | `ug-oauth-dbc-a5d4177a-49dc.cloud.databricks.com-4f7af981-8977-4042-b90e-a5dea5b62e19` / `dbc-a5d4177a-49dc` | unsupported | `None`; no exception escapes the NOT_FOUND mapping | `false` / 1 |
+
+Reproduce using the read-only
+[`managed_memory_failure_probe.py`](../../scripts/managed_memory_failure_probe.py)
+[commands](../running/sessions-and-memory.md#managed-memory-failures). To close
+live acceptance, provide (1) an authenticated restricted profile plus an existing
+store that returns `PERMISSION_DENIED`, and (2) a workspace returning
+`FEATURE_DISABLED`, `NOT_IMPLEMENTED`, or `UNIMPLEMENTED`. Save the JSON output
+with `verified=true` for each. Do not manufacture a disabled feature by changing
+production settings or count a mocked transport as live evidence.
+
+Local tests exercise the **real AgentKit SDK** against a controlled transport:
+all seven adapter operations preserve permission/unsupported/transient codes
+and their chained causes, including errors during PATCH/DELETE and lazy list
+iteration rather than only the initial store GET. Explicit provisioning never
+POSTs after these errors. The boot readiness probe is deliberately boolean,
+logs the code, and triggers degraded wiring; it is not a runtime success path.
+Doctor's existing classification maps denied/unsupported codes to distinct
+FAIL diagnostics. These tests prove APX mapping, not backend availability.
+
+#### #856 checklist disposition
+
+- Supported SDK replacement, public remember/recall/forget interface, ID / actor /
+  namespace mapping, ownership checks, metadata limits, explicit provisioning,
+  SDK list pagination and bounded non-paginated search: implemented and locally
+  covered in `test_memory_managed.py` (including a two-page list response).
+- Live CRUD and actor isolation: the 2026-10-13 and 2026-10-21 records above.
+- Live permission-denied and unsupported service: **blocked**, not completed or
+  silently transferred. #856 must remain open for these two observations.
+- Data migration / retrieval-filter equivalence: explicitly owned by
+  [#859](https://github.com/stuagano/apx-agent/issues/859), not this bead.
+  #859 is now closed by #927 for the bounded long-term-memory import slice;
+  its closing comment explicitly excludes transcript/checkpoint migration.
+  This probe does not reopen #859 or claim those excluded migrations shipped.
+
 ## Sources
 
 - This checkout: `_memory.py`, `_memory_managed.py`, `_memory_wiring.py`,
