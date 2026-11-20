@@ -744,8 +744,13 @@ invocation IDs. Session IDs inside `input` are rejected: the SDK must see the
 session before scheduling execution, so it can serialize turns in that session. The
 keys are namespaced by agent name, and by authenticated principal for
 request-user execution. App-auth-only sessions remain shared app state. Resume an interrupted approval with the same
-top-level session and `{"resume": "approve"}` as input. The underlying SDK
-records invocation completion separately from the handler's `interrupted` result.
+top-level session and `{"resume": "approve"}` as input, using a **new invocation
+ID** and fresh authentication as the same principal. The underlying SDK records
+invocation completion separately from the handler's `interrupted` result.
+This fresh continuation is not automatic request-user crash recovery, which
+remains unsupported. Local principal-isolation and duplicate-resume coverage is
+not deployed replacement proof; see the [blocked apx-ab7 verification record and
+operator runbook](../design/durable-approval-continuation.md).
 
 `session_store` creates the SDK's `DatabricksSessionStoreSaver` with the explicit
 `service_ws` client. It binds an existing store; it does not provision one or

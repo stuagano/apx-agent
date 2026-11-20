@@ -75,6 +75,12 @@ below is historical, not a claim that OAuth is unavailable today.
 | Disconnect/reconnect/cancellation contract | `apx-4ag` | No authorized OAuth SSE/replacement probe; native cancellation API is absent | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries; explicitly document that disconnect is not cancellation or rollback and cancellation remains unsupported unless independently proven |
 | Native downstream delegation with caller identity | `apx-gar` | Request-user recovery cannot reconstruct transient credentials; no authorized two-App/OAuth/UC audit probe supplied | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
 
+The [apx-ab7 approval-continuation handoff](durable-approval-continuation.md)
+records the 2026-11-20 local principal/duplicate-resume regression, the exact
+installed SDK request-user recovery error, and the operator-authorized live
+procedure. **Deployed approval acceptance remains BLOCKED / NOT RUN**; that
+handoff is not a live evidence record or consumer equivalence proof.
+
 ### Existing evidence and its limits
 
 The [observed deployed lifecycle](../running/runtime-targets.md#observed-deployed-lifecycle)
