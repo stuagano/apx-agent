@@ -479,41 +479,59 @@ python/tests/test_managed_state_live_reality_ctk.py`.
 `grant_permission`, retention, and measured DBU were not part of this probe.
 No App deploy and no idle/wake run.
 
-### #855 residual probe preparation: `apx-l79`, 2026-11-20
+### #855 residual probe: `apx-l79`, 2026-11-20
 
-**No new live run.** This assignment forbids deployment and provides no
-operator-authorized disposable App, grant recipient, denied-store identity,
-or unsupported-service workspace. The three live acceptance items remain
-**UNVERIFIED**. Local SDK-transport tests are not a substitute. Retention,
-measured DBU, idle/wake and existing-state migration (#859) remain outside
-this probe. No existing App or store was modified for this change.
+User OAuth only (`databricks-cli`). Packages: `databricks-agentbricks` **0.10.0**,
+`databricks-sdk` **0.146.0**. No service principal was created.
+`APX_MANAGED_STATE_GRANT_SP` was not set. The App process was not stopped,
+started, deployed, or killed. Retention, measured DBU, idle/wake, and
+existing-state migration (#859) stay outside this probe. A skipped case is
+**UNVERIFIED**, not a pass.
 
-`python/tests/test_managed_state_live_reality_ctk.py` now offers independent,
-opt-in residual cases. Run only the selected case; do not enable the historical
-CRUD probe casually (it empties its two fixed-name disposable stores).
+| Case | Profile / workspace | Observed result |
+|---|---|---|
+| Disposable CRUD | `fevm-stable` / `fevm-serverless-stable-7def3z` | Passed. `apx-862-855-probe` and `apx-862-855-sessions` were created, exercised, and deleted. Follow-up GET of both names: `AgentCliError` / `NOT_FOUND`. |
+| Grant on the authorized store | same workspace; App `agent-bricks-apx-dur-gen` | Passed. `provision_managed_memory` granted WRITE on `apx-862-855-probe` to that App's existing service principal. `list_permissions()` read back `SERVICE_PRINCIPAL` / `WRITE`. Revoke left that principal absent. Teardown GET: `NOT_FOUND`. The application id is not recorded. This does not prove access while authenticated as the recipient. The separate fresh-store `APX_MANAGED_STATE_GRANT_SP` case was not run. |
+| Permission denied | OAuth profile for `dbc-a5d4177a-49dc` | Passed, read-only. Store `a-team-dev-memory` is visible to metadata GET and is not owned by the caller. `list_permissions()` raised `AgentCliError` / `PERMISSION_DENIED`. No permission was changed. |
+| Unsupported service | both OAuth workspaces above | **UNVERIFIED.** Both workspaces list memory stores. A missing name returns `NOT_FOUND`, not `FEATURE_DISABLED`, `NOT_IMPLEMENTED`, or `UNIMPLEMENTED`. Account workspace listing returned Not Found. No GCP or Gov profile is configured. |
+| App observation, no process change | `fevm-stable`; App `agent-bricks-apx-dur-gen` at `https://agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com` | Apps API: `RUNNING`, compute `UPDATING` (fault injection by another agent was already in progress), active deployment `SUCCEEDED` `01f1beecf82619c685185503691c3654`, resource `postgres-runtime-store`. Deployed `agent.toml` declares no `memory_store` or `session_store`. `managed_binding=UNVERIFIED`. Process was not entered. |
+| In-process startup | — | **UNVERIFIED.** `DATABRICKS_APP_NAME` was unset, so the lifespan probe skipped. It must not be used to deploy or restart the App. Workspace-token `GET /readyz` returned HTTP 404 JSON; an unauthenticated GET returned the sign-in HTML. Neither is application `/readyz`. |
+
+`python/tests/test_managed_state_live_reality_ctk.py` keeps the cases opt-in.
+`APX_MANAGED_STATE_LIVE=1` authorizes only `apx-862-855-probe` and
+`apx-862-855-sessions`, including teardown. With `APX_MANAGED_STATE_APP_NAME`
+the grant case uses that App's existing service principal on the memory store
+above. Do not enable the historical CRUD probe casually.
 
 | Case | Operator inputs and authorization | Required evidence |
 |---|---|---|
-| Grant to another principal | `APX_MANAGED_STATE_LIVE=1`, selected Databricks profile, `APX_MANAGED_STATE_GRANT_SP=<application UUID>` of another existing sandbox SP; caller must be able to resolve that SP | APX provision grants WRITE on a fresh UUID-named store; AgentKit `list_permissions()` independently returns the target SP/WRITE; teardown GET returns typed `NOT_FOUND`. Does not prove access while authenticated as the recipient. |
-| Permission denied | `APX_MANAGED_STATE_DENIED_PROFILE`, `APX_MANAGED_STATE_DENIED_STORE`: known existing store inaccessible to that profile | Read-only GET raises `AgentCliError(error_code="PERMISSION_DENIED")`; a missing store or authentication failure is not accepted as evidence. |
-| Unsupported service | `APX_MANAGED_STATE_UNSUPPORTED_PROFILE`, `APX_MANAGED_STATE_UNSUPPORTED_STORE`: operator-selected workspace without the feature | Read-only GET raises `AgentCliError` with `FEATURE_DISABLED`, `NOT_IMPLEMENTED` or `UNIMPLEMENTED`; generic 404, network and authentication failures are not accepted. |
-| App-process startup | Execute from the project directory **inside an already deployed, authorized disposable App**, with `APX_MANAGED_STATE_APP_NAME` equal to `DATABRICKS_APP_NAME`; declared memory/session stores in `agent.toml`, matching `AGENT_SESSION_STORE`, `recovery=false`, no memory retention | Enter the real packaged ASGI lifespan; actual managed saver (not a cached local or differently bound saver), readable declared memory and session stores, no memory degradation, `/readyz` 200. No invocation or model call. Not proof of the external App listener, recipient access, crash recovery or idle/wake. |
+| Grant to the authorized App principal | `APX_MANAGED_STATE_LIVE=1`, `DATABRICKS_CONFIG_PROFILE` for the App's workspace, `APX_MANAGED_STATE_APP_NAME` of an already deployed App | APX provision grants WRITE on `apx-862-855-probe`; `list_permissions()` returns that service principal with WRITE; revoke removes it; teardown GET returns `NOT_FOUND`. Does not prove recipient access. |
+| Grant via `APX_MANAGED_STATE_GRANT_SP` | Set only when that variable is already present. Do not create a service principal. | Fresh UUID-named store, independent WRITE readback, teardown `NOT_FOUND`. Not run on 2026-11-20. |
+| Permission denied | `APX_MANAGED_STATE_DENIED_PROFILE`, `APX_MANAGED_STATE_DENIED_STORE`: existing store the caller must not administer | Read-only. Metadata GET may succeed. `list_permissions()` or the GET itself raises `AgentCliError(error_code="PERMISSION_DENIED")`. `NOT_FOUND` and a successful permission list are not denial. |
+| Unsupported service | `APX_MANAGED_STATE_UNSUPPORTED_PROFILE`, `APX_MANAGED_STATE_UNSUPPORTED_STORE`: workspace without the feature | Read-only metadata GET raises `AgentCliError` with `FEATURE_DISABLED`, `NOT_IMPLEMENTED`, or `UNIMPLEMENTED`. A generic 404, `NOT_FOUND`, network, or authentication failure is not accepted. |
+| App-process startup | Inside an already deployed App, `APX_MANAGED_STATE_APP_NAME` equal to `DATABRICKS_APP_NAME`; declared memory and session stores, `recovery=false`, no memory retention | Enter the packaged ASGI lifespan; managed saver and memory store bound; `/readyz` 200. External Apps API status is not this proof. |
 
-Example grant-only invocation, **after** operator authorization (from `python/`):
+Example, **after** operator authorization, from `python/`. Do not set
+`APX_MANAGED_STATE_GRANT_SP` unless it is already present. Do not create a
+service principal. The 2026-11-20 run used `fevm-stable`, App
+`agent-bricks-apx-dur-gen`, and the read-only denial pair above. It did not
+set `APX_MANAGED_STATE_UNSUPPORTED_PROFILE`.
 
 ```bash
-APX_MANAGED_STATE_LIVE=1 APX_MANAGED_STATE_GRANT_SP=<sandbox-application-id> \
+DATABRICKS_CONFIG_PROFILE=fevm-stable APX_MANAGED_STATE_LIVE=1 \
+  APX_MANAGED_STATE_APP_NAME=<authorized-app> \
+  APX_MANAGED_STATE_DENIED_PROFILE=<profile> \
+  APX_MANAGED_STATE_DENIED_STORE=<existing-store> \
   uv run --frozen pytest tests/test_managed_state_live_reality_ctk.py \
-  -k grant_to_another -rA -o junit_family=legacy --junitxml=/tmp/apx-l79-grant.xml
+  -rA -o junit_family=legacy --junitxml=/tmp/apx-l79-live.xml
 ```
 
-For each read-only failure case use `-k typed_store_failure` and its explicit
-profile/store pair; an unconfigured case skips as **UNVERIFIED**. For the App
-case, run pytest against the absolute path to this probe file from the App's
-project directory, selecting `-k app_process`; do not deploy, restart an
-existing listener, or run it against a production project merely to collect
-this evidence. The probe constructs a separate ASGI instance in that App
-process. Do not enable recovery or retention to make the probe pass.
+An unconfigured failure or in-process case skips as **UNVERIFIED**. The
+in-process case runs only when `DATABRICKS_APP_NAME` already equals
+`APX_MANAGED_STATE_APP_NAME` inside that App. Do not deploy or restart an
+App to collect it. The external observation (`-k app_declared_resources`)
+only reads Apps API and `agent.toml`. Do not enable recovery or retention
+to make a probe pass.
 
 Use `-o junit_family=legacy --junitxml=<run-file>` to retain per-case resource,
 grant, typed-error and startup properties. A skipped test is never a successful

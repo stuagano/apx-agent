@@ -106,16 +106,16 @@ Obtain operator authorization before provisioning, fault injection or teardown;
 these beads are not permission to operate on production.
 
 Managed-store startup/grant evidence is tracked separately by `apx-l79`
-(#855 residual). Its [2026-11-20 probe runbook](managed-state-contract-map.md#855-residual-probe-preparation-apx-l79-2026-11-20)
-adds opt-in grant readback, typed denied/unsupported-service failures and an
-App-process lifespan check of the declared memory and session bindings. **No
-new live App or grant run was performed**: deployment is prohibited for this
-assignment and no authorized App/second-principal/failure-workspace context was
-provided. Those acceptance items remain unverified. Local SDK-transport tests,
-a successful `/readyz`, or constructing a saver do not close this gate; retain
-the actual deployment/run and independent binding evidence before claiming
-live acceptance. The probe does not deploy or enable recovery, and must not be
-used to restart a production listener.
+(#855 residual). Its [2026-11-20 probe run](managed-state-contract-map.md#855-residual-probe-apx-l79-2026-11-20)
+records a WRITE grant on disposable store `apx-862-855-probe` to the existing
+service principal of App `agent-bricks-apx-dur-gen`, independently read back
+and revoked, and a read-only `list_permissions` `PERMISSION_DENIED` on store
+`a-team-dev-memory`. The App was only observed: Apps API `RUNNING`, compute
+`UPDATING`, deployment `SUCCEEDED`, declared resource `postgres-runtime-store`,
+and no managed memory or session store in `agent.toml`. In-process managed-store
+startup was not entered and remains **UNVERIFIED**, as does unsupported-service
+behavior. Local SDK-transport tests, Apps API status, or a `/readyz` HTTP status
+do not close that gate. The probe does not deploy, restart, or enable recovery.
 
 **No custom runtime machinery is removed by apx-fgj.** ChatAgent consumers and
 compatibility routes above, policy/approval/audit wiring and the legacy
@@ -165,7 +165,7 @@ bodies still stop at `6cdcff86` (2026-10-06).
 
 | Issue | Code / evidence | Still open for |
 |---|---|---|
-| #855 / #856 | Live disposable store probe on DEFAULT; opt-in `APX_MANAGED_STATE_LIVE=1` | Retention, grants, App-process startup; GitHub checklists |
+| #855 / #856 | Live disposable store probe; 2026-11-20 grant readback and `PERMISSION_DENIED` on `list_permissions` | Retention; in-process App binding; unsupported-service workspace; #856 checklist |
 | #857 | Lakebase conversation history on in-repo examples | `platform-health` / `product-finder` are not in this repo |
 | #858 | `apx-agent memory extract` / `_memory_extract.py` | GitHub text still says extraction is unshipped |
 | #864 | Consumer freeze, historical OAuth probe, and later [deployed lifecycle observations](../running/runtime-targets.md#observed-deployed-lifecycle) | Six open live acceptance beads in the [apx-fgj ledger](#live-864-acceptance-ledger-apx-fgj); no consumer equivalence proof |
