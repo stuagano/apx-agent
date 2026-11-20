@@ -93,7 +93,7 @@ def test_no_project_declares_the_agent_table() -> None:
     offenders = sorted(
         d for d in _tracked_projects()
         if "agent" in tomllib.loads((_REPO / d / "pyproject.toml").read_text()).get("tool", {}).get("apx", {}))
-    assert offenders == [], "run `apx-agent agents migrate-config` in: " + ", ".join(offenders)
+    assert offenders == [], "a project still declares [tool.apx.agent]: " + ", ".join(offenders)
 
 
 @pytest.mark.parametrize("project", sorted(_MIGRATED))
@@ -128,11 +128,10 @@ def test_payroll_coworker_keeps_history_without_a_declared_session() -> None:
     assert "if _conversation_store is None:" in server and "InMemoryConversationStore()" in server
 
 
-# Code that still reads or migrates [tool.apx.agent] may name it; 3d's PR C removes the readers.
+# Functions that name [tool.apx.agent] while rejecting it, or while folding [tool.apx.deploy].
 _TABLE_TEXT_ALLOWED = {
-    "_migrate_config.py": None,  # the whole module migrates the table
     "_tool_config.py": None,
-    "cli.py": {"migrate_config", "migrate_agent_toml", "_read_apx_agent_config", "_save_to_pyproject"},
+    "cli.py": {"migrate_agent_toml", "_read_apx_agent_config"},
     "_inspection.py": {"_fold_deploy_table", "_agent_config_fields"},
 }
 
