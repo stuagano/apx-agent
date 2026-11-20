@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -160,5 +161,10 @@ class TestLandingSparklineMount:
             agent=None,  # type: ignore[arg-type]
         )
         html = _render_agent_ui(ctx)
-        assert "/_apx/traces/latency" in html
+        app_js = (
+            Path(__file__).resolve().parents[1]
+            / "src/apx_agent/_static/vendor/legacy-chat-app.js"
+        ).read_text(encoding="utf-8")
+        assert 'src="/_apx/vendor/legacy-chat-app.js"' in html
+        assert "/_apx/traces/latency" in app_js
         assert "latency-spark-line" in html

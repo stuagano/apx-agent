@@ -119,18 +119,25 @@ class TestPageIntegrations:
     """Each surface must ship the shared renderer and route tool JSON to it."""
 
     def test_chat_page_ships_shared_renderer_and_uses_it(self):
+        from pathlib import Path
+
         from apx_agent._ui_chat import _render_agent_ui
 
         html = _render_agent_ui(None)
+        app_js = (
+            Path(__file__).resolve().parents[1]
+            / "src/apx_agent/_static/vendor/legacy-chat-app.js"
+        ).read_text(encoding="utf-8")
         # Shared assets are substituted (no leftover template markers).
         assert "{APX_TABLE_JS}" not in html and "{APX_TABLE_CSS}" not in html
         assert "function renderToolOutput" in html
         assert "function tableShape" in html
         assert "table.out" in html
+        assert 'src="/_apx/vendor/legacy-chat-app.js"' in html
         # Chat detail / inline steps / trace replay all go through fmtResp.
-        assert "if (tableShape(obj)) return renderToolOutput(rawStr);" in html
+        assert "if (tableShape(obj)) return renderToolOutput(rawStr);" in app_js
         # The warehouse SQL viewer still wins for _sql/data payloads.
-        assert "if (obj._sql || Array.isArray(obj.data))" in html
+        assert "if (obj._sql || Array.isArray(obj.data))" in app_js
 
     def test_tools_page_ships_shared_renderer(self):
         from apx_agent._ui_tools import _render_tools_ui

@@ -2,8 +2,9 @@
 
 Distinct from the dev console under ``/_apx/*`` (which is intentionally off in
 Apps deployments). This surface ships in *every* runtime and carries no dev
-write-guard. Markdown libs are inlined from ``_static/vendor`` so the page is
-self-contained (no ``/vendor`` asset route, no CDN — private-link-safe).
+write-guard. Markdown libs are inlined from ``_static/vendor`` (no CDN —
+private-link-safe). The page's own script is a same-origin asset this router
+serves at ``/assets/chat/``, so it does not depend on the dev UI.
 
 The host selects native ``/api/invocations`` or declared legacy ``/invocations``
 transport. Native reconnects read persisted state and events without resubmission.
@@ -93,93 +94,8 @@ __VENDOR__
   <textarea id="in" rows="1" placeholder="Message the agent..." autofocus></textarea>
   <button id="send" type="submit">Send</button>
 </form>
-<script>
-  const log = document.getElementById('log');
-  const input = document.getElementById('in');
-  const sendBtn = document.getElementById('send');
-  const form = document.getElementById('f');
-  const history = [];  // [{role, content}] sent as the /invocations `input`
-
-  const hasMd = typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined';
-  function renderMarkdown(el, text) {
-    if (hasMd) el.innerHTML = DOMPurify.sanitize(marked.parse(text || ''));
-    else el.textContent = text || '';
-  }
-
-  function bubble(role, text) {
-    const el = document.createElement('div');
-    el.className = 'msg ' + role;
-    if (role === 'assistant') renderMarkdown(el, text);
-    else el.textContent = text;
-    log.appendChild(el);
-    log.scrollTop = log.scrollHeight;
-    return el;
-  }
-
-  function errLine(text) {
-    const el = document.createElement('div');
-    el.className = 'err';
-    el.textContent = text;
-    log.appendChild(el);
-    log.scrollTop = log.scrollHeight;
-  }
-
-  async function send(text) {
-    if (__NATIVE__) return;
-    history.push({ role: 'user', content: text });
-    bubble('user', text);
-    sendBtn.disabled = true;
-    const pending = bubble('assistant', '');
-    pending.classList.add('dots');
-    try {
-      const resp = await fetch('/invocations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: history }),
-      });
-      if (!resp.ok) throw new Error(resp.status + ' ' + (await resp.text()).slice(0, 300));
-      const data = await resp.json();
-      // ResponsesAgent output: items of {type}. Collect assistant text from
-      // `message` items; ignore function_call / function_call_output (tools).
-      const out = Array.isArray(data.output) ? data.output : [];
-      let reply = '';
-      for (const item of out) {
-        if (item.type === 'message' && Array.isArray(item.content)) {
-          for (const p of item.content) {
-            if (p.type === 'output_text' && p.text) reply += p.text;
-          }
-        }
-      }
-      pending.classList.remove('dots');
-      renderMarkdown(pending, reply || '(empty response)');
-      history.push({ role: 'assistant', content: reply });
-    } catch (e) {
-      pending.remove();
-      errLine('Error: ' + e.message);
-    } finally {
-      sendBtn.disabled = false;
-      input.focus();
-    }
-  }
-
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = '';
-    input.style.height = 'auto';
-    send(text);
-  });
-
-  // Enter sends, Shift+Enter newlines; textarea grows with content.
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
-  });
-  input.addEventListener('input', () => {
-    input.style.height = 'auto';
-    input.style.height = input.scrollHeight + 'px';
-  });
-</script>
+<script>window.__APX_NATIVE__ = __NATIVE__;</script>
+<script src="/assets/chat/root-chat.js"></script>
 __NATIVE_SCRIPT__
 </body>
 </html>
@@ -211,6 +127,9 @@ def render_root_chat(name: str = "Agent", description: str | None = None, *, nat
     )
 
 
+_CHAT_ASSETS = ("root-chat.js", "native-chat.js")
+
+
 def build_root_chat_router() -> APIRouter:
     """Router serving the end-user chat at ``GET /``.
 
@@ -218,7 +137,19 @@ def build_root_chat_router() -> APIRouter:
     titled from the served agent's config (``app.state.agent_context``), read at
     request time so it reflects whatever agent this app is serving.
     """
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
     router = APIRouter()
+
+    @router.get("/assets/chat/{filename}", include_in_schema=False)
+    async def chat_asset(filename: str) -> FileResponse:
+        if filename not in _CHAT_ASSETS:
+            raise HTTPException(status_code=404)
+        target = (_VENDOR / filename).resolve()
+        if _VENDOR.resolve() not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(target, media_type="application/javascript")
 
     @router.get("/", include_in_schema=False)
     async def root_chat(request: Request) -> HTMLResponse:
