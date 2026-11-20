@@ -175,6 +175,46 @@ def get_llm(endpoint: str, **kwargs: Any) -> Any:
         )
     kwargs["use_ai_gateway"] = True
     if any(endpoint.startswith(p) for p in GPT_REASONING_PREFIXES):
-        return _make_gpt_reasoning_class()(model=endpoint, **kwargs)
-    from databricks_langchain import ChatDatabricks
-    return ChatDatabricks(model=endpoint, **kwargs)
+        llm = _make_gpt_reasoning_class()(model=endpoint, **kwargs)
+    else:
+        from databricks_langchain import ChatDatabricks
+        llm = ChatDatabricks(model=endpoint, **kwargs)
+    return _attach_gateway_denial(llm)
+
+
+def _attach_gateway_denial(llm: Any) -> Any:
+    """Raise GatewayRefusal when a chat completion carries a gateway DENY.
+
+    ``ChatDatabricks`` drops unknown response fields, so the
+    ``databricks_service_policy`` object never reaches the agent as a message
+    attribute. The check runs on the raw completion, before that conversion.
+    Token streaming is unchanged: databricks-langchain yields deltas and does
+    not pass the completion object through this method.
+    """
+
+    for name in (
+        "_convert_response_to_chat_result",
+        "_convert_responses_api_response_to_chat_result",
+    ):
+        original = _bound_method(llm, name)
+        if original is None:
+            continue
+
+        def _wrapped(response: Any, _original: Any = original) -> Any:
+            from ._gateway_refusal import gateway_refusal
+
+            refusal = gateway_refusal(response, surface="model")
+            if refusal is not None:
+                raise refusal
+            return _original(response)
+
+        object.__setattr__(llm, name, _wrapped)
+    return llm
+
+
+def _bound_method(llm: Any, name: str) -> Any | None:
+    for base in type(llm).__mro__:
+        method = base.__dict__.get(name)
+        if method is not None:
+            return method.__get__(llm, type(llm))
+    return None
