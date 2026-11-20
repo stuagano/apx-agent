@@ -122,10 +122,34 @@ def test_apx_builder_settings_reach_the_cli() -> None:
         "databricks-claude-sonnet-4-6 | Natural language agent builder — describe your agent and I'll build and deploy it")
 
 
-def test_payroll_coworker_keeps_history_without_a_declared_session() -> None:
-    # Its Delta session was dropped (3c); like samples-*, fall back to an in-process store.
-    server = (_REPO / "python" / "payroll-coworker" / "agent_server" / "start_server.py").read_text()
-    assert "if _conversation_store is None:" in server and "InMemoryConversationStore()" in server
+def test_tracked_launchers_match_rendered_durable_generator(tmp_path: Path) -> None:
+    """Apps deploy refuses a launcher without DurableAgentServer (#981).
+
+    The rendered generator output is that launcher. Every tracked
+    ``agent_server/start_server.py`` and ``start_host.py`` must match it,
+    including hello-world, payroll-coworker, and samples-* — not a one-off
+    that still imports mlflow AgentServer.
+    """
+    from apx_agent._models import AgentConfig
+    from apx_agent._project_gen import generate_project
+
+    generate_project(AgentConfig(name="launcher", target="responses_agent"), tmp_path)
+    rendered = {
+        "start_server.py": (tmp_path / "agent_server" / "start_server.py").read_text(),
+        "start_host.py": (tmp_path / "agent_server" / "start_host.py").read_text(),
+    }
+    assert "DurableAgentServer" in rendered["start_server.py"]
+    assert "DurableAgentServer" in rendered["start_host.py"]
+    assert "mlflow.genai.agent_server" not in rendered["start_server.py"]
+    assert "compile_to_responses_agent" not in rendered["start_server.py"]
+
+    listed = subprocess.run(
+        ["git", "ls-files", "*agent_server/start_server.py", "*agent_server/start_host.py"],
+        cwd=_REPO, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert listed
+    drifted = [rel for rel in listed if (_REPO / rel).read_text() != rendered[Path(rel).name]]
+    assert drifted == []
 
 
 # Code that still reads or migrates [tool.apx.agent] may name it; 3d's PR C removes the readers.
