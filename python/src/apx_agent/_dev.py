@@ -280,7 +280,7 @@ _TRACE_CSS = """
   td a:hover{text-decoration:underline;}
   .st-ok{color:var(--apx-ok);} .st-err{color:var(--apx-err);} .st-run{color:var(--apx-warn);}
   .tool-fails-card{display:flex;flex-wrap:wrap;gap:8px 14px;padding:10px 12px;
-                   margin:0 0 12px;background:var(--apx-panel-2);border:1px solid var(--apx-panel-2);
+                   margin:0 0 12px;background:var(--apx-panel);border:1px solid var(--apx-border);
                    border-radius:10px;font-size:12px;}
   #tool-fails[hidden]{display:none;}
   .tool-fail{font-family:monospace;}
@@ -291,7 +291,7 @@ _TRACE_CSS = """
   .trace-diff-go:disabled{opacity:.4;cursor:not-allowed;}
   .td-pick{margin-right:6px;}
   .trace-diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-  .trace-diff-card{background:var(--apx-panel-2);border:1px solid var(--apx-panel-2);border-radius:10px;
+  .trace-diff-card{background:var(--apx-panel);border:1px solid var(--apx-border);border-radius:10px;
                    padding:12px 14px;display:flex;flex-direction:column;gap:8px;}
   .trace-diff-label{font-size:11px;color:var(--muted);text-transform:uppercase;
                     letter-spacing:.04em;}
