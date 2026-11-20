@@ -23,6 +23,8 @@
 
 ## Running agents
 
+- [running/prompt-registry.md](running/prompt-registry.md) — upstream prompt bindings, runtime loading, and preservation across project regeneration
+
 - [running/runtime-targets.md](running/runtime-targets.md) — compile targets, compatibility reports, and native durable host limits
 - [agents/llm-agent.md#running](agents/llm-agent.md#running) — `agent.run()`, `agent.stream()`, `max_iterations` safety cap
 - [running/sessions-and-memory.md](running/sessions-and-memory.md) — session stores, memory stores, example stores
