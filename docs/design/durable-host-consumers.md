@@ -105,6 +105,18 @@ unsupported capabilities as well as successes. Never commit tokens or secrets.
 Obtain operator authorization before provisioning, fault injection or teardown;
 these beads are not permission to operate on production.
 
+Managed-store startup/grant evidence is tracked separately by `apx-l79`
+(#855 residual). Its [2026-11-20 probe runbook](managed-state-contract-map.md#855-residual-probe-preparation-apx-l79-2026-11-20)
+adds opt-in grant readback, typed denied/unsupported-service failures and an
+App-process lifespan check of the declared memory and session bindings. **No
+new live App or grant run was performed**: deployment is prohibited for this
+assignment and no authorized App/second-principal/failure-workspace context was
+provided. Those acceptance items remain unverified. Local SDK-transport tests,
+a successful `/readyz`, or constructing a saver do not close this gate; retain
+the actual deployment/run and independent binding evidence before claiming
+live acceptance. The probe does not deploy or enable recovery, and must not be
+used to restart a production listener.
+
 **No custom runtime machinery is removed by apx-fgj.** ChatAgent consumers and
 compatibility routes above, policy/approval/audit wiring and the legacy
 cancellation wrapper stay in place. Retirement requires a recorded equivalence
