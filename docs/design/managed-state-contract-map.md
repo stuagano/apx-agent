@@ -486,30 +486,36 @@ Residual #856 / bead `apx-nxc`. Packages: `databricks-agentbricks` **0.10.0**,
 historical 0.4.0 contract above. All calls were read-only. No deployment,
 provisioning, entry mutation, grant change, or store deletion was performed.
 
-**Live denial and unsupported-service behavior remain UNVERIFIED.** Both
-configured workspaces expose memory-store listing. Direct AgentKit metadata
-GETs of sentinel `apx-nxc-missing-store` returned `AgentCliError(NOT_FOUND)`.
-That is not permission-denied or unsupported-service evidence. The existing
-restricted `isaac-mcp-…people-mcp` profile also returned an absent entry through
-APX, not `PERMISSION_DENIED`. Store metadata listing is not proof of entry
-read/write access.
+Permission-denied is now verified through `ManagedMemoryStore.get`. Unsupported
+service is still **UNVERIFIED** and is not moved to #859. Earlier sentinel
+reads are kept below; they returned absence, not a typed failure. Store
+metadata listing is not proof of entry access.
 
-Read back the strict probe's JSON results (sentinel store above, sentinel entry
-`apx-nxc-missing-entry`, `ManagedMemoryStore.get`):
+Read back the strict probe's JSON results (`ManagedMemoryStore.get` of
+`apx-nxc-missing-entry`):
 
 | UTC timestamp | Profile / workspace | Requested scenario | Adapter observation | `verified` / exit |
 |---|---|---|---|---|
 | 2026-11-20T19:34:42.448363+00:00 | `fevm-stable` / `fevm-serverless-stable-7def3z` | denied | `None`; no exception escapes the NOT_FOUND mapping | `false` / 1 |
 | 2026-11-20T19:34:44.310687+00:00 | `ug-oauth-dbc-a5d4177a-49dc.cloud.databricks.com-4f7af981-8977-4042-b90e-a5dea5b62e19` / `dbc-a5d4177a-49dc` | unsupported | `None`; no exception escapes the NOT_FOUND mapping | `false` / 1 |
+| 2026-11-20T23:51:30.799143+00:00 | same `dbc-a5d4177a-49dc` profile / host | denied | `AgentCliError` / `PERMISSION_DENIED` on store `a-team-dev-memory` (not owned; read-only) | `true` / 0 |
+| 2026-11-20T23:51:40.726829+00:00 | `fevm-stable` / `fevm-serverless-stable-7def3z` | unsupported | `None` for missing store `apx-nxc-missing-store` (`entry_returned=false`) | `false` / 1 |
 
-Reproduce using the read-only
+The passing denial was also run as
+`APX_MANAGED_STATE_LIVE=1 pytest tests/test_managed_state_live_reality_ctk.py -k memory_adapter`:
+denied passed with `exception_type=AgentCliError`, `error_code=PERMISSION_DENIED`,
+`verified=true`; the unsupported case skipped because
+`APX_MANAGED_STATE_UNSUPPORTED_PROFILE` was unset. A skip is **UNVERIFIED**.
+No store, entry, or grant was created. The application id and memory content
+were not recorded.
+
+Reproduce with the read-only
 [`managed_memory_failure_probe.py`](../../scripts/managed_memory_failure_probe.py)
-[commands](../running/sessions-and-memory.md#managed-memory-failures). To close
-live acceptance, provide (1) an authenticated restricted profile plus an existing
-store that returns `PERMISSION_DENIED`, and (2) a workspace returning
-`FEATURE_DISABLED`, `NOT_IMPLEMENTED`, or `UNIMPLEMENTED`. Save the JSON output
-with `verified=true` for each. Do not manufacture a disabled feature by changing
-production settings or count a mocked transport as live evidence.
+[commands](../running/sessions-and-memory.md#managed-memory-failures).
+Unsupported service still needs a workspace whose metadata or entry read
+returns `FEATURE_DISABLED`, `NOT_IMPLEMENTED`, or `UNIMPLEMENTED`. Do not
+manufacture that by changing production settings, and do not count a mocked
+transport or a `NOT_FOUND` as live evidence.
 
 Local tests exercise the **real AgentKit SDK** against a controlled transport:
 all seven adapter operations preserve permission/unsupported/transient codes
@@ -527,8 +533,12 @@ FAIL diagnostics. These tests prove APX mapping, not backend availability.
   SDK list pagination and bounded non-paginated search: implemented and locally
   covered in `test_memory_managed.py` (including a two-page list response).
 - Live CRUD and actor isolation: the 2026-10-13 and 2026-10-21 records above.
-- Live permission-denied and unsupported service: **blocked**, not completed or
-  silently transferred. #856 must remain open for these two observations.
+- Live permission-denied: **verified** 2026-11-20. `ManagedMemoryStore.get` on
+  `a-team-dev-memory` raised `AgentCliError` / `PERMISSION_DENIED` and did not
+  return `None`.
+- Live unsupported service: **still open** on #856. Not moved to #859. The
+  configured workspaces return absence (`NOT_FOUND` mapped to `None`), not
+  `FEATURE_DISABLED`, `NOT_IMPLEMENTED`, or `UNIMPLEMENTED`.
 - Data migration / retrieval-filter equivalence: explicitly owned by
   [#859](https://github.com/stuagano/apx-agent/issues/859), not this bead.
   #859 is now closed by #927 for the bounded long-term-memory import slice;
