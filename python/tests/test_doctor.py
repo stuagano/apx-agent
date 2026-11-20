@@ -159,17 +159,26 @@ def test_agent_image_checks_declaration_and_lock(tmp_path, dependency, version, 
     assert result.status is expected
 
 
-def _space_rows(tmp_path, monkeypatch, *, online: bool, setting=None, dependency: str = "apx-agent[agentbricks]"):
+def _space_rows(
+    tmp_path, monkeypatch, *, online: bool, setting=None, dependency: str = "apx-agent[agentbricks]",
+    region: tuple[str, str] | Exception = ("aws", "us-east-1"), host: str = "https://dbc-1.cloud.databricks.com",
+):
     from apx_agent import AgentConfig
+    from databricks.sdk.service.catalog import GetMetastoreSummaryResponse
     from databricks.sdk.service.settings import BooleanMessage, LlmProxyPartnerPoweredWorkspace
 
     (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "native"\ndependencies = ["{dependency}"]\n')
     ws = MagicMock()
+    ws.config.host = host
     read = ws.settings.llm_proxy_partner_powered_workspace.get
     if isinstance(setting, Exception):
         read.side_effect = setting
     else:
         read.return_value = LlmProxyPartnerPoweredWorkspace(boolean_val=BooleanMessage(value=setting))
+    if isinstance(region, Exception):
+        ws.metastores.summary.side_effect = region
+    else:
+        ws.metastores.summary.return_value = GetMetastoreSummaryResponse(cloud=region[0], region=region[1])
     monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda: ws)
     config = AgentConfig(name="native", target="durable_agent_server", deploy={"space": "agent-space"})
     rows = {c.name: c for c in doctor.check_space_prerequisites(tmp_path, config, online=online)}
@@ -182,6 +191,7 @@ def test_doctor_space_rows_report_what_can_and_cannot_be_read(tmp_path, monkeypa
     rows = _space_rows(tmp_path, monkeypatch, online=True, setting=True)
     assert [(name, row.status) for name, row in rows.items()] == [
         ("Partner-powered AI (workspace)", Status.OK),
+        ("App Space region", Status.OK),
         ("App Space role", Status.SKIP),
         ("Partner-powered AI (account)", Status.SKIP),
         ("Cross-Geo processing", Status.SKIP),
@@ -194,6 +204,7 @@ def test_doctor_space_rows_report_what_can_and_cannot_be_read(tmp_path, monkeypa
     assert rows["App Space role"].detail == "the agent did not import; its user-identity tools and hops were not inspected"
     offline = _space_rows(tmp_path, monkeypatch, online=False)
     assert offline["Partner-powered AI (workspace)"].status is Status.SKIP
+    assert offline["App Space region"].status is Status.SKIP
     assert offline["App Space role"].status is Status.SKIP
 
 
@@ -208,6 +219,33 @@ def test_doctor_space_partner_ai_permission_error_is_a_warning(tmp_path, monkeyp
     row = _space_rows(tmp_path, monkeypatch, online=True, setting=PermissionDenied("admins only"))["Partner-powered AI (workspace)"]
     assert row.status is Status.WARN
     assert "PermissionDenied" in row.detail
+
+
+@pytest.mark.parametrize(("cloud", "region", "status", "needle"), [
+    ("aws", "us-west-2", Status.OK, "aws us-west-2 is a supported App Space region"),
+    ("azure", "westeurope", Status.OK, "azure westeurope is a supported App Space region"),
+    ("aws", "us-gov-west-1", Status.FAIL, "GovCloud region 'us-gov-west-1' is not supported for App Space"),
+    ("aws", "ca-central-1", Status.FAIL, "region 'ca-central-1' on 'aws' is not a supported App Space region"),
+    ("gcp", "us-central1", Status.FAIL, "GCP region 'us-central1' is not supported for App Space"),
+    ("azure", "chinaeast2", Status.FAIL, "Azure China (Mooncake) region 'chinaeast2' is not supported for App Space"),
+])
+def test_doctor_space_region_fails_closed(tmp_path, monkeypatch, cloud, region, status, needle):
+    """#1069: an allowed region passes; GovCloud and any other region fail closed, naming why."""
+    row = _space_rows(tmp_path, monkeypatch, online=True, region=(cloud, region))["App Space region"]
+    assert row.status is status
+    assert row.detail == needle
+    if status is Status.FAIL:
+        assert "GovCloud, GCP, and Azure China" in row.fix
+
+
+def test_doctor_space_region_govcloud_host_fails_without_the_summary(tmp_path, monkeypatch):
+    """A GovCloud host fails closed even when the region read itself errors."""
+    from databricks.sdk.errors import PermissionDenied
+
+    row = _space_rows(tmp_path, monkeypatch, online=True, host="https://dbc-1.cloud.databricks.us",
+                      region=PermissionDenied("no metastore"))["App Space region"]
+    assert row.status is Status.FAIL
+    assert row.detail == "GovCloud host 'dbc-1.cloud.databricks.us' is not supported for App Space"
 
 
 def _space_role_row(monkeypatch, read, *, user_tool: bool):
@@ -317,6 +355,7 @@ def test_doctor_run_checks_includes_space_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "check_databricks_auth", lambda: Check("Databricks auth", Status.OK, "test"))
     checks = {c.name: c for _, group in doctor.run_checks(tmp_path, online=False) for c in group}
     assert checks["Space package proxy"].status is Status.OK
+    assert checks["App Space region"].status is Status.SKIP
     assert checks["Cross-Geo processing"].status is Status.SKIP
 
 
