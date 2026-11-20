@@ -1,7 +1,7 @@
 """Gate tests for POST /_apx/edit/optimize-instructions (the 'Improve instructions' button).
 
-optimize_prompts (GEPA) is always mocked — only the plumbing and failure paths
-are gated (GEPA quality is stochastic and not unit-testable). See the PRD.
+AgentKit ``model_upgrades`` is always mocked — only the plumbing and failure
+paths are gated. The search itself is not unit-testable.
 """
 
 from __future__ import annotations
@@ -29,8 +29,16 @@ def app() -> FastAPI:
     return a
 
 
+def _upgrade_result(template: str, *, before: float = 0.5, after: float = 0.9):
+    return SimpleNamespace(
+        best_candidate={"prompt:apx_optimize_x": template},
+        baseline_score=before,
+        best_score=after,
+    )
+
+
 def _mlflow_mocks(*, optimize: MagicMock, get_scorer: MagicMock | None = None):
-    """Patch every mlflow symbol _optimize_instructions_sync imports at call time.
+    """Patch the AgentKit call and the mlflow symbols imported at call time.
 
     Returns the register_prompt and MlflowClient() spies so tests can assert the
     transient prompt is created then cleaned up.
@@ -38,12 +46,10 @@ def _mlflow_mocks(*, optimize: MagicMock, get_scorer: MagicMock | None = None):
     register = MagicMock(return_value=SimpleNamespace(name="apx_optimize_x", version=1))
     client_instance = MagicMock()
     scorer = get_scorer or MagicMock(return_value=MagicMock())
-    return patch.multiple(
-        "mlflow.genai",
-        optimize_prompts=optimize,
-        register_prompt=register,
-    ), patch("mlflow.genai.scorers.get_scorer", scorer), patch(
-        "mlflow.genai.optimize.GepaPromptOptimizer", MagicMock()
+    return patch(
+        "databricks_agentkit.model_upgrades.optimize_prompts_and_models", optimize
+    ), patch("mlflow.genai.register_prompt", register), patch(
+        "mlflow.genai.scorers.get_scorer", scorer
     ), patch("mlflow.MlflowClient", MagicMock(return_value=client_instance)), register, client_instance
 
 
@@ -61,17 +67,11 @@ async def _post(app: FastAPI, body: dict) -> _Resp:
 @pytest.mark.asyncio
 async def test_optimize_route_returns_candidate_and_scores(app: FastAPI):
     """AC-1: registered route returns {ok, candidate, scores:{before,after}}."""
-    optimize = MagicMock(
-        return_value=SimpleNamespace(
-            optimized_prompts=[SimpleNamespace(template="BETTER INSTRUCTIONS")],
-            initial_eval_score=0.5,
-            final_eval_score=0.9,
-        )
-    )
-    p_multi, p_scorer, p_gepa, p_client, register, client = _mlflow_mocks(optimize=optimize)
+    optimize = MagicMock(return_value=_upgrade_result("BETTER INSTRUCTIONS"))
+    p_upgrade, p_register, p_scorer, p_client, register, client = _mlflow_mocks(optimize=optimize)
     with patch("apx_agent._dev._load_optimize_eval_rows", return_value=[{"question": "q"}]), patch(
         "apx_agent._dev._current_root_instructions", return_value="old instructions"
-    ), p_multi, p_scorer, p_gepa, p_client:
+    ), p_upgrade, p_register, p_scorer, p_client:
         status, body = await _post(app, {"judge_name": "my_judge"})
     assert status == 200, body
     assert body["ok"] is True
@@ -79,14 +79,17 @@ async def test_optimize_route_returns_candidate_and_scores(app: FastAPI):
     assert body["scores"] == {"before": 0.5, "after": 0.9}
     assert "status" not in body  # internal key stripped before responding
     optimize.assert_called_once()
+    assert optimize.call_args.kwargs["prompt_uris"] == ["prompts:/apx_optimize_x/1"]
+    assert optimize.call_args.kwargs["scorers"]
+    assert optimize.call_args.kwargs["max_metric_calls"] == 20
 
 
 @pytest.mark.asyncio
 async def test_missing_judge_name_returns_422(app: FastAPI):
-    """AC-2: empty/missing judge_name → 422 and optimize_prompts never called."""
+    """AC-2: empty/missing judge_name → 422 and model_upgrades is never called."""
     optimize = MagicMock()
-    p_multi, p_scorer, p_gepa, p_client, register, client = _mlflow_mocks(optimize=optimize)
-    with patch("apx_agent._dev._load_optimize_eval_rows", return_value=[{"question": "q"}]), p_multi, p_scorer, p_gepa, p_client:
+    p_upgrade, p_register, p_scorer, p_client, register, client = _mlflow_mocks(optimize=optimize)
+    with patch("apx_agent._dev._load_optimize_eval_rows", return_value=[{"question": "q"}]), p_upgrade, p_register, p_scorer, p_client:
         status, body = await _post(app, {"judge_name": "   "})
     assert status == 422
     assert body["ok"] is False
@@ -95,10 +98,10 @@ async def test_missing_judge_name_returns_422(app: FastAPI):
 
 @pytest.mark.asyncio
 async def test_missing_eval_dataset_fails_clear(app: FastAPI):
-    """AC-3: no eval dataset → clear error, optimize_prompts never called."""
+    """AC-3: no eval dataset → clear error, model_upgrades is never called."""
     optimize = MagicMock()
-    p_multi, p_scorer, p_gepa, p_client, register, client = _mlflow_mocks(optimize=optimize)
-    with patch("apx_agent._dev._load_optimize_eval_rows", return_value=[]), p_multi, p_scorer, p_gepa, p_client:
+    p_upgrade, p_register, p_scorer, p_client, register, client = _mlflow_mocks(optimize=optimize)
+    with patch("apx_agent._dev._load_optimize_eval_rows", return_value=[]), p_upgrade, p_register, p_scorer, p_client:
         status, body = await _post(app, {"judge_name": "my_judge"})
     assert status == 422
     assert body["ok"] is False
@@ -111,10 +114,10 @@ async def test_missing_judge_fails_clear(app: FastAPI):
     """AC-4: unknown judge (get_scorer raises) → clear error, optimize never called."""
     optimize = MagicMock()
     get_scorer = MagicMock(side_effect=RuntimeError("no such scorer"))
-    p_multi, p_scorer, p_gepa, p_client, register, client = _mlflow_mocks(optimize=optimize, get_scorer=get_scorer)
+    p_upgrade, p_register, p_scorer, p_client, register, client = _mlflow_mocks(optimize=optimize, get_scorer=get_scorer)
     with patch("apx_agent._dev._load_optimize_eval_rows", return_value=[{"question": "q"}]), patch(
         "apx_agent._dev._current_root_instructions", return_value="old"
-    ), p_multi, p_scorer, p_gepa, p_client:
+    ), p_upgrade, p_register, p_scorer, p_client:
         status, body = await _post(app, {"judge_name": "ghost_judge"})
     assert status == 422
     assert body["ok"] is False
@@ -124,12 +127,12 @@ async def test_missing_judge_fails_clear(app: FastAPI):
 
 @pytest.mark.asyncio
 async def test_transient_prompt_registered_and_cleaned_up(app: FastAPI):
-    """AC-5: transient prompt registered then deleted, even when optimize raises."""
-    optimize = MagicMock(side_effect=RuntimeError("gepa blew up"))
-    p_multi, p_scorer, p_gepa, p_client, register, client = _mlflow_mocks(optimize=optimize)
+    """AC-5: transient prompt registered then deleted, even when model_upgrades raises."""
+    optimize = MagicMock(side_effect=RuntimeError("search blew up"))
+    p_upgrade, p_register, p_scorer, p_client, register, client = _mlflow_mocks(optimize=optimize)
     with patch("apx_agent._dev._load_optimize_eval_rows", return_value=[{"question": "q"}]), patch(
         "apx_agent._dev._current_root_instructions", return_value="old"
-    ), p_multi, p_scorer, p_gepa, p_client:
+    ), p_upgrade, p_register, p_scorer, p_client:
         status, body = await _post(app, {"judge_name": "my_judge"})
     register.assert_called_once()
     client.delete_prompt.assert_called_once()  # cleanup ran despite the raise

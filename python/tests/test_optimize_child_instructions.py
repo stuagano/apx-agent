@@ -34,7 +34,6 @@ async def test_child_candidates_execute_without_mutating_live_agent_or_source(tm
     app.state.workspace_client = None
     monkeypatch.setattr("apx_agent._dev._load_optimize_eval_rows", lambda: [{"inputs": {"question": "go"}}])
     monkeypatch.setattr("mlflow.genai.scorers.get_scorer", lambda **kwargs: MagicMock())
-    monkeypatch.setattr("mlflow.genai.optimize.GepaPromptOptimizer", MagicMock())
     register = MagicMock(side_effect=lambda **kwargs: SimpleNamespace(name=kwargs["name"], version=1))
     monkeypatch.setattr("mlflow.genai.register_prompt", register)
     client = MagicMock()
@@ -56,13 +55,21 @@ async def test_child_candidates_execute_without_mutating_live_agent_or_source(tm
     monkeypatch.setattr("apx_agent.compile_to_chat_agent", compile_checked)
     candidate = "Better $1, $$, $& and quotes 'é'"
 
-    def optimize(**kwargs):
-        assert kwargs["predict_fn"]({"question": "go"}) == "OK"
+    def optimize(predict_fn, train_data, val_data, **kwargs):
+        assert predict_fn({"question": "go"}) == "OK"
         prompt.template = candidate
-        assert kwargs["predict_fn"]({"question": "go"}) == "OK"
-        return SimpleNamespace(optimized_prompts=[prompt], initial_eval_score=0.3, final_eval_score=0.8)
+        assert predict_fn({"question": "go"}) == "OK"
+        uri = kwargs["prompt_uris"][0]
+        short = uri.removeprefix("prompts:/").rsplit("/", 1)[0].rsplit(".", 1)[-1]
+        assert kwargs["scorers"]
+        assert len(train_data) == len(val_data) == 1
+        return SimpleNamespace(
+            best_candidate={f"prompt:{short}": candidate},
+            baseline_score=0.3,
+            best_score=0.8,
+        )
 
-    monkeypatch.setattr("mlflow.genai.optimize_prompts", optimize)
+    monkeypatch.setattr("databricks_agentkit.model_upgrades.optimize_prompts_and_models", optimize)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post("/_apx/edit/optimize-instructions", json={"judge_name": "judge", "node": "second", "source": source})
     assert response.status_code == 200, response.text
