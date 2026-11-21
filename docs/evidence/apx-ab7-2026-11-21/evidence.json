@@ -1,0 +1,99 @@
+{
+  "bead": "apx-ab7",
+  "title": "Verify authorized approval continuation after live worker replacement",
+  "observed_on": "2026-11-21",
+  "result": "blocked",
+  "live_pass": false,
+  "fault_injection": false,
+  "http_invocations_sent": 0,
+  "approval_created": false,
+  "apps_stop_or_start": false,
+  "deployment_changed": false,
+  "second_principal_created": false,
+  "pat_minted": false,
+  "app_service_principal_used_as_caller": false,
+  "other_workspace_profiles_used": false,
+  "app": {
+    "name": "agent-bricks-apx-dur-gen",
+    "url": "https://agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com/",
+    "workspace_id": "7474660401027952",
+    "profile": "fevm-stable",
+    "command": "databricks apps get agent-bricks-apx-dur-gen -p fevm-stable -o json",
+    "observed_at": "2026-11-21T01:12:33.386430+00:00",
+    "app_status_state": "RUNNING",
+    "app_status_message": "App has status: App is running",
+    "running_instances": 1,
+    "compute_status_state": "ACTIVE",
+    "compute_status_message": "App compute is running.",
+    "deployment_id": "01f1e546718010678017040e46a17107",
+    "deployment_mode": "SNAPSHOT",
+    "deployment_status_state": "SUCCEEDED",
+    "deployment_update_time": "2026-11-21T00:57:08Z"
+  },
+  "profiles": {
+    "command": "databricks auth profiles -o json",
+    "profile_count": 5,
+    "workspace_7474660401027952": [
+      {
+        "name": "fevm-stable",
+        "host": "https://fevm-serverless-stable-7def3z.cloud.databricks.com",
+        "auth_type": "databricks-cli",
+        "valid": true,
+        "cloud": "aws"
+      }
+    ],
+    "other_workspace_id": "1965859176160743",
+    "other_workspace_profile_count": 4,
+    "other_workspace_profile_names": [
+      "ug-oauth-dbc-a5d4177a-49dc.cloud.databricks.com-4f7af981-8977-4042-b90e-a5dea5b62e19",
+      "isaac-mcp-ai_devtools_prod.it_ex_internal_mcps.people-mcp",
+      "isaac-mcp-ai_devtools_prod.it_ex_internal_mcps.perf-mcp",
+      "isaac-mcp-ai_devtools_prod.it_ex_internal_mcps.brickroad-mcp"
+    ],
+    "sdk_check": {
+      "call": "WorkspaceClient(profile='fevm-stable').config.authenticate()",
+      "observed_at": "2026-11-21T01:13:22.936841+00:00",
+      "auth_type": "databricks-cli",
+      "auth_type_is_pat": false,
+      "personal_access_token_prefix": false,
+      "token_printed": false,
+      "reader_sdk": "databricks-sdk 0.146.0"
+    }
+  },
+  "symbols_inspected": {
+    "distribution": "databricks-agentbricks",
+    "distribution_version": "0.10.0",
+    "sdk_symbol": "DurableAgentServer._execute",
+    "sdk_source": "databricks_agentkit/runtime/app.py",
+    "recovery_error_code": "MCP_USER_AUTH_RECOVERY_UNSUPPORTED",
+    "recovery_error_message": "Request-user execution does not survive failure recovery yet",
+    "recovery_error_status": 500,
+    "header_symbol": "RequestAuthContext.from_headers",
+    "apx_manifest_symbol": "build_native_manifest",
+    "apx_manifest_refusal": "ValueError: Request-user recovery is unsupported",
+    "apx_handler_symbol": "compile_durable_handlers.request_auth",
+    "apx_handler_refusal": "ValueError: Request-user recovery is unsupported",
+    "approval_interrupt_symbol": "apx_agent._policy._interrupt_for_approval",
+    "approval_interrupt_calls": "langgraph.types.interrupt",
+    "approval_store_symbol": "apx_agent._policy.ApprovalStore",
+    "approval_store_durable": false,
+    "resume_symbol": "apx_agent._graph_turn Command(resume=resume)",
+    "resume_admission_symbol": "apx_agent._durable_agent._validate_native_input",
+    "resume_without_checkpoint": "ValueError: Approval resume requires a checkpointed session"
+  },
+  "versions": {
+    "databricks_cli": "1.26.0",
+    "databricks_sdk_local_reader": "0.146.0",
+    "databricks_agentbricks_inspected": "0.10.0",
+    "inspected_tree": "apx-4ag worktree site-packages and apx-ab7 source; this bead did not deploy"
+  },
+  "acceptance": {
+    "pending_approval_survived_replacement": false,
+    "unauthorized_continuation_denied": false,
+    "authorized_continuation_once": false,
+    "duplicate_resume_blocked": false,
+    "checkpoint_and_audit_readback": false,
+    "session_invocation_ids_recorded": false
+  },
+  "left_running": true
+}

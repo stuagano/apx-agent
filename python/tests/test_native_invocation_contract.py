@@ -14,6 +14,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import RootModel
 
 from apx_agent import Dependencies, FunctionPolicy, LlmAgent, PolicyAction, PolicyGate, PolicyResult, compile_agent
+from apx_agent._durable_agent import session_thread_config
 from tests.test_runtime_targets import execution, _write_native_pyproject  # noqa: F401
 
 
@@ -163,6 +164,63 @@ def test_native_approval_is_interrupted_output_inside_completed_invocation(nativ
     assert result["output"]["approval_required"]["tool_name"] == "record"
     assert native.effects == []
     assert native.client.get(f"/api/invocations/{body['id']}", headers=headers()).json() == result
+
+
+def test_native_approval_fresh_auth_and_duplicate_resume(native):
+    """Local SDK HTTP coverage, not OAuth ingress or deployed replacement proof."""
+    native.agent._before_tool = PolicyGate([
+        FunctionPolicy(lambda event: PolicyResult(action=PolicyAction.ASK, reason="approval required")),
+    ])
+    original = request_body()
+    paused = native.client.post("/api/invocations", json=original, headers=headers())
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["output"]["status"] == "interrupted"
+    assert native.effects == []
+    auth = RequestAuthContext.from_headers(headers())
+    try:
+        principal = auth.namespace("principal", "verified")
+        config = session_thread_config("contract", auth.namespace("session", original["session_id"]), principal)
+    finally:
+        auth.close()
+    checkpoint = native.saver.get_tuple(config)
+    assert checkpoint is not None
+    assert any(channel == "__interrupt__" for _, channel, _ in checkpoint.pending_writes)
+    # Each completed HTTP call has discarded its transient request credentials.
+    assert not native.app._request_auth
+    resume = {"id": str(uuid.uuid4()), "session_id": original["session_id"],
+              "input": {"resume": "approve"}}
+    assert resume["id"] != original["id"]
+    path = f"/api/invocations/{original['id']}"
+    assert native.client.get(path, headers=headers("bob")).status_code == 404
+    wrong = native.client.post("/api/invocations", json=resume, headers=headers("bob"))
+    assert wrong.status_code == 500, wrong.text
+    assert wrong.json()["error"]["code"] == "AGENT_ERROR"
+    assert native.effects == []
+    assert native.saver.get_tuple(config) == checkpoint
+    assert native.client.get(path, headers=headers()).json() == paused.json()
+    assert not native.app._request_auth
+
+    authorized = native.client.post("/api/invocations", json=resume, headers=headers())
+    assert authorized.status_code == 200, authorized.text
+    assert authorized.json()["output"]["status"] == "completed"
+    completed_checkpoint = native.saver.get_tuple(config)
+    assert completed_checkpoint is not None
+    assert completed_checkpoint.config != checkpoint.config
+    assert not any(channel == "__interrupt__" for _, channel, _ in completed_checkpoint.pending_writes)
+    assert native.effects == ["proof"]
+    assert native.principals == [principal]
+    assert not native.app._request_auth
+    # Same textual ID used by bob is isolated from alice's invocation ID.
+    repeated = native.client.post("/api/invocations", json=resume, headers=headers())
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json() == authorized.json()
+    duplicate = {**resume, "id": str(uuid.uuid4())}
+    fresh_duplicate = native.client.post("/api/invocations", json=duplicate, headers=headers())
+    assert fresh_duplicate.status_code == 200, fresh_duplicate.text
+    assert fresh_duplicate.json()["output"]["status"] == "completed"
+    assert native.effects == ["proof"]
+    assert native.principals == [principal]
+    assert not native.app._request_auth
 
 
 def test_native_envelope_and_handler_errors(native):
