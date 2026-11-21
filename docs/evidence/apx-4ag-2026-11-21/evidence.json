@@ -1,0 +1,867 @@
+{
+  "app": {
+    "compute_size": "MEDIUM",
+    "instances": 1,
+    "name": "agent-bricks-apx-dur-gen",
+    "profile": "fevm-stable",
+    "url_host": "agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com",
+    "workspace_id": "7474660401027952"
+  },
+  "bead": "apx-4ag",
+  "cancellation": {
+    "disconnect_is_not_cancellation": true,
+    "reason": "DurableAgentServer registers no cancel route. POST /cancel returned 404 Not Found. DELETE of the invocation returned 405 Method Not Allowed. The invocation stayed active, then completed.",
+    "supported": false
+  },
+  "code": {
+    "agent_toml_sha256": "b3b2bc12a1b277363196413e0d76e7b6fc3c7e905cca12217fb5972fd9b323e7",
+    "agentbricks_cli": "0.10.0",
+    "app_yaml_sha256": "c078302336b2962382a127db278757beadd13c994b388a079487edfa8240c141",
+    "cli": "1.26.0",
+    "installed_versions": {
+      "apx-agent": "0.7.8.dev8+g0c15c9f84",
+      "databricks-agentbricks": "0.10.0",
+      "databricks-sdk": "0.169.0",
+      "langchain": "1.5.2",
+      "langchain-core": "1.8.4",
+      "langgraph": "1.2.24",
+      "langgraph-checkpoint": "4.3.2"
+    },
+    "package_index": "https://pypi.org/simple/",
+    "probe": "scripts/probes/apx_4ag/server.py",
+    "probe_sha256": "4cf7778cefad73b7d6c92c43c67788c0d3de4b68607dc53108b3608180d22278",
+    "pyproject_sha256": "9a04495fc90fe0839f37e2b8fd1355247cfd9c4c7a54e65645f0184ca276509d",
+    "python": "3.15.1",
+    "sdk_symbols": {
+      "events_after": "after: int = 0",
+      "events_line": 314,
+      "events_method": "DurableAgentServer._events",
+      "exclusive_filter": "databricks_agentkit.runtime.store sequence_number > after_sequence",
+      "exclusive_filter_line": 302,
+      "legacy_kill_switch": "apx_agent._cancellation.CancellationRegistry",
+      "route_lines": [
+        133,
+        134,
+        135
+      ],
+      "routes": [
+        "POST /api/invocations",
+        "GET /api/invocations/{invocation_id}",
+        "GET /api/invocations/{invocation_id}/events"
+      ],
+      "routes_file": "databricks_agentkit/runtime/app.py",
+      "server": "databricks_agentkit.runtime.app.DurableAgentServer"
+    },
+    "wheel_sha256": "8a1582e144fd906fa0ccb3858be53ca31e3b1a285c756ec3f2ffe29ae2a37879"
+  },
+  "commands": {
+    "apps_stop_or_start": false,
+    "deploy": "agentbricks -p fevm-stable deploy apx-dur-gen --source <stage> --instances 1 --pip-index-url https://pypi.org/simple/"
+  },
+  "final_ping": {
+    "app": {
+      "active_deployment_id": "01f1e540a39a1e87b454a2b09081c5e9",
+      "app_message": "App has status: App is running",
+      "app_state": "RUNNING",
+      "compute_state": "ACTIVE",
+      "deployment_state": "SUCCEEDED",
+      "name": "agent-bricks-apx-dur-gen",
+      "running_instances": 1,
+      "url_host": "agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com",
+      "utc": "2026-11-21T00:19:00.447901+00:00"
+    },
+    "http_get": 200,
+    "http_post": 202,
+    "invocation_id": "46c37341-7248-4a50-9ae7-d1dea90c22be",
+    "invocation_status": "completed",
+    "output_content": "pong",
+    "polls": [
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:18:57.038588+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "completed",
+        "utc": "2026-11-21T00:18:59.467446+00:00"
+      }
+    ],
+    "sent_utc": "2026-11-21T00:18:55.790867+00:00",
+    "session_id": "4ag-ping-b58bdc5d-578b-46b9-badd-626e44892960",
+    "utc": "2026-11-21T00:18:59.895344+00:00"
+  },
+  "hold": {
+    "accepted": {
+      "body": {
+        "id": "c5a4b04e-e38b-4797-bbee-2a49591ba6f6",
+        "status": "queued",
+        "status_url": "/api/invocations/c5a4b04e-e38b-4797-bbee-2a49591ba6f6"
+      },
+      "status": 202,
+      "utc": "2026-11-21T00:13:28.968118+00:00"
+    },
+    "attempt": {
+      "attempt": 1,
+      "invocation_id": "c5a4b04e-e38b-4797-bbee-2a49591ba6f6",
+      "marker": "4ag-hold",
+      "python": "3.15.1",
+      "recovery": false,
+      "session_id": "4ag-hold-5cfb0678-2a57-473d-a875-972c622b086d",
+      "utc": "2026-11-21T00:13:29.329130+00:00",
+      "versions": {
+        "apx-agent": "0.7.8.dev8+g0c15c9f84",
+        "databricks-agentbricks": "0.10.0",
+        "databricks-sdk": "0.169.0",
+        "langchain": "1.5.2",
+        "langchain-core": "1.8.4",
+        "langgraph": "1.2.24",
+        "langgraph-checkpoint": "4.3.2"
+      }
+    },
+    "boundary": {
+      "attempt": 1,
+      "checkpoint_id": "1f1e5406-0ffa-61dd-8001-70e47c4cf85e",
+      "message_types": [
+        "human",
+        "ai"
+      ],
+      "pending_write_channels": [],
+      "recovery": false,
+      "tool_results": []
+    },
+    "cancel_after_completed": {
+      "delete_invocation": 405,
+      "post_cancel": 404,
+      "readback": {
+        "invocation_status": "completed",
+        "status": 200,
+        "utc": "2026-11-21T00:13:46.126283+00:00"
+      }
+    },
+    "cancel_while_active": {
+      "delete_detail": {
+        "detail": "Method Not Allowed"
+      },
+      "delete_invocation": 405,
+      "delete_utc": "2026-11-21T00:13:30.713391+00:00",
+      "post_cancel": 404,
+      "post_cancel_detail": {
+        "detail": "Not Found"
+      },
+      "post_cancel_utc": "2026-11-21T00:13:30.301920+00:00",
+      "readback": {
+        "invocation_status": "active",
+        "status": 200,
+        "utc": "2026-11-21T00:13:31.125790+00:00"
+      }
+    },
+    "checkpoint_after_completion": {
+      "actor_id": "ed374d9e91b1da29e87bbcc307d7af03c50408634de85c10335c63da216e31ca",
+      "checkpoint_id": "1f1e5406-880c-6596-8003-7eea490291a1",
+      "message_ids": [
+        "411ad2e5-e20a-487f-b020-9d4782dd4eb9",
+        "lc_run--01a1fb73-715a-718c-9624-8db5039eb608-0",
+        "e4058ca6-3bc8-499e-98ee-79cb8c32fdcc",
+        "lc_run--01a1fb73-a287-7155-b788-cf19433450e6-0"
+      ],
+      "message_types": [
+        "human",
+        "ai",
+        "tool",
+        "ai"
+      ],
+      "metadata_invocation_id": "c5a4b04e-e38b-4797-bbee-2a49591ba6f6",
+      "metadata_step": 3,
+      "pending_write_channels": [],
+      "present": true,
+      "tool_call_ids": [
+        "4ag-call"
+      ]
+    },
+    "diag_listing": [
+      "/Shared/apx-4ag-1120-diag/attempt-1-4ag-hold.json",
+      "/Shared/apx-4ag-1120-diag/boundary-1-4ag-hold.json"
+    ],
+    "final": {
+      "invocation_id": "c5a4b04e-e38b-4797-bbee-2a49591ba6f6",
+      "invocation_status": "completed",
+      "status": 200,
+      "utc": "2026-11-21T00:13:44.056367+00:00"
+    },
+    "marker": "4ag-hold",
+    "polls": [
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:13:31.540064+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:13:33.969875+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:13:36.397901+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:13:38.803694+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:13:41.235290+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "completed",
+        "utc": "2026-11-21T00:13:43.640597+00:00"
+      }
+    ],
+    "replay_after_cursor": {
+      "after": "22",
+      "event_ids": [
+        "23",
+        "24",
+        "25",
+        "26"
+      ],
+      "event_names": [
+        "agent.message.delta",
+        "agent.message.delta",
+        "agent.message.delta",
+        "run.completed"
+      ],
+      "records": [
+        {
+          "event": "agent.message.delta",
+          "id": "23",
+          "message": {
+            "id": "lc_run--01a1fb73-715a-718c-9624-8db5039eb608-0",
+            "tool_call_ids": [
+              "4ag-call"
+            ],
+            "type": "ai"
+          }
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "24",
+          "message": {
+            "id": "e4058ca6-3bc8-499e-98ee-79cb8c32fdcc",
+            "tool_call_ids": [],
+            "type": "tool"
+          }
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "25",
+          "message": {
+            "id": "lc_run--01a1fb73-a287-7155-b788-cf19433450e6-0",
+            "tool_call_ids": [],
+            "type": "ai"
+          }
+        },
+        {
+          "event": "run.completed",
+          "id": "26"
+        }
+      ],
+      "status": 200,
+      "utc": "2026-11-21T00:13:44.489924+00:00"
+    },
+    "replay_full": {
+      "after": null,
+      "event_ids": [
+        "21",
+        "22",
+        "23",
+        "24",
+        "25",
+        "26"
+      ],
+      "event_names": [
+        "run.started",
+        "4ag.attempt",
+        "agent.message.delta",
+        "agent.message.delta",
+        "agent.message.delta",
+        "run.completed"
+      ],
+      "records": [
+        {
+          "event": "run.started",
+          "id": "21"
+        },
+        {
+          "data": {
+            "attempt": 1,
+            "invocation_id": "c5a4b04e-e38b-4797-bbee-2a49591ba6f6",
+            "recovery": false,
+            "session_id": "4ag-hold-5cfb0678-2a57-473d-a875-972c622b086d"
+          },
+          "event": "4ag.attempt",
+          "id": "22"
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "23",
+          "message": {
+            "id": "lc_run--01a1fb73-715a-718c-9624-8db5039eb608-0",
+            "tool_call_ids": [
+              "4ag-call"
+            ],
+            "type": "ai"
+          }
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "24",
+          "message": {
+            "id": "e4058ca6-3bc8-499e-98ee-79cb8c32fdcc",
+            "tool_call_ids": [],
+            "type": "tool"
+          }
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "25",
+          "message": {
+            "id": "lc_run--01a1fb73-a287-7155-b788-cf19433450e6-0",
+            "tool_call_ids": [],
+            "type": "ai"
+          }
+        },
+        {
+          "event": "run.completed",
+          "id": "26"
+        }
+      ],
+      "status": 200,
+      "utc": "2026-11-21T00:13:44.913767+00:00"
+    },
+    "request": {
+      "background": true,
+      "id": "c5a4b04e-e38b-4797-bbee-2a49591ba6f6",
+      "input": [
+        {
+          "content": "Please 4ag-hold this turn",
+          "role": "user"
+        }
+      ],
+      "session_id": "4ag-hold-5cfb0678-2a57-473d-a875-972c622b086d"
+    },
+    "sent_utc": "2026-11-21T00:13:28.207927+00:00",
+    "sse_disconnect": {
+      "cursor": "22",
+      "events": [
+        {
+          "data": {
+            "type": "run.started"
+          },
+          "event": "run.started",
+          "id": "21"
+        },
+        {
+          "data": {
+            "attempt": 1,
+            "invocation_id": "c5a4b04e-e38b-4797-bbee-2a49591ba6f6",
+            "recovery": false,
+            "session_id": "4ag-hold-5cfb0678-2a57-473d-a875-972c622b086d",
+            "type": "4ag.attempt"
+          },
+          "event": "4ag.attempt",
+          "id": "22"
+        }
+      ],
+      "status": 200,
+      "utc_close": "2026-11-21T00:13:29.465062+00:00",
+      "utc_open": "2026-11-21T00:13:28.969130+00:00"
+    },
+    "status_at_disconnect": {
+      "invocation_status": "active",
+      "status": 200,
+      "utc": "2026-11-21T00:13:29.887605+00:00"
+    }
+  },
+  "identity": {
+    "auth_type": "databricks-cli",
+    "auth_user_required": false,
+    "execution": "app service principal",
+    "ingress": "Apps user-to-machine OAuth through apps_inbound_oauth_headers",
+    "pat": false,
+    "request_user_recovery": "not enabled and not substituted",
+    "service_principal_client_id": "06c3f57c-f656-4872-b791-33106ce1ad0b"
+  },
+  "left_running": {
+    "app_state": "RUNNING",
+    "deleted": false,
+    "deployment_id": "01f1e540a39a1e87b454a2b09081c5e9",
+    "running_instances": 1
+  },
+  "observed": "2026-11-21",
+  "operator_authorization": "2026-11-20",
+  "replacement": {
+    "app_after_replay": {
+      "active_deployment_id": "01f1e540a39a1e87b454a2b09081c5e9",
+      "app_message": "App has status: App is running",
+      "app_state": "RUNNING",
+      "compute_state": "ACTIVE",
+      "deployment_state": "SUCCEEDED",
+      "name": "agent-bricks-apx-dur-gen",
+      "running_instances": 1,
+      "url_host": "agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com",
+      "utc": "2026-11-21T00:17:29.807777+00:00"
+    },
+    "app_before_replay": {
+      "active_deployment_id": "01f1e540a39a1e87b454a2b09081c5e9",
+      "app_message": "App has status: App is running",
+      "app_state": "RUNNING",
+      "compute_state": "ACTIVE",
+      "deployment_state": "SUCCEEDED",
+      "name": "agent-bricks-apx-dur-gen",
+      "running_instances": 1,
+      "url_host": "agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com",
+      "utc": "2026-11-21T00:17:13.959296+00:00"
+    },
+    "attempt_1_still_present": {
+      "checkpoint_id": "1f1e5408-cf8e-68a5-8001-c223eda71620",
+      "recovery": false,
+      "utc": "2026-11-21T00:14:43.100183+00:00"
+    },
+    "attempt_2": {
+      "attempt": 2,
+      "invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+      "marker": "4ag-worker-loss",
+      "python": "3.15.1",
+      "recovery": true,
+      "session_id": "4ag-kill-9613d8e9-eb57-484f-8c96-1fa761bc75bd",
+      "utc": "2026-11-21T00:17:10.126431+00:00",
+      "versions": {
+        "apx-agent": "0.7.8.dev8+g0c15c9f84",
+        "databricks-agentbricks": "0.10.0",
+        "databricks-sdk": "0.169.0",
+        "langchain": "1.5.2",
+        "langchain-core": "1.8.4",
+        "langgraph": "1.2.24",
+        "langgraph-checkpoint": "4.3.2"
+      }
+    },
+    "boundary_2": {
+      "attempt": 2,
+      "checkpoint_id": "1f1e5408-cf8e-68a5-8001-c223eda71620",
+      "invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+      "message_types": [
+        "human",
+        "ai"
+      ],
+      "recovery": true,
+      "session_id": "4ag-kill-9613d8e9-eb57-484f-8c96-1fa761bc75bd",
+      "tool_results": [],
+      "utc": "2026-11-21T00:17:10.126431+00:00"
+    },
+    "cancel_after_completed": {
+      "delete_invocation": 405,
+      "post_cancel": 404,
+      "readback": {
+        "invocation_status": "completed",
+        "status": 200,
+        "utc": "2026-11-21T00:17:29.280820+00:00"
+      }
+    },
+    "checkpoint_after_recovery": {
+      "actor_id": "440fda1b82606ae7933ba97d35f3368956a776dd950ff065b45fc88b88968ff9",
+      "checkpoint_id": "1f1e540e-c179-660c-8003-1c75693fa153",
+      "message_ids": [
+        "13cd9625-fc5b-4674-9696-987573b75fc1",
+        "lc_run--01a1fb74-9189-7179-b559-49c3ab5779c3-0",
+        "031ff727-829e-461a-886c-21586b9c75ef",
+        "lc_run--01a1fb77-00de-7630-985a-651b12981b35-0"
+      ],
+      "message_types": [
+        "human",
+        "ai",
+        "tool",
+        "ai"
+      ],
+      "metadata_invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+      "metadata_step": 3,
+      "pending_write_channels": [],
+      "present": true,
+      "tool_call_ids": [
+        "4ag-call"
+      ]
+    },
+    "crash_to_attempt_2_seconds": 143.126431,
+    "diag_listing": [
+      "/Shared/apx-4ag-1120-diag/attempt-1-4ag-hold.json",
+      "/Shared/apx-4ag-1120-diag/attempt-1-4ag-worker-loss.json",
+      "/Shared/apx-4ag-1120-diag/attempt-2-4ag-worker-loss.json",
+      "/Shared/apx-4ag-1120-diag/boundary-1-4ag-hold.json",
+      "/Shared/apx-4ag-1120-diag/boundary-1-4ag-worker-loss.json",
+      "/Shared/apx-4ag-1120-diag/boundary-2-4ag-worker-loss.json"
+    ],
+    "final": {
+      "invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+      "invocation_status": "completed",
+      "status": 200,
+      "utc": "2026-11-21T00:17:24.981161+00:00"
+    },
+    "initial_deployment_id": "01f1e53fc3c91529b6c0409bcc91a128",
+    "initial_traffic_switched": "2026-11-21T00:10:43Z",
+    "instances": 1,
+    "mechanism": "explicit agentbricks deploy of the same source; not apps start/stop; not a surviving replica",
+    "mode": "SNAPSHOT",
+    "polls": [
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:17:14.879791+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:17:17.313467+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:17:19.726278+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:17:22.135131+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "completed",
+        "utc": "2026-11-21T00:17:24.564751+00:00"
+      }
+    ],
+    "redeploy_started": "2026-11-21T00:15:14Z",
+    "replacement_created": "2026-11-21T00:15:21Z",
+    "replacement_deployment_id": "01f1e540a39a1e87b454a2b09081c5e9",
+    "replacement_traffic_switched": "2026-11-21T00:15:35Z",
+    "replay_after_cursor": {
+      "after": "28",
+      "event_ids": [
+        "29",
+        "30",
+        "31",
+        "32",
+        "33",
+        "34"
+      ],
+      "event_names": [
+        "agent.message.delta",
+        "run.started",
+        "4ag.attempt",
+        "agent.message.delta",
+        "agent.message.delta",
+        "run.completed"
+      ],
+      "records": [
+        {
+          "event": "agent.message.delta",
+          "id": "29",
+          "message": {
+            "id": "lc_run--01a1fb74-9189-7179-b559-49c3ab5779c3-0",
+            "tool_call_ids": [
+              "4ag-call"
+            ],
+            "type": "ai"
+          }
+        },
+        {
+          "event": "run.started",
+          "id": "30"
+        },
+        {
+          "data": {
+            "attempt": 2,
+            "invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+            "recovery": true,
+            "session_id": "4ag-kill-9613d8e9-eb57-484f-8c96-1fa761bc75bd"
+          },
+          "event": "4ag.attempt",
+          "id": "31"
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "32",
+          "message": {
+            "id": "031ff727-829e-461a-886c-21586b9c75ef",
+            "tool_call_ids": [],
+            "type": "tool"
+          }
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "33",
+          "message": {
+            "id": "lc_run--01a1fb77-00de-7630-985a-651b12981b35-0",
+            "tool_call_ids": [],
+            "type": "ai"
+          }
+        },
+        {
+          "event": "run.completed",
+          "id": "34"
+        }
+      ],
+      "status": 200,
+      "utc": "2026-11-21T00:17:25.491024+00:00"
+    },
+    "replay_full": {
+      "after": null,
+      "event_ids": [
+        "27",
+        "28",
+        "29",
+        "30",
+        "31",
+        "32",
+        "33",
+        "34"
+      ],
+      "event_names": [
+        "run.started",
+        "4ag.attempt",
+        "agent.message.delta",
+        "run.started",
+        "4ag.attempt",
+        "agent.message.delta",
+        "agent.message.delta",
+        "run.completed"
+      ],
+      "records": [
+        {
+          "event": "run.started",
+          "id": "27"
+        },
+        {
+          "data": {
+            "attempt": 1,
+            "invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+            "recovery": false,
+            "session_id": "4ag-kill-9613d8e9-eb57-484f-8c96-1fa761bc75bd"
+          },
+          "event": "4ag.attempt",
+          "id": "28"
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "29",
+          "message": {
+            "id": "lc_run--01a1fb74-9189-7179-b559-49c3ab5779c3-0",
+            "tool_call_ids": [
+              "4ag-call"
+            ],
+            "type": "ai"
+          }
+        },
+        {
+          "event": "run.started",
+          "id": "30"
+        },
+        {
+          "data": {
+            "attempt": 2,
+            "invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+            "recovery": true,
+            "session_id": "4ag-kill-9613d8e9-eb57-484f-8c96-1fa761bc75bd"
+          },
+          "event": "4ag.attempt",
+          "id": "31"
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "32",
+          "message": {
+            "id": "031ff727-829e-461a-886c-21586b9c75ef",
+            "tool_call_ids": [],
+            "type": "tool"
+          }
+        },
+        {
+          "event": "agent.message.delta",
+          "id": "33",
+          "message": {
+            "id": "lc_run--01a1fb77-00de-7630-985a-651b12981b35-0",
+            "tool_call_ids": [],
+            "type": "ai"
+          }
+        },
+        {
+          "event": "run.completed",
+          "id": "34"
+        }
+      ],
+      "status": 200,
+      "utc": "2026-11-21T00:17:25.951733+00:00"
+    }
+  },
+  "serving_ping": {
+    "completed_utc": "2026-11-21T00:13:07.991948+00:00",
+    "http_get": 200,
+    "http_post": 202,
+    "invocation_id": "afec9ff0-fed1-44b8-8805-731197685c2d",
+    "invocation_status": "completed",
+    "output_content": "pong",
+    "sent_utc": "2026-11-21T00:12:30.184560+00:00",
+    "session_id": "4ag-ping-20edb4ac-a09a-43e7-bef1-1393f5fca903"
+  },
+  "stores": {
+    "deleted": false,
+    "diag_object_id": "4267699505067702",
+    "diag_root": "/Shared/apx-4ag-1120-diag",
+    "runtime_branch": "projects/databricks-internal-custom-agents/branches/production",
+    "runtime_database": "agent-bricks-apx-dur-gen",
+    "runtime_schema": "databricks_agentkit_runtime",
+    "session_store": "apx-4ag-1120-sessions",
+    "session_store_created": "2026-11-21T00:08:58.120Z",
+    "session_store_uid": "b9e1f296-dc58-4e0a-911f-59cd8c5e9195"
+  },
+  "worker_loss": {
+    "accepted": {
+      "body": {
+        "id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+        "status": "queued",
+        "status_url": "/api/invocations/eb618495-b483-4ea1-a86e-9eb734c6a708"
+      },
+      "status": 202,
+      "utc": "2026-11-21T00:14:42.681720+00:00"
+    },
+    "app_while_dead": {
+      "active_deployment_id": "01f1e53fc3c91529b6c0409bcc91a128",
+      "app_message": "App has status: App crashed unexpectedly at 2026-11-21T00:14:47Z",
+      "app_state": "CRASHED",
+      "compute_state": "ACTIVE",
+      "deployment_state": "SUCCEEDED",
+      "name": "agent-bricks-apx-dur-gen",
+      "running_instances": 0,
+      "url_host": "agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com",
+      "utc": "2026-11-21T00:14:49.146686+00:00"
+    },
+    "attempt_1": {
+      "attempt": 1,
+      "invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+      "marker": "4ag-worker-loss",
+      "python": "3.15.1",
+      "recovery": false,
+      "session_id": "4ag-kill-9613d8e9-eb57-484f-8c96-1fa761bc75bd",
+      "utc": "2026-11-21T00:14:43.100183+00:00",
+      "versions": {
+        "apx-agent": "0.7.8.dev8+g0c15c9f84",
+        "databricks-agentbricks": "0.10.0",
+        "databricks-sdk": "0.169.0",
+        "langchain": "1.5.2",
+        "langchain-core": "1.8.4",
+        "langgraph": "1.2.24",
+        "langgraph-checkpoint": "4.3.2"
+      }
+    },
+    "boundary_1": {
+      "attempt": 1,
+      "checkpoint_id": "1f1e5408-cf8e-68a5-8001-c223eda71620",
+      "invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+      "message_types": [
+        "human",
+        "ai"
+      ],
+      "metadata_invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+      "pending_write_channels": [],
+      "recovery": false,
+      "session_id": "4ag-kill-9613d8e9-eb57-484f-8c96-1fa761bc75bd",
+      "tool_results": [],
+      "utc": "2026-11-21T00:14:43.100183+00:00"
+    },
+    "checkpoint_after_crash": {
+      "actor_id": "440fda1b82606ae7933ba97d35f3368956a776dd950ff065b45fc88b88968ff9",
+      "checkpoint_id": "1f1e5408-cf8e-68a5-8001-c223eda71620",
+      "message_ids": [
+        "13cd9625-fc5b-4674-9696-987573b75fc1",
+        "lc_run--01a1fb74-9189-7179-b559-49c3ab5779c3-0"
+      ],
+      "message_types": [
+        "human",
+        "ai"
+      ],
+      "metadata_invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+      "metadata_step": 1,
+      "pending_write_channels": [],
+      "present": true,
+      "tool_call_ids": [
+        "4ag-call"
+      ]
+    },
+    "diag_listing_after_crash": [
+      "/Shared/apx-4ag-1120-diag/attempt-1-4ag-hold.json",
+      "/Shared/apx-4ag-1120-diag/attempt-1-4ag-worker-loss.json",
+      "/Shared/apx-4ag-1120-diag/boundary-1-4ag-hold.json",
+      "/Shared/apx-4ag-1120-diag/boundary-1-4ag-worker-loss.json"
+    ],
+    "exit_code": 86,
+    "http_after_disconnect": [
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:14:43.705691+00:00"
+      },
+      {
+        "http": 200,
+        "invocation_status": "active",
+        "utc": "2026-11-21T00:14:46.130296+00:00"
+      },
+      {
+        "http": 502,
+        "invocation_status": null,
+        "utc": "2026-11-21T00:14:48.639913+00:00"
+      }
+    ],
+    "marker": "4ag-worker-loss",
+    "request": {
+      "background": true,
+      "id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+      "input": [
+        {
+          "content": "Lose the worker with 4ag-worker-loss",
+          "role": "user"
+        }
+      ],
+      "session_id": "4ag-kill-9613d8e9-eb57-484f-8c96-1fa761bc75bd"
+    },
+    "sent_utc": "2026-11-21T00:14:41.910338+00:00",
+    "sse_disconnect": {
+      "cursor": "28",
+      "events": [
+        {
+          "data": {
+            "type": "run.started"
+          },
+          "event": "run.started",
+          "id": "27"
+        },
+        {
+          "data": {
+            "attempt": 1,
+            "invocation_id": "eb618495-b483-4ea1-a86e-9eb734c6a708",
+            "recovery": false,
+            "session_id": "4ag-kill-9613d8e9-eb57-484f-8c96-1fa761bc75bd",
+            "type": "4ag.attempt"
+          },
+          "event": "4ag.attempt",
+          "id": "28"
+        }
+      ],
+      "status": 200,
+      "utc_close": "2026-11-21T00:14:43.293930+00:00",
+      "utc_open": "2026-11-21T00:14:42.682366+00:00"
+    }
+  }
+}
