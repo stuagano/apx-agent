@@ -1,6 +1,6 @@
 # Durable host consumers (#864)
 
-**Status:** inventory frozen; external-effect proof recorded, five live follow-ups remain · **Date:** 2026-11-20 ·
+**Status:** inventory frozen; external-effect proof recorded (2026-11-20 and again on agent-bricks-apx-dur-gen 2026-11-21); five live follow-ups remain · **Date:** 2026-11-20 ·
 **Issue:** [#864](https://github.com/stuagano/apx-agent/issues/864) ·
 **Parent:** [#862](https://github.com/stuagano/apx-agent/issues/862)
 
@@ -72,7 +72,7 @@ is unavailable today.
 | Live item | Follow-up bead | Blocker / boundary | Required deployed proof |
 |---|---|---|---|
 | Session/invocation round-trip after worker loss | `apx-h0f` | No operator-authorized disposable App, fault-injection run, or Apps OAuth context supplied for this assignment | Same invocation and session read back over HTTP and managed storage across real worker loss; original/recovery attempts and replacement mechanism recorded |
-| Replay-safe external effects | `apx-aub` | **Proof recorded, 2026-11-20:** operator-authorized disposable App/sink, hard exit before tool return, explicit replacement redeploy; uncommitted work remains at-least-once | [Run report and sanitized committed readbacks](../evidence/apx-aub-2026-11-20/README.md): same invocation, attempts 1/2, stable-key create-only sink, **2 raw tool attempts / 1 effective mutation**, independent pre/post checkpoints, residual limits and verified teardown. Not exactly-once execution or automatic capacity restoration |
+| Replay-safe external effects | `apx-aub` | **Proof recorded.** 2026-11-20 on a torn-down disposable app, and 2026-11-21 on `agent-bricks-apx-dur-gen` (left running). Hard exit after the sink write and before tool return; explicit SNAPSHOT redeploy. Uncommitted work remains at-least-once | [2026-11-20](../evidence/apx-aub-2026-11-20/README.md) and [2026-11-21](../evidence/apx-aub-2026-11-21/README.md): same invocation, attempts 1/2, stable-key create-only sink, **2 raw tool attempts / 1 effective mutation**. Not exactly-once execution or automatic capacity restoration |
 | Authorized approval continuation after replacement | `apx-ab7` | No authorized App and distinct OAuth principals; request-user automatic recovery remains unsupported | Pending approval survives without effects; wrong principal is denied, authorized fresh continuation succeeds once, duplicate resume cannot repeat the effect; retain original and new resume invocation IDs in the same session |
 | Trace correlation after real replacement | `apx-pzd` | No authorized fault-injection App with readable MLflow traces; the invocation-tag join has local tests only | Read back initial/recovered trace IDs and actual invocation record; separate roots join on `apx.invocation.id`, recovered trace has `apx.recovery=true` |
 | Disconnect/reconnect/cancellation contract | `apx-4ag` | No authorized OAuth SSE/replacement probe; native cancellation API is absent | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries; explicitly document that disconnect is not cancellation or rollback and cancellation remains unsupported unless independently proven |
@@ -89,8 +89,14 @@ replica capacity. These observations supersede a blanket "local tests only"
 claim about durable execution, but do not supply the full per-item acceptance
 record above (notably APX HTTP/session round-trip, principal-scoped approvals,
 trace joins, stream lifecycle, and downstream OBO). External crash-window effects
-now have a separate [apx-aub acceptance record](../evidence/apx-aub-2026-11-20/README.md);
-its service-identity deterministic harness is not full consumer equivalence.
+now have separate records for
+[2026-11-20](../evidence/apx-aub-2026-11-20/README.md) and, on the still-live
+app `agent-bricks-apx-dur-gen`,
+[2026-11-21](../evidence/apx-aub-2026-11-21/README.md).
+The 2026-11-21 invocation `0d89a816-f94a-496c-a4e2-a0dbc2fe65a0` created effect
+key `aub-business-20261121-dur-gen` once; attempt 2 returned `created=false`
+and the sink body was unchanged. Its service-identity deterministic harness is
+not full consumer equivalence.
 Do not infer the other proofs or invent missing run dates, invocation IDs or traces.
 
 `test_durable_recovery.py` reconstructs handlers/savers against a local REST fake.

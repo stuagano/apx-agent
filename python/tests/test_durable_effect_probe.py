@@ -160,3 +160,39 @@ def test_committed_live_record_matches_deployed_probe_and_boundaries() -> None:
     assert record["recovered_http"]["body"]["status"] == "completed"
     assert record["duplicate_submission"]["body"]["status"] == "completed"
     assert all(check["result"] == "absent" for check in record["teardown"]["checks"].values())
+
+
+def test_committed_2026_11_21_record_matches_the_live_sink() -> None:
+    """Artifact integrity only: this does not rerun the deployed fault."""
+    root = Path(__file__).resolve().parents[2]
+    record = json.loads((root / "docs/evidence/apx-aub-2026-11-21/evidence.json").read_text())
+    assert hashlib.sha256((root / record["code"]["probe"]).read_bytes()).hexdigest() == (
+        record["code"]["probe_sha256"]
+    )
+    assert record["commands"]["apps_stop_or_start"] is False
+    assert record["left_running"]["deleted"] is False
+    invocation_id = record["request"]["id"]
+    assert record["request"]["http_post"] == 202
+    assert record["worker_loss"]["http"][-1]["http"] == 502
+    assert record["worker_loss"]["app_while_dead"]["app_state"] == "CRASHED"
+    assert record["worker_loss"]["app_while_dead"]["running_instances"] == 0
+    assert record["worker_loss"]["attempt_1"]["created"] is True
+    assert record["worker_loss"]["attempt_1"]["recovery"] is False
+    assert record["worker_loss"]["boundary_1"]["tool_results"] == []
+    replacement = record["replacement"]
+    assert replacement["initial_deployment_id"] != replacement["replacement_deployment_id"]
+    assert replacement["attempt_2"]["created"] is False
+    assert replacement["attempt_2"]["recovery"] is True
+    assert replacement["attempt_2"]["invocation_id"] == invocation_id
+    assert replacement["boundary_2_checkpoint_id"] == record["worker_loss"]["boundary_1"]["checkpoint_id"]
+    assert replacement["final"]["status"] == 200
+    assert replacement["final"]["invocation_status"] == "completed"
+    assert "created\": false" in replacement["final"]["tool_content"]
+    assert record["sink_readback"]["effect_key"] == record["effect"]["key"]
+    assert record["sink_readback"]["value"] == record["effect"]["value"]
+    assert record["sink_listing"].count("effect.json") == 1
+    assert record["raw_tool_attempts"] == 2
+    assert record["effective_mutations"] == 1
+    assert record["duplicate_post"] is False
+    assert record["left_running"]["app_state"] == "RUNNING"
+    assert record["left_running"]["running_instances"] == 1

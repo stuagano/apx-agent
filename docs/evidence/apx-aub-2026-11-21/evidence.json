@@ -1,0 +1,148 @@
+{
+  "bead": "apx-aub",
+  "observed_utc_date": "2026-11-21",
+  "authorization": "operator disposable app authorized 2026-11-20",
+  "prior_record": "docs/evidence/apx-aub-2026-11-20/evidence.json was a different torn-down app and is not this run",
+  "app": {
+    "name": "agent-bricks-apx-dur-gen",
+    "url_host": "agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com",
+    "workspace_id": "7474660401027952",
+    "profile": "fevm-stable",
+    "compute_size": "MEDIUM",
+    "instances": 1
+  },
+  "identity": {
+    "ingress": "databricks-cli U2M OAuth via apps_inbound_oauth_headers",
+    "auth_type": "databricks-cli",
+    "auth_user_required": false,
+    "execution_service_principal_client_id": "06c3f57c-f656-4872-b791-33106ce1ad0b",
+    "request_user_recovery": false
+  },
+  "code": {
+    "probe": "scripts/probes/apx_aub/server.py",
+    "probe_sha256": "7dd68344d9eba60c803f3ecf3ebc29e2632389ab14acb9624e5e91916ad874dd",
+    "apx_agent": "0.7.8.dev9+ge67f146a3",
+    "python_in_app": "3.15.1",
+    "databricks_cli": "1.26.0",
+    "installed_versions": {
+      "apx-agent": "0.7.8.dev9+ge67f146a3",
+      "databricks-agentbricks": "0.10.0",
+      "databricks-sdk": "0.169.0",
+      "langchain": "1.5.2",
+      "langchain-core": "1.8.4",
+      "langgraph": "1.2.24",
+      "langgraph-checkpoint": "4.3.2"
+    }
+  },
+  "stores": {
+    "session_store": "apx-aub-1121-sessions",
+    "session_store_uid": "02de0240-7def-4325-8db4-361083014597",
+    "session_store_created": "2026-11-21T00:52:53.230Z",
+    "runtime_database": "agent-bricks-apx-dur-gen",
+    "runtime_schema": "databricks_agentkit_runtime",
+    "sink_directory": "/Shared/apx-aub-1121-sink",
+    "sink_object_id": "2683107657279850",
+    "package_index": "https://pypi.org/simple/"
+  },
+  "commands": {
+    "deploy": "agentbricks -p fevm-stable deploy apx-dur-gen --source <stage> --instances 1 --pip-index-url https://pypi.org/simple/",
+    "apps_stop_or_start": false,
+    "crash_trigger": "os._exit(86) after a successful create-only sink write and before the tool returns"
+  },
+  "effect": {
+    "key": "aub-business-20261121-dur-gen",
+    "value": "harmless-test-mutation",
+    "dedup": "workspace.upload overwrite=false; ResourceAlreadyExists keeps the first body"
+  },
+  "request": {
+    "id": "0d89a816-f94a-496c-a4e2-a0dbc2fe65a0",
+    "session_id": "aub-session-652f166c-742a-4868-8870-09187eb2023d",
+    "sent_utc": "2026-11-21T00:56:18.844716+00:00",
+    "http_post": 202,
+    "post_utc": "2026-11-21T00:56:19.641632+00:00",
+    "body_status": "queued"
+  },
+  "worker_loss": {
+    "http": [
+      {"http": 200, "invocation_status": "active", "utc": "2026-11-21T00:56:20.056376+00:00"},
+      {"http": 200, "invocation_status": "active", "utc": "2026-11-21T00:56:27.363319+00:00"},
+      {"http": 502, "invocation_status": null, "utc": "2026-11-21T00:56:29.867947+00:00", "non_json": true}
+    ],
+    "app_while_dead": {
+      "app_state": "CRASHED",
+      "app_message": "App has status: App crashed unexpectedly at 2026-11-21T00:56:30Z",
+      "running_instances": 0,
+      "compute_state": "ACTIVE",
+      "active_deployment_id": "01f1e545e5aa1aeaaf631e9d52db70cf"
+    },
+    "attempt_1": {
+      "utc": "2026-11-21T00:56:28.710707+00:00",
+      "attempt": 1,
+      "recovery": false,
+      "created": true
+    },
+    "boundary_1": {
+      "checkpoint_id": "1f1e5466-26d5-6f32-8001-4cfde084eb40",
+      "message_types": ["human", "ai"],
+      "tool_results": [],
+      "pending_write_channels": [],
+      "step": 1
+    }
+  },
+  "replacement": {
+    "redeploy_started_utc": "2026-11-21T00:56:47Z",
+    "redeploy_finished_utc": "2026-11-21T00:58:35Z",
+    "initial_deployment_id": "01f1e545e5aa1aeaaf631e9d52db70cf",
+    "initial_traffic_switched": "2026-11-21T00:54:36Z",
+    "replacement_deployment_id": "01f1e546718010678017040e46a17107",
+    "replacement_traffic_switched": "2026-11-21T00:57:08Z",
+    "replacement_message": "Traffic switched successfully",
+    "attempt_2": {
+      "utc": "2026-11-21T00:58:41.593553+00:00",
+      "attempt": 2,
+      "recovery": true,
+      "created": false,
+      "invocation_id": "0d89a816-f94a-496c-a4e2-a0dbc2fe65a0",
+      "session_id": "aub-session-652f166c-742a-4868-8870-09187eb2023d"
+    },
+    "boundary_2_checkpoint_id": "1f1e5466-26d5-6f32-8001-4cfde084eb40",
+    "final": {
+      "status": 200,
+      "utc": "2026-11-21T00:58:52.109953+00:00",
+      "invocation_id": "0d89a816-f94a-496c-a4e2-a0dbc2fe65a0",
+      "invocation_status": "completed",
+      "tool_content": "{\"created\": false, \"effect_key\": \"aub-business-20261121-dur-gen\"}"
+    },
+    "checkpoint_after_recovery": {
+      "checkpoint_id": "1f1e546b-2291-6355-8003-9c729ea7a0f4",
+      "step": 3,
+      "message_types": ["human", "ai", "tool", "ai"],
+      "metadata_invocation_id": "0d89a816-f94a-496c-a4e2-a0dbc2fe65a0"
+    },
+    "seconds_crash_to_attempt_2": 131.593
+  },
+  "sink_readback": {
+    "effect_key": "aub-business-20261121-dur-gen",
+    "value": "harmless-test-mutation",
+    "unchanged_after_attempt_2": true
+  },
+  "sink_listing": [
+    "attempt-1.json",
+    "attempt-2.json",
+    "boundary-1.json",
+    "boundary-2.json",
+    "effect.json"
+  ],
+  "raw_tool_attempts": 2,
+  "effective_mutations": 1,
+  "duplicate_post": false,
+  "left_running": {
+    "deleted": false,
+    "app_state": "RUNNING",
+    "running_instances": 1,
+    "compute_state": "ACTIVE",
+    "active_deployment_id": "01f1e546718010678017040e46a17107",
+    "observed_utc": "2026-11-21T00:58:54.828307+00:00"
+  },
+  "residual_limits": "The tool body ran twice. The sink mutated once because the second upload used overwrite=false and the existing body matched. This is not exactly-once execution. One worker required an explicit SNAPSHOT redeploy; dead replica capacity was not restored by itself. A new non-recovery user message on this snapshot still calls os._exit(86)."
+}
