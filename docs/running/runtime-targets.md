@@ -1101,6 +1101,17 @@ above.
   per session, and treat a 502 from one routing key as a signal to redeploy,
   since the app status won't show it.
 
+A [2026-11-20 APX `LlmAgent` run (apx-h0f)](../evidence/apx-h0f-2026-11-20/README.md)
+on disposable App `agent-bricks-apx-dur-gen` repeats the single-worker shape and
+does not replace the two-replica observation above. One MEDIUM instance,
+`os._exit` before the tool returned, then an explicit new SNAPSHOT. While the
+process was dead, `app_status` was `CRASHED` with `running_instances=0` even
+though compute stayed `ACTIVE`. The same invocation and session completed only
+after that redeploy. `apps start` was not used, and dead replica capacity was
+not restored by itself. The older single-worker note on this page reported the
+control plane still `RUNNING`; that was a different deployment, and this run
+does not edit it into the 2026-11-20 result.
+
 Operational note: `databricks apps deploy` build steps can fail transiently
 with an opaque `[BUILD][ERROR] Unexpected error ... contact support`; a plain
 retry succeeded and it was not a requirements problem.

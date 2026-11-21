@@ -307,6 +307,34 @@ def _build_chat_databricks(
 # ---------------------------------------------------------------------------
 
 
+def _gateway_refusal_middleware() -> Any:
+    """Turn a gateway DENY raised by the chat model into the assistant message.
+
+    ``get_llm`` raises :class:`GatewayRefusal` when the completion carries
+    ``databricks_service_policy``. Leaving that exception to escape the graph
+    is a generic failed turn. The refusal text is the user-visible reply.
+    """
+    from langchain.agents.middleware import AgentMiddleware
+    from langchain_core.messages import AIMessage
+
+    from ._errors import GatewayRefusal
+
+    class _GatewayRefusalMiddleware(AgentMiddleware):
+        def wrap_model_call(self, request: Any, handler: Any) -> Any:
+            try:
+                return handler(request)
+            except GatewayRefusal as exc:
+                return AIMessage(content=str(exc))
+
+        async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+            try:
+                return await handler(request)
+            except GatewayRefusal as exc:
+                return AIMessage(content=str(exc))
+
+    return _GatewayRefusalMiddleware()
+
+
 def _governance_exception_middleware() -> Any:
     """Middleware that converts governance exceptions into tool error results.
 
@@ -550,7 +578,7 @@ def _compile_llm_agent(
     if duplicates:
         raise ValueError(f"{agent._name}: duplicate tool name(s) {', '.join(map(repr, duplicates))}; "
                          "rename the Python tool or the platform tool.")
-    middleware = [_governance_exception_middleware()]
+    middleware = [_gateway_refusal_middleware(), _governance_exception_middleware()]
     if agent._output_tool is not None:
         middleware.append(_authoritative_output_middleware(agent._output_tool))
     if ctx.escalate_failures:

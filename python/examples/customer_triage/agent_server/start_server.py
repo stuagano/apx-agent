@@ -1,57 +1,19 @@
-"""FastAPI entry point for Databricks Apps — framework boilerplate.
-
-Don't edit this file. Edit ``../agent.py`` instead — that's where the
-RouterAgent + route agents + memory wiring live. This file
-wires that agent into the Databricks Apps runtime:
-
-  * Imports the user's ``agent`` from the top-level ``agent.py``.
-  * Compiles it to the MLflow ResponsesAgent contract.
-  * Registers ``@invoke`` / ``@stream`` handlers.
-  * Mounts apx-agent's ``/mcp`` + ``/.well-known/agent.json`` + ``/health``
-    so Genie / Genie Code can consume the same agent.
-
-Run via ``uvicorn agent_server.start_server:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT``
-(driven by ``databricks.yml`` on deploy).
-"""
-
-from __future__ import annotations
-
+"""Native APX DurableAgentServer target. Install databricks-agentbricks to use it."""
 import os
+from pathlib import Path
 
-from mlflow.genai.agent_server import AgentServer, invoke, stream
+os.environ.setdefault("APX_RUNTIME", "apps")
 
-from apx_agent import compile_to_responses_agent, mount_mcp_endpoints, mount_readyz
-
-# Import the user's agent from the top-level module.
 from agent import agent
+from apx_agent import compile_agent
+from apx_agent._defaults import _make_workspace_client
+from apx_agent._inspection import _load_agent_config
+from apx_agent._settings import resolve_settings
 
-# Default model endpoint — documented source: databricks.yml variable
-# ``llm_endpoint_name`` (default: databricks-claude-sonnet-4-6), surfaced to the
-# app as the APX_MODEL env var on deploy.
-_DEFAULT_MODEL = "databricks-claude-sonnet-4-6"
-MODEL = os.environ.get("APX_MODEL", _DEFAULT_MODEL)
-
-_invoke_fn, _stream_fn = compile_to_responses_agent(agent, model=MODEL)
-
-
-@invoke()
-def non_streaming(request):
-    """Non-streaming request handler — POST /invocations."""
-    return _invoke_fn(request)
-
-
-@stream()
-def streaming(request):
-    """Streaming request handler — POST /invocations with stream=true."""
-    yield from _stream_fn(request)
-
-
-server = AgentServer(agent_type="ResponsesAgent")
-app = server.app
-
-mount_mcp_endpoints(app, agent)
-mount_readyz(app, agent, model=MODEL)
-
-
-if __name__ == "__main__":
-    server.run("agent_server.start_server:app")
+config = resolve_settings(agent, _load_agent_config())
+ws = _make_workspace_client()
+app = compile_agent(
+    agent, config=config, target="durable_agent_server",
+    model=os.environ.get("APX_MODEL", config.model), service_ws=ws,
+    session_store=os.environ.get("AGENT_SESSION_STORE"), project_root=Path.cwd(),
+)
