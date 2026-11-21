@@ -1,6 +1,6 @@
 # Durable host consumers (#864)
 
-**Status:** inventory frozen; live acceptance split into six blocked follow-ups · **Date:** 2026-11-20 ·
+**Status:** inventory frozen; apx-ab7 2026-11-21 found one OAuth profile on workspace 7474660401027952, so approval continuation after replacement stays open · **Date:** 2026-11-20 ·
 **Issue:** [#864](https://github.com/stuagano/apx-agent/issues/864) ·
 **Parent:** [#862](https://github.com/stuagano/apx-agent/issues/862)
 
@@ -70,7 +70,7 @@ below is historical, not a claim that OAuth is unavailable today.
 |---|---|---|---|
 | Session/invocation round-trip after worker loss | `apx-h0f` | No operator-authorized disposable App, fault-injection run, or Apps OAuth context supplied for this assignment | Same invocation and session read back over HTTP and managed storage across real worker loss; original/recovery attempts and replacement mechanism recorded |
 | Replay-safe external effects | `apx-aub` | No authorized disposable effect sink or crash-window probe; uncommitted work is at-least-once | Kill after an external write but before its tool-result checkpoint; independent sink and checkpoint readback prove stable-key deduplication or reconciliation, with retry counts and residual limits |
-| Authorized approval continuation after replacement | `apx-ab7` | No authorized App and distinct OAuth principals; request-user automatic recovery remains unsupported | Pending approval survives without effects; wrong principal is denied, authorized fresh continuation succeeds once, duplicate resume cannot repeat the effect; retain original and new resume invocation IDs in the same session |
+| Authorized approval continuation after replacement | `apx-ab7` | **Blocked 2026-11-21.** `databricks auth profiles` shows one profile on workspace `7474660401027952` (`fevm-stable`, `databricks-cli`). No second principal, no approval, no invocation. [Record](../evidence/apx-ab7-2026-11-21/README.md). `DurableAgentServer._execute` still raises `MCP_USER_AUTH_RECOVERY_UNSUPPORTED` | Pending approval survives without effects; wrong principal is denied, authorized fresh continuation succeeds once, duplicate resume cannot repeat the effect; retain original and new resume invocation IDs in the same session |
 | Trace correlation after real replacement | `apx-pzd` | No authorized fault-injection App with readable MLflow traces; the invocation-tag join has local tests only | Read back initial/recovered trace IDs and actual invocation record; separate roots join on `apx.invocation.id`, recovered trace has `apx.recovery=true` |
 | Disconnect/reconnect/cancellation contract | `apx-4ag` | No authorized OAuth SSE/replacement probe; native cancellation API is absent | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries; explicitly document that disconnect is not cancellation or rollback and cancellation remains unsupported unless independently proven |
 | Native downstream delegation with caller identity | `apx-gar` | Request-user recovery cannot reconstruct transient credentials; no authorized two-App/OAuth/UC audit probe supplied | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
@@ -78,8 +78,16 @@ below is historical, not a claim that OAuth is unavailable today.
 The [apx-ab7 approval-continuation handoff](durable-approval-continuation.md)
 records the 2026-11-20 local principal/duplicate-resume regression, the exact
 installed SDK request-user recovery error, and the operator-authorized live
-procedure. **Deployed approval acceptance remains BLOCKED / NOT RUN**; that
-handoff is not a live evidence record or consumer equivalence proof.
+procedure. On **2026-11-21** `databricks auth profiles -o json` still showed
+one profile, `fevm-stable` (`auth_type=databricks-cli`), on workspace
+`7474660401027952`. The other four profiles are workspace
+`1965859176160743` and were not used. `databricks apps get
+agent-bricks-apx-dur-gen -p fevm-stable` at `2026-11-21T01:12:33.386430+00:00`
+showed the app **RUNNING** with `running_instances=1` on SNAPSHOT
+`01f1e546718010678017040e46a17107`. This bead sent no HTTP invocation, created
+no approval, and did not redeploy. The
+[sanitized record](../evidence/apx-ab7-2026-11-21/README.md) is the blocker.
+**Deployed approval acceptance remains BLOCKED / NOT RUN.**
 
 ### Existing evidence and its limits
 

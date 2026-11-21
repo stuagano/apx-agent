@@ -1,20 +1,38 @@
 # Approval continuation after worker replacement (apx-ab7)
 
-**Date:** 2026-11-20 · **Status:** BLOCKED — deployed acceptance NOT RUN ·
+**Date:** 2026-11-20 · **Status:** BLOCKED — deployed acceptance NOT RUN.
+The 2026-11-21 principal survey found the disposable app running and only one
+OAuth profile on its workspace
+([record](../evidence/apx-ab7-2026-11-21/README.md)). ·
 **Issue:** [#864](https://github.com/stuagano/apx-agent/issues/864) ·
 **Boundary:** [durable host consumers](durable-host-consumers.md#live-864-acceptance-ledger-apx-fgj)
 
 This is a blocked-verification record and operator handoff, **not a successful
-live run record**. No App was provisioned, deployed, invoked, faulted, inspected,
-or torn down for this work. No live principals, session/invocation IDs, worker
-IDs, store records, effects, or audit records were collected. The bead stays
-open; local green gates do not satisfy its deployed acceptance.
+live run record**. The 2026-11-20 split did not provision, deploy, invoke, or
+fault an App. The 2026-11-21 survey inspected the already-running disposable
+app and did not invoke or replace it. No approval, session, or invocation id
+was collected. The bead stays open; local green gates do not satisfy its
+deployed acceptance.
+
+## 2026-11-21 principal survey
+
+`databricks apps get agent-bricks-apx-dur-gen -p fevm-stable -o json` at
+`2026-11-21T01:12:33.386430+00:00` showed app `agent-bricks-apx-dur-gen`
+**RUNNING**, `running_instances=1`, SNAPSHOT
+`01f1e546718010678017040e46a17107`. `databricks auth profiles -o json`
+returned five profiles. One, `fevm-stable` (`auth_type=databricks-cli`), is
+on workspace `7474660401027952`. Four are on workspace `1965859176160743`
+and were not used. No second principal was created, no personal access token
+was minted, and the app service principal was not used as a caller. This bead
+sent no invocation and did not replace the worker. Deployed approval
+acceptance stays NOT RUN. The paragraphs below describe the 2026-11-20 split,
+which had not yet been given this app.
 
 ## Blocker and authority boundary
 
-The operator has not supplied an authorized disposable deployed App, permission
-for worker fault injection, store/effect/audit access and teardown, or two
-distinct OAuth principals. The assignment forbids deployment. Before a live run,
+The 2026-11-20 split had not been given an authorized disposable App or two
+distinct OAuth principals. On 2026-11-21 the app exists and is running; the
+remaining blocker is the missing second principal on that workspace. Before a live run,
 obtain explicit authorization for each of those operations and securely
 configured Apps U2M/M2M OAuth contexts for the authorized and unauthorized
 principals. An App service identity used for infrastructure/storage is not a
@@ -23,8 +41,9 @@ to fill a missing user identity; never persist tokens in evidence or checkpoints
 
 Do not retry parked `agent-bricks-stu-dur-1002`. The old
 `agent-bricks-864probe` and its stores were deleted on 2026-10-21. Neither is an
-available disposable probe. If a new deployment is necessary, the operator must
-first explicitly change the no-deploy instruction.
+available disposable probe. The 2026-11-21 assignment allows fault injection on
+`agent-bricks-apx-dur-gen` only. This bead did not use that permission, because
+a second OAuth principal on workspace `7474660401027952` is not configured.
 
 ## Exact runtime restriction and fresh continuation path
 
