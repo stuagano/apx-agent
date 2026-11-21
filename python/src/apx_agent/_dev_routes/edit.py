@@ -161,7 +161,6 @@ def register(router: APIRouter, ctx: DevRouteContext) -> None:
                 model=getattr(ctx.config, "model", "") if ctx else "",
                 current_instructions=current_instructions,
                 experiment_id=experiment_id,
-                reflection_model="databricks:/databricks-claude-sonnet-4-6",
                 target=target,
             )
         except Exception as exc:  # noqa: BLE001 — optimize/predict failure → clean 500 (transient prompt already cleaned in finally)

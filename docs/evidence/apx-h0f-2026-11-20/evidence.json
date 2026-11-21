@@ -1,0 +1,520 @@
+{
+  "schema_version": 1,
+  "bead": "apx-h0f",
+  "date": "2026-11-20",
+  "scope": "Same invocation and session across a hard worker exit and an explicit replacement redeploy. Not request-user recovery, not cancellation, not automatic capacity restoration, not consumer retirement.",
+  "authorization": "Operator authorized this existing disposable App for fault injection, redeploy, and store access on 2026-11-20. The App and its stores were left running. No other App was modified.",
+  "environment": {
+    "profile": "fevm-stable",
+    "workspace_id": "7474660401027952",
+    "workspace_host": "https://fevm-serverless-stable-7def3z.cloud.databricks.com",
+    "app": "agent-bricks-apx-dur-gen",
+    "app_url": "https://agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com",
+    "hosting": "space-less MEDIUM; compute_min_instances=1; compute_max_instances=1",
+    "ingress_auth": "databricks-cli U2M OAuth JWT via apps_inbound_oauth_headers; not a PAT",
+    "auth_type": "databricks-cli",
+    "execution_identity": "App service principal; [auth.user] required=false; request-user recovery not enabled",
+    "app_service_principal": "06c3f57c-f656-4872-b791-33106ce1ad0b",
+    "session_store": "apx-h0f-1120-sessions",
+    "session_store_uid": "d6b2eb8d-490e-4a95-bc19-c6403d7d7d3e",
+    "runtime_store": {
+      "binding": "managed Runtime Store env injected by agentbricks 0.10.0",
+      "branch": "projects/databricks-internal-custom-agents/branches/production",
+      "database": "agent-bricks-apx-dur-gen",
+      "schema": "databricks_agentkit_runtime",
+      "username": "06c3f57c-f656-4872-b791-33106ce1ad0b"
+    },
+    "legacy_postgres_resource_left_attached": {
+      "name": "postgres-runtime-store",
+      "branch": "projects/agent-bricks-apx-dur-gen-runtime-store/branches/production",
+      "note": "Pre-existing resource was not deleted. The deployed env does not set DATABRICKS_AGENTBRICKS_RUNTIME_STORE_LAKEBASE_ENDPOINT."
+    },
+    "diag_root": "/Shared/apx-h0f-1120-diag",
+    "databricks_cli": "1.26.0",
+    "agentbricks_cli": "0.10.0"
+  },
+  "code": {
+    "apx_base_commit": "0c15c9f8464e62418de9d9244721764b54e0b990",
+    "probe": "scripts/probes/apx_h0f/server.py",
+    "probe_sha256": "2c383bb51e78efb1b37a9d7908942db3f66b535430a473ec7a31fb1dcab4ac87",
+    "wheel": {
+      "name": "apx_agent-0.7.8.dev8+g0c15c9f84-py3-none-any.whl",
+      "sha256": "8a1582e144fd906fa0ccb3858be53ca31e3b1a285c756ec3f2ffe29ae2a37879"
+    },
+    "deployment_manifests_sha256": {
+      "agent.toml": "689d475b3d63d696c745f07a34c34fe0033a8f49c1fdc8783e982b6001df2ec4",
+      "app.yaml": "0e639a546cd33ed3325d22b0092477495986de7614016a20cd50fb93d088fb83",
+      "pyproject.toml": "f5b19d764413730766a505ceaf91039f378eb555b8182f75f5a32cff7c71ef43",
+      "server.py": "2c383bb51e78efb1b37a9d7908942db3f66b535430a473ec7a31fb1dcab4ac87"
+    },
+    "symbols": [
+      "apx_agent.LlmAgent",
+      "apx_agent._durable_agent.compile_durable_handlers",
+      "databricks_agentkit.DurableAgentServer",
+      "databricks_agentkit.langgraph.session_store.DatabricksSessionStoreSaver",
+      "os._exit"
+    ],
+    "python": "3.15.1",
+    "installed_versions": {
+      "apx-agent": "0.7.8.dev8+g0c15c9f84",
+      "databricks-agentbricks": "0.10.0",
+      "databricks-sdk": "0.169.0",
+      "langchain": "1.5.2",
+      "langchain-core": "1.8.4",
+      "langgraph": "1.2.24",
+      "langgraph-checkpoint": "4.3.2"
+    }
+  },
+  "replacement": {
+    "trigger": "os._exit(86) inside the tool before it returned. Replacement was an explicit redeploy of the same source and store bindings, not apps stop/start and not a surviving replica.",
+    "pre_experiment_snapshot": {
+      "deployment_id": "01f1beecf82619c685185503691c3654",
+      "update_time": "2026-10-03T05:40:49Z",
+      "note": "Previously deployed host on this App. Replaced before the invocation; it did not serve the crashed attempt."
+    },
+    "initial_deployment": {
+      "deployment_id": "01f1e53ca10d1b999edcd8bfe28aa517",
+      "create_time": "2026-11-20T23:46:38Z",
+      "update_time": "2026-11-20T23:48:15Z",
+      "mode": "SNAPSHOT",
+      "status": "SUCCEEDED"
+    },
+    "while_worker_dead": {
+      "observed_utc": "2026-11-20T23:51:37Z",
+      "app_status": {
+        "state": "CRASHED",
+        "message": "App crashed unexpectedly at 2026-11-20T23:50:53Z",
+        "running_instances": 0
+      },
+      "compute_status": {
+        "state": "ACTIVE",
+        "message": "App compute is running.",
+        "active_instances": 1
+      },
+      "active_deployment_id": "01f1e53ca10d1b999edcd8bfe28aa517"
+    },
+    "replacement_deployment": {
+      "deployment_id": "01f1e53d58751383b86e77e91dca86e6",
+      "create_time": "2026-11-20T23:51:46Z",
+      "update_time": "2026-11-20T23:52:00Z",
+      "mode": "SNAPSHOT",
+      "status": "SUCCEEDED",
+      "redeploy_started_utc": "2026-11-20T23:51:38Z",
+      "redeploy_finished_utc": "2026-11-20T23:53:28Z",
+      "agent_answered_wait": "1m17s"
+    },
+    "after_recovery": {
+      "observed_after_ping_utc": "2026-11-20T23:54:28Z",
+      "app_status": {
+        "state": "RUNNING",
+        "running_instances": 1
+      },
+      "compute_status": {
+        "state": "ACTIVE",
+        "active_instances": 1
+      },
+      "active_deployment_id": "01f1e53d58751383b86e77e91dca86e6"
+    }
+  },
+  "fault_boundary": {
+    "marker": "h0f-worker-loss",
+    "tool_call_id": "h0f-call",
+    "order": [
+      "Emit h0f.attempt for attempt 1",
+      "Checkpoint human + AI tool call",
+      "Write attempt-1.json and boundary-1.json",
+      "os._exit(86) before the tool returns"
+    ],
+    "http_after_exit": 502
+  },
+  "request": {
+    "background": true,
+    "id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+    "input": [
+      {
+        "content": "Lose the worker with h0f-worker-loss",
+        "role": "user"
+      }
+    ],
+    "session_id": "h0f-session-2a5aa8f5-a06b-4ca4-a0f0-19da59aec46f"
+  },
+  "accepted": {
+    "status": 202,
+    "utc": "2026-11-20T23:50:50.374335+00:00",
+    "body": {
+      "id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+      "status": "queued",
+      "status_url": "/api/invocations/470246f7-8dda-4f3d-8cdb-7394fecc64b5"
+    }
+  },
+  "boundary_1": {
+    "attempt": 1,
+    "checkpoint": {
+      "checkpoint_id": "1f1e53d3-7b09-65d1-8001-f8d112ebfbd5",
+      "message_types": [
+        "human",
+        "ai"
+      ],
+      "metadata": {
+        "actor_id": "d6c3a35836847ed463dc1a714cc42460ceea7f286f1d1bf018dba4a90cc3ffd2",
+        "apx_turn": "{\"input_digest\": \"5ceb9fb9022421e83925cbbee5fbe5935598a631d747968b474169b240dbb905\", \"invocation_id\": \"470246f7-8dda-4f3d-8cdb-7394fecc64b5\", \"pre_count\": 0, \"prior_tokens\": 0, \"prior_usd\": 0.0}",
+        "databricks_agentkit.invocation_id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+        "ls_integration": "langchain_create_agent",
+        "parents": {},
+        "source": "loop",
+        "step": 1
+      },
+      "pending_write_channels": [],
+      "tool_results": []
+    },
+    "invocation_id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+    "marker": "h0f-worker-loss",
+    "python": "3.15.1",
+    "recovery": false,
+    "session_id": "h0f-session-2a5aa8f5-a06b-4ca4-a0f0-19da59aec46f",
+    "utc": "2026-11-20T23:50:51.534951+00:00",
+    "versions": {
+      "apx-agent": "0.7.8.dev8+g0c15c9f84",
+      "databricks-agentbricks": "0.10.0",
+      "databricks-sdk": "0.169.0",
+      "langchain": "1.5.2",
+      "langchain-core": "1.8.4",
+      "langgraph": "1.2.24",
+      "langgraph-checkpoint": "4.3.2"
+    }
+  },
+  "checkpoint_after_crash": {
+    "checkpoint_id": "1f1e53d3-7b09-65d1-8001-f8d112ebfbd5",
+    "message_types": [
+      "human",
+      "ai"
+    ],
+    "messages": [
+      {
+        "content": "Lose the worker with h0f-worker-loss",
+        "id": "b173d6c5-81bb-407d-898c-0aaae5f882b1",
+        "type": "human"
+      },
+      {
+        "content": "",
+        "id": "lc_run--01a1fb5e-b977-7504-b2b9-73f9a3e9b3d2-0",
+        "tool_calls": [
+          {
+            "args": {
+              "value": "h0f-worker-loss"
+            },
+            "id": "h0f-call",
+            "name": "mark"
+          }
+        ],
+        "type": "ai"
+      }
+    ],
+    "metadata": {
+      "actor_id": "d6c3a35836847ed463dc1a714cc42460ceea7f286f1d1bf018dba4a90cc3ffd2",
+      "apx_turn": "{\"input_digest\": \"5ceb9fb9022421e83925cbbee5fbe5935598a631d747968b474169b240dbb905\", \"invocation_id\": \"470246f7-8dda-4f3d-8cdb-7394fecc64b5\", \"pre_count\": 0, \"prior_tokens\": 0, \"prior_usd\": 0.0}",
+      "databricks_agentkit.invocation_id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+      "ls_integration": "langchain_create_agent",
+      "parents": {},
+      "source": "loop",
+      "step": 1
+    },
+    "pending_write_channels": [],
+    "present": true
+  },
+  "http_after_crash": {
+    "status": 502,
+    "utc": "2026-11-20T23:50:54.584453+00:00",
+    "body": "omitted HTML",
+    "bytes": 11545
+  },
+  "boundary_2": {
+    "attempt": 2,
+    "checkpoint": {
+      "checkpoint_id": "1f1e53d3-7b09-65d1-8001-f8d112ebfbd5",
+      "message_types": [
+        "human",
+        "ai"
+      ],
+      "metadata": {
+        "actor_id": "d6c3a35836847ed463dc1a714cc42460ceea7f286f1d1bf018dba4a90cc3ffd2",
+        "apx_turn": "{\"input_digest\": \"5ceb9fb9022421e83925cbbee5fbe5935598a631d747968b474169b240dbb905\", \"invocation_id\": \"470246f7-8dda-4f3d-8cdb-7394fecc64b5\", \"pre_count\": 0, \"prior_tokens\": 0, \"prior_usd\": 0.0}",
+        "databricks_agentkit.invocation_id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+        "ls_integration": "langchain_create_agent",
+        "parents": {},
+        "source": "loop",
+        "step": 1
+      },
+      "pending_write_channels": [],
+      "tool_results": []
+    },
+    "invocation_id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+    "marker": "h0f-worker-loss",
+    "python": "3.15.1",
+    "recovery": true,
+    "session_id": "h0f-session-2a5aa8f5-a06b-4ca4-a0f0-19da59aec46f",
+    "utc": "2026-11-20T23:53:36.358604+00:00",
+    "versions": {
+      "apx-agent": "0.7.8.dev8+g0c15c9f84",
+      "databricks-agentbricks": "0.10.0",
+      "databricks-sdk": "0.169.0",
+      "langchain": "1.5.2",
+      "langchain-core": "1.8.4",
+      "langgraph": "1.2.24",
+      "langgraph-checkpoint": "4.3.2"
+    }
+  },
+  "recovered_http": {
+    "body": {
+      "id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+      "output": {
+        "checkpoint": {
+          "thread_id": "d6c3a35836847ed463dc1a714cc42460ceea7f286f1d1bf018dba4a90cc3ffd2"
+        },
+        "messages": [
+          {
+            "additional_kwargs": {},
+            "content": "",
+            "id": "lc_run--01a1fb5e-b977-7504-b2b9-73f9a3e9b3d2-0",
+            "invalid_tool_calls": [],
+            "name": null,
+            "response_metadata": {},
+            "tool_calls": [
+              {
+                "args": {
+                  "value": "h0f-worker-loss"
+                },
+                "id": "h0f-call",
+                "name": "mark",
+                "type": "tool_call"
+              }
+            ],
+            "type": "ai",
+            "usage_metadata": {
+              "input_tokens": 1,
+              "output_tokens": 1,
+              "total_tokens": 2
+            }
+          },
+          {
+            "additional_kwargs": {},
+            "artifact": null,
+            "content": "{\"attempt\": 2, \"invocation_id\": \"470246f7-8dda-4f3d-8cdb-7394fecc64b5\", \"marker\": \"h0f-worker-loss\", \"recovery\": true, \"session_id\": \"h0f-session-2a5aa8f5-a06b-4ca4-a0f0-19da59aec46f\"}",
+            "id": "38a62103-8dc3-4954-a8ce-9789466a79e4",
+            "name": "mark",
+            "response_metadata": {},
+            "status": "success",
+            "tool_call_id": "h0f-call",
+            "type": "tool"
+          },
+          {
+            "additional_kwargs": {},
+            "content": "Continued {\"attempt\": 2, \"invocation_id\": \"470246f7-8dda-4f3d-8cdb-7394fecc64b5\", \"marker\": \"h0f-worker-loss\", \"recovery\": true, \"session_id\": \"h0f-session-2a5aa8f5-a06b-4ca4-a0f0-19da59aec46f\"}",
+            "id": "lc_run--01a1fb61-3f8c-7276-a306-38ba1c289647-0",
+            "invalid_tool_calls": [],
+            "name": null,
+            "response_metadata": {},
+            "tool_calls": [],
+            "type": "ai",
+            "usage_metadata": {
+              "input_tokens": 1,
+              "output_tokens": 1,
+              "total_tokens": 2
+            }
+          }
+        ],
+        "status": "completed"
+      },
+      "status": "completed"
+    },
+    "status": 200,
+    "utc": "2026-11-20T23:53:39.563713+00:00"
+  },
+  "checkpoint_after_recovery": {
+    "checkpoint_id": "1f1e53d9-a47e-6cc7-8003-db2850afc237",
+    "message_types": [
+      "human",
+      "ai",
+      "tool",
+      "ai"
+    ],
+    "messages": [
+      {
+        "content": "Lose the worker with h0f-worker-loss",
+        "id": "b173d6c5-81bb-407d-898c-0aaae5f882b1",
+        "type": "human"
+      },
+      {
+        "content": "",
+        "id": "lc_run--01a1fb5e-b977-7504-b2b9-73f9a3e9b3d2-0",
+        "tool_calls": [
+          {
+            "args": {
+              "value": "h0f-worker-loss"
+            },
+            "id": "h0f-call",
+            "name": "mark"
+          }
+        ],
+        "type": "ai"
+      },
+      {
+        "content": "{\"attempt\": 2, \"invocation_id\": \"470246f7-8dda-4f3d-8cdb-7394fecc64b5\", \"marker\": \"h0f-worker-loss\", \"recovery\": true, \"session_id\": \"h0f-session-2a5aa8f5-a06b-4ca4-a0f0-19da59aec46f\"}",
+        "id": "38a62103-8dc3-4954-a8ce-9789466a79e4",
+        "type": "tool"
+      },
+      {
+        "content": "Continued {\"attempt\": 2, \"invocation_id\": \"470246f7-8dda-4f3d-8cdb-7394fecc64b5\", \"marker\": \"h0f-worker-loss\", \"recovery\": true, \"session_id\": \"h0f-session-2a5aa8f5-a06b-4ca4-a0f0-19da59aec46f\"}",
+        "id": "lc_run--01a1fb61-3f8c-7276-a306-38ba1c289647-0",
+        "type": "ai"
+      }
+    ],
+    "metadata": {
+      "actor_id": "d6c3a35836847ed463dc1a714cc42460ceea7f286f1d1bf018dba4a90cc3ffd2",
+      "apx_turn": "{\"input_digest\": \"5ceb9fb9022421e83925cbbee5fbe5935598a631d747968b474169b240dbb905\", \"invocation_id\": \"470246f7-8dda-4f3d-8cdb-7394fecc64b5\", \"pre_count\": 0, \"prior_tokens\": 0, \"prior_usd\": 0.0}",
+      "databricks_agentkit.invocation_id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+      "ls_integration": "langchain_create_agent",
+      "parents": {},
+      "source": "loop",
+      "step": 3
+    },
+    "pending_write_channels": [],
+    "present": true
+  },
+  "events": {
+    "status": 200,
+    "content_type": "text/event-stream; charset=utf-8",
+    "utc": "2026-11-20T23:53:40.044659+00:00",
+    "note": "The first GET was HTTP 200 and 2108 bytes. A follow-up GET of the same URL returned text/event-stream of the same size. Replay ids are 5 through 12. Ids 1-4 were not in the body and are not invented.",
+    "records": [
+      {
+        "id": 5,
+        "event": "run.started",
+        "data": {
+          "type": "run.started"
+        }
+      },
+      {
+        "id": 6,
+        "event": "h0f.attempt",
+        "data": {
+          "type": "h0f.attempt",
+          "attempt": 1,
+          "recovery": false,
+          "session_id": "h0f-session-2a5aa8f5-a06b-4ca4-a0f0-19da59aec46f",
+          "invocation_id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5"
+        }
+      },
+      {
+        "id": 7,
+        "event": "agent.message.delta",
+        "data": {
+          "type": "agent.message.delta",
+          "message_id": "lc_run--01a1fb5e-b977-7504-b2b9-73f9a3e9b3d2-0",
+          "message_type": "ai",
+          "tool_call_id": "h0f-call"
+        }
+      },
+      {
+        "id": 8,
+        "event": "run.started",
+        "data": {
+          "type": "run.started"
+        }
+      },
+      {
+        "id": 9,
+        "event": "h0f.attempt",
+        "data": {
+          "type": "h0f.attempt",
+          "attempt": 2,
+          "recovery": true,
+          "session_id": "h0f-session-2a5aa8f5-a06b-4ca4-a0f0-19da59aec46f",
+          "invocation_id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5"
+        }
+      },
+      {
+        "id": 10,
+        "event": "agent.message.delta",
+        "data": {
+          "type": "agent.message.delta",
+          "message_id": "38a62103-8dc3-4954-a8ce-9789466a79e4",
+          "message_type": "tool",
+          "tool_call_id": "h0f-call"
+        }
+      },
+      {
+        "id": 11,
+        "event": "agent.message.delta",
+        "data": {
+          "type": "agent.message.delta",
+          "message_id": "lc_run--01a1fb61-3f8c-7276-a306-38ba1c289647-0",
+          "message_type": "ai"
+        }
+      },
+      {
+        "id": 12,
+        "event": "run.completed",
+        "data": {
+          "type": "run.completed"
+        }
+      }
+    ]
+  },
+  "duplicate_submission": {
+    "body": {
+      "id": "470246f7-8dda-4f3d-8cdb-7394fecc64b5",
+      "status": "completed",
+      "status_url": "/api/invocations/470246f7-8dda-4f3d-8cdb-7394fecc64b5"
+    },
+    "status": 202,
+    "utc": "2026-11-20T23:53:42.267753+00:00"
+  },
+  "diag_listing_after_duplicate": [
+    "/Shared/apx-h0f-1120-diag/attempt-1.json",
+    "/Shared/apx-h0f-1120-diag/boundary-1.json",
+    "/Shared/apx-h0f-1120-diag/attempt-2.json",
+    "/Shared/apx-h0f-1120-diag/boundary-2.json"
+  ],
+  "attempts": {
+    "raw_tool_attempts": 2,
+    "attempt_3_absent": true
+  },
+  "latency": {
+    "accepted_utc": "2026-11-20T23:50:50.374335+00:00",
+    "attempt_1_utc": "2026-11-20T23:50:51.534951+00:00",
+    "http_502_utc": "2026-11-20T23:50:54.584453+00:00",
+    "attempt_2_utc": "2026-11-20T23:53:36.358604+00:00",
+    "completed_utc": "2026-11-20T23:53:39.563713+00:00",
+    "exit_to_attempt_2_seconds": 164.8,
+    "note": "Most of that interval is the operator starting the redeploy and the new process booting. It is not a recovery SLO. Once the replacement process was up, the original invocation was active on the first poll and completed on the next."
+  },
+  "serving_pings": {
+    "before_fault": {
+      "id": "38c089bc-1b9e-4129-a6b8-2f5d5ec380b7",
+      "session_id": "h0f-ping-c854894e-a7e9-4af4-8fe4-a77999a2eeb1",
+      "submit_status": 202,
+      "final_status": 200,
+      "invocation_status": "completed",
+      "content": "pong",
+      "final_utc": "2026-11-20T23:50:39.247253+00:00"
+    },
+    "after_replacement": {
+      "id": "16434525-62de-4e02-afee-f2fbd5e3606a",
+      "session_id": "h0f-ping-1f90b564-818d-4407-ba0c-33877c37c57a",
+      "submit_status": 202,
+      "submit_utc": "2026-11-20T23:54:28.732167+00:00",
+      "final_status": 200,
+      "invocation_status": "completed",
+      "content": "pong"
+    }
+  },
+  "left_running": {
+    "app": "agent-bricks-apx-dur-gen",
+    "deleted": false,
+    "session_store_deleted": false,
+    "legacy_postgres_resource_deleted": false,
+    "diag_directory_deleted": false
+  },
+  "sanitization": "Omitted OAuth tokens, Authorization headers, operator email, client IPs, workspace user paths, and the 502 HTML body."
+}

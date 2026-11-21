@@ -1500,7 +1500,7 @@ def _load_optimize_eval_rows() -> list[Any]:
 
     MLflow cache when fresh (and an experiment is set), else the local
     ``evals.json`` via ``_find_evals_path``. Returns ``[]`` when neither yields
-    rows so the caller can fail clear without ever calling ``optimize_prompts``.
+    rows so the caller can fail clear without ever calling AgentKit.
     """
     experiment_id = (os.environ.get("MLFLOW_EXPERIMENT_ID") or "").strip()
     if experiment_id and _EVAL_CASES_CACHE.fresh:
@@ -1593,23 +1593,25 @@ def _optimize_instructions_sync(
     model: str,
     current_instructions: str,
     experiment_id: str | None,
-    reflection_model: str,
     target: Any = None,
 ) -> dict[str, Any]:
-    """Run GEPA prompt optimization against the eval rows + judge (synchronous —
-    called via ``asyncio.to_thread``).
+    """Tune the selected instructions with AgentKit ``model_upgrades``.
 
-    Bridges the current instructions through a *transient* MLflow prompt: it is
-    registered, passed as the single ``prompt_uris`` entry, and deleted in a
-    ``finally`` so cleanup runs even if ``optimize_prompts`` raises. The prompt
-    registry is never surfaced and never a source of truth. Returns a dict with
-    a ``status`` key the route strips before responding.
+    The judge is the scorer ``label align`` registered (``get_scorer``). The
+    current instructions are bridged through a transient prompt registry entry
+    because ``optimize_prompts_and_models`` tunes ``prompts:/`` URIs, not source
+    text. The entry is deleted in ``finally``. The registry is not a source of
+    truth. Returns a dict with a ``status`` key the route strips before responding.
+
+    ``max_metric_calls`` uses the same default as ``agentbricks experimental
+    models upgrade``: 10 evaluations per train record and per val record. The
+    editor has one eval set, so that set is both.
     """
     import uuid
 
+    from databricks_agentkit.model_upgrades import optimize_prompts_and_models
     from mlflow import MlflowClient
-    from mlflow.genai import load_prompt, optimize_prompts, register_prompt
-    from mlflow.genai.optimize import GepaPromptOptimizer
+    from mlflow.genai import load_prompt, register_prompt
     from mlflow.genai.scorers import get_scorer
 
     from apx_agent import _eval
@@ -1623,7 +1625,7 @@ def _optimize_instructions_sync(
         from mlflow.types.agent import ChatAgentMessage
         from apx_agent import compile_to_chat_agent
 
-        # MLflow substitutes candidate templates at load_prompt().template.
+        # model_upgrades patches the registered prompt's template per candidate.
         # Compile each prediction independently so concurrent trials cannot
         # reuse stale instructions or mutate the served agent.
         template = load_prompt(uri).template
@@ -1640,22 +1642,27 @@ def _optimize_instructions_sync(
     prompt_name = f"apx_optimize_{uuid.uuid4().hex}"
     registered = register_prompt(name=prompt_name, template=current_instructions)
     uri = f"prompts:/{registered.name}/{registered.version}"
+    short_name = registered.name.rsplit(".", 1)[-1]
+    records = _eval._normalize_evalset(rows)
     try:
-        result = optimize_prompts(
-            predict_fn=predict_fn,
-            train_data=_eval._normalize_evalset(rows),
+        result = optimize_prompts_and_models(
+            predict_fn,
+            records,
+            list(records),
             prompt_uris=[uri],
-            optimizer=GepaPromptOptimizer(reflection_model=reflection_model),
             scorers=[judge],
+            max_metric_calls=10 * (len(records) + len(records)),
+            display_progress_bar=False,
         )
-        optimized = result.optimized_prompts or []
-        candidate = optimized[0].template if optimized else current_instructions
+        best = result.best_candidate
+        key = f"prompt:{short_name}"
+        candidate = best[key] if isinstance(best, dict) and key in best else None
         if not isinstance(candidate, str):
-            raise ValueError("Optimized instructions must be text")
+            raise ValueError(f"model_upgrades did not return a text prompt for {short_name!r}")
         return {
             "ok": True,
             "candidate": candidate,
-            "scores": {"before": result.initial_eval_score, "after": result.final_eval_score},
+            "scores": {"before": result.baseline_score, "after": result.best_score},
             "status": 200,
         }
     finally:

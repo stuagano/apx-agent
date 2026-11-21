@@ -88,6 +88,42 @@ class SessionBudgetExceeded(Exception):
         )
 
 
+class GatewayRefusal(PermissionError):
+    """Unity AI Gateway blocked a model or MCP call.
+
+    The gateway does not fail the HTTP call on a chat-model DENY: it returns
+    200 with a ``databricks_service_policy`` object. An MCP DENY is a JSON-RPC
+    error whose message is the block reason. Either one used to surface as a
+    normal assistant turn or a generic ``{"error": ...}`` tool result.
+
+    Subclasses :class:`PermissionError` so an MCP denial is contained as an
+    error tool message instead of an HTTP 500. The model path catches this
+    and returns the same text as the assistant message. The message is the
+    gateway's block reason — never the prompt or tool arguments.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        policy_name: str | None,
+        kind: str | None,
+        phase: str | None,
+        rank: int | None,
+        mode: str,
+        action: str,
+        surface: str,
+    ) -> None:
+        super().__init__(message)
+        self.policy_name = policy_name
+        self.kind = kind
+        self.phase = phase
+        self.rank = rank
+        self.mode = mode
+        self.action = action
+        self.surface = surface
+
+
 class ToolError(Exception):
     """A tool failed in an expected, legible way — contain it, don't crash.
 
