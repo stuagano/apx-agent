@@ -1,0 +1,597 @@
+{
+  "schema_version": 1,
+  "bead": "apx-aub",
+  "date": "2026-11-20",
+  "scope": "Synthetic create-only Workspace file effect across hard worker loss; not exactly-once runtime execution.",
+  "authorization": "Operator explicitly authorized only this disposable App, test-only writes, fault injection, store/sink access, replacement redeploy and teardown. Existing Apps remained outside the experiment.",
+  "environment": {
+    "profile": "fevm-stable",
+    "workspace_id": "7474660401027952",
+    "app": "agent-bricks-aub-1120-2018",
+    "app_url": "https://agent-bricks-aub-1120-2018-7474660401027952.aws.databricksapps.com",
+    "hosting": "space-less MEDIUM; single worker; no idle-down/wake or automatic capacity-restoration claim",
+    "ingress_auth": "explicit databricks-cli U2M OAuth; apps_inbound_oauth_headers; no PAT or ambient credential fallback",
+    "execution_identity": "App service identity; request-user recovery not enabled",
+    "app_service_principal": "69440258-78c8-4e60-b74e-d9ab3da4cf67",
+    "session_store": "apx-aub-1120-2018-sessions",
+    "session_store_uid": "d04f9a29-fa35-4c56-ad7f-d545222102fb",
+    "runtime_store": "agent-bricks-aub-1120-2018",
+    "runtime_schema": "databricks_agentkit_runtime",
+    "sink_root": "/Shared/apx-aub-1120-2018-sink/verified",
+    "sink_permissions": "New directory only: CAN_EDIT to this App principal; inherited operator ownership."
+  },
+  "code": {
+    "apx_base_commit": "0c15c9f8464e62418de9d9244721764b54e0b990",
+    "probe": "scripts/probes/apx_aub/server.py",
+    "probe_sha256": "7dd68344d9eba60c803f3ecf3ebc29e2632389ab14acb9624e5e91916ad874dd",
+    "wheel": {
+      "name": "apx_agent-0.7.8.dev8+g0c15c9f84-py3-none-any.whl",
+      "sha256": "8a1582e144fd906fa0ccb3858be53ca31e3b1a285c756ec3f2ffe29ae2a37879"
+    },
+    "deployment_manifests_sha256": {
+      "agent.toml": "5921947d5a155641e5b54b65375c67d0c08c1781649059158aabead83b692f9d",
+      "app.yaml": "e2155977b1ff4df1cd27a62fe0e7b76cf2e09d4a95fa030a14c01a62bde23619",
+      "pyproject.toml": "c1f67d83525ed9e47021f5255ee8018ddf8466a6388c9d9e26ca73bee10788dc"
+    },
+    "native_manifest": "schema_version = 1\n[agent]\nframework = \"langgraph\"\nserver = \"agentbricks\"\ndeployment_name = \"aub-1120-2018\"\n[auth.user]\nrequired = false\n[session_store]\nname = \"apx-aub-1120-2018-sessions\"\n",
+    "project_manifest": "[project]\nname = \"aub-disposable-proof\"\nversion = \"0.0.1\"\nrequires-python = \">=3.12\"\ndependencies = [\"apx-agent[agentbricks]\", \"uvicorn==0.42.0\"]\n[tool.uv.sources]\napx-agent = {path = \"apx_agent-0.7.8.dev8+g0c15c9f84-py3-none-any.whl\"}\n",
+    "python": "3.15.1",
+    "installed_versions": {
+      "apx-agent": "0.7.8.dev8+g0c15c9f84",
+      "databricks-agentbricks": "0.10.0",
+      "databricks-sdk": "0.169.0",
+      "langchain": "1.5.2",
+      "langchain-core": "1.8.4",
+      "langgraph": "1.2.24",
+      "langgraph-checkpoint": "4.3.2"
+    }
+  },
+  "replacement": {
+    "trigger": "Explicit redeployment of the same probe/source/App against unchanged Runtime/Session Stores after os._exit(86). No claim of automatic worker restart.",
+    "initial_deployment": {
+      "deployment_id": "01f1e521524c15f582729feed29b057c",
+      "create_time": "2026-11-20T20:31:10Z",
+      "update_time": "2026-11-20T20:31:18Z",
+      "mode": "SNAPSHOT",
+      "status": {
+        "message": "App started successfully",
+        "state": "SUCCEEDED"
+      }
+    },
+    "replacement_deployment": {
+      "deployment_id": "01f1e52195b019d292e3066703216015",
+      "create_time": "2026-11-20T20:33:03Z",
+      "update_time": "2026-11-20T20:33:11Z",
+      "mode": "SNAPSHOT",
+      "status": {
+        "message": "App started successfully",
+        "state": "SUCCEEDED"
+      }
+    }
+  },
+  "fault_boundary": {
+    "operation": "workspace.upload(effect.json, overwrite=False)",
+    "idempotency_key": "aub-business-20261120-2018-verified",
+    "order": [
+      "Create harmless effect.json successfully",
+      "Independently download and compare sink payload inside tool",
+      "Read managed Session Store: tool-call AI checkpoint, no ToolMessage or pending tool write",
+      "Write boundary-1.json",
+      "os._exit(86) before tool returns, before tool-result checkpoint commit"
+    ],
+    "http_after_exit": 502,
+    "before_return": true
+  },
+  "request": {
+    "id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+    "session_id": "aub-session-b523f4c2-0dd0-4869-9589-acdba3bbdd4f",
+    "background": true,
+    "input": [
+      {
+        "role": "user",
+        "content": "Record the disposable business fact"
+      }
+    ]
+  },
+  "accepted": {
+    "status": 202,
+    "body": {
+      "id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+      "status": "queued",
+      "status_url": "/api/invocations/c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d"
+    }
+  },
+  "boundary_1": {
+    "attempt": 1,
+    "checkpoint": {
+      "checkpoint_id": "1f1e5217-42c7-6071-8001-e18ec7b5495c",
+      "message_types": [
+        "human",
+        "ai"
+      ],
+      "metadata": {
+        "actor_id": "87804e8f2746e22ff1116a527646f1c2e76a2b71dc56386731d843ff742aac20",
+        "apx_turn": "{\"input_digest\": \"ee0645a961800b3cabf03cf69e14372ada75ed8cb0263260496bb1bd584bc178\", \"invocation_id\": \"c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d\", \"pre_count\": 0, \"prior_tokens\": 0, \"prior_usd\": 0.0}",
+        "databricks_agentkit.invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+        "ls_integration": "langchain_create_agent",
+        "parents": {},
+        "source": "loop",
+        "step": 1
+      },
+      "pending_write_channels": [],
+      "tool_results": []
+    },
+    "created": true,
+    "effect_key": "aub-business-20261120-2018-verified",
+    "invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+    "python": "3.15.1",
+    "recovery": false,
+    "session_id": "aub-session-b523f4c2-0dd0-4869-9589-acdba3bbdd4f",
+    "sink_readback": {
+      "effect_key": "aub-business-20261120-2018-verified",
+      "value": "harmless-test-mutation"
+    },
+    "utc": "2026-11-20T20:32:07.100780+00:00",
+    "versions": {
+      "apx-agent": "0.7.8.dev8+g0c15c9f84",
+      "databricks-agentbricks": "0.10.0",
+      "databricks-sdk": "0.169.0",
+      "langchain": "1.5.2",
+      "langchain-core": "1.8.4",
+      "langgraph": "1.2.24",
+      "langgraph-checkpoint": "4.3.2"
+    }
+  },
+  "checkpoint_after_crash": {
+    "id": "1f1e5217-42c7-6071-8001-e18ec7b5495c",
+    "metadata": {
+      "source": "loop",
+      "step": 1,
+      "parents": {},
+      "ls_integration": "langchain_create_agent",
+      "apx_turn": "{\"input_digest\": \"ee0645a961800b3cabf03cf69e14372ada75ed8cb0263260496bb1bd584bc178\", \"invocation_id\": \"c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d\", \"pre_count\": 0, \"prior_tokens\": 0, \"prior_usd\": 0.0}",
+      "databricks_agentkit.invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+      "actor_id": "87804e8f2746e22ff1116a527646f1c2e76a2b71dc56386731d843ff742aac20"
+    },
+    "messages": [
+      {
+        "content": "Record the disposable business fact",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "human",
+        "name": null,
+        "id": "2fe8229a-6529-4ef0-9f11-33b0339030e9"
+      },
+      {
+        "content": "",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "ai",
+        "name": null,
+        "id": "lc_run--01a1faa8-c5a2-7171-bdc6-05801af113e7-0",
+        "tool_calls": [
+          {
+            "name": "record",
+            "args": {
+              "value": "aub-business-20261120-2018-verified"
+            },
+            "id": "aub-call",
+            "type": "tool_call"
+          }
+        ],
+        "invalid_tool_calls": [],
+        "usage_metadata": {
+          "input_tokens": 1,
+          "output_tokens": 1,
+          "total_tokens": 2
+        }
+      }
+    ],
+    "pending_writes": []
+  },
+  "sink_after_crash": {
+    "effect_key": "aub-business-20261120-2018-verified",
+    "value": "harmless-test-mutation"
+  },
+  "recovered_http": {
+    "status": 200,
+    "body": {
+      "id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+      "status": "completed",
+      "output": {
+        "status": "completed",
+        "messages": [
+          {
+            "id": "lc_run--01a1faa8-c5a2-7171-bdc6-05801af113e7-0",
+            "name": null,
+            "type": "ai",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "aub-call",
+                "args": {
+                  "value": "aub-business-20261120-2018-verified"
+                },
+                "name": "record",
+                "type": "tool_call"
+              }
+            ],
+            "usage_metadata": {
+              "input_tokens": 1,
+              "total_tokens": 2,
+              "output_tokens": 1
+            },
+            "additional_kwargs": {},
+            "response_metadata": {},
+            "invalid_tool_calls": []
+          },
+          {
+            "id": "0313a755-4d8b-4013-a61b-f8af0a661ea7",
+            "name": "record",
+            "type": "tool",
+            "status": "success",
+            "content": "{\"created\": false, \"effect_key\": \"aub-business-20261120-2018-verified\"}",
+            "artifact": null,
+            "tool_call_id": "aub-call",
+            "additional_kwargs": {},
+            "response_metadata": {}
+          },
+          {
+            "id": "lc_run--01a1faa9-db90-7164-be32-9533a1a267cf-0",
+            "name": null,
+            "type": "ai",
+            "content": "Recorded {\"created\": false, \"effect_key\": \"aub-business-20261120-2018-verified\"}",
+            "tool_calls": [],
+            "usage_metadata": {
+              "input_tokens": 1,
+              "total_tokens": 2,
+              "output_tokens": 1
+            },
+            "additional_kwargs": {},
+            "response_metadata": {},
+            "invalid_tool_calls": []
+          }
+        ],
+        "checkpoint": {
+          "thread_id": "87804e8f2746e22ff1116a527646f1c2e76a2b71dc56386731d843ff742aac20"
+        }
+      }
+    }
+  },
+  "checkpoint_after_recovery": {
+    "id": "1f1e5219-e94c-6f67-8003-8c54792e9959",
+    "metadata": {
+      "source": "loop",
+      "step": 3,
+      "parents": {},
+      "ls_integration": "langchain_create_agent",
+      "apx_turn": "{\"input_digest\": \"ee0645a961800b3cabf03cf69e14372ada75ed8cb0263260496bb1bd584bc178\", \"invocation_id\": \"c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d\", \"pre_count\": 0, \"prior_tokens\": 0, \"prior_usd\": 0.0}",
+      "databricks_agentkit.invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+      "actor_id": "87804e8f2746e22ff1116a527646f1c2e76a2b71dc56386731d843ff742aac20"
+    },
+    "messages": [
+      {
+        "content": "Record the disposable business fact",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "human",
+        "name": null,
+        "id": "2fe8229a-6529-4ef0-9f11-33b0339030e9"
+      },
+      {
+        "content": "",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "ai",
+        "name": null,
+        "id": "lc_run--01a1faa8-c5a2-7171-bdc6-05801af113e7-0",
+        "tool_calls": [
+          {
+            "name": "record",
+            "args": {
+              "value": "aub-business-20261120-2018-verified"
+            },
+            "id": "aub-call",
+            "type": "tool_call"
+          }
+        ],
+        "invalid_tool_calls": [],
+        "usage_metadata": {
+          "input_tokens": 1,
+          "output_tokens": 1,
+          "total_tokens": 2
+        }
+      },
+      {
+        "content": "{\"created\": false, \"effect_key\": \"aub-business-20261120-2018-verified\"}",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "tool",
+        "name": "record",
+        "id": "0313a755-4d8b-4013-a61b-f8af0a661ea7",
+        "tool_call_id": "aub-call",
+        "artifact": null,
+        "status": "success"
+      },
+      {
+        "content": "Recorded {\"created\": false, \"effect_key\": \"aub-business-20261120-2018-verified\"}",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "ai",
+        "name": null,
+        "id": "lc_run--01a1faa9-db90-7164-be32-9533a1a267cf-0",
+        "tool_calls": [],
+        "invalid_tool_calls": [],
+        "usage_metadata": {
+          "input_tokens": 1,
+          "output_tokens": 1,
+          "total_tokens": 2
+        }
+      }
+    ],
+    "pending_write_channels": []
+  },
+  "sink_listing": [
+    {
+      "created_at": 1795206727501,
+      "modified_at": 1795206727501,
+      "object_id": 3282413529227711,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/attempt-1.json",
+      "resource_id": "3282413529227711",
+      "size": 494
+    },
+    {
+      "created_at": 1795206727681,
+      "modified_at": 1795206727681,
+      "object_id": 3282413529227712,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/effect.json",
+      "resource_id": "3282413529227712",
+      "size": 88
+    },
+    {
+      "created_at": 1795206728423,
+      "modified_at": 1795206728423,
+      "object_id": 3282413529227713,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/boundary-1.json",
+      "resource_id": "3282413529227713",
+      "size": 1258
+    },
+    {
+      "created_at": 1795206797631,
+      "modified_at": 1795206797631,
+      "object_id": 3282413529227722,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/attempt-2.json",
+      "resource_id": "3282413529227722",
+      "size": 493
+    },
+    {
+      "created_at": 1795206798195,
+      "modified_at": 1795206798195,
+      "object_id": 3282413529227723,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/boundary-2.json",
+      "resource_id": "3282413529227723",
+      "size": 1258
+    }
+  ],
+  "sink_files": {
+    "attempt-1.json": {
+      "attempt": 1,
+      "effect_key": "aub-business-20261120-2018-verified",
+      "invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+      "python": "3.15.1",
+      "recovery": false,
+      "session_id": "aub-session-b523f4c2-0dd0-4869-9589-acdba3bbdd4f",
+      "utc": "2026-11-20T20:32:07.100780+00:00",
+      "versions": {
+        "apx-agent": "0.7.8.dev8+g0c15c9f84",
+        "databricks-agentbricks": "0.10.0",
+        "databricks-sdk": "0.169.0",
+        "langchain": "1.5.2",
+        "langchain-core": "1.8.4",
+        "langgraph": "1.2.24",
+        "langgraph-checkpoint": "4.3.2"
+      }
+    },
+    "effect.json": {
+      "effect_key": "aub-business-20261120-2018-verified",
+      "value": "harmless-test-mutation"
+    },
+    "boundary-1.json": {
+      "attempt": 1,
+      "checkpoint": {
+        "checkpoint_id": "1f1e5217-42c7-6071-8001-e18ec7b5495c",
+        "message_types": [
+          "human",
+          "ai"
+        ],
+        "metadata": {
+          "actor_id": "87804e8f2746e22ff1116a527646f1c2e76a2b71dc56386731d843ff742aac20",
+          "apx_turn": "{\"input_digest\": \"ee0645a961800b3cabf03cf69e14372ada75ed8cb0263260496bb1bd584bc178\", \"invocation_id\": \"c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d\", \"pre_count\": 0, \"prior_tokens\": 0, \"prior_usd\": 0.0}",
+          "databricks_agentkit.invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+          "ls_integration": "langchain_create_agent",
+          "parents": {},
+          "source": "loop",
+          "step": 1
+        },
+        "pending_write_channels": [],
+        "tool_results": []
+      },
+      "created": true,
+      "effect_key": "aub-business-20261120-2018-verified",
+      "invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+      "python": "3.15.1",
+      "recovery": false,
+      "session_id": "aub-session-b523f4c2-0dd0-4869-9589-acdba3bbdd4f",
+      "sink_readback": {
+        "effect_key": "aub-business-20261120-2018-verified",
+        "value": "harmless-test-mutation"
+      },
+      "utc": "2026-11-20T20:32:07.100780+00:00",
+      "versions": {
+        "apx-agent": "0.7.8.dev8+g0c15c9f84",
+        "databricks-agentbricks": "0.10.0",
+        "databricks-sdk": "0.169.0",
+        "langchain": "1.5.2",
+        "langchain-core": "1.8.4",
+        "langgraph": "1.2.24",
+        "langgraph-checkpoint": "4.3.2"
+      }
+    },
+    "attempt-2.json": {
+      "attempt": 2,
+      "effect_key": "aub-business-20261120-2018-verified",
+      "invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+      "python": "3.15.1",
+      "recovery": true,
+      "session_id": "aub-session-b523f4c2-0dd0-4869-9589-acdba3bbdd4f",
+      "utc": "2026-11-20T20:33:17.446879+00:00",
+      "versions": {
+        "apx-agent": "0.7.8.dev8+g0c15c9f84",
+        "databricks-agentbricks": "0.10.0",
+        "databricks-sdk": "0.169.0",
+        "langchain": "1.5.2",
+        "langchain-core": "1.8.4",
+        "langgraph": "1.2.24",
+        "langgraph-checkpoint": "4.3.2"
+      }
+    },
+    "boundary-2.json": {
+      "attempt": 2,
+      "checkpoint": {
+        "checkpoint_id": "1f1e5217-42c7-6071-8001-e18ec7b5495c",
+        "message_types": [
+          "human",
+          "ai"
+        ],
+        "metadata": {
+          "actor_id": "87804e8f2746e22ff1116a527646f1c2e76a2b71dc56386731d843ff742aac20",
+          "apx_turn": "{\"input_digest\": \"ee0645a961800b3cabf03cf69e14372ada75ed8cb0263260496bb1bd584bc178\", \"invocation_id\": \"c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d\", \"pre_count\": 0, \"prior_tokens\": 0, \"prior_usd\": 0.0}",
+          "databricks_agentkit.invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+          "ls_integration": "langchain_create_agent",
+          "parents": {},
+          "source": "loop",
+          "step": 1
+        },
+        "pending_write_channels": [],
+        "tool_results": []
+      },
+      "created": false,
+      "effect_key": "aub-business-20261120-2018-verified",
+      "invocation_id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+      "python": "3.15.1",
+      "recovery": true,
+      "session_id": "aub-session-b523f4c2-0dd0-4869-9589-acdba3bbdd4f",
+      "sink_readback": {
+        "effect_key": "aub-business-20261120-2018-verified",
+        "value": "harmless-test-mutation"
+      },
+      "utc": "2026-11-20T20:33:17.446879+00:00",
+      "versions": {
+        "apx-agent": "0.7.8.dev8+g0c15c9f84",
+        "databricks-agentbricks": "0.10.0",
+        "databricks-sdk": "0.169.0",
+        "langchain": "1.5.2",
+        "langchain-core": "1.8.4",
+        "langgraph": "1.2.24",
+        "langgraph-checkpoint": "4.3.2"
+      }
+    }
+  },
+  "runtime_event_history": {
+    "status": 200,
+    "body": "id: 9\nevent: run.started\ndata: {\"type\": \"run.started\"}\n\nid: 10\nevent: aub.attempt\ndata: {\"type\": \"aub.attempt\", \"attempt\": 1, \"recovery\": false, \"effect_key\": \"aub-business-20261120-2018-verified\"}\n\nid: 11\nevent: agent.message.delta\ndata: {\"type\": \"agent.message.delta\", \"message\": {\"id\": \"lc_run--01a1faa8-c5a2-7171-bdc6-05801af113e7-0\", \"name\": null, \"type\": \"ai\", \"content\": \"\", \"tool_calls\": [{\"id\": \"aub-call\", \"args\": {\"value\": \"aub-business-20261120-2018-verified\"}, \"name\": \"record\", \"type\": \"tool_call\"}], \"usage_metadata\": {\"input_tokens\": 1, \"total_tokens\": 2, \"output_tokens\": 1}, \"additional_kwargs\": {}, \"response_metadata\": {}, \"invalid_tool_calls\": []}}\n\nid: 12\nevent: run.started\ndata: {\"type\": \"run.started\"}\n\nid: 13\nevent: aub.attempt\ndata: {\"type\": \"aub.attempt\", \"attempt\": 2, \"recovery\": true, \"effect_key\": \"aub-business-20261120-2018-verified\"}\n\nid: 14\nevent: agent.message.delta\ndata: {\"type\": \"agent.message.delta\", \"message\": {\"id\": \"0313a755-4d8b-4013-a61b-f8af0a661ea7\", \"name\": \"record\", \"type\": \"tool\", \"status\": \"success\", \"content\": \"{\\\"created\\\": false, \\\"effect_key\\\": \\\"aub-business-20261120-2018-verified\\\"}\", \"artifact\": null, \"tool_call_id\": \"aub-call\", \"additional_kwargs\": {}, \"response_metadata\": {}}}\n\nid: 15\nevent: agent.message.delta\ndata: {\"type\": \"agent.message.delta\", \"message\": {\"id\": \"lc_run--01a1faa9-db90-7164-be32-9533a1a267cf-0\", \"name\": null, \"type\": \"ai\", \"content\": \"Recorded {\\\"created\\\": false, \\\"effect_key\\\": \\\"aub-business-20261120-2018-verified\\\"}\", \"tool_calls\": [], \"usage_metadata\": {\"input_tokens\": 1, \"total_tokens\": 2, \"output_tokens\": 1}, \"additional_kwargs\": {}, \"response_metadata\": {}, \"invalid_tool_calls\": []}}\n\nid: 16\nevent: run.completed\ndata: {\"type\": \"run.completed\"}\n\n"
+  },
+  "duplicate_submission": {
+    "status": 202,
+    "body": {
+      "id": "c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d",
+      "status": "completed",
+      "status_url": "/api/invocations/c8dc5bd7-fddf-43e7-a1b5-228aec67fa2d"
+    }
+  },
+  "sink_listing_after_duplicate": [
+    {
+      "created_at": 1795206727501,
+      "modified_at": 1795206727501,
+      "object_id": 3282413529227711,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/attempt-1.json",
+      "resource_id": "3282413529227711",
+      "size": 494
+    },
+    {
+      "created_at": 1795206727681,
+      "modified_at": 1795206727681,
+      "object_id": 3282413529227712,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/effect.json",
+      "resource_id": "3282413529227712",
+      "size": 88
+    },
+    {
+      "created_at": 1795206728423,
+      "modified_at": 1795206728423,
+      "object_id": 3282413529227713,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/boundary-1.json",
+      "resource_id": "3282413529227713",
+      "size": 1258
+    },
+    {
+      "created_at": 1795206797631,
+      "modified_at": 1795206797631,
+      "object_id": 3282413529227722,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/attempt-2.json",
+      "resource_id": "3282413529227722",
+      "size": 493
+    },
+    {
+      "created_at": 1795206798195,
+      "modified_at": 1795206798195,
+      "object_id": 3282413529227723,
+      "object_type": "FILE",
+      "path": "/Shared/apx-aub-1120-2018-sink/verified/boundary-2.json",
+      "resource_id": "3282413529227723",
+      "size": 1258
+    }
+  ],
+  "raw_tool_attempts": 2,
+  "effective_mutations": 1,
+  "teardown": {
+    "utc": "2026-11-20T20:35:34.691476+00:00",
+    "checks": {
+      "app": {
+        "result": "absent",
+        "exception_type": "NotFound",
+        "error_code": "NOT_FOUND"
+      },
+      "runtime_store": {
+        "result": "absent",
+        "exception_type": "AgentCliError",
+        "error_code": "NOT_FOUND"
+      },
+      "session_store": {
+        "result": "absent",
+        "exception_type": "AgentCliError",
+        "error_code": "NOT_FOUND"
+      },
+      "uploaded_source": {
+        "result": "absent",
+        "exception_type": "ResourceDoesNotExist",
+        "error_code": "RESOURCE_DOES_NOT_EXIST"
+      },
+      "sink": {
+        "result": "absent",
+        "exception_type": "ResourceDoesNotExist",
+        "error_code": "RESOURCE_DOES_NOT_EXIST"
+      }
+    }
+  },
+  "sanitization": "Omitted OAuth tokens, headers, operator email, client IPs, workspace upload paths and the 502 HTML body. All business payloads are synthetic. Resource identifiers, hashes and persisted synthetic messages are retained."
+}
