@@ -1,0 +1,90 @@
+Recorded load test. No Authorization header and no token are included.
+
+Command (Locust 2.47.0 was on PYTHONPATH because the project env had no
+databricks-agentbricks[loadtest] extra; agentbricks was 0.10.0):
+
+PYTHONPATH=/tmp/apx-9pc-locust \
+  agentbricks -p fevm-stable -o json endpoint loadtest \
+  agent-bricks-apx-dur-gen \
+  --path /api/invocations \
+  --auth \
+  --requests /tmp/apx-9pc-loadtest/requests.json \
+  --concurrency 2 \
+  --max-duration 20 \
+  --max-requests 4 \
+  --timeout 45 \
+  --report-dir /tmp/apx-9pc-loadtest/report
+
+requests.json:
+
+[
+  {
+    "id": "{{request_id}}",
+    "session_id": "apx-9pc-{{user_id}}",
+    "input": {
+      "messages": [
+        {"role": "user", "content": "Reply with the single word pong."}
+      ]
+    }
+  }
+]
+
+Clock:
+  before apps get: 2026-11-21T01:25:32Z
+  command start:   2026-11-21T01:25:33Z
+  command end:     2026-11-21T01:25:45Z
+  exit code:       1
+
+databricks apps get agent-bricks-apx-dur-gen -p fevm-stable
+before and after the command (same both times):
+  app_state=RUNNING
+  app_message=App has status: App is running
+  compute_state=ACTIVE
+  compute_message=App compute is running.
+  deployment_id=01f1e546718010678017040e46a17107
+  deployment_state=SUCCEEDED
+  url=https://agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com
+
+Polls during the command, 2026-11-21T01:25:39Z and 2026-11-21T01:25:44Z,
+also reported app_state=RUNNING and compute_state=ACTIVE. The command
+exited on its own. It was not killed.
+
+stdout: empty
+stderr:
+ERROR:root:Load test warm-up failed: HTTP 502
+{
+  "error": {
+    "message": "Load test warm-up failed: HTTP 502. No measured requests were sent."
+  }
+}
+
+report dir: empty (no summary.json, no Locust CSV, no HTML)
+
+Load-test status codes seen: one warm-up HTTP 502.
+Measured request count: 0.
+Locust error histogram: not produced.
+
+App log lines for that request (client IP omitted):
+  2026-11-21T01:25:39Z Invocation execution failed: 449ddee9-1740-48ff-afc7-72271a808e61 attempt=1
+  databricks.sdk.errors.platform.ResourceAlreadyExists: /Shared/apx-aub-1121-sink/attempt-1.json already exists. Please pass overwrite=true to overwrite it.
+  2026-11-21T01:25:40Z POST /api/invocations HTTP/1.1 502 Bad Gateway
+
+Separate read after the load test stopped, not a second load run.
+agentbricks -p fevm-stable -o json endpoint invoke agent-bricks-apx-dur-gen \
+  --method GET --path /api/invocations/449ddee9-1740-48ff-afc7-72271a808e61 --auth
+
+HTTP 200, elapsed_seconds 0.86771, body:
+{
+  "id": "449ddee9-1740-48ff-afc7-72271a808e61",
+  "status": "failed",
+  "error": {
+    "code": "UPSTREAM_ERROR",
+    "type": "databricks.sdk.errors.platform.ResourceAlreadyExists",
+    "message": "/Shared/apx-aub-1121-sink/attempt-1.json already exists. Please pass overwrite=true to overwrite it.",
+    "upstream_code": "RESOURCE_ALREADY_EXISTS",
+    "upstream_status": 409
+  }
+}
+
+apps get after that GET: RUNNING, ACTIVE, snapshot 01f1e546718010678017040e46a17107.
+No larger load test was started.
