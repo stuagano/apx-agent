@@ -311,6 +311,45 @@ names are rejected; historical entries require an explicit export/import with a
 reviewed scope-to-actor mapping. Direct Python construction takes
 `ManagedMemoryStore(ws=workspace_client, store_name="agent-memory", scope_resolver=...)`.
 
+#### Managed memory failures
+
+APX preserves AgentKit's `databricks_agentbricks.errors.AgentCliError`, including
+`error_code` and the chained service exception; it does not invent a separate
+APX exception hierarchy. `add` / `add_batch` / `list` / `recall` propagate service
+failures, as do `get` / `update` / `delete` except for missing entries:
+
+| Service code | APX behavior |
+|---|---|
+| `NOT_FOUND`, `RESOURCE_DOES_NOT_EXIST` | ID-based operations return `None` / `False`; explicit provisioning may create a missing store. |
+| `PERMISSION_DENIED` | Raise `AgentCliError`; doctor reports access denied, not a missing store. |
+| `FEATURE_DISABLED`, `NOT_IMPLEMENTED`, `UNIMPLEMENTED` | Raise `AgentCliError`; doctor reports disabled/unavailable service. |
+| Other errors, including exhausted transient failures | Propagate the AgentKit error; never treat it as absence or permission to create. |
+
+Missing trusted identity or a different actor also hides ID-based reads and
+mutations; this is an ownership check, not service-failure handling.
+The boot-only `store_exists()` probe intentionally returns `False` on failure
+and logs the service code (or exception type). Wiring marks declared memory
+**degraded** and omits its tools. It does not report memory healthy or create a
+store in response to a denied/unsupported backend.
+
+Live failure verification is **separate from mocked regression coverage**. Run
+these read-only probes using an existing store denied to the first profile and
+a workspace without managed-memory support for the second:
+
+```bash
+uv run --project python --frozen python scripts/managed_memory_failure_probe.py \
+  --scenario denied --profile <restricted-profile> --store <existing-store>
+uv run --project python --frozen python scripts/managed_memory_failure_probe.py \
+  --scenario unsupported --profile <unsupported-workspace-profile> --store <store-name>
+```
+
+The probe prints JSON with SDK versions, workspace, timestamp, observed error,
+and `verified`. It exits nonzero for successful/absent reads, an unexpected code,
+or the wrong failure scenario. `UNAUTHENTICATED` is not proof of store permission
+denial; a missing store or route is not proof of unsupported service. No stores,
+entries, or permissions are changed, and no memory content is printed. See the
+[2026-11-20 evidence and remaining blocker](../design/managed-state-contract-map.md#failure-path-probe-2026-11-20).
+
 ### Memory retention
 
 Declare how long memories are kept, in days per namespace, plus an optional

@@ -138,24 +138,28 @@ def provision_registry(
     tables: RegistryTables,
     sp_client_id: str | None,
     warehouse_id: str | None = None,
+    grants: bool = True,
 ) -> None:
     """Create missing registry tables, then grant only what is missing.
 
-    UC ``GRANT`` needs owner/MANAGE even for a privilege already held, so a
-    redeploy by a non-owner must not re-send grants that are already in place.
+    ``grants=False`` creates the tables and does not read or run ``GRANT``
+    (no MANAGE required). UC ``GRANT`` needs owner/MANAGE even for a privilege
+    already held, so a redeploy by a non-owner must not re-send grants that
+    effective privileges (``SHOW GRANTS`` plus inheritance) already show.
     Every grant that still fails is reported together.
     """
     from . import _sql
     from ._publish import _REGISTRY_DDL, _TOOLS_DDL
 
-    # Reject a malformed table name or SP id before any SQL runs.
-    plans = [
-        (table, ddl, registry_grants(table, sp_client_id=sp_client_id))
-        for table, ddl in ((tables.agents, _REGISTRY_DDL), (tables.tools, _TOOLS_DDL))
-    ]
+    # Reject a malformed table name or SP id before any SQL runs. ``grants=False``
+    # keeps that check and then drops the statements so nothing is read or granted.
+    plans = []
+    for table, ddl in ((tables.agents, _REGISTRY_DDL), (tables.tools, _TOOLS_DDL)):
+        wanted = registry_grants(table, sp_client_id=sp_client_id)
+        plans.append((table, ddl, wanted if grants else []))
     failed: list[str] = []
     causes: list[str] = []
-    for table, ddl, grants in plans:
+    for table, ddl, wanted in plans:
         schema = table.rsplit(".", 1)[0]
         try:
             if not ws.tables.exists(full_name=table).table_exists:
@@ -168,7 +172,7 @@ def provision_registry(
                      "(or CREATE TABLE on the schema), or set registry_table and tools_table "
                      "in [tool.apx.deploy] to a schema you can write"),
             ) from e
-        for grant in grants:
+        for grant in wanted:
             try:
                 missing = grant.privileges - _held(ws, grant)
             except Exception as e:  # can't read grants: try the full grant

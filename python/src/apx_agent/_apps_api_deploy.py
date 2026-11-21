@@ -52,6 +52,7 @@ def deploy_apps_api(
     log: Callable[[str], None],
     smoke_input: Path | None = None,
     registry_tables: "RegistryTables | None" = None,
+    registry_grants: bool = True,
 ) -> str:
     """Run the Apps API path. Re-running is safe; nothing is deleted on failure."""
     if config.target != "durable_agent_server" or config.deploy is None or config.deploy.backend != "apps_api":
@@ -110,6 +111,7 @@ def deploy_apps_api(
         experiment_id=env.get(EXPERIMENT_ENV),
         extra_version_tags=extra_version_tags, pin=pin, json_output=json_output, log=log,
         smoke_input=native_smoke_input, smoke_agent=agent, registry_tables=registry_tables,
+        registry_grants=registry_grants,
     )
 
 
@@ -473,6 +475,7 @@ def _verify(
     extra_version_tags: dict[str, str] | None, pin: Any, json_output: bool, log: Callable[[str], None],
     smoke_input: dict[str, Any] | None = None, smoke_agent: Any = None,
     registry_tables: "RegistryTables | None" = None,
+    registry_grants: bool = True,
 ) -> str:
     import json
 
@@ -519,7 +522,7 @@ def _verify(
         )
     if registry_tables is not None:
         _deploy_registry_step(profile=profile, app_name=app_name, app_url=app_url,
-                              tables=registry_tables, module=module, log=log)
+                              tables=registry_tables, module=module, log=log, grants=registry_grants)
     recorded = _maybe_write_deploy_state(
         profile=profile, app_name=app_name, bundle_target=bundle_target, app_url=app_url,
         experiment_id=experiment_id, pin=pin, wheel_path=None, log=log,
