@@ -1,0 +1,268 @@
+{
+  "bead": "apx-pzd",
+  "observed_utc_date": "2026-11-21",
+  "authorization": "operator disposable app authorized 2026-11-20",
+  "app": {
+    "name": "agent-bricks-apx-dur-gen",
+    "url_host": "agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com",
+    "workspace_id": "7474660401027952",
+    "profile": "fevm-stable",
+    "compute_size": "MEDIUM",
+    "instances": 1
+  },
+  "identity": {
+    "ingress": "databricks-cli U2M OAuth via apps_inbound_oauth_headers",
+    "auth_type": "databricks-cli",
+    "auth_user_required": false,
+    "execution_service_principal_client_id": "06c3f57c-f656-4872-b791-33106ce1ad0b",
+    "request_user_recovery": false
+  },
+  "code": {
+    "probe": "scripts/probes/apx_pzd/server.py",
+    "probe_sha256": "9c3979646ccfc0237b36ff25d92dca89562e7d4a6fda898b21327006bf73fdea",
+    "apx_agent": "0.7.8.dev8+g0c15c9f84",
+    "python_in_app": "3.15.1",
+    "databricks_cli": "1.26.0",
+    "installed_versions": {
+      "apx-agent": "0.7.8.dev8+g0c15c9f84",
+      "databricks-agentbricks": "0.10.0",
+      "databricks-sdk": "0.169.0",
+      "langchain": "1.5.2",
+      "langchain-core": "1.8.4",
+      "langgraph": "1.2.24",
+      "langgraph-checkpoint": "4.3.2",
+      "mlflow": "3.18.0"
+    },
+    "trace_reader_mlflow": "3.14.0"
+  },
+  "stores": {
+    "session_store": "apx-pzd-1121-sessions",
+    "session_store_uid": "0d45531c-f23d-4849-a0e4-6498743b8e86",
+    "session_store_created": "2026-11-21T00:32:55.082Z",
+    "runtime_database": "agent-bricks-apx-dur-gen",
+    "runtime_schema": "databricks_agentkit_runtime",
+    "diagnostic_directory": "/Shared/apx-pzd-1121-diag",
+    "diagnostic_object_id": "347424927259108",
+    "experiment_name": "/Shared/apx-pzd-1121-traces",
+    "experiment_id": "347424927259109",
+    "package_index": "https://pypi.org/simple/"
+  },
+  "commands": {
+    "deploy": "agentbricks -p fevm-stable deploy apx-dur-gen --source <stage> --instances 1 --pip-index-url https://pypi.org/simple/",
+    "apps_stop_or_start": false,
+    "crash_trigger": "os._exit(86) after span.end and mlflow.flush_trace_async_logging on the non-recovery path only"
+  },
+  "symbols_inspected": {
+    "stamp_invocation_correlation": "apx_agent._audit.stamp_invocation_correlation",
+    "stamp_call_site": "apx_agent._graph_turn safe_span(\"graph.invoke\")",
+    "continue_trace_from_headers": "apx_agent._mlflow_tracing.continue_trace_from_headers",
+    "compatibility_host_caller": "apx_agent._invocations._inbound_request_span",
+    "native_handler": "databricks_agentkit.runtime.app.DurableAgentServer._invoke_request",
+    "native_handler_continues_traceparent": false,
+    "agentkit_start_trace": "databricks_agentkit.runtime.tracing.start_trace opens mlflow.start_span and does not read traceparent",
+    "durable_execute_calls_start_trace": false
+  },
+  "preflight_ping": {
+    "request_id": "62156c60-04f5-4605-8539-fa407a727302",
+    "sent_utc": "2026-11-21T00:36:48.022022+00:00",
+    "http_post": 202,
+    "post_utc": "2026-11-21T00:36:48.865886+00:00",
+    "http_get": 200,
+    "get_utc": "2026-11-21T00:37:21.743436+00:00",
+    "invocation_status": "completed",
+    "output_content": "pong",
+    "deployment_id": "01f1e5431f3e1ef8b065d7d6324ca67c",
+    "trace_id": "tr-9ec7d99c1172fe58fd347d9a278b64a7",
+    "apx_tags": {
+      "apx.invocation.id": "62156c60-04f5-4605-8539-fa407a727302",
+      "apx.recovery": "false"
+    }
+  },
+  "worker_loss": {
+    "request": {
+      "id": "e45fcae3-ebb0-4df8-b31b-4b9da8576b3c",
+      "session_id": "pzd-kill-4a5679d3-cffe-4299-aa9d-35f8ba2495de",
+      "background": true,
+      "content": "Lose the worker with pzd-worker-loss"
+    },
+    "inbound_traceparent": "00-8f50350ad56a5b042a0ce02fdad9ede8-5aa77c0f102dd0f6-01",
+    "inbound_trace_id_hex": "8f50350ad56a5b042a0ce02fdad9ede8",
+    "sent_utc": "2026-11-21T00:37:48.584409+00:00",
+    "accepted": {
+      "status": 202,
+      "utc": "2026-11-21T00:37:49.388288+00:00",
+      "body_status": "queued"
+    },
+    "sse": {
+      "status": 200,
+      "utc_open": "2026-11-21T00:37:49.389221+00:00",
+      "utc_close": "2026-11-21T00:37:49.898467+00:00",
+      "cursor": "44",
+      "events": [
+        {"id": "43", "event": "run.started"},
+        {
+          "id": "44",
+          "event": "pzd.attempt",
+          "attempt": 1,
+          "recovery": false,
+          "invocation_id": "e45fcae3-ebb0-4df8-b31b-4b9da8576b3c",
+          "session_id": "pzd-kill-4a5679d3-cffe-4299-aa9d-35f8ba2495de"
+        }
+      ]
+    },
+    "http_while_active_last": {
+      "http": 200,
+      "invocation_status": "active",
+      "utc": "2026-11-21T00:38:28.942402+00:00",
+      "polls": 17
+    },
+    "http_after_crash": {
+      "http": 502,
+      "utc": "2026-11-21T00:40:01.123918+00:00",
+      "non_json": true,
+      "starts_html": true,
+      "bytes": 11545
+    },
+    "app_while_dead": {
+      "app_state": "CRASHED",
+      "app_message": "App has status: App crashed unexpectedly at 2026-11-21T00:38:56Z",
+      "running_instances": 0,
+      "compute_state": "ACTIVE",
+      "active_deployment_id": "01f1e5431f3e1ef8b065d7d6324ca67c"
+    },
+    "attempt_1": {
+      "utc": "2026-11-21T00:37:49.772746+00:00",
+      "attempt": 1,
+      "recovery": false,
+      "active_trace_id": "tr-6ceac8086d4f4ba5346c0ea535d07247",
+      "invocation_id": "e45fcae3-ebb0-4df8-b31b-4b9da8576b3c"
+    },
+    "export_1": {
+      "ended": true,
+      "flushed": true,
+      "trace_id": "tr-6ceac8086d4f4ba5346c0ea535d07247"
+    },
+    "boundary_1": {
+      "checkpoint_id": "1f1e543c-77d6-6e9f-8001-7b1820ec35a7",
+      "message_types": ["human", "ai"],
+      "tool_results": []
+    }
+  },
+  "replacement": {
+    "redeploy_started_utc": "2026-11-21T00:40:06Z",
+    "redeploy_finished_utc": "2026-11-21T00:41:59Z",
+    "initial_deployment_id": "01f1e5431f3e1ef8b065d7d6324ca67c",
+    "initial_traffic_switched": "2026-11-21T00:34:55Z",
+    "replacement_deployment_id": "01f1e5441f8e1de992b159c0e347aebd",
+    "replacement_traffic_switched": "2026-11-21T00:40:31Z",
+    "replacement_mode": "SNAPSHOT",
+    "replacement_message": "Traffic switched successfully",
+    "attempt_2": {
+      "utc": "2026-11-21T00:42:03.766604+00:00",
+      "attempt": 2,
+      "recovery": true,
+      "active_trace_id": "tr-ef5152ac9ae8a1a69b85d7d064214df9",
+      "invocation_id": "e45fcae3-ebb0-4df8-b31b-4b9da8576b3c",
+      "session_id": "pzd-kill-4a5679d3-cffe-4299-aa9d-35f8ba2495de"
+    },
+    "boundary_2": {
+      "checkpoint_id": "1f1e543c-77d6-6e9f-8001-7b1820ec35a7",
+      "message_types": ["human", "ai"],
+      "tool_results": []
+    },
+    "final": {
+      "status": 200,
+      "utc": "2026-11-21T00:42:12.933703+00:00",
+      "invocation_id": "e45fcae3-ebb0-4df8-b31b-4b9da8576b3c",
+      "invocation_status": "completed"
+    },
+    "checkpoint_after_recovery": {
+      "checkpoint_id": "1f1e5445-f38f-617c-8003-22b25386d620",
+      "step": 3,
+      "message_types": ["human", "ai", "tool", "ai"],
+      "metadata_invocation_id": "e45fcae3-ebb0-4df8-b31b-4b9da8576b3c"
+    },
+    "diag_listing": [
+      "attempt-1.json",
+      "attempt-2.json",
+      "boundary-1.json",
+      "boundary-2.json",
+      "export-1.json"
+    ],
+    "seconds_crash_to_attempt_2": 187.766
+  },
+  "traces": {
+    "read_api": "mlflow.MlflowClient.search_traces filter tags.`apx.invocation.id`",
+    "filter_count": 2,
+    "initial": {
+      "trace_id": "tr-6ceac8086d4f4ba5346c0ea535d07247",
+      "state": "OK",
+      "request_time_utc": "2026-11-21T00:37:49.589000+00:00",
+      "execution_duration": 694,
+      "trace_name": "graph.invoke",
+      "apx_tags": {
+        "apx.invocation.id": "e45fcae3-ebb0-4df8-b31b-4b9da8576b3c",
+        "apx.recovery": "false"
+      },
+      "tag_names": [
+        "apx.invocation.id",
+        "apx.recovery",
+        "mlflow.artifactLocation",
+        "mlflow.traceName",
+        "mlflow.user"
+      ]
+    },
+    "recovered": {
+      "trace_id": "tr-ef5152ac9ae8a1a69b85d7d064214df9",
+      "state": "OK",
+      "request_time_utc": "2026-11-21T00:42:03.515000+00:00",
+      "execution_duration": 926,
+      "trace_name": "graph.invoke",
+      "apx_tags": {
+        "apx.invocation.id": "e45fcae3-ebb0-4df8-b31b-4b9da8576b3c",
+        "apx.recovery": "true"
+      },
+      "tag_names": [
+        "apx.invocation.id",
+        "apx.recovery",
+        "mlflow.artifactLocation",
+        "mlflow.traceName",
+        "mlflow.user"
+      ]
+    },
+    "inbound_equals_any_exported": false,
+    "apx_traceparent_tag_present": false,
+    "get_trace": {
+      "client": "mlflow 3.14.0 MlflowClient.get_trace",
+      "initial": "MlflowException: Trace with ID tr-6ceac8086d4f4ba5346c0ea535d07247 cannot be loaded because it is missing span data.",
+      "recovered": "MlflowException: Trace with ID tr-ef5152ac9ae8a1a69b85d7d064214df9 cannot be loaded because it is missing span data.",
+      "ping": "same missing span data exception for tr-9ec7d99c1172fe58fd347d9a278b64a7"
+    },
+    "agentbricks_tracing_get": {
+      "exit_code": 1,
+      "trace_id": "tr-ef5152ac9ae8a1a69b85d7d064214df9",
+      "warning": "missing span data",
+      "error_message": "No trace found with id 'tr-ef5152ac9ae8a1a69b85d7d064214df9'."
+    }
+  },
+  "final_ping": {
+    "request_id": "a11fe9f8-4b36-4355-b78f-a10f8695efba",
+    "sent_utc": "2026-11-21T00:45:05.584905+00:00",
+    "http_post": 202,
+    "post_utc": "2026-11-21T00:45:06.358432+00:00",
+    "http_get": 200,
+    "get_utc": "2026-11-21T00:45:09.600217+00:00",
+    "invocation_status": "completed",
+    "output_content": "pong",
+    "deployment_id": "01f1e5441f8e1de992b159c0e347aebd"
+  },
+  "left_running": {
+    "deleted": false,
+    "app_state": "RUNNING",
+    "running_instances": 1,
+    "compute_state": "ACTIVE",
+    "active_deployment_id": "01f1e5441f8e1de992b159c0e347aebd",
+    "observed_utc": "2026-11-21T00:45:10.125880+00:00"
+  },
+  "open_boundary": "Native DurableAgentServer._invoke_request does not continue an inbound traceparent. The two exported roots join only by the apx.invocation.id tag. Span payloads were not downloadable."
+}

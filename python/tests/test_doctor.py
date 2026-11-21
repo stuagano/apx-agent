@@ -45,6 +45,7 @@ def test_agent_prerequisites_read_real_sdk_responses_only(monkeypatch):
 @pytest.mark.parametrize("code,detail", [
     ("FEATURE_DISABLED", "disabled or unavailable"),
     ("NOT_IMPLEMENTED", "disabled or unavailable"),
+    ("UNIMPLEMENTED", "disabled or unavailable"),
     ("PERMISSION_DENIED", "Access denied"),
     ("RESOURCE_DOES_NOT_EXIST", "not found"),
     ("UNAVAILABLE", "probe failed"),
