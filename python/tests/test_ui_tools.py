@@ -680,7 +680,12 @@ async def test_chat_tools_tab_embeds_the_live_inspector(app: FastAPI):
     assert r.status_code == 200
     assert 'id="tab-tools"' in r.text
     assert 'id="tools-embed"' in r.text
-    assert "frame.src = '/_apx/tools';" in r.text
+    assert 'src="/_apx/vendor/legacy-chat-prelude.js"' in r.text
+    prelude = (
+        Path(__file__).resolve().parents[1]
+        / "src/apx_agent/_static/vendor/legacy-chat-prelude.js"
+    ).read_text(encoding="utf-8")
+    assert "frame.src = '/_apx/tools';" in prelude
     assert 'Open full page ↗' in r.text
 
 

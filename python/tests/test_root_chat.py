@@ -1,8 +1,9 @@
 """End-user chat at ``/`` — the public face of a deployed agent.
 
 Guards two things:
-  1. The page is self-contained (markdown libs inlined, talks to /invocations) —
-     it does not depend on /_apx/* assets.
+  1. Markdown libs stay inlined. The page script is a same-origin
+     ``/assets/chat/`` asset (it talks to /invocations) and does not depend
+     on ``/_apx/*``.
   2. It ships in the Apps runtime alongside the Dev UI (``/_apx/*``), so a
      deployed agent always has a simple chat at ``/`` even if someone deep-links
      past the Dev shell.
@@ -14,6 +15,8 @@ contract is identical on both serve paths, whereas /invocations is ChatAgent
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -23,15 +26,20 @@ from apx_agent._ui_root_chat import build_root_chat_router, render_root_chat
 
 from .conftest import get_weather
 
+_ROOT_JS = Path(__file__).resolve().parents[1] / "src/apx_agent/_static/vendor/root-chat.js"
+
 
 def test_page_is_self_contained():
     html = render_root_chat()
-    # Posts {input} to the one chat route. The page may mention the
-    # ChatAgent messages contract in a comment; the fetch is what matters.
-    assert "fetch('/invocations'" in html
+    script = _ROOT_JS.read_text(encoding="utf-8")
+    # Posts {input} to the one chat route. The fetch lives in the page script.
+    assert "fetch('/invocations'" in script
+    assert "fetch('/responses'" not in script
     assert "fetch('/responses'" not in html
+    assert html.count('src="/assets/chat/root-chat.js"') == 1
+    assert html.count("<script src=") == 1
     assert "/_apx/" not in html
-    # Markdown libs inlined (not <script src=...>) so the page needs no assets.
+    # Markdown libs stay inlined. The page script is the only external asset.
     assert "marked" in html and "DOMPurify" in html
     assert "/_apx/vendor" not in html
 
@@ -57,9 +65,20 @@ async def test_root_serves_chat_html():
     app.include_router(build_root_chat_router())
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
         r = await ac.get("/")
+        script = await ac.get("/assets/chat/root-chat.js")
+        native = await ac.get("/assets/chat/native-chat.js")
+        missing = await ac.get("/assets/chat/missing-chat.js")
+        marked = await ac.get("/assets/chat/marked.min.js")
+        traversal = await ac.get("/assets/chat/%2e%2e%2f_ui_root_chat.py")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "/invocations" in r.text
+    assert 'src="/assets/chat/root-chat.js"' in r.text
+    assert script.status_code == native.status_code == 200
+    assert "javascript" in script.headers["content-type"]
+    assert "javascript" in native.headers["content-type"]
+    assert "fetch('/invocations'" in script.text
+    assert script.text == _ROOT_JS.read_text(encoding="utf-8")
+    assert missing.status_code == marked.status_code == traversal.status_code == 404
     # No agent_context on a bare app → falls back to the generic title.
     assert "<title>Agent</title>" in r.text
 
@@ -105,5 +124,6 @@ async def test_explicit_dev_ui_disable_removes_developer_routes(monkeypatch):
     mount_mcp_endpoints(app, LlmAgent(tools=[get_weather]), AgentConfig(name="t"))
     paths = [r.path for r in app.routes]
     assert "/" in paths
+    assert "/assets/chat/{filename}" in paths
     assert "/_apx/agent" not in paths
     assert "/_apx/discover" not in paths

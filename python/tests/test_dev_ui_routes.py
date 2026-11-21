@@ -26,6 +26,22 @@ def _make_ctx() -> AgentContext:
     return AgentContext(config=config, tools=[], card=card, agent=None)  # type: ignore[arg-type]
 
 
+def _with_chat_scripts(html: str) -> str:
+    """Page HTML plus the legacy chat scripts that page loads.
+
+    Behavior moved to ``/_apx/vendor/legacy-chat-*.js``. Token checks still
+    cover that behavior, and the script tags prove the page references it.
+    """
+    from pathlib import Path
+
+    vendor = Path(__file__).resolve().parents[1] / "src" / "apx_agent" / "_static" / "vendor"
+    names = ("legacy-chat-prelude.js", "legacy-chat-history.js", "legacy-chat-app.js")
+    for name in names:
+        assert f'src="/_apx/vendor/{name}"' in html
+    scripts = "\n".join((vendor / name).read_text(encoding="utf-8") for name in names)
+    return html + "\n" + scripts
+
+
 @pytest.fixture
 def app() -> FastAPI:
     a = FastAPI()
@@ -149,7 +165,7 @@ class TestMarkdownWiring:
 
         # Building the full HTML also catches f-string brace-doubling mistakes
         # in the CSS/JS we added (a stray single {/} throws at f-string eval).
-        html = _render_agent_ui(_make_ctx())
+        html = _with_chat_scripts(_render_agent_ui(_make_ctx()))
         assert "/_apx/vendor/marked.min.js" in html
         assert "/_apx/vendor/purify.min.js" in html
         assert "DOMPurify.sanitize(marked.parse(" in html  # render wiring present
@@ -161,7 +177,7 @@ class TestMarkdownWiring:
         resume). The thread_id is generated once per sessionStorage lifetime."""
         from apx_agent._ui_chat import _render_agent_ui
 
-        html = _render_agent_ui(_make_ctx())
+        html = _with_chat_scripts(_render_agent_ui(_make_ctx()))
         # sessionStorage persistence so page refresh resumes the same session.
         assert "sessionStorage" in html
         assert "_apx_dev_thread_id" in html
@@ -173,7 +189,7 @@ class TestMarkdownWiring:
     def test_embed_mode_keeps_shared_chat_but_removes_page_chrome(self):
         from apx_agent._ui_chat import _render_agent_ui
 
-        html = _render_agent_ui(_make_ctx(), embed=True)
+        html = _with_chat_scripts(_render_agent_ui(_make_ctx(), embed=True))
         assert '<body class="apx-embed">' in html
         assert "body.apx-embed header" in html
         assert "body.apx-embed #landing" in html
@@ -337,7 +353,7 @@ class TestLandingRender:
 
     def test_chat_turn_surfaces_mlflow_trace_identity(self):
         from apx_agent._ui_chat import _render_agent_ui
-        html = _render_agent_ui(self._ctx(tools=[], examples=[]))
+        html = _with_chat_scripts(_render_agent_ui(self._ctx(tools=[], examples=[])))
         assert "'x-return-trace-id': 'true'" in html
         assert "res.headers.get('x-apx-trace-id')" in html
         assert "MLflow trace" in html
@@ -395,7 +411,7 @@ class TestEventsToolCalls:
                              input_schema={"type": "object", "properties": {}})],
             card={"name": "d", "skills": []}, agent=None,  # type: ignore[arg-type]
         )
-        html = _render_agent_ui(ctx)
+        html = _with_chat_scripts(_render_agent_ui(ctx))
         # function_call / function_call_output items become tool events from the stream
         assert "item.type === 'function_call'" in html
         assert "addToolCall(" in html
@@ -415,7 +431,7 @@ class TestEventsToolCalls:
                              input_schema={"type": "object", "properties": {}})],
             card={"name": "d", "skills": []}, agent=None,  # type: ignore[arg-type]
         )
-        html = _render_agent_ui(ctx)
+        html = _with_chat_scripts(_render_agent_ui(ctx))
         # A tool call + its response are grouped into one block keyed by call_id.
         assert "function addToolCall" in html
         assert "function addToolResponse" in html
@@ -444,7 +460,7 @@ class TestInlineSteps:
                              input_schema={"type": "object", "properties": {}})],
             card={"name": "d", "skills": []}, agent=None,  # type: ignore[arg-type]
         )
-        html = _render_agent_ui(ctx)
+        html = _with_chat_scripts(_render_agent_ui(ctx))
         assert "function renderInlineStep" in html          # the renderer exists
         assert "stepsContainer" in html                      # transcript container
         assert "renderInlineStep(" in html                   # called from the stream branches
@@ -465,7 +481,7 @@ class TestInlineSteps:
                              input_schema={"type": "object", "properties": {}})],
             card={"name": "d", "skills": []}, agent=None,  # type: ignore[arg-type]
         )
-        html = _render_agent_ui(ctx)
+        html = _with_chat_scripts(_render_agent_ui(ctx))
         # Renderer tracks request + response separately (not a single `detail`).
         assert "request:" in html      # function_call branch passes the args as request
         assert "response:" in html     # function_call_output branch passes the output

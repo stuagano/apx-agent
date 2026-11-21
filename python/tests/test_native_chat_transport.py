@@ -81,7 +81,10 @@ def test_native_dev_chat_enablement(enabled, native):
     assert response.status_code == (200 if enabled == "1" else 404)
     if enabled == "1":
         assert "apxNativeChat" in response.text
-        assert 'src="/_apx/vendor/' not in response.text
+        # Legacy chat is inlined. The native client is the one vendor script.
+        assert response.text.count('src="/_apx/vendor/native-chat.js"') == 1
+        assert response.text.count('src="/_apx/vendor/') == 1
+        assert 'src="/_apx/vendor/legacy-chat-' not in response.text
     assert host.client.post("/invocations", json={}).status_code == 404
     # A free-text entry keeps Eval (it runs over /api/invocations); off when the dev UI is.
     assert host.client.post("/_apx/eval/judge", json={}).status_code == (422 if enabled == "1" else 404)
@@ -116,7 +119,9 @@ def test_typed_chat_without_config_preserves_declaration_and_project_root(
             assert "apxNativeChat" in root.text
         chat = client.get("/_apx/chat?shell=1")
         assert chat.status_code == 200 and "apxNativeChat" in chat.text
-        assert "native-execution-cards" in chat.text
+        assert 'src="/_apx/vendor/native-chat.js"' in chat.text
+        script = client.get("/_apx/vendor/native-chat.js")
+        assert script.status_code == 200 and "native-execution-cards" in script.text
         assert client.get("/_apx/api/ui/config").status_code == 404
         # Only a typed entry, which a free-text question can't reach, hides Eval.
         assert client.post("/_apx/eval/judge", json={}).status_code == (404 if declaration == "input" else 422)
