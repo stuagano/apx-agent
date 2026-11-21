@@ -744,8 +744,13 @@ invocation IDs. Session IDs inside `input` are rejected: the SDK must see the
 session before scheduling execution, so it can serialize turns in that session. The
 keys are namespaced by agent name, and by authenticated principal for
 request-user execution. App-auth-only sessions remain shared app state. Resume an interrupted approval with the same
-top-level session and `{"resume": "approve"}` as input. The underlying SDK
-records invocation completion separately from the handler's `interrupted` result.
+top-level session and `{"resume": "approve"}` as input, using a **new invocation
+ID** and fresh authentication as the same principal. The underlying SDK records
+invocation completion separately from the handler's `interrupted` result.
+This fresh continuation is not automatic request-user crash recovery, which
+remains unsupported. Local principal-isolation and duplicate-resume coverage is
+not deployed replacement proof; see the [blocked apx-ab7 verification record and
+operator runbook](../design/durable-approval-continuation.md).
 
 `session_store` creates the SDK's `DatabricksSessionStoreSaver` with the explicit
 `service_ws` client. It binds an existing store; it does not provision one or
@@ -855,6 +860,15 @@ business/idempotency key or reconcile the write with the external system. APX
 does not promise exactly-once external effects. Stream events from interrupted
 attempts can remain in the event history; consumers must account for attempt
 boundaries when displaying recovered generation.
+
+A [2026-11-20 disposable deployed probe (apx-aub)](../evidence/apx-aub-2026-11-20/README.md)
+exercised exactly that crash window: a successful create-only external write,
+`os._exit` before the tool returned, then recovery of the same invocation after
+an explicit replacement redeploy. Independent sink and managed-checkpoint
+readbacks showed **two raw tool attempts and one effective mutation**, using a
+stable business key. This service-identity synthetic harness proves the scoped
+idempotency pattern, not exactly-once execution, automatic worker restoration,
+request-user recovery or equivalence of every production consumer.
 
 AgentKit 0.4.0 rejects
 request-user execution after worker failure because credentials are transient.
@@ -1086,6 +1100,17 @@ above.
   for the *capacity*. Run at least two replicas, send a stable `X-Routing-Key`
   per session, and treat a 502 from one routing key as a signal to redeploy,
   since the app status won't show it.
+
+A [2026-11-20 APX `LlmAgent` run (apx-h0f)](../evidence/apx-h0f-2026-11-20/README.md)
+on disposable App `agent-bricks-apx-dur-gen` repeats the single-worker shape and
+does not replace the two-replica observation above. One MEDIUM instance,
+`os._exit` before the tool returned, then an explicit new SNAPSHOT. While the
+process was dead, `app_status` was `CRASHED` with `running_instances=0` even
+though compute stayed `ACTIVE`. The same invocation and session completed only
+after that redeploy. `apps start` was not used, and dead replica capacity was
+not restored by itself. The older single-worker note on this page reported the
+control plane still `RUNNING`; that was a different deployment, and this run
+does not edit it into the 2026-11-20 result.
 
 Operational note: `databricks apps deploy` build steps can fail transiently
 with an opaque `[BUILD][ERROR] Unexpected error ... contact support`; a plain

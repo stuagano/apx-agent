@@ -208,7 +208,10 @@ _AGENT_SECTION = ("tool", "apx", "agent")
 DEV_KEYS = ("profile", "experiment", "memory_store", "example_store", "summarize_fn")
 """Dev-loop CLI keys: top-level [tool.apx] (and .apx.local [tool.apx]). Sub-project 3b-1; the
 memory/example store defaults joined in 3d."""
-REGISTRATION_KEYS = ("registered_model", "catalog", "schema", "supervisor_id", "registry_table", "tools_table")
+REGISTRATION_KEYS = (
+    "registered_model", "catalog", "schema", "supervisor_id",
+    "registry_table", "tools_table", "registry_grants",
+)
 """Registration/publishing CLI keys: [tool.apx.deploy]. Sub-project 3b-1."""
 
 

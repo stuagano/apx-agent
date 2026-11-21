@@ -1218,7 +1218,7 @@ def _render_edit_ui(
   <button id="btn-save">Save &nbsp;<kbd>⌘S</kbd></button>
   <label for="optimize-node">Instructions</label>
   <select id="optimize-node" aria-label="Agent instructions to improve"></select>
-  <button id="btn-improve" title="Propose better instructions with GEPA, scored against your eval set">✨ Improve instructions</button>
+  <button id="btn-improve" title="Propose better instructions with AgentKit model_upgrades, scored against your eval set">✨ Improve instructions</button>
   <button id="btn-new-tool">+ New Tool</button>
   <button id="btn-from-data">✨ From data</button>
   <span id="status-msg"></span>
@@ -1361,9 +1361,10 @@ async function save() {{
 }}
 document.getElementById('btn-save').addEventListener('click', save);
 
-// ── Improve instructions (GEPA) ───────────────────────────────────────────────
-// Runs mlflow.genai.optimize_prompts against the agent's eval set + a judge and
-// loads the winning instructions into the editor for review. Never auto-saves —
+// ── Improve instructions (AgentKit model_upgrades) ────────────────────────────
+// Calls optimize_prompts_and_models against the eval set and the named judge
+// (the scorer label align registered) and loads the winning instructions into
+// the editor for review. Never auto-saves —
 // the human lands it via the existing Save control.
 const optimizeNode = document.getElementById('optimize-node');
 for (const name of {optimize_nodes_js}) {{

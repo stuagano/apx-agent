@@ -44,18 +44,20 @@ async def test_optimize_route_does_not_write_source(tmp_path: Path):
 
     optimize = MagicMock(
         return_value=SimpleNamespace(
-            optimized_prompts=[SimpleNamespace(template="CANDIDATE_NEW_INSTRUCTIONS")],
-            initial_eval_score=0.4,
-            final_eval_score=0.8,
+            best_candidate={"prompt:p": "CANDIDATE_NEW_INSTRUCTIONS"},
+            baseline_score=0.4,
+            best_score=0.8,
         )
     )
     with patch("apx_agent._ui_edit._find_agent_router_path", return_value=agent_file), patch(
         "apx_agent._dev._load_optimize_eval_rows", return_value=[{"question": "q"}]
-    ), patch.multiple(
-        "mlflow.genai", optimize_prompts=optimize, register_prompt=MagicMock(return_value=SimpleNamespace(name="p", version=1))
+    ), patch(
+        "databricks_agentkit.model_upgrades.optimize_prompts_and_models", optimize
+    ), patch(
+        "mlflow.genai.register_prompt", MagicMock(return_value=SimpleNamespace(name="p", version=1))
     ), patch("mlflow.genai.scorers.get_scorer", MagicMock(return_value=MagicMock())), patch(
-        "mlflow.genai.optimize.GepaPromptOptimizer", MagicMock()
-    ), patch("mlflow.MlflowClient", MagicMock()):
+        "mlflow.MlflowClient", MagicMock()
+    ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             r = await ac.post("/_apx/edit/optimize-instructions", json={"judge_name": "j"})
 

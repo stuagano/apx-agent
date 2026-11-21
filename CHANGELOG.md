@@ -12,6 +12,11 @@ All notable changes to apx-agent. Format loosely follows
   release that included it. Move runtime settings onto the agent in `agent.py`,
   deploy and registration keys to `[tool.apx.deploy]`, and `profile` /
   `experiment` to `[tool.apx]`.
+- **Durable load tests use `agentbricks endpoint loadtest` (#1132).** No apx
+  wrapper. One short sandbox run is recorded in
+  [docs/running/endpoint-loadtest.md](docs/running/endpoint-loadtest.md): the
+  warm-up `POST /api/invocations` returned HTTP 502, the CLI sent no measured
+  requests, and the app stayed `RUNNING`.
 
 - **Coworker gallery templates scaffold durable agents with managed stores (#1141).**
   The six gallery coworkers and the `docs/coworkers/` copies (plus
