@@ -1,6 +1,6 @@
 # Durable host consumers (#864)
 
-**Status:** inventory frozen; live acceptance split into six blocked follow-ups · **Date:** 2026-11-20 ·
+**Status:** inventory frozen; apx-gar 2026-11-21 found one OAuth profile on workspace 7474660401027952, so caller-identity replacement proof stays open · **Date:** 2026-11-20 ·
 **Issue:** [#864](https://github.com/stuagano/apx-agent/issues/864) ·
 **Parent:** [#862](https://github.com/stuagano/apx-agent/issues/862)
 
@@ -73,7 +73,23 @@ below is historical, not a claim that OAuth is unavailable today.
 | Authorized approval continuation after replacement | `apx-ab7` | No authorized App and distinct OAuth principals; request-user automatic recovery remains unsupported | Pending approval survives without effects; wrong principal is denied, authorized fresh continuation succeeds once, duplicate resume cannot repeat the effect; retain original and new resume invocation IDs in the same session |
 | Trace correlation after real replacement | `apx-pzd` | No authorized fault-injection App with readable MLflow traces; the invocation-tag join has local tests only | Read back initial/recovered trace IDs and actual invocation record; separate roots join on `apx.invocation.id`, recovered trace has `apx.recovery=true` |
 | Disconnect/reconnect/cancellation contract | `apx-4ag` | No authorized OAuth SSE/replacement probe; native cancellation API is absent | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries; explicitly document that disconnect is not cancellation or rollback and cancellation remains unsupported unless independently proven |
-| Native downstream delegation with caller identity | `apx-gar` | Request-user recovery cannot reconstruct transient credentials; no authorized two-App/OAuth/UC audit probe supplied | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
+| Native downstream delegation with caller identity | `apx-gar` | **Blocked 2026-11-21.** `databricks auth profiles` shows one profile on workspace `7474660401027952` (`fevm-stable`, `databricks-cli`). No second principal, no fault, no invocation. [Record](../evidence/apx-gar-2026-11-21/README.md). `DurableAgentServer._execute` still raises `MCP_USER_AUTH_RECOVERY_UNSUPPORTED` for request-user recovery | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
+
+### apx-gar principal survey (2026-11-21)
+
+`databricks auth profiles -o json` on this machine returned five profiles.
+One, `fevm-stable` (`auth_type=databricks-cli`), is on workspace
+`7474660401027952`. The other four are workspace `1965859176160743` and were
+not used. No principal was created, no PAT was minted, and the app service
+principal was not used as the unauthorized caller. `databricks apps get
+agent-bricks-apx-dur-gen -p fevm-stable` at `2026-11-21T01:07:28.868790+00:00`
+showed the app **RUNNING** with `running_instances=1` on SNAPSHOT
+`01f1e546718010678017040e46a17107`. This bead sent no HTTP invocation and did
+not redeploy. The [sanitized record](../evidence/apx-gar-2026-11-21/README.md)
+is the blocker, not a live delegation pass. Installed
+`databricks-agentbricks` 0.10.0 `DurableAgentServer._execute` raises
+`MCP_USER_AUTH_RECOVERY_UNSUPPORTED` when request-user recovery is attempted.
+GitHub #816 and #755 are still unproven coordination items.
 
 ### Existing evidence and its limits
 
