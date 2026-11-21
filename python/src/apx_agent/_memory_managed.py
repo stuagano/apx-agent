@@ -2,6 +2,11 @@
 
 Actor IDs partition memories; store permissions are the security boundary.
 Tags, importance and metadata are not persisted by the service.
+Runtime operations and explicit provisioning propagate AgentKit AgentCliError
+with its service error_code and chained cause. Only NOT_FOUND /
+RESOURCE_DOES_NOT_EXIST become absent entries (or allow provisioning).
+The boot-only store_exists probe instead logs the error code and returns False
+so declared memory is reported as degraded, never healthy or auto-created.
 """
 from __future__ import annotations
 
@@ -70,7 +75,10 @@ class ManagedMemoryStore:
         try:
             self._resource()
         except Exception as exc:
-            logger.warning("Managed memory store %s not reachable: %s", self._store, exc)
+            logger.warning(
+                "Managed memory store %s not reachable [%s]: %s",
+                self._store, getattr(exc, "error_code", type(exc).__name__), exc,
+            )
             return False
         return True
 

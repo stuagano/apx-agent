@@ -479,6 +479,57 @@ python/tests/test_managed_state_live_reality_ctk.py`.
 `grant_permission`, retention, and measured DBU were not part of this probe.
 No App deploy and no idle/wake run.
 
+### #855 residual probe preparation: `apx-l79`, 2026-11-20
+
+**No new live run.** This assignment forbids deployment and provides no
+operator-authorized disposable App, grant recipient, denied-store identity,
+or unsupported-service workspace. The three live acceptance items remain
+**UNVERIFIED**. Local SDK-transport tests are not a substitute. Retention,
+measured DBU, idle/wake and existing-state migration (#859) remain outside
+this probe. No existing App or store was modified for this change.
+
+`python/tests/test_managed_state_live_reality_ctk.py` now offers independent,
+opt-in residual cases. Run only the selected case; do not enable the historical
+CRUD probe casually (it empties its two fixed-name disposable stores).
+
+| Case | Operator inputs and authorization | Required evidence |
+|---|---|---|
+| Grant to another principal | `APX_MANAGED_STATE_LIVE=1`, selected Databricks profile, `APX_MANAGED_STATE_GRANT_SP=<application UUID>` of another existing sandbox SP; caller must be able to resolve that SP | APX provision grants WRITE on a fresh UUID-named store; AgentKit `list_permissions()` independently returns the target SP/WRITE; teardown GET returns typed `NOT_FOUND`. Does not prove access while authenticated as the recipient. |
+| Permission denied | `APX_MANAGED_STATE_DENIED_PROFILE`, `APX_MANAGED_STATE_DENIED_STORE`: known existing store inaccessible to that profile | Read-only GET raises `AgentCliError(error_code="PERMISSION_DENIED")`; a missing store or authentication failure is not accepted as evidence. |
+| Unsupported service | `APX_MANAGED_STATE_UNSUPPORTED_PROFILE`, `APX_MANAGED_STATE_UNSUPPORTED_STORE`: operator-selected workspace without the feature | Read-only GET raises `AgentCliError` with `FEATURE_DISABLED`, `NOT_IMPLEMENTED` or `UNIMPLEMENTED`; generic 404, network and authentication failures are not accepted. |
+| App-process startup | Execute from the project directory **inside an already deployed, authorized disposable App**, with `APX_MANAGED_STATE_APP_NAME` equal to `DATABRICKS_APP_NAME`; declared memory/session stores in `agent.toml`, matching `AGENT_SESSION_STORE`, `recovery=false`, no memory retention | Enter the real packaged ASGI lifespan; actual managed saver (not a cached local or differently bound saver), readable declared memory and session stores, no memory degradation, `/readyz` 200. No invocation or model call. Not proof of the external App listener, recipient access, crash recovery or idle/wake. |
+
+Example grant-only invocation, **after** operator authorization (from `python/`):
+
+```bash
+APX_MANAGED_STATE_LIVE=1 APX_MANAGED_STATE_GRANT_SP=<sandbox-application-id> \
+  uv run --frozen pytest tests/test_managed_state_live_reality_ctk.py \
+  -k grant_to_another -rA -o junit_family=legacy --junitxml=/tmp/apx-l79-grant.xml
+```
+
+For each read-only failure case use `-k typed_store_failure` and its explicit
+profile/store pair; an unconfigured case skips as **UNVERIFIED**. For the App
+case, run pytest against the absolute path to this probe file from the App's
+project directory, selecting `-k app_process`; do not deploy, restart an
+existing listener, or run it against a production project merely to collect
+this evidence. The probe constructs a separate ASGI instance in that App
+process. Do not enable recovery or retention to make the probe pass.
+
+Use `-o junit_family=legacy --junitxml=<run-file>` to retain per-case resource,
+grant, typed-error and startup properties. A skipped test is never a successful
+live check. Before claiming acceptance, commit a sanitized dated run record
+here containing workspace, App/deployment and code revision, SDK versions,
+identity mode, resource names, selected cases, observed properties and cleanup
+readback. Never include credentials, raw authorization headers or entry data.
+The App's original deployment/run evidence must accompany the in-process
+startup result; `/readyz` on its own does not establish declared-store binding.
+
+`test_managed_state_probe_contracts.py` exercises the real AgentKit permission
+wire format, error normalization, APX no-provision-on-denial behavior and App
+startup against local transports. It rejects absent grant readback, a missing
+store mislabeled as denied, an in-memory saver and a wrong-store saver. These
+checks demonstrate probe sensitivity, **not** live acceptance.
+
 ## Sources
 
 - This checkout: `_memory.py`, `_memory_managed.py`, `_memory_wiring.py`,
