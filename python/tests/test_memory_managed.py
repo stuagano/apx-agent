@@ -1,11 +1,16 @@
 """Exercise the real AgentKit SDK against a controlled memory REST transport."""
 from __future__ import annotations
 
+import json
+import sys
+from pathlib import Path
+from runpy import run_path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from databricks.sdk.errors import NotFound, PermissionDenied
+from databricks.sdk.errors import DatabricksError, NotFound, PermissionDenied
+from databricks_agentbricks.errors import AgentCliError
 
 from apx_agent._memory import MemoryFilter, MemoryStore, RecallOptions
 from apx_agent._memory_managed import ManagedMemoryStore, provision_managed_memory
@@ -20,11 +25,12 @@ class MemoryApi:
         self.calls: list[dict[str, Any]] = []
         self.exists = True
         self.failure: Exception | None = None
+        self.failure_target: tuple[str, str] | None = None
 
     def do(self, method: str, path: str, *, query: Any = None, body: Any = None) -> Any:
         self.calls.append(dict(method=method, path=path, query=query, body=body))
         assert path.startswith("/api/2.0/agents/memory-stores")
-        if self.failure:
+        if self.failure and (self.failure_target is None or self.failure_target == (method, path)):
             raise self.failure
         if path == BASE:
             if not self.exists:
@@ -126,6 +132,119 @@ def test_backend_failures_propagate_and_never_provision(failure: Exception) -> N
         store.get("entry-1")
     with pytest.raises(Exception, match="denied|offline"):
         provision_managed_memory(ws, "agent-memory")
+    assert all(call["method"] == "GET" for call in api.calls)
+
+
+@pytest.mark.parametrize("code", [
+    "PERMISSION_DENIED", "FEATURE_DISABLED", "NOT_IMPLEMENTED", "UNIMPLEMENTED", "UNAVAILABLE",
+])
+@pytest.mark.parametrize("operation,method,suffix", [
+    ("get", "GET", "/entries/entry-1"),
+    ("update", "PATCH", "/entries/entry-1"),
+    ("delete", "DELETE", "/entries/entry-1"),
+    ("add", "POST", "/entries"),
+    ("add_batch", "POST", "/entries"),
+    ("list", "GET", "/entries"),
+    ("recall", "POST", "/entries:search"),
+])
+def test_service_failure_codes_survive_each_adapter_operation(code, operation, method, suffix) -> None:
+    """Fail the operation itself, not just the initial store metadata lookup."""
+    api = MemoryApi()
+    store = ManagedMemoryStore(
+        ws=SimpleNamespace(api_client=api), store_name="agent-memory", scope_resolver=lambda: "alice",
+    )
+    store.add({"principal_id": "alice", "content": "unchanged"})
+    before = {key: dict(value) for key, value in api.entries.items()}
+    api.failure = DatabricksError("service failure", error_code=code)
+    api.failure_target = (method, BASE + suffix)
+    operations = {
+        "get": lambda: store.get("entry-1"),
+        "update": lambda: store.update("entry-1", {"content": "must not write"}),
+        "delete": lambda: store.delete("entry-1"),
+        "add": lambda: store.add({"principal_id": "alice", "content": "must not write"}),
+        "add_batch": lambda: store.add_batch([{"principal_id": "alice", "content": "must not write"}]),
+        "list": lambda: store.list(MemoryFilter(principal_id="alice")),
+        "recall": lambda: store.recall(RecallOptions(principal_id="alice", query="unchanged")),
+    }
+    with pytest.raises(AgentCliError) as raised:
+        operations[operation]()
+    assert raised.value.error_code == code
+    assert raised.value.__cause__ is api.failure
+    assert api.entries == before
+    assert api.calls[-1]["method"] == method
+    assert api.calls[-1]["path"] == BASE + suffix
+
+
+@pytest.mark.parametrize("code", [
+    "PERMISSION_DENIED", "FEATURE_DISABLED", "NOT_IMPLEMENTED", "UNIMPLEMENTED", "UNAVAILABLE",
+])
+def test_resource_failures_are_not_absence_or_permission_to_create(code, caplog) -> None:
+    api = MemoryApi()
+    api.failure = DatabricksError("service failure", error_code=code)
+    ws = SimpleNamespace(api_client=api)
+    store = ManagedMemoryStore(ws=ws, store_name="agent-memory", scope_resolver=lambda: "alice")
+    # Boot readiness intentionally degrades, but records why. Runtime and
+    # explicit provisioning must instead propagate the structured SDK error.
+    assert not store.store_exists()
+    assert code in caplog.text
+    with pytest.raises(AgentCliError) as raised:
+        store.get("entry-1")
+    assert raised.value.error_code == code
+    with pytest.raises(AgentCliError) as raised:
+        provision_managed_memory(ws, "agent-memory")
+    assert raised.value.error_code == code
+    assert all(call["method"] == "GET" for call in api.calls)
+
+
+@pytest.mark.parametrize("scenario,code,verified", [
+    ("denied", "PERMISSION_DENIED", True),
+    ("unsupported", "FEATURE_DISABLED", True),
+    ("unsupported", "NOT_IMPLEMENTED", True),
+    ("unsupported", "UNIMPLEMENTED", True),
+    ("denied", "UNAUTHENTICATED", False),
+    ("denied", "FEATURE_DISABLED", False),
+    ("unsupported", "PERMISSION_DENIED", False),
+    ("unsupported", "UNAVAILABLE", False),
+    ("unsupported", "NOT_FOUND", False),
+    ("denied", "NOT_FOUND", False),
+    ("denied", None, False),
+])
+def test_failure_probe_requires_the_requested_real_error(scenario, code, verified) -> None:
+    probe = run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "managed_memory_failure_probe.py"))["probe"]
+    api = MemoryApi()
+    if code is not None:
+        api.failure = DatabricksError("service failure", error_code=code)
+    result = probe(SimpleNamespace(api_client=api), store_name="agent-memory", scenario=scenario)
+    assert result["verified"] is verified
+    assert result["error_code"] == (None if code == "NOT_FOUND" else code)
+    assert all(call["method"] == "GET" for call in api.calls)
+    assert "service failure" not in str(result)
+
+
+@pytest.mark.parametrize("scenario,code,exit_code", [
+    ("denied", "PERMISSION_DENIED", 0),
+    ("unsupported", "FEATURE_DISABLED", 0),
+    ("denied", "NOT_FOUND", 1),
+    ("unsupported", None, 1),
+])
+def test_failure_probe_cli_records_evidence_and_fails_unsuitable_targets(
+    scenario, code, exit_code, monkeypatch, capsys,
+) -> None:
+    main = run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "managed_memory_failure_probe.py"))["main"]
+    api = MemoryApi()
+    if code is not None:
+        api.failure = DatabricksError("sensitive-response", error_code=code)
+    ws = SimpleNamespace(api_client=api, config=SimpleNamespace(host="https://example.invalid"))
+    monkeypatch.setitem(main.__globals__, "WorkspaceClient", lambda **kwargs: ws)
+    monkeypatch.setattr(sys, "argv", ["probe", "--scenario", scenario, "--profile", "restricted", "--store", "agent-memory"])
+    assert main() == exit_code
+    output = capsys.readouterr().out
+    evidence = json.loads(output)
+    assert evidence["verified"] is (exit_code == 0)
+    assert evidence["profile"] == "restricted"
+    assert evidence["host"] == "https://example.invalid"
+    assert evidence["timestamp"] and evidence["agentbricks_version"] and evidence["sdk_version"]
+    assert "sensitive-response" not in output
     assert all(call["method"] == "GET" for call in api.calls)
 
 
