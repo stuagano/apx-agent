@@ -4840,6 +4840,75 @@ def test_bundle_deploy_no_run_skips_registry_step(
     assert seen["steps"] == []
 
 
+def _capture_registry_grants(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    from apx_agent import cli
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(cli, "_deploy_registry_step", lambda **k: seen.update(k))
+    return seen
+
+
+def test_deploy_grants_registry_access_by_default(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_registry_grants(monkeypatch)
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--json-output"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["registry_recorded"] is True
+    assert seen["grants"] is True
+
+
+def test_registry_no_grants_flag_still_records(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_registry_grants(monkeypatch)
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(
+        main, ["agents", "deploy", "--target", "apps", "--registry-no-grants", "--json-output"],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["registry_recorded"] is True
+    assert seen["grants"] is False
+
+
+def test_registry_grants_setting_still_records(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with (scaffold / "pyproject.toml").open("a") as handle:
+        handle.write("\n[tool.apx.deploy]\nregistry_grants = false\n")
+    seen = _capture_registry_grants(monkeypatch)
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--json-output"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["registry_recorded"] is True
+    assert seen["grants"] is False
+
+
+def test_registry_no_grants_flag_overrides_a_true_setting(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with (scaffold / "pyproject.toml").open("a") as handle:
+        handle.write("\n[tool.apx.deploy]\nregistry_grants = true\n")
+    seen = _capture_registry_grants(monkeypatch)
+    _install_subprocess_mock(monkeypatch)
+    result = CliRunner().invoke(
+        main, ["agents", "deploy", "--target", "apps", "--registry-no-grants", "--json-output"],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["grants"] is False
+
+
+def test_bad_registry_grants_setting_refuses_deploy(
+    scaffold: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with (scaffold / "pyproject.toml").open("a") as handle:
+        handle.write('\n[tool.apx.deploy]\nregistry_grants = "no"\n')
+    result = CliRunner().invoke(main, ["agents", "deploy", "--target", "apps", "--json-output"])
+    assert result.exit_code != 0
+    assert "registry_grants" in result.output
+
+
 # --- #1070: a role-required App Space refuses tools and hops that run as the user ----------------
 
 def _role_preflight(monkeypatch: pytest.MonkeyPatch, group: str | None, *, user_tool: bool, sub_agent: bool) -> Any:
