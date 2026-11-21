@@ -23,6 +23,13 @@ from ._agent_tool import agent_tool
 # Platform tools — agent.toml tool placeholders
 from ._platform_tools import platform_tools
 
+# Per-agent Python client for declared Databricks SDK operations (#946)
+from ._platform_client import (
+    PlatformOperation,
+    declare_platform_operations,
+    generate_platform_client,
+)
+
 # DataAgent — LlmAgent specialized for governed UC data access
 from .data_agent import DataAgent, DataAgentHealth, DataAgentProbe, DataTemplate
 from .coworker import CoworkerAgent, CoworkerTemplate
@@ -443,6 +450,9 @@ __all__ = [
     "RemoteDatabricksAgent",
     "agent_tool",
     "platform_tools",
+    "PlatformOperation",
+    "declare_platform_operations",
+    "generate_platform_client",
     # Template protocol + registry
     "Template",
     "TemplateInfo",
