@@ -1,6 +1,6 @@
 # Durable host consumers (#864)
 
-**Status:** inventory frozen; external-effect proof recorded (2026-11-20 and again on agent-bricks-apx-dur-gen 2026-11-21); five live follow-ups remain · **Date:** 2026-11-20 ·
+**Status:** inventory frozen; disconnect/replay recorded 2026-11-21; native cancellation unsupported; five other live follow-ups remain blocked on this branch · **Date:** 2026-11-21 ·
 **Issue:** [#864](https://github.com/stuagano/apx-agent/issues/864) ·
 **Parent:** [#862](https://github.com/stuagano/apx-agent/issues/862)
 
@@ -24,7 +24,8 @@ you want to remove one, migrate the caller first.
 
 `apx_agent._serve.create_app` → `compile_agent(..., target="durable_agent_server")`.
 No `chat_agent_for`. Transport is `POST /api/invocations` plus read-back and
-event replay. There is no cancel / disconnect / reconnect route
+event replay. There is no cancel route. A closed event stream is resumed with
+`GET /api/invocations/{id}/events?after=`. That replay is not cancellation
 ([runtime-targets](../running/runtime-targets.md)).
 
 Request-user recovery stays rejected. Service-identity recovery is opt-in
@@ -74,8 +75,8 @@ is unavailable today.
 | Session/invocation round-trip after worker loss | `apx-h0f` | No operator-authorized disposable App, fault-injection run, or Apps OAuth context supplied for this assignment | Same invocation and session read back over HTTP and managed storage across real worker loss; original/recovery attempts and replacement mechanism recorded |
 | Replay-safe external effects | `apx-aub` | **Proof recorded.** 2026-11-20 on a torn-down disposable app, and 2026-11-21 on `agent-bricks-apx-dur-gen` (left running). Hard exit after the sink write and before tool return; explicit SNAPSHOT redeploy. Uncommitted work remains at-least-once | [2026-11-20](../evidence/apx-aub-2026-11-20/README.md) and [2026-11-21](../evidence/apx-aub-2026-11-21/README.md): same invocation, attempts 1/2, stable-key create-only sink, **2 raw tool attempts / 1 effective mutation**. Not exactly-once execution or automatic capacity restoration |
 | Authorized approval continuation after replacement | `apx-ab7` | No authorized App and distinct OAuth principals; request-user automatic recovery remains unsupported | Pending approval survives without effects; wrong principal is denied, authorized fresh continuation succeeds once, duplicate resume cannot repeat the effect; retain original and new resume invocation IDs in the same session |
-| Trace correlation after real replacement | `apx-pzd` | [2026-11-21 evidence](../evidence/apx-pzd-2026-11-21/README.md): two roots join on `apx.invocation.id` and the recovered tag is `apx.recovery=true`. `DurableAgentServer._invoke_request` does not call `continue_trace_from_headers`. `MlflowClient.get_trace` could not load span data | Read back initial/recovered trace IDs and actual invocation record; separate roots join on `apx.invocation.id`, recovered trace has `apx.recovery=true` |
-| Disconnect/reconnect/cancellation contract | `apx-4ag` | No authorized OAuth SSE/replacement probe; native cancellation API is absent | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries; explicitly document that disconnect is not cancellation or rollback and cancellation remains unsupported unless independently proven |
+| Trace correlation after real replacement | `apx-pzd` | No authorized fault-injection App with readable MLflow traces; the invocation-tag join has local tests only | Read back initial/recovered trace IDs and actual invocation record; separate roots join on `apx.invocation.id`, recovered trace has `apx.recovery=true` |
+| Disconnect/reconnect/cancellation contract | `apx-4ag` | Disconnect replay and replacement readback recorded in [apx-4ag-2026-11-21](../evidence/apx-4ag-2026-11-21/README.md). Native cancellation stays unsupported: `DurableAgentServer` has no cancel route (`POST .../cancel` 404, `DELETE` invocation 405) | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries. Closing the stream left the invocation active, then completed. `CancellationRegistry` stays |
 | Native downstream delegation with caller identity | `apx-gar` | Request-user recovery cannot reconstruct transient credentials; no authorized two-App/OAuth/UC audit probe supplied | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
 
 ### Existing evidence and its limits
@@ -116,6 +117,19 @@ trace-tag record. The full sanitized run is
 [apx-pzd-2026-11-21](../evidence/apx-pzd-2026-11-21/README.md). That run does
 not prove inbound header continuation, request-user recovery, a native cancel
 API, downstream OBO, or exactly-once effects.
+
+On **2026-11-21**, `apx-4ag` recorded a live disconnect and a one-worker replacement
+on `agent-bricks-apx-dur-gen`. The record is
+[apx-4ag-2026-11-21](../evidence/apx-4ag-2026-11-21/README.md). Closing
+`GET /api/invocations/{id}/events` left the invocation **active**; it later
+**completed**, and `GET .../events?after=<cursor>` returned the later ids.
+After `os._exit(86)`, `running_instances` was 0 with compute still ACTIVE, and
+an explicit SNAPSHOT redeploy — not `apps start` — resumed the same invocation
+at attempt 2. `POST /api/invocations/{id}/cancel` returned **404** and
+`DELETE` of the invocation returned **405**. `DurableAgentServer._events`
+(`after: int = 0`) and `CancellationRegistry` were the symbols inspected.
+That run does not prove a native cancel API, request-user recovery, trace
+joins, downstream OBO, or exactly-once external effects.
 
 `test_durable_recovery.py` reconstructs handlers/savers against a local REST fake.
 It covers committed-tool recovery, approval pause/resume, budgets and invocation
