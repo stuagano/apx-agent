@@ -1,6 +1,6 @@
 # Durable host consumers (#864)
 
-**Status:** inventory frozen; live acceptance split into six blocked follow-ups · **Date:** 2026-11-20 ·
+**Status:** inventory frozen; apx-pzd recorded a live trace-tag join on 2026-11-21; native handlers still do not continue an inbound traceparent · **Date:** 2026-11-20 ·
 **Issue:** [#864](https://github.com/stuagano/apx-agent/issues/864) ·
 **Parent:** [#862](https://github.com/stuagano/apx-agent/issues/862)
 
@@ -71,7 +71,7 @@ below is historical, not a claim that OAuth is unavailable today.
 | Session/invocation round-trip after worker loss | `apx-h0f` | No operator-authorized disposable App, fault-injection run, or Apps OAuth context supplied for this assignment | Same invocation and session read back over HTTP and managed storage across real worker loss; original/recovery attempts and replacement mechanism recorded |
 | Replay-safe external effects | `apx-aub` | No authorized disposable effect sink or crash-window probe; uncommitted work is at-least-once | Kill after an external write but before its tool-result checkpoint; independent sink and checkpoint readback prove stable-key deduplication or reconciliation, with retry counts and residual limits |
 | Authorized approval continuation after replacement | `apx-ab7` | No authorized App and distinct OAuth principals; request-user automatic recovery remains unsupported | Pending approval survives without effects; wrong principal is denied, authorized fresh continuation succeeds once, duplicate resume cannot repeat the effect; retain original and new resume invocation IDs in the same session |
-| Trace correlation after real replacement | `apx-pzd` | No authorized fault-injection App with readable MLflow traces; the invocation-tag join has local tests only | Read back initial/recovered trace IDs and actual invocation record; separate roots join on `apx.invocation.id`, recovered trace has `apx.recovery=true` |
+| Trace correlation after real replacement | `apx-pzd` | [2026-11-21 evidence](../evidence/apx-pzd-2026-11-21/README.md): two roots join on `apx.invocation.id` and the recovered tag is `apx.recovery=true`. `DurableAgentServer._invoke_request` does not call `continue_trace_from_headers`. `MlflowClient.get_trace` could not load span data | Read back initial/recovered trace IDs and actual invocation record; separate roots join on `apx.invocation.id`, recovered trace has `apx.recovery=true` |
 | Disconnect/reconnect/cancellation contract | `apx-4ag` | No authorized OAuth SSE/replacement probe; native cancellation API is absent | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries; explicitly document that disconnect is not cancellation or rollback and cancellation remains unsupported unless independently proven |
 | Native downstream delegation with caller identity | `apx-gar` | Request-user recovery cannot reconstruct transient credentials; no authorized two-App/OAuth/UC audit probe supplied | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
 
@@ -87,6 +87,24 @@ claim about durable execution, but do not supply the full per-item acceptance
 record above (notably APX HTTP/session round-trip, external crash-window effects,
 principal-scoped approvals, trace joins, stream lifecycle, and downstream OBO).
 Do not infer those proofs or invent missing run dates, invocation IDs or traces.
+
+On **2026-11-21**, disposable app `agent-bricks-apx-dur-gen` (one instance)
+lost its worker inside a tool and came back only after an explicit SNAPSHOT
+redeploy. Invocation `e45fcae3-ebb0-4df8-b31b-4b9da8576b3c` read back **200 /
+completed**. `search_traces` filtered on `tags.\`apx.invocation.id\`` returned
+`tr-6ceac8086d4f4ba5346c0ea535d07247` (`apx.recovery=false`) and
+`tr-ef5152ac9ae8a1a69b85d7d064214df9` (`apx.recovery=true`). The client
+`traceparent` trace id `8f50350ad56a5b042a0ce02fdad9ede8` is neither of those.
+`stamp_invocation_correlation` (`apx_agent._audit`) runs inside
+`safe_span("graph.invoke")` in `apx_agent._graph_turn`.
+`continue_trace_from_headers` (`apx_agent._mlflow_tracing`) is called from the
+compatibility host `_invocations._inbound_request_span`.
+`DurableAgentServer._invoke_request` does not call it. `MlflowClient.get_trace`
+and `agentbricks tracing get` reported missing span data, so the join is the
+trace-tag record. The full sanitized run is
+[apx-pzd-2026-11-21](../evidence/apx-pzd-2026-11-21/README.md). That run does
+not prove inbound header continuation, request-user recovery, a native cancel
+API, downstream OBO, or exactly-once effects.
 
 `test_durable_recovery.py` reconstructs handlers/savers against a local REST fake.
 It covers committed-tool recovery, approval pause/resume, budgets and invocation
@@ -104,6 +122,18 @@ store/effect/audit readback appropriate to the item. Record observed failures an
 unsupported capabilities as well as successes. Never commit tokens or secrets.
 Obtain operator authorization before provisioning, fault injection or teardown;
 these beads are not permission to operate on production.
+
+Managed-store startup/grant evidence is tracked separately by `apx-l79`
+(#855 residual). Its [2026-11-20 probe runbook](managed-state-contract-map.md#855-residual-probe-preparation-apx-l79-2026-11-20)
+adds opt-in grant readback, typed denied/unsupported-service failures and an
+App-process lifespan check of the declared memory and session bindings. **No
+new live App or grant run was performed**: deployment is prohibited for this
+assignment and no authorized App/second-principal/failure-workspace context was
+provided. Those acceptance items remain unverified. Local SDK-transport tests,
+a successful `/readyz`, or constructing a saver do not close this gate; retain
+the actual deployment/run and independent binding evidence before claiming
+live acceptance. The probe does not deploy or enable recovery, and must not be
+used to restart a production listener.
 
 **No custom runtime machinery is removed by apx-fgj.** ChatAgent consumers and
 compatibility routes above, policy/approval/audit wiring and the legacy
