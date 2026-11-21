@@ -104,9 +104,9 @@ The body was `status: failed` with `error.code` `UPSTREAM_ERROR`,
 GET is not part of the load-test counts. The same `apps get` after the GET
 was still `RUNNING` / `ACTIVE` on the same snapshot.
 
-## Ready-to-file issue
+## Contract gap
 
-Not filed. `gh issue create` was not run.
+Filed as https://github.com/stuagano/apx-agent/issues/1207.
 
 **Title:** Durable invocation failure is HTTP 502, so agentbricks loadtest records no sample
 
