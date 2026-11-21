@@ -195,6 +195,16 @@ async def call_until_done(
     return result
 
 
+def _gateway_denial(payload: Any) -> Any:
+    """A gateway DENY on this MCP call, or None for an ordinary failure."""
+    from ._errors import GatewayRefusal
+    from ._gateway_refusal import gateway_refusal
+
+    if isinstance(payload, GatewayRefusal):
+        return payload
+    return gateway_refusal(payload, surface="mcp")
+
+
 def _make_mcp_tool(
     server_url: str,
     remote_name: str,
@@ -242,8 +252,14 @@ def _make_mcp_tool(
                     result = await call_until_done(session, remote_name, arguments or {},
                                                    timeout_s=timeout_s, **poll)
         except Exception as e:  # noqa: BLE001
+            refusal = _gateway_denial(e)
+            if refusal is not None:
+                raise refusal
             logger.warning("mcp_tool %s on %s failed: %s", remote_name, server_url, e)
             return {"error": str(e)}
+        refusal = _gateway_denial(result)
+        if refusal is not None:
+            raise refusal
         return _extract_result(result)
 
     _desc = resolve_description(
