@@ -24,13 +24,15 @@ you want to remove one, migrate the caller first.
 
 `apx_agent._serve.create_app` → `compile_agent(..., target="durable_agent_server")`.
 No `chat_agent_for`. Transport is `POST /api/invocations` plus read-back and
-event replay. There is no cancel / disconnect / reconnect route
+event replay. There is no cancel route. A closed event stream is resumed with
+`GET /api/invocations/{id}/events?after=`. That replay is not cancellation
 ([runtime-targets](../running/runtime-targets.md)).
 
 Request-user recovery stays rejected. Service-identity recovery is opt-in
 (`recovery = true`). Local APX recovery tests and later deployed lifecycle
 observations are distinct evidence; neither closes all six acceptance items
-below.
+below. The separately authorized [apx-aub external-effect run](../evidence/apx-aub-2026-11-20/README.md)
+closes only that item, not the other five or consumer retirement.
 
 ## ChatAgent / Model Serving (keep until those products move)
 
@@ -59,12 +61,14 @@ scaffolds still generate `agent_server/start_server.py` → `create_app` in
 ## Live #864 acceptance ledger (apx-fgj)
 
 On **2026-11-20**, apx-fgj used its acceptance option to split each unproven
-live item into its own bead with a named blocker. **No new deployed run was
-performed**: this assignment forbids deploys and operations on running workers.
-These are open follow-ups in Beadhive hive `apx`, each linked to apx-fgj by
-`discovered-from`; splitting the work does not establish live equivalence or
-close the platform's remaining acceptance. The old probe's Apps OAuth failure
-below is historical, not a claim that OAuth is unavailable today.
+live item into its own bead with a named blocker. **No deployed run was
+performed by that splitting assignment**, which prohibited deploys and worker
+operations. The follow-ups are in Beadhive hive `apx`, each linked to apx-fgj by
+`discovered-from`; splitting alone did not establish live equivalence.
+Subsequently, the operator explicitly authorized the isolated `apx-aub` run
+recorded below. That evidence does not close the platform's remaining acceptance.
+The old probe's Apps OAuth failure below is historical, not a claim that OAuth
+is unavailable today.
 
 | Live item | Follow-up bead | Blocker / boundary | Required deployed proof |
 |---|---|---|---|
@@ -72,7 +76,7 @@ below is historical, not a claim that OAuth is unavailable today.
 | Replay-safe external effects | `apx-aub` | No authorized disposable effect sink or crash-window probe; uncommitted work is at-least-once | Kill after an external write but before its tool-result checkpoint; independent sink and checkpoint readback prove stable-key deduplication or reconciliation, with retry counts and residual limits |
 | Authorized approval continuation after replacement | `apx-ab7` | **Blocked 2026-11-21.** `databricks auth profiles` shows one profile on workspace `7474660401027952` (`fevm-stable`, `databricks-cli`). No second principal, no approval, no invocation. [Record](../evidence/apx-ab7-2026-11-21/README.md). `DurableAgentServer._execute` still raises `MCP_USER_AUTH_RECOVERY_UNSUPPORTED` | Pending approval survives without effects; wrong principal is denied, authorized fresh continuation succeeds once, duplicate resume cannot repeat the effect; retain original and new resume invocation IDs in the same session |
 | Trace correlation after real replacement | `apx-pzd` | No authorized fault-injection App with readable MLflow traces; the invocation-tag join has local tests only | Read back initial/recovered trace IDs and actual invocation record; separate roots join on `apx.invocation.id`, recovered trace has `apx.recovery=true` |
-| Disconnect/reconnect/cancellation contract | `apx-4ag` | No authorized OAuth SSE/replacement probe; native cancellation API is absent | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries; explicitly document that disconnect is not cancellation or rollback and cancellation remains unsupported unless independently proven |
+| Disconnect/reconnect/cancellation contract | `apx-4ag` | Disconnect replay and replacement readback recorded in [apx-4ag-2026-11-21](../evidence/apx-4ag-2026-11-21/README.md). Native cancellation stays unsupported: `DurableAgentServer` has no cancel route (`POST .../cancel` 404, `DELETE` invocation 405) | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries. Closing the stream left the invocation active, then completed. `CancellationRegistry` stays |
 | Native downstream delegation with caller identity | `apx-gar` | Request-user recovery cannot reconstruct transient credentials; no authorized two-App/OAuth/UC audit probe supplied | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
 
 The [apx-ab7 approval-continuation handoff](durable-approval-continuation.md)
@@ -98,9 +102,48 @@ two-replica hand-written LangGraph deployment resumed an unfinished node via the
 surviving replica. Neither observation establishes automatic restoration of dead
 replica capacity. These observations supersede a blanket "local tests only"
 claim about durable execution, but do not supply the full per-item acceptance
-record above (notably APX HTTP/session round-trip, external crash-window effects,
-principal-scoped approvals, trace joins, stream lifecycle, and downstream OBO).
-Do not infer those proofs or invent missing run dates, invocation IDs or traces.
+record above (notably APX HTTP/session round-trip, principal-scoped approvals,
+trace joins, stream lifecycle, and downstream OBO). External crash-window effects
+now have separate records for
+[2026-11-20](../evidence/apx-aub-2026-11-20/README.md) and, on the still-live
+app `agent-bricks-apx-dur-gen`,
+[2026-11-21](../evidence/apx-aub-2026-11-21/README.md).
+The 2026-11-21 invocation `0d89a816-f94a-496c-a4e2-a0dbc2fe65a0` created effect
+key `aub-business-20261121-dur-gen` once; attempt 2 returned `created=false`
+and the sink body was unchanged. Its service-identity deterministic harness is
+not full consumer equivalence.
+Do not infer the other proofs or invent missing run dates, invocation IDs or traces.
+
+On **2026-11-21**, disposable app `agent-bricks-apx-dur-gen` (one instance)
+lost its worker inside a tool and came back only after an explicit SNAPSHOT
+redeploy. Invocation `e45fcae3-ebb0-4df8-b31b-4b9da8576b3c` read back **200 /
+completed**. `search_traces` filtered on `tags.\`apx.invocation.id\`` returned
+`tr-6ceac8086d4f4ba5346c0ea535d07247` (`apx.recovery=false`) and
+`tr-ef5152ac9ae8a1a69b85d7d064214df9` (`apx.recovery=true`). The client
+`traceparent` trace id `8f50350ad56a5b042a0ce02fdad9ede8` is neither of those.
+`stamp_invocation_correlation` (`apx_agent._audit`) runs inside
+`safe_span("graph.invoke")` in `apx_agent._graph_turn`.
+`continue_trace_from_headers` (`apx_agent._mlflow_tracing`) is called from the
+compatibility host `_invocations._inbound_request_span`.
+`DurableAgentServer._invoke_request` does not call it. `MlflowClient.get_trace`
+and `agentbricks tracing get` reported missing span data, so the join is the
+trace-tag record. The full sanitized run is
+[apx-pzd-2026-11-21](../evidence/apx-pzd-2026-11-21/README.md). That run does
+not prove inbound header continuation, request-user recovery, a native cancel
+API, downstream OBO, or exactly-once effects.
+
+On **2026-11-21**, `apx-4ag` recorded a live disconnect and a one-worker replacement
+on `agent-bricks-apx-dur-gen`. The record is
+[apx-4ag-2026-11-21](../evidence/apx-4ag-2026-11-21/README.md). Closing
+`GET /api/invocations/{id}/events` left the invocation **active**; it later
+**completed**, and `GET .../events?after=<cursor>` returned the later ids.
+After `os._exit(86)`, `running_instances` was 0 with compute still ACTIVE, and
+an explicit SNAPSHOT redeploy — not `apps start` — resumed the same invocation
+at attempt 2. `POST /api/invocations/{id}/cancel` returned **404** and
+`DELETE` of the invocation returned **405**. `DurableAgentServer._events`
+(`after: int = 0`) and `CancellationRegistry` were the symbols inspected.
+That run does not prove a native cancel API, request-user recovery, trace
+joins, downstream OBO, or exactly-once external effects.
 
 `test_durable_recovery.py` reconstructs handlers/savers against a local REST fake.
 It covers committed-tool recovery, approval pause/resume, budgets and invocation
@@ -119,11 +162,24 @@ unsupported capabilities as well as successes. Never commit tokens or secrets.
 Obtain operator authorization before provisioning, fault injection or teardown;
 these beads are not permission to operate on production.
 
+Managed-store startup/grant evidence is tracked separately by `apx-l79`
+(#855 residual). Its [2026-11-20 probe runbook](managed-state-contract-map.md#855-residual-probe-preparation-apx-l79-2026-11-20)
+adds opt-in grant readback, typed denied/unsupported-service failures and an
+App-process lifespan check of the declared memory and session bindings. **No
+new live App or grant run was performed**: deployment is prohibited for this
+assignment and no authorized App/second-principal/failure-workspace context was
+provided. Those acceptance items remain unverified. Local SDK-transport tests,
+a successful `/readyz`, or constructing a saver do not close this gate; retain
+the actual deployment/run and independent binding evidence before claiming
+live acceptance. The probe does not deploy or enable recovery, and must not be
+used to restart a production listener.
+
 **No custom runtime machinery is removed by apx-fgj.** ChatAgent consumers and
 compatibility routes above, policy/approval/audit wiring and the legacy
 cancellation wrapper stay in place. Retirement requires a recorded equivalence
 proof for each migrated consumer, including identity and governance behavior;
-these open beads and historical lifecycle observations are not that proof.
+these remaining open beads, historical lifecycle observations and the scoped
+external-effect harness are not that proof.
 Do not retry parked app `agent-bricks-stu-dur-1002` (#863), or reuse the torn-down
 `agent-bricks-864probe` as though it still exists.
 
@@ -170,7 +226,7 @@ bodies still stop at `6cdcff86` (2026-10-06).
 | #855 / #856 | Live disposable store probe on DEFAULT; opt-in `APX_MANAGED_STATE_LIVE=1` | Retention, grants, App-process startup; GitHub checklists |
 | #857 | Lakebase conversation history on in-repo examples | `platform-health` / `product-finder` are not in this repo |
 | #858 | `apx-agent memory extract` / `_memory_extract.py` | GitHub text still says extraction is unshipped |
-| #864 | Consumer freeze, historical OAuth probe, and later [deployed lifecycle observations](../running/runtime-targets.md#observed-deployed-lifecycle) | Six open live acceptance beads in the [apx-fgj ledger](#live-864-acceptance-ledger-apx-fgj); no consumer equivalence proof |
+| #864 | Consumer freeze, historical OAuth probe, later [deployed lifecycle observations](../running/runtime-targets.md#observed-deployed-lifecycle), and [apx-aub external-effect proof](../evidence/apx-aub-2026-11-20/README.md) | Five remaining live acceptance items in the [apx-fgj ledger](#live-864-acceptance-ledger-apx-fgj); no consumer equivalence proof |
 | #575 | Wait | UC Agent Services GA |
 | #909 | Agent Bricks forces `agent-bricks-*` | MCP `mcp-` discovery; workaround is App Space `apps_api` |
 | #911 | Doctor names services that need a UI guardrail check | Attachment is UI-only |

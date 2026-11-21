@@ -861,6 +861,15 @@ does not promise exactly-once external effects. Stream events from interrupted
 attempts can remain in the event history; consumers must account for attempt
 boundaries when displaying recovered generation.
 
+A [2026-11-20 disposable deployed probe (apx-aub)](../evidence/apx-aub-2026-11-20/README.md)
+exercised exactly that crash window: a successful create-only external write,
+`os._exit` before the tool returned, then recovery of the same invocation after
+an explicit replacement redeploy. Independent sink and managed-checkpoint
+readbacks showed **two raw tool attempts and one effective mutation**, using a
+stable business key. This service-identity synthetic harness proves the scoped
+idempotency pattern, not exactly-once execution, automatic worker restoration,
+request-user recovery or equivalence of every production consumer.
+
 AgentKit 0.4.0 rejects
 request-user execution after worker failure because credentials are transient.
 Managed-memory tools require that request-user identity, so enabling memory,

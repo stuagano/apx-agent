@@ -6838,6 +6838,12 @@ def _deploy_from_yaml(
          "users, writable by every apx agent's service principal).",
 )
 @click.option(
+    "--registry-no-grants", "registry_no_grants", is_flag=True, default=False,
+    help="Record the app in the agent registry but do not run GRANT. "
+         "Same as registry_grants = false in [tool.apx.deploy]. "
+         "Rows are written; catalog access is left to an owner.",
+)
+@click.option(
     "--register-uc/--no-register-uc", default=True,
     help="After the app is live, register a UC model-version *manifest* for it "
          "(mlflow.pyfunc.log_model + apx.* tags, tagged apx.serving=apps) so the Apps agent "
@@ -6923,6 +6929,7 @@ def deploy(
     readyz_gate: bool,
     register_uc: bool,
     record_registry: bool,
+    registry_no_grants: bool,
     uc_name: str | None,
     vars: tuple[str, ...],
     env_pairs: tuple[str, ...],
@@ -7038,6 +7045,7 @@ def deploy(
             readyz_gate=readyz_gate,
             register_uc=register_uc,
             record_registry=record_registry,
+            registry_no_grants=registry_no_grants,
             uc_name=uc_name,
             poll_timeout_seconds=timeout_seconds,
             readyz_attempts=readyz_retries,
@@ -9942,6 +9950,7 @@ def _deploy_apps(
     readyz_gate: bool = True,
     register_uc: bool = True,
     record_registry: bool = True,
+    registry_no_grants: bool = False,
     uc_name: str | None = None,
     app_name_override: str | None = None,
     poll_timeout_seconds: int = 300,
@@ -9985,6 +9994,7 @@ def _deploy_apps(
             smoke_input=smoke_input,
             log=log,
             record_registry=record_registry,
+            registry_no_grants=registry_no_grants,
         )
 
 
@@ -10075,6 +10085,7 @@ def _deploy_apps_body(
     readyz_gate: bool = True,
     register_uc: bool = True,
     record_registry: bool = True,
+    registry_no_grants: bool = False,
     uc_name: str | None = None,
     app_name_override: str | None = None,
     extra_version_tags: dict[str, str] | None = None,
@@ -10109,6 +10120,7 @@ def _deploy_apps_body(
         and effective_config.deploy.backend == "apps_api"
     )
     registry_cfg = _read_apx_agent_config()
+    registry_grants = _registry_grants_enabled(registry_cfg, skip=registry_no_grants)
     registry_tables = _resolve_deploy_registry(profile, registry_cfg) if record_registry else None
     # Only an explicit location rides into the App env: the default resolves to
     # the same table at runtime (current_catalog()), and the --env merge is not
@@ -10170,6 +10182,7 @@ def _deploy_apps_body(
             json_output=json_output, extra_version_tags=extra_version_tags,
             poll_timeout_seconds=poll_timeout_seconds, readyz_attempts=readyz_attempts, pin=pin, log=log,
             smoke_input=smoke_input, registry_tables=registry_tables,
+            registry_grants=registry_grants,
         )
     native_direct = (
         effective_config is not None and effective_config.target == "durable_agent_server"
@@ -10896,15 +10909,16 @@ def _deploy_apps_body(
         else:
             log("# --no-register-uc: skipping the UC version-manifest registration")
 
-        # 6f. Record the App in the workspace agent registry — part of the
-        # deploy contract like the UC ledger (fails loudly, App stays live).
-        # --no-run skips it: the step follows readyz, which --no-run skips.
+        # 6f. Record the App in the workspace agent registry. A missing row
+        # fails the deploy (the App stays live). A GRANT failure does not:
+        # the row is kept and the deploy warns. --no-run skips it: the step
+        # follows readyz, which --no-run skips.
         registry_recorded = registry_tables is not None and not no_run
         if registry_recorded:
             assert registry_tables is not None
             _deploy_registry_step(
                 profile=profile, app_name=app_name, app_url=app_url or None,
-                tables=registry_tables, module=module, log=log,
+                tables=registry_tables, module=module, log=log, grants=registry_grants,
             )
 
         # 6e. Record local deploy history (redeploy convenience) — best-effort,
@@ -11367,16 +11381,38 @@ def _cli_registry_tables(
         raise click.ClickException(str(exc)) from exc
 
 
+def _registry_grants_enabled(cfg: dict[str, Any], *, skip: bool) -> bool:
+    """``--registry-no-grants`` wins; otherwise ``[tool.apx.deploy] registry_grants`` (default true)."""
+    if skip:
+        return False
+    if "registry_grants" not in cfg:
+        return True
+    value = cfg["registry_grants"]
+    if not isinstance(value, bool):
+        raise click.ClickException("registry_grants in [tool.apx.deploy] must be true or false")
+    return value
+
+
 def _record_in_registry(
     *, ws: "WorkspaceClient", tables: "RegistryTables", name: str, display_name: str,
     description: str, endpoint_url: str | None, sp_client_id: str | None, module: str | None,
-    supervisor_agent_id: str | None, log: Callable[[str], None],
+    supervisor_agent_id: str | None, log: Callable[[str], None], grants: bool = True,
 ) -> int:
-    """Provision the registry, upsert this agent's row, snapshot its tools."""
+    """Provision the registry, upsert this agent's row, snapshot its tools.
+
+    A GRANT failure is reported after the row and tools are written. It does
+    not fail the caller: the app is recorded, access is not granted.
+    """
     import apx_agent
     from . import _publish, _registry, _resources
 
-    _registry.provision_registry(ws, tables=tables, sp_client_id=sp_client_id)
+    grant_failure: _registry.RegistryStepError | None = None
+    try:
+        _registry.provision_registry(ws, tables=tables, sp_client_id=sp_client_id, grants=grants)
+    except _registry.RegistryStepError as exc:
+        if exc.step != "grant registry access":
+            raise
+        grant_failure = exc
     try:
         agent_id = apx_agent.publish_to_registry(
             name=name, description=description, display_name=display_name,
@@ -11395,19 +11431,23 @@ def _record_in_registry(
             fix=f"check MODIFY on {tables.agents} for the deployer",
         ) from e
     log(f"  registry: {name} recorded in {tables.agents}")
-    if module is None:
-        return 0
-    try:
-        tool_fns = list(_resources._iter_tool_fns(_load_finalized_agent(module)))
-        written = _publish.publish_tools_to_registry(
-            agent_id=agent_id, agent_name=name, tool_fns=tool_fns, tools_table=tables.tools, ws=ws,
-        )
-    except Exception as e:
-        raise _registry.RegistryStepError(
-            step="write the agent's tools", table=tables.tools, cause=e,
-            fix=f"check MODIFY on {tables.tools} for the deployer",
-        ) from e
-    log(f"  registry: {written} tool(s) recorded in {tables.tools}")
+    written = 0
+    if module is not None:
+        try:
+            tool_fns = list(_resources._iter_tool_fns(_load_finalized_agent(module)))
+            written = _publish.publish_tools_to_registry(
+                agent_id=agent_id, agent_name=name, tool_fns=tool_fns, tools_table=tables.tools, ws=ws,
+            )
+        except Exception as e:
+            raise _registry.RegistryStepError(
+                step="write the agent's tools", table=tables.tools, cause=e,
+                fix=f"check MODIFY on {tables.tools} for the deployer",
+            ) from e
+        log(f"  registry: {written} tool(s) recorded in {tables.tools}")
+    if grant_failure is not None:
+        log(f"warning: registry row written, access not granted:\n  {grant_failure}")
+    elif not grants:
+        log("  registry: grants skipped")
     return written
 
 
@@ -11419,23 +11459,30 @@ def _resolve_deploy_registry(profile: str | None, cfg: dict[str, Any]) -> "Regis
 
 def _deploy_registry_step(
     *, profile: str | None, app_name: str, app_url: str | None, tables: "RegistryTables",
-    module: str, log: Callable[[str], None],
+    module: str, log: Callable[[str], None], grants: bool = True,
 ) -> None:
-    """Deploy contract: the live App must be recorded in the registry."""
+    """Deploy contract: the live App must be recorded in the registry.
+
+    ``grants=False`` writes the rows and does not look up the App service
+    principal or run GRANT. A GRANT failure after the rows are written is a
+    warning from ``_record_in_registry``, not a deploy error.
+    """
     cfg = _read_apx_agent_config()
     try:
         ws, _ = _connect_workspace(profile)
-        sp_client_id = ws.apps.get(app_name).service_principal_client_id
-        if not sp_client_id:
-            raise RuntimeError(
-                f"the Apps API reports no service principal for {app_name!r}, so it can't be "
-                "granted access to the agent registry"
-            )
+        sp_client_id: str | None = None
+        if grants:
+            sp_client_id = ws.apps.get(app_name).service_principal_client_id
+            if not sp_client_id:
+                raise RuntimeError(
+                    f"the Apps API reports no service principal for {app_name!r}, so it can't be "
+                    "granted access to the agent registry"
+                )
         _record_in_registry(
             ws=ws, tables=tables, name=app_name, display_name=cfg.get("name") or app_name,
             description=cfg.get("description") or app_name, endpoint_url=app_url,
             sp_client_id=sp_client_id, module=module,
-            supervisor_agent_id=cfg.get("supervisor_id"), log=log,
+            supervisor_agent_id=cfg.get("supervisor_id"), log=log, grants=grants,
         )
     except Exception as exc:
         raise click.ClickException(

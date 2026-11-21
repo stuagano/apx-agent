@@ -63,6 +63,12 @@ pre-commit run --all-files          # lint suite (.pre-commit-config.yaml)
 
 `make check` is the read-after-write gate; run it before claiming a change works.
 
+Managed-state live probes are opt-in and require operator-owned disposable
+resources/identities; see `docs/design/managed-state-contract-map.md` for the
+#855 residual runbook. Unconfigured/skipped probes and local SDK-transport
+checks are **not** live evidence. Never deploy or enable recovery/retention
+merely to satisfy a probe's acceptance record.
+
 ## Platform alignment (local only)
 
 Before building auth / identity / deploy surfaces, check

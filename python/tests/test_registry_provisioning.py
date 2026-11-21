@@ -314,3 +314,130 @@ def test_resolver_wraps_sql_errors(monkeypatch):
     monkeypatch.setattr("apx_agent._sql.run_sql", run_sql)
     with pytest.raises(RuntimeError, match="CAN_USE"):
         resolve_registry_tables(MagicMock())
+
+
+def _stub_row_writes(monkeypatch, wrote: list[str]) -> None:
+    monkeypatch.setattr(
+        "apx_agent.publish_to_registry",
+        lambda **k: wrote.append(k["registry_table"]) or "agent_x",
+    )
+    monkeypatch.setattr(
+        "apx_agent._publish.publish_tools_to_registry",
+        lambda **k: wrote.append(k["tools_table"]) or 1,
+    )
+    monkeypatch.setattr(cli, "_load_finalized_agent", lambda module: MagicMock())
+    monkeypatch.setattr("apx_agent._resources._iter_tool_fns", lambda agent: [len])
+
+
+def _record(ws, log, *, grants: bool = True) -> int:
+    return cli._record_in_registry(
+        ws=ws, tables=_TABLES, name="proof", display_name="proof", description="d",
+        endpoint_url="https://proof", sp_client_id="sp-1", module="agent:agent",
+        supervisor_agent_id=None, log=log, grants=grants,
+    )
+
+
+def test_provision_without_grants_creates_tables_and_does_not_read_or_grant(monkeypatch):
+    ws, ran = _provision_ws(monkeypatch, exists=False, fail_on=("GRANT",))
+    provision_registry(ws, tables=_TABLES, sp_client_id="sp-1", grants=False)
+    assert any(s.startswith("CREATE TABLE IF NOT EXISTS") for s in ran)
+    assert not any("GRANT" in s for s in ran)
+    ws.grants.get_effective.assert_not_called()
+
+
+def test_grants_disabled_still_rejects_a_bad_sp_before_sql(monkeypatch):
+    ws, ran = _provision_ws(monkeypatch, exists=False)
+    with pytest.raises(ValueError, match="service principal"):
+        provision_registry(ws, tables=_TABLES, sp_client_id="x`y", grants=False)
+    assert ran == []
+
+
+def test_record_skips_grants_show_grants_already_holds(monkeypatch):
+    """Privileges effective grants already show are not re-sent, so a deployer without MANAGE still records."""
+    ws, ran = _provision_ws(monkeypatch, exists=True, held=_ALL_HELD, fail_on=("GRANT",))
+    wrote: list[str] = []
+    _stub_row_writes(monkeypatch, wrote)
+    logs: list[str] = []
+    n = _record(ws, log=logs.append)
+    assert n == 1
+    assert wrote == ["c.apx.agent_registry", "c.apx.agent_tools"]
+    assert ws.grants.get_effective.called
+    assert ran == []
+    assert not any("access not granted" in line for line in logs)
+
+
+def test_grant_failure_after_the_row_is_written_warns(monkeypatch):
+    ws, _ = _provision_ws(monkeypatch, exists=True, fail_on=("GRANT",))
+    wrote: list[str] = []
+    _stub_row_writes(monkeypatch, wrote)
+    logs: list[str] = []
+    n = _record(ws, log=logs.append)
+    assert n == 1
+    assert wrote == ["c.apx.agent_registry", "c.apx.agent_tools"]
+    warning = "\n".join(logs)
+    assert "registry row written, access not granted" in warning
+    assert "GRANT USE CATALOG ON CATALOG c TO `account users`" in warning
+    assert "PERMISSION_DENIED" in warning
+
+
+def test_deploy_step_grant_failure_warns_instead_of_exiting(monkeypatch):
+    ws, _ = _provision_ws(monkeypatch, exists=True, fail_on=("GRANT",))
+    ws.apps.get.return_value = MagicMock(service_principal_client_id="sp-1")
+    monkeypatch.setattr(cli, "_connect_workspace", lambda profile: (ws, MagicMock()))
+    monkeypatch.setattr(cli, "_read_apx_agent_config", lambda: {"name": "proof", "description": "d"})
+    wrote: list[str] = []
+    _stub_row_writes(monkeypatch, wrote)
+    logs: list[str] = []
+    _REAL_DEPLOY_STEP(
+        profile="p", app_name="proof", app_url="https://proof", tables=_TABLES,
+        module="agent:agent", log=logs.append,
+    )
+    assert wrote == ["c.apx.agent_registry", "c.apx.agent_tools"]
+    assert any("registry row written, access not granted" in line for line in logs)
+
+
+def test_deploy_step_without_grants_records_without_an_app_sp(monkeypatch):
+    recorded = {}
+
+    def record(**k):
+        recorded.update(k)
+        return 0
+
+    ws = MagicMock()
+    monkeypatch.setattr(cli, "_connect_workspace", lambda profile: (ws, MagicMock()))
+    monkeypatch.setattr(cli, "_read_apx_agent_config", lambda: {})
+    monkeypatch.setattr(cli, "_record_in_registry", record)
+    logs: list[str] = []
+    _REAL_DEPLOY_STEP(
+        profile="p", app_name="proof", app_url="https://proof", tables=_TABLES,
+        module="agent:agent", log=logs.append, grants=False,
+    )
+    assert recorded["grants"] is False and recorded["sp_client_id"] is None
+    ws.apps.get.assert_not_called()
+
+
+def test_table_create_failure_still_blocks_the_row(monkeypatch):
+    def boom(ws, **k):
+        raise RegistryStepError(
+            step="create the table", table="c.apx.agent_registry",
+            cause=RuntimeError("no CREATE"), fix="ask the owner",
+        )
+
+    monkeypatch.setattr("apx_agent._registry.provision_registry", boom)
+    wrote: list[str] = []
+    _stub_row_writes(monkeypatch, wrote)
+    with pytest.raises(RegistryStepError, match="create the table"):
+        _record(MagicMock(), log=lambda _m: None)
+    assert wrote == []
+
+
+def test_registry_grants_setting_is_false_and_the_flag_wins(tmp_path):
+    path = tmp_path / "pyproject.toml"
+    path.write_text('[project]\nname = "t"\n\n[tool.apx.deploy]\nregistry_grants = false\n')
+    cfg = cli._read_apx_agent_config(path)
+    assert cfg["registry_grants"] is False
+    assert cli._registry_grants_enabled(cfg, skip=False) is False
+    assert cli._registry_grants_enabled({"registry_grants": True}, skip=True) is False
+    assert cli._registry_grants_enabled({}, skip=False) is True
+    with pytest.raises(click.ClickException, match="registry_grants"):
+        cli._registry_grants_enabled({"registry_grants": "no"}, skip=False)
