@@ -6,6 +6,12 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Breaking: `[tool.apx.agent]` migration was removed.** A leftover
+  `[tool.apx.agent]` table in `pyproject.toml` or `.apx.local` still fails to
+  load. `apx-agent agents migrate-config` was removed after 0.7.7, the last
+  release that included it. Move runtime settings onto the agent in `agent.py`,
+  deploy and registration keys to `[tool.apx.deploy]`, and `profile` /
+  `experiment` to `[tool.apx]`.
 - **Durable load tests use `agentbricks endpoint loadtest` (#1132).** No apx
   wrapper. One short sandbox run is recorded in
   [docs/running/endpoint-loadtest.md](docs/running/endpoint-loadtest.md): the

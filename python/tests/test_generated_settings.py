@@ -86,13 +86,16 @@ def test_generated_project_reads_back_as_its_spec(tmp_path: Path, monkeypatch, k
     assert "agent" not in data["tool"]["apx"], "generated pyproject must not declare [tool.apx.agent]"
     verify(Artifact(str(tmp_path / "agent.py"), min_bytes=40, must_contain=f"name={spec.name!r}"))
     from apx_agent._inspection import _load_agent_config
-    from apx_agent._migrate_config import _CONSTRUCTOR
 
+    constructor = {
+        "instructions": "_instructions", "description": "_description", "temperature": "_temperature",
+        "max_tokens": "_max_tokens", "max_iterations": "_max_iterations", "sub_agents": "_sub_agent_urls",
+    }
     agent = _load_generated(tmp_path, monkeypatch)
     effective = resolve_settings(agent, _load_agent_config(pyproject_path=tmp_path / "pyproject.toml"))
     for field in spec.model_fields_set - {"template", "tools", "skills", "agents", "root"}:
         # Constructor arguments live on the agent; everything else is in the effective config.
-        actual = getattr(agent, _CONSTRUCTOR[field]) if field in _CONSTRUCTOR else getattr(effective, field)
+        actual = getattr(agent, constructor[field]) if field in constructor else getattr(effective, field)
         assert actual == getattr(spec, field), field
 
 

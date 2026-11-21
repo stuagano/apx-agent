@@ -120,12 +120,11 @@ experiment = "/Users/you@example.com/orders"   # MLflow experiment for run/eval/
 
 ## Removed: `[tool.apx.agent]`
 
-The `[tool.apx.agent]` table is no longer supported. To move an existing
-project, commit your work and run `apx-agent agents migrate-config`. It moves
-runtime settings onto the agent, deploy and registration keys to
-`[tool.apx.deploy]`, and `profile` / `experiment` to `[tool.apx]`. It prints the
-keyword arguments to add to your root agent; add them, commit, and run it again
-to remove the old table. Nested tables map onto dicts: `guardrails` with
+The `[tool.apx.agent]` table is no longer supported. `apx-agent agents
+migrate-config` was removed after 0.7.7, the last release that included it.
+Move the settings by hand: runtime settings onto the agent in `agent.py`,
+deploy and registration keys to `[tool.apx.deploy]`, and `profile` /
+`experiment` to `[tool.apx]`. Nested tables map onto dicts: `guardrails` with
 `injection_detection = true` becomes `guardrails={"injection_detection": True}`.
 
 | Setting | Where it lives now |
