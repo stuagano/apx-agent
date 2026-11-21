@@ -121,9 +121,11 @@ Missing cost is unavailable, not zero.
 ## Improve a failing step
 
 In the Edit tab, choose the agent variable in the **Instructions** selector,
-then select **Improve instructions** and name your registered judge. GEPA
-scores candidates through the full running agent using the existing eval
-dataset, changing only the selected leaf's instructions for each trial.
+then select **Improve instructions** and name your registered judge. AgentKit
+`model_upgrades` (`optimize_prompts_and_models`) scores candidates through the
+full running agent using the existing eval dataset and that judge. `label align`
+registers the judge the scorer name refers to. Each trial changes only the
+selected leaf's instructions.
 The candidate appears in the editor for review; **Save** is the only action
 that writes it to the source file. Restart afterward to load the saved code.
 
@@ -136,7 +138,10 @@ reflection, and live tool calls may incur cost and retain their normal effects.
 Use representative cases that exercise the selected child; a higher aggregate
 score does not prove every step improved.
 
-This improves agent instructions. [MemAlign](advanced.md#golden-set-and-judge-calibration)
+This improves agent instructions. The sample agent in
+[`upgrade_sample_agent.py`](../../python/examples/model-upgrades/upgrade_sample_agent.py)
+calls the same `model_upgrades` entry point with the label-aligned judge as its
+scorer. [MemAlign](advanced.md#golden-set-and-judge-calibration)
 aligns the judge to human feedback and remains a separate action.
 
 ## Other checks and advanced workflows
