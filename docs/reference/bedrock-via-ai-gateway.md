@@ -1,8 +1,9 @@
 # Bind agent chat to an AI Gateway model service
 
-APX sends the declared chat model unchanged through Unity Catalog AI Gateway.
-Declare an existing model service, or a supported Databricks foundation-model
-name. Deployment does not create or reconcile a Model Serving endpoint for chat.
+APX sends chat through Unity Catalog AI Gateway. A declared
+`catalog.schema.service` name is sent as written. A `databricks-<id>`
+foundation endpoint is sent as `system.ai.<id>`. Deployment does not create
+or reconcile a Model Serving endpoint for chat.
 
 ```python
 agent = Agent(name="support-agent", model="main.ai.support_chat")

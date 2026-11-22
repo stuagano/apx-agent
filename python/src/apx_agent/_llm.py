@@ -6,8 +6,10 @@ Why this module exists
 (Anthropic, OpenAI, Google, Meta, ...). apx-agent always routes that client
 through Unity Catalog AI Gateway (``use_ai_gateway=True`` →
 ``{host}/ai-gateway/mlflow/v1``). It does not use the Model Serving query
-client for the agent chat model. The authored ``model`` string is sent
-unchanged — typically a ``databricks-*`` foundation-model name. The base
+client for the agent chat model. A declared ``databricks-<id>`` pay-per-token
+endpoint is sent as the Unity Catalog model service ``system.ai.<id>``;
+AI Gateway rejects the endpoint name. A ``catalog.schema.service`` name is
+sent as declared. The base
 client assumes the OpenAI chat-completions request shape — but each provider
 accepts a different *subset* of that shape, and the working subsets drift
 over time as providers ship new model generations and the
@@ -118,7 +120,24 @@ def _make_gpt_reasoning_class() -> type:
 
 
 # Endpoint-name prefixes that require the reasoning-model request shape.
+# Matched on the declared name, before the system.ai rewrite.
 GPT_REASONING_PREFIXES: tuple[str, ...] = ("databricks-gpt-5",)
+
+_FOUNDATION_ENDPOINT_PREFIX = "databricks-"
+
+
+def ai_gateway_chat_model(model: str) -> str:
+    """Name ``get_llm`` sends to ``/ai-gateway/mlflow/v1``.
+
+    Pay-per-token foundation endpoints are ``databricks-<id>``. The same model
+    on Unity Catalog AI Gateway is ``system.ai.<id>`` (observed for
+    ``databricks-meta-llama-3-3-70b-instruct`` →
+    ``system.ai.meta-llama-3-3-70b-instruct``). A name that already contains
+    ``.`` is a model service and is returned unchanged.
+    """
+    if model.startswith(_FOUNDATION_ENDPOINT_PREFIX) and "." not in model:
+        return "system.ai." + model[len(_FOUNDATION_ENDPOINT_PREFIX):]
+    return model
 
 
 def validate_chat_model(model: str) -> str:
@@ -143,9 +162,10 @@ def get_llm(endpoint: str, **kwargs: Any) -> Any:
     AI Gateway attached to a Model Serving endpoint, and not a factory that
     picks a transport from the model name.
 
-    Routing is by model-name prefix, not by config — the caller passes the
-    exact model they want to hit, and this function picks the wrapper that
-    knows that model's quirks. The model string is forwarded unchanged.
+    Routing is by the declared model-name prefix, not by config — the caller
+    passes the model they want, and this function picks the wrapper that
+    knows that model's quirks. The client is constructed with
+    ``ai_gateway_chat_model`` of that name.
 
     Verified rules (2026-05-18, ``databricks-langchain==0.19.0``):
       * ``databricks-gpt-5*``         → ``ChatDatabricksGptReasoning``
@@ -174,11 +194,12 @@ def get_llm(endpoint: str, **kwargs: Any) -> Any:
             "transport."
         )
     kwargs["use_ai_gateway"] = True
+    gateway_model = ai_gateway_chat_model(endpoint)
     if any(endpoint.startswith(p) for p in GPT_REASONING_PREFIXES):
-        llm = _make_gpt_reasoning_class()(model=endpoint, **kwargs)
+        llm = _make_gpt_reasoning_class()(model=gateway_model, **kwargs)
     else:
         from databricks_langchain import ChatDatabricks
-        llm = ChatDatabricks(model=endpoint, **kwargs)
+        llm = ChatDatabricks(model=gateway_model, **kwargs)
     return _attach_gateway_denial(llm)
 
 

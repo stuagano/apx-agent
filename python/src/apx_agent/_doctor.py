@@ -563,10 +563,12 @@ def _ai_gateway_model_service_name(model: str) -> str | None:
     """Resource name for ``GET /api/2.1/unity-catalog/{name}``, or None.
 
     That API requires ``model-services/{catalog}.{schema}.{id}``. A three-part
-    UC name (``system.ai.claude-sonnet-4-5``) maps directly. A ``databricks-*``
-    foundation-model name is the string ``get_llm`` sends unchanged; it is not
-    that resource name, so doctor does not guess a rewrite.
+    UC name maps directly. A ``databricks-*`` foundation endpoint is the
+    ``system.ai.<id>`` service ``get_llm`` sends.
     """
+    from ._llm import ai_gateway_chat_model
+
+    model = ai_gateway_chat_model(model)
     if model.startswith("model-services/"):
         return model
     parts = model.split(".")
@@ -629,10 +631,9 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
             label, Status.WARN,
             f"chat model {model!r} is not a model-service name "
             "(expected catalog.schema.id); UC AI Gateway is still the client",
-            "get_llm sends this name unchanged to /ai-gateway/mlflow/v1. "
-            "Doctor cannot look a databricks-* name up as a model service "
-            "without guessing a rewrite. Confirm the name on AI Gateway if "
-            "calls 404.",
+            "get_llm rewrites a databricks-* foundation endpoint to "
+            "system.ai.<id> and sends any other name unchanged. This name is "
+            "neither a model service nor that endpoint form.",
         )
     try:
         from databricks.sdk import WorkspaceClient

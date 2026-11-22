@@ -963,14 +963,20 @@ class TestCheckModelEndpoint:
         (tmp_path / "agent.py").write_text("from apx_agent import LlmAgent\nagent = LlmAgent(name='x')\n")
         assert doctor.check_model_endpoint(tmp_path, auth_ok=True) is None
 
-    def test_foundation_model_name_abstains_without_serving_lookup(self, tmp_path: Path):
+    def test_foundation_endpoint_is_looked_up_as_system_ai_service(self, tmp_path: Path):
         self._make_pyproject(tmp_path, "databricks-claude-sonnet-4-6")
-        with patch("databricks.sdk.WorkspaceClient") as ws_cls:
+        ws = MagicMock()
+        ws.api_client.do.return_value = {
+            "name": "model-services/system.ai.claude-sonnet-4-6"
+        }
+        with patch("databricks.sdk.WorkspaceClient", return_value=ws):
             c = doctor.check_model_endpoint(tmp_path, auth_ok=True)
         assert c is not None
-        assert c.status is Status.WARN
-        assert "not a model-service name" in c.detail
-        ws_cls.assert_not_called()
+        assert c.status is Status.OK
+        ws.api_client.do.assert_called_once_with(
+            "GET", "/api/2.1/unity-catalog/model-services/system.ai.claude-sonnet-4-6"
+        )
+        ws.serving_endpoints.get.assert_not_called()
 
     def test_model_service_found_returns_ok(self, tmp_path: Path):
         self._make_pyproject(tmp_path, "system.ai.claude-sonnet-4-6")
@@ -1048,7 +1054,9 @@ class TestCheckGatewayGuardrails:
         assert c is not None
         assert c.status is Status.WARN
         assert "do not apply" in c.detail
-        assert c.detail.endswith("Unverified: databricks-claude-sonnet-4-6")
+        assert c.detail.endswith(
+            "Unverified: model-services/system.ai.claude-sonnet-4-6"
+        )
         assert c.fix is not None
         ws_cls.assert_not_called()
 
