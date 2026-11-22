@@ -98,11 +98,15 @@ backend = "agentbricks"   # | apps_api (+ entrypoint, env)
 `agents deploy` records every App in the workspace agent registry. With no
 `registry_table` / `tools_table` set, it lives in the workspace default catalog
 (`<catalog>.apx.agent_registry` and `<catalog>.apx.agent_tools`) and is created by
-the first deploy. Each deploy grants whatever is missing: `SELECT` for
-`account users` and `SELECT, MODIFY` for its App's service principal, plus
-`USE CATALOG` and `USE SCHEMA` on the parents for both. A deployer without
-MANAGE gets the exact `GRANT` statements to hand to the owner. Pass
-`--no-registry` to skip.
+the first deploy. Each deploy grants whatever effective privileges do not already
+show: `SELECT` for `account users` and `SELECT, MODIFY` for its App's service
+principal, plus `USE CATALOG` and `USE SCHEMA` on the parents for both. A
+privilege already held is not granted again, so a redeploy succeeds without
+MANAGE once an owner has set access up. If a grant still fails, the registry row
+is kept and the deploy warns (`row written, access not granted`) with the
+`GRANT` statements for the owner, instead of failing. Set `registry_grants = false`
+or pass `--registry-no-grants` to write the rows and skip grants. Pass
+`--no-registry` to skip the registry entirely.
 
 Dev-loop keys live in top-level `[tool.apx]`:
 
@@ -116,19 +120,18 @@ experiment = "/Users/you@example.com/orders"   # MLflow experiment for run/eval/
 
 ## Removed: `[tool.apx.agent]`
 
-The `[tool.apx.agent]` table is no longer supported. To move an existing
-project, commit your work and run `apx-agent agents migrate-config`. It moves
-runtime settings onto the agent, deploy and registration keys to
-`[tool.apx.deploy]`, and `profile` / `experiment` to `[tool.apx]`. It prints the
-keyword arguments to add to your root agent; add them, commit, and run it again
-to remove the old table. Nested tables map onto dicts: `guardrails` with
+The `[tool.apx.agent]` table is no longer supported. `apx-agent agents
+migrate-config` was removed after 0.7.7, the last release that included it.
+Move the settings by hand: runtime settings onto the agent in `agent.py`,
+deploy and registration keys to `[tool.apx.deploy]`, and `profile` /
+`experiment` to `[tool.apx]`. Nested tables map onto dicts: `guardrails` with
 `injection_detection = true` becomes `guardrails={"injection_detection": True}`.
 
 | Setting | Where it lives now |
 |---|---|
 | `model`, `identity`, `target`, `recovery`, `gateway`, `service_policies`, `guardrails`, `knowledge`, `vector_search_index`, `bindings`, `url`, `registry`, `api_prefix`, `examples`, `workflows`, `data`, `executor`, `example`, `description` | keyword argument on the root agent in `agent.py` (`Agent(..., guardrails={...})`), or `agent.configure(...)` for an agent built by a factory |
 | `instructions`, `temperature`, `max_tokens`, `max_iterations`, `sub_agents`, `memory`, `session` | agent constructor arguments; `session=` takes a dict such as `{"type": "lakebase", "host": "${LAKEBASE_HOST}", "database": "x"}`; a Lakebase `memory=` dict also needs `embedding_model` and `embedding_dim` |
-| `name`, `host`, deploy fields (space, instances, backend, entrypoint, include, autoscale, ...), `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`, `tools_table` | `[tool.apx.deploy]` in `pyproject.toml` |
+| `name`, `host`, deploy fields (space, instances, backend, entrypoint, include, autoscale, ...), `registered_model`, `catalog`, `schema`, `supervisor_id`, `registry_table`, `tools_table`, `registry_grants` | `[tool.apx.deploy]` in `pyproject.toml` |
 | `profile`, `experiment`, `memory_store`, `example_store`, `summarize_fn` | `[tool.apx]` in `pyproject.toml` (`profile` usually in the gitignored `.apx.local`) |
 | graph declarations (`agents` leaves + `root`), `template` | a YAML spec file (`my_agent.yaml`); `apx-agent agents run my_agent.yaml` materializes it |
 | `module = "agent:agent"` | gone: the agent is always the `agent` variable in `agent.py` |

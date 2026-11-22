@@ -323,7 +323,10 @@ def _stage_config(project: Path) -> _Loaded | Check:
         try:
             reject_legacy_tool_config(str(project / "pyproject.toml"))
         except ToolConfigError as exc:
-            return Check("Config", Status.FAIL, str(exc), "Run `apx-agent agents migrate-config`, then commit.")
+            return Check(
+                "Config", Status.FAIL, str(exc),
+                "migrate-config was removed after 0.7.7. Move the settings by hand, then commit.",
+            )
     declared = apx.get("deploy")
     python_only = declared is None and (project / "agent.py").is_file()
     if declared is None and not python_only:

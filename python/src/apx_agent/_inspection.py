@@ -208,7 +208,10 @@ _AGENT_SECTION = ("tool", "apx", "agent")
 DEV_KEYS = ("profile", "experiment", "memory_store", "example_store", "summarize_fn")
 """Dev-loop CLI keys: top-level [tool.apx] (and .apx.local [tool.apx]). Sub-project 3b-1; the
 memory/example store defaults joined in 3d."""
-REGISTRATION_KEYS = ("registered_model", "catalog", "schema", "supervisor_id", "registry_table", "tools_table")
+REGISTRATION_KEYS = (
+    "registered_model", "catalog", "schema", "supervisor_id",
+    "registry_table", "tools_table", "registry_grants",
+)
 """Registration/publishing CLI keys: [tool.apx.deploy]. Sub-project 3b-1."""
 
 
@@ -301,7 +304,11 @@ def _agent_config_fields(
         section = section.get(key, {})
         if not section:
             break
-    fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields} if section else {}
+    # [tool.apx.agent] is rejected, not read. Deploy keys and agent.py literals still fold in below.
+    if section_path == _AGENT_SECTION or not section:
+        fields: dict[str, Any] = {}
+    else:
+        fields = {k: v for k, v in section.items() if k in AgentConfig.model_fields}
     static = from_agent_py if from_agent_py is not None else set()
     if section_path == _AGENT_SECTION:
         fields = _fold_deploy_table(data, fields)
@@ -389,8 +396,6 @@ def _resolve_agent_pyproject(
 def _load_agent_config(
     section_path: tuple[str, ...] = ("tool", "apx", "agent"),
     pyproject_path: Path | str | None = None,
-    *,
-    allow_agent_table: bool = False,
 ) -> AgentConfig | None:
     """Read config from the resolved agent project. Returns None if absent."""
     import logging
@@ -402,7 +407,7 @@ def _load_agent_config(
 
     from ._tool_config import reject_legacy_tool_config
 
-    reject_legacy_tool_config(str(resolved), allow_agent_table=allow_agent_table)  # only migrate-config allows it
+    reject_legacy_tool_config(str(resolved))
     from_agent_py: set[str] = set()
     fields = _agent_config_fields(resolved, section_path, from_agent_py)
     if fields is None:

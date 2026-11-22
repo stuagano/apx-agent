@@ -29,31 +29,24 @@ def test_each_key_resolves_from_its_home(tmp_path: Path, body: str, key: str, va
     assert _read_apx_agent_config(_write(tmp_path, body))[key] == value
 
 
-def test_the_legacy_table_is_rejected_unless_migrate_config_reads_it(tmp_path: Path) -> None:
+def test_the_legacy_table_is_rejected(tmp_path: Path) -> None:
     path = _write(tmp_path, '[tool.apx.agent]\nregistered_model = "c.s.m"\n')
-    with pytest.raises(click.ClickException, match="migrate-config"):
+    with pytest.raises(click.ClickException, match=r"pyproject\.toml:.*migrate-config.*0\.7\.7"):
         _read_apx_agent_config(path)
-    assert _read_apx_agent_config(path, allow_agent_table=True)["registered_model"] == "c.s.m"
 
 
 def test_apx_local_wins_and_a_legacy_local_table_is_rejected(tmp_path: Path) -> None:
     path = _write(tmp_path, '[tool.apx]\nprofile = "committed"\n', local='[tool.apx]\nprofile = "mine"\n')
     assert _read_apx_agent_config(path)["profile"] == "mine"
     (tmp_path / ".apx.local").write_text('[tool.apx.agent]\nprofile = "legacy-local"\n')
-    with pytest.raises(click.ClickException, match="migrate-config"):
+    with pytest.raises(click.ClickException, match=r"\.apx\.local:.*migrate-config.*0\.7\.7"):
         _read_apx_agent_config(path)
-    assert _read_apx_agent_config(path, allow_agent_table=True)["profile"] == "legacy-local"
 
 
-def test_migrate_config_reads_the_old_table_and_rejects_a_conflict_with_the_new_home(tmp_path: Path) -> None:
-    path = _write(tmp_path, '[tool.apx.agent]\nprofile = "a"\n\n[tool.apx]\nprofile = "a"\n')
-    assert _read_apx_agent_config(path, allow_agent_table=True)["profile"] == "a"
-    with pytest.raises(click.ClickException, match="migrate-config"):
-        _read_apx_agent_config(path)
+def test_a_legacy_table_next_to_its_new_home_is_rejected(tmp_path: Path) -> None:
     path = _write(tmp_path, '[tool.apx.agent]\nprofile = "a"\n\n[tool.apx]\nprofile = "b"\n')
-    with pytest.raises(click.ClickException,
-                       match=r"profile is declared in both \[tool.apx.agent\] and \[tool.apx\] with different values; keep \[tool.apx\]."):
-        _read_apx_agent_config(path, allow_agent_table=True)
+    with pytest.raises(click.ClickException, match=r"pyproject\.toml:.*removed after 0\.7\.7"):
+        _read_apx_agent_config(path)
 
 
 def test_older_deploy_keys_never_reach_the_dict(tmp_path: Path) -> None:

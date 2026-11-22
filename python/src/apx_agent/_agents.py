@@ -148,6 +148,8 @@ class BaseAgent:
     _description: str | None = None
     _overrides: Mapping[str, Any] = MappingProxyType({})
     """Per-agent values that differ from the app's; written by resolve_settings."""
+    _platform_operations: tuple[Any, ...] = ()
+    """Declared Databricks SDK operations for ``generate_platform_client`` (#946)."""
 
     def overlay_instructions(self, overlay: str) -> None:
         """Compose *overlay* above this agent's own (e.g. schema-grounded) instructions, once.

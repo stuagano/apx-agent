@@ -280,10 +280,11 @@ See [data-agent.md](../agents/data-agent.md), [coworker.md](../agents/coworker.m
 
 ## Moving off `[tool.apx.agent]`
 
-The `[tool.apx.agent]` table in `pyproject.toml` is no longer supported. Run
-`apx-agent agents migrate-config` to move an existing project: runtime settings
-go onto the root agent in `agent.py`, deploy and registration keys to
-`[tool.apx.deploy]`, and `profile` / `experiment` to `[tool.apx]`. See the
+The `[tool.apx.agent]` table in `pyproject.toml` is no longer supported.
+`apx-agent agents migrate-config` was removed after 0.7.7, the last release that
+included it. Move the settings by hand: runtime settings go onto the root agent
+in `agent.py`, deploy and registration keys to `[tool.apx.deploy]`, and
+`profile` / `experiment` to `[tool.apx]`. See the
 [settings map](../reference/pyproject-toml.md#removed-toolapxagent) for where
 each setting lives now.
 

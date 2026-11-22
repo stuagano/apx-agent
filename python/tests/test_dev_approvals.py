@@ -273,18 +273,26 @@ async def test_missing_conversation_store_still_returns_empty_list():
 
 
 def test_chat_template_includes_approval_and_history_js():
+    from pathlib import Path
+
     from apx_agent._ui_chat import _render_agent_ui
 
     config = AgentConfig(name="t", model="m")
     card = AgentCard(name="t", description="", skills=[])
     ctx = AgentContext(config=config, tools=[], card=card, agent=None)  # type: ignore[arg-type]
     html = _render_agent_ui(ctx)
-    # The approval banner functions must ship in the page.
-    assert "checkPendingApprovals" in html
-    assert "resolveApproval" in html
-    assert "/_apx/approvals" in html
+    vendor = Path(__file__).resolve().parents[1] / "src/apx_agent/_static/vendor"
+    app_js = (vendor / "legacy-chat-app.js").read_text(encoding="utf-8")
+    history_js = (vendor / "legacy-chat-history.js").read_text(encoding="utf-8")
+    # The approval banner lives in the app script the page actually loads.
+    assert 'src="/_apx/vendor/legacy-chat-app.js"' in html
+    assert 'src="/_apx/vendor/legacy-chat-history.js"' in html
+    assert "checkPendingApprovals" in app_js
+    assert "resolveApproval" in app_js
+    assert "/_apx/approvals" in app_js
     # The history-desync fix: both flows must reset the request payload.
-    assert "history.length = 0" in html
+    assert "history.length = 0" in history_js
+    assert "history.length = 0" in app_js
 
 
 # ---------------------------------------------------------------------------

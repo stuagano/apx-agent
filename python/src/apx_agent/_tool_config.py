@@ -213,7 +213,15 @@ def _find_pyproject_upward(start: Path) -> Path | None:
     return None
 
 
-def reject_legacy_tool_config(pyproject_path: str | None = None, *, allow_agent_table: bool = False) -> None:
+LEGACY_AGENT_TABLE = (
+    "[tool.apx.agent] is no longer supported. "
+    "`apx-agent agents migrate-config` was removed after 0.7.7, the last release that included it. "
+    "Declare settings on the agent in agent.py, deploy and registration keys in [tool.apx.deploy], "
+    "and profile and experiment in [tool.apx]."
+)
+
+
+def reject_legacy_tool_config(pyproject_path: str | None = None) -> None:
     """Reject removed TOML declarations ([[tool.apx.tools]], [tool.apx.agent]) before any factory can run."""
     import tomllib
 
@@ -233,12 +241,8 @@ def reject_legacy_tool_config(pyproject_path: str | None = None, *, allow_agent_
             "pass them to the agent's tools (or extra_tools) argument, then remove "
             "the TOML tool declarations."
         )
-    if "agent" in apx and not allow_agent_table:
-        raise ToolConfigError(
-            f"{path}: [tool.apx.agent] is no longer supported. Run `apx-agent agents migrate-config` "
-            f"in {path.parent} to move its settings onto the agent in agent.py and into "
-            "[tool.apx.deploy] / [tool.apx], then commit the result."
-        )
+    if "agent" in apx:
+        raise ToolConfigError(f"{path}: {LEGACY_AGENT_TABLE}")
 
 
 def load_config_tools(raw_tables: list[dict[str, Any]]) -> list[Callable[..., Any]]:

@@ -213,20 +213,19 @@ def _parse_module_spec(spec: str) -> _ModuleSpec:
     return _ModuleSpec(module_path=module_path, variable=variable)
 
 
-def _read_apx_agent_config(pyproject_path: Path | None = None, *, allow_agent_table: bool = False) -> dict[str, Any]:
+def _read_apx_agent_config(pyproject_path: Path | None = None) -> dict[str, Any]:
     """CLI view of the project's apx settings as one flat dict.
 
     Merges, lowest to highest: the dev keys from top-level ``[tool.apx]`` and the
     registration keys from ``[tool.apx.deploy]``; then ``.apx.local``'s ``[tool.apx]``
-    (gitignored). A ``[tool.apx.agent]`` table in either file is an error naming
-    migrate-config, which alone passes *allow_agent_table* to read it (lowest
-    precedence; a key in both it and its new home with different values is an error).
+    (gitignored). A ``[tool.apx.agent]`` table in either file is an error.
 
     Returns an empty dict if the files are missing, malformed, or declare nothing.
     """
     import tomllib
 
     from ._inspection import DEV_KEYS, REGISTRATION_KEYS
+    from ._tool_config import LEGACY_AGENT_TABLE
 
     def _apx(path: Path) -> dict[str, Any]:
         if not path.exists():
@@ -245,23 +244,15 @@ def _read_apx_agent_config(pyproject_path: Path | None = None, *, allow_agent_ta
 
     cwd = pyproject_path.parent if pyproject_path else Path.cwd()
     committed = _apx(pyproject_path or cwd / "pyproject.toml")
-    legacy = _table(committed, "agent")
-    homes = {k: ("[tool.apx]", committed[k]) for k in DEV_KEYS if k in committed}
-    deploy = _table(committed, "deploy")
-    homes.update({k: ("[tool.apx.deploy]", deploy[k]) for k in REGISTRATION_KEYS if k in deploy})
-    for key, (home, value) in homes.items():
-        if key in legacy and legacy[key] != value:
-            raise click.ClickException(
-                f"{key} is declared in both [tool.apx.agent] and {home} with different values; keep {home}.")
     local = _apx(cwd / ".apx.local")
-    if not allow_agent_table:
-        for where, apx in (("pyproject.toml", committed), (".apx.local", local)):
-            if "agent" in apx:
-                raise click.ClickException(
-                    f"{where}: [tool.apx.agent] is no longer supported. Run `apx-agent agents migrate-config` "
-                    f"in {cwd} to move its settings to [tool.apx], [tool.apx.deploy] and the agent in agent.py.")
-    local_keys = {**_table(local, "agent"), **{k: local[k] for k in DEV_KEYS if k in local}}
-    return {**legacy, **{k: v for k, (_, v) in homes.items()}, **local_keys}
+    for where, apx in (("pyproject.toml", committed), (".apx.local", local)):
+        if "agent" in apx:
+            raise click.ClickException(f"{where}: {LEGACY_AGENT_TABLE}")
+    homes = {k: committed[k] for k in DEV_KEYS if k in committed}
+    deploy = _table(committed, "deploy")
+    homes.update({k: deploy[k] for k in REGISTRATION_KEYS if k in deploy})
+    local_keys = {k: local[k] for k in DEV_KEYS if k in local}
+    return {**homes, **local_keys}
 
 _AGENT_SETTING_KEYS = ("name", "model", "description", "data")
 
@@ -646,12 +637,45 @@ def _databrickscfg_profiles() -> list[str]:
     return names
 
 
+_TOML_HEADER = re.compile(r"^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$")
+
+
+def _set_key_text(text: str, section: str, key: str, value: str) -> str:
+    """Set ``key = "<value>"`` inside ``[section]`` of *text* only; add the section if missing.
+
+    Raises ValueError if the result isn't valid TOML (the caller writes nothing)."""
+    import tomllib
+
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    line = f'{key} = "{escaped}"\n'
+    lines = text.splitlines(keepends=True)
+    headers = [(i, m.group(1)) for i, raw in enumerate(lines) if (m := _TOML_HEADER.match(raw))]
+    start = next((i for i, name in headers if name == section), None)
+    if start is None:
+        body = "".join(lines)
+        if body and not body.endswith("\n"):
+            body += "\n"
+        out = body + ("\n" if body else "") + f"[{section}]\n" + line
+    else:
+        end = next((i for i, _ in headers if i > start), len(lines))
+        pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+        hit = next((i for i in range(start + 1, end) if pattern.match(lines[i])), None)
+        if hit is None:
+            lines.insert(start + 1, line)
+        else:
+            lines[hit] = line
+        out = "".join(lines)
+    try:
+        tomllib.loads(out)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"setting {key} in [{section}] would not be valid TOML: {exc}") from exc
+    return out
+
+
 def _set_toml_key(path: Path, section: str, key: str, value: str) -> None:
     """Set ``key = "<value>"`` inside ``[section]`` only, creating the section/file if missing."""
-    from ._migrate_config import set_key_text
-
     try:
-        text = set_key_text(path.read_text() if path.exists() else "", section, key, value)
+        text = _set_key_text(path.read_text() if path.exists() else "", section, key, value)
     except ValueError as exc:
         raise click.ClickException(f"{path.name}: {exc}; edit it by hand.") from exc
     path.write_text(text)
@@ -4891,123 +4915,6 @@ def _check_langgraph_migration(root: Path) -> int:
     return 1 if failed or bad else 0
 
 
-@agents.command("migrate-config")
-def migrate_config() -> None:
-    """Move [tool.apx.agent] to [tool.apx.deploy] and the Python agent (safe to re-run)."""
-    import subprocess
-
-    from . import _migrate_config
-    from ._inspection import _load_agent_config
-    from ._settings import resolve_settings
-
-    import importlib.util
-    import tomllib
-
-    cwd = Path.cwd()
-    pyproject = cwd / "pyproject.toml"
-    local_path = cwd / ".apx.local"
-    local_text = local_path.read_text() if local_path.exists() else None
-    try:
-        local_new = _migrate_config.migrate_local(local_text) if local_text is not None else None
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
-        raise click.ClickException(f".apx.local: {exc}") from exc
-
-    def _apply_local() -> None:
-        # Last, and only after pyproject.toml migrated (or had nothing to do).
-        if local_new is None or local_text is None:
-            return
-        backup = cwd / ".apx.local.bak"
-        n = 2
-        while backup.exists():
-            backup, n = cwd / f".apx.local.bak.{n}", n + 1
-        from ._inspection import DEV_KEYS
-
-        def _dev(flat: dict[str, Any]) -> dict[str, Any]:  # the keys .apx.local still carries
-            return {k: flat[k] for k in DEV_KEYS if k in flat}
-
-        before_flat = _dev(_read_apx_agent_config(pyproject, allow_agent_table=True))
-        backup.write_text(local_text)
-        local_path.write_text(local_new)
-        if _dev(_read_apx_agent_config(pyproject, allow_agent_table=True)) != before_flat:
-            local_path.write_text(local_text)
-            raise click.ClickException("migrating .apx.local changed the effective settings; restored it.")
-        click.echo(f"migrated .apx.local to [tool.apx] (backup: {backup.name})")
-        dropped = _migrate_config.local_dropped_keys(local_text)
-        if dropped:
-            click.echo("  dropped from .apx.local (no longer read there): " + ", ".join(dropped)
-                       + (" — pass --model per command, or set model= on the agent" if "model" in dropped else ""))
-
-    if "agent" not in tomllib.loads(pyproject.read_text()).get("tool", {}).get("apx", {}):
-        _apply_local()
-        if local_new is None:
-            click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
-        return
-    status = subprocess.run(["git", "status", "--porcelain", "--", "pyproject.toml"],
-                            cwd=cwd, capture_output=True, text=True, check=False)
-    if status.returncode != 0 or status.stdout.strip():
-        raise click.ClickException(
-            "pyproject.toml has uncommitted changes; commit them first (git is migrate-config's undo).")
-    agent_py = cwd / "agent.py"
-    if not agent_py.is_file():
-        raise click.ClickException(f"no agent.py in {cwd}; migrate-config reads the agent to see what Python declares.")
-    if str(cwd) not in sys.path:
-        sys.path.insert(0, str(cwd))  # agent.py's own imports (tools/, …)
-    # Load this project's agent.py, never another `agent` module on sys.path; no finalize_agent,
-    # so the agent carries only what Python declares.
-    spec = importlib.util.spec_from_file_location("agent", agent_py)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["agent"] = module
-    try:
-        spec.loader.exec_module(module)
-        agent = module.agent
-    except Exception as exc:  # noqa: BLE001 — any import failure is the user's agent.py
-        sys.modules.pop("agent", None)
-        raise click.ClickException(f"could not import agent.py: {type(exc).__name__}: {exc}") from exc
-    from ._inspection import DEV_KEYS, REGISTRATION_KEYS
-
-    def _meta() -> dict[str, Any]:
-        flat = _read_apx_agent_config(pyproject, allow_agent_table=True)
-        return {k: flat[k] for k in (*DEV_KEYS, *REGISTRATION_KEYS) if k in flat}
-
-    before_meta = _meta()
-    try:
-        before = _load_agent_config(pyproject_path=pyproject, allow_agent_table=True)
-        migration = _migrate_config.plan_migration(pyproject, agent)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    original = pyproject.read_text()
-    if migration.text == original:
-        click.echo("nothing to migrate: no [tool.apx.agent] in pyproject.toml")
-        return
-    pyproject.write_text(migration.text)
-    try:
-        after = _load_agent_config(pyproject_path=pyproject, allow_agent_table=True)
-        # Constructor fields were checked against the agent by plan_migration; once the
-        # table is gone they fall back to defaults in the config, so they're excluded here.
-        skip = set(_migrate_config._CONSTRUCTOR)
-        same = (before is not None and after is not None
-                and resolve_settings(agent, after).model_dump(exclude=skip)
-                == resolve_settings(agent, before).model_dump(exclude=skip)
-                and _meta() == before_meta)
-    except (ValueError, click.ClickException):
-        same = False
-    if not same:
-        pyproject.write_text(original)
-        raise click.ClickException("migrate-config changed the effective config; restored pyproject.toml.")
-    _apply_local()
-    click.echo("moved deploy settings to [tool.apx.deploy]")
-    if migration.removed_agent_table:
-        click.echo("removed [tool.apx.agent]: every field is declared in Python")
-    else:
-        click.echo("kept [tool.apx.agent]:")
-        if migration.missing:
-            click.echo("  add these to the root agent, then re-run:")
-            click.echo("    " + _migrate_config.snippet(migration.missing))
-        if migration.manual:
-            click.echo("  remove by hand once handled elsewhere: " + ", ".join(migration.manual))
-
-
 @agents.command("ontology-jumpstart")
 @click.argument("model_json", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--catalog", required=True, help="APX catalog envelope for generated grounding.")
@@ -6838,6 +6745,12 @@ def _deploy_from_yaml(
          "users, writable by every apx agent's service principal).",
 )
 @click.option(
+    "--registry-no-grants", "registry_no_grants", is_flag=True, default=False,
+    help="Record the app in the agent registry but do not run GRANT. "
+         "Same as registry_grants = false in [tool.apx.deploy]. "
+         "Rows are written; catalog access is left to an owner.",
+)
+@click.option(
     "--register-uc/--no-register-uc", default=True,
     help="After the app is live, register a UC model-version *manifest* for it "
          "(mlflow.pyfunc.log_model + apx.* tags, tagged apx.serving=apps) so the Apps agent "
@@ -6923,6 +6836,7 @@ def deploy(
     readyz_gate: bool,
     register_uc: bool,
     record_registry: bool,
+    registry_no_grants: bool,
     uc_name: str | None,
     vars: tuple[str, ...],
     env_pairs: tuple[str, ...],
@@ -7038,6 +6952,7 @@ def deploy(
             readyz_gate=readyz_gate,
             register_uc=register_uc,
             record_registry=record_registry,
+            registry_no_grants=registry_no_grants,
             uc_name=uc_name,
             poll_timeout_seconds=timeout_seconds,
             readyz_attempts=readyz_retries,
@@ -9942,6 +9857,7 @@ def _deploy_apps(
     readyz_gate: bool = True,
     register_uc: bool = True,
     record_registry: bool = True,
+    registry_no_grants: bool = False,
     uc_name: str | None = None,
     app_name_override: str | None = None,
     poll_timeout_seconds: int = 300,
@@ -9985,6 +9901,7 @@ def _deploy_apps(
             smoke_input=smoke_input,
             log=log,
             record_registry=record_registry,
+            registry_no_grants=registry_no_grants,
         )
 
 
@@ -10075,6 +9992,7 @@ def _deploy_apps_body(
     readyz_gate: bool = True,
     register_uc: bool = True,
     record_registry: bool = True,
+    registry_no_grants: bool = False,
     uc_name: str | None = None,
     app_name_override: str | None = None,
     extra_version_tags: dict[str, str] | None = None,
@@ -10109,6 +10027,7 @@ def _deploy_apps_body(
         and effective_config.deploy.backend == "apps_api"
     )
     registry_cfg = _read_apx_agent_config()
+    registry_grants = _registry_grants_enabled(registry_cfg, skip=registry_no_grants)
     registry_tables = _resolve_deploy_registry(profile, registry_cfg) if record_registry else None
     # Only an explicit location rides into the App env: the default resolves to
     # the same table at runtime (current_catalog()), and the --env merge is not
@@ -10170,6 +10089,7 @@ def _deploy_apps_body(
             json_output=json_output, extra_version_tags=extra_version_tags,
             poll_timeout_seconds=poll_timeout_seconds, readyz_attempts=readyz_attempts, pin=pin, log=log,
             smoke_input=smoke_input, registry_tables=registry_tables,
+            registry_grants=registry_grants,
         )
     native_direct = (
         effective_config is not None and effective_config.target == "durable_agent_server"
@@ -10896,15 +10816,16 @@ def _deploy_apps_body(
         else:
             log("# --no-register-uc: skipping the UC version-manifest registration")
 
-        # 6f. Record the App in the workspace agent registry — part of the
-        # deploy contract like the UC ledger (fails loudly, App stays live).
-        # --no-run skips it: the step follows readyz, which --no-run skips.
+        # 6f. Record the App in the workspace agent registry. A missing row
+        # fails the deploy (the App stays live). A GRANT failure does not:
+        # the row is kept and the deploy warns. --no-run skips it: the step
+        # follows readyz, which --no-run skips.
         registry_recorded = registry_tables is not None and not no_run
         if registry_recorded:
             assert registry_tables is not None
             _deploy_registry_step(
                 profile=profile, app_name=app_name, app_url=app_url or None,
-                tables=registry_tables, module=module, log=log,
+                tables=registry_tables, module=module, log=log, grants=registry_grants,
             )
 
         # 6e. Record local deploy history (redeploy convenience) — best-effort,
@@ -11367,16 +11288,38 @@ def _cli_registry_tables(
         raise click.ClickException(str(exc)) from exc
 
 
+def _registry_grants_enabled(cfg: dict[str, Any], *, skip: bool) -> bool:
+    """``--registry-no-grants`` wins; otherwise ``[tool.apx.deploy] registry_grants`` (default true)."""
+    if skip:
+        return False
+    if "registry_grants" not in cfg:
+        return True
+    value = cfg["registry_grants"]
+    if not isinstance(value, bool):
+        raise click.ClickException("registry_grants in [tool.apx.deploy] must be true or false")
+    return value
+
+
 def _record_in_registry(
     *, ws: "WorkspaceClient", tables: "RegistryTables", name: str, display_name: str,
     description: str, endpoint_url: str | None, sp_client_id: str | None, module: str | None,
-    supervisor_agent_id: str | None, log: Callable[[str], None],
+    supervisor_agent_id: str | None, log: Callable[[str], None], grants: bool = True,
 ) -> int:
-    """Provision the registry, upsert this agent's row, snapshot its tools."""
+    """Provision the registry, upsert this agent's row, snapshot its tools.
+
+    A GRANT failure is reported after the row and tools are written. It does
+    not fail the caller: the app is recorded, access is not granted.
+    """
     import apx_agent
     from . import _publish, _registry, _resources
 
-    _registry.provision_registry(ws, tables=tables, sp_client_id=sp_client_id)
+    grant_failure: _registry.RegistryStepError | None = None
+    try:
+        _registry.provision_registry(ws, tables=tables, sp_client_id=sp_client_id, grants=grants)
+    except _registry.RegistryStepError as exc:
+        if exc.step != "grant registry access":
+            raise
+        grant_failure = exc
     try:
         agent_id = apx_agent.publish_to_registry(
             name=name, description=description, display_name=display_name,
@@ -11395,19 +11338,23 @@ def _record_in_registry(
             fix=f"check MODIFY on {tables.agents} for the deployer",
         ) from e
     log(f"  registry: {name} recorded in {tables.agents}")
-    if module is None:
-        return 0
-    try:
-        tool_fns = list(_resources._iter_tool_fns(_load_finalized_agent(module)))
-        written = _publish.publish_tools_to_registry(
-            agent_id=agent_id, agent_name=name, tool_fns=tool_fns, tools_table=tables.tools, ws=ws,
-        )
-    except Exception as e:
-        raise _registry.RegistryStepError(
-            step="write the agent's tools", table=tables.tools, cause=e,
-            fix=f"check MODIFY on {tables.tools} for the deployer",
-        ) from e
-    log(f"  registry: {written} tool(s) recorded in {tables.tools}")
+    written = 0
+    if module is not None:
+        try:
+            tool_fns = list(_resources._iter_tool_fns(_load_finalized_agent(module)))
+            written = _publish.publish_tools_to_registry(
+                agent_id=agent_id, agent_name=name, tool_fns=tool_fns, tools_table=tables.tools, ws=ws,
+            )
+        except Exception as e:
+            raise _registry.RegistryStepError(
+                step="write the agent's tools", table=tables.tools, cause=e,
+                fix=f"check MODIFY on {tables.tools} for the deployer",
+            ) from e
+        log(f"  registry: {written} tool(s) recorded in {tables.tools}")
+    if grant_failure is not None:
+        log(f"warning: registry row written, access not granted:\n  {grant_failure}")
+    elif not grants:
+        log("  registry: grants skipped")
     return written
 
 
@@ -11419,23 +11366,30 @@ def _resolve_deploy_registry(profile: str | None, cfg: dict[str, Any]) -> "Regis
 
 def _deploy_registry_step(
     *, profile: str | None, app_name: str, app_url: str | None, tables: "RegistryTables",
-    module: str, log: Callable[[str], None],
+    module: str, log: Callable[[str], None], grants: bool = True,
 ) -> None:
-    """Deploy contract: the live App must be recorded in the registry."""
+    """Deploy contract: the live App must be recorded in the registry.
+
+    ``grants=False`` writes the rows and does not look up the App service
+    principal or run GRANT. A GRANT failure after the rows are written is a
+    warning from ``_record_in_registry``, not a deploy error.
+    """
     cfg = _read_apx_agent_config()
     try:
         ws, _ = _connect_workspace(profile)
-        sp_client_id = ws.apps.get(app_name).service_principal_client_id
-        if not sp_client_id:
-            raise RuntimeError(
-                f"the Apps API reports no service principal for {app_name!r}, so it can't be "
-                "granted access to the agent registry"
-            )
+        sp_client_id: str | None = None
+        if grants:
+            sp_client_id = ws.apps.get(app_name).service_principal_client_id
+            if not sp_client_id:
+                raise RuntimeError(
+                    f"the Apps API reports no service principal for {app_name!r}, so it can't be "
+                    "granted access to the agent registry"
+                )
         _record_in_registry(
             ws=ws, tables=tables, name=app_name, display_name=cfg.get("name") or app_name,
             description=cfg.get("description") or app_name, endpoint_url=app_url,
             sp_client_id=sp_client_id, module=module,
-            supervisor_agent_id=cfg.get("supervisor_id"), log=log,
+            supervisor_agent_id=cfg.get("supervisor_id"), log=log, grants=grants,
         )
     except Exception as exc:
         raise click.ClickException(

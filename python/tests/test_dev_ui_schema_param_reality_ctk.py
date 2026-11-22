@@ -17,7 +17,14 @@ import apx_agent._dev as _dev
 
 
 def _src() -> str:
-    return pathlib.Path(_dev.__file__).read_text()
+    """Dev router source, including the per-family route modules."""
+    root = pathlib.Path(_dev.__file__).resolve().parent
+    parts = [pathlib.Path(_dev.__file__).read_text(encoding="utf-8")]
+    parts.extend(
+        path.read_text(encoding="utf-8")
+        for path in sorted((root / "_dev_routes").glob("*.py"))
+    )
+    return "\n".join(parts)
 
 
 def test_no_raw_schema_interpolation_into_information_schema_query() -> None:

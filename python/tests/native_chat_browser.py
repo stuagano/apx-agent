@@ -47,7 +47,7 @@ def browser_chat(request):
         page.on("pageerror", lambda error: errors.append(str(error)))
         surface = request.param
         html = render_root_chat(native=True) if surface == "root" else _render_agent_ui(_make_ctx(), native=True)
-        posts, reads = [], []
+        posts, reads, assets = [], [], []
         state = {"status": "completed", "output": {"status": "completed", "messages": [
             {"type": "ai", "content": "Recorded proof"}]}}
         event = {"type": "agent.message.completed", "message": {"type": "tool", "content": "tool proof"}}
@@ -74,7 +74,8 @@ def browser_chat(request):
                     req.fulfill(json={"id": posts[-1]["id"], **state})
             elif url.endswith("/"):
                 req.fulfill(content_type="text/html", body=html)
-            elif "/vendor/" in url:
+            elif "/vendor/" in url or "/assets/chat/" in url:
+                assets.append(urlsplit(url).path)
                 vendor = Path(__file__).parents[1] / "src/apx_agent/_static/vendor" / url.rsplit("/", 1)[-1]
                 req.fulfill(content_type="application/javascript", body=vendor.read_text())
             else:
@@ -82,6 +83,11 @@ def browser_chat(request):
 
         page.route("**/*", route)
         page.goto("http://localhost/")
+        native_src = "/assets/chat/native-chat.js" if surface == "root" else "/_apx/vendor/native-chat.js"
+        assert assets.count(native_src) == 1
+        if surface == "root":
+            assert assets.count("/assets/chat/root-chat.js") == 1
+        assert page.evaluate("typeof apxNativeChat") == "function"
         yield page, posts, reads, state, event
         assert errors == []
         browser.close()
