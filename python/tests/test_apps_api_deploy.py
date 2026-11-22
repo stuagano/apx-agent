@@ -202,6 +202,10 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr("apx_agent.cli._grant_trace_uc_tables_to_sp", lambda *a, **k: True)
     monkeypatch.setattr("apx_agent.cli._ensure_apx_wheel", lambda cwd: None)
     monkeypatch.setattr("apx_agent.cli._stage_build_manifest", lambda build, wheel: (build / "pyproject.toml").write_text("[project]\nname = \"proof\"\n"))
+    monkeypatch.setattr(
+        "apx_agent._apps_api_deploy._write_space_requirements",
+        lambda build_dir, log: (build_dir / "requirements.txt").write_text("./proof.whl\n"),
+    )
     monkeypatch.setattr("apx_agent.cli._poll_app_ready", lambda *a, **k: state["calls"].append("poll") or {"url": "https://proof"})
     monkeypatch.setattr("apx_agent.cli._check_readyz", lambda *a, **k: state["calls"].append("readyz") or (True, {"durable": True}))
     monkeypatch.setattr("apx_agent.cli._check_native_execution", lambda *a, **k: state["calls"].append("smoke") or SimpleNamespace(completed=True, detail="ok"))
@@ -271,6 +275,9 @@ def test_sync_uploads_the_gitignored_build_tree(harness: dict[str, Any]) -> None
     sync = next(call for call in harness["state"]["calls"] if isinstance(call, tuple) and call[0] == "sync")
     assert "--include" in sync and sync[sync.index("--include") + 1] == "**"
     assert sync[sync.index("--exclude") + 1] == "uv.lock"
+    assert not (harness["project"] / ".build" / "requirements.txt").exists()
+    dedicated = yaml.safe_load((harness["project"] / ".build" / "app.yaml").read_text().split("\n", 1)[1])
+    assert dedicated["command"] == ["uv", "run", "python", "-m", "app"]
 
 
 def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any]) -> None:
@@ -288,8 +295,9 @@ def test_steps_run_in_order_and_rerun_does_not_recreate(harness: dict[str, Any])
     sync = next(item for item in harness["state"]["calls"] if isinstance(item, tuple) and item[0] == "sync")
     assert sync[3:] == ("--include", "**", "--exclude", "uv.lock", "--exclude", ".databricks/**")
     app_yaml = yaml.safe_load((harness["project"] / ".build" / "app.yaml").read_text().split("\n", 1)[1])
-    # The upload omits uv.lock and Apps installs nothing from a bare pyproject.toml (#956).
-    assert app_yaml["command"] == ["uv", "run", "python", "-m", "app"]
+    # Space builds pip-install requirements.txt through the workspace proxy (#956, #1069).
+    assert app_yaml["command"] == ["python", "-m", "app"]
+    assert (harness["project"] / ".build" / "requirements.txt").read_text() == "./proof.whl\n"
     env = {item["name"]: item["value"] for item in app_yaml["env"]}
     assert env["DATA_INSPECTOR_URL"] == "https://inspector.example"
     assert env["AGENT_SESSION_STORE"] == "proof-sessions"
@@ -521,6 +529,36 @@ def test_stage_lock_builds_the_git_wheel_only_for_a_space(
     (tmp_path / ".build").mkdir()
     _stage_lock(tmp_path / ".build", True, lambda line: None, space=space)
     assert staged == [wheel if built else None]
+
+
+def test_space_requirements_export_uses_the_staged_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apx_agent._apps_api_deploy import _write_space_requirements
+
+    build = tmp_path / ".build"
+    build.mkdir()
+    with pytest.raises(click.ClickException, match="staged uv.lock"):
+        _write_space_requirements(build, lambda line: None)
+    (build / "uv.lock").write_text("version = 1\n")
+    seen: dict[str, Any] = {}
+
+    def run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
+        seen["cmd"] = cmd
+        seen["cwd"] = kwargs["cwd"]
+        (build / "requirements.txt").write_text("./local.whl\naiohttp==1.0.0\n")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", run)
+    _write_space_requirements(build, lambda line: None)
+    assert seen["cmd"] == ["uv", "export", "--frozen", "--no-dev", "--no-hashes", "--no-emit-project", "-o", "requirements.txt"]
+    assert seen["cwd"] == build
+    assert (build / "requirements.txt").read_text().startswith("./local.whl\n")
+
+    def fail(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, stdout="", stderr="lock mismatch")
+
+    monkeypatch.setattr("subprocess.run", fail)
+    with pytest.raises(click.ClickException, match="lock mismatch"):
+        _write_space_requirements(build, lambda line: None)
 
 
 def test_git_wheel_rewrite_joins_an_existing_uv_sources_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

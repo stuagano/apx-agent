@@ -403,11 +403,15 @@ Azure China, or GCP host fails even when that read errors. An unreadable
 commercial workspace warns and continues. `apx-agent doctor` reports the same
 region check. The account-level setting and Cross-Geo processing cannot be read
 with workspace credentials, so `apx-agent doctor` lists them as manual checks.
-Spaces install packages only through Databricks-managed proxies, so preflight
-refuses staged install inputs that bypass them, listing each one: VCS (`git+`)
-or direct-URL dependencies, `[tool.uv]` indexes or sources on hosts other than
-public PyPI, and the same in `requirements.txt` and the shipped `uv.lock`. A
-wheel shipped inside the source passes. A default `apx-agent agents scaffold`
+Spaces install packages only through Databricks-managed proxies. The space
+build has no public egress, so deploy exports a hash-free `requirements.txt`
+from the staged lock and starts the app with `python -m <entrypoint>`. The
+upload still omits `uv.lock`: a public-PyPI lock makes the space build's
+`uv sync --locked` reject the injected workspace index, and `uv run` at process
+start resolves `pypi.org` and fails DNS. Preflight refuses staged install
+inputs that bypass the proxies, listing each one: VCS (`git+`) or direct-URL
+dependencies, `[tool.uv]` indexes or sources on hosts other than public PyPI,
+and the same in `requirements.txt`. A wheel shipped inside the source passes. A default `apx-agent agents scaffold`
 project outside the framework repo pins apx-agent with
 `git+https://github.com/...`. An App Space deploy builds that pin into a wheel
 and rewrites the staged manifest, and this check does not refuse that one pin;

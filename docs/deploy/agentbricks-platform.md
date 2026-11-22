@@ -221,6 +221,9 @@ gotcha worth calling out:
 |---|---|---|---|
 | `stu-appspace-probe-1002`, `stu-appspace-control-1002` | updater `apps+gateway+private+preview` | `status: SUCCEEDED` ("Traffic switched") | **yes** |
 | `agent-card-aggregator` | `stuart.gano` directly | **no deployments at all** | **no** — created in the space, never ran (logs 502, nothing serving) |
+| `apx-u9t-space` | `apx-agent agents deploy --target apps` into existing space `app-space` (profile `fevm-stable`, metastore region `us-east-1`), 2026-11-22 | deployment `01f1e610686112998f179bffef61692a`, `SUCCEEDED` ("Traffic switched"), compute `LIQUID` | **yes** — app `RUNNING` at `https://apx-u9t-space-7474660401027952.aws.databricksapps.com`. `GET /readyz` returned 200 `{"status":"ready","checks":{"runtime_store":"ok","durable":true,"agent_execution":"not_probed"}}`. `POST /api/invocations` returned a gateway HTTP 502 HTML page; the app log has no traceback for that request, and a later `GET /readyz` was still 200. |
+
+That `apx-u9t-space` rollout installed with `pip install -r requirements.txt` from `http://package-proxy.host.local:8184` (the workspace package proxy). The uploaded source contained `requirements.txt` and no `uv.lock`, and `app.yaml` started `python -m app`. Two earlier rollouts of the same app did not serve. Omitting `uv.lock` and starting with `uv run` failed DNS for `https://pypi.org/simple/langchain-core/` while the platform still switched traffic and `/readyz` returned HTTP 502. Uploading the public-PyPI `uv.lock` made the build run `uv sync --locked`, which stopped with `The lockfile at uv.lock needs to be updated`.
 
 The apps that launched were deployed through the governed-agentic/preview path
 (the preview service principal is the updater) and have a SUCCEEDED deployment.
