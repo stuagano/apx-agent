@@ -6,6 +6,17 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Chat calls send a `databricks-*` foundation endpoint as its Unity Catalog
+  model service.** `get_llm` maps `databricks-<id>` to `system.ai.<id>` on the
+  AI Gateway request. A `catalog.schema.service` name is unchanged. The default
+  declaration stays `databricks-meta-llama-3-3-70b-instruct`; the call uses
+  `system.ai.meta-llama-3-3-70b-instruct`.
+
+- **App Space deploys install through the workspace package proxy.** A space has
+  no public egress. The deploy exports a hash-free `requirements.txt` from the
+  staged lock, omits `uv.lock`, and starts with `python -m <entrypoint>`.
+  Dedicated apps still omit the lock and start with `uv run`.
+
 - **Breaking: `[tool.apx.agent]` migration was removed.** A leftover
   `[tool.apx.agent]` table in `pyproject.toml` or `.apx.local` still fails to
   load. `apx-agent agents migrate-config` was removed after 0.7.7, the last

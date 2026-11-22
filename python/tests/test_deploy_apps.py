@@ -4965,12 +4965,14 @@ def test_space_preflight_passes_user_tools_when_the_space_has_no_role(monkeypatc
 
 def _partner_ai_preflight(monkeypatch: pytest.MonkeyPatch, setting: Any) -> None:
     """Run space preflight with the workspace partner-powered AI setting returning ``setting``."""
+    from databricks.sdk.service.catalog import GetMetastoreSummaryResponse
     from databricks.sdk.service.settings import BooleanMessage, LlmProxyPartnerPoweredWorkspace
 
     from apx_agent._app_space import validate_space_deployment
 
     client = MagicMock()
     client.workspace_client.config.host = _SPACE_WS
+    client.workspace_client.metastores.summary.return_value = GetMetastoreSummaryResponse(cloud="aws", region="us-east-1")
     client.workspace_client.apps.get.return_value = SimpleNamespace(space="app-space")
     client.workspace_client.apps.get_space.return_value = SimpleNamespace(
         effective_user_api_scopes=[], user_api_scopes=[], resources=[], assume_group_id=None)
@@ -5009,6 +5011,37 @@ def test_space_preflight_warns_when_partner_ai_unreadable(monkeypatch: pytest.Mo
     _partner_ai_preflight(monkeypatch, PermissionDenied("admins only"))
     assert ("# WARNING: Partner-powered AI (workspace): could not read the workspace setting (PermissionDenied); "
             "enablement is unverified.") in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("cloud", "region", "detail"), [
+    ("aws", "us-gov-west-1", "GovCloud region 'us-gov-west-1' is not supported for App Space"),
+    ("aws", "eu-west-2", "region 'eu-west-2' on 'aws' is not a supported App Space region"),
+])
+def test_space_preflight_refuses_govcloud_and_a_disallowed_region(
+    monkeypatch: pytest.MonkeyPatch, cloud: str, region: str, detail: str,
+) -> None:
+    """#1069: deploy stops before the space read, naming GovCloud or the disallowed region."""
+    from databricks.sdk.service.catalog import GetMetastoreSummaryResponse
+    from databricks.sdk.service.settings import BooleanMessage, LlmProxyPartnerPoweredWorkspace
+
+    from apx_agent._app_space import validate_space_deployment
+
+    client = MagicMock()
+    client.workspace_client.config.host = _SPACE_WS
+    client.workspace_client.settings.llm_proxy_partner_powered_workspace.get.return_value = (
+        LlmProxyPartnerPoweredWorkspace(boolean_val=BooleanMessage(value=True)))
+    client.workspace_client.metastores.summary.return_value = GetMetastoreSummaryResponse(cloud=cloud, region=region)
+    monkeypatch.setattr("databricks_agentkit._api_client._AgentBricksApiClient", lambda profile: client)
+    doc = {"resources": {"apps": {"a": {"space": "app-space", "config": {"env": []}}}}}
+    plan = SimpleNamespace(user_api_scopes=[], service_resources=[], operations=(), model=None, sub_agent_urls=())
+    with pytest.raises(click.ClickException) as raised:
+        validate_space_deployment(doc, bundle_key="a", app_name="x", profile="p", plan=plan,
+                                  family_permissions=SimpleNamespace(can_use_groups=[], can_manage_groups=[]))
+    assert raised.value.message == (
+        f"App Space region: {detail}. Deploy from a workspace in a supported App Space Beta region. "
+        "GovCloud, GCP, and Azure China (Mooncake) are not supported: "
+        "https://docs.databricks.com/aws/en/dev-tools/databricks-apps/governed-agentic-app-building")
+    client.workspace_client.apps.get_space.assert_not_called()
 
 
 _PROXY_BYPASS_PYPROJECT = '''\

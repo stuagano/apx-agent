@@ -30,6 +30,7 @@ def test_llama_returns_plain_chat_databricks():
     llm = get_llm("databricks-meta-llama-3-3-70b-instruct")
     assert type(llm).__name__ == "ChatDatabricks"
     assert llm.use_ai_gateway is True
+    assert llm.model == "system.ai.meta-llama-3-3-70b-instruct"
 
 
 def test_gemini_returns_plain_chat_databricks():
@@ -44,6 +45,7 @@ def test_gpt_5_returns_reasoning_subclass():
     assert isinstance(llm, ChatDatabricks)
     assert type(llm).__name__ == "ChatDatabricksGptReasoning"
     assert llm.use_ai_gateway is True
+    assert llm.model == "system.ai.gpt-5-mini"
 
 
 def test_get_llm_rejects_serving_transport_opt_out():
@@ -61,12 +63,22 @@ def test_chat_model_rejects_unsupported_bindings(model):
             build()
 
 
-@pytest.mark.parametrize("model", ["databricks-claude-sonnet-4-6", "main.ai.customer_chat"])
-def test_gateway_model_binding_is_preserved(model):
+@pytest.mark.parametrize(
+    ("declared", "sent"),
+    [
+        ("databricks-claude-sonnet-4-6", "system.ai.claude-sonnet-4-6"),
+        ("databricks-meta-llama-3-3-70b-instruct", "system.ai.meta-llama-3-3-70b-instruct"),
+        ("main.ai.customer_chat", "main.ai.customer_chat"),
+        ("system.ai.meta-llama-3-3-70b-instruct", "system.ai.meta-llama-3-3-70b-instruct"),
+    ],
+)
+def test_gateway_model_binding_is_preserved(declared, sent):
     from apx_agent import AgentConfig
+    from apx_agent._llm import ai_gateway_chat_model
 
-    assert AgentConfig(name="test", model=model).model == model
-    assert get_llm(model).model == model
+    assert AgentConfig(name="test", model=declared).model == declared
+    assert ai_gateway_chat_model(declared) == sent
+    assert get_llm(declared).model == sent
 
 
 def test_gpt_5_5_pro_routes_to_reasoning_subclass():
@@ -80,6 +92,7 @@ def test_gpt_5_5_pro_routes_to_reasoning_subclass():
     llm = get_llm("databricks-gpt-5-5-pro")
     assert type(llm).__name__ == "ChatDatabricksGptReasoning"
     assert llm.use_ai_gateway is True
+    assert llm.model == "system.ai.gpt-5-5-pro"
 
 
 # ---------------------------------------------------------------------------

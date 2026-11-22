@@ -135,15 +135,28 @@ def _reject_external_tools(plan: Any, workspace_client: Any) -> None:
             + "\n".join(lines) + f"\nSee {_SPACE_EGRESS_DOCS}")
 
 
-def _require_partner_ai(workspace_client: Any) -> None:
-    """Fail when the workspace setting reads off; an unreadable setting is a warning, not a failure."""
-    from ._doctor import Status, check_space_partner_ai
+def _require_checked(check: Any) -> None:
+    """Fail the deploy on a FAIL row; an unverified read warns and continues."""
+    from ._doctor import Status
 
-    check = check_space_partner_ai(workspace_client)
     if check.status is Status.FAIL:
         raise click.ClickException(f"{check.name}: {check.detail}. {check.fix}")
     if check.status is Status.WARN:
         click.echo(f"# WARNING: {check.name}: {check.detail}. {check.fix}", err=True)
+
+
+def _require_partner_ai(workspace_client: Any) -> None:
+    """Fail when the workspace setting reads off; an unreadable setting is a warning, not a failure."""
+    from ._doctor import check_space_partner_ai
+
+    _require_checked(check_space_partner_ai(workspace_client))
+
+
+def _require_space_region(workspace_client: Any) -> None:
+    """Fail closed when the workspace is GovCloud or outside the App Space Beta regions."""
+    from ._doctor import check_space_region
+
+    _require_checked(check_space_region(workspace_client))
 
 
 @dataclass(frozen=True)
@@ -175,6 +188,7 @@ def validate_space_deployment(
     client = _AgentBricksApiClient(profile)
     _reject_external_tools(plan, client.workspace_client)
     _require_partner_ai(client.workspace_client)
+    _require_space_region(client.workspace_client)
     inherited = client.workspace_client.apps.get_space(space)
     # #1070: a role-required space acts with the role, so user-identity tools and hops are refused.
     from ._apps_authorization import _obo_callers

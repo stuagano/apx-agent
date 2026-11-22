@@ -37,7 +37,7 @@ databricks --profile prod schemas get main.agents
 
 **Symptom.** Deploy succeeds, first chat call returns `RESOURCE_DOES_NOT_EXIST` or the model name is rejected.
 
-**Diagnosis.** The agent chat model is called through **Unity Catalog AI Gateway** (`{host}/ai-gateway/mlflow/v1`). `get_llm` sends the declared model string unchanged. `system.ai.claude-sonnet-4-6` is a Gateway **model service** name (`catalog.schema.name`). `databricks-claude-sonnet-4-6` names a Model Serving endpoint; finding that endpoint does not establish that the same string resolves through Gateway. Confirm the model service exists and that the caller can access it. Serving endpoints still matter for explicit endpoint tools, embeddings, and sub-agent endpoints. Provider-prefixed chat declarations such as `bedrock:...` are rejected; configure the provider in AI Gateway and declare its model-service name instead. See [the migration guide](../reference/bedrock-via-ai-gateway.md).
+**Diagnosis.** The agent chat model is called through **Unity Catalog AI Gateway** (`{host}/ai-gateway/mlflow/v1`). `get_llm` sends a declared `databricks-<id>` foundation endpoint as the model service `system.ai.<id>`. A `catalog.schema.service` name is sent as declared. Confirm that model service exists and that the caller can access it. Serving endpoints still matter for explicit endpoint tools, embeddings, and sub-agent endpoints. Provider-prefixed chat declarations such as `bedrock:...` are rejected; configure the provider in AI Gateway and declare its model-service name instead. See [the migration guide](../reference/bedrock-via-ai-gateway.md).
 
 **Fix.**
 

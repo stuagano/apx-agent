@@ -563,10 +563,12 @@ def _ai_gateway_model_service_name(model: str) -> str | None:
     """Resource name for ``GET /api/2.1/unity-catalog/{name}``, or None.
 
     That API requires ``model-services/{catalog}.{schema}.{id}``. A three-part
-    UC name (``system.ai.claude-sonnet-4-5``) maps directly. A ``databricks-*``
-    foundation-model name is the string ``get_llm`` sends unchanged; it is not
-    that resource name, so doctor does not guess a rewrite.
+    UC name maps directly. A ``databricks-*`` foundation endpoint is the
+    ``system.ai.<id>`` service ``get_llm`` sends.
     """
+    from ._llm import ai_gateway_chat_model
+
+    model = ai_gateway_chat_model(model)
     if model.startswith("model-services/"):
         return model
     parts = model.split(".")
@@ -629,10 +631,9 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
             label, Status.WARN,
             f"chat model {model!r} is not a model-service name "
             "(expected catalog.schema.id); UC AI Gateway is still the client",
-            "get_llm sends this name unchanged to /ai-gateway/mlflow/v1. "
-            "Doctor cannot look a databricks-* name up as a model service "
-            "without guessing a rewrite. Confirm the name on AI Gateway if "
-            "calls 404.",
+            "get_llm rewrites a databricks-* foundation endpoint to "
+            "system.ai.<id> and sends any other name unchanged. This name is "
+            "neither a model service nor that endpoint form.",
         )
     try:
         from databricks.sdk import WorkspaceClient
@@ -1405,6 +1406,22 @@ _SPACE_DOCS = "https://docs.databricks.com/aws/en/dev-tools/databricks-apps/gove
 _PARTNER_AI_DOCS = "https://docs.databricks.com/aws/en/databricks-ai/partner-powered"
 _CROSS_GEO_DOCS = "https://docs.databricks.com/aws/en/resources/databricks-geos#cross-geo-processing"
 _VCS_PREFIXES = ("git+", "hg+", "svn+", "bzr+")
+# App Space Beta regions from the governed-agentic-app-building page (#1069).
+# GovCloud, GCP, and Azure China (Mooncake) are excluded there, not listed here.
+_AWS_SPACE_REGIONS = frozenset({
+    "ap-northeast-1", "ap-south-1", "ap-southeast-1", "ap-southeast-2",
+    "eu-central-1", "eu-west-1", "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+})
+_AZURE_SPACE_REGIONS = frozenset({
+    "australiaeast", "brazilsouth", "canadacentral", "centralindia", "centralus",
+    "eastus", "eastus2", "francecentral", "germanywestcentral", "japaneast",
+    "northcentralus", "northeurope", "southcentralus", "southeastasia",
+    "uksouth", "westeurope", "westus", "westus2",
+})
+_SPACE_REGION_FIX = (
+    "Deploy from a workspace in a supported App Space Beta region. "
+    f"GovCloud, GCP, and Azure China (Mooncake) are not supported: {_SPACE_DOCS}"
+)
 
 
 def check_space_partner_ai(ws: Any) -> Check:
@@ -1428,6 +1445,73 @@ def check_space_partner_ai(ws: Any) -> Check:
                      f"Ask a workspace admin to turn it on: {_PARTNER_AI_DOCS}")
     return Check(label, Status.WARN, "the workspace setting returned no value; enablement is unverified",
                  f"Ask a workspace admin to confirm it is on: {_PARTNER_AI_DOCS}")
+
+
+def _workspace_hostname(ws: Any) -> str | None:
+    raw = getattr(getattr(ws, "config", None), "host", None)
+    if not isinstance(raw, str):
+        return None
+    return urlparse(raw).hostname
+
+
+def _host_region_refusal(hostname: str | None) -> str | None:
+    """A gov, China, or GCP workspace host is unsupported even when the region read fails."""
+    if hostname is None:
+        return None
+    host = hostname.lower()
+    if host.endswith((".cloud.databricks.us", ".cloud.databricks.mil", ".azuredatabricks.us")):
+        return f"GovCloud host {hostname!r} is not supported for App Space"
+    if host.endswith((".databricks.azure.cn", ".azuredatabricks.cn")):
+        return f"Azure China (Mooncake) host {hostname!r} is not supported for App Space"
+    if host.endswith(".gcp.databricks.com"):
+        return f"GCP host {hostname!r} is not supported for App Space"
+    return None
+
+
+def _summary_region_refusal(cloud: str, region: str) -> str | None:
+    """None when ``cloud``/``region`` is on the App Space Beta list."""
+    cloud_name = cloud.lower()
+    region_name = region.lower()
+    if region_name.startswith(("us-gov-", "usgov", "usdod")):
+        return f"GovCloud region {region!r} is not supported for App Space"
+    if region_name.startswith("china"):
+        return f"Azure China (Mooncake) region {region!r} is not supported for App Space"
+    if cloud_name == "gcp":
+        return f"GCP region {region!r} is not supported for App Space"
+    allowed = {"aws": _AWS_SPACE_REGIONS, "azure": _AZURE_SPACE_REGIONS}.get(cloud_name)
+    if allowed is None or region_name not in allowed:
+        return f"region {region!r} on {cloud!r} is not a supported App Space region"
+    return None
+
+
+def check_space_region(ws: Any) -> Check:
+    """App Space Beta is regional: GovCloud and any region outside the Beta list fail closed.
+
+    Cloud and region come from ``WorkspaceClient.metastores.summary()``. A GovCloud,
+    Azure China, or GCP host fails before that read. An unreadable commercial
+    workspace is a WARN, like the partner-powered AI setting: the local identity
+    may not be allowed to read the metastore summary.
+    """
+    from databricks.sdk.errors.base import DatabricksError
+
+    label = "App Space region"
+    refusal = _host_region_refusal(_workspace_hostname(ws))
+    if refusal is not None:
+        return Check(label, Status.FAIL, refusal, _SPACE_REGION_FIX)
+    try:
+        summary = ws.metastores.summary()
+        cloud, region = summary.cloud, summary.region
+    except DatabricksError as exc:
+        return Check(label, Status.WARN,
+                     f"could not read the workspace region ({type(exc).__name__}); regional availability is unverified",
+                     _SPACE_REGION_FIX)
+    if not isinstance(cloud, str) or not isinstance(region, str) or not cloud or not region:
+        return Check(label, Status.WARN, "the workspace summary returned no cloud or region; regional availability is unverified",
+                     _SPACE_REGION_FIX)
+    refusal = _summary_region_refusal(cloud, region)
+    if refusal is not None:
+        return Check(label, Status.FAIL, refusal, _SPACE_REGION_FIX)
+    return Check(label, Status.OK, f"{cloud} {region} is a supported App Space region")
 
 
 def check_space_role(space: str, group: str | None, callers: list[str]) -> Check:
@@ -1524,13 +1608,13 @@ def check_space_prerequisites(
     """App Space Beta workspace prerequisites apx can read, and the ones it cannot (#1069, #1070)."""
     if config is None or config.deploy is None or config.deploy.space is None:
         return []
-    labels = ("Partner-powered AI (workspace)", "App Space role")
+    labels = ("Partner-powered AI (workspace)", "App Space region", "App Space role")
     if online:
         try:
             from ._defaults import _make_workspace_client
 
             ws = _make_workspace_client()
-            checks = [check_space_partner_ai(ws), _space_role_row(ws, config.deploy.space, agent, config)]
+            checks = [check_space_partner_ai(ws), check_space_region(ws), _space_role_row(ws, config.deploy.space, agent, config)]
         except Exception as exc:  # reported, not raised: doctor keeps going
             checks = [Check(label, Status.WARN, f"could not create a workspace client ({type(exc).__name__})",
                             "Authenticate to the intended workspace and rerun doctor.") for label in labels]
