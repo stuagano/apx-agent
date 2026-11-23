@@ -248,6 +248,30 @@ def test_failure_probe_cli_records_evidence_and_fails_unsuitable_targets(
     assert all(call["method"] == "GET" for call in api.calls)
 
 
+def test_live_adapter_failure_rejects_absence_and_keeps_entry_denial(monkeypatch) -> None:
+    """The live wrapper uses the adapter probe. A missing entry is not denial."""
+    from tests.test_managed_state_live_reality_ctk import test_live_memory_adapter_failure
+
+    api = MemoryApi()
+    ws = SimpleNamespace(api_client=api, config=SimpleNamespace(host="https://sandbox.invalid"))
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda **_kwargs: ws)
+    monkeypatch.setenv("APX_MANAGED_STATE_LIVE", "1")
+    monkeypatch.setenv("APX_MANAGED_STATE_DENIED_PROFILE", "sandbox")
+    monkeypatch.setenv("APX_MANAGED_STATE_DENIED_STORE", "agent-memory")
+    with pytest.raises(AssertionError):
+        test_live_memory_adapter_failure("denied", {"PERMISSION_DENIED"}, lambda *_args: None)
+    assert all(call["method"] == "GET" for call in api.calls)
+
+    api.failure = DatabricksError("service failure", error_code="PERMISSION_DENIED")
+    api.failure_target = ("GET", BASE + "/entries/apx-nxc-missing-entry")
+    properties = {}
+    test_live_memory_adapter_failure("denied", {"PERMISSION_DENIED"}, properties.__setitem__)
+    assert properties["exception_type"] == "AgentCliError"
+    assert properties["error_code"] == "PERMISSION_DENIED"
+    assert properties["verified"] is True
+    assert all(call["method"] == "GET" for call in api.calls)
+
+
 def test_provision_creates_only_missing_store() -> None:
     api = MemoryApi()
     api.exists = False
