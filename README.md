@@ -422,6 +422,8 @@ See [docs/get-started/migration.md](docs/get-started/migration.md) for a concept
 
 ## For AI coding assistants
 
+Work is tracked in the beads hive. [AGENTS.md](AGENTS.md#beads) has the `bd` pin, how to claim a bead, and the pull-request rules.
+
 The repo ships an [`llms.txt`](llms.txt) index of all documentation URLs. Add the docs as a local MCP server in Claude Code:
 
 ```bash

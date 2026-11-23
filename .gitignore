@@ -37,6 +37,10 @@ typescript/deploy/*/app.yaml
 # Git worktrees
 .worktrees/
 
+# Local beads hive (the data lives on refs/dolt/data)
+.beads/
+.beads.gate.lock
+
 # Local MLflow runs
 mlruns/
 

@@ -1,0 +1,20 @@
+name: beads
+
+# A pull request must name a bead. The id can be in the title, the body, or
+# the branch (wt/bead/issue/<id>). dependabot[bot], github-actions[bot], and
+# the beads:exempt label skip this check.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  bead-ref:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Require a bead id
+        run: python3 scripts/beads/beads.py check-pr --event "$GITHUB_EVENT_PATH"
