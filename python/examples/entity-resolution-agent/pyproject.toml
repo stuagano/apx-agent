@@ -5,10 +5,9 @@ description = "Entity resolution agent — fuzzy name+address matching via Datab
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    # The [langgraph] extra is required at runtime for both deploy targets:
-    # compile_to_chat_agent (Model Serving) and compile_to_responses_agent
-    # (Apps) both import langchain_core via the langgraph compiler.
-    "apx-agent[eval]",
+    # [agentbricks] provides DurableAgentServer, the Apps host
+    # (agent_server/start_server.py); [eval] keeps the local app.py runtime.
+    "apx-agent[eval,agentbricks]",
     "databricks-tools-core",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.119.0",
@@ -23,6 +22,8 @@ dependencies = [
 # time, the apx-agent wheel is built + the artifacts script in databricks.yml
 # rewrites .build/pyproject.toml to point at the wheel.
 apx-agent = { path = "../..", editable = true }
+# Not on PyPI. The in-repo package is the install source.
+databricks-tools-core = { path = "../databricks-tools-core", editable = true }
 
 [dependency-groups]
 dev = [

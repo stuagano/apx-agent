@@ -1,1 +1,1 @@
-"""entity-resolution-agent — Apps-target shape (mlflow.genai.agent_server)."""
+"""entity-resolution-agent — Apps-target shape (DurableAgentServer)."""
