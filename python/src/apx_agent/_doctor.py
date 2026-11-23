@@ -666,14 +666,17 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
 def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
     """Abstain: name the services whose guardrail policies need a UI check.
 
-    Guardrails on Unity AI Gateway services (External and other service
-    policies) are attached in the Unity Gateway UI only. No REST, SDK, or SQL
-    surface reads an attachment or its log/enforce mode back, and a
-    ``ModelService`` / ``McpService`` payload carries no policy field. Mosaic
-    serving-endpoint guardrails do not govern the chat call either. Reporting
-    OK would be a false pass, so this check WARNs, lists the bound model
-    service plus every declared ``service_policies`` attachment target, and
-    calls no API.
+    External service policies are attached in the Unity Gateway UI. Rechecked
+    2026-11-23: the external-policies page (updated 2026-11-18) says REST and
+    Terraform attachment are unavailable; ``databricks-sdk`` 0.170.0
+    ``ModelService`` has no policy field and ``ai_gateway`` has no
+    service-policy method; Terraform ``databricks_ai_gateway_model_service``
+    (registry page published 2026-11-23) manages routing only. Serving-endpoint
+    ``AiGatewayGuardrails`` do not govern the Unity Catalog AI Gateway chat
+    call. A runtime ``DENY`` or ``ASK`` is enforced by the gateway and is not
+    visible here. Reporting OK would be a false pass, so this check WARNs,
+    lists the bound model service plus every declared ``service_policies``
+    attachment target, and calls no API.
 
     Returns None (nothing to check) unless: an apx project, auth is available,
     a ``model`` is declared, and the target is ``apps``. Never FAILs.
@@ -702,12 +705,18 @@ def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
 
     return Check(
         f"AI Gateway guardrails ({model})", Status.WARN,
-        "service policy attachment (External or otherwise) is not readable "
+        "external service policy attachment is UI-only and is not readable "
         "through any API; serving-endpoint guardrails do not apply to the "
-        "Unity Catalog AI Gateway chat call. Unverified: " + ", ".join(services),
-        "Confirm each service's policy and log/enforce mode in the Unity "
-        "Gateway UI. This check abstains rather than reporting a guardrail "
-        "it cannot read back.",
+        "Unity Catalog AI Gateway chat call. DENY and ASK are enforced by "
+        "the gateway at runtime and are not visible here. Unverified: "
+        + ", ".join(services),
+        "Attach each policy in the Unity Gateway UI: open AI Gateway, select "
+        "the service, open Policies, and choose New policy with Guardrail "
+        "type External. Set the phase and Log or Enforce. An ASK holds an "
+        "MCP tool call for approval and blocks a model call, because a model "
+        "service cannot pause. This check abstains rather than reporting a "
+        "guardrail it cannot read back. See "
+        "docs/safety/unity-gateway-external-guardrails.md.",
     )
 
 

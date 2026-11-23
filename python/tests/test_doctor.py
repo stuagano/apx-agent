@@ -9,6 +9,7 @@ import pytest
 
 import apx_agent._doctor as doctor
 from apx_agent._doctor import Check, Status, run_checks
+from ctk import Artifact, verify
 
 
 def test_agent_prerequisites_read_real_sdk_responses_only(monkeypatch):
@@ -1058,6 +1059,11 @@ class TestCheckGatewayGuardrails:
             "Unverified: model-services/system.ai.claude-sonnet-4-6"
         )
         assert c.fix is not None
+        assert "UI-only" in c.detail
+        assert "ASK" in c.detail
+        assert "ASK" in c.fix
+        assert "Guardrail type External" in c.fix
+        assert "cannot pause" in c.fix
         ws_cls.assert_not_called()
 
     def test_uc_model_service_also_abstains(self, tmp_path: Path):
@@ -1090,7 +1096,23 @@ class TestCheckGatewayGuardrails:
         )
 
 
-class TestCheckUcDataSource:
+def test_external_guardrail_doc_records_the_ui_step_and_runtime_verdicts() -> None:
+    """The author page is the read-back for a check that cannot call an API."""
+    page = Path(__file__).resolve().parents[2] / "docs/safety/unity-gateway-external-guardrails.md"
+    anchors = (
+        "Guardrail type**, select **External",
+        "The Unity AI Gateway refused this model call",
+        "The Unity AI Gateway refused this MCP call",
+        "holding this MCP call for approval",
+        "A model service cannot pause for approval",
+        "databricks-sdk` 0.170.0",
+        "-32042",
+        "UI-only",
+    )
+    verify(*(
+        Artifact(str(page), min_bytes=2000, must_contain=anchor)
+        for anchor in anchors
+    ))
     def _project(self, tmp_path: Path, catalog: str, schema: str) -> None:
         (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname = 'x'\n")
         (tmp_path / "agent.py").write_text(
