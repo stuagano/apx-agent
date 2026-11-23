@@ -242,10 +242,51 @@ def test_doctor_json_has_durable_group(tmp_path: Path, monkeypatch: pytest.Monke
     root = _project(tmp_path, "jsonproj", LLM_AGENT.format(name="jsonproj"))
     monkeypatch.chdir(root)
     result = CliRunner().invoke(cli, ["doctor", "--offline", "--json", "--durable"])
-    payload = json.loads(result.output)
+    # stdout only. result.output mixes stderr, and an MLflow export line starts
+    # with the year — a JSON number — so loads() dies at char 4. See the regression below.
+    payload = json.loads(result.stdout)
     names = [c["name"] for c in payload["Durable readiness"]]
     assert names[:5] == ["Config", "Compile", "Startup", "Request", "Deploy"]
     assert {c["status"] for c in payload["Durable readiness"]} <= {s.value for s in Status}
+
+
+def test_doctor_json_stdout_ignores_mlflow_year_prefixed_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CI failure: Extra data at line 1 column 5 (char 4).
+
+    MLflow's logging stream writes to whatever ``sys.stderr`` is right then.
+    CliRunner has swapped that in, and ``result.output`` mixes the streams.
+    The export warning starts with the year (``2026/...``). ``json.loads``
+    accepts that as a number and rejects the rest. Stdout stays the document.
+    """
+    import json
+    import logging
+
+    import mlflow  # noqa: F401 — installs the stderr handler the exporter uses
+    from click.testing import CliRunner
+
+    from apx_agent import _doctor
+    from apx_agent.cli import main as cli
+
+    real = _doctor.run_checks
+
+    def warn_then_check(*args: Any, **kwargs: Any) -> Any:
+        logging.getLogger("mlflow.tracing.export.mlflow_v3").warning(
+            "Failed to send trace to MLflow backend: Experiment 0 does not exist."
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(_doctor, "run_checks", warn_then_check)
+    root = _project(tmp_path, "jsonnoise", LLM_AGENT.format(name="jsonnoise"))
+    monkeypatch.chdir(root)
+    result = CliRunner().invoke(cli, ["doctor", "--offline", "--json", "--durable"])
+    with pytest.raises(json.JSONDecodeError, match=r"Extra data: line 1 column 5 \(char 4\)"):
+        json.loads(result.output)
+    assert "Failed to send trace to MLflow backend" in result.stderr
+    payload = json.loads(result.stdout)
+    names = [c["name"] for c in payload["Durable readiness"]]
+    assert names[:5] == ["Config", "Compile", "Startup", "Request", "Deploy"]
 
 
 DELEGATE_AGENT = (
