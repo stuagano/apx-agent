@@ -4,8 +4,9 @@ version = "0.1.0"
 description = "Example: Slack bot using apx-agent with Databricks OAuth — illustrates OBO token forwarding"
 requires-python = ">=3.11"
 dependencies = [
-    # The [langgraph] extra is required at runtime for compile_to_responses_agent.
-    "apx-agent[eval]",
+    # [agentbricks] provides DurableAgentServer, the Apps host
+    # (agent_server/start_server.py); [eval] keeps the local app.py runtime.
+    "apx-agent[eval,agentbricks]",
     "mlflow[databricks]>=3.0.0",
     "fastapi>=0.119.0",
     "uvicorn>=0.37.0",
