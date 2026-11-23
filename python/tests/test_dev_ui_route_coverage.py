@@ -1033,8 +1033,11 @@ def test_agent_page_sidebar_renders_workspace_links() -> None:
     from apx_agent._ui_chat import _render_unified_shell
 
     page = _render_unified_shell(None)
-    start = page.index("    // Rows are built with textContent")
-    script = page[start:page.index("    loadSidebar();\n", start)]
+    source = (
+        Path(__file__).resolve().parents[1] / "src/apx_agent/_static/vendor/dev-shell.js"
+    ).read_text(encoding="utf-8")
+    start = source.index("    // Rows are built with textContent")
+    script = source[start:source.index("    loadSidebar();\n", start)]
     dom = """
 const nodes = {};
 global.document = {

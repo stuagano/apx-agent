@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from databricks.sdk.errors import ResourceAlreadyExists
 from databricks_agentkit.runtime.auth import RequestAuthContext
 from databricks_agentkit.runtime.store import InMemoryRuntimeStore
 from fastapi.testclient import TestClient
@@ -305,4 +306,36 @@ def test_native_execution_failure_remains_persisted_500(native, monkeypatch):
     saved = native.client.get(f"/api/invocations/{body['id']}", headers=headers())
     assert saved.json() == response.json()
     assert len(native.app._runtime.runtime_store.states) == 1
+    assert native.effects == []
+
+
+def test_native_sdk_conflict_remains_persisted_502(native, monkeypatch):
+    def fail(*args, **kwargs):
+        raise ResourceAlreadyExists(
+            "/Shared/apx-aub-1121-sink/attempt-1.json already exists",
+            error_code="RESOURCE_ALREADY_EXISTS",
+        )
+
+    monkeypatch.setattr("apx_agent._durable_agent.run_graph_turn", fail)
+    body = request_body()
+    response = native.client.post("/api/invocations", json=body, headers=headers())
+    # AgentKit maps a Databricks SDK error to UPSTREAM_ERROR / 502 and persists
+    # the invocation as failed. HTTP 200 would make endpoint loadtest count it
+    # as a success: perform_request never reads status inside a 2xx body.
+    error = {
+        "code": "UPSTREAM_ERROR",
+        "type": "databricks.sdk.errors.platform.ResourceAlreadyExists",
+        "message": "/Shared/apx-aub-1121-sink/attempt-1.json already exists",
+        "upstream_status": 409,
+        "upstream_code": "RESOURCE_ALREADY_EXISTS",
+    }
+    assert response.status_code == 502
+    assert response.json() == {"id": body["id"], "status": "failed", "error": error}
+    assert "contract-credential-sentinel" not in response.text
+    saved = native.client.get(f"/api/invocations/{body['id']}", headers=headers())
+    assert saved.status_code == 200
+    assert saved.json() == response.json()
+    stored = next(iter(native.app._runtime.runtime_store.states.values()))
+    assert stored.status.value == "FAILED"
+    assert stored.response == {"error": error, "status_code": 502, "source": "agent"}
     assert native.effects == []
