@@ -30,7 +30,7 @@ service_policies:
     result = CliRunner().invoke(main, ["agents", "describe", str(spec), "--format", "json"])
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     policy = payload["service_policies"]["attachments"][0]["policies"][0]
     assert policy["name"] == "judge"
     assert policy["classifier"] == "judge-model"

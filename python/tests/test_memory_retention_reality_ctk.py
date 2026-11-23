@@ -133,7 +133,7 @@ def test_memory_purge_cli_deletes_expired_rows_and_reports_count(monkeypatch: py
     monkeypatch.setattr("databricks.sdk.WorkspaceClient", MagicMock())
     result = CliRunner().invoke(main, ["memory", "purge"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output) == {"deleted": 3, "table": "apx_memories"}
+    assert json.loads(result.stdout) == {"deleted": 3, "table": "apx_memories"}
     assert _ids(store) == {"scratch-fresh", "default-fresh"}
 
 

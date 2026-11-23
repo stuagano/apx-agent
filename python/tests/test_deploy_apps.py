@@ -2141,7 +2141,7 @@ def test_json_output_shape(
     ])
     assert result.exit_code == 0, result.output
     # The stdout will only contain the JSON line — progress went to stderr.
-    payload = json.loads(result.output.strip().splitlines()[-1])
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["app_name"] == "my-app"
     assert payload["bundle_target"] == "prod"
@@ -2487,7 +2487,7 @@ def test_json_output_on_validate_failure_includes_app_name(
         "agents", "deploy", "--target", "apps", "--json-output",
     ])
     assert result.exit_code != 0
-    payload = json.loads(result.output.strip().splitlines()[-1])
+    payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["app_name"] == "my-app"
 
@@ -2500,7 +2500,7 @@ def test_json_output_on_deploy_failure_includes_app_name(
         "agents", "deploy", "--target", "apps", "--json-output",
     ])
     assert result.exit_code != 0
-    payload = json.loads(result.output.strip().splitlines()[-1])
+    payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["app_name"] == "my-app"
 
@@ -3214,7 +3214,7 @@ def test_readyz_failure_json_output_carries_url_and_detail(
         "agents", "deploy", "--target", "apps", "--json-output",
     ])
     assert result.exit_code != 0
-    payload = json.loads(result.output.strip().splitlines()[-1])
+    payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["app_name"] == "my-app"
     assert payload["app_url"] == "https://my-app.example.databricksapps.com"

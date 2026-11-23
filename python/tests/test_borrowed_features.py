@@ -44,5 +44,5 @@ def test_status_harness_version_human() -> None:
 def test_status_harness_version_json() -> None:
     result = CliRunner().invoke(main, ["status", "--json"])
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["harness_version"] == INSTALLED_VERSION

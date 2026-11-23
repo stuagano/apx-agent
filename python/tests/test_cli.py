@@ -746,7 +746,7 @@ def test_mcp_config_outputs_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     sys.modules.pop("tmp_test_agent", None)
 
     assert result.exit_code == 0, result.output
-    parsed = json.loads(result.output)
+    parsed = json.loads(result.stdout)
     assert "mcpServers" in parsed
     # The uc_function and genie_space from the fixture agent show up
     keys = list(parsed["mcpServers"].keys())
@@ -830,7 +830,7 @@ def test_publish_tools_json_output_reports_registry_failure(
     sys.modules.pop("tmp_test_agent", None)
 
     assert result.exit_code != 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["registry_error"] == "permission denied"
     assert payload["published"][0]["uc_name"] == "main.tools.classify_intent"
@@ -858,7 +858,7 @@ def test_publish_tools_json_output_success(
     sys.modules.pop("tmp_test_agent", None)
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["registry"] == {"table": "main.apx.agent_tools", "count": 1}
     assert payload["registry_error"] is None
@@ -899,7 +899,7 @@ def test_info_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     sys.modules.pop("tmp_test_agent", None)
 
     assert result.exit_code == 0, result.output
-    parsed = json.loads(result.output)
+    parsed = json.loads(result.stdout)
     assert parsed["module"] == "tmp_test_agent:agent"
     assert any(t["name"] == "classify_intent" for t in parsed["tools"])
     classify = next(t for t in parsed["tools"] if t["name"] == "classify_intent")
@@ -1135,7 +1135,7 @@ def test_governance_violations_json_output() -> None:
             "--format", "json",
         ])
 
-    parsed = json.loads(result.output)
+    parsed = json.loads(result.stdout)
     assert parsed[0]["agent_name"] == "triage"
     assert parsed[0]["policy_id"] == "p-1"
 
@@ -1216,7 +1216,7 @@ def test_governance_status_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
             "--format", "json",
         ])
 
-    parsed = json.loads(result.output)
+    parsed = json.loads(result.stdout)
     assert parsed["agent_id"] == "triage"
     assert parsed["risk_level"] == "high"
     assert parsed["checks_denied"] == 2
@@ -1389,7 +1389,7 @@ def test_trace_json_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         ])
 
     assert result.exit_code == 0
-    parsed = json.loads(result.output)
+    parsed = json.loads(result.stdout)
     assert parsed[0]["trace_id"] == "trace-1"
     assert parsed[0]["agent_name"] == "triage"
 
@@ -1567,7 +1567,7 @@ def test_list_json_format() -> None:
         result = runner.invoke(main, ["agents", "list", "--format", "json"])
 
     assert result.exit_code == 0
-    parsed = json.loads(result.output)
+    parsed = json.loads(result.stdout)
     assert parsed[0]["agent_name"] == "customer_triage"
     assert parsed[0]["resource_count"] == 2
 
@@ -1752,7 +1752,7 @@ def test_memory_remember_then_list(
             "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
         ])
         assert result.exit_code == 0, result.output
-        new = json.loads(result.output)
+        new = json.loads(result.stdout)
         assert new["principal_id"] == "alice"
         assert new["importance"] == 0.8
         assert set(new["tags"]) == {"preference", "seating"}
@@ -1789,7 +1789,7 @@ def test_memory_recall_returns_results(
             "--store-module", f"{_STORE_MODULE_NAME}:mem_store",
         ])
         assert result.exit_code == 0, result.output
-        rows = json.loads(result.output)
+        rows = json.loads(result.stdout)
         assert len(rows) <= 2
         assert all("memory" in r and "score" in r for r in rows)
         assert all(r["memory"]["principal_id"] == "alice" for r in rows)
@@ -1904,7 +1904,7 @@ def test_memory_pyproject_fallback(
             "--principal-id", "alice",
         ])
         assert result.exit_code == 0, result.output
-        rows = json.loads(result.output)
+        rows = json.loads(result.stdout)
         assert len(rows) == 3
     finally:
         _cleanup_store_module()
@@ -2016,7 +2016,7 @@ def test_examples_list_filter_by_intent(
             "--store-module", f"{_STORE_MODULE_NAME}:ex_store",
         ])
         assert result.exit_code == 0, result.output
-        rows = json.loads(result.output)
+        rows = json.loads(result.stdout)
         # seeded: 2 with intent=modify
         assert len(rows) == 2
         assert all(r["intent"] == "modify" for r in rows)
@@ -2678,7 +2678,7 @@ def test_doctor_json_flag():
                return_value=Check("Databricks auth", Status.OK, "ok", None)):
         result = runner.invoke(main, ["doctor", "--offline", "--json"])
     assert result.exit_code in (0, 1)
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert "Environment" in payload
     assert isinstance(payload["Environment"], list)
 
@@ -3899,7 +3899,7 @@ def test_lint_sees_imported_python_tools(
     sys.modules.pop("lint_python_tools", None)
 
     assert result.exit_code == 0, result.output  # L002 is WARNING, not ERROR
-    findings = json.loads(result.output)
+    findings = json.loads(result.stdout)
     l002_locations = [f["location"] for f in findings if f["code"] == "L002"]
     assert "tool:python_tool_no_doc" in l002_locations, findings
 
@@ -4924,7 +4924,7 @@ class TestTracesGet:
         with patch.object(_mlflow, "get_trace", return_value=fake_trace):
             result = CliRunner().invoke(main, ["traces", "get", "trace-json-1", "--format", "json"])
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
+        payload = json.loads(result.stdout)
         assert payload["trace_id"] == "trace-json-1"
         assert payload["status"] == "OK"
         # Span list must be present and non-empty
@@ -4978,7 +4978,7 @@ class TestTracesFeedback:
                 "screenshot_uri": "s3://bucket/image.png",
             },
         )]
-        assert json.loads(result.output) == {
+        assert json.loads(result.stdout) == {
             "created": True,
             "feedback_id": "a-1",
             "name": "quality",
@@ -5034,7 +5034,7 @@ class TestTracesFeedback:
             )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output) == {
+        assert json.loads(result.stdout) == {
             "trace_id": "tr-1",
             "tags": {"apx.agent.name": "claims"},
             "assessments": [{
@@ -5142,7 +5142,7 @@ class TestAgentsApps:
                    return_value=(ws, SimpleNamespace(host="https://ws.example.com"))):
             result = CliRunner().invoke(main, ["agents", "apps", "--format", "json"])
         assert result.exit_code == 0, result.output
-        rows = json.loads(result.output)
+        rows = json.loads(result.stdout)
         assert rows == [{
             "name": "payroll-app", "state": "RUNNING",
             "updated": None, "url": "https://payroll.example.com",
@@ -5155,7 +5155,7 @@ class TestAgentsApps:
                    return_value=(ws, SimpleNamespace(host="https://ws.example.com"))):
             result = CliRunner().invoke(main, ["agents", "apps", "--json"])
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)[0]["name"] == "a"
+        assert json.loads(result.stdout)[0]["name"] == "a"
 
     def test_json_format_empty_list(self):
         ws = MagicMock()
@@ -5164,7 +5164,7 @@ class TestAgentsApps:
                    return_value=(ws, SimpleNamespace(host="https://ws.example.com"))):
             result = CliRunner().invoke(main, ["agents", "apps", "--format", "json"])
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output) == []
+        assert json.loads(result.stdout) == []
 
     def test_text_format_empty_list_hints_deploy(self):
         ws = MagicMock()
@@ -5847,7 +5847,7 @@ class TestUcValidate:
             ])
 
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
+        payload = json.loads(result.stdout)
         assert "checks" in payload
         assert payload["catalog"] == "c"
         assert payload["schema"] == "s"
@@ -5939,7 +5939,7 @@ class TestEvalReport:
             result = CliRunner().invoke(main, ["eval", "report", "--format", "json"])
 
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
+        payload = json.loads(result.stdout)
         assert isinstance(payload, list)
         assert payload[0]["run_id"] == "r1"
         assert payload[0]["metrics"]["pass_rate"] == 1.0
@@ -6000,7 +6000,7 @@ class TestMemoryExport:
                 "--store-module", "fake:store",
             ])
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output.strip())
+        payload = json.loads(result.stdout)
         assert payload["id"] == "m1"
 
     def test_missing_output_fails(self):

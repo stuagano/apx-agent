@@ -633,7 +633,7 @@ def test_cli_canary_analyze_apps_json_output(
          "--canary-version", "x", "--format", "json"],
     )
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["prod_app_name"] == "my-app"
     assert payload["canary_app_name"] == "my-app-canary-x"
     assert isinstance(payload["apps"], list)

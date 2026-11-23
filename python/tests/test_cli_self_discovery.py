@@ -16,7 +16,7 @@ from apx_agent.cli import main
 def _tree() -> dict:
     result = CliRunner().invoke(main, ["describe-cli"])
     assert result.exit_code == 0, result.output
-    return json.loads(result.output)
+    return json.loads(result.stdout)
 
 
 def test_describe_cli_emits_valid_json_with_name_and_version():
@@ -96,7 +96,7 @@ def test_list_local_discovers_declared_agent_offline(tmp_path, monkeypatch):
     monkeypatch.chdir(_project(tmp_path))
     result = CliRunner().invoke(main, ["agents", "list", "--local", "--format", "json"])
     assert result.exit_code == 0, result.output
-    rows = json.loads(result.output)
+    rows = json.loads(result.stdout)
     assert len(rows) == 1
     assert rows[0]["agent_name"] == "agent"
     assert rows[0]["tool_count"] == 1  # `lookup` parsed from tools=[...]
@@ -138,7 +138,7 @@ def test_list_local_makes_no_databricks_calls(tmp_path, monkeypatch):
     monkeypatch.chdir(_project(tmp_path))
     result = CliRunner().invoke(main, ["agents", "list", "--local", "--format", "json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)[0]["agent_name"] == "agent"
+    assert json.loads(result.stdout)[0]["agent_name"] == "agent"
 
 
 # ── universal --json alias (auto-injected by _ApxCommand) ────────────────────
@@ -207,7 +207,7 @@ def test_status_json_in_project_reports_declared_agents_and_next_steps(tmp_path,
     monkeypatch.chdir(_project(tmp_path))
     result = CliRunner().invoke(main, ["status", "--json"])
     assert result.exit_code == 0, result.output
-    p = json.loads(result.output)
+    p = json.loads(result.stdout)
     assert p["in_project"] is True
     assert p["project"]["agents"][0]["agent_name"] == "agent"
     assert any("--local" in step for step in p["next"])
@@ -218,7 +218,7 @@ def test_status_json_outside_project_points_to_scaffold(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # no pyproject / agent.py
     result = CliRunner().invoke(main, ["status", "--json"])
     assert result.exit_code == 0, result.output
-    p = json.loads(result.output)
+    p = json.loads(result.stdout)
     assert p["in_project"] is False
     assert p["project"] is None
     assert any("scaffold" in step for step in p["next"])
@@ -234,4 +234,4 @@ def test_status_json_is_offline(tmp_path, monkeypatch):
     monkeypatch.chdir(_project(tmp_path))
     result = CliRunner().invoke(main, ["status", "--json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["in_project"] is True
+    assert json.loads(result.stdout)["in_project"] is True
