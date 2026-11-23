@@ -1,0 +1,40 @@
+name: beads sync
+
+# Daily backstop for the issue-opened workflow: import any open GitHub issue
+# that has no bead yet. Already-imported issues are left unchanged, including
+# their comments.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: beads-hive
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install bd
+        run: bash scripts/beads/setup_bd.sh
+
+      - name: List open issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 1000 \
+            --json number,title,body,url > "$RUNNER_TEMP/open-issues.json"
+
+      - name: Import issues that have no bead
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEADS_ACTOR: github-actions[bot]
+        run: python3 scripts/beads/beads.py sync-open --issues-file "$RUNNER_TEMP/open-issues.json" --comment

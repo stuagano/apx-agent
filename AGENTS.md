@@ -86,6 +86,22 @@ Suggested labels:
 Use `gh issue create` after preparing an issue body, or paste the issue-ready
 block into GitHub when direct GitHub writes are not intended.
 
+## Beads
+
+The hive on `refs/dolt/data` is the work tracker. The `bd` release is the
+single line in `scripts/beads/BD_VERSION`. `scripts/beads/setup_bd.sh` installs
+that release; workflows and these docs do not hardcode it.
+
+Claim a bead before starting work: `bd update <id> --claim`. Put that bead id
+in the pull request title, body, or branch name (`wt/bead/issue/<id>`). The
+beads check fails the PR otherwise. Trivial and bot PRs can opt out with the
+`beads:exempt` label. `dependabot[bot]` and `github-actions[bot]` are exempt
+by author.
+
+Opening a GitHub issue creates its bead and comments the id. A daily sync
+imports any open issue that sync missed. Merging the pull request closes the
+referenced bead and pushes `refs/dolt/data`. Never delete a closed bead.
+
 ## Domain Notes
 
 - The project thesis is "declared, not wired": agent declarations should compile

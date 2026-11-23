@@ -3,6 +3,10 @@ description: Scoped improvement discovered during review or implementation.
 title: "follow-up: "
 labels: ["follow-up"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Opening this issue creates a bead in the hive. The workflow comments the bead id. Do not file a duplicate bead by hand.
   - type: textarea
     id: context
     attributes:
