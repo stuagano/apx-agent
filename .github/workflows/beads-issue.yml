@@ -2,8 +2,7 @@ name: beads issue
 
 # Opening a GitHub issue creates its bead. Closing the issue closes that
 # bead, and reopening the issue reopens it. The match is external_ref = the
-# issue URL. Re-runs leave a bead that already matches. Hive writes share
-# the beads-hive queue so two jobs cannot push refs/dolt/data at once.
+# issue URL. Re-runs leave a bead that already matches.
 on:
   issues:
     types: [opened, closed, reopened]
@@ -13,7 +12,12 @@ permissions:
   issues: write
 
 concurrency:
-  group: beads-hive
+  # GitHub keeps a single pending run per group. cancel-in-progress: false
+  # preserves the run that already started and still cancels older pending
+  # ones. That dropped the close of issue #1052 (run 45218387550) when the
+  # next issue event was queued. Each event gets its own group so none are
+  # dropped. bd dolt push retries if two jobs push refs/dolt/data together.
+  group: beads-issue-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:

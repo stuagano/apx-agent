@@ -1,22 +1,39 @@
 name: beads merge
 
-# A merged pull request closes every bead id it names, then pushes
-# refs/dolt/data. An exempt PR with no bead id is a no-op. An id that is
-# already closed is left closed.
+# A merged pull request closes every bead it names, including the bead for a
+# Fixes/Closes #N in the title or body, then pushes refs/dolt/data. A blocked
+# bead is closed with --force and the blocker is logged. The linked issue is
+# closed in the same job: a squash commit often drops the keyword, and an
+# issue left open would make the daily sync reopen the bead. An exempt PR
+# with no bead id and no closing keyword is a no-op. An id that is already
+# closed is left closed.
+#
+# GITHUB_TOKEN squash auto-merge does not emit pull_request or push.
+# pull_request_target is suppressed the same way, so it is not a fix. The
+# schedule and workflow_dispatch scan pull requests merged in the last 12
+# hours, the same backstop post-merge CI uses for the missing push event.
 on:
   pull_request:
     types: [closed]
+  schedule:
+    - cron: "14,29,44,59 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: read
 
 concurrency:
-  group: beads-hive
+  # One shared group kept only the newest pending run, so a queued close was
+  # dropped even with cancel-in-progress false. A per-run group lets each
+  # event finish. bd dolt push retries when two pushes race.
+  group: beads-merge-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
   close:
-    if: github.event.pull_request.merged == true
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -24,8 +41,22 @@ jobs:
       - name: Install bd
         run: bash scripts/beads/setup_bd.sh
 
-      - name: Close the referenced beads
+      - name: Close beads for this pull request
+        if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BEADS_ACTOR: github-actions[bot]
         run: python3 scripts/beads/beads.py close-pr --event "$GITHUB_EVENT_PATH"
+
+      - name: Close beads for squash merges the event missed
+        if: github.event_name != 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEADS_ACTOR: github-actions[bot]
+        run: |
+          gh pr list --repo "$GITHUB_REPOSITORY" --state merged --limit 50 \
+            --json number,title,body,headRefName,mergedAt > "$RUNNER_TEMP/prs.json"
+          python3 scripts/beads/beads.py close-merged \
+            --prs-file "$RUNNER_TEMP/prs.json" --within-hours 12
