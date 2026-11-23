@@ -7,8 +7,12 @@ name: beads sync
 on:
   schedule:
     # 06:17 UTC. Minute 17 avoids the top of the hour, when scheduled
-    # workflows are most often delayed. workflow_dispatch is the manual
-    # backstop: the 2026-11-23 06:17 run was never created.
+    # workflows are most often delayed. GitHub drops a delayed schedule
+    # and does not create the run, so there is nothing to retry: on
+    # 2026-11-23 the 06:17 run was never created while this workflow was
+    # active. The same day the 15-minute post-merge CI schedule landed
+    # about eight hours apart (02:33Z, then 11:11Z). workflow_dispatch is
+    # the manual backstop.
     - cron: "17 6 * * *"
   workflow_dispatch:
 

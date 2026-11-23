@@ -10,10 +10,11 @@ issue creates the bead. Closing the issue closes that bead, and reopening the
 issue reopens it. The daily sync does the same for issues that already moved.
 
 A merged pull request closes every bead it names, plus the bead for each
-Fixes/Closes #N in the title or body. A blocked bead is closed with --force
-and the blocker is logged. The linked GitHub issue is closed too, because a
-squash merge often drops the keyword from the commit message and an open
-issue would make the daily sync reopen the bead.
+Fixes/Closes #N in the title or body. --force is used only when every open
+blocker is an intake-hold gate; any other open blocker leaves the bead open.
+The linked GitHub issue is closed too, because a squash merge often drops
+the keyword from the commit message and an open issue would make the daily
+sync reopen the bead.
 
 Pushing refs/dolt/data uses the dolt remote. When GITHUB_TOKEN and
 GITHUB_REPOSITORY are set, origin is pointed at that token before bootstrap.
@@ -57,6 +58,11 @@ _CLOSING_ISSUE = re.compile(
 )
 _TOKEN = re.compile(r"x-access-token:[^@\s]+")
 PUSH_ATTEMPTS = 5
+# Docs PR #1236 merged at 2026-11-23T16:49:41Z and names apx-e0i without
+# finishing that work. The first 12-hour backfill still covers that merge.
+# Ignore anything earlier than 17:00Z. Once the window starts later, this
+# floor no longer moves the cutoff.
+MERGE_SCAN_FLOOR = datetime(2026, 11, 23, 17, 0, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -333,6 +339,44 @@ def closing_issue_numbers(text: str) -> list[int]:
     return found
 
 
+def is_intake_hold_gate(row: dict[str, Any]) -> bool:
+    if "issue_type" not in row or row["issue_type"] != "gate":
+        return False
+    if "description" not in row or not isinstance(row["description"], str):
+        return False
+    return "intake-hold:" in row["description"]
+
+
+def only_intake_hold_blockers(rows: list[Any]) -> bool:
+    """True when every open ``blocks`` edge is an intake-hold gate.
+
+    An empty list, a closed edge, or any other open blocker is false.
+    """
+    blocking: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if "dependency_type" not in row or row["dependency_type"] != "blocks":
+            continue
+        if "status" not in row or row["status"] == "closed":
+            continue
+        blocking.append(row)
+    if not blocking:
+        return False
+    for row in blocking:
+        if not is_intake_hold_gate(row):
+            return False
+    return True
+
+
+def merge_close_force(cwd: Path, bead_id: str) -> bool:
+    """Whether a merged pull request may close this bead with ``--force``."""
+    row = show_bead(cwd, bead_id)
+    if "dependencies" not in row or not isinstance(row["dependencies"], list):
+        return False
+    return only_intake_hold_blockers(row["dependencies"])
+
+
 def close_bead(
     cwd: Path,
     bead_id: str,
@@ -343,8 +387,8 @@ def close_bead(
 ) -> str:
     """Close a bead. ``force`` overrides an assignee, pin, or open gate.
 
-    Issue sync and a merged pull request both pass force. The pull request
-    logs each open blocker before the forced close.
+    Issue sync passes force. A merged pull request passes force only when
+    every open blocker is an intake-hold gate, and logs those blockers first.
     """
     row = show_bead(cwd, bead_id)
     status = row["status"]
@@ -751,9 +795,10 @@ def close_pull_request(
     *,
     dry_run: bool,
 ) -> bool:
-    """Close this PR's beads with --force, then close linked issues.
+    """Close this PR's beads, then close linked issues.
 
-    Return True when the hive changed.
+    ``--force`` is passed only when every open blocker is an intake-hold
+    gate. Return True when the hive changed.
     """
     numbers = closing_issue_numbers(f"{pr.title}\n{pr.body}")
     bead_ids = linked_bead_ids(cwd, pr.title, pr.body, pr.branch, repository, numbers)
@@ -762,7 +807,13 @@ def close_pull_request(
         return False
     changed = False
     for bead_id in bead_ids:
-        outcome = close_bead(cwd, bead_id, reason, dry_run=dry_run, force=True)
+        outcome = close_bead(
+            cwd,
+            bead_id,
+            reason,
+            dry_run=dry_run,
+            force=merge_close_force(cwd, bead_id),
+        )
         print(f"{bead_id} {outcome}")
         if outcome == "closed":
             changed = True
@@ -826,13 +877,16 @@ def select_recent_prs(payload: Any, *, within_hours: int, now: datetime) -> list
 
     ``within_hours`` of 0 keeps every row. A positive window drops a pull
     request whose ``mergedAt`` is older than that, which is how the schedule
-    avoids replaying merges from earlier in the week.
+    avoids replaying merges from earlier in the week. The cutoff never moves
+    earlier than ``MERGE_SCAN_FLOOR``.
     """
     if not isinstance(payload, list):
         raise SystemExit("pull requests file is not a list")
     if within_hours < 0:
         raise SystemExit("within-hours must be >= 0")
     cutoff = None if within_hours == 0 else now - timedelta(hours=within_hours)
+    if cutoff is not None and cutoff < MERGE_SCAN_FLOOR:
+        cutoff = MERGE_SCAN_FLOOR
     selected: list[PrSnapshot] = []
     for row in payload:
         if not isinstance(row, dict):
