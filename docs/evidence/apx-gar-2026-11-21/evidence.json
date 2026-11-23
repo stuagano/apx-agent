@@ -1,0 +1,93 @@
+{
+  "bead": "apx-gar",
+  "title": "Verify caller identity for native downstream delegation after replacement",
+  "observed_on": "2026-11-21",
+  "result": "blocked",
+  "live_pass": false,
+  "fault_injection": false,
+  "http_invocations_sent": 0,
+  "apps_stop_or_start": false,
+  "deployment_changed": false,
+  "second_principal_created": false,
+  "pat_minted": false,
+  "app_service_principal_used_as_caller": false,
+  "other_workspace_profiles_used": false,
+  "app": {
+    "name": "agent-bricks-apx-dur-gen",
+    "url": "https://agent-bricks-apx-dur-gen-7474660401027952.aws.databricksapps.com/",
+    "workspace_id": "7474660401027952",
+    "profile": "fevm-stable",
+    "command": "databricks apps get agent-bricks-apx-dur-gen -p fevm-stable -o json",
+    "observed_at": "2026-11-21T01:07:28.868790+00:00",
+    "app_status_state": "RUNNING",
+    "app_status_message": "App has status: App is running",
+    "running_instances": 1,
+    "compute_status_state": "ACTIVE",
+    "compute_status_message": "App compute is running.",
+    "deployment_id": "01f1e546718010678017040e46a17107",
+    "deployment_mode": "SNAPSHOT",
+    "deployment_status_state": "SUCCEEDED",
+    "deployment_update_time": "2026-11-21T00:57:08Z"
+  },
+  "profiles": {
+    "command": "databricks auth profiles -o json",
+    "profile_count": 5,
+    "workspace_7474660401027952": [
+      {
+        "name": "fevm-stable",
+        "host": "https://fevm-serverless-stable-7def3z.cloud.databricks.com",
+        "auth_type": "databricks-cli",
+        "valid": true,
+        "cloud": "aws"
+      }
+    ],
+    "other_workspace_id": "1965859176160743",
+    "other_workspace_profile_count": 4,
+    "other_workspace_profile_names": [
+      "ug-oauth-dbc-a5d4177a-49dc.cloud.databricks.com-4f7af981-8977-4042-b90e-a5dea5b62e19",
+      "isaac-mcp-ai_devtools_prod.it_ex_internal_mcps.people-mcp",
+      "isaac-mcp-ai_devtools_prod.it_ex_internal_mcps.perf-mcp",
+      "isaac-mcp-ai_devtools_prod.it_ex_internal_mcps.brickroad-mcp"
+    ],
+    "sdk_check": {
+      "call": "WorkspaceClient(profile='fevm-stable').config.authenticate()",
+      "auth_type": "databricks-cli",
+      "auth_type_is_pat": false,
+      "personal_access_token_prefix": false,
+      "token_printed": false
+    }
+  },
+  "symbols_inspected": {
+    "distribution": "databricks-agentbricks",
+    "distribution_version": "0.10.0",
+    "module": "databricks_agentkit.runtime.app",
+    "symbol": "DurableAgentServer._execute",
+    "source": "databricks_agentkit/runtime/app.py",
+    "recovery_error_code": "MCP_USER_AUTH_RECOVERY_UNSUPPORTED",
+    "recovery_error_message": "Request-user execution does not survive failure recovery yet",
+    "recovery_error_status": 500,
+    "when": "InvocationAuthPolicy.requires_user and attempt_context.is_recovery",
+    "missing_request_auth_uses_same_code": true,
+    "header_symbol": "RequestAuthContext.from_headers",
+    "header_names": ["x-forwarded-access-token", "x-forwarded-user"],
+    "missing_token_code": "MCP_USER_AUTH_REQUIRED",
+    "missing_principal_code": "MCP_USER_IDENTITY_MISSING",
+    "apx_symbol": "apx_agent._durable_agent compile path",
+    "apx_refusal": "ValueError: recovery is incompatible with the manifest's request-user authentication"
+  },
+  "versions": {
+    "databricks_cli": "1.26.0",
+    "databricks_sdk_local_reader": "0.146.0",
+    "databricks_agentbricks_inspected": "0.10.0",
+    "inspected_tree": "apx-4ag worktree site-packages; this bead did not deploy"
+  },
+  "acceptance": {
+    "parent_child_invocation_ids": false,
+    "downstream_readback": false,
+    "uc_audit_of_caller": false,
+    "authorized_continuation_after_replacement": false,
+    "unauthorized_fail_closed_after_replacement": false,
+    "issues_816_and_755_live_coordination": false
+  },
+  "left_running": true
+}

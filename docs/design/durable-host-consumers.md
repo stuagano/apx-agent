@@ -1,6 +1,6 @@
 # Durable host consumers (#864)
 
-**Status:** inventory frozen; session/invocation proof recorded 2026-11-20; disconnect/replay recorded 2026-11-21; native cancellation unsupported; apx-ab7 2026-11-21 found one OAuth profile on workspace 7474660401027952, so approval continuation after replacement stays open · **Date:** 2026-11-21 ·
+**Status:** inventory frozen; session/invocation proof recorded 2026-11-20; disconnect/replay recorded 2026-11-21; native cancellation unsupported; apx-ab7 and apx-gar on 2026-11-21 found one OAuth profile on workspace 7474660401027952, so approval continuation and caller-identity replacement stay open · **Date:** 2026-11-21 ·
 **Issue:** [#864](https://github.com/stuagano/apx-agent/issues/864) ·
 **Parent:** [#862](https://github.com/stuagano/apx-agent/issues/862)
 
@@ -80,7 +80,23 @@ that OAuth is unavailable today.
 | Authorized approval continuation after replacement | `apx-ab7` | **Blocked 2026-11-21.** `databricks auth profiles` shows one profile on workspace `7474660401027952` (`fevm-stable`, `databricks-cli`). No second principal, no approval, no invocation. [Record](../evidence/apx-ab7-2026-11-21/README.md). `DurableAgentServer._execute` still raises `MCP_USER_AUTH_RECOVERY_UNSUPPORTED` | Pending approval survives without effects; wrong principal is denied, authorized fresh continuation succeeds once, duplicate resume cannot repeat the effect; retain original and new resume invocation IDs in the same session |
 | Trace correlation after real replacement | `apx-pzd` | **Tag join recorded, 2026-11-21.** Inbound header continuation was not observed: `DurableAgentServer._invoke_request` does not call `continue_trace_from_headers` | [apx-pzd-2026-11-21](../evidence/apx-pzd-2026-11-21/README.md): invocation `e45fcae3-ebb0-4df8-b31b-4b9da8576b3c`, traces `tr-6ceac8086d4f4ba5346c0ea535d07247` (`apx.recovery=false`) and `tr-ef5152ac9ae8a1a69b85d7d064214df9` (`apx.recovery=true`). Client trace id `8f50350ad56a5b042a0ce02fdad9ede8` is neither |
 | Disconnect/reconnect/cancellation contract | `apx-4ag` | Disconnect replay and replacement readback recorded in [apx-4ag-2026-11-21](../evidence/apx-4ag-2026-11-21/README.md). Native cancellation stays unsupported: `DurableAgentServer` has no cancel route (`POST .../cancel` 404, `DELETE` invocation 405) | Persisted cursor replay after disconnect and replacement, invocation/effect readback, attempt boundaries. Closing the stream left the invocation active, then completed. `CancellationRegistry` stays |
-| Native downstream delegation with caller identity | `apx-gar` | Request-user recovery cannot reconstruct transient credentials; no authorized two-App/OAuth/UC audit probe supplied | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
+| Native downstream delegation with caller identity | `apx-gar` | **Blocked 2026-11-21.** `databricks auth profiles` shows one profile on workspace `7474660401027952` (`fevm-stable`, `databricks-cli`). No second principal, no fault, no invocation. [Record](../evidence/apx-gar-2026-11-21/README.md). `DurableAgentServer._execute` still raises `MCP_USER_AUTH_RECOVERY_UNSUPPORTED` for request-user recovery | Parent/child invocation and result/events readback plus per-hop caller/scopes audit; unauthorized or missing credentials fail closed, no service-identity fallback; coordinate [#816](https://github.com/stuagano/apx-agent/issues/816) / [#755](https://github.com/stuagano/apx-agent/issues/755) |
+
+### apx-gar principal survey (2026-11-21)
+
+`databricks auth profiles -o json` on this machine returned five profiles.
+One, `fevm-stable` (`auth_type=databricks-cli`), is on workspace
+`7474660401027952`. The other four are workspace `1965859176160743` and were
+not used. No principal was created, no PAT was minted, and the app service
+principal was not used as the unauthorized caller. `databricks apps get
+agent-bricks-apx-dur-gen -p fevm-stable` at `2026-11-21T01:07:28.868790+00:00`
+showed the app **RUNNING** with `running_instances=1` on SNAPSHOT
+`01f1e546718010678017040e46a17107`. This bead sent no HTTP invocation and did
+not redeploy. The [sanitized record](../evidence/apx-gar-2026-11-21/README.md)
+is the blocker, not a live delegation pass. Installed
+`databricks-agentbricks` 0.10.0 `DurableAgentServer._execute` raises
+`MCP_USER_AUTH_RECOVERY_UNSUPPORTED` when request-user recovery is attempted.
+GitHub #816 and #755 are still unproven coordination items.
 
 The [apx-ab7 approval-continuation handoff](durable-approval-continuation.md)
 records the 2026-11-20 local principal/duplicate-resume regression, the exact
