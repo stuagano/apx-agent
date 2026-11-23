@@ -28,6 +28,11 @@ agentbricks -p fevm-stable -o json endpoint loadtest \
   --timeout 45
 ```
 
+Warm-up is on by default (`--warmup` / `--no-warmup`). A persisted invocation
+failure answers HTTP 502. That status fails warm-up, and the CLI exits before
+Locust sends a measured request. Add `--no-warmup` when the sample you want is
+that failure. The run recorded below omitted it.
+
 `requests.json` for this run was one body, repeated by the CLI:
 
 ```json
@@ -122,8 +127,44 @@ No Locust summary was written. `databricks apps get` stayed `RUNNING` and
 that id returned HTTP 200, `status: failed`, `error.code: UPSTREAM_ERROR`,
 `upstream_status: 409`, `upstream_code: RESOURCE_ALREADY_EXISTS`.
 
-**Expected:** A durable invocation the server has already stored as `failed`
-should show up in the load-test report as a counted error. HTTP 502 from a
-still-running app should not abort the run before any measured request.
-OAuth and `POST /api/invocations` themselves worked; the missing piece is a
-measured sample of this failure.
+**Expected:** The server keeps the invocation it already stored as `failed`.
+The POST stays HTTP 502 with that body. GET of the same id stays HTTP 200.
+The load-test report counts the 502 as an error. Default warm-up exits before
+any measured request, so that count needs `--no-warmup`. OAuth and
+`POST /api/invocations` themselves worked. The missing piece is a measured
+sample of this failure.
+
+## Counting the persisted failure
+
+The 502 is the app answering, with the app still `RUNNING`. AgentKit's
+`describe_failure` (agentbricks 0.10.0) maps a Databricks SDK error onto
+`error.code: UPSTREAM_ERROR` and HTTP 502, and copies the upstream status onto
+the error (`upstream_status` 409 and `upstream_code: RESOURCE_ALREADY_EXISTS`
+for this conflict). A `ValueError` stays HTTP 500 `AGENT_ERROR`. The POST body
+is `{"id", "status": "failed", "error": ...}`. `GET /api/invocations/{id}`
+returns HTTP 200 with the same body. Both shapes are pinned by
+`test_native_execution_failure_remains_persisted_500` and
+`test_native_sdk_conflict_remains_persisted_502` in
+`python/tests/test_native_invocation_contract.py`.
+
+`agentbricks endpoint loadtest` treats every status outside 200–299 as
+`StreamError` and drops the body. A 2xx body is a successful sample even when
+its `status` is `failed`. The default warm-up request runs that check before
+Locust starts. On failure the runner exits with `No measured requests were
+sent`, and `summary.json` stays unwritten.
+
+`--no-warmup` skips that request. Each measured 502 then lands in
+`summary.json`: `counts.failed` increments, and `errors` has a key `HTTP 502`.
+`workload.warmup_requests` is 0. The app can stay `RUNNING` / `ACTIVE` for the
+whole run. That report counts this failure. It is still not a capacity number.
+
+Teaching warm-up to treat a JSON body with `status: failed` as "the endpoint
+answered", while the same response still counts as an error, belongs in
+upstream `agentbricks`. A Locust wrapper stays out of this repo
+([ADR 0001](../adr/0001-build-on-agent-bricks.md)).
+
+#1207 stays open until a new run records that sample: a disposable app, a tool
+that fails and persists the invocation, argv including `--no-warmup`, a
+non-empty `counts.failed` (or `errors`), and `databricks apps get` still
+`RUNNING`. Put the sanitized output next to
+[endpoint-loadtest-2026-11-21.txt](endpoint-loadtest-2026-11-21.txt).
