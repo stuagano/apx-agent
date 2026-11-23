@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -533,8 +534,14 @@ def test_eval_landing_includes_alignment_timeline() -> None:
     from apx_agent._ui_chat import _render_eval_landing
 
     html = _render_eval_landing([], None, None)
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "src/apx_agent/_static/vendor/judge-alignment.js"
+    ).read_text(encoding="utf-8")
     assert 'id="la-history"' in html
-    assert "/_apx/eval/label-history" in html
-    assert "Judge aligned" in html
-    assert "No alignments yet." in html
-    assert "loadAlignHistory()" in html
+    assert 'src="/_apx/vendor/judge-alignment.js"' in html
+    assert "function loadAlignHistory" not in html
+    assert "/_apx/eval/label-history" in script
+    assert "Judge aligned" in script
+    assert "No alignments yet." in script
+    assert "loadAlignHistory()" in script
