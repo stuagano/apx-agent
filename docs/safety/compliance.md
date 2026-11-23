@@ -177,3 +177,8 @@ These are runtime helpers, not a policy engine. Compliance posture (cross-domain
 The portable Service Policy declaration and its fail-closed semantics are
 documented in [reference/service-policies.md](../reference/service-policies.md).
 It complements, rather than replaces, governance-monitoring and Unity Catalog governance.
+
+A vendor guardrail on the Unity AI Gateway service the agent calls is a
+separate attachment. Attach it in the Unity Gateway UI. `DENY` and `ASK` at
+runtime are described in
+[unity-gateway-external-guardrails.md](unity-gateway-external-guardrails.md).

@@ -6,6 +6,16 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Unity AI Gateway external guardrails stay a UI step (#911).** Rechecked
+  2026-11-23: the external-policies page (updated 2026-11-18), the Model Service
+  API object, `databricks-sdk` 0.170.0, and Terraform
+  `databricks_ai_gateway_model_service` (registry page published 2026-11-23)
+  still cannot read or attach an external service policy. `doctor` keeps the
+  WARN and now names the UI attach step, plus that a runtime `ASK` is not
+  something the check can see. The author walkthrough is
+  [docs/safety/unity-gateway-external-guardrails.md](docs/safety/unity-gateway-external-guardrails.md).
+  Deploy does not declare a policy it cannot read back.
+
 - **`user:` state is managed memory; `app:` is deploy-time config (#947, #1233).**
   Cross-session preferences go through the Agent Bricks memory pipeline (about
   every 24h, or a manual run) and the memory tools (`remember` / `recall`).

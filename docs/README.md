@@ -54,6 +54,7 @@
 - [safety/callbacks.md](safety/callbacks.md) — `before_tool`, `before_model`, `before_agent_callback`, `after_*` hooks
 - [safety/identity-passthrough.md](safety/identity-passthrough.md) — OBO token propagation; each caller runs as themselves
 - [safety/compliance.md](safety/compliance.md) — Governance integration, audit log, `GuardrailsConfig`, `GovernanceGuard`
+- [safety/unity-gateway-external-guardrails.md](safety/unity-gateway-external-guardrails.md) — attach a Unity AI Gateway external guardrail in the UI; what `DENY` and `ASK` look like
 
 ## Observability
 

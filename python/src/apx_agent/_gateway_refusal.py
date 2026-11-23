@@ -16,12 +16,15 @@ model surface is a block.
 An ASK on an MCP result phase is not a hold: Databricks lets that result
 through, and hiding it would drop a call the gateway already allowed.
 
-Attaching an external policy is still UI-only. The external-policies page,
-updated 2026-11-18 and rechecked 2026-11-23, says attachment through the REST
-API or Terraform is not available, and a service payload has no policy field.
-This module does not declare ``guardrails``, does not call a guardrail vendor,
-and does not report a policy as attached. ``doctor`` still abstains on that
-read-back. A caller-visible verdict is not evidence the attachment was read.
+Attaching an external policy is still UI-only. Rechecked 2026-11-23: the
+external-policies page (updated 2026-11-18) says REST and Terraform attachment
+are unavailable, ``databricks-sdk`` 0.170.0 ``ModelService`` has no policy
+field, and Terraform ``databricks_ai_gateway_model_service`` manages routing
+only. This module does not declare ``guardrails``, does not call a guardrail
+vendor, and does not report a policy as attached. ``doctor`` still abstains
+on that read-back. A caller-visible verdict is not evidence the attachment
+was read. The author steps are in
+``docs/safety/unity-gateway-external-guardrails.md``.
 
 This module does not call the gateway and does not build a vendor request.
 """

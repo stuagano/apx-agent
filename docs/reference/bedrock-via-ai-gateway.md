@@ -63,6 +63,10 @@ See [querying model services](https://docs.databricks.com/aws/en/ai-gateway/quer
 for supported model names and request formats. Chat uses the service identity;
 APX tools continue to enforce their declared user or service identity.
 
+An external guardrail on that service is attached in the Unity Gateway UI.
+The steps, and what a gateway `DENY` or `ASK` looks like in the agent, are in
+[unity-gateway-external-guardrails.md](../safety/unity-gateway-external-guardrails.md).
+
 ## Explicit Model Serving tools
 
 Existing endpoints can still be used by explicitly declared endpoint tools,
