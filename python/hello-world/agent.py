@@ -8,8 +8,8 @@ Databricks Apps runtime. The same symbol is consumed by
 ``apx-agent deploy --target model-serving`` if you also publish to a serving
 endpoint.
 
-The Apps runtime boilerplate — ``compile_to_responses_agent``,
-``@invoke()`` / ``@stream()`` registration, MCP mounting — lives in
+The Apps runtime boilerplate — the DurableAgentServer launcher
+(``compile_agent(..., target="durable_agent_server")``) — lives in
 ``agent_server/start_server.py`` so this file stays focused on the
 agent's behavior.
 """
