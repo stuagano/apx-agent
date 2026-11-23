@@ -6,6 +6,8 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **The financial-reporting coworker example uses managed stores.** The spec in `docs/agents/financial-reporting-coworker.md` matches `docs/coworkers/financial-reporting.yaml`: `memory` and `session` are `type: managed`.
+
 - **Chat calls send a `databricks-*` foundation endpoint as its Unity Catalog
   model service.** `get_llm` maps `databricks-<id>` to `system.ai.<id>` on the
   AI Gateway request. A `catalog.schema.service` name is unchanged. The default

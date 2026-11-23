@@ -155,27 +155,15 @@ template:
     Surface unposted invoices, billing-vs-ledger variances, and timing
     differences, and return the periodic report figures finance consumes today
     as spreadsheets — computed live from the governed source of truth.
-  memory: persistent
+  memory: managed
   warehouse_id: $WAREHOUSE_ID
   include_functions: true
 
 memory:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: finrep_coworker
-  table_name: $CATALOG.$SCHEMA.apx_finrep_coworker_memory
-  embedding_model: databricks-bge-large-en
-  embedding_dim: 1024
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 session:
-  type: lakebase
-  host: $LAKEBASE_HOST
-  database: finrep_coworker
-  table_name: $CATALOG.$SCHEMA.apx_finrep_coworker_sessions
-  auto_create: true
-  validate_at_boot: true
+  type: managed
 
 guardrails:
   injection_detection: true
@@ -184,8 +172,9 @@ guardrails:
 
 # The governed data tool. `sql` runs against the warehouse under the calling
 # user's identity (OBO), so UC table grants apply per read and every query is
-# audited. Swap for a `genie` space to ground on a curated semantic model
-# instead of letting the agent author SQL.
+# audited — this is what makes "the answer is the report" a governed claim, not
+# a shared file. Swap for a `genie` space if you'd rather ground on a curated
+# semantic model than let the agent author SQL.
 tools:
   - type: sql
     warehouse_id: $WAREHOUSE_ID
@@ -194,4 +183,8 @@ tools:
       Run SQL against the governed billing and general-ledger tables and return
       the rows. Auth is per-call user identity — the query sees only what the
       calling user has UC grants on.
+# - type: genie
+#   space_id: $GENIE_SPACE_ID
+#   name: ask_finance_data
+#   description: Answer questions about billing, revenue, and the general ledger.
 ```
