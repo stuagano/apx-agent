@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "python" / "examples"
 STAGES = ("Config", "Compile", "Startup", "Request", "Deploy")
 SYMBOL = {"ok": "✓", "fail": "✗", "skip": "–", "warn": "!"}
-WITH_SDK = "databricks-agentbricks>=0.9.0,<0.10"
+WITH_SDK = "databricks-agentbricks>=0.9.0,<0.11"
 
 
 @dataclass

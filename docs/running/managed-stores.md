@@ -64,5 +64,8 @@ confirm the WARN row is gone.
 
 A scheduled pipeline runs about every 24 hours, not every N turns. Entries are
 organized by topic under each actor, not in one namespace per strategy.
+`--trigger always-on` (Agent Bricks 0.10.0) distills as sessions update and
+still runs daily maintenance. What each CLI release added is in
+[agentbricks-cli-changelog.md](agentbricks-cli-changelog.md).
 
 For per-store behaviour, see [sessions-and-memory.md](sessions-and-memory.md).

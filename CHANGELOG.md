@@ -6,6 +6,13 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Agent Bricks CLI changelog, and install hints match the pin.**
+  [docs/running/agentbricks-cli-changelog.md](docs/running/agentbricks-cli-changelog.md)
+  records every PyPI release of `databricks-agentbricks` (0.2.0 through 0.11.0),
+  written from the sdist diff. Live install hints that still said
+  `>=0.9.0,<0.10` now say `>=0.9.0,<0.11`, the extra in `python/pyproject.toml`.
+  That pin is unchanged, so 0.11.0 is documented and not what the extra installs.
+
 - **Unity AI Gateway external guardrails stay a UI step (#911).** Rechecked
   2026-11-23: the external-policies page (updated 2026-11-18), the Model Service
   API object, `databricks-sdk` 0.170.0, and Terraform

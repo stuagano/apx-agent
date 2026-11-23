@@ -59,7 +59,7 @@ in-process, so apx-agent must be installed in the same environment as the graph'
 4. **`agent.py`.** At the project root, define `agent = GraphAgent(build=..., tools=[...], name="...")` plus
    `input_schema` / `input` / `output` / `context` from step 3. Use a short kebab-case `name`, the same value as
    step 5's `[tool.apx.deploy] name`.
-5. **`pyproject.toml`.** Add dependencies `apx-agent[agentbricks]` and `databricks-agentbricks[langgraph]>=0.9.0,<0.10`
+5. **`pyproject.toml`.** Add dependencies `apx-agent[agentbricks]` and `databricks-agentbricks[langgraph]>=0.9.0,<0.11`
    (Agent Bricks' doctor requires the second explicitly). To use a local apx-agent checkout, keep the plain
    `apx-agent[agentbricks]` requirement and add `[tool.uv.sources] apx-agent = { path = "<checkout>/python",
    editable = true }`; deploy builds a wheel from it. Never write `apx-agent @ file:///...` in `dependencies`:
