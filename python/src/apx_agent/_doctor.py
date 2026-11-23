@@ -243,6 +243,11 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
             project.append(image_check)
         project.extend(check_space_prerequisites(cwd, agent_config, online=online and auth.status is Status.OK, agent=agent))
         project.extend(agent_rows)
+        from ._app_state import check_app_constants  # noqa: PLC0415
+
+        app_constants = check_app_constants(agent, agent_config, cwd / "agent.py")
+        if app_constants is not None:
+            project.append(app_constants)
     memory_check = check_memory_backend(cwd, auth_ok=auth.status is Status.OK)
     if memory_check is not None:
         project.append(memory_check)

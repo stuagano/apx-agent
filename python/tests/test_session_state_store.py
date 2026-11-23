@@ -93,7 +93,7 @@ def test_persist_session_state_warns_once_when_scoped_keys_are_dropped(caplog):
     assert "user:pref" in caplog.text
     assert "remember" in caplog.text
     assert "app:flag" in caplog.text
-    assert "#1233" in caplog.text
+    assert "app_state" in caplog.text
     caplog.clear()
     persist_session_state(store, "c1", state)
     assert caplog.records == []

@@ -1649,7 +1649,10 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
             from ._session_state import note_unpersisted_scope
 
             note_unpersisted_scope(agent._output_key)
-            merged_state[agent._output_key] = deepcopy(payload) if step_path or native_part is not None else payload
+            # app: is deploy-time config. Construction rejects this key; a later
+            # assignment must still not replace the seeded value.
+            if not agent._output_key.startswith("app:"):
+                merged_state[agent._output_key] = deepcopy(payload) if step_path or native_part is not None else payload
         if merged_state:
             update["state"] = merged_state
         if step_path and agent._output_schema is not None:
@@ -1919,6 +1922,11 @@ def _compile_graph_agent(agent: GraphAgent, ctx: CompileContext) -> Any:
             "call .compile() on your StateGraph and return it unwrapped."
         )
     _bridge_async_nodes(graph)
+    if agent.app_state and "state" not in graph.channels:
+        raise ValueError(
+            f"GraphAgent {agent._name or ''}: app_state needs a `state: dict` channel "
+            "so deploy-time app constants can be seeded."
+        )
     if agent._session_budget is not None and "state" not in graph.channels:
         # The running total is persisted with update_state(..., {"state": ...}); without the channel
         # that write fails and is only logged, so the cap would silently never accumulate.

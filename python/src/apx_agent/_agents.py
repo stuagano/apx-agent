@@ -112,6 +112,7 @@ class AgentSettings(TypedDict, total=False):
     data: DataConfig
     executor: str
     example: ExampleBackendConfig
+    app_state: dict[str, Any]
 
 
 class CompositeSettings(AgentSettings, total=False):
@@ -145,6 +146,8 @@ class BaseAgent:
     data: DataConfig | None = None
     executor: str | None = None
     example: ExampleBackendConfig | None = None
+    app_state: dict[str, Any] | None = None
+    """Deploy-time constants seeded as ``app:<key>`` on every invoke (#1233)."""
     _description: str | None = None
     _overrides: Mapping[str, Any] = MappingProxyType({})
     """Per-agent values that differ from the app's; written by resolve_settings."""
@@ -196,6 +199,13 @@ class BaseAgent:
             self._description = description  # the attribute LlmAgent uses for its own description
         for key, value in settings.items():
             if key == "description" or value is None:  # None means "not declared here"
+                continue
+            if key == "app_state":
+                # The field annotation is dict[str, Any]; normalize here so the
+                # AgentConfig validator (prefixes, JSON values) still runs.
+                from ._app_state import normalize_app_state
+
+                setattr(self, key, normalize_app_state(value))
                 continue
             # Generated agent.py passes dicts; validate into the AgentConfig field's type (3b-3b).
             setattr(self, key, TypeAdapter(AgentConfig.model_fields[key].annotation).validate_python(value))
@@ -427,6 +437,11 @@ class LlmAgent(BaseAgent):
         validate_input_declaration(input_schema, input_key)
         if output_key == NATIVE_ARTIFACTS_KEY:
             raise ValueError("output_key must be a non-reserved domain state slot")
+        if output_key is not None and output_key.startswith("app:"):
+            raise ValueError(
+                "output_key cannot write an app: key; declare it in app_state. "
+                "App constants are deploy-time config."
+            )
         if input_preparation is not None and (not callable(input_preparation) or input_schema is None):
             raise ValueError("input_preparation requires a callable and declared input_schema")
         if output_tool is not None and (output_schema is None or output_tool not in {fn.__name__ for fn in self._tool_fns}):

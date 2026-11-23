@@ -127,6 +127,9 @@ def run_graph_turn(
             if domain_input is not None:
                 graph_input["state"] = domain_input
                 graph_input.update(_mapped_graph_input(agent, domain_input))
+        from ._app_state import graph_input_with_app_state
+
+        graph_input = graph_input_with_app_state(agent, graph_input)
         if continuing and snapshot is not None and not snapshot.next:
             result = snapshot.values
         elif emit_message is None:

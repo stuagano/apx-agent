@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 PER_AGENT = ("model", "identity")
 APP_WIDE = ("target", "recovery", "gateway", "service_policies", "guardrails", "knowledge",
             "vector_search_index", "bindings", "url", "registry", "api_prefix", "examples",
-            "workflows", "data", "executor", "example")
+            "workflows", "data", "executor", "example", "app_state")
 _ROOT_ONLY = {"memory": "memory_config", "session": "session_config", "description": "_description",
               "sub_agents": "_sub_agent_urls"}  # remote peers the root declares (doctor, cards)
 

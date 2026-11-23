@@ -40,7 +40,7 @@ Scheduled "Post-merge CI" runs in 6–13 seconds and are not the pytest gate. Th
 | [#856](https://github.com/stuagano/apx-agent/issues/856) | SDK adapter shipped. One live code remains: unsupported-service. | S | a workspace that returns `FEATURE_DISABLED` |
 | [#864](https://github.com/stuagano/apx-agent/issues/864) | Four of six live items have records. Two are blocked. Do not delete the custom runtime. | L | second principal; AgentKit has no cancel route |
 | [#862](https://github.com/stuagano/apx-agent/issues/862) | Umbrella. Keep open. Do not implement as one PR. | — | children |
-| [#947](https://github.com/stuagano/apx-agent/issues/947) | Decided 2026-11-23: `user:` is the memory pipeline plus the memory tools. `app:` is deploy-time config ([#1233](https://github.com/stuagano/apx-agent/issues/1233)). No store. | S, docs and a drop warning | no |
+| [#947](https://github.com/stuagano/apx-agent/issues/947) | Decided 2026-11-23: `user:` is the memory pipeline plus the memory tools. `app:` is deploy-time `app_state` seeded on invoke ([#1233](https://github.com/stuagano/apx-agent/issues/1233)). No store. | S, docs and a drop warning | no |
 | [#1146](https://github.com/stuagano/apx-agent/issues/1146) | Still rejected by agentbricks 0.10.0. | S once the flag flips | `SANDBOX_DOWNSCOPE_ENABLED = False` |
 | [#575](https://github.com/stuagano/apx-agent/issues/575) | Still Beta. Do not build. | L at GA | GA gates still false |
 
@@ -80,7 +80,7 @@ Not parallel with each other on the same disposable app. They can be parallel wi
 - **#1146** until `databricks_agentkit.runtime.tool_manifest.SANDBOX_DOWNSCOPE_ENABLED` is `True` in the locked agentbricks.
 - **#575** until the Agent Services limitations list drops runtime invocation, null `owner` / `full_name`, and Global Search. A Catalog Explorer paragraph added since the August gate check does not flip the gate.
 - **#911 attachment** (issue steps 1 and 2) until External policies can be attached and read back through REST or Terraform. The docs on 2026-11-18 still say UI only.
-- **#947** is decided (2026-11-23). `user:` is the memory pipeline and the memory tools, as soft preference memory, not a key-value store. `app:` is deploy-time config and stays on [#1233](https://github.com/stuagano/apx-agent/issues/1233); `{app:…}` is not seeded from `agent.toml` / `[tool.apx]` in this pass. Do not extend `ConversationStore`. Do not add a Lakebase table.
+- **#947** is decided (2026-11-23). `user:` is the memory pipeline and the memory tools, as soft preference memory, not a key-value store. `app:` is deploy-time config on the agent (`app_state`), seeded into every invoke ([#1233](https://github.com/stuagano/apx-agent/issues/1233)). It is not an `agent.toml` or `[tool.apx]` table. Do not extend `ConversationStore`. Do not add a Lakebase table.
 
 ### Wave 4 — tracker only
 
@@ -393,11 +393,11 @@ The chosen design (additive mirror on `agents advertise`, keep `main.apx.agent_r
 
 `user:` is the Agent Bricks memory pipeline (distilled about every 24h, or on a manual run) plus the memory tools for an immediate save. Reads go through `recall` / search, not a key get. Author steps are in `docs/running/sessions-and-memory.md`. Writing `state["user:…"]` does not enter memory.
 
-`app:` is agent config set at deploy time (`agent.toml`, `[tool.apx]`), not runtime state. Agents do not write it. `{app:…}` renders only when that key is already in the in-graph state dict; nothing seeds it from config. That seed is left on [#1233](https://github.com/stuagano/apx-agent/issues/1233).
+`app:` is agent config set at deploy time, not runtime state. [#1233](https://github.com/stuagano/apx-agent/issues/1233) declares it as `app_state` on the root agent (and `app_state:` in a coworker YAML spec, written through to `agent.py`). `agent.toml` and `[tool.apx]` do not hold the table. Every ChatAgent, durable, Responses, and composite invoke seeds `app:<key>`. A runtime write raises. Doctor and `agents describe` list the key names, not the values.
 
-In-graph templating for `{user:…}` / `{app:…}` / `{temp:…}` exists (`_compile.py`, `_TEMPLATE_KEY`). `partition_state` drops `user:` and `app:` from conversation `set_session_state`. A tool write, an `output_key` with that prefix, and those persistence drops log a one-time warning that points at the docs.
+In-graph templating for `{user:…}` / `{app:…}` / `{temp:…}` exists (`_compile.py`, `_TEMPLATE_KEY`). `partition_state` drops `user:` and `app:` from conversation `set_session_state`. A `user:` tool write, a `user:` `output_key`, and those persistence drops log a one-time warning that points at the docs. An `app:` write is rejected.
 
-**Proposed approach.** Close #947 on the doc, the warning, and the author guidance. Do not add a Lakebase table (ADR 0001, #862). Leave #1233 open until `app:` config is either seeded into initial state or the issue is closed on the documentation alone.
+**Proposed approach.** Close #947 on the doc, the warning, and the author guidance. Do not add a Lakebase table (ADR 0001, #862). #1233 is the `app_state` declaration and the seed; it does not add a store.
 
 **Depends on.** Nothing further for `user:`. #1233 is independent. #855 does not unblock either.
 

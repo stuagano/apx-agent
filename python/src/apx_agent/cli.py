@@ -11923,6 +11923,9 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
     except SpecValidationError as e:
         raise click.ClickException(f"Invalid spec {yaml_path}: {e}") from e
 
+    from ._app_state import declared_app_keys
+
+    app_constants = declared_app_keys(cfg)
     payload = {
         "spec": str(yaml_path),
         "name": cfg.name,
@@ -11932,6 +11935,7 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
         "tools": cfg.tools,
         "sub_agents": cfg.sub_agents,
         "service_policies": _service_policy_description(cfg),
+        "app_constants": app_constants,
     }
     if fmt == "json":
         click.echo(json.dumps(payload, indent=2))
@@ -11948,6 +11952,10 @@ def _describe_from_spec(yaml_path: Path, fmt: str) -> None:
         click.echo(f"  {cfg.instructions}")
     else:
         click.echo("  (empty — add 'instructions:' to the YAML to say what it does)")
+    if app_constants:
+        click.echo("\nApp constants (keys only):")
+        for key in app_constants:
+            click.echo(f"  - {key}")
     click.echo(f"\nDeclared tools ({len(cfg.tools)}):")
     if not cfg.tools:
         click.echo("  (none)")
@@ -12192,12 +12200,16 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
         for s in resource_specs
     ]
 
+    from ._app_state import declared_app_keys
+
+    app_constants = declared_app_keys(agent)
     payload = {
         "module": module,
         "instructions": instructions,
         "tools": tools_info,
         "sub_agents": sub_agents,
         "resources": resources_info,
+        "app_constants": app_constants,
     }
 
     if fmt == "json":
@@ -12209,6 +12221,10 @@ def info(spec: str | None, module: str, fmt: str, app: bool, profile: str | None
     if instructions:
         click.echo("\nInstructions:")
         click.echo(f"  {instructions}")
+    if app_constants:
+        click.echo("\nApp constants (keys only):")
+        for key in app_constants:
+            click.echo(f"  - {key}")
     click.echo(f"\nTools ({len(tools_info)}):")
     if not tools_info:
         click.echo("  (none — add tools with @tool, uc_function_tool(), or genie_tool())")

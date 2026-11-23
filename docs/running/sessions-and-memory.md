@@ -433,8 +433,23 @@ under that person's actor. Declare both stores on the agent
    Both are search over text, not a get by key.
 
 `state["user:…"]` does not save a preference. Conversation persistence drops
-that prefix, and a checkpoint on one thread is not the next session. `app:`
-values are deploy-time agent config, not a runtime write. See
+that prefix, and a checkpoint on one thread is not the next session.
+
+### App constants
+
+`app:` is one value for every user of this agent, set when the agent is
+deployed. Declare it on the root agent. A coworker YAML spec uses the same
+field; `generate_project` writes it onto that agent. `agent.toml` and
+`[tool.apx]` do not hold it.
+
+```python
+agent = Agent(app_state={"flag": "on"}, instructions="Flag is {app:flag}.")
+```
+
+`flag` and `app:flag` are the same key. The graph state is `app:flag`. Every
+invoke seeds it, including a second principal or session, and a runtime write
+raises `ValueError` instead of replacing the declared value. `apx-agent doctor`
+and `apx-agent agents describe` list the key names and not the values. See
 [keyed-state-scopes.md](../design/keyed-state-scopes.md).
 
 ### Migrating Lakebase memory
