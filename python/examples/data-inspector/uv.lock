@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -196,6 +196,7 @@ dependencies = [
     { name = "databricks-langchain" },
     { name = "databricks-openai" },
     { name = "databricks-sdk" },
+    { name = "dbdemos-tracker" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langchain" },
@@ -218,10 +219,11 @@ eval = [
 
 [package.metadata]
 requires-dist = [
-    { name = "databricks-agentbricks", extras = ["langgraph"], marker = "extra == 'agentbricks'", specifier = ">=0.5.0,<0.6" },
+    { name = "databricks-agentbricks", extras = ["langgraph"], marker = "extra == 'agentbricks'", specifier = ">=0.9.0,<0.11" },
     { name = "databricks-langchain", specifier = ">=0.3.0" },
     { name = "databricks-openai", specifier = ">=0.15.0" },
     { name = "databricks-sdk", specifier = ">=0.74.0" },
+    { name = "dbdemos-tracker", specifier = "==0.1.11" },
     { name = "dspy", marker = "extra == 'align'" },
     { name = "dspy", marker = "extra == 'all'" },
     { name = "fastapi", specifier = ">=0.119.0" },
@@ -231,7 +233,7 @@ requires-dist = [
     { name = "langgraph", specifier = ">=1.1.0" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'lakebase'", specifier = ">=2.0" },
-    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0,<2" },
     { name = "mlflow", extras = ["databricks"], marker = "extra == 'align'", specifier = ">=3.14,<3.15" },
     { name = "mlflow", extras = ["databricks"], marker = "extra == 'all'", specifier = ">=3.14,<3.15" },
     { name = "mlflow", extras = ["databricks"], marker = "extra == 'eval'", specifier = ">=3.14,<3.15" },
@@ -803,7 +805,7 @@ dev = [{ name = "ty", specifier = ">=0.0.12" }]
 
 [[package]]
 name = "databricks-agentbricks"
-version = "0.5.1"
+version = "0.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -814,15 +816,16 @@ dependencies = [
     { name = "packaging" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyyaml" },
+    { name = "requests" },
     { name = "rich" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "tomli" },
     { name = "tomlkit" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d2/97/e6f17cd2edd82428a9fad31b356067664d39bd4617945eb744246c494daf/databricks_agentbricks-0.5.1.tar.gz", hash = "sha256:3a22f675a2423c70ddbddf10a45f8da3c87c69a8bed2e8469f5def9134988496", size = 484028, upload-time = "2026-10-14T20:16:09.007Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/45/50a42950e10f53a9f859a8dc2a67a64b6e0e85fbfa1d028cca245ebf8680/databricks_agentbricks-0.10.0.tar.gz", hash = "sha256:9476e322451e808116aa253619d02e73295744e809ec20fa12fe67d6b28792c9", size = 706510, upload-time = "2026-11-13T23:49:47.841Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/55/82/78642d61ec896251fa059e9849f9a1fc88eb0c003e6331f5291a718d347d/databricks_agentbricks-0.5.1-py3-none-any.whl", hash = "sha256:e0d355f8749ad8fe8dbba48862bf7a0ce1d0a1bbed6aadb7a517bdbafb4aa41d", size = 552016, upload-time = "2026-10-14T20:16:07.628Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/d0/189ae48004cc80b4003cb7be7c690bc260f364f5d88b242fb09abf9dd556/databricks_agentbricks-0.10.0-py3-none-any.whl", hash = "sha256:119cebe4f416f076a2a4dc3b88b16115b58e9080aa8cfbb15078f5a0e2c6601a", size = 783793, upload-time = "2026-11-13T23:49:46.106Z" },
 ]
 
 [package.optional-dependencies]
@@ -1080,6 +1083,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/64/a4/f71d9cf3a5ac257c993b5ca3f93df5f7fb395c725e7f1e6479d2514173c3/dataclasses_json-0.6.7.tar.gz", hash = "sha256:b6b3e528266ea45b9535223bc53ca645f5208833c29229e847b3f26a1cc55fc0", size = 32227, upload-time = "2024-06-09T16:20:19.103Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c3/be/d0d44e092656fe7a06b55e6103cbce807cdbdee17884a5367c68c9860853/dataclasses_json-0.6.7-py3-none-any.whl", hash = "sha256:0dbf33f26c8d5305befd61b39d2b3414e8a407bedc2834dea9b8d642666fb40a", size = 28686, upload-time = "2024-06-09T16:20:16.715Z" },
+]
+
+[[package]]
+name = "dbdemos-tracker"
+version = "0.1.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "databricks-sdk" },
+    { name = "requests" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/1b/8b06b8a622e944e3fe3ac32afc72aca42170e874486385480d464b5b0ef2/dbdemos_tracker-0.1.11-py3-none-any.whl", hash = "sha256:eef1cbe62240056f8bb936487c91411f99f491375baec2c930b93626943f1910", size = 10375, upload-time = "2025-12-05T21:49:09.951Z" },
 ]
 
 [[package]]

@@ -3,12 +3,10 @@ name = "payroll-coworker"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    # The eval extra pulls mlflow.genai for ResponsesAgent Apps hosting.
-    # langgraph is a required apx-agent dependency, not an extra.
-    "apx-agent[eval]",
-    # mlflow.genai.agent_server (imported by agent_server/start_server.py)
-    # only exists in mlflow >=3.12; an older floor lets `uv sync` succeed but
-    # the deployed App 502s with ModuleNotFoundError: mlflow.genai.
+    # [agentbricks] provides DurableAgentServer, the Apps host
+    # (agent_server/start_server.py); [eval] keeps the local app.py runtime.
+    "apx-agent[eval,agentbricks]",
+    # mlflow.genai (tracing) needs mlflow >=3.12. The Apps launcher does not import it.
     "mlflow[databricks]>=3.12",
     # Add your agent's deps here
 ]
