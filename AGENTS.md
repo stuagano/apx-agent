@@ -98,9 +98,12 @@ beads check fails the PR otherwise. Trivial and bot PRs can opt out with the
 `beads:exempt` label. `dependabot[bot]` and `github-actions[bot]` are exempt
 by author.
 
-Opening a GitHub issue creates its bead and comments the id. A daily sync
-imports any open issue that sync missed. Merging the pull request closes the
-referenced bead and pushes `refs/dolt/data`. Never delete a closed bead.
+Opening a GitHub issue creates its bead and comments the id. Closing that
+issue closes the bead whose external_ref is the issue URL, and reopening the
+issue reopens that bead. A daily sync imports any open issue that sync missed
+and reconciles beads whose GitHub issues are already closed or reopened.
+Merging the pull request closes the referenced bead and pushes
+`refs/dolt/data`. Never delete a closed bead.
 
 ## Domain Notes
 

@@ -1,11 +1,12 @@
 name: beads issue
 
-# Opening a GitHub issue creates its bead. Re-runs skip a bead that already
-# has this issue URL. Hive writes share the beads-hive queue so two jobs
-# cannot push refs/dolt/data at once.
+# Opening a GitHub issue creates its bead. Closing the issue closes that
+# bead, and reopening the issue reopens it. The match is external_ref = the
+# issue URL. Re-runs leave a bead that already matches. Hive writes share
+# the beads-hive queue so two jobs cannot push refs/dolt/data at once.
 on:
   issues:
-    types: [opened]
+    types: [opened, closed, reopened]
 
 permissions:
   contents: write
@@ -16,7 +17,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  create:
+  sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -24,9 +25,9 @@ jobs:
       - name: Install bd
         run: bash scripts/beads/setup_bd.sh
 
-      - name: Create the bead and comment its id
+      - name: Sync the bead with the issue
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BEADS_ACTOR: github-actions[bot]
-        run: python3 scripts/beads/beads.py ensure-issue --event "$GITHUB_EVENT_PATH" --comment
+        run: python3 scripts/beads/beads.py sync-issue --event "$GITHUB_EVENT_PATH" --comment
