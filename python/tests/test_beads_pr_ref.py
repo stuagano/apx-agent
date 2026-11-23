@@ -548,9 +548,23 @@ def test_fixes_keyword_closes_the_issue_bead_when_the_title_has_no_id(
 
 
 def test_select_recent_prs_drops_merges_outside_the_window() -> None:
-    now = datetime(2026, 11, 23, 17, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 23, 18, 0, tzinfo=timezone.utc)
     rows = beads.select_recent_prs(
         [
+            {
+                "number": 1247,
+                "title": "after the floor",
+                "body": "Fixes #1",
+                "headRefName": "cursor/after-the-floor",
+                "mergedAt": "2026-11-23T17:51:00Z",
+            },
+            {
+                "number": 1246,
+                "title": "floor explanation",
+                "body": "names the #911 work",
+                "headRefName": "cursor/beads-reconcile-f7e5",
+                "mergedAt": "2026-11-23T17:49:08Z",
+            },
             {
                 "number": 1242,
                 "title": "Seed app_state",
@@ -576,7 +590,8 @@ def test_select_recent_prs_drops_merges_outside_the_window() -> None:
         within_hours=12,
         now=now,
     )
-    assert [pr.number for pr in rows] == [1242]
+    assert [pr.number for pr in rows] == [1247]
+    assert rows[0].body == "Fixes #1"
     later = beads.select_recent_prs(
         [
             {
@@ -598,7 +613,6 @@ def test_select_recent_prs_drops_merges_outside_the_window() -> None:
         now=datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc),
     )
     assert [pr.number for pr in later] == [1300]
-    assert rows[0].body == "Fixes #1233"
     with pytest.raises(SystemExit, match="within-hours"):
         beads.select_recent_prs([], within_hours=-1, now=now)
 
