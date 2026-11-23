@@ -5,6 +5,10 @@ The bd version is scripts/beads/BD_VERSION. GitHub issue imports use the same
 labels as the existing hive rows. Bead ids look like apx-om5, apx-ije.2, or
 apx-merge-slot. The repo name apx-agent is not a bead id.
 
+A GitHub issue and its bead share the issue URL as external_ref. Opening the
+issue creates the bead. Closing the issue closes that bead, and reopening the
+issue reopens it. The daily sync does the same for issues that already moved.
+
 Pushing refs/dolt/data uses the dolt remote. When GITHUB_TOKEN and
 GITHUB_REPOSITORY are set, origin is pointed at that token before bootstrap.
 The token is never printed.
@@ -60,6 +64,21 @@ class PrBeadCheck:
 class Ensured:
     bead_id: str
     created: bool
+
+
+@dataclass(frozen=True)
+class IssueSnapshot:
+    number: int
+    title: str
+    body: str
+    url: str
+    state: str
+
+
+@dataclass(frozen=True)
+class IssueSync:
+    bead_id: str
+    outcome: str
 
 
 def redact(text: str) -> str:
@@ -143,7 +162,8 @@ def ensure_database(cwd: Path) -> None:
     _run([_bd(), "bootstrap", "--yes"], cwd=cwd, check=True)
 
 
-def find_bead(cwd: Path, url: str) -> str | None:
+def find_bead_row(cwd: Path, url: str) -> dict[str, Any] | None:
+    """Return the bead whose external_ref is this issue URL, including closed."""
     result = _run(
         [
             _bd(),
@@ -171,7 +191,17 @@ def find_bead(cwd: Path, url: str) -> str | None:
     if len(rows) > 1:
         ids = [str(row["id"]) for row in rows]
         raise SystemExit(f"multiple beads for {url}: {ids}")
-    return str(rows[0]["id"])
+    row = rows[0]
+    if not isinstance(row, dict):
+        raise SystemExit("bd list row is not an object")
+    return row
+
+
+def find_bead(cwd: Path, url: str) -> str | None:
+    row = find_bead_row(cwd, url)
+    if row is None:
+        return None
+    return str(row["id"])
 
 
 def _blank_body(value: Any) -> str:
@@ -245,15 +275,175 @@ def show_bead(cwd: Path, bead_id: str) -> dict[str, Any]:
     return row
 
 
-def close_bead(cwd: Path, bead_id: str, reason: str, *, dry_run: bool) -> str:
+def close_bead(
+    cwd: Path,
+    bead_id: str,
+    reason: str,
+    *,
+    dry_run: bool,
+    force: bool = False,
+) -> str:
+    """Close a bead. ``force`` overrides an assignee, pin, or open gate.
+
+    GitHub issue sync passes force because the issue state is the decision.
+    A merged pull request does not.
+    """
     row = show_bead(cwd, bead_id)
     status = row["status"]
     if status == "closed":
         return "already-closed"
     if dry_run:
         return "would-close"
-    _run([_bd(), "--sandbox", "close", bead_id, "--reason", reason], cwd=cwd, check=True)
+    cmd = [_bd(), "--sandbox", "close", bead_id, "--reason", reason]
+    if force:
+        cmd.append("--force")
+    _run(cmd, cwd=cwd, check=True)
     return "closed"
+
+
+def reopen_bead(cwd: Path, bead_id: str, reason: str, *, dry_run: bool) -> str:
+    row = show_bead(cwd, bead_id)
+    if row["status"] != "closed":
+        return "already-open"
+    if dry_run:
+        return "would-reopen"
+    _run([_bd(), "--sandbox", "reopen", bead_id, "--reason", reason], cwd=cwd, check=True)
+    return "reopened"
+
+
+def normalize_github_state(value: Any) -> str:
+    """Accept the webhook spelling (open) and the gh CLI spelling (OPEN)."""
+    if not isinstance(value, str):
+        raise SystemExit("issue state is not a string")
+    state = value.lower()
+    if state != "open" and state != "closed":
+        raise SystemExit(f"unsupported issue state {value}")
+    return state
+
+
+def plan_issue_sync(github_state: str, bead_status: str | None) -> str:
+    """Decide how a bead should follow its GitHub issue.
+
+    ``bead_status`` is None when no bead has this issue URL. A closed issue
+    with no bead is skipped. An open issue reopens a closed bead and leaves
+    any other status, including in_progress, unchanged.
+    """
+    state = normalize_github_state(github_state)
+    if bead_status is None:
+        if state == "open":
+            return "create"
+        return "skip"
+    if state == "closed":
+        if bead_status == "closed":
+            return "unchanged"
+        return "close"
+    if bead_status == "closed":
+        return "reopen"
+    return "unchanged"
+
+
+def _issue_url_value(value: Any) -> str:
+    if not isinstance(value, str) or "/issues/" not in value:
+        raise SystemExit("issue url is required")
+    return value
+
+
+def snapshot_from_mapping(issue: dict[str, Any], *, url_key: str) -> IssueSnapshot:
+    number = issue["number"]
+    title = issue["title"]
+    if not isinstance(number, int) or not isinstance(title, str) or title == "":
+        raise SystemExit("issue number and title are required")
+    if "state" not in issue:
+        raise SystemExit("issue state is required")
+    body = _blank_body(issue["body"] if "body" in issue else None)
+    return IssueSnapshot(
+        number,
+        title,
+        body,
+        _issue_url_value(issue[url_key]),
+        normalize_github_state(issue["state"]),
+    )
+
+
+def issue_from_event(event: dict[str, Any]) -> IssueSnapshot:
+    issue = event["issue"]
+    if not isinstance(issue, dict):
+        raise SystemExit("issue is not an object")
+    if "pull_request" in issue:
+        raise SystemExit("pull requests are not imported as issues")
+    return snapshot_from_mapping(issue, url_key="html_url")
+
+
+def issues_from_payload(payload: Any) -> list[IssueSnapshot]:
+    if not isinstance(payload, list):
+        raise SystemExit("issues file is not a list")
+    snapshots: list[IssueSnapshot] = []
+    for issue in payload:
+        if not isinstance(issue, dict):
+            raise SystemExit("issue row is not an object")
+        snapshots.append(snapshot_from_mapping(issue, url_key="url"))
+    return snapshots
+
+
+def apply_issue_sync(cwd: Path, issue: IssueSnapshot, *, dry_run: bool) -> IssueSync:
+    """Create, close, or reopen the bead that matches this issue URL."""
+    row = find_bead_row(cwd, issue.url)
+    status: str | None = None
+    bead_id = ""
+    if row is not None:
+        bead_id = str(row["id"])
+        status_value = row["status"]
+        if not isinstance(status_value, str):
+            raise SystemExit(f"bead {bead_id} status is not a string")
+        status = status_value
+    action = plan_issue_sync(issue.state, status)
+    if action == "skip":
+        return IssueSync("", "skipped")
+    if action == "unchanged":
+        return IssueSync(bead_id, "unchanged")
+    if action == "create":
+        if dry_run:
+            return IssueSync("", "would-create")
+        return IssueSync(create_bead(cwd, issue.title, issue.body, issue.url), "created")
+    if action == "close":
+        outcome = close_bead(
+            cwd,
+            bead_id,
+            f"GitHub issue #{issue.number} is closed",
+            dry_run=dry_run,
+            force=True,
+        )
+        return IssueSync(bead_id, outcome)
+    if action == "reopen":
+        outcome = reopen_bead(
+            cwd,
+            bead_id,
+            f"GitHub issue #{issue.number} is open",
+            dry_run=dry_run,
+        )
+        return IssueSync(bead_id, outcome)
+    raise SystemExit(f"unknown issue sync action {action}")
+
+
+_PUSH_OUTCOMES = frozenset({"created", "closed", "reopened"})
+
+
+def _push_if_changed(cwd: Path, changed: bool, *, dry_run: bool, no_push: bool) -> None:
+    if changed and not dry_run and not no_push:
+        push_with_retry(_subprocess_execute(cwd), time.sleep)
+
+
+def _print_sync(number: int, result: IssueSync) -> None:
+    json.dump(
+        {
+            "number": number,
+            "bead_id": result.bead_id,
+            "created": result.outcome == "created",
+            "outcome": result.outcome,
+        },
+        sys.stdout,
+    )
+    sys.stdout.write("\n")
 
 
 def push_with_retry(
@@ -436,38 +626,57 @@ def cmd_close_pr(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sync_one(cwd: Path, issue: IssueSnapshot, args: argparse.Namespace) -> bool:
+    """Apply one issue. Return True when the hive changed."""
+    result = apply_issue_sync(cwd, issue, dry_run=args.dry_run)
+    if result.outcome == "skipped" or result.outcome == "unchanged":
+        return False
+    if result.outcome == "would-create":
+        print(f"would create a bead for {issue.url}")
+        return False
+    _print_sync(issue.number, result)
+    if result.outcome == "created" and args.comment and not args.dry_run:
+        comment_bead(issue.number, result.bead_id)
+    return result.outcome in _PUSH_OUTCOMES
+
+
+def cmd_sync_issue(args: argparse.Namespace) -> int:
+    cwd = Path.cwd()
+    if args.event != "":
+        issue = issue_from_event(_load_event(args.event))
+    else:
+        body = Path(args.body_file).read_text(encoding="utf-8")
+        issue = snapshot_from_mapping(
+            {
+                "number": args.number,
+                "title": args.title,
+                "body": body,
+                "url": _issue_url(args.number, args.url),
+                "state": args.state,
+            },
+            url_key="url",
+        )
+    ensure_database(cwd)
+    changed = _sync_one(cwd, issue, args)
+    _push_if_changed(cwd, changed, dry_run=args.dry_run, no_push=args.no_push)
+    return 0
+
+
 def cmd_sync_open(args: argparse.Namespace) -> int:
     cwd = Path.cwd()
     with open(args.issues_file, encoding="utf-8") as handle:
-        issues = json.load(handle)
-    if not isinstance(issues, list):
-        raise SystemExit("issues file is not a list")
+        payload = json.load(handle)
+    issues = issues_from_payload(payload)
     if len(issues) >= args.limit:
         raise SystemExit(
-            f"open issue list has {len(issues)} rows, at the limit {args.limit}; refusing to guess that the list is complete"
+            f"issue list has {len(issues)} rows, at the limit {args.limit}; refusing to guess that the list is complete"
         )
     ensure_database(cwd)
-    created_any = False
+    changed = False
     for issue in issues:
-        if not isinstance(issue, dict):
-            raise SystemExit("issue row is not an object")
-        number = issue["number"]
-        title = issue["title"]
-        url = issue["url"]
-        if not isinstance(number, int) or not isinstance(title, str) or not isinstance(url, str):
-            raise SystemExit("each issue needs int number, string title, and string url")
-        body = _blank_body(issue["body"] if "body" in issue else None)
-        ensured = ensure_issue(cwd, title, body, url, dry_run=args.dry_run)
-        if args.dry_run and ensured.created:
-            print(f"would create a bead for {url}")
-            continue
-        _print_ensured(number, ensured)
-        if ensured.created and not args.dry_run:
-            created_any = True
-            if args.comment:
-                comment_bead(number, ensured.bead_id)
-    if created_any and not args.no_push:
-        push_with_retry(_subprocess_execute(cwd), time.sleep)
+        if _sync_one(cwd, issue, args):
+            changed = True
+    _push_if_changed(cwd, changed, dry_run=args.dry_run, no_push=args.no_push)
     return 0
 
 
@@ -507,6 +716,18 @@ def _parser() -> argparse.ArgumentParser:
     close.add_argument("--no-push", action="store_true")
     close.set_defaults(func=cmd_close_pr)
 
+    sync_issue = sub.add_parser("sync-issue")
+    sync_issue.add_argument("--event", default="")
+    sync_issue.add_argument("--number", type=int)
+    sync_issue.add_argument("--title", default="")
+    sync_issue.add_argument("--body-file", default="")
+    sync_issue.add_argument("--url", default="")
+    sync_issue.add_argument("--state", default="")
+    sync_issue.add_argument("--dry-run", action="store_true")
+    sync_issue.add_argument("--no-push", action="store_true")
+    sync_issue.add_argument("--comment", action="store_true")
+    sync_issue.set_defaults(func=cmd_sync_issue)
+
     sync = sub.add_parser("sync-open")
     sync.add_argument("--issues-file", required=True)
     sync.add_argument("--limit", type=int, default=1000)
@@ -536,6 +757,11 @@ def main(argv: list[str]) -> int:
     if args.command == "ensure-issue" and args.event == "":
         if args.number is None or args.title == "" or args.body_file == "":
             raise SystemExit("ensure-issue needs --event or --number, --title, and --body-file")
+    if args.command == "sync-issue" and args.event == "":
+        if args.number is None or args.title == "" or args.body_file == "" or args.state == "":
+            raise SystemExit(
+                "sync-issue needs --event or --number, --title, --body-file, and --state"
+            )
     if args.command == "close-pr" and args.event == "":
         missing = [
             name
