@@ -102,7 +102,7 @@ def test_destroy_runs_bundle_destroy_and_clears_state(
     assert result.exit_code == 0, result.output
     assert any(c[:2] == ["bundle", "destroy"] for c in calls)
     assert ("my-app", "staging") in deleted
-    payload = json.loads(result.output.strip().splitlines()[-1])
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["destroyed"] is True
 

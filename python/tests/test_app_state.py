@@ -201,7 +201,7 @@ def test_doctor_and_describe_list_keys_not_values(tmp_path: Any) -> None:
 
     result = CliRunner().invoke(info, ["--format", "json", str(spec)])
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["app_constants"] == ["flag"]
     assert "secret-value" not in result.output
 

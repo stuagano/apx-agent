@@ -236,11 +236,40 @@ def test_fleet_tag_json_format():
                    "--set", "team=revops", "--apply", "--format", "json"],
         )
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["apply"] is True
     assert payload["results"][0]["uc_name"] == "cat.sch.a"
     assert payload["results"][0]["status"] == "ok"
     assert payload["summary"] == {"ok": 1, "skipped": 0, "failed": 0}
+
+
+@pytest.mark.unit
+def test_fleet_tag_json_empty_selection_is_only_json():
+    import json
+
+    ws = _fake_ws([])
+    with patch("apx_agent.cli._require_sdk", return_value=ws):
+        result = CliRunner().invoke(
+            main, ["fleet", "tag", "--name", "missing",
+                   "--set", "team=revops", "--format", "json"],
+        )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["results"] == []
+    assert payload["summary"] == {"ok": 0, "skipped": 0, "failed": 0}
+
+
+@pytest.mark.unit
+def test_fleet_repoint_json_empty_selection_is_only_json():
+    import json
+
+    with patch("apx_agent.cli._require_sdk", return_value=MagicMock()), \
+         patch("apx_agent.cli._fleet_resolve", return_value=[]):
+        result = CliRunner().invoke(main, ["fleet", "repoint", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["results"] == []
+    assert payload["summary"] == {"ok": 0, "skipped": 0, "failed": 0}
 
 
 @pytest.mark.unit
@@ -304,7 +333,7 @@ def test_fleet_backfill_json_format_omits_text_note():
                    "--name", "payroll", "--format", "json"],
         )
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["apply"] is False
     assert payload["results"][0]["uc_name"] == "cat.sch.payroll"
     # The human-only "cannot reconstruct tools/resources" note must not leak
@@ -393,7 +422,7 @@ def test_fleet_repoint_json_format():
         )
     assert result.exit_code == 0, result.output
     setp.assert_called_once_with("cat.sch.a", "5")
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["results"][0]["uc_name"] == "cat.sch.a"
     assert payload["results"][0]["detail"] == "3 -> 5"
 

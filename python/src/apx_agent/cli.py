@@ -14836,6 +14836,9 @@ def fleet_tag_cmd(
         where_exprs=where_exprs, uc_names=uc_names,
     )
     if not agents_:
+        if fmt == "json":
+            click.echo(_fleet.render_summary_json([], apply=apply).text)
+            return
         click.echo("No agents matched the selection.")
         return
 
@@ -14952,6 +14955,9 @@ def _do_fleet_repoint(
         where_exprs=where_exprs, uc_names=uc_names,
     )
     if not agents_:
+        if fmt == "json":
+            click.echo(_fleet.render_summary_json([], apply=apply).text)
+            return
         click.echo("No agents matched the selection.")
         return
 
