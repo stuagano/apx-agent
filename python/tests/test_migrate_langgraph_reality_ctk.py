@@ -137,7 +137,7 @@ def test_check_fails_when_the_agent_is_not_a_graph_agent(tmp_path: Path) -> None
 def test_check_reports_a_missing_agentbricks_dependency(tmp_path: Path) -> None:
     project = _golden(tmp_path)
     pyproject = project / "pyproject.toml"
-    pyproject.write_text(pyproject.read_text().replace('    "databricks-agentbricks[langgraph]>=0.9.0,<0.10",\n', ""))
+    pyproject.write_text(pyproject.read_text().replace('    "databricks-agentbricks[langgraph]>=0.9.0,<0.11",\n', ""))
 
     result = _migrate(str(project), "--check")
 

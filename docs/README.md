@@ -27,6 +27,7 @@
 
 - [running/runtime-targets.md](running/runtime-targets.md) — compile targets, compatibility reports, and native durable host limits
 - [running/endpoint-loadtest.md](running/endpoint-loadtest.md) — `agentbricks endpoint loadtest` against a durable `/api/invocations` host
+- [running/agentbricks-cli-changelog.md](running/agentbricks-cli-changelog.md) — changelog for every published `databricks-agentbricks` release
 - [agents/llm-agent.md#running](agents/llm-agent.md#running) — `agent.run()`, `agent.stream()`, `max_iterations` safety cap
 - [running/sessions-and-memory.md](running/sessions-and-memory.md) — session stores, memory stores, example stores
 - [running/lakebase-recipe.md](running/lakebase-recipe.md) — Lakebase provisioning, pgvector, pool tuning

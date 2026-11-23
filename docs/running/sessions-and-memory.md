@@ -394,7 +394,9 @@ apx does not distill sessions into memory itself. An Agent Bricks memory
 pipeline does: it reads a managed session store and writes facts, preferences
 and workflows into a managed memory store, under each session's actor. Each run
 distills new sessions, merges the results by topic, then merges overlapping
-entries and splits oversized ones.
+entries and splits oversized ones. Command history for that CLI, including
+`--trigger always-on` (0.10.0) and `memory changes` (0.11.0), is in
+[agentbricks-cli-changelog.md](agentbricks-cli-changelog.md).
 
 ```bash
 agentbricks memory pipeline create \
