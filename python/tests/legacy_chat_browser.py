@@ -40,14 +40,13 @@ def test_history_asset_keeps_globals_debounce_and_new_conversation(native, embed
 
         page.route("**/*", route)
         page.goto("http://localhost/")
-        # The later inline script must initialize and call the extracted global.
+        # The later script must initialize and call the extracted global.
         expect(page.locator("#conv-list")).to_contain_text("No conversations yet")
         assert page.evaluate("typeof loadConversationHistory + ':' + typeof newConversation") == "function:function"
-        # The moved scripts must actually load. Native pages inline the legacy
-        # files and request only the native client.
-        assert assets.count("/_apx/vendor/legacy-chat-history.js") == (0 if native else 1)
-        assert assets.count("/_apx/vendor/legacy-chat-prelude.js") == (0 if native else 1)
-        assert assets.count("/_apx/vendor/legacy-chat-app.js") == (0 if native else 1)
+        # Both hosts request the legacy files. Native also requests its client.
+        assert assets.count("/_apx/vendor/legacy-chat-history.js") == 1
+        assert assets.count("/_apx/vendor/legacy-chat-prelude.js") == 1
+        assert assets.count("/_apx/vendor/legacy-chat-app.js") == 1
         assert assets.count("/_apx/vendor/native-chat.js") == (1 if native else 0)
         loaded = page.evaluate(
             "typeof switchTab + ':' + typeof checkPendingApprovals + ':' + typeof apxNativeChat"

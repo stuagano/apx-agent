@@ -81,10 +81,11 @@ def test_native_dev_chat_enablement(enabled, native):
     assert response.status_code == (200 if enabled == "1" else 404)
     if enabled == "1":
         assert "apxNativeChat" in response.text
-        # Legacy chat is inlined. The native client is the one vendor script.
+        # Chat scripts load from the vendor route this host mounts.
         assert response.text.count('src="/_apx/vendor/native-chat.js"') == 1
-        assert response.text.count('src="/_apx/vendor/') == 1
-        assert 'src="/_apx/vendor/legacy-chat-' not in response.text
+        assert 'src="/_apx/vendor/legacy-chat-prelude.js"' in response.text
+        assert 'src="/_apx/vendor/legacy-chat-history.js"' in response.text
+        assert 'src="/_apx/vendor/legacy-chat-app.js"' in response.text
     assert host.client.post("/invocations", json={}).status_code == 404
     # A free-text entry keeps Eval (it runs over /api/invocations); off when the dev UI is.
     assert host.client.post("/_apx/eval/judge", json={}).status_code == (422 if enabled == "1" else 404)
@@ -228,8 +229,8 @@ def test_durable_dev_chat_survives_a_project_ui_at_root(execution, monkeypatch, 
 
 
 def test_native_page_injections_land_in_the_real_head_and_body():
-    # The inlined DOMPurify contains "<head></head><body>" in a JS string; an injection must
-    # never land there (it broke the page script: "Unexpected identifier 'button'").
+    # Panel CSS and the tools-tab opener must land outside any script. An earlier
+    # inline of DOMPurify put "<body>" in a JS string and the opener landed there.
     from apx_agent._ui_chat import NATIVE_PANEL_HIDE, NATIVE_PANEL_OPEN_TOOLS, _render_agent_ui
     from tests.test_dev_ui_routes import _make_ctx
 
