@@ -6,8 +6,8 @@ Edit this file to define your agent. ``agent`` is the canonical top-level
 symbol that ``agent_server/start_server.py`` imports + wraps for the
 Databricks Apps runtime.
 
-The Apps runtime boilerplate — ``compile_to_responses_agent``,
-``@invoke()`` / ``@stream()`` registration, MCP mounting — lives in
+The Apps runtime boilerplate — the DurableAgentServer launcher
+(``compile_agent(..., target="durable_agent_server")``) — lives in
 ``agent_server/start_server.py`` so this file stays focused on the
 agent's behavior.
 """

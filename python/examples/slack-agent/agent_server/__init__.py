@@ -1,1 +1,1 @@
-"""slack-agent — Apps-target shape (mlflow.genai.agent_server + Slack webhook)."""
+"""slack-agent — Apps-target shape (DurableAgentServer + Slack webhook)."""
