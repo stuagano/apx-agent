@@ -361,6 +361,22 @@ def clears_scorers(
     return scorers
 
 
+def _open_prompt_eval_run(mlflow: Any, tags: dict[str, str]) -> bool:
+    """Put prompt pins on the eval run evaluate will reuse.
+
+    ``mlflow.genai.evaluate`` keeps an already active run, so tags set here
+    land on that run. Returns whether this function opened the run and must
+    close it.
+    """
+    if not tags:
+        return False
+    opened = mlflow.active_run() is None
+    if opened:
+        mlflow.start_run()
+    mlflow.set_tags(tags)
+    return opened
+
+
 def evaluate(
     agent: "BaseAgent",
     *,
@@ -438,6 +454,12 @@ def evaluate(
             "Install with: pip install 'apx-agent[eval]'"
         )
 
+    from pathlib import Path
+
+    from ._prompt_pins import apply_pinned_prompts, loaded_prompts, prompt_run_tags
+
+    apply_pinned_prompts(agent, Path.cwd())
+    prompt_tags = prompt_run_tags(loaded_prompts(agent))
     chat_agent = compile_to_chat_agent(agent, model=model)
 
     custom_inputs: dict[str, Any] | None = None
@@ -462,13 +484,17 @@ def evaluate(
         return _extract_response_text(response)
 
     eval_scorers = scorers if scorers is not None else _default_scorers(judge_model)
-
-    return mlflow.genai.evaluate(  # type: ignore[attr-defined]
-        data=_normalize_evalset(evalset),
-        predict_fn=_predict,
-        scorers=eval_scorers,
-        **mlflow_kwargs,
-    )
+    opened_run = _open_prompt_eval_run(mlflow, prompt_tags)
+    try:
+        return mlflow.genai.evaluate(  # type: ignore[attr-defined]
+            data=_normalize_evalset(evalset),
+            predict_fn=_predict,
+            scorers=eval_scorers,
+            **mlflow_kwargs,
+        )
+    finally:
+        if opened_run:
+            mlflow.end_run()
 
 
 # ---------------------------------------------------------------------------

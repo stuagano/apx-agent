@@ -23,7 +23,7 @@
 
 ## Running agents
 
-- [running/prompt-registry.md](running/prompt-registry.md) — upstream prompt bindings, runtime loading, and preservation across project regeneration
+- [running/prompt-registry.md](running/prompt-registry.md) — upstream prompt bindings, pinned versions loaded at startup, and preservation across project regeneration
 
 - [running/runtime-targets.md](running/runtime-targets.md) — compile targets, compatibility reports, and native durable host limits
 - [running/endpoint-loadtest.md](running/endpoint-loadtest.md) — `agentbricks endpoint loadtest` against a durable `/api/invocations` host

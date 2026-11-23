@@ -243,6 +243,10 @@ def compile_agent(
         from ._wiring import ensure_scope_guard
 
         ensure_scope_guard(agent)
+    if project_root is not None:
+        from ._prompt_pins import apply_pinned_prompts
+
+        apply_pinned_prompts(agent, project_root)
     report = inspect_target(
         agent, target=target, config=config, requirements=requirements, checkpointer=checkpointer,
         conversation_store=conversation_store, session_store=session_store,

@@ -775,6 +775,12 @@ async def setup_agent(
         pyproject_path=pyproject_path,
         ws=getattr(app.state, "workspace_client", None),
     )
+    from pathlib import Path
+
+    from ._prompt_pins import apply_pinned_prompts
+
+    prompt_root = Path(pyproject_path).resolve().parent if pyproject_path else Path.cwd()
+    apply_pinned_prompts(agent, prompt_root)
 
     builtin_agent = _builtin_agent_flow_graph(agent)
     tools = _dedupe_tools(agent.collect_tools())

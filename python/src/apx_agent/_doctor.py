@@ -275,6 +275,9 @@ def _run_checks(cwd: Path, *, online: bool, durable: bool) -> list[tuple[str, li
     if provenance_check is not None:
         project.append(provenance_check)
     project.extend(check_declared_tools(cwd, auth_ok=auth.status is Status.OK, online=online))
+    from ._prompt_pins import check_prompt_pins
+
+    project.extend(check_prompt_pins(cwd, online=online, auth_ok=auth.status is Status.OK))
     sub_agents_check = check_sub_agents(cwd)
     if sub_agents_check is not None:
         project.append(sub_agents_check)

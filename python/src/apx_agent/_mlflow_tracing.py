@@ -277,10 +277,11 @@ def safe_span(
             # CHAIN/TOOL spans stay clean. Late import: _audit imports this
             # module, so a top-level import would be circular.
             if span_type == "AGENT" and span is not None:
-                from ._audit import stamp_harness_version, stamp_version_correlation
+                from ._audit import stamp_harness_version, stamp_pinned_prompts, stamp_version_correlation
 
                 stamp_harness_version(span)
                 stamp_version_correlation(span)
+                stamp_pinned_prompts(span)
             yield span
     except Exception as exc:
         logger.debug("Exception during traced block (re-raising): %s", exc)
