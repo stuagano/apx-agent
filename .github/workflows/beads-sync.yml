@@ -6,6 +6,9 @@ name: beads sync
 # unchanged, including its comments.
 on:
   schedule:
+    # 06:17 UTC. Minute 17 avoids the top of the hour, when scheduled
+    # workflows are most often delayed. workflow_dispatch is the manual
+    # backstop: the 2026-11-23 06:17 run was never created.
     - cron: "17 6 * * *"
   workflow_dispatch:
 
@@ -14,7 +17,9 @@ permissions:
   issues: write
 
 concurrency:
-  group: beads-hive
+  # Same reason as beads issue: a shared group drops every pending run but
+  # the newest, even with cancel-in-progress false.
+  group: beads-sync-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:

@@ -9,6 +9,12 @@ A GitHub issue and its bead share the issue URL as external_ref. Opening the
 issue creates the bead. Closing the issue closes that bead, and reopening the
 issue reopens it. The daily sync does the same for issues that already moved.
 
+A merged pull request closes every bead it names, plus the bead for each
+Fixes/Closes #N in the title or body. A blocked bead is closed with --force
+and the blocker is logged. The linked GitHub issue is closed too, because a
+squash merge often drops the keyword from the commit message and an open
+issue would make the daily sync reopen the bead.
+
 Pushing refs/dolt/data uses the dolt remote. When GITHUB_TOKEN and
 GITHUB_REPOSITORY are set, origin is pointed at that token before bootstrap.
 The token is never printed.
@@ -26,6 +32,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +48,12 @@ EXEMPT_LABEL = "beads:exempt"
 NOT_A_BEAD = frozenset({"apx-agent"})
 BEAD_ID = re.compile(
     r"(?<![A-Za-z0-9])apx-(?:merge-slot|[a-z0-9]{3,8}(?:\.[0-9]+)?)(?![A-Za-z0-9])"
+)
+# GitHub's closing keywords. Longer forms come first so "closes" is not read
+# as "close". The number has to follow on the same line; "fixed in #12" does not.
+_CLOSING_ISSUE = re.compile(
+    r"(?i)(?:^|[\s(])(?:closes|closed|close|fixes|fixed|fix|resolves|resolved|resolve)"
+    r":?[ \t]+(?:#(\d+)|https://github\.com/[^/\s]+/[^/\s]+/issues/(\d+))(?![A-Za-z0-9])"
 )
 _TOKEN = re.compile(r"x-access-token:[^@\s]+")
 PUSH_ATTEMPTS = 5
@@ -79,6 +92,14 @@ class IssueSnapshot:
 class IssueSync:
     bead_id: str
     outcome: str
+
+
+@dataclass(frozen=True)
+class PrSnapshot:
+    number: int
+    title: str
+    body: str
+    branch: str
 
 
 def redact(text: str) -> str:
@@ -275,6 +296,43 @@ def show_bead(cwd: Path, bead_id: str) -> dict[str, Any]:
     return row
 
 
+def blocking_ids(row: dict[str, Any]) -> list[str]:
+    """Open beads that block this one. Closed and non-blocking edges are omitted."""
+    if "dependencies" not in row:
+        return []
+    deps = row["dependencies"]
+    if not isinstance(deps, list):
+        return []
+    found: list[str] = []
+    for dep in deps:
+        if not isinstance(dep, dict):
+            continue
+        if "dependency_type" not in dep or dep["dependency_type"] != "blocks":
+            continue
+        if "status" not in dep or dep["status"] == "closed":
+            continue
+        if "id" not in dep or not isinstance(dep["id"], str) or dep["id"] == "":
+            continue
+        found.append(dep["id"])
+    return found
+
+
+def closing_issue_numbers(text: str) -> list[int]:
+    """Issue numbers a title or body closes, in order, without duplicates."""
+    found: list[int] = []
+    seen: set[int] = set()
+    for match in _CLOSING_ISSUE.finditer(text):
+        raw = match.group(1) if match.group(1) is not None else match.group(2)
+        if raw is None:
+            continue
+        number = int(raw)
+        if number in seen:
+            continue
+        seen.add(number)
+        found.append(number)
+    return found
+
+
 def close_bead(
     cwd: Path,
     bead_id: str,
@@ -285,13 +343,16 @@ def close_bead(
 ) -> str:
     """Close a bead. ``force`` overrides an assignee, pin, or open gate.
 
-    GitHub issue sync passes force because the issue state is the decision.
-    A merged pull request does not.
+    Issue sync and a merged pull request both pass force. The pull request
+    logs each open blocker before the forced close.
     """
     row = show_bead(cwd, bead_id)
     status = row["status"]
     if status == "closed":
         return "already-closed"
+    blockers = blocking_ids(row)
+    if force and blockers:
+        print(f"{bead_id} is blocked by [{', '.join(blockers)}]; closing with --force")
     if dry_run:
         return "would-close"
     cmd = [_bd(), "--sandbox", "close", bead_id, "--reason", reason]
@@ -584,6 +645,144 @@ def cmd_ensure_issue(args: argparse.Namespace) -> int:
     return 0
 
 
+def _repository() -> str:
+    if "GITHUB_REPOSITORY" not in os.environ:
+        return ""
+    return os.environ["GITHUB_REPOSITORY"]
+
+
+def snapshot_from_event_pr(pr: dict[str, Any]) -> PrSnapshot:
+    title = pr["title"]
+    head = pr["head"]
+    if not isinstance(title, str) or not isinstance(head, dict):
+        raise SystemExit("pull request title and head are required")
+    branch = head["ref"]
+    if not isinstance(branch, str):
+        raise SystemExit("pull request branch is not a string")
+    number = pr["number"]
+    if not isinstance(number, int):
+        raise SystemExit("pull request number is not an int")
+    body = _blank_body(pr["body"] if "body" in pr else None)
+    return PrSnapshot(number, title, body, branch)
+
+
+def linked_bead_ids(
+    cwd: Path,
+    title: str,
+    body: str,
+    branch: str,
+    repository: str,
+    numbers: list[int],
+) -> list[str]:
+    """Bead ids named on the PR, then the bead for each closing keyword."""
+    ids = referenced_bead_ids(title, body, branch)
+    if not numbers:
+        return ids
+    if repository == "":
+        print("GITHUB_REPOSITORY is unset; skipping Fixes/Closes bead lookup")
+        return ids
+    for number in numbers:
+        url = f"https://github.com/{repository}/issues/{number}"
+        bead_id = find_bead(cwd, url)
+        if bead_id is None:
+            print(f"issue #{number} has no bead")
+            continue
+        if bead_id not in ids:
+            ids.append(bead_id)
+    return ids
+
+
+def close_linked_issue(repository: str, number: int, note: str) -> str:
+    """Comment on and close a GitHub issue. Skip pull requests and closed issues."""
+    viewed = _run(
+        [
+            "gh",
+            "api",
+            f"repos/{repository}/issues/{number}",
+            "--jq",
+            "{state:.state,is_pr:(.pull_request != null)}",
+        ],
+        cwd=Path.cwd(),
+        check=True,
+    )
+    info = json.loads(viewed.stdout)
+    if not isinstance(info, dict):
+        raise SystemExit(f"issue #{number} lookup did not return an object")
+    if info["is_pr"] is True:
+        return "skipped-pull-request"
+    state = info["state"]
+    if not isinstance(state, str):
+        raise SystemExit(f"issue #{number} state is not a string")
+    if state.lower() != "open":
+        return "already-closed"
+    _run(
+        ["gh", "issue", "comment", str(number), "--repo", repository, "--body", note],
+        cwd=Path.cwd(),
+        check=True,
+    )
+    _run(
+        [
+            "gh",
+            "issue",
+            "close",
+            str(number),
+            "--repo",
+            repository,
+            "--reason",
+            "completed",
+        ],
+        cwd=Path.cwd(),
+        check=True,
+    )
+    return "closed"
+
+
+def issue_close_note(pr: PrSnapshot) -> str:
+    if pr.number == 0:
+        return f"Closed by a merged pull request: {pr.title}"
+    return f"Closed by merged PR #{pr.number}: {pr.title}"
+
+
+def close_pull_request(
+    cwd: Path,
+    pr: PrSnapshot,
+    repository: str,
+    reason: str,
+    *,
+    dry_run: bool,
+) -> bool:
+    """Close this PR's beads with --force, then close linked issues.
+
+    Return True when the hive changed.
+    """
+    numbers = closing_issue_numbers(f"{pr.title}\n{pr.body}")
+    bead_ids = linked_bead_ids(cwd, pr.title, pr.body, pr.branch, repository, numbers)
+    if not bead_ids and not numbers:
+        print(f"PR #{pr.number}: no bead id; nothing to close")
+        return False
+    changed = False
+    for bead_id in bead_ids:
+        outcome = close_bead(cwd, bead_id, reason, dry_run=dry_run, force=True)
+        print(f"{bead_id} {outcome}")
+        if outcome == "closed":
+            changed = True
+    note = issue_close_note(pr)
+    for number in numbers:
+        if repository == "":
+            print(f"issue #{number} not closed; GITHUB_REPOSITORY is unset")
+            continue
+        if dry_run:
+            print(f"would close issue #{number}")
+            continue
+        print(f"issue #{number} {close_linked_issue(repository, number, note)}")
+    return changed
+
+
+def _finish_closes(cwd: Path, changed: bool, *, dry_run: bool, no_push: bool) -> None:
+    if changed and not dry_run and not no_push:
+        push_with_retry(_subprocess_execute(cwd), time.sleep)
+
+
 def cmd_close_pr(args: argparse.Namespace) -> int:
     cwd = Path.cwd()
     if args.event != "":
@@ -593,36 +792,94 @@ def cmd_close_pr(args: argparse.Namespace) -> int:
         if merged is not True:
             print("pull request is not merged; nothing to close")
             return 0
-        title = pr["title"]
-        head = pr["head"]
-        if not isinstance(title, str) or not isinstance(head, dict):
-            raise SystemExit("pull request title and head are required")
-        branch = head["ref"]
-        if not isinstance(branch, str):
-            raise SystemExit("pull request branch is not a string")
-        body = _blank_body(pr["body"] if "body" in pr else None)
-        number = pr["number"]
-        if not isinstance(number, int):
-            raise SystemExit("pull request number is not an int")
-        reason = f"Merged PR #{number}"
+        snapshot = snapshot_from_event_pr(pr)
+        reason = f"Merged PR #{snapshot.number}"
     else:
-        title = args.title
-        body = Path(args.body_file).read_text(encoding="utf-8")
-        branch = args.branch
+        snapshot = PrSnapshot(
+            0,
+            args.title,
+            Path(args.body_file).read_text(encoding="utf-8"),
+            args.branch,
+        )
         reason = args.reason
-    bead_ids = referenced_bead_ids(title, body, branch)
-    if not bead_ids:
+    numbers = closing_issue_numbers(f"{snapshot.title}\n{snapshot.body}")
+    if not referenced_bead_ids(snapshot.title, snapshot.body, snapshot.branch) and not numbers:
         print("no bead id on the pull request; nothing to close")
         return 0
     ensure_database(cwd)
+    changed = close_pull_request(cwd, snapshot, _repository(), reason, dry_run=args.dry_run)
+    _finish_closes(cwd, changed, dry_run=args.dry_run, no_push=args.no_push)
+    return 0
+
+
+def parse_github_time(value: str) -> datetime:
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise SystemExit(f"mergedAt {value} has no timezone")
+    return parsed
+
+
+def select_recent_prs(payload: Any, *, within_hours: int, now: datetime) -> list[PrSnapshot]:
+    """Merged PRs from a ``gh pr list`` payload, newest window only.
+
+    ``within_hours`` of 0 keeps every row. A positive window drops a pull
+    request whose ``mergedAt`` is older than that, which is how the schedule
+    avoids replaying merges from earlier in the week.
+    """
+    if not isinstance(payload, list):
+        raise SystemExit("pull requests file is not a list")
+    if within_hours < 0:
+        raise SystemExit("within-hours must be >= 0")
+    cutoff = None if within_hours == 0 else now - timedelta(hours=within_hours)
+    selected: list[PrSnapshot] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            raise SystemExit("pull request row is not an object")
+        number = row["number"]
+        title = row["title"]
+        if not isinstance(number, int) or not isinstance(title, str) or title == "":
+            raise SystemExit("pull request number and title are required")
+        if "headRefName" not in row or not isinstance(row["headRefName"], str):
+            raise SystemExit("pull request headRefName is required")
+        merged_at: datetime | None = None
+        if "mergedAt" in row and row["mergedAt"] is not None:
+            if not isinstance(row["mergedAt"], str):
+                raise SystemExit("mergedAt is not a string")
+            merged_at = parse_github_time(row["mergedAt"])
+        if cutoff is not None and (merged_at is None or merged_at < cutoff):
+            continue
+        body = _blank_body(row["body"] if "body" in row else None)
+        selected.append(PrSnapshot(number, title, body, row["headRefName"]))
+    return selected
+
+
+def cmd_close_merged(args: argparse.Namespace) -> int:
+    cwd = Path.cwd()
+    with open(args.prs_file, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    prs = select_recent_prs(
+        payload,
+        within_hours=args.within_hours,
+        now=datetime.now(timezone.utc),
+    )
+    if not prs:
+        print("no merged pull requests in the window")
+        return 0
+    ensure_database(cwd)
+    repository = _repository()
     changed = False
-    for bead_id in bead_ids:
-        outcome = close_bead(cwd, bead_id, reason, dry_run=args.dry_run)
-        print(f"{bead_id} {outcome}")
-        if outcome == "closed":
+    for pr in prs:
+        if close_pull_request(
+            cwd,
+            pr,
+            repository,
+            f"Merged PR #{pr.number}",
+            dry_run=args.dry_run,
+        ):
             changed = True
-    if changed and not args.no_push:
-        push_with_retry(_subprocess_execute(cwd), time.sleep)
+    _finish_closes(cwd, changed, dry_run=args.dry_run, no_push=args.no_push)
     return 0
 
 
@@ -715,6 +972,13 @@ def _parser() -> argparse.ArgumentParser:
     close.add_argument("--dry-run", action="store_true")
     close.add_argument("--no-push", action="store_true")
     close.set_defaults(func=cmd_close_pr)
+
+    merged = sub.add_parser("close-merged")
+    merged.add_argument("--prs-file", required=True)
+    merged.add_argument("--within-hours", type=int, default=12)
+    merged.add_argument("--dry-run", action="store_true")
+    merged.add_argument("--no-push", action="store_true")
+    merged.set_defaults(func=cmd_close_merged)
 
     sync_issue = sub.add_parser("sync-issue")
     sync_issue.add_argument("--event", default="")
