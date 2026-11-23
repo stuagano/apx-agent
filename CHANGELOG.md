@@ -36,6 +36,9 @@ All notable changes to apx-agent. Format loosely follows
   runs on `durable_agent_server`. Memory retrieval changes from pgvector search to
   managed full-text search; the per-template tables and embedding settings are gone.
   An Agent Bricks memory pipeline can distill sessions into that memory.
+  The gallery scaffolds stay `tools: []`. The docs copies are the worked examples
+  and each declare one governed `sql` tool. `financial-reporting.yaml` is docs-only.
+  [`docs/coworkers/README.md`](docs/coworkers/README.md) records that split.
 
 - **Breaking: apx no longer extracts or consolidates memory; use an Agent Bricks
   memory pipeline (#858, ADR 0001).** `apx-agent memory extract`,
