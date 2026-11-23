@@ -58,11 +58,11 @@ _CLOSING_ISSUE = re.compile(
 )
 _TOKEN = re.compile(r"x-access-token:[^@\s]+")
 PUSH_ATTEMPTS = 5
-# Docs PR #1236 merged at 2026-11-23T16:49:41Z and names apx-e0i without
-# finishing that work. The first 12-hour backfill still covers that merge.
-# Ignore anything earlier than 17:00Z. Once the window starts later, this
-# floor no longer moves the cutoff.
-MERGE_SCAN_FLOOR = datetime(2026, 11, 23, 17, 0, tzinfo=timezone.utc)
+# Docs PR #1236 (2026-11-23T16:49:41Z) and the explanation on #1246
+# (2026-11-23T17:49:08Z) name the #911 bead without finishing that work.
+# Ignore merges before 17:50Z so the scheduled replay does not close it.
+# Once the 12-hour window starts later, this floor no longer moves the cutoff.
+MERGE_SCAN_FLOOR = datetime(2026, 11, 23, 17, 50, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)

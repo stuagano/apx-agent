@@ -7,8 +7,8 @@ name: beads merge
 # job: a squash commit often drops the keyword, and an issue left open would
 # make the daily sync reopen the bead. An exempt PR with no bead id and no
 # closing keyword is a no-op. An id that is already closed is left closed.
-# Merges before 2026-11-23 17:00Z stay out of the scan so #1236's docs
-# reference does not close apx-e0i.
+# Merges before 2026-11-23 17:50Z stay out of the scan so the #911 docs
+# reference is not replayed.
 #
 # GITHUB_TOKEN squash auto-merge does not emit pull_request or push.
 # pull_request_target is suppressed the same way, so it is not a fix. The
