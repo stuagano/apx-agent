@@ -1,0 +1,3 @@
+# Coworker specs
+
+The six names shared by this directory and `python/src/apx_agent/coworker_gallery/` are one coworker each. The gallery is what `apx-agent agents scaffold --coworker` copies: a skeleton with `tools: []`, so a new project does not invent a warehouse tool. The copies here are the worked examples. Each declares one governed `sql` tool (`warehouse_id: $WAREHOUSE_ID`) that runs under the caller's identity. Everything else in the pair — instructions, the template block, `memory: {type: managed}`, and `session: {type: managed}` — is the same text. `financial-reporting.yaml` is the docs-only example and is not in the gallery.
