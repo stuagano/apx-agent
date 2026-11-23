@@ -8,8 +8,9 @@ The served adapters seed the in-graph ``state`` channel from a conversation's
 - ``temp:`` — scratch; never persisted
 - ``user:`` / ``app:`` — partitioned here but **not** written to
   ConversationStore or managed memory. ``user:`` is managed memory (the
-  pipeline and the memory tools). ``app:`` is deploy-time config. A write or
-  a drop logs once per key (see docs/design/keyed-state-scopes.md)
+  pipeline and the memory tools). ``app:`` is deploy-time ``app_state``,
+  seeded on invoke; a runtime write is rejected. A drop logs once per key
+  (see docs/design/keyed-state-scopes.md)
 
 See docs/design/session-state-persistence.md.
 """
@@ -49,9 +50,9 @@ def note_unpersisted_scope(key: str) -> None:
         )
         return
     logger.warning(
-        "state key %s is not runtime state. app: values are agent config set "
-        "at deploy time (agent.toml or [tool.apx]); agents do not write them. "
-        "See docs/design/keyed-state-scopes.md (#1233).",
+        "state key %s is deploy-time app config, not runtime state. "
+        "Declare it with app_state; a runtime write is rejected and the key "
+        "is not stored. See docs/design/keyed-state-scopes.md.",
         key,
     )
 

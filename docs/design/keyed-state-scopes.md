@@ -1,6 +1,6 @@
 # Design: `user:` / `app:` keyed-state scopes (G3 phase 3)
 
-**Status:** decided 2026-11-23 — `user:` is managed memory; `app:` is deploy-time config ([#1233](https://github.com/stuagano/apx-agent/issues/1233)). Do not add a store. ·
+**Status:** decided 2026-11-23 — `user:` is managed memory; `app:` is deploy-time config ([#1233](https://github.com/stuagano/apx-agent/issues/1233)), declared as `app_state` and seeded into every invoke. Do not add a store. ·
 **Date:** 2026-06-25 (decisions 2026-10-21 and 2026-11-23) · **Source:** ADK gap audit (G3, #232) ·
 **Builds on:** [keyed-shared-state.md](keyed-shared-state.md) (phases 1–3 plan),
 [keyed-state-tool-access.md](keyed-state-tool-access.md) (tool read/write),
@@ -58,19 +58,62 @@ Pipeline behaviour is
 ### `app:` is deploy-time config
 
 `app:` (one value for every user of this agent) is agent config set at deploy
-time, for example in `agent.toml` or `[tool.apx]`. Agents do not write it at
-runtime. There is no shared runtime bucket, and this doc does not add one.
-[#1233](https://github.com/stuagano/apx-agent/issues/1233) tracks that decision.
+time. Agents do not write it at runtime. There is no shared runtime bucket and
+no Lakebase table.
+[#1233](https://github.com/stuagano/apx-agent/issues/1233) is that declaration
+and the seed into graph state.
 
-`{app:…}` templating is not seeded from that config today. `_render_template`
-in `_compile.py` substitutes `{app:key}` only when `state["app:key"]` is
-already in the in-graph dict. A missing key stays literal. The dict is filled
-by a tool write, `output_key`, domain input on the turn, or the same thread's
-checkpoint. `Agent`, `AgentConfig`, and `agent.toml` have no app-constant
-field. `agent.toml` is the Agent Bricks manifest (framework, server, stores,
-auth, tools). `[tool.apx]` is a fixed list of CLI keys. Seeding a new config
-table into every invoke path is a separate change, so this PR does not wire
-it and #1233 stays open.
+Declare it on the root agent. Keys may include the `app:` prefix or omit it;
+both forms become the same unprefixed name, and the graph sees `app:<key>`.
+Declaring the same name both ways is an error. Values are JSON: null, bool,
+number, string, array, or object.
+
+```python
+agent = Agent(
+    app_state={"flag": "on", "limits": {"max": 3}},
+    instructions="Feature flag is {app:flag}.",
+)
+```
+
+`agent.configure(app_state={...})` is the same declaration. A coworker YAML
+spec sets `app_state:` and `generate_project` writes it onto the root agent in
+`agent.py`. That is the config-file form: apx settings live on the Python
+agent (`docs/design/agent-toml-source-of-truth.md`). `agent.toml` is the Agent
+Bricks manifest (framework, server, stores, auth, tools). `[tool.apx]` is a
+fixed list of CLI keys, and `[tool.apx.agent]` is rejected. Neither file holds
+this table.
+
+Every compiled invoke seeds those keys into the initial `state` channel, and
+the declaration wins over a caller-supplied or checkpointed value for the same
+key:
+
+- ChatAgent `predict` and `predict_stream`
+- the durable host (`run_graph_turn`, including a composite's `session_keys`
+  load)
+- ResponsesAgent (non-streaming through `run_graph_turn`, streaming on its own
+  input)
+- composites, because they are that same root graph, so every step sees the
+  constants
+
+A fresh invoke of a checkpointed thread writes the declaration over any
+`app:` keys already in the checkpoint. An approval resume carries the
+declaration in the resume update. A recovery continuation replays the
+checkpointed invocation and does not seed again. The OpenAI-compat executor
+does not compile a graph, so it does not seed or render `{app:…}`.
+
+`_render_template` still substitutes `{app:key}` only when `state["app:key"]`
+is present. The seed is what puts it there. A missing key stays literal.
+
+A runtime write of an `app:` key is rejected. `Dependencies.State` raises
+`ValueError` after the once-per-key log, and the declared value stays.
+`output_key` cannot name an `app:` key. Persistence still drops `app:` keys
+from conversation and composite session snapshots and logs once per key. The
+next invoke seeds the declaration again. It is not read back from a store.
+
+`apx-agent doctor` adds an `App constants` row with the key names.
+`apx-agent agents describe` lists the same names, for a loaded agent and for
+a YAML spec. Values are omitted: a constant can be sensitive, and the key is
+the contract `{app:flag}` refers to.
 
 ### Host, and what a write does today
 
@@ -93,9 +136,11 @@ When a graph does put `user:x` or `app:x` in `state`:
   in the turn state is omitted from the snapshot, and `save_session_state`
   logs the same warning. The composite path does not use a graph checkpointer
   for those keys.
-- A tool write through `StateProxy`, or an `output_key` that itself starts
-  with `user:` or `app:`, logs the warning once per key per process. The
-  value is not copied into memory.
+- A tool write through `StateProxy` of a `user:` key logs the warning once
+  per key per process and stays in the graph for that turn. It is not copied
+  into memory. A write of an `app:` key raises `ValueError` and does not
+  change the seeded value. `output_key` may start with `user:` (same warning)
+  and may not start with `app:`.
 - A LangGraph checkpointer keeps the whole `state` channel for that thread,
   including prefixed keys, and does not strip `temp:`. The next thread does
   not see them.
@@ -138,7 +183,8 @@ at runtime, `user:` has no KV owner key, and there is no scoped delete.
 | Piece | State |
 |---|---|
 | `ApxState` channel, `_merge_state`, `output_key`, `{key}` templating including a `user:` / `app:` / `temp:` prefix | Live, in `_compile.py` |
-| `Dependencies.State` (`StateProxy`) | Live. A `user:` or `app:` write logs the warning |
+| `Dependencies.State` (`StateProxy`) | Live. A `user:` write logs the warning. An `app:` write raises and is not applied |
+| `app_state` on the root agent / YAML `app_state:` | Live. Seeded as `app:<key>` on ChatAgent, durable, Responses, and composite invokes. Doctor and `agents describe` list the key names, not the values |
 | `ConversationStore.set_session_state` | Live for one conversation |
 | `persist_session_state` | Helper only. Served adapters do not call it. When called, it writes unprefixed keys and warns on `user:` / `app:` |
 | Durable checkpointer | One thread. Keeps the `state` channel, prefixes included |
@@ -166,7 +212,9 @@ have since moved. Those citations are removed. Do not implement that proposal.
 
 - A Lakebase table, `ConversationStore` scoped methods, or an automatic copy
   of ADK state into memory.
-- Seeding `{app:…}` from `agent.toml` / `[tool.apx]` (left on #1233).
+- Putting `app_state` in `agent.toml` or `[tool.apx]`. Those files are the
+  Agent Bricks manifest and the CLI key list. The declaration is `app_state`
+  on the agent.
 - TTLs, size caps, and scoped-key deletion.
 - Typed `output_key` values ([typed output contracts](../agents/llm-agent.md#typed-output),
   #835) do not extend these scopes.

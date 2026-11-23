@@ -1445,6 +1445,9 @@ def compile_to_responses_agent(
                     stream_input: Any = Command(resume=resume)
                 else:
                     stream_input = {"messages": graph_input}
+                from ._app_state import graph_input_with_app_state  # noqa: PLC0415
+
+                stream_input = graph_input_with_app_state(_agent, stream_input)
                 # Combined stream: "messages" surfaces LLM token chunks (emitted
                 # as response.output_text.delta for true word-by-word streaming),
                 # "updates" surfaces completed graph steps (kept as the existing

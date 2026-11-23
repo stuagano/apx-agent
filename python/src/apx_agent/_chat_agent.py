@@ -891,15 +891,19 @@ def chat_agent_for(
                 resume = _resume_decision(custom_inputs) if lg_config else None
                 if resume is not None:
                     set_audit_attrs(span, approval_decision=str(resume))
+                    from langgraph.types import Command  # noqa: PLC0415
+
+                    graph_input: Any = Command(resume=resume)
+                else:
+                    graph_input = {"messages": lc_input}
+                from ._app_state import graph_input_with_app_state  # noqa: PLC0415
+
+                graph_input = graph_input_with_app_state(self._agent, graph_input)
                 with safe_span("graph.invoke", span_type="CHAIN") as inv_span:
-                    if resume is not None:
-                        from langgraph.types import Command  # noqa: PLC0415
-                        result = graph.invoke(Command(resume=resume), config=lg_config)
-                    else:
-                        result = graph.invoke(
-                            {"messages": lc_input},
-                            **({"config": lg_config} if lg_config else {}),
-                        )
+                    result = graph.invoke(
+                        graph_input,
+                        **({"config": lg_config} if lg_config else {}),
+                    )
                     set_audit_attrs(
                         inv_span,
                         model_input_messages=input_count,
@@ -1060,6 +1064,9 @@ def chat_agent_for(
                     stream_input: Any = Command(resume=resume)
                 else:
                     stream_input = {"messages": lc_input}
+                from ._app_state import graph_input_with_app_state  # noqa: PLC0415
+
+                stream_input = graph_input_with_app_state(self._agent, stream_input)
 
                 # stream_mode="updates" yields {node_name: {"messages": [...new...]}}
                 # per node completion — same pattern Rand's shortage_intel uses.

@@ -26,10 +26,14 @@ All notable changes to apx-agent. Format loosely follows
 - **`user:` state is managed memory; `app:` is deploy-time config (#947, #1233).**
   Cross-session preferences go through the Agent Bricks memory pipeline (about
   every 24h, or a manual run) and the memory tools (`remember` / `recall`).
-  They are search, not a key get. `app:` values belong in agent config such as
-  `agent.toml` or `[tool.apx]`; agents do not write them at runtime, and
-  `{app:…}` is not seeded from that config. A `user:` or `app:` key written
-  into graph state is left out of conversation and composite session
+  They are search, not a key get. `app:` values are `app_state` on the root
+  agent (or `app_state:` in a coworker YAML spec, written onto `agent.py`).
+  `agent.toml` and `[tool.apx]` do not hold them. Every ChatAgent, durable,
+  Responses, and composite invoke seeds `app:<key>`, and `{app:key}` renders
+  for every principal and session. A runtime write raises `ValueError` and
+  does not replace the declared value. `apx-agent doctor` and
+  `apx-agent agents describe` list the key names and not the values. A `user:`
+  or `app:` key is still left out of conversation and composite session
   persistence, and the process logs that once per key. See
   [keyed-state-scopes.md](docs/design/keyed-state-scopes.md).
 

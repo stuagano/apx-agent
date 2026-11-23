@@ -12,6 +12,7 @@ from collections.abc import Iterator, MutableMapping
 from copy import deepcopy
 from typing import Any
 
+from ._app_state import reject_app_write
 from ._native_input import NATIVE_ARTIFACTS_KEY
 from ._session_state import note_unpersisted_scope
 
@@ -39,12 +40,14 @@ class StateProxy(MutableMapping[str, Any]):
     def __setitem__(self, key: str, value: Any) -> None:
         if key == NATIVE_ARTIFACTS_KEY:
             raise ValueError("Native artifact state is reserved for the framework")
+        reject_app_write(key)
         note_unpersisted_scope(key)
         self._writes[key] = value
 
     def __delitem__(self, key: str) -> None:
         if key == NATIVE_ARTIFACTS_KEY:
             raise ValueError("Native artifact state is reserved for the framework")
+        reject_app_write(key)
         # Deletion is recorded as a write of None (the reducer can't remove a
         # key; this is the closest in-graph semantic). Documented limitation.
         if key not in self._source and key not in self._writes:

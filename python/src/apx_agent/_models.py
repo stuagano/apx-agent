@@ -859,6 +859,24 @@ class AgentConfig(BaseModel):
     example: ExampleBackendConfig | None = None
     """Declarative example backend — see ``example=``."""
 
+    app_state: dict[str, Any] = Field(default_factory=dict)
+    """Deploy-time constants seeded as ``app:<key>`` on every invoke (#1233).
+
+    Keys may be written with or without the ``app:`` prefix. Values are JSON
+    scalars or nested arrays and objects. A coworker YAML spec sets this as
+    ``app_state:``; ``generate_project`` writes it onto the root agent.
+    ``agent.toml`` and ``[tool.apx]`` do not hold it.
+    """
+
+    @field_validator("app_state", mode="before")
+    @classmethod
+    def _normalize_app_state(cls, value: Any) -> Any:
+        if value is None:
+            return {}
+        from ._app_state import normalize_app_state
+
+        return normalize_app_state(value)
+
     session: SessionBackendConfig | None = None
     """Declarative session backend — see ``session=``.
 

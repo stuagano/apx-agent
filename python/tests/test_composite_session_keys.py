@@ -108,7 +108,7 @@ def test_save_warns_when_a_scoped_key_is_omitted(caplog):
     with caplog.at_level(logging.WARNING, logger="apx_agent._session_state"):
         save_session_state(store, "t1", ("intake",), {"intake": {"n": 1}, "app:flag": "on"})
     assert "app:flag" in caplog.text
-    assert "#1233" in caplog.text
+    assert "app_state" in caplog.text
     [item] = next(iter(store.items.values()))
     assert item["state"] == {"intake": {"n": 1}}
 
