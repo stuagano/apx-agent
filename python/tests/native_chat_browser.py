@@ -920,12 +920,14 @@ def test_native_eval_runs_a_case_over_the_durable_contract():
 
     html = _render_eval_landing([{"question": "Price our HYSA", "expected_judge": "gives options"}],
                                 "evals.json", None, native=True)
+    vendor = Path(__file__).resolve().parents[1] / "src/apx_agent/_static/vendor"
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE"))
         page = browser.new_page()
         errors, posts, judged = [], [], []
         page.on("pageerror", lambda error: errors.append(str(error)))
         polls = {"n": 0}
+        aligned = {"runs": []}
 
         def route(req):
             url, method = req.request.url, req.request.method
@@ -943,6 +945,20 @@ def test_native_eval_runs_a_case_over_the_durable_contract():
                 req.fulfill(json={"ok": True, "pass": True, "verdict": "PASS", "reason": "lists options"})
             elif url.endswith("/_apx/eval/data"):
                 req.fulfill(json={"ok": True})
+            elif "/_apx/vendor/eval-landing.js" in url:
+                req.fulfill(content_type="application/javascript", body=(vendor / "eval-landing.js").read_text())
+            elif "/_apx/vendor/judge-alignment.js" in url:
+                req.fulfill(content_type="application/javascript", body=(vendor / "judge-alignment.js").read_text())
+            elif "/_apx/eval/label-history" in url:
+                req.fulfill(json={"ok": True, "runs": aligned["runs"]})
+            elif url.endswith("/_apx/eval/label-align") and method == "POST":
+                aligned["runs"] = [{
+                    "start_time": "2026-11-23T15:04:05",
+                    "judge_name": "quality",
+                    "guidelines": ["Be grounded."],
+                    "trace_count": 2,
+                }]
+                req.fulfill(json={"ok": True, "guidelines": ["Be grounded."], "trace_count": 2})
             elif url.endswith("/"):
                 req.fulfill(content_type="text/html", body=html)
             else:
@@ -950,8 +966,14 @@ def test_native_eval_runs_a_case_over_the_durable_contract():
 
         page.route("**/*", route)
         page.goto("http://localhost/")
+        expect(page.locator("#la-history")).to_contain_text("No alignments yet.")
         page.get_by_role("button", name="Run", exact=True).first.click()
         expect(page.locator(".badge-pass")).to_be_visible(timeout=10000)
+        page.locator("#la-judge").fill("quality")
+        page.locator("#la-align-btn").click()
+        expect(page.locator("#la-status")).to_contain_text("Aligned on 2 traces")
+        expect(page.locator("#la-history")).to_contain_text("Judge aligned 1 time")
+        expect(page.locator("#la-history")).to_contain_text("Be grounded.")
         assert errors == []
         assert posts[0]["input"] == {"messages": [{"role": "user", "content": "Price our HYSA"}]}
         uuid.UUID(posts[0]["session_id"])

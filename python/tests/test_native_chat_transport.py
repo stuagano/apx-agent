@@ -202,7 +202,11 @@ def test_free_text_entry_with_typed_steps_keeps_eval(execution, monkeypatch, tmp
     with TestClient(app) as client:
         page = client.get("/_apx/eval")
         assert page.status_code == 200, page.text
-        assert "/api/invocations" in page.text  # cases run over the durable contract
+        # The durable contract lives in the eval script the page loads, not in the HTML.
+        assert 'src="/_apx/vendor/eval-landing.js"' in page.text
+        assert "window.__APX_EVAL_NATIVE__ = true;" in page.text
+        script = client.get("/_apx/vendor/eval-landing.js")
+        assert script.status_code == 200 and "/api/invocations" in script.text
         assert client.post("/_apx/eval/judge", json={}).status_code == 422  # mounted, validates
 
 

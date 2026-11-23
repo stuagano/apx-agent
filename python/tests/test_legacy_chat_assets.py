@@ -28,6 +28,8 @@ CHAT_JS = (
     "native-chat.js",
     "root-chat.js",
     "dev-shell.js",
+    "eval-landing.js",
+    "judge-alignment.js",
 )
 SCRIPT = '<script src="/_apx/vendor/legacy-chat-history.js"></script>'
 PRELUDE_TAG = '<script src="/_apx/vendor/legacy-chat-prelude.js"></script>'
@@ -107,6 +109,10 @@ def test_built_wheel_contains_history_asset(tmp_path):
     assert b"fetch('/invocations'" in shipped["root-chat.js"]
     assert b'function selectTab(slug)' in shipped["dev-shell.js"]
     assert b'document.getElementById("dash-frame")' in shipped["dev-shell.js"]
+    assert b"async function runCase(" in shipped["eval-landing.js"]
+    assert b"let rows = window.__APX_EVAL_ROWS__" in shipped["eval-landing.js"]
+    assert b"async function labelAlign()" in shipped["judge-alignment.js"]
+    assert b"function renderAlignHistory(" in shipped["judge-alignment.js"]
 
 
 _TAB_DOM = r"""
