@@ -103,7 +103,8 @@ issue closes the bead whose external_ref is the issue URL, and reopening the
 issue reopens that bead. A daily sync imports any open issue that sync missed
 and reconciles beads whose GitHub issues are already closed or reopened.
 Merging the pull request closes the referenced bead and pushes
-`refs/dolt/data`. Never delete a closed bead.
+`refs/dolt/data`. That close passes `--force` only when every open blocker
+is an intake-hold gate. Never delete a closed bead.
 
 ## Domain Notes
 

@@ -368,6 +368,84 @@ def test_closing_keywords_find_issue_numbers() -> None:
     assert beads.closing_issue_numbers("prefixFixes #3") == []
 
 
+def test_only_intake_hold_gates_force_a_merge_close() -> None:
+    gate = {
+        "issue_type": "gate",
+        "status": "open",
+        "dependency_type": "blocks",
+        "description": "Ad-hoc gate blocking apx-n0o\n\nReason: intake-hold: external report, never work",
+    }
+    closed_gate = {
+        "issue_type": "gate",
+        "status": "closed",
+        "dependency_type": "blocks",
+        "description": "Reason: intake-hold: external report, never work",
+    }
+    tracked = {
+        "issue_type": "task",
+        "status": "open",
+        "dependency_type": "tracks",
+        "description": "Reason: intake-hold: external report, never work",
+    }
+    task = {
+        "issue_type": "task",
+        "status": "open",
+        "dependency_type": "blocks",
+        "description": "still open work",
+    }
+    assert beads.only_intake_hold_blockers([gate, tracked, closed_gate]) is True
+    assert beads.only_intake_hold_blockers([gate, task]) is False
+    assert beads.only_intake_hold_blockers([tracked]) is False
+    assert beads.only_intake_hold_blockers([]) is False
+
+
+def test_merge_close_force_reads_show_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        beads,
+        "show_bead",
+        lambda _cwd, _bead_id: {
+            "status": "open",
+            "dependencies": [
+                {
+                    "id": "apx-abl",
+                    "issue_type": "gate",
+                    "status": "open",
+                    "dependency_type": "blocks",
+                    "description": "Reason: intake-hold: external report, never work",
+                }
+            ],
+        },
+    )
+    assert beads.merge_close_force(Path("."), "apx-n0o") is True
+
+
+def test_close_pull_request_forces_an_intake_hold_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(beads, "merge_close_force", lambda _cwd, _bead_id: True)
+    seen: dict[str, bool] = {}
+
+    def fake_close(
+        _cwd: Path,
+        bead_id: str,
+        reason: str,
+        *,
+        dry_run: bool,
+        force: bool = False,
+    ) -> str:
+        del bead_id, reason, dry_run
+        seen["force"] = force
+        return "closed"
+
+    monkeypatch.setattr(beads, "close_bead", fake_close)
+    pr = beads.PrSnapshot(
+        1234,
+        "Move eval assets",
+        "apx-n0o",
+        "cursor/apx-n0o-eval-judge-assets-bdd3",
+    )
+    assert beads.close_pull_request(Path("."), pr, "", "Merged PR #1234", dry_run=False) is True
+    assert seen["force"] is True
+
+
 def test_blocking_ids_keep_open_block_edges() -> None:
     row = {
         "dependencies": [
@@ -418,6 +496,7 @@ def test_fixes_keyword_closes_the_issue_bead_when_the_title_has_no_id(
         return None
 
     monkeypatch.setattr(beads, "find_bead", fake_find)
+    monkeypatch.setattr(beads, "merge_close_force", lambda _cwd, _bead_id: False)
     seen: dict[str, str | bool] = {}
 
     def fake_close(
@@ -457,7 +536,7 @@ def test_fixes_keyword_closes_the_issue_bead_when_the_title_has_no_id(
     )
     assert changed is True
     assert seen["bead_id"] == "apx-pry"
-    assert seen["force"] is True
+    assert seen["force"] is False
     assert seen["reason"] == "Merged PR #1242"
     assert notes == [
         (
@@ -486,11 +565,39 @@ def test_select_recent_prs_drops_merges_outside_the_window() -> None:
                 "headRefName": "cursor/apx-gar-caller-identity-blocker-50f5",
                 "mergedAt": "2026-11-23T02:59:53Z",
             },
+            {
+                "number": 1236,
+                "title": "docs: name the UI step",
+                "body": "Refs #911\napx-e0i",
+                "headRefName": "cursor/unity-gateway-guardrail-docs-8a76",
+                "mergedAt": "2026-11-23T16:49:41Z",
+            },
         ],
         within_hours=12,
         now=now,
     )
     assert [pr.number for pr in rows] == [1242]
+    later = beads.select_recent_prs(
+        [
+            {
+                "number": 1300,
+                "title": "later work",
+                "body": "",
+                "headRefName": "cursor/later-work",
+                "mergedAt": "2026-11-24T02:00:00Z",
+            },
+            {
+                "number": 1299,
+                "title": "just outside",
+                "body": "",
+                "headRefName": "cursor/just-outside",
+                "mergedAt": "2026-11-23T23:30:00Z",
+            },
+        ],
+        within_hours=12,
+        now=datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc),
+    )
+    assert [pr.number for pr in later] == [1300]
     assert rows[0].body == "Fixes #1233"
     with pytest.raises(SystemExit, match="within-hours"):
         beads.select_recent_prs([], within_hours=-1, now=now)
