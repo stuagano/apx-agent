@@ -1,3 +1,6 @@
+import logging
+
+from apx_agent._session_state import _warned_scoped_keys
 from apx_agent._state_proxy import StateProxy
 
 
@@ -38,6 +41,20 @@ def test_missing_key_raises_keyerror():
     import pytest
     with pytest.raises(KeyError):
         _ = p["nope"]
+
+
+def test_scoped_write_warns_once(caplog):
+    _warned_scoped_keys.clear()
+    proxy = StateProxy({})
+    with caplog.at_level(logging.WARNING, logger="apx_agent._session_state"):
+        proxy["user:pref"] = "en"
+        proxy["keep"] = 1
+    assert proxy.delta == {"user:pref": "en", "keep": 1}
+    assert "user:pref" in caplog.text
+    assert "recall" in caplog.text
+    caplog.clear()
+    proxy["user:pref"] = "fr"
+    assert caplog.records == []
 
 
 def test_none_source_behaves_as_empty():

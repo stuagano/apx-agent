@@ -38,6 +38,10 @@ def load_session_state(client: Any, thread_id: str, keys: tuple[str, ...]) -> di
 
 def save_session_state(client: Any, thread_id: str, keys: tuple[str, ...], state: dict[str, Any]) -> None:
     """Append a snapshot of the allow-listed keys; compact past MAX_SNAPSHOTS."""
+    from ._session_state import note_unpersisted_scope
+
+    for key in state:
+        note_unpersisted_scope(str(key))
     session = _session(client, thread_id)
     item = {"type": _ITEM_TYPE, "state": {k: state[k] for k in keys if k in state}}
     if len(_snapshots(client, session)) >= MAX_SNAPSHOTS:

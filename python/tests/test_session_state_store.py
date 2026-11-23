@@ -1,7 +1,15 @@
+import logging
+
 import pytest
 
 from apx_agent._conversation import InMemoryConversationStore
-from apx_agent._session_state import partition_state, persistable_state, persist_session_state
+from apx_agent._session_state import (
+    _warned_scoped_keys,
+    note_unpersisted_scope,
+    partition_state,
+    persistable_state,
+    persist_session_state,
+)
 
 
 def _store_with_conv(cid: str = "c1") -> InMemoryConversationStore:
@@ -72,6 +80,31 @@ def test_persist_session_state_noops_without_conv_id():
     store = _store_with_conv()
     persist_session_state(store, None, {"x": 1})  # must not raise
     assert store.get_conversation("c1").session_state == {}
+
+
+def test_persist_session_state_warns_once_when_scoped_keys_are_dropped(caplog):
+    """#947: user:/app: are dropped, and the author hears it once per key."""
+    _warned_scoped_keys.clear()
+    store = _store_with_conv()
+    state = {"keep": 1, "user:pref": "en", "app:flag": "on", "temp:scratch": 2}
+    with caplog.at_level(logging.WARNING, logger="apx_agent._session_state"):
+        persist_session_state(store, "c1", state)
+    assert store.get_conversation("c1").session_state == {"keep": 1}
+    assert "user:pref" in caplog.text
+    assert "remember" in caplog.text
+    assert "app:flag" in caplog.text
+    assert "#1233" in caplog.text
+    caplog.clear()
+    persist_session_state(store, "c1", state)
+    assert caplog.records == []
+
+
+def test_note_unpersisted_scope_ignores_session_and_temp_keys(caplog):
+    _warned_scoped_keys.clear()
+    with caplog.at_level(logging.WARNING, logger="apx_agent._session_state"):
+        note_unpersisted_scope("keep")
+        note_unpersisted_scope("temp:scratch")
+    assert caplog.records == []
 
 
 def test_persist_session_state_swallows_backend_error():

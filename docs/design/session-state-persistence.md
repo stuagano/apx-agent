@@ -7,8 +7,9 @@
 > ConversationStore, so it does not implement this surface. See
 > [managed-state-contract-map.md](managed-state-contract-map.md).
 >
-> **#947:** `persistable_state` writes only unprefixed keys. `user:` / `app:`
-> are not session-scoped and are not stored here.
+> **#947 (decided 2026-11-23):** `persistable_state` writes only unprefixed
+> keys. `user:` is managed memory; `app:` is deploy-time config. See
+> [keyed-state-scopes.md](keyed-state-scopes.md).
 >
 > **Historical note (#332):** this design documents three backends — in-memory,
 > Delta (`_conversation_delta.py`), and Lakebase. The Delta backend was
@@ -21,8 +22,8 @@ phase makes session-scoped state **survive across turns** of a conversation, so 
 value a tool or `output_key` wrote in turn 1 is readable in turn 2.
 
 In-graph state ↔ `Conversation.session_state`, through a **governed** store
-method. `user:`/`app:` scopes remain [phase 3](keyed-state-scopes.md); they
-are not written through this mutator.
+method. `user:` and `app:` are not written through this mutator; see
+[keyed-state-scopes.md](keyed-state-scopes.md) (decided 2026-11-23).
 
 ---
 
@@ -109,7 +110,8 @@ Persist only when there is a conversation (skip the sessionless path).
 The only scope prefix this phase introduces. `temp:foo` is readable and writable
 in-graph for the duration of the turn (it lives in the `state` channel like any
 key) but is stripped before persistence — an author's "scratch, don't store this"
-escape hatch. `user:` / `app:` scopes (cross-session, cross-user) stay phase 3.
+escape hatch. `user:` and `app:` are not stored here; the 2026-11-23 decision
+is in [keyed-state-scopes.md](keyed-state-scopes.md).
 
 ### 5. Constraints / edges
 
@@ -140,7 +142,9 @@ escape hatch. `user:` / `app:` scopes (cross-session, cross-user) stay phase 3.
 
 ## Out of scope
 
-- `user:` / `app:` scope prefixes and their stores — phase 3.
+- `user:` / `app:` scope prefixes and their stores — decided in
+  [keyed-state-scopes.md](keyed-state-scopes.md) (2026-11-23): memory and
+  deploy-time config, not a new table.
 - Per-key persistence policy beyond `temp:` (e.g. TTLs, size caps).
 - Seeding/persisting on the bare `LangGraphExecutor` path (it has no conversation
   handle; the served adapters are the persistence surface).

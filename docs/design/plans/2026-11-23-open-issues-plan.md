@@ -40,7 +40,7 @@ Scheduled "Post-merge CI" runs in 6–13 seconds and are not the pytest gate. Th
 | [#856](https://github.com/stuagano/apx-agent/issues/856) | SDK adapter shipped. One live code remains: unsupported-service. | S | a workspace that returns `FEATURE_DISABLED` |
 | [#864](https://github.com/stuagano/apx-agent/issues/864) | Four of six live items have records. Two are blocked. Do not delete the custom runtime. | L | second principal; AgentKit has no cancel route |
 | [#862](https://github.com/stuagano/apx-agent/issues/862) | Umbrella. Keep open. Do not implement as one PR. | — | children |
-| [#947](https://github.com/stuagano/apx-agent/issues/947) | Decided: managed stores do not cover this. Do not build a Lakebase table. | L if a store is chosen | no managed KV |
+| [#947](https://github.com/stuagano/apx-agent/issues/947) | Decided 2026-11-23: `user:` is the memory pipeline plus the memory tools. `app:` is deploy-time config ([#1233](https://github.com/stuagano/apx-agent/issues/1233)). No store. | S, docs and a drop warning | no |
 | [#1146](https://github.com/stuagano/apx-agent/issues/1146) | Still rejected by agentbricks 0.10.0. | S once the flag flips | `SANDBOX_DOWNSCOPE_ENABLED = False` |
 | [#575](https://github.com/stuagano/apx-agent/issues/575) | Still Beta. Do not build. | L at GA | GA gates still false |
 
@@ -80,7 +80,7 @@ Not parallel with each other on the same disposable app. They can be parallel wi
 - **#1146** until `databricks_agentkit.runtime.tool_manifest.SANDBOX_DOWNSCOPE_ENABLED` is `True` in the locked agentbricks.
 - **#575** until the Agent Services limitations list drops runtime invocation, null `owner` / `full_name`, and Global Search. A Catalog Explorer paragraph added since the August gate check does not flip the gate.
 - **#911 attachment** (issue steps 1 and 2) until External policies can be attached and read back through REST or Terraform. The docs on 2026-11-18 still say UI only.
-- **#947** until there is a managed key-value store that is not the session checkpointer and not memory recall, or Stuart explicitly chooses a custom table. A custom table fights #862. Do not extend `ConversationStore`.
+- **#947** is decided (2026-11-23). `user:` is the memory pipeline and the memory tools, as soft preference memory, not a key-value store. `app:` is deploy-time config and stays on [#1233](https://github.com/stuagano/apx-agent/issues/1233); `{app:…}` is not seeded from `agent.toml` / `[tool.apx]` in this pass. Do not extend `ConversationStore`. Do not add a Lakebase table.
 
 ### Wave 4 — tracker only
 
@@ -389,17 +389,19 @@ The chosen design (additive mirror on `agents advertise`, keep `main.apx.agent_r
 
 ### #947 — `user:` / `app:` keyed state
 
-**Current state.** `docs/design/keyed-state-scopes.md` (decision 2026-10-21) answers the issue's "check first": managed session stores are one thread, managed memory is recall, and `ConversationStore.session_state` is one conversation. None of those are `user:` (this principal, across sessions) or `app:` (every user of this agent). The doc says do not add `get_scoped_state` / `set_scoped_state` on `ConversationStore`, and do not seed them from ChatAgent. That host is the compatibility path #864 is keeping, not the durable host.
+**Current state.** Decided 2026-11-23, recorded in `docs/design/keyed-state-scopes.md`. The 2026-10-21 check still holds: managed session stores are one thread, managed memory is recall, and `ConversationStore.session_state` is one conversation. None of those is an exact `user:` / `app:` key-value store. Do not add `get_scoped_state` / `set_scoped_state`, and do not seed scopes from ChatAgent. Phase 3's host is the durable session store. `session_keys` are unprefixed keys for one session; `_agents.py` rejects `user:` / `app:` on them.
 
-In-graph templating for `{user:…}` / `{app:…}` / `{temp:…}` exists (`_compile.py`, `_TEMPLATE_KEY`). `partition_state` drops `user:` and `app:` from conversation `set_session_state`. There is still no cross-session bucket. Durable composites persist unprefixed `session_keys` through the managed session store (`_durable_agent.py`); those keys are one session, and `_agents.py` rejects `user:` / `app:` prefixes on `session_keys`.
+`user:` is the Agent Bricks memory pipeline (distilled about every 24h, or on a manual run) plus the memory tools for an immediate save. Reads go through `recall` / search, not a key get. Author steps are in `docs/running/sessions-and-memory.md`. Writing `state["user:…"]` does not enter memory.
 
-The design doc's "phase 2 is unwired" table points at `_chat_agent.py` line numbers from October. Do not implement phase 3 by wiring that adapter. Re-read the seed path before touching it; the line numbers have moved.
+`app:` is agent config set at deploy time (`agent.toml`, `[tool.apx]`), not runtime state. Agents do not write it. `{app:…}` renders only when that key is already in the in-graph state dict; nothing seeds it from config. That seed is left on [#1233](https://github.com/stuagano/apx-agent/issues/1233).
 
-**Proposed approach.** Leave the issue open and blocked. Do not add a Lakebase table (ADR 0001, #862). The only in-repo change worth making before a store exists is a short correction to `keyed-state-scopes.md`: phase 3's host is the durable session store, not ChatAgent, and `session_keys` are not `user:` / `app:`. That doc fix can ride with any other docs PR; it does not implement the feature.
+In-graph templating for `{user:…}` / `{app:…}` / `{temp:…}` exists (`_compile.py`, `_TEMPLATE_KEY`). `partition_state` drops `user:` and `app:` from conversation `set_session_state`. A tool write, an `output_key` with that prefix, and those persistence drops log a one-time warning that points at the docs.
 
-**Depends on.** A Databricks KV that is not memory and not a checkpointer, or an explicit decision to keep a custom table. #855 does not unblock this.
+**Proposed approach.** Close #947 on the doc, the warning, and the author guidance. Do not add a Lakebase table (ADR 0001, #862). Leave #1233 open until `app:` config is either seeded into initial state or the issue is closed on the documentation alone.
 
-**Verify.** Not until a store is chosen. The test, when that happens, is: write `user:pref` in session A, read it back in session B for the same principal, and show a second principal does not see it; write `app:` and show both principals see it. No such test should be skipped in the meantime.
+**Depends on.** Nothing further for `user:`. #1233 is independent. #855 does not unblock either.
+
+**Verify.** The warning tests: a `user:` / `app:` key dropped by `persist_session_state` or omitted by `save_session_state` logs once and is not written back as session state. No exact cross-session key round-trip, because that store is not being built.
 
 ---
 
@@ -407,7 +409,7 @@ The design doc's "phase 2 is unwired" table points at `_chat_agent.py` line numb
 
 ### #862 — platform-first tracker
 
-**Current state.** The 2026-10-06 file table and the 2026-10-07 / 2026-10-13 comments are behind `main`. Several children the comments still list as open are closed: #868 (lifecycle, via #871), #863 (App Space declaration and deploy; the live idle/wake proof failed on a `zoneinfo` error and was explicitly not rescheduled), #870, #860, #858 (memory extraction removed, #1189). TypeScript Gateway chat (#869) is moot if the TypeScript runtime stayed retired (#873). This plan's open children inside the 19 are #864, #855, #856, #575, and #947. #815, #816, and #755 are still named by #864 and are not in this set.
+**Current state.** The 2026-10-06 file table and the 2026-10-07 / 2026-10-13 comments are behind `main`. Several children the comments still list as open are closed: #868 (lifecycle, via #871), #863 (App Space declaration and deploy; the live idle/wake proof failed on a `zoneinfo` error and was explicitly not rescheduled), #870, #860, #858 (memory extraction removed, #1189). TypeScript Gateway chat (#869) is moot if the TypeScript runtime stayed retired (#873). This plan's open children inside the 19 are #864, #855, #856, and #575. #947 was decided on 2026-11-23 (`user:` is memory; `app:` moved to #1233). #815, #816, and #755 are still named by #864 and are not in this set.
 
 `_memory_managed.py`, `_durable_agent.py`, and the Lakebase modules are in the keep/replace table. Nothing in this plan authorizes deleting a KEEP or KEEP COMPATIBILITY row.
 
@@ -425,4 +427,4 @@ The design doc's "phase 2 is unwired" table points at `_chat_agent.py` line numb
 2. One PR for the #1141 tool-list note (S).
 3. One PR for the #1207 contract test and the `--no-warmup` paragraph (S). Schedule the live re-run separately; do not block the test PR on it.
 4. One PR for #981, starting with a single example so the lockfile fix is proven before the rest are relocked (M).
-5. Leave #1052 and the #911 `ASK` mapping as the next two independent PRs. Do not start #864, #947, #1146, or #575.
+5. Leave #1052 and the #911 `ASK` mapping as the next two independent PRs. Do not start #864, #1146, or #575. #947 is the memory-pipeline decision, not a store.

@@ -275,7 +275,9 @@ methods **stripped** from the omniagents copy. That is intentional.
 - Persist `persistable_state(final)` through
   `ConversationStore.set_session_state`.
 - Keys starting `temp:` are scratch and never written. `user:` / `app:`
-  are also excluded from `set_session_state` (#947).
+  are also excluded from `set_session_state`. Decided 2026-11-23:
+  `user:` is managed memory and `app:` is deploy-time config
+  ([keyed-state-scopes.md](keyed-state-scopes.md)).
 - Persist is never fatal.
 
 On the native durable path the graph checkpointer already stores channel
