@@ -347,8 +347,10 @@ The probe prints JSON with SDK versions, workspace, timestamp, observed error,
 and `verified`. It exits nonzero for successful/absent reads, an unexpected code,
 or the wrong failure scenario. `UNAUTHENTICATED` is not proof of store permission
 denial; a missing store or route is not proof of unsupported service. No stores,
-entries, or permissions are changed, and no memory content is printed. See the
-[2026-11-20 evidence and remaining blocker](../design/managed-state-contract-map.md#failure-path-probe-2026-11-20).
+entries, or permissions are changed, and no memory content is printed. The
+[2026-11-20 evidence](../design/managed-state-contract-map.md#failure-path-probe-2026-11-20)
+records a live `PERMISSION_DENIED` from `ManagedMemoryStore.get`. Unsupported
+service remains unverified and stays on #856, not #859.
 
 ### Memory retention
 
