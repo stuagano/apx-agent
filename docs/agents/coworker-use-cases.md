@@ -101,7 +101,10 @@ pair of landed systems plus a one-paragraph persona, not a new agent class.
 Each use case below has a **runnable declaration** under
 [`docs/coworkers/`](../coworkers/) — a complete YAML spec grounded on a governed
 `sql` tool (bound to a warehouse, run under per-call user identity so UC grants
-apply). Point it at your schema, set the env vars, and it serves.
+apply). Point it at your schema, set the env vars, and it serves. The packaged
+gallery (`python/src/apx_agent/coworker_gallery/`) is the scaffold skeleton and
+leaves `tools: []`; these docs copies are the worked examples. See
+[`docs/coworkers/README.md`](../coworkers/README.md).
 
 **The pattern:** the join key is a business entity (employee, deal, asset,
 shipment, encounter), each system is authoritative for half the record, and the
