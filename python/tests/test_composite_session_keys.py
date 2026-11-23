@@ -97,6 +97,22 @@ class _FakeSessions:
         self.items[session.session_id] = []
 
 
+def test_save_warns_when_a_scoped_key_is_omitted(caplog):
+    import logging
+
+    from apx_agent._composite_session import save_session_state
+    from apx_agent._session_state import _warned_scoped_keys
+
+    _warned_scoped_keys.clear()
+    store = _FakeSessions()
+    with caplog.at_level(logging.WARNING, logger="apx_agent._session_state"):
+        save_session_state(store, "t1", ("intake",), {"intake": {"n": 1}, "app:flag": "on"})
+    assert "app:flag" in caplog.text
+    assert "#1233" in caplog.text
+    [item] = next(iter(store.items.values()))
+    assert item["state"] == {"intake": {"n": 1}}
+
+
 def test_snapshot_round_trip_keeps_only_listed_keys():
     from apx_agent._composite_session import load_session_state, save_session_state
     store = _FakeSessions()

@@ -259,6 +259,6 @@ bodies still stop at `6cdcff86` (2026-10-06).
 | #575 | Wait | UC Agent Services GA |
 | #909 | Agent Bricks forces `agent-bricks-*` | MCP `mcp-` discovery; workaround is App Space `apps_api` |
 | #911 | Doctor names services that need a UI guardrail check | Attachment is UI-only |
-| #946 / #947 | #947: templating + partition shipped; ConversationStore scoped methods rejected | #946 TS vs Python client; #947 durable `user:`/`app:` backend |
+| #946 / #947 | #947 decided 2026-11-23: `user:` is managed memory; `app:` is deploy-time config (#1233). No scoped store | #946 TS vs Python client |
 | #954 | Checks, deploy, doctor, native launcher, and `config_from_agent` read Python constructor settings when there is no `AgentConfig` | `[tool.apx.agent]` remains valid until sub-project 3 removes it |
 | #836 | `session_budget={"usd": D}` on served turns, priced from usage metadata | Live billing vs published FMAPI list prices |

@@ -102,8 +102,10 @@ Model ADK's four scopes by **key prefix**, dispatched on read/write:
 | `app:` | all users of this agent | an app-scoped store |
 | `temp:` | this invocation only | the in-graph `state` channel; never persisted |
 
-`temp:` works with phase 1 alone (in-graph only). The other three require
-persistence, which depends on §5.
+`temp:` works with phase 1 alone (in-graph only). Session persistence is §5.
+The `user:` and `app:` rows above are the original sketch. The 2026-11-23
+decision is in [keyed-state-scopes.md](keyed-state-scopes.md): `user:` is
+managed memory, and `app:` is deploy-time config.
 
 ### 5. The `session_state` mutator (later phase — governed write)
 
@@ -111,7 +113,8 @@ To persist session-scoped state, restore a **governed** `set_session_state` on
 `ConversationStore` (it was deliberately stripped). This is a write to a
 governed surface, so — consistent with the OKF/UC-write principle in this repo —
 it should be an explicit, audited store method, not an implicit side effect.
-`user:`/`app:` scopes need their own stores; scope them as a follow-up.
+`user:` and `app:` are not given stores here. See
+[keyed-state-scopes.md](keyed-state-scopes.md).
 
 ---
 
@@ -124,8 +127,10 @@ it should be an explicit, audited store method, not an implicit side effect.
    backend.
 2. **Phase 2 — session persistence.** Governed `set_session_state` mutator +
    default (session) scope reads/writes through `Conversation.session_state`.
-3. **Phase 3 — user/app scopes.** Principal- and app-scoped stores; full prefix
-   dispatch.
+3. **Phase 3 — user/app scopes.** Decided 2026-11-23 in
+   [keyed-state-scopes.md](keyed-state-scopes.md): `user:` is managed memory;
+   `app:` is deploy-time config ([#1233](https://github.com/stuagano/apx-agent/issues/1233)).
+   Do not add a scoped store.
 
 Recommend shipping **Phase 1 alone first** and validating the ergonomics before
 committing to the persistence surface.

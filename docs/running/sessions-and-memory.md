@@ -416,6 +416,27 @@ agentbricks memory pipeline create \
 `memory.extract_every_n_turns` were removed (ADR 0001). A config that still
 sets one fails to load with the command above.
 
+### Cross-session per-user preferences
+
+A preference that should follow one person across sessions is managed memory
+under that person's actor. Declare both stores on the agent
+(`memory={"type": "managed"}` and `session={"type": "managed"}`), then:
+
+1. Describe the preferences in the pipeline `--instructions` file (language,
+   notification channel, standing constraints) and what to skip.
+   `--trigger scheduled` distills about every 24 hours. Leave the trigger at
+   `manual` and run `agentbricks memory pipeline run <name>` for a pass now.
+2. When the agent must keep something on this turn, give it the memory tools
+   (`remember`, `recall`, `forget` from `make_memory_tools`, or the tools a
+   declared `memory=` wires). `remember` writes immediately. A later turn
+   reads with `recall`, or auto-recall adds a `### Relevant memories` block.
+   Both are search over text, not a get by key.
+
+`state["user:…"]` does not save a preference. Conversation persistence drops
+that prefix, and a checkpoint on one thread is not the next session. `app:`
+values are deploy-time agent config, not a runtime write. See
+[keyed-state-scopes.md](../design/keyed-state-scopes.md).
+
 ### Migrating Lakebase memory
 
 `inventory_memory_table` and `import_memories` in `apx_agent._state_migration`

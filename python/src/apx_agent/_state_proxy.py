@@ -13,6 +13,7 @@ from copy import deepcopy
 from typing import Any
 
 from ._native_input import NATIVE_ARTIFACTS_KEY
+from ._session_state import note_unpersisted_scope
 
 
 class StateProxy(MutableMapping[str, Any]):
@@ -38,6 +39,7 @@ class StateProxy(MutableMapping[str, Any]):
     def __setitem__(self, key: str, value: Any) -> None:
         if key == NATIVE_ARTIFACTS_KEY:
             raise ValueError("Native artifact state is reserved for the framework")
+        note_unpersisted_scope(key)
         self._writes[key] = value
 
     def __delitem__(self, key: str) -> None:

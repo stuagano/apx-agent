@@ -122,6 +122,22 @@ async def test_before_and_after_callbacks_fire() -> None:
 
 
 @pytest.mark.asyncio
+async def test_output_key_with_user_prefix_warns(caplog) -> None:
+    import logging
+
+    from apx_agent._session_state import _warned_scoped_keys
+
+    _warned_scoped_keys.clear()
+    fake = _FakeRunnable(reply="en")
+    graph = _wrap_agent_node(_agent(output_key="user:pref"), fake, templated=False)
+    with caplog.at_level(logging.WARNING, logger="apx_agent._session_state"):
+        out = await graph.ainvoke({"messages": [HumanMessage(content="lang")]})
+    assert out["state"]["user:pref"] == "en"
+    assert "user:pref" in caplog.text
+    assert "remember" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_output_key_writes_final_text_to_state() -> None:
     fake = _FakeRunnable(reply="42 customers")
     graph = _wrap_agent_node(_agent(output_key="facts"), fake, templated=False)

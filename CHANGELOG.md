@@ -6,6 +6,16 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **`user:` state is managed memory; `app:` is deploy-time config (#947, #1233).**
+  Cross-session preferences go through the Agent Bricks memory pipeline (about
+  every 24h, or a manual run) and the memory tools (`remember` / `recall`).
+  They are search, not a key get. `app:` values belong in agent config such as
+  `agent.toml` or `[tool.apx]`; agents do not write them at runtime, and
+  `{app:…}` is not seeded from that config. A `user:` or `app:` key written
+  into graph state is left out of conversation and composite session
+  persistence, and the process logs that once per key. See
+  [keyed-state-scopes.md](docs/design/keyed-state-scopes.md).
+
 - **The financial-reporting coworker example uses managed stores.** The spec in `docs/agents/financial-reporting-coworker.md` matches `docs/coworkers/financial-reporting.yaml`: `memory` and `session` are `type: managed`.
 
 - **Chat calls send a `databricks-*` foundation endpoint as its Unity Catalog

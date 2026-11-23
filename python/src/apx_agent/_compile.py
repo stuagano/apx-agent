@@ -1646,6 +1646,9 @@ def _wrap_agent_node(agent: LlmAgent, runnable: Any, *, templated: bool, escalat
             artifacts[agent._output_key or logical_name or agent._name or "agent"] = deepcopy(native_part)
             merged_state[NATIVE_ARTIFACTS_KEY] = artifacts
         if agent._output_key:
+            from ._session_state import note_unpersisted_scope
+
+            note_unpersisted_scope(agent._output_key)
             merged_state[agent._output_key] = deepcopy(payload) if step_path or native_part is not None else payload
         if merged_state:
             update["state"] = merged_state
