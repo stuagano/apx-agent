@@ -67,19 +67,19 @@ Actions:
 
 **For comprehensive Genie guidance, use the `databricks-genie` skill.**
 
-Use `manage_genie` with actions:
-- `create_or_update` - Create or update a Genie Space
-- `get` - Get Genie Space details
-- `list` - List all Genie Spaces
-- `delete` - Delete a Genie Space
-- `export` / `import` - For migration
+This MCP server has no Genie tools. Declare Genie Spaces as code and manage
+them with `apx-agent resources genie-space`:
+- `pull <space-id> FILE` - Export a live space to a config file
+- `validate FILE` - Check the file offline
+- `plan FILE` - Show create / update (with a diff) / noop
+- `push FILE [--warehouse ID]` - Create, update or promote the space (never deletes)
 
 See `databricks-genie` skill for:
 - Table inspection workflow
 - Sample question best practices
 - Curation (instructions, certified queries)
 
-**IMPORTANT**: There is NO system table for Genie spaces (e.g., `system.ai.genie_spaces` does not exist). Use `manage_genie(action="list")` to find spaces.
+**IMPORTANT**: There is NO system table for Genie spaces (e.g., `system.ai.genie_spaces` does not exist). Find a space's ID in the Genie UI URL, under `deployments` in its config file, or with the SDK's `WorkspaceClient().genie.list_spaces()`. Pass that ID as `genie_space_id` below.
 
 ### Supervisor Agent Tool
 

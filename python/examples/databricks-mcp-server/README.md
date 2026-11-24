@@ -135,12 +135,10 @@ Claude now has both:
 
 ### Genie Spaces
 
-| Tool | Description |
-|------|-------------|
-| `create_or_update_genie` | Create or update a Genie Space for SQL-based data exploration |
-| `get_genie` | Get Genie Space details by space ID |
-| `find_genie_by_name` | Find Genie Space by name, returns space ID |
-| `delete_genie` | Delete a Genie Space |
+This server has no Genie tools. Manage Genie spaces as code with
+`apx-agent resources genie-space validate|pull|plan|push` (see
+[docs/deploy/genie-agents-as-code.md](../../../docs/deploy/genie-agents-as-code.md)),
+and query them from an agent with `apx_agent.genie_tool` / `genie_query_tool`.
 
 ### Supervisor Agent (MAS)
 

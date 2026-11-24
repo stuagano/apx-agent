@@ -179,12 +179,6 @@ def vector_search_schema(workspace_client: WorkspaceClient, test_catalog: str) -
 
 
 @pytest.fixture(scope="module")
-def genie_schema(workspace_client: WorkspaceClient, test_catalog: str) -> Generator[str, None, None]:
-    """Schema for Genie tests."""
-    yield from _create_test_schema(workspace_client, test_catalog, SCHEMAS["genie"])
-
-
-@pytest.fixture(scope="module")
 def dashboards_schema(workspace_client: WorkspaceClient, test_catalog: str) -> Generator[str, None, None]:
     """Schema for dashboard tests."""
     yield from _create_test_schema(workspace_client, test_catalog, SCHEMAS["dashboards"])
@@ -322,26 +316,6 @@ def cleanup_dashboards() -> Generator[Callable[[str], None], None, None]:
             logger.info(f"Cleaned up dashboard: {did}")
         except Exception as e:
             logger.warning(f"Failed to cleanup dashboard {did}: {e}")
-
-
-@pytest.fixture(scope="function")
-def cleanup_genie_spaces() -> Generator[Callable[[str], None], None, None]:
-    """Register Genie spaces for cleanup after test."""
-    from databricks_mcp_server.tools.genie import manage_genie
-
-    spaces_to_cleanup = []
-
-    def register(space_id: str):
-        spaces_to_cleanup.append(space_id)
-
-    yield register
-
-    for sid in spaces_to_cleanup:
-        try:
-            manage_genie(action="delete", space_id=sid)
-            logger.info(f"Cleaned up Genie space: {sid}")
-        except Exception as e:
-            logger.warning(f"Failed to cleanup Genie space {sid}: {e}")
 
 
 @pytest.fixture(scope="function")
