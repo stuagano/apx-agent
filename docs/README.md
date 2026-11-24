@@ -25,6 +25,7 @@
 
 - [running/prompt-registry.md](running/prompt-registry.md) — upstream prompt bindings, pinned versions loaded at startup, and preservation across project regeneration
 
+- [running/eval-datasets.md](running/eval-datasets.md) — build Unity Catalog eval datasets from files and labeled traces, score them by name, and record the digest on the run
 - [running/runtime-targets.md](running/runtime-targets.md) — compile targets, compatibility reports, and native durable host limits
 - [running/endpoint-loadtest.md](running/endpoint-loadtest.md) — `agentbricks endpoint loadtest` against a durable `/api/invocations` host
 - [running/agentbricks-cli-changelog.md](running/agentbricks-cli-changelog.md) — changelog for every published `databricks-agentbricks` release

@@ -155,6 +155,13 @@ class AuditAttrs:
     MODEL_VERSION = "apx.model_version"
     GIT_SHA = "apx.git_sha"
 
+    # The evaluation dataset an eval run scored (#1247): the UC name or file
+    # the caller passed, the dataset id (or path), and MLflow's digest.
+    # Eval-run tags only, never agent traces.
+    EVAL_DATASET_KEY = "apx.eval_dataset.key"
+    EVAL_DATASET_URI = "apx.eval_dataset.uri"
+    EVAL_DATASET_VERSION = "apx.eval_dataset.version"
+
     # Prompt Registry pins (#1245). Stamped from the version comment in
     # agent.toml after startup loads that exact version. Comma-joined when
     # more than one prompt is pinned, in key order.

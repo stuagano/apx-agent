@@ -30,6 +30,8 @@ from ._audit import AuditAttrs
 
 # kind -> (key, uri, version) tag names. A kind missing here cannot be recorded.
 _TAG_KEYS: dict[str, tuple[str, str, str]] = {
+    # The dataset an eval run scored. Eval runs only (_eval_datasets.record_eval_dataset).
+    "eval_dataset": (AuditAttrs.EVAL_DATASET_KEY, AuditAttrs.EVAL_DATASET_URI, AuditAttrs.EVAL_DATASET_VERSION),
     "prompt": (AuditAttrs.PROMPT_KEY, AuditAttrs.PROMPT_URI, AuditAttrs.PROMPT_VERSION),
 }
 

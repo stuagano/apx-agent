@@ -20,6 +20,8 @@ apx-agent supervisor add --app my-agent-app --supervisor sa-12345
 apx-agent uc mcp-config --host https://workspace.cloud.databricks.com
 apx-agent eval run evalset.jsonl --model databricks-claude-sonnet-4-6
 apx-agent eval run chain-cases.json --fixtures  # typed step checks using recorded tool results
+apx-agent eval dataset add main.evals.support evalset.jsonl --from-traces --labeled  # build a UC eval dataset
+apx-agent eval run main.evals.support  # score a UC eval dataset; the run records its digest
 apx-agent eval sweep evalset.jsonl --model endpoint-a --model endpoint-b  # compare quality, latency, estimated LLM cost
 apx-agent agents logs --app my-app --profile prod   # Databricks Apps logs (via the CLI)
 apx-agent agents describe                   # introspect tools, sub-agents, declared resources
