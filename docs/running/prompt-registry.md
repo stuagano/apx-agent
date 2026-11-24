@@ -84,7 +84,43 @@ Every agent trace is tagged `apx.prompt.key`, `apx.prompt.uri`, and
 pinned). The root span also carries MLflow's native `mlflow.linkedPrompts`
 trace tag, so the MLflow UI links the trace to the prompt version. See
 [Resolved artifact versions](tracing.md#resolved-artifact-versions).
-`evaluate` sets the `apx.prompt.*` tags on the MLflow eval run.
+
+## Evals record the versions they scored
+
+`evaluate` and `eval_against_endpoint` record the pinned versions on the MLflow
+eval run. Each run gets the `apx.prompt.*` tags. Each prompt version is also
+linked to the run with MLflow's `MlflowClient.link_prompt_version_to_run`,
+which writes the run's `mlflow.linkedPrompts` tag. On Unity Catalog it also
+records the registry's prompt-to-run link. If an MLflow run is already active,
+the tags and links go on that run and it stays open. Otherwise APX opens a run,
+`mlflow.genai.evaluate` reuses it, and APX closes it. When nothing is pinned,
+APX opens no run. A failed link fails the eval before any row is scored.
+
+`evaluate` compiles the agent in-process, so the run records what that agent
+loaded. `eval_against_endpoint` scores a deployed App. It loads the pins in
+`./agent.toml` with the same checks: a missing or unauthorized pin fails before
+any request is sent. The run records those pins, so run it from the checkout
+the App was deployed from. The App's own traces carry the versions it loaded
+at startup.
+
+For a judge whose instructions live in the Prompt Registry, build it with
+`pinned_judge`:
+
+```python
+from apx_agent import evaluate, pinned_judge
+
+tone = pinned_judge("tone", "prompts:/main.judges.tone/3", model="databricks")
+evaluate(agent, model="databricks-claude-sonnet-4-6", evalset=rows, scorers=[tone])
+```
+
+`pinned_judge` loads that exact version and checks the version number. It
+passes the text to `mlflow.genai.judges.make_judge`, and passes any other
+keyword arguments through. An `@alias` or a URI with no version raises. The
+eval run records the judge as `apx.judge_prompt.key` (the judge name),
+`apx.judge_prompt.uri`, and `apx.judge_prompt.version`, and links the version
+like an agent prompt. Judge prompts go on eval runs only, never on agent
+traces. A judge you build yourself from `make_judge(instructions=...)` has no
+registry version, so nothing records it.
 
 Startup fails when the pin cannot be loaded. The error names the key, the
 URI, and the exception. The loading identity needs `USE SCHEMA`, `EXECUTE`,

@@ -25,6 +25,8 @@ import subprocess as _subprocess
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from ._resolved_versions import ResolvedVersion, resolved_versions, tag_run
+
 if TYPE_CHECKING:
     from ._agents import BaseAgent
 
@@ -361,20 +363,67 @@ def clears_scorers(
     return scorers
 
 
-def _open_prompt_eval_run(mlflow: Any, tags: dict[str, str]) -> bool:
-    """Put prompt pins on the eval run evaluate will reuse.
+# id(judge) -> (judge, version). The judge is held so its id is not reused.
+# ponytail: judges are few and live as long as the process; nothing evicts them.
+_JUDGE_PROMPTS: dict[int, tuple[Any, ResolvedVersion]] = {}
 
-    ``mlflow.genai.evaluate`` keeps an already active run, so tags set here
-    land on that run. Returns whether this function opened the run and must
-    close it.
+
+def pinned_judge(
+    name: str,
+    uri: str,
+    *,
+    model: str | None = None,
+    loader: Callable[[str], Any] | None = None,
+    **judge_kwargs: Any,
+) -> Any:
+    """``mlflow.genai.judges.make_judge`` with instructions from a pinned Prompt Registry version.
+
+    ``uri`` must be an exact ``prompts:/catalog.schema.name/<version>``; an
+    ``@alias`` raises. ``evaluate`` and ``eval_against_endpoint`` record the
+    version on their run as ``apx.judge_prompt.key`` (the judge name) /
+    ``.uri`` / ``.version`` and link it with MLflow's native prompt-to-run
+    link. ``loader`` replaces ``mlflow.genai.load_prompt`` in tests. Other
+    keyword arguments go to ``make_judge``.
     """
-    if not tags:
-        return False
+    from mlflow.genai.judges import make_judge
+
+    from ._prompt_pins import load_prompt_uri
+
+    loaded = load_prompt_uri(name, uri, loader=loader)
+    if model is not None:
+        judge_kwargs["model"] = model
+    judge = make_judge(name=name, instructions=loaded.template, **judge_kwargs)
+    version = ResolvedVersion(kind="judge_prompt", key=name, name=loaded.name, uri=loaded.uri, version=str(loaded.version))
+    _JUDGE_PROMPTS[id(judge)] = (judge, version)
+    return judge
+
+
+def _judge_versions(scorers: list[Any]) -> list[ResolvedVersion]:
+    """Pinned prompt versions behind the ``pinned_judge`` judges in ``scorers``."""
+    found: list[ResolvedVersion] = []
+    for scorer in scorers:
+        entry = _JUDGE_PROMPTS.get(id(scorer))
+        if entry is not None:
+            found.append(entry[1])
+    return found
+
+
+def _evaluate_versioned(mlflow: Any, versions: list[ResolvedVersion], **evaluate_kwargs: Any) -> Any:
+    """``mlflow.genai.evaluate`` inside a run that records ``versions``.
+
+    ``mlflow.genai.evaluate`` keeps an already active run, so tags and prompt
+    links set first land on the eval run. A run opened here is closed here.
+    """
+    if not versions:
+        return mlflow.genai.evaluate(**evaluate_kwargs)  # type: ignore[attr-defined]
     opened = mlflow.active_run() is None
-    if opened:
-        mlflow.start_run()
-    mlflow.set_tags(tags)
-    return opened
+    run = mlflow.start_run() if opened else mlflow.active_run()
+    try:
+        tag_run(run.info.run_id, versions)
+        return mlflow.genai.evaluate(**evaluate_kwargs)  # type: ignore[attr-defined]
+    finally:
+        if opened:
+            mlflow.end_run()
 
 
 def evaluate(
@@ -456,10 +505,9 @@ def evaluate(
 
     from pathlib import Path
 
-    from ._prompt_pins import apply_pinned_prompts, loaded_prompts, prompt_run_tags
+    from ._prompt_pins import apply_pinned_prompts
 
     apply_pinned_prompts(agent, Path.cwd())
-    prompt_tags = prompt_run_tags(loaded_prompts(agent))
     chat_agent = compile_to_chat_agent(agent, model=model)
 
     custom_inputs: dict[str, Any] | None = None
@@ -486,17 +534,14 @@ def evaluate(
         return _extract_response_text(response)
 
     eval_scorers = scorers if scorers is not None else _default_scorers(judge_model)
-    opened_run = _open_prompt_eval_run(mlflow, prompt_tags)
-    try:
-        return mlflow.genai.evaluate(  # type: ignore[attr-defined]
-            data=_normalize_evalset(evalset),
-            predict_fn=_predict,
-            scorers=eval_scorers,
-            **mlflow_kwargs,
-        )
-    finally:
-        if opened_run:
-            mlflow.end_run()
+    return _evaluate_versioned(
+        mlflow,
+        resolved_versions() + _judge_versions(eval_scorers),
+        data=_normalize_evalset(evalset),
+        predict_fn=_predict,
+        scorers=eval_scorers,
+        **mlflow_kwargs,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +741,11 @@ def eval_against_endpoint(
         timeout: Per-request timeout in seconds (default 300).
         **mlflow_kwargs: Forwarded verbatim to ``mlflow.genai.evaluate``.
 
+    Version pins in ``./agent.toml`` are loaded with the checks
+    :func:`evaluate` uses and recorded on the eval run, together with any
+    :func:`pinned_judge` versions in ``scorers``. They are the pins this
+    checkout declares; the deployed App must have been deployed from it.
+
     Requires ``mlflow`` (the ``eval`` extra). Does NOT require the
     ``langgraph`` extra — there's no in-process compile.
     """
@@ -723,9 +773,17 @@ def eval_against_endpoint(
         timeout=timeout,
     )
 
-    eval_scorers = scorers if scorers is not None else _default_scorers()
+    from pathlib import Path
 
-    return mlflow.genai.evaluate(  # type: ignore[attr-defined]
+    from ._prompt_pins import load_pinned_prompts
+
+    # The App loaded its pins at its own startup. These are the pins in the
+    # local agent.toml, loaded with the same checks so the run records them.
+    load_pinned_prompts(Path.cwd())
+    eval_scorers = scorers if scorers is not None else _default_scorers()
+    return _evaluate_versioned(
+        mlflow,
+        resolved_versions() + _judge_versions(eval_scorers),
         data=evalset,
         predict_fn=predict_fn,
         scorers=eval_scorers,

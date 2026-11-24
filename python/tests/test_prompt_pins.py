@@ -301,16 +301,16 @@ def test_evaluate_tags_the_run_with_the_loaded_pin(tmp_path: Path, monkeypatch: 
          patch("mlflow.genai.evaluate", fake_eval), \
          patch("mlflow.active_run", return_value=None), \
          patch("mlflow.start_run") as started, \
-         patch("mlflow.set_tags") as set_tags, \
+         patch("apx_agent._eval.tag_run") as tag_run, \
          patch("mlflow.end_run") as ended:
         assert evaluate(agent, model="m", evalset=[{"request": "hi"}], scorers=[]) == "ok"
     assert agent._instructions == "text for prompts:/main.prompts.writer/7"
     started.assert_called_once()
-    set_tags.assert_called_once_with({
-        "apx.prompt.key": "writer",
-        "apx.prompt.uri": "prompts:/main.prompts.writer/7",
-        "apx.prompt.version": "7",
-    })
+    run_id, versions = tag_run.call_args.args
+    assert run_id is started.return_value.info.run_id
+    assert [(version.kind, version.key, version.uri, version.version) for version in versions] == [
+        ("prompt", "writer", "prompts:/main.prompts.writer/7", "7"),
+    ]
     ended.assert_called_once()
     fake_eval.assert_called_once()
 

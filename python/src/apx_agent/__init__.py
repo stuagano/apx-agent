@@ -90,6 +90,7 @@ from ._eval import (
     endpoint_predict_fn,
     eval_against_endpoint,
     evaluate,
+    pinned_judge,
 )
 
 from ._eval_sweep import SweepResult, evaluate_sweep
@@ -517,6 +518,7 @@ __all__ = [
     "eval_against_endpoint",
     "evaluate",
     "evaluate_sweep",
+    "pinned_judge",
     "SweepResult",
     # Tool factories
     "genie_one_tool",
