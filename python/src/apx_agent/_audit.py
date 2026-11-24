@@ -25,8 +25,10 @@ Where attributes get set:
     stamps ``apx.outbound.trace_id``; the served routes stamp
     ``apx.traceparent`` / ``apx.caller`` / ``apx.outbound.trace_id`` from
     those headers, so A's and B's traces join on one tag equality.
-  * Prompt pins (#1245) — ``apx.prompt.key`` / ``apx.prompt.uri`` /
-    ``apx.prompt.version`` from the version comment loaded at startup.
+  * Resolved artifact versions (#1245, #1247) — ``apx.prompt.key`` /
+    ``apx.prompt.uri`` / ``apx.prompt.version`` for the Prompt Registry pins
+    loaded at startup, stamped by ``_resolved_versions.stamp_resolved_versions``
+    on every AGENT span with MLflow's own ``mlflow.linkedPrompts`` trace tag.
 
 The schema is intentionally narrow: audit attributes describe *what
 happened* (operation, identity, scope, decision) without logging raw
@@ -299,24 +301,6 @@ def stamp_version_correlation(span: Any) -> None:
     for key, value in attrs.items():
         set_span_attribute(span, key, value)
     set_trace_tags(attrs)
-
-
-def stamp_pinned_prompts(span: Any) -> None:
-    """Stamp pinned Prompt Registry identity on the current trace (#1245).
-
-    Sets ``apx.prompt.key`` / ``apx.prompt.uri`` / ``apx.prompt.version`` when
-    startup loaded at least one version pin. No pin → no-op. Applied with
-    ``stamp_version_correlation`` on every AGENT-typed span.
-    """
-    from ._prompt_pins import current_prompt_tags
-
-    tags = current_prompt_tags()
-    if not tags:
-        return
-    if span is not None:
-        for key, value in tags.items():
-            set_span_attribute(span, key, value)
-    set_trace_tags(tags)
 
 
 # ---------------------------------------------------------------------------
