@@ -105,7 +105,6 @@ from .tools import (  # noqa: F401, E402
     serving,
     unity_catalog,
     volume_files,
-    genie,
     manifest,
     vector_search,
     lakebase,

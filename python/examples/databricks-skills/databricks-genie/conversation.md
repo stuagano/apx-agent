@@ -1,239 +1,122 @@
-# Genie Conversations
+# Querying Genie Spaces
 
-Use the Genie Conversation API to ask natural language questions to a curated Genie Space.
+Give an apx-agent agent a tool that asks a Genie Space questions through the
+Genie Conversation API. Genie writes the SQL using the space's curated
+instructions and certified queries, so the agent does not have to.
 
-## Overview
+## When to Use a Genie tool
 
-The `ask_genie` tool allows you to programmatically send questions to a Genie Space and receive SQL-generated answers. Instead of writing SQL directly, you delegate the query generation to Genie, which has been curated with business logic, instructions, and certified queries.
-
-## When to Use `ask_genie`
-
-### Use `ask_genie` When:
+### Use Genie When:
 
 | Scenario | Why |
 |----------|-----|
-| Genie Space has curated business logic | Genie knows rules like "active customer = ordered in 90 days" |
-| User explicitly says "ask Genie" or "use my Genie Space" | User intent to use their curated space |
-| Complex business metrics with specific definitions | Genie has certified queries for official metrics |
-| Testing a Genie Space after creating it | Validate the space works correctly |
-| User wants conversational data exploration | Genie handles context for follow-up questions |
+| The space has curated business logic | Genie knows rules like "active customer = ordered in 90 days" |
+| The user asks to use their Genie Space | Their curated space is the source of truth |
+| Business metrics with official definitions | Genie has certified queries for them |
+| Conversational exploration with follow-ups | Genie keeps the context of earlier questions |
 
-### Use Direct SQL (`execute_sql`) Instead When:
+### Use Direct SQL (`sql_tool`) Instead When:
 
 | Scenario | Why |
 |----------|-----|
-| Simple ad-hoc query | Direct SQL is faster, no curation needed |
-| You already have the exact SQL | No need for Genie to regenerate |
-| Genie Space doesn't exist for this data | Can't use Genie without a space |
-| Need precise control over the query | Direct SQL gives exact control |
+| Simple ad-hoc query, or the SQL is already known | No curation needed |
+| No Genie Space covers the data | Genie needs a space |
+| You need exact control over the query | Direct SQL runs what you write |
 
-## MCP Tools
+## The tools
 
-| Tool | Purpose |
-|------|---------|
-| `ask_genie` | Ask a question or follow-up (`conversation_id` optional) |
-
-## Basic Usage
-
-### Ask a Question
+| Factory | Returns | Use for |
+|---------|---------|---------|
+| `genie_tool(space_id)` | Genie's text answer (`str`) | Narrative answers ("which region sold most?") |
+| `genie_query_tool(space_id, max_rows=20)` | `{question, sql_results, result_count, genie_response, generated_sql}`, or `{error, question}` | Steps that need the rows or the SQL |
+| `genie_one_tool()` | The finished Genie One answer | Workspace-wide Genie, not one space |
 
 ```python
-ask_genie(
-    space_id="01abc123...",
-    question="What were total sales last month?"
+from apx_agent import Agent, genie_tool, genie_query_tool
+
+agent = Agent(
+    instructions="Answer sales questions with the Sales Genie Space.",
+    tools=[
+        genie_tool("<space-id>", description="Ask the Sales Genie Space a question."),
+        genie_query_tool("<space-id>", name="query_sales_rows", max_rows=50),
+    ],
 )
 ```
 
-**Response:**
-```python
-{
-    "question": "What were total sales last month?",
-    "conversation_id": "conv_xyz789",
-    "message_id": "msg_123",
-    "status": "COMPLETED",
-    "sql": "SELECT SUM(total_amount) AS total_sales FROM orders WHERE order_date >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL 1 MONTH) AND order_date < DATE_TRUNC('month', CURRENT_DATE)",
-    "columns": ["total_sales"],
-    "data": [[125430.50]],
-    "row_count": 1
-}
+The model sees one parameter, `question: str`. The workspace client comes from
+the incoming request, so Genie runs as the calling user (OBO). Each tool
+declares the `genie_space` resource (and the `genie` user scope) for deploy.
+Give each tool a distinct `name` and `description` when an
+agent uses more than one space.
+
+## Follow-ups
+
+Within one apx session (the `thread_id` / `session_id` the turn runs under),
+each tool keeps one Genie conversation per space. Later questions in the
+session continue it, so "and last year?" keeps its context. Different sessions
+never share a conversation. A turn with no session starts a new conversation
+for every question. If the stored conversation is gone, the tool starts a new
+one.
+
+Turn follow-ups off per tool with `genie_tool(space_id, follow_ups=False)`.
+
+## Cleanup
+
+apx deletes the conversations it started:
+
+- when the app calls `end_genie_session(session_id)` at the end of a chat;
+- when a conversation sits idle for an hour, or is the least recently used once
+  more than 512 are tracked in the process.
+
+Deletion is best-effort and never fails a user request. Sweep conversations
+left behind by a stopped process:
+
+```bash
+apx-agent resources genie-sweep <space-id> --older-than-hours 24 --dry-run   # list only
+apx-agent resources genie-sweep <space-id> --older-than-hours 24             # delete
 ```
-
-### Ask Follow-up Questions
-
-Use the `conversation_id` from the first response to ask follow-up questions with context:
-
-```python
-# First question
-result = ask_genie(
-    space_id="01abc123...",
-    question="What were total sales last month?"
-)
-
-# Follow-up (uses context from first question)
-ask_genie(
-    space_id="01abc123...",
-    question="Break that down by region",
-    conversation_id=result["conversation_id"]
-)
-```
-
-Genie remembers the context, so "that" refers to "total sales last month".
-
-## Response Fields
-
-| Field | Description |
-|-------|-------------|
-| `question` | The original question asked |
-| `conversation_id` | ID for follow-up questions |
-| `message_id` | Unique message identifier |
-| `status` | `COMPLETED`, `FAILED`, `CANCELLED`, `TIMEOUT` |
-| `sql` | The SQL query Genie generated |
-| `columns` | List of column names in result |
-| `data` | Query results as list of rows |
-| `row_count` | Number of rows returned |
-| `text_response` | Text explanation (if Genie asks for clarification) |
-| `error` | Error message (if status is not COMPLETED) |
-
-## Handling Responses
-
-### Successful Response
 
 ```python
-result = ask_genie(space_id, "Who are our top 10 customers?")
+from apx_agent import sweep_genie_conversations
 
-if result["status"] == "COMPLETED":
-    print(f"SQL: {result['sql']}")
-    print(f"Rows: {result['row_count']}")
-    for row in result["data"]:
-        print(row)
+stale = sweep_genie_conversations(ws, "<space-id>", older_than_s=86400)                 # dry run
+deleted = sweep_genie_conversations(ws, "<space-id>", older_than_s=86400, dry_run=False)
 ```
 
-### Failed Response
+The sweep cannot tell apx-started conversations from ones a person started in
+the Genie UI, so choose an age past anything still in use. `--all-users` /
+`include_all=True` covers every user's conversations and needs CAN MANAGE on
+the space.
 
-```python
-result = ask_genie(space_id, "What is the meaning of life?")
+## Handling results
 
-if result["status"] == "FAILED":
-    print(f"Error: {result['error']}")
-    # Genie couldn't answer - may need to rephrase or use direct SQL
-```
+- `genie_tool` raises a tool error when the Genie API fails, including a
+  re-authorize hint when the user's token lacks the scope. A query that does not
+  complete returns `"Genie query did not complete (status: ...)"`.
+- `genie_query_tool` never raises: check for an `error` key.
+- If Genie asks for clarification, the text answer (`genie_response`) holds the
+  question. Have the agent rephrase with specifics.
 
-### Timeout
+## Testing a new space
 
-```python
-result = ask_genie(space_id, question, timeout_seconds=60)
-
-if result["status"] == "TIMEOUT":
-    print("Query took too long - try a simpler question or increase timeout")
-```
-
-## Example Workflows
-
-### Workflow 1: User Asks to Use Genie
-
-```
-User: "Ask my Sales Genie what the churn rate is"
-
-Claude:
-1. Identifies user wants to use Genie (explicit request)
-2. Calls ask_genie(space_id="sales_genie_id", question="What is the churn rate?")
-3. Returns: "Based on your Sales Genie, the churn rate is 4.2%.
-   Genie used this SQL: SELECT ..."
-```
-
-### Workflow 2: Testing a New Genie Space
-
-```
-User: "I just created a Genie Space for HR data. Can you test it?"
-
-Claude:
-1. Gets the space_id from the user or recent manage_genie(action="create_or_update") result
-2. Calls ask_genie with test questions:
-   - "How many employees do we have?"
-   - "What is the average salary by department?"
-3. Reports results: "Your HR Genie is working. It correctly answered..."
-```
-
-### Workflow 3: Data Exploration with Follow-ups
-
-```
-User: "Use my analytics Genie to explore sales trends"
-
-Claude:
-1. ask_genie(space_id, "What were total sales by month this year?")
-2. User: "Which month had the highest growth?"
-3. ask_genie(space_id, "Which month had the highest growth?", conversation_id=conv_id)
-4. User: "What products drove that growth?"
-5. ask_genie(space_id, "What products drove that growth?", conversation_id=conv_id)
-```
-
-## Best Practices
-
-### Start New Conversations for New Topics
-
-Don't reuse conversations across unrelated questions:
-
-```python
-# Good: New conversation for new topic
-result1 = ask_genie(space_id, "What were sales last month?")  # New conversation
-result2 = ask_genie(space_id, "How many employees do we have?")  # New conversation
-
-# Good: Follow-up for related question
-result1 = ask_genie(space_id, "What were sales last month?")
-result2 = ask_genie(space_id, "Break that down by product",
-                    conversation_id=result1["conversation_id"])  # Related follow-up
-```
-
-### Handle Clarification Requests
-
-Genie may ask for clarification instead of returning results:
-
-```python
-result = ask_genie(space_id, "Show me the data")
-
-if result.get("text_response"):
-    # Genie is asking for clarification
-    print(f"Genie asks: {result['text_response']}")
-    # Rephrase with more specifics
-```
-
-### Set Appropriate Timeouts
-
-- Simple aggregations: 30-60 seconds
-- Complex joins: 60-120 seconds
-- Large data scans: 120+ seconds
-
-```python
-# Quick question
-ask_genie(space_id, "How many orders today?", timeout_seconds=30)
-
-# Complex analysis
-ask_genie(space_id, "Calculate customer lifetime value for all customers",
-          timeout_seconds=180)
-```
+After `apx-agent resources genie-space push`, run the agent locally and ask the
+space's sample questions, or score it with the benchmarks in its config file.
+Check the generated SQL (`genie_query_tool`) as well as the answers.
 
 ## Troubleshooting
 
-### "Genie Space not found"
+### "Genie space not found" or permission errors
 
-- Verify the `space_id` is correct
-- Check you have access to the space
-- Use `manage_genie(action="get", space_id=...)` to verify it exists
+- Check the `space_id` (the ID recorded under `deployments` in the config file)
+- Check the calling user has CAN RUN on the space and access to its tables
 
-### "Query timed out"
+### Slow or timed-out answers
 
-- Increase `timeout_seconds`
-- Simplify the question
-- Check if the SQL warehouse is running
+- Check the SQL warehouse is running
+- Simplify the question, or give the space SQL examples for it
 
-### "Failed to generate SQL"
+### Wrong answers
 
-- Rephrase the question more clearly
-- Check if the question is answerable with the available tables
-- Add more instructions/curation to the Genie Space
-
-### Unexpected Results
-
-- Review the generated SQL in the response
-- Add SQL instructions to the Genie Space via the Databricks UI
-- Add sample questions that demonstrate correct patterns
+- Review `generated_sql` from `genie_query_tool`
+- Add instructions, join specs, SQL examples or sample questions to the config
+  file and `push` again (see [spaces.md](spaces.md))

@@ -29,9 +29,6 @@ SCHEMAS = {
     # Vector search tests
     "vector_search": "test_vs",
 
-    # Genie tests
-    "genie": "test_genie",
-
     # Serving tests
     "serving": "test_serving",
 
@@ -88,11 +85,6 @@ VS_ENDPOINT_NAMES = {
 def get_vs_index_name(index_key: str) -> str:
     """Get fully-qualified VS index name."""
     return f"{TEST_CATALOG}.{SCHEMAS['vector_search']}.{TEST_RESOURCE_PREFIX}vs_index_{index_key}"
-
-# Genie space names
-GENIE_SPACE_NAMES = {
-    "basic": f"{TEST_RESOURCE_PREFIX}genie_space",
-}
 
 # Serving endpoint names
 SERVING_ENDPOINT_NAMES = {

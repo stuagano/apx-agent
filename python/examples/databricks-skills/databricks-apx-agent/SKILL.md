@@ -45,17 +45,17 @@ from apx_agent import Agent, AgentConfig, create_app, genie_tool
 GENIE_SPACE_ID = os.environ["GENIE_SPACE_ID"]
 
 SYSTEM_PROMPT = """You are an AI assistant that answers questions about sales pipeline data.
-Use the ask_genie tool to retrieve data. Always provide clear, accurate answers."""
+Use the sales_genie tool to retrieve data. Always provide clear, accurate answers."""
 
 # genie_tool is async + OBO via Dependencies.UserClient, and attaches a
 # ResourceSpec("genie_space", ...) so deploy/resource collection sees the space.
-ask_genie = genie_tool(
+sales_genie = genie_tool(
     GENIE_SPACE_ID,
-    name="ask_genie",
+    name="sales_genie",
     description="Query sales pipeline and opportunity data via Genie.",
 )
 
-agent = Agent(tools=[ask_genie], instructions=SYSTEM_PROMPT)
+agent = Agent(tools=[sales_genie], instructions=SYSTEM_PROMPT)
 
 config = AgentConfig(
     name="sales-insights-agent",
@@ -77,9 +77,18 @@ def index():
 **Why `genie_tool()` (not a hand-rolled Genie poll loop)?**
 `genie_tool()` already runs async under the caller's OBO `WorkspaceClient`,
 declares the Genie space via `attach_resources` / `ResourceSpec`, and surfaces
-failures as `ToolError`. Do not reimplement `/start_conversation` + poll with
-raw `httpx` unless you have a reason the factory cannot cover — and if you do,
-call `attach_resources(fn, [ResourceSpec("genie_space", space_id)])` yourself.
+failures as `ToolError`. It also continues one Genie conversation per apx
+session, so follow-up questions keep their context; call
+`end_genie_session(session_id)` when a chat ends, and sweep leftovers with
+`apx-agent resources genie-sweep`. Do not reimplement `/start_conversation` +
+poll with raw `httpx` unless you have a reason the factory cannot cover — and if
+you do, call `attach_resources(fn, [ResourceSpec("genie_space", space_id)])`
+yourself.
+
+**Creating the Genie Space itself:** declare it as code and push it with
+`apx-agent resources genie-space pull|validate|plan|push` (see the
+`databricks-genie` skill and `docs/deploy/genie-agents-as-code.md`). The
+`deployments` entry `push` records is the `GENIE_SPACE_ID` for that workspace.
 
 ### `requirements.txt`
 
@@ -162,7 +171,7 @@ Minimal placeholder — the real UI is at `/_apx/agent`.
 ## What `/_apx/agent` Provides
 
 - Chat UI connected to the agent's `/responses` SSE endpoint
-- Live trace panel — every `ask_genie` call shows input, output, latency
+- Live trace panel — every `sales_genie` call shows input, output, latency
 - Tool inspector at `/_apx/tools`
 - Health probe at `/_apx/probe`
 - Agent card at `/.well-known/agent.json`
@@ -172,19 +181,19 @@ Minimal placeholder — the real UI is at `/_apx/agent`.
 Add one `genie_tool(...)` per space (distinct `name=` / `description=`) and register all as tools:
 
 ```python
-ask_genie_sales = genie_tool(
+sales_genie = genie_tool(
     SALES_SPACE_ID,
-    name="ask_genie_sales",
+    name="sales_genie",
     description="Query sales pipeline and opportunity data.",
 )
-ask_genie_support = genie_tool(
+support_genie = genie_tool(
     SUPPORT_SPACE_ID,
-    name="ask_genie_support",
+    name="support_genie",
     description="Query customer support tickets and case history.",
 )
 
 agent = Agent(
-    tools=[ask_genie_sales, ask_genie_support],
+    tools=[sales_genie, support_genie],
     instructions=SYSTEM_PROMPT,
 )
 ```
@@ -199,7 +208,7 @@ config = AgentConfig(
 )
 
 # ❌ WRONG — hand-rolled Genie poll without attach_resources
-async def ask_genie(question: str, headers: Dependencies.Headers) -> str:
+async def sales_genie(question: str, headers: Dependencies.Headers) -> str:
     ...  # raw httpx start_conversation + poll — no ResourceSpec declared
 
 # ❌ WRONG — this is for scripts/notebooks, not Databricks Apps
@@ -209,6 +218,6 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 app.mount("/", StaticFiles(directory="static"), html=True)
 
 # ✅ RIGHT — genie_tool (declares resources) + mount at /static
-ask_genie = genie_tool(GENIE_SPACE_ID, description="Query domain data via Genie.")
+sales_genie = genie_tool(GENIE_SPACE_ID, description="Query domain data via Genie.")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 ```

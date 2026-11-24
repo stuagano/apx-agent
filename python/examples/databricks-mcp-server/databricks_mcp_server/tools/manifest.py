@@ -30,7 +30,7 @@ def _delete_from_databricks(resource_type: str, resource_id: str) -> Optional[st
 
 @mcp.tool(timeout=30)
 def list_tracked_resources(type: Optional[str] = None) -> Dict[str, Any]:
-    """List resources tracked in project manifest (dashboards, jobs, pipelines, genie_space, etc.).
+    """List resources tracked in project manifest (dashboards, jobs, pipelines, etc.).
 
     type: Filter by resource type (optional). Returns: {resources: [...], count}."""
     resources = list_resources(resource_type=type)

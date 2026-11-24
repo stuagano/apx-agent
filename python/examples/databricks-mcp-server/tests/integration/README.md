@@ -87,7 +87,6 @@ Test results are saved to `.test-results/<timestamp>/`:
 | `workspace_files/` | Workspace file upload/download tests |
 | `volume_files/` | Unity Catalog volume file operations |
 | `dashboards/` | AI/BI dashboard management |
-| `genie/` | Genie (AI assistant) spaces |
 | `agent_bricks/` | Agent Bricks tool tests |
 | `compute/` | Cluster and serverless compute |
 | `jobs/` | Job creation and execution |

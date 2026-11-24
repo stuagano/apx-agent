@@ -1,6 +1,6 @@
 """Agent Bricks tools - Manage Knowledge Assistants (KA) and Supervisor Agents (MAS).
 
-For Genie Space tools, see genie.py
+Genie spaces are managed as code: `apx-agent resources genie-space pull|plan|push`.
 """
 
 from typing import Any, Dict, List, Optional

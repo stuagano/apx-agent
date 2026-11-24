@@ -58,14 +58,6 @@ class KAIds:
 
 
 @dataclass(frozen=True)
-class GenieIds:
-    """Genie Space identifiers."""
-
-    space_id: str
-    display_name: str
-
-
-@dataclass(frozen=True)
 class MASIds:
     """Supervisor Agent identifiers."""
 
@@ -183,58 +175,6 @@ class MultiAgentSupervisorListExamplesResponseDict(TypedDict, total=False):
     examples: List[MultiAgentSupervisorExampleDict]
     tile_id: str
     next_page_token: Optional[str]
-
-
-class GenieSpaceDict(TypedDict, total=False):
-    """Genie Space (Data Room) response.
-
-    Note: Genie uses /api/2.0/data-rooms endpoint (not defined in KA/MAS protos).
-    """
-
-    space_id: str
-    id: str  # Same as space_id
-    display_name: str
-    description: Optional[str]
-    warehouse_id: str
-    table_identifiers: List[str]
-    run_as_type: str  # VIEWER, OWNER, etc.
-    created_timestamp: int
-    last_updated_timestamp: int
-    user_id: str
-    folder_node_internal_name: Optional[str]
-    sample_questions: Optional[List[str]]
-
-
-class CuratedQuestionDict(TypedDict, total=False):
-    """Curated question for Genie space."""
-
-    question_id: str
-    data_space_id: str
-    question_text: str
-    question_type: str  # SAMPLE_QUESTION, BENCHMARK
-    answer_text: Optional[str]
-    is_deprecated: bool
-
-
-class GenieListQuestionsResponseDict(TypedDict, total=False):
-    """List curated questions response."""
-
-    curated_questions: List[CuratedQuestionDict]
-
-
-class InstructionDict(TypedDict, total=False):
-    """Genie instruction (text, SQL, or certified answer)."""
-
-    instruction_id: str
-    title: str
-    content: str
-    instruction_type: str  # TEXT_INSTRUCTION, SQL_INSTRUCTION, CERTIFIED_ANSWER
-
-
-class GenieListInstructionsResponseDict(TypedDict, total=False):
-    """List instructions response."""
-
-    instructions: List[InstructionDict]
 
 
 class EvaluationRunDict(TypedDict, total=False):

@@ -22,7 +22,6 @@ python -m pytest tests/integration -m "integration and not slow" -v
 
 # Single module
 python -m pytest tests/integration/sql -m "integration and not slow" -v
-python -m pytest tests/integration/genie -m "integration and not slow" -v
 python -m pytest tests/integration/apps -m "integration and not slow" -v
 ```
 
@@ -47,7 +46,6 @@ For faster execution, run test modules in parallel:
 TIMESTAMP=$(date +%Y%m%d_%H%M%S) && mkdir -p .test-results/$TIMESTAMP && \
 (
   python -m pytest tests/integration/sql -m integration -v > .test-results/$TIMESTAMP/sql.txt 2>&1 &
-  python -m pytest tests/integration/genie -m integration -v > .test-results/$TIMESTAMP/genie.txt 2>&1 &
   python -m pytest tests/integration/apps -m integration -v > .test-results/$TIMESTAMP/apps.txt 2>&1 &
   python -m pytest tests/integration/agent_bricks -m integration -v > .test-results/$TIMESTAMP/agent_bricks.txt 2>&1 &
   python -m pytest tests/integration/dashboards -m integration -v > .test-results/$TIMESTAMP/dashboards.txt 2>&1 &
@@ -93,7 +91,6 @@ grep -l FAILED .test-results/$(ls -t .test-results | head -1)/*.txt | \
 | Module | Fast Tests | Lifecycle Tests | Notes |
 |--------|------------|-----------------|-------|
 | sql | Yes | No | SQL query execution |
-| genie | Yes | Yes | Genie space CRUD + queries |
 | apps | Yes | Yes | App deployment (slow) |
 | agent_bricks | Yes | Yes | KA/MAS creation (very slow) |
 | dashboards | Yes | No | Dashboard CRUD |
@@ -125,7 +122,7 @@ Test resources use the prefix `ai_dev_kit_test_` to enable safe cleanup:
 
 Test results are stored in `.test-results/` (gitignored):
 - Each run creates a timestamped folder: `.test-results/20250331_123456/`
-- Each module gets its own file: `sql.txt`, `genie.txt`, etc.
+- Each module gets its own file: `sql.txt`, `apps.txt`, etc.
 - Summary in `summary.txt`
 
 ## Troubleshooting
