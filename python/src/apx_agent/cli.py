@@ -17299,6 +17299,34 @@ def resources_genie(space: str) -> None:
     click.echo(f"genie space {resolved['title']!r} id={resolved['id']}")
 
 
+@resources.command("genie-sweep")
+@click.argument("space_id")
+@click.option("--older-than-hours", type=float, default=24.0, show_default=True,
+              help="Only conversations created longer ago than this.")
+@click.option("--all-users", is_flag=True, default=False,
+              help="Include every user's conversations (needs CAN MANAGE on the space).")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="List the stale conversations without deleting them.")
+@click.option("--profile", default=None, help="Databricks config profile.")
+def resources_genie_sweep(
+    space_id: str, older_than_hours: float, all_users: bool, dry_run: bool, profile: str | None,
+) -> None:
+    """Delete stale Genie conversations in SPACE_ID (e.g. left by genie_tool follow-ups)."""
+    from .genie import sweep_genie_conversations
+
+    try:
+        stale = sweep_genie_conversations(
+            _require_sdk(profile), space_id, older_than_s=older_than_hours * 3600,
+            include_all=all_users, dry_run=dry_run,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    verb = "would delete" if dry_run else "deleted"
+    for conversation_id in stale:
+        click.echo(conversation_id)
+    click.echo(f"{verb} {len(stale)} conversation(s) older than {older_than_hours:g}h")
+
+
 @main.command("dashboard-open")
 @click.argument("dashboard_id")
 def dashboard_open(dashboard_id: str) -> None:

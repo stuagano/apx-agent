@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import contextvars
 import logging
 import os
 from typing import Any
@@ -196,6 +197,26 @@ def autolog_if_env() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Active session — the turn's session key, readable by tools
+# ---------------------------------------------------------------------------
+
+# The session key the current turn runs under (the principal-scoped
+# thread_id / session_id / conversation id). Bound where the trace session is
+# resolved — every AGENT root span and ``set_trace_session`` — so tools that keep
+# per-session state (Genie follow-ups, #1254) read the same key the trace groups
+# by. Empty string = no session. Never reset: each request runs in its own
+# context, and an AGENT root span rebinds it (possibly to empty) every turn.
+_ACTIVE_SESSION: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "apx_active_session", default=""
+)
+
+
+def current_session_id() -> str | None:
+    """Return the session key of the running turn, or ``None`` when sessionless."""
+    return _ACTIVE_SESSION.get() or None
+
+
+# ---------------------------------------------------------------------------
 # Span helpers
 # ---------------------------------------------------------------------------
 
@@ -243,6 +264,11 @@ def safe_span(
             if span is not None:
                 span.set_outputs(result)
     """
+    session = attributes.get("apx.session.id") if attributes else None
+    if span_type == "AGENT" or session:
+        # An AGENT root span starts a turn: rebind so a sessionless turn never
+        # inherits a previous turn's session in a reused context.
+        _ACTIVE_SESSION.set(str(session) if session else "")
     if not is_mlflow_available():
         yield None
         return
@@ -350,6 +376,7 @@ def set_trace_session(span, session_id, attributes=None):
         if not resolved:
             return
         sid = str(resolved)
+        _ACTIVE_SESSION.set(sid)
         if is_mlflow_available():
             import mlflow
 

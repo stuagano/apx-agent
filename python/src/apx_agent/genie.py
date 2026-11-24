@@ -12,17 +12,28 @@ Three factories:
   * ``genie_one_tool()`` — asks Genie One (the workspace-wide Genie, not one space)
     through its managed MCP and returns the finished answer as one tool call.
 
+``genie_tool`` and ``genie_query_tool`` continue one Genie conversation per apx
+session per space, so follow-up questions keep their context (#1254). apx deletes
+the conversations it started when the session ends or is evicted, and
+``sweep_genie_conversations`` / ``apx-agent resources genie-sweep`` clear leftovers (#1255).
+
 Annotations are intentionally NOT deferred (no ``from __future__ import annotations``)
 so that ``UserClientDependency`` is resolved eagerly at function definition time and
 ``get_type_hints()`` in ``_inspection.py`` sees the real Annotated[...] type, not a string.
 """
 
+import collections
 import logging
+import threading
+import time
+from dataclasses import dataclass
 from typing import Any
 
+from databricks.sdk.errors import NotFound
 from databricks.sdk.errors.base import DatabricksError
 
 from ._errors import ToolError
+from ._mlflow_tracing import current_session_id
 from ._obo import reauthorize_hint
 
 logger = logging.getLogger(__name__)
@@ -39,6 +50,177 @@ def _run_genie_query(ws: Any, space_id: str, question: str) -> Any:
     answer or the underlying query results depending on their use case.
     """
     return ws.genie.start_conversation_and_wait(space_id=space_id, content=question)
+
+
+# ---------------------------------------------------------------------------
+# Follow-ups: one Genie conversation per apx session per space (#1254, #1255)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _Conversation:
+    conversation_id: str
+    ws: Any  # the client that created it, reused to delete it
+    last_used: float
+
+
+class GenieConversations:
+    """Bounded map of (apx session, Genie space) → the Genie conversation apx started.
+
+    Later questions in a session continue that conversation, so Genie keeps the
+    context of earlier ones. A conversation is deleted when its session ends
+    (:meth:`end_session`), sits idle past ``idle_ttl_s``, or is the least recently
+    used once more than ``max_conversations`` are tracked. Deletion is best-effort:
+    a failure is logged and never reaches a user request.
+    """
+
+    def __init__(self, *, max_conversations: int = 512, idle_ttl_s: float = 3600.0) -> None:
+        self.max_conversations = max_conversations
+        self.idle_ttl_s = idle_ttl_s
+        self._entries: collections.OrderedDict[tuple[str, str], _Conversation] = (
+            collections.OrderedDict()
+        )
+        self._lock = threading.Lock()
+
+    def get(self, session_id: str, space_id: str) -> str | None:
+        """The live conversation for this session and space, or ``None``."""
+        with self._lock:
+            evicted = self._pop_idle()
+            entry = self._entries.get((session_id, space_id))
+            if entry is not None:
+                entry.last_used = time.monotonic()
+                self._entries.move_to_end((session_id, space_id))
+        self._delete(evicted)
+        return entry.conversation_id if entry is not None else None
+
+    def put(self, session_id: str, space_id: str, conversation_id: str, ws: Any) -> None:
+        """Track a conversation apx started, evicting past ``max_conversations``."""
+        with self._lock:
+            self._entries[(session_id, space_id)] = _Conversation(
+                conversation_id, ws, time.monotonic()
+            )
+            self._entries.move_to_end((session_id, space_id))
+            evicted = self._pop_idle()
+            while len(self._entries) > self.max_conversations:
+                evicted.append(self._entries.popitem(last=False))
+        self._delete(evicted)
+
+    def forget(self, session_id: str, space_id: str) -> None:
+        """Drop a conversation that no longer exists, without deleting it."""
+        with self._lock:
+            self._entries.pop((session_id, space_id), None)
+
+    def end_session(self, session_id: str) -> int:
+        """Delete every conversation ``session_id`` started; returns how many it tracked."""
+        with self._lock:
+            keys = [key for key in self._entries if key[0] == session_id]
+            ended = [(key, self._entries.pop(key)) for key in keys]
+        self._delete(ended)
+        return len(ended)
+
+    def _pop_idle(self) -> list[tuple[tuple[str, str], _Conversation]]:
+        cutoff = time.monotonic() - self.idle_ttl_s
+        idle = [key for key, entry in self._entries.items() if entry.last_used < cutoff]
+        return [(key, self._entries.pop(key)) for key in idle]
+
+    @staticmethod
+    def _delete(entries: list[tuple[tuple[str, str], _Conversation]]) -> None:
+        for (_, space_id), entry in entries:
+            try:
+                entry.ws.genie.delete_conversation(
+                    space_id=space_id, conversation_id=entry.conversation_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not delete Genie conversation %s in space %s: %s",
+                    entry.conversation_id, space_id, exc,
+                )
+
+
+_CONVERSATIONS = GenieConversations()
+
+
+def end_genie_session(session_id: str) -> int:
+    """Delete the Genie conversations apx started for ``session_id``.
+
+    Call it when a chat session ends; sessions that never call it are cleaned
+    up by idle/LRU eviction. Returns how many conversations the session had.
+    Deletion failures are logged, never raised.
+    """
+    return _CONVERSATIONS.end_session(session_id)
+
+
+def _ask(ws: Any, space_id: str, question: str, *, follow_ups: bool) -> Any:
+    """Ask ``question``, continuing this session's conversation when there is one.
+
+    Without a session (or with ``follow_ups=False``) every question starts a new
+    conversation, as before. A tracked conversation that no longer exists is
+    replaced by a new one.
+    """
+    session_id = current_session_id() if follow_ups else None
+    if session_id is None:
+        return _run_genie_query(ws, space_id, question)
+    conversation_id = _CONVERSATIONS.get(session_id, space_id)
+    if conversation_id is not None:
+        try:
+            return ws.genie.create_message_and_wait(
+                space_id=space_id, conversation_id=conversation_id, content=question
+            )
+        except NotFound:
+            logger.info(
+                "Genie conversation %s is gone in space %s; starting a new one",
+                conversation_id, space_id,
+            )
+            _CONVERSATIONS.forget(session_id, space_id)
+    msg = _run_genie_query(ws, space_id, question)
+    if msg.conversation_id:
+        _CONVERSATIONS.put(session_id, space_id, str(msg.conversation_id), ws)
+    return msg
+
+
+def sweep_genie_conversations(
+    ws: Any,
+    space_id: str,
+    *,
+    older_than_s: float,
+    include_all: bool = False,
+    dry_run: bool = True,
+) -> list[str]:
+    """List, and unless ``dry_run`` delete, Genie conversations older than ``older_than_s``.
+
+    Removes conversations left behind when a process stopped before its sessions
+    ended. Lists the caller's own conversations; ``include_all=True`` lists every
+    user's (needs CAN MANAGE on the space). The listing cannot tell apx-started
+    conversations from ones a person started in the Genie UI, so pick an age past
+    any conversation still in use. Returns the stale ids on a dry run, else the ids
+    actually deleted; a failed delete is logged and skipped.
+    """
+    cutoff_ms = (time.time() - older_than_s) * 1000
+    stale: list[str] = []
+    page_token: str | None = None
+    while True:
+        page = ws.genie.list_conversations(
+            space_id=space_id, include_all=include_all, page_token=page_token
+        )
+        for conv in page.conversations or []:
+            if conv.created_timestamp is not None and conv.created_timestamp < cutoff_ms:
+                stale.append(conv.conversation_id)
+        page_token = page.next_page_token
+        if not page_token:
+            break
+    if dry_run:
+        return stale
+    deleted: list[str] = []
+    for conversation_id in stale:
+        try:
+            ws.genie.delete_conversation(space_id=space_id, conversation_id=conversation_id)
+        except Exception as exc:
+            logger.warning(
+                "Could not delete Genie conversation %s in space %s: %s",
+                conversation_id, space_id, exc,
+            )
+            continue
+        deleted.append(conversation_id)
+    return deleted
 
 
 def _extract_text(msg: Any) -> str:
@@ -92,6 +274,7 @@ def genie_tool(
     *,
     name: str = "ask_genie",
     description: str | None = None,
+    follow_ups: bool = True,
 ) -> Any:
     """Return a tool that queries a Genie space and returns the text answer.
 
@@ -106,6 +289,9 @@ def genie_tool(
         space_id: Genie space ID (the UUID from the Genie space URL).
         name: Tool name shown to the LLM. Defaults to ``"ask_genie"``.
         description: Tool description shown to the LLM.
+        follow_ups: Continue one Genie conversation per apx session, so later
+            questions keep the context of earlier ones. ``False`` starts a new
+            conversation for every question. Defaults to ``True``.
     """
     if not space_id:
         raise ValueError(
@@ -126,7 +312,7 @@ def genie_tool(
     async def _ask_genie(question: str, ws: UserClientDependency) -> str:  # type: ignore[valid-type]
         """Placeholder doc — overwritten below."""
         try:
-            msg = _run_genie_query(ws, space_id, question)
+            msg = _ask(ws, space_id, question, follow_ups=follow_ups)
         except DatabricksError as e:
             # A Genie API failure is a finding, not a pipeline-fatal 500 (#562)
             # — matches the structured genie_query_tool, which already contains.
@@ -155,6 +341,7 @@ def genie_query_tool(
     name: str = "query_genie",
     description: str | None = None,
     max_rows: int = 20,
+    follow_ups: bool = True,
 ) -> Any:
     """Return a tool that asks Genie a question and returns structured results.
 
@@ -170,6 +357,8 @@ def genie_query_tool(
         description: Tool description shown to the LLM. If omitted, a sensible
             ad-hoc-exploration description is generated.
         max_rows: Truncate ``sql_results`` to this many rows. Defaults to 20.
+        follow_ups: Continue one Genie conversation per apx session (see
+            ``genie_tool``). ``False`` starts a new conversation per question.
 
     Example::
 
@@ -192,7 +381,7 @@ def genie_query_tool(
     async def _query_genie(question: str, ws: UserClientDependency) -> dict[str, Any]:  # type: ignore[valid-type]
         """Placeholder doc — overwritten below."""
         try:
-            msg = _run_genie_query(ws, space_id, question)
+            msg = _ask(ws, space_id, question, follow_ups=follow_ups)
         except Exception as exc:
             logger.warning("Genie query failed for space %s: %s", space_id, exc)
             hint = reauthorize_hint(exc)
