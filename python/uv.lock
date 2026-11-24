@@ -279,7 +279,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "databricks-agentbricks", extras = ["langgraph"], marker = "extra == 'agentbricks'", specifier = ">=0.9.0,<0.11" },
+    { name = "databricks-agentbricks", extras = ["langgraph"], marker = "extra == 'agentbricks'", specifier = ">=0.9.0,<0.12" },
     { name = "databricks-langchain", specifier = ">=0.3.0" },
     { name = "databricks-openai", specifier = ">=0.15.0" },
     { name = "databricks-sdk", specifier = ">=0.74.0" },
@@ -910,7 +910,7 @@ wheels = [
 
 [[package]]
 name = "databricks-agentbricks"
-version = "0.10.0"
+version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -928,9 +928,9 @@ dependencies = [
     { name = "tomlkit" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f2/45/50a42950e10f53a9f859a8dc2a67a64b6e0e85fbfa1d028cca245ebf8680/databricks_agentbricks-0.10.0.tar.gz", hash = "sha256:9476e322451e808116aa253619d02e73295744e809ec20fa12fe67d6b28792c9", size = 706510, upload-time = "2026-11-13T23:49:47.841Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/70/85/420e0e8f09e59fdafaaed9ccf617437b5905a679e976e51f0962c7a6a66d/databricks_agentbricks-0.11.0.tar.gz", hash = "sha256:d7e23b6fa89f7462e4361be30493362e26546aa7cbbb42a7a097d9008321d79a", size = 717228, upload-time = "2026-11-20T22:31:41.691Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/d0/189ae48004cc80b4003cb7be7c690bc260f364f5d88b242fb09abf9dd556/databricks_agentbricks-0.10.0-py3-none-any.whl", hash = "sha256:119cebe4f416f076a2a4dc3b88b16115b58e9080aa8cfbb15078f5a0e2c6601a", size = 783793, upload-time = "2026-11-13T23:49:46.106Z" },
+    { url = "https://files.pythonhosted.org/packages/89/a8/3ffbe1495db04802cfbdd680d1b37ed754e2e222598686385dcd180970f1/databricks_agentbricks-0.11.0-py3-none-any.whl", hash = "sha256:79a98376d8de4fdbc33c46dbb4b3d01e5b681f0e9f4bfeb2ad1d6868c7cf5f4b", size = 795226, upload-time = "2026-11-20T22:31:40.051Z" },
 ]
 
 [package.optional-dependencies]
