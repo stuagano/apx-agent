@@ -6382,8 +6382,21 @@ def _warn_empty_predictions(result: Any) -> None:
     )
 
 
+def _record_scored_dataset(result: Any, evalset: str, dataset: Any) -> None:
+    """Tag the eval run with the dataset it scored (``apx.eval_dataset.*``)."""
+    from apx_agent._eval_datasets import record_eval_dataset
+
+    run_id = getattr(result, "run_id", None)
+    if run_id is None:
+        return
+    uri = evalset if dataset is None else dataset.dataset_id
+    recorded = record_eval_dataset(run_id, key=evalset, uri=uri)
+    if recorded is not None:
+        click.echo(f"Scored dataset {recorded.key} (digest {recorded.version}) on run {run_id}.")
+
+
 @eval_group.command("run")
-@click.argument("evalset", type=click.Path(exists=True, dir_okay=False))
+@click.argument("evalset")
 @click.option("--fixtures", is_flag=True, help="Check typed chain steps against recorded tool results; fail if any case is wrong.")
 @click.option(
     "--module",
@@ -6450,6 +6463,10 @@ def eval_cmd(
 ) -> None:
     """Evaluate your agent against EVALSET.
 
+    EVALSET is a local eval file, or the catalog.schema.table name of an
+    MLflow evaluation dataset in Unity Catalog. The run is tagged with the
+    dataset it scored (apx.eval_dataset.*).
+
     Use --fixtures for recorded-tool checks with per-step results.
     Otherwise run MLflow scoring locally, or use --endpoint-url to score a
     deployed App. --model overrides the model in your project configuration.
@@ -6477,11 +6494,30 @@ def eval_cmd(
     # Auto-detect JSON / JSONL / YAML / CSV. mlflow.genai.evaluate accepts
     # most of these via the data kwarg, but only some via path — we read
     # JSON/JSONL ourselves for predictability.
+    from ._eval_datasets import EvalDatasetError, get_eval_dataset, is_dataset_name
+
     data: Any
+    dataset: Any = None
     path = Path(evalset)
     suffix = path.suffix.lower()
+    if path.is_dir():
+        raise click.BadParameter(f"{evalset} is a directory.", param_hint="EVALSET")
+    if not path.exists():
+        if not is_dataset_name(evalset):
+            raise click.BadParameter(
+                f"{evalset} is neither an existing file nor a catalog.schema.table eval dataset name.",
+                param_hint="EVALSET",
+            )
+        if fixtures:
+            raise click.UsageError("--fixtures reads a local fixtures file, not an eval dataset.")
+        try:
+            dataset = get_eval_dataset(evalset)
+        except EvalDatasetError as e:
+            raise click.ClickException(str(e)) from e
     try:
-        if suffix == ".jsonl":
+        if dataset is not None:
+            data = dataset
+        elif suffix == ".jsonl":
             data = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         elif suffix == ".json":
             data = json.loads(path.read_text())
@@ -6518,6 +6554,7 @@ def eval_cmd(
         except RuntimeError as e:
             raise click.ClickException(str(e)) from e
         click.echo(f"Eval complete. Result: {result}")
+        _record_scored_dataset(result, evalset, dataset)
         _warn_empty_predictions(result)
         return
 
@@ -6560,7 +6597,74 @@ def eval_cmd(
         experiment=effective_experiment,
     )
     click.echo(f"Eval complete. Result: {result}")
+    _record_scored_dataset(result, evalset, dataset)
     _warn_empty_predictions(result)
+
+
+@eval_group.group("dataset", cls=_ApxGroup)
+def eval_dataset_group() -> None:
+    """Build MLflow evaluation datasets in Unity Catalog for `eval run`."""
+
+
+@eval_dataset_group.command("add")
+@click.argument("name")
+@click.argument("evalsets", nargs=-1, type=click.Path(exists=True, dir_okay=False))
+@click.option("--from-traces", is_flag=True, help="Also add traces from the experiment (search_traces), with their expectations.")
+@click.option("--filter", "filter_string", default=None, help="search_traces filter string for --from-traces.")
+@click.option("--max-results", type=int, default=None, help="Most traces to read for --from-traces.")
+@click.option("--labeled", is_flag=True, help="With --from-traces, keep only traces with a human (SME) assessment.")
+@click.option(
+    "--experiment", default=None,
+    help="MLflow experiment name/path or id. The dataset is created in it and --from-traces reads it. "
+         "Falls back to experiment in [tool.apx].",
+)
+def eval_dataset_add_cmd(name: str, evalsets: tuple[str, ...], from_traces: bool, filter_string: str | None,
+                         max_results: int | None, labeled: bool, experiment: str | None) -> None:
+    """Create or update eval dataset NAME (catalog.schema.table) from EVALSETS and traces.
+
+    EVALSETS are JSON/JSONL eval files in the `eval run` format. Records with
+    the same inputs merge into one; the dataset is created when it does not
+    exist.
+    """
+    from ._eval_datasets import (
+        EvalDatasetError,
+        add_eval_records,
+        eval_rows_from_file,
+        is_dataset_name,
+        traces_for_dataset,
+    )
+    from ._mlflow_tracing import _resolve_experiment_id
+
+    if not is_dataset_name(name):
+        raise click.BadParameter(f"{name} is not a catalog.schema.table name.", param_hint="NAME")
+    if not evalsets and not from_traces:
+        raise click.UsageError("Pass at least one EVALSET file or --from-traces.")
+    if (filter_string or max_results or labeled) and not from_traces:
+        raise click.UsageError("--filter, --max-results and --labeled need --from-traces.")
+    effective_experiment = experiment or _read_apx_agent_config().get("experiment")
+    if from_traces and not effective_experiment:
+        raise click.UsageError("--from-traces needs --experiment (or experiment in [tool.apx]).")
+    try:
+        experiment_id = _resolve_experiment_id(effective_experiment) if effective_experiment else None
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+
+    try:
+        for evalset in evalsets:
+            rows = eval_rows_from_file(Path(evalset))
+            add_eval_records(name, rows, experiment_id=experiment_id)
+            click.echo(f"Merged {len(rows)} records from {evalset} into {name}.")
+        if from_traces:
+            traces = traces_for_dataset(
+                str(experiment_id), filter_string=filter_string, max_results=max_results, labeled=labeled,
+            )
+            if len(traces) == 0:
+                raise click.ClickException(f"No traces matched in experiment {effective_experiment}; nothing added.")
+            add_eval_records(name, traces, experiment_id=experiment_id)
+            click.echo(f"Merged {len(traces)} traces from experiment {effective_experiment} into {name}.")
+    except EvalDatasetError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"Score it with: apx-agent eval run {name}")
 
 
 @eval_group.command("sweep")

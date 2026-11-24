@@ -156,6 +156,9 @@ scored evaluation.
 - `eval report`: compare previously logged evaluation runs.
 - `eval run --endpoint-url URL`: evaluate a deployed App with its live tools,
   authentication, and network path.
+- `eval dataset add` and `eval run catalog.schema.table`: keep cases in a
+  [Unity Catalog eval dataset](../running/eval-datasets.md), built from files
+  and labeled traces.
 - [Full CLI reference](../get-started/cli.md).
 
 ## MLflow experiments

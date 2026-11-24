@@ -351,6 +351,9 @@ from ._industry_models import industry_model_question_pairs, industry_model_topo
 # Cross-agent evaluation
 from ._eval_chain import ChainCaseResult, ChainEvalReport, StepEvalResult, evaluate_chain
 
+# MLflow evaluation datasets in Unity Catalog (#1247)
+from ._eval_datasets import EvalDatasetError, add_eval_records, get_eval_dataset, record_eval_dataset
+
 # Canary / A-B deployment helpers (Model Serving target)
 
 # Canary helpers for the Databricks Apps target — multi-target bundle flow
@@ -724,6 +727,11 @@ __all__ = [
     "ChainEvalReport",
     "StepEvalResult",
     "evaluate_chain",
+    # Eval datasets
+    "EvalDatasetError",
+    "add_eval_records",
+    "get_eval_dataset",
+    "record_eval_dataset",
     # Canary / A-B helpers (Model Serving)
     # Canary helpers (Databricks Apps)
     "AppsCanaryConfig",

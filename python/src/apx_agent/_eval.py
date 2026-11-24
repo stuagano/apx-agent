@@ -468,10 +468,12 @@ def evaluate(
         if workspace_host:
             custom_inputs["workspace_host"] = workspace_host
 
-    def _predict(inputs: Any) -> str:
+    def _predict(inputs: Any = None, **fields: Any) -> str:
         from mlflow.types.agent import ChatAgentMessage
 
-        msg_dicts = _extract_messages(inputs)
+        # mlflow calls predict_fn(**row_inputs): a managed dataset row
+        # {"question": ...} arrives as fields, not as ``inputs``.
+        msg_dicts = _extract_messages(fields if inputs is None else inputs)
         chat_messages = [
             ChatAgentMessage(
                 role=m.get("role", "user"),
@@ -607,11 +609,11 @@ def endpoint_predict_fn(
         "Content-Type": "application/json",
     }
 
-    def predict(inputs: Any) -> str:
+    def predict(inputs: Any = None, **fields: Any) -> str:
         import urllib.error
         import urllib.request
 
-        question = _extract_question(inputs)
+        question = _extract_question(fields if inputs is None else inputs)
         try:
             return _predict_responses(question)
         except urllib.error.HTTPError as err:
