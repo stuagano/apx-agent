@@ -133,7 +133,7 @@ These are pre-built tools for the Databricks platform. Each factory returns a re
 |---------|--------------|-------------------|
 | `uc_function_tool(name)` | Execute a registered UC function with a `params` dictionary. UC types guide SQL literal conversion. | `DatabricksFunction` |
 | `uc_function_toolkit(schema)` | All agent-facing functions in a UC schema as tools | `DatabricksFunction` (×N) |
-| `genie_tool(space_id)` | Ask a natural-language question to a Genie space | `DatabricksGenieSpace` |
+| `genie_tool(space_id)` | Ask a natural-language question to a Genie space; follow-ups in one session continue the same conversation | `DatabricksGenieSpace` |
 | `genie_one_tool()` | Ask Genie One (workspace-wide Genie) via its managed MCP; asks and polls in one call, as the calling user, and returns the finished answer or a deep link after `wait_s` | `genie` user scope |
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
 | `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse | `DatabricksSQLWarehouse` |
@@ -161,6 +161,44 @@ agent = Agent(
                               description="Ask the specialist for hard reasoning."),
     ],
 )
+```
+
+### Genie follow-ups — `genie_tool` and `genie_query_tool`
+
+Within one apx session (the principal-scoped `thread_id` / `session_id` the
+turn runs under), `genie_tool` and `genie_query_tool` keep one Genie
+conversation per space. The first question starts a conversation; later
+questions in the same session go to it through
+`ws.genie.create_message_and_wait`, so Genie keeps the context of earlier
+questions ("and last year?"). Different sessions never share a conversation,
+and a turn with no session starts a new conversation for each question, as
+before. If the stored conversation no longer exists, the tool starts a new one.
+
+apx deletes the conversations it started:
+
+- when your app calls `end_genie_session(session_id)` at the end of a chat;
+- when a conversation sits idle for an hour, or is the least recently used once
+  more than 512 are tracked in the process.
+
+Deletion is best-effort and never fails a user request. Turn follow-ups off per
+tool with `genie_tool(space_id, follow_ups=False)`.
+
+Conversations left behind by a stopped process can be swept. The sweep lists
+the caller's conversations (or every user's with `--all-users` /
+`include_all=True`, which needs CAN MANAGE on the space) created before the age
+cutoff. It cannot tell apx-started conversations from ones a person started in
+the Genie UI, so choose an age past anything still in use:
+
+```bash
+apx-agent resources genie-sweep SPACE_ID --older-than-hours 24 --dry-run   # list only
+apx-agent resources genie-sweep SPACE_ID --older-than-hours 24             # delete
+```
+
+```python
+from apx_agent import sweep_genie_conversations
+
+stale = sweep_genie_conversations(ws, "space-abc", older_than_s=86400)          # dry run
+deleted = sweep_genie_conversations(ws, "space-abc", older_than_s=86400, dry_run=False)
 ```
 
 ### UC functions as tools — `uc_function_tool` and `uc_function_toolkit`
