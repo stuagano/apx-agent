@@ -19,8 +19,8 @@ from apx_agent._prompt_pins import (
     check_prompt_pins,
     open_prompt_pin_pr,
     read_prompt_bindings,
-    reset_prompt_tags,
 )
+from apx_agent._resolved_versions import clear_resolved
 
 _HEADER = """\
 schema_version = 1
@@ -41,9 +41,9 @@ class _Version:
 
 @pytest.fixture(autouse=True)
 def _clear_prompt_tags():
-    reset_prompt_tags()
+    clear_resolved()
     yield
-    reset_prompt_tags()
+    clear_resolved()
 
 
 def _write(root: Path, body: str) -> Path:
@@ -249,7 +249,7 @@ def test_doctor_online_reports_load_success_and_denial(tmp_path: Path) -> None:
 def test_trace_tags_follow_the_loaded_pin(tmp_path: Path) -> None:
     from unittest.mock import MagicMock, patch
 
-    from apx_agent._audit import stamp_pinned_prompts
+    from apx_agent._resolved_versions import stamp_resolved_versions
 
     _write(
         tmp_path,
@@ -257,9 +257,9 @@ def test_trace_tags_follow_the_loaded_pin(tmp_path: Path) -> None:
         'a = "main.prompts.a" # prompts:/main.prompts.a/1\n',
     )
     apply_pinned_prompts(LlmAgent(instructions="local"), tmp_path, loader=_texts)
-    span = MagicMock()
-    with patch("apx_agent._audit.set_trace_tags") as tags:
-        stamp_pinned_prompts(span)
+    span = MagicMock()  # a nested span: parent_id is set, so no upstream link
+    with patch("apx_agent._mlflow_tracing.set_trace_tags") as tags:
+        stamp_resolved_versions(span)
     tags.assert_called_once_with({
         "apx.prompt.key": "a,b",
         "apx.prompt.uri": "prompts:/main.prompts.a/1,prompts:/main.prompts.b/2",
@@ -280,7 +280,7 @@ def test_agent_span_stamps_prompt_tags(tmp_path: Path) -> None:
     context = MagicMock()
     context.__enter__ = MagicMock(return_value=mock_span)
     context.__exit__ = MagicMock(return_value=None)
-    with patch("mlflow.start_span", return_value=context), patch("apx_agent._audit.set_trace_tags") as tags:
+    with patch("mlflow.start_span", return_value=context), patch("apx_agent._mlflow_tracing.set_trace_tags") as tags:
         with safe_span("turn", span_type="AGENT"):
             pass
     assert any(call.args[0].get("apx.prompt.version") == "7" for call in tags.call_args_list)

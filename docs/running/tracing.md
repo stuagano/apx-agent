@@ -155,6 +155,30 @@ Every framework-emitted span carries a stable set of `apx.*` attributes. These a
 | `apx.governance.policy_id` | Which guard fired |
 | `apx.governance.reason` | Human-readable reason |
 
+### Resolved artifact versions
+
+When startup resolves an exact artifact version, every AGENT span carries it as
+span attributes and trace tags. Prompt Registry pins
+([prompt-registry.md](prompt-registry.md)) are the only kind today.
+
+| Attribute / trace tag | Value |
+|---|---|
+| `apx.prompt.key` | `[experimental.prompts]` keys, comma-joined in key order |
+| `apx.prompt.uri` | The pinned URIs, for example `prompts:/main.prompts.writer/7` |
+| `apx.prompt.version` | The pinned versions, in the same order |
+| `mlflow.linkedPrompts` | MLflow's own prompt link, trace tag only (root span) |
+
+`mlflow.linkedPrompts` is the tag `mlflow.genai.load_prompt` writes when it runs
+inside a trace. APX loads pins at startup, outside any trace, so it writes that
+tag on each root span itself, built with MLflow's `update_linked_prompts_tag`.
+The MLflow UI then links the trace to the prompt version. If agent code also
+loads a prompt during the turn, MLflow merges it into the same tag.
+
+A version is recorded once per process, so a request served on another task or
+thread sees what startup loaded. Only exact versions are recorded, never a live
+alias. A model or endpoint version would be one more kind with its own three
+`apx.<kind>.*` keys in `apx_agent._resolved_versions`; none is resolved yet.
+
 These attributes flow into `system.access.audit_logs` and workspace-level trace tables on Databricks, so compliance queries don't need agent-specific schemas.
 
 ## Exporting traces to Delta

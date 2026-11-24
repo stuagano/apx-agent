@@ -81,7 +81,10 @@ there too; APX does not guess which one is the system prompt.
 
 Every agent trace is tagged `apx.prompt.key`, `apx.prompt.uri`, and
 `apx.prompt.version` (comma-joined, key order, when more than one prompt is
-pinned). `evaluate` sets the same tags on the MLflow eval run.
+pinned). The root span also carries MLflow's native `mlflow.linkedPrompts`
+trace tag, so the MLflow UI links the trace to the prompt version. See
+[Resolved artifact versions](tracing.md#resolved-artifact-versions).
+`evaluate` sets the `apx.prompt.*` tags on the MLflow eval run.
 
 Startup fails when the pin cannot be loaded. The error names the key, the
 URI, and the exception. The loading identity needs `USE SCHEMA`, `EXECUTE`,

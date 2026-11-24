@@ -19,11 +19,12 @@ from __future__ import annotations
 import re
 import subprocess
 from collections.abc import Callable
-from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary
+
+from ._resolved_versions import ResolvedVersion, record_resolved, version_tags
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
@@ -37,7 +38,6 @@ _BINDING_LINE = re.compile(
     r"""^(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<quote>['"])(?P<value>.*?)(?P=quote)\s*(?P<comment>#.*)?$"""
 )
 _PROMPTS_HEADER = "[experimental.prompts]"
-_PROMPT_TAGS: ContextVar[dict[str, str] | None] = ContextVar("apx_prompt_tags", default=None)
 _APPLIED: WeakKeyDictionary[BaseAgent, dict[str, LoadedPrompt]] = WeakKeyDictionary()
 
 _GRANT_FIX = (
@@ -92,19 +92,6 @@ class PinPullRequest:
     body: str
     commands: list[list[str]]
     binding: PromptBinding
-
-
-def current_prompt_tags() -> dict[str, str]:
-    """Tags for the prompts applied in this process, or ``{}`` when none are pinned."""
-    tags = _PROMPT_TAGS.get()
-    if not tags:
-        return {}
-    return dict(tags)
-
-
-def reset_prompt_tags() -> None:
-    """Drop process-local prompt tags. Tests call this so later traces stay untagged."""
-    _PROMPT_TAGS.set(None)
 
 
 def read_prompt_bindings(project_root: Path) -> list[PromptBinding]:
@@ -163,14 +150,11 @@ def apply_pinned_prompts(
     bindings = read_prompt_bindings(project_root)
     _raise_binding_errors(bindings)
     pins = [binding for binding in bindings if binding.uri is not None and binding.version is not None]
-    if not pins:
-        existing = loaded_prompts(agent)
-        if existing:
-            _PROMPT_TAGS.set(prompt_run_tags(existing))
-        return existing
     current = loaded_prompts(agent)
-    if [prompt.uri for prompt in current] == [binding.uri for binding in sorted(pins, key=lambda item: item.key)]:
-        _PROMPT_TAGS.set(prompt_run_tags(current))
+    if not pins or [prompt.uri for prompt in current] == [
+        binding.uri for binding in sorted(pins, key=lambda item: item.key)
+    ]:
+        _record(current)
         return current
     load = loader if loader is not None else _default_loader
     loaded = [_load_one(binding, load) for binding in sorted(pins, key=lambda item: item.key)]
@@ -178,22 +162,25 @@ def apply_pinned_prompts(
     chosen = _choose_instructions(loaded)
     if chosen is not None and "_instructions" in vars(agent):
         setattr(agent, "_instructions", chosen.template)
-    _PROMPT_TAGS.set(prompt_run_tags(loaded))
+    _record(loaded)
     return loaded
 
 
 def prompt_run_tags(loaded: list[LoadedPrompt]) -> dict[str, str]:
     """Trace and eval tags for ``loaded``, keys sorted so the order is stable."""
-    if not loaded:
-        return {}
-    from ._audit import AuditAttrs
+    return version_tags(_resolved(loaded))
 
-    ordered = sorted(loaded, key=lambda prompt: prompt.key)
-    return {
-        AuditAttrs.PROMPT_KEY: ",".join(prompt.key for prompt in ordered),
-        AuditAttrs.PROMPT_URI: ",".join(prompt.uri for prompt in ordered),
-        AuditAttrs.PROMPT_VERSION: ",".join(str(prompt.version) for prompt in ordered),
-    }
+
+def _resolved(loaded: list[LoadedPrompt]) -> list[ResolvedVersion]:
+    return [
+        ResolvedVersion(kind="prompt", key=prompt.key, name=prompt.name, uri=prompt.uri, version=str(prompt.version))
+        for prompt in loaded
+    ]
+
+
+def _record(loaded: list[LoadedPrompt]) -> None:
+    """Make ``loaded`` the prompts every later trace in this process is stamped with."""
+    record_resolved("prompt", _resolved(loaded))
 
 
 def check_prompt_pins(
