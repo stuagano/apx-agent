@@ -66,6 +66,7 @@
 
 - [deploy/agentbricks-platform.md](deploy/agentbricks-platform.md) — how the Agent Bricks product works (durable-agent model, CLI, deploy, hosting tiers, identity) and where APX fits
 - [deploy/overview.md](deploy/overview.md) — deploying to Databricks Apps, compile flow, bundle structure
+- [deploy/genie-agents-as-code.md](deploy/genie-agents-as-code.md) — declare a Genie Agent in a file; validate, pull, plan and push it across workspaces
 - [deploy/troubleshooting.md](deploy/troubleshooting.md) — common failure modes and fixes
 
 ## Evaluate
