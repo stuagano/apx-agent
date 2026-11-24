@@ -169,6 +169,12 @@ class AuditAttrs:
     PROMPT_URI = "apx.prompt.uri"
     PROMPT_VERSION = "apx.prompt.version"
 
+    # Judge instructions loaded from a pinned Prompt Registry version (#1247).
+    # Eval-run tags only, never agent traces: the key is the judge name.
+    JUDGE_PROMPT_KEY = "apx.judge_prompt.key"
+    JUDGE_PROMPT_URI = "apx.judge_prompt.uri"
+    JUDGE_PROMPT_VERSION = "apx.judge_prompt.version"
+
     # Cross-agent trace correlation (issue #443). When agent A calls agent B,
     # A sends a W3C ``traceparent`` + ``x-apx-caller`` header. Both sides
     # stamp OUTBOUND_TRACE_ID (the traceparent's trace-id) as a trace tag, so

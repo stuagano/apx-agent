@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary
 
-from ._resolved_versions import ResolvedVersion, record_resolved, version_tags
+from ._resolved_versions import ResolvedVersion, record_resolved
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
@@ -147,17 +147,13 @@ def apply_pinned_prompts(
     does not contact the registry again. Startup calls this from ``compile_agent``
     (when ``project_root`` is set) and from ``setup_agent``.
     """
-    bindings = read_prompt_bindings(project_root)
-    _raise_binding_errors(bindings)
-    pins = [binding for binding in bindings if binding.uri is not None and binding.version is not None]
+    pins = _pins(project_root)
     current = loaded_prompts(agent)
-    if not pins or [prompt.uri for prompt in current] == [
-        binding.uri for binding in sorted(pins, key=lambda item: item.key)
-    ]:
+    if not pins or [prompt.uri for prompt in current] == [binding.uri for binding in pins]:
         _record(current)
         return current
     load = loader if loader is not None else _default_loader
-    loaded = [_load_one(binding, load) for binding in sorted(pins, key=lambda item: item.key)]
+    loaded = [_load_one(binding, load) for binding in pins]
     _APPLIED[agent] = {prompt.key: prompt for prompt in loaded}
     chosen = _choose_instructions(loaded)
     if chosen is not None and "_instructions" in vars(agent):
@@ -166,9 +162,51 @@ def apply_pinned_prompts(
     return loaded
 
 
-def prompt_run_tags(loaded: list[LoadedPrompt]) -> dict[str, str]:
-    """Trace and eval tags for ``loaded``, keys sorted so the order is stable."""
-    return version_tags(_resolved(loaded))
+def load_pinned_prompts(
+    project_root: Path,
+    *,
+    loader: Callable[[str], Any] | None = None,
+) -> list[LoadedPrompt]:
+    """Load and record every version pin in ``agent.toml`` without an agent in hand.
+
+    ``eval_against_endpoint`` uses this: the agent runs in a deployed App, so
+    only the pins it was deployed with are known. Same checks and errors as
+    ``apply_pinned_prompts``; instructions are not touched.
+    """
+    load = loader if loader is not None else _default_loader
+    loaded = [_load_one(binding, load) for binding in _pins(project_root)]
+    _record(loaded)
+    return loaded
+
+
+def load_prompt_uri(
+    key: str,
+    uri: str,
+    *,
+    loader: Callable[[str], Any] | None = None,
+) -> LoadedPrompt:
+    """Load one exact ``prompts:/catalog.schema.name/<version>`` URI, such as a judge's instructions.
+
+    An ``@alias`` or a name without a version raises ``PromptPinError``: APX
+    does not follow a live alias. The loaded version must equal the URI's.
+    """
+    name = _suggest_name(uri)
+    if name is None:
+        raise PromptPinError(
+            f"{key}: {uri!r} is not an exact prompts:/catalog.schema.name/<version> URI. "
+            "APX loads pinned versions only, never an @alias."
+        )
+    binding = _classify_comment(key, name, uri)
+    _raise_binding_errors([binding])
+    return _load_one(binding, loader if loader is not None else _default_loader)
+
+
+def _pins(project_root: Path) -> list[PromptBinding]:
+    """Version-pinned bindings in key order. Name-only and alias bindings are dropped."""
+    bindings = read_prompt_bindings(project_root)
+    _raise_binding_errors(bindings)
+    pins = [binding for binding in bindings if binding.uri is not None and binding.version is not None]
+    return sorted(pins, key=lambda binding: binding.key)
 
 
 def _resolved(loaded: list[LoadedPrompt]) -> list[ResolvedVersion]:

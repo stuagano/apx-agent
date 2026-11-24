@@ -16,6 +16,11 @@ The store is a module global, not a ``ContextVar``: startup runs in the server
 lifespan and requests run in other tasks, so a context-local value would not
 reach request traces.
 
+Eval runs carry the same versions: ``tag_run`` sets the ``apx.<kind>.*`` tags
+on the run and links Prompt Registry versions with MLflow's
+``link_prompt_version_to_run``. Judges built by ``pinned_judge`` add kind
+``judge_prompt``, which goes on eval runs only.
+
 To add a kind (model or endpoint versions), add its three ``AuditAttrs`` keys to
 ``_TAG_KEYS`` and record it where APX resolves the version. Record only exact
 versions, never a live alias.
@@ -24,16 +29,25 @@ versions, never a live alias.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ._audit import AuditAttrs
+
+if TYPE_CHECKING:
+    from mlflow.entities.model_registry.prompt_version import PromptVersion
 
 # kind -> (key, uri, version) tag names. A kind missing here cannot be recorded.
 _TAG_KEYS: dict[str, tuple[str, str, str]] = {
     # The dataset an eval run scored. Eval runs only (_eval_datasets.record_eval_dataset).
     "eval_dataset": (AuditAttrs.EVAL_DATASET_KEY, AuditAttrs.EVAL_DATASET_URI, AuditAttrs.EVAL_DATASET_VERSION),
     "prompt": (AuditAttrs.PROMPT_KEY, AuditAttrs.PROMPT_URI, AuditAttrs.PROMPT_VERSION),
+    # Judge instructions. Eval runs only: nothing records this kind, so agent
+    # traces never carry it.
+    "judge_prompt": (AuditAttrs.JUDGE_PROMPT_KEY, AuditAttrs.JUDGE_PROMPT_URI, AuditAttrs.JUDGE_PROMPT_VERSION),
 }
+
+# Kinds that are Prompt Registry versions, so MLflow can link them to a run.
+_PROMPT_KINDS = ("prompt", "judge_prompt")
 
 
 @dataclass(frozen=True)
@@ -100,7 +114,29 @@ def upstream_trace_tags(versions: list[ResolvedVersion]) -> dict[str, str]:
 
     # update_linked_prompts_tag reads only .name and .version, so a
     # ResolvedVersion stands in for the PromptVersion load_prompt returned.
-    return {TraceTagKey.LINKED_PROMPTS: update_linked_prompts_tag(None, prompts)}
+    # With no current tag and at least one prompt it always returns JSON text.
+    linked = update_linked_prompts_tag(None, cast("list[PromptVersion]", prompts))
+    return {TraceTagKey.LINKED_PROMPTS: str(linked)}
+
+
+def tag_run(run_id: str, versions: list[ResolvedVersion]) -> None:
+    """Record ``versions`` on an MLflow run (an eval run). No versions → no-op.
+
+    Sets the ``apx.<kind>.*`` tags, then links each Prompt Registry version with
+    MLflow's own ``MlflowClient.link_prompt_version_to_run``: the run's
+    ``mlflow.linkedPrompts`` tag, and on Unity Catalog the registry's
+    prompt-to-run link. A failed link raises; it is not skipped.
+    """
+    if not versions:
+        return
+    from mlflow import MlflowClient
+
+    client = MlflowClient()
+    for key, value in version_tags(versions).items():
+        client.set_tag(run_id, key, value)
+    for version in versions:
+        if version.kind in _PROMPT_KINDS:
+            client.link_prompt_version_to_run(run_id, version.uri)
 
 
 def stamp_resolved_versions(span: Any) -> None:

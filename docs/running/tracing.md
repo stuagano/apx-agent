@@ -179,6 +179,11 @@ thread sees what startup loaded. Only exact versions are recorded, never a live
 alias. A model or endpoint version would be one more kind with its own three
 `apx.<kind>.*` keys in `apx_agent._resolved_versions`; none is resolved yet.
 
+Eval runs carry the same `apx.<kind>.*` tags. Their prompt versions are linked
+to the run with MLflow's `link_prompt_version_to_run`. Judges built with
+`pinned_judge` add `apx.judge_prompt.*` on the run only. See
+[Evals record the versions they scored](prompt-registry.md#evals-record-the-versions-they-scored).
+
 These attributes flow into `system.access.audit_logs` and workspace-level trace tables on Databricks, so compliance queries don't need agent-specific schemas.
 
 ## Exporting traces to Delta
