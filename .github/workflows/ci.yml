@@ -6,7 +6,8 @@ on:
   pull_request:
     branches: [main]
   # GITHUB_TOKEN auto-merge does not fire `push`. Post-merge-ci.yml dispatches
-  # this so the full 3.13 suite still runs after a bot squash.
+  # this so the full 3.13 suite still runs after a bot squash;
+  # after-auto-merge.yml triggers that within minutes of the merge.
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a new push frees the runners and

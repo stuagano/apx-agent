@@ -1,0 +1,55 @@
+name: After auto-merge
+
+# A GITHUB_TOKEN squash auto-merge emits no pull_request or push event, so
+# beads-merge.yml and post-merge-ci.yml would only run on their cron, which
+# GitHub schedules rarely. A CI run on a pull request is started by a human
+# push, so its completion does fire workflow_run. This job waits for that pull
+# request to merge, then dispatches both workflows. GITHUB_TOKEN may trigger
+# workflow_dispatch. It exits quietly if the pull request closes unmerged or
+# is still open after about 10 minutes; the crons remain the backstop.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: write
+  pull-requests: read
+
+concurrency:
+  # A newer CI run for the same pull request supersedes the older wait.
+  group: after-auto-merge-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.pull_requests[0].number
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wait for the merge, then dispatch beads merge and post-merge CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 20); do
+            state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state -q .state)
+            case "$state" in
+              MERGED)
+                echo "PR #$PR merged; dispatching beads merge and post-merge CI"
+                gh workflow run beads-merge.yml --repo "$GITHUB_REPOSITORY" --ref main
+                gh workflow run post-merge-ci.yml --repo "$GITHUB_REPOSITORY" --ref main
+                exit 0
+                ;;
+              CLOSED)
+                echo "PR #$PR closed without merging; nothing to do"
+                exit 0
+                ;;
+            esac
+            sleep 30
+          done
+          echo "PR #$PR not merged after 10 minutes; leaving it to the cron"

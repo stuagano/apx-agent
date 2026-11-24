@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 BEADS_PY = ROOT / "scripts" / "beads" / "beads.py"
@@ -353,6 +354,24 @@ def test_merge_workflow_catches_token_squash_without_dropping_runs() -> None:
     assert "close-merged" in merge
     assert "--within-hours 12" in merge
     assert 'beads.py close-pr --event "$GITHUB_EVENT_PATH"' in merge
+    assert "2026-11-23" not in merge
+    assert "MERGE_CLOSE_SKIP" in merge
+
+
+def test_ci_completion_dispatches_merge_followups() -> None:
+    after = yaml.safe_load((ROOT / ".github" / "workflows" / "after-auto-merge.yml").read_text(encoding="utf-8"))
+    assert after[True]["workflow_run"] == {"workflows": ["CI"], "types": ["completed"]}
+    assert after["permissions"] == {"actions": "write", "pull-requests": "read"}
+    job = after["jobs"]["dispatch"]
+    assert "github.event.workflow_run.event == 'pull_request'" in job["if"]
+    assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+    script = job["steps"][0]["run"]
+    assert "gh workflow run beads-merge.yml" in script
+    assert "gh workflow run post-merge-ci.yml" in script
+    assert "CLOSED)" in script
+    for name in ("beads-merge.yml", "post-merge-ci.yml", "ci.yml"):
+        dispatched = yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
+        assert "workflow_dispatch" in dispatched[True], name
 
 
 def test_closing_keywords_find_issue_numbers() -> None:

@@ -7,13 +7,14 @@ name: beads merge
 # job: a squash commit often drops the keyword, and an issue left open would
 # make the daily sync reopen the bead. An exempt PR with no bead id and no
 # closing keyword is a no-op. An id that is already closed is left closed.
-# Merges before 2026-11-23 17:50Z stay out of the scan so the #911 docs
-# reference is not replayed.
+# MERGE_CLOSE_SKIP in scripts/beads/beads.py lists the (PR, bead) pairs a
+# merge never closes.
 #
 # GITHUB_TOKEN squash auto-merge does not emit pull_request or push.
-# pull_request_target is suppressed the same way, so it is not a fix. The
-# schedule and workflow_dispatch scan pull requests merged in the last 12
-# hours, the same backstop post-merge CI uses for the missing push event.
+# pull_request_target is suppressed the same way, so it is not a fix.
+# after-auto-merge.yml dispatches this workflow within minutes of the merge.
+# The dispatch and the schedule, a rare backstop, scan pull requests merged in
+# the last 12 hours, as post-merge CI does for the missing push event.
 on:
   pull_request:
     types: [closed]
