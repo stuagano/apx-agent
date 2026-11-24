@@ -17327,6 +17327,11 @@ def resources_genie_sweep(
     click.echo(f"{verb} {len(stale)} conversation(s) older than {older_than_hours:g}h")
 
 
+from ._genie_space_as_code import genie_space as _genie_space_group  # noqa: E402
+
+resources.add_command(_genie_space_group)
+
+
 @main.command("dashboard-open")
 @click.argument("dashboard_id")
 def dashboard_open(dashboard_id: str) -> None:
