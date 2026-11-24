@@ -145,6 +145,35 @@ def test_evaluate_records_the_pin_on_the_run_it_scored(
     assert [call.args for call in links.call_args_list] == [(seen["run_id"], "prompts:/main.prompts.writer/7")]
 
 
+def test_dataset_and_pin_land_on_the_same_eval_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_store: str
+) -> None:
+    """The pin set before evaluate and the dataset recorded after (#1251) share one run."""
+    import pandas as pd
+
+    from apx_agent._eval import evaluate
+    from apx_agent._eval_datasets import record_eval_dataset
+
+    monkeypatch.chdir(_project(tmp_path))
+    monkeypatch.setattr("apx_agent._prompt_pins._default_loader", _texts)
+
+    def fake_evaluate(**kwargs: Any) -> MagicMock:
+        run_id = mlflow.active_run().info.run_id
+        mlflow.log_input(mlflow.data.from_pandas(pd.DataFrame(kwargs["data"]), name="cases"))
+        return MagicMock(run_id=run_id)
+
+    with patch("apx_agent._eval.compile_to_chat_agent", return_value=MagicMock()), \
+         patch("mlflow.genai.evaluate", fake_evaluate), \
+         patch("mlflow.MlflowClient.link_prompt_version_to_run", _links()):
+        result = evaluate(LlmAgent(instructions="local"), model="m", evalset=[{"request": "hi"}], scorers=[])
+    recorded = record_eval_dataset(result.run_id, key="cases.jsonl", uri="cases.jsonl")
+    assert recorded is not None
+    tags = mlflow.MlflowClient().get_run(result.run_id).data.tags
+    assert tags["apx.prompt.uri"] == "prompts:/main.prompts.writer/7"
+    assert tags["apx.eval_dataset.key"] == "cases.jsonl"
+    assert tags["apx.eval_dataset.version"] == recorded.version != ""
+
+
 def test_evaluate_reuses_an_active_run_and_leaves_it_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_store: str
 ) -> None:
