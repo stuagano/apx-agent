@@ -1,0 +1,330 @@
+"""genie_agent_tool (#1256): Genie Agent mode over SSE, progress, cited report, errors.
+
+The Agent mode responses endpoint is called through ``ws.api_client.do(raw=True)``
+and mocked here with an in-memory SSE byte stream.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+from databricks.sdk.errors import NotFound, PermissionDenied
+
+import apx_agent.genie as g
+from apx_agent import end_genie_session, genie_agent_tool
+from apx_agent._errors import ToolError
+from apx_agent._mlflow_tracing import _ACTIVE_SESSION
+
+
+def _sse(events: list[dict[str, Any]]) -> bytes:
+    return b"".join(
+        f"event: {e['type']}\r\ndata: {json.dumps(e)}\r\n\r\n".encode() for e in events
+    )
+
+
+class _Stream:
+    """A raw SDK stream over fixed bytes, read in the caller's block size."""
+
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.pos = 0
+        self.closed = False
+
+    def read(self, n: int = -1) -> bytes:
+        chunk = self.payload[self.pos:self.pos + n]
+        self.pos += len(chunk)
+        return chunk
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _response(conversation_id: str, status: str, output: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
+    return {"object": "response", "id": f"r-{conversation_id}", "model": "genie-agent", "status": status,
+            "conversation_id": conversation_id, "output": output, **extra}
+
+
+REASONING = {"type": "reasoning", "id": "rs1", "status": "completed",
+             "content": [{"type": "reasoning_text", "text": "I need revenue by region."}], "summary": []}
+CALL = {"type": "function_call", "id": "fc1", "call_id": "call1", "name": "execute_sql",
+        "arguments": json.dumps({"sql": "SELECT region, SUM(rev) FROM sales GROUP BY region"})}
+CALL_OUT = {"type": "function_call_output", "id": "call1_output", "status": "completed",
+            "output": "Revenue by region\n| region | rev |\n|---|---|\n| west | 10 |"}
+TABLE = {"type": "table", "columns": ["region", "rev"], "total_row_count": 1}
+REPORT = {"type": "message", "role": "assistant", "id": "m1", "content": [
+    {"type": "output_text", "text": "West leads revenue.",
+     "annotations": [{"type": "url_citation", "title": "sales", "url": "https://x/sales"}]},
+    TABLE,
+]}
+
+
+def _events(conversation_id: str = "c1", final: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    output = [REASONING, CALL, CALL_OUT, REPORT]
+    return [
+        {"type": "response.created", "sequence_number": 0,
+         "response": _response(conversation_id, "in_progress", [])},
+        {"type": "response.output_item.added", "sequence_number": 1, "item": {**REASONING, "status": "in_progress"}},
+        {"type": "response.output_item.done", "sequence_number": 2, "item": REASONING},
+        {"type": "response.output_item.done", "sequence_number": 3, "item": CALL},
+        {"type": "response.output_item.done", "sequence_number": 4, "item": CALL_OUT},
+        {"type": "response.output_item.done", "sequence_number": 5, "item": REPORT},
+        final or {"type": "response.completed", "sequence_number": 6,
+                  "response": _response(conversation_id, "completed", output)},
+    ]
+
+
+def _ws(*conversation_ids: str) -> MagicMock:
+    """A client whose responses endpoint streams one full turn per conversation id."""
+    ws = MagicMock()
+    streams = [_Stream(_sse(_events(c))) for c in conversation_ids]
+    ws.api_client.do.side_effect = [{"contents": s} for s in streams]
+    ws.streams = streams
+    return ws
+
+
+def _body(ws: MagicMock, call: int) -> dict[str, Any]:
+    return ws.api_client.do.call_args_list[call].kwargs["body"]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_registry(monkeypatch):
+    registry = g.GenieConversations()
+    monkeypatch.setattr(g, "_AGENT_CONVERSATIONS", registry)
+    token = _ACTIVE_SESSION.set("")
+    yield registry
+    _ACTIVE_SESSION.reset(token)
+
+
+@pytest.fixture
+def progress(monkeypatch):
+    events: list[dict[str, Any]] = []
+
+    def _record(message: str, **attributes: Any) -> None:
+        events.append({"message": message, **attributes})
+
+    monkeypatch.setattr(g, "emit_progress", _record)
+    return events
+
+
+@pytest.mark.asyncio
+async def test_streams_reasoning_and_sql_as_progress_before_the_stream_ends(monkeypatch):
+    ws = _ws("c1")
+    seen: list[tuple[str, bool]] = []
+    monkeypatch.setattr(g, "emit_progress", lambda message, **a: seen.append(
+        (a["kind"], ws.streams[0].pos < len(ws.streams[0].payload))))
+
+    await genie_agent_tool("space-1")(question="revenue by region?", ws=ws)
+
+    # One event per finished reasoning step and SQL call, each while the stream was still open.
+    assert seen == [("reasoning", True), ("sql", True)]
+
+
+@pytest.mark.asyncio
+async def test_progress_carries_the_reasoning_text_and_sql(progress):
+    await genie_agent_tool("space-1")(question="revenue by region?", ws=_ws("c1"))
+
+    assert progress == [
+        {"message": "Genie reasoning: I need revenue by region.", "kind": "reasoning"},
+        {"message": "Genie is running SQL", "kind": "sql",
+         "sql": "SELECT region, SUM(rev) FROM sales GROUP BY region"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_progress_lands_on_the_real_tool_span_across_the_worker_thread(tmp_path):
+    """Read-back: the streamed steps are apx.progress events on the caller's MLflow span."""
+    import mlflow
+
+    old_uri = mlflow.get_tracking_uri()
+    mlflow.set_tracking_uri(f"file://{tmp_path}")
+    try:
+        mlflow.set_experiment("apx-genie-agent-progress")
+        mlflow.tracing.enable()
+        with mlflow.start_span(name="ask_genie_agent") as span:
+            await genie_agent_tool("space-1")(question="q", ws=_ws("c1"))
+    finally:
+        mlflow.set_tracking_uri(old_uri)
+
+    progress = [(e.attributes or {}) for e in span.events or [] if e.name == "apx.progress"]
+    assert [p["kind"] for p in progress] == ["reasoning", "sql"]
+    assert progress[1]["sql"].startswith("SELECT region")
+
+
+@pytest.mark.asyncio
+async def test_returns_report_with_sources_and_posts_an_agent_mode_prompt():
+    ws = _ws("c1")
+
+    text = await genie_agent_tool("space-1")(question="revenue by region?", ws=ws)
+
+    assert text == "West leads revenue.\n\nSources:\n- [sales](https://x/sales)"
+    call = ws.api_client.do.call_args_list[0]
+    assert call.args == ("POST", "/api/2.0/genie/agents/space-1/responses")
+    assert call.kwargs["raw"] is True
+    assert call.kwargs["headers"]["Accept"] == "text/event-stream"
+    assert call.kwargs["body"] == {"input": [{"type": "message", "role": "user", "content": [
+        {"type": "input_text", "text": "revenue by region?"}]}]}
+    assert ws.streams[0].closed
+
+
+@pytest.mark.asyncio
+async def test_structured_returns_citations_queries_and_tables():
+    result = await genie_agent_tool("space-1", structured=True)(question="q", ws=_ws("c1"))
+
+    assert result == {
+        "question": "q",
+        "report": "West leads revenue.",
+        "citations": [{"type": "url_citation", "title": "sales", "url": "https://x/sales"}],
+        "queries": [{"call_id": "call1", "sql": "SELECT region, SUM(rev) FROM sales GROUP BY region",
+                     "result": CALL_OUT["output"]}],
+        "tables": [TABLE],
+        "conversation_id": "c1",
+        "response_id": "r-c1",
+        "status": "completed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_without_a_progress_sink_the_final_report_still_returns():
+    # No MLflow span is active, so emit_progress has nowhere to stream to.
+    text = await genie_agent_tool("space-1")(question="q", ws=_ws("c1"))
+    assert text.startswith("West leads revenue.")
+
+
+@pytest.mark.asyncio
+async def test_failed_response_is_a_tool_error():
+    ws = MagicMock()
+    failed = {"type": "response.failed", "sequence_number": 3, "response": _response(
+        "c1", "failed", [], error={"code": "INTERNAL_ERROR", "message": "warehouse stopped"})}
+    ws.api_client.do.return_value = {"contents": _Stream(_sse(_events(final=failed)))}
+
+    with pytest.raises(ToolError, match="warehouse stopped"):
+        await genie_agent_tool("space-1")(question="q", ws=ws)
+
+
+@pytest.mark.asyncio
+async def test_stream_ending_early_is_a_tool_error():
+    ws = MagicMock()
+    ws.api_client.do.return_value = {"contents": _Stream(_sse(_events()[:3]))}
+
+    with pytest.raises(ToolError, match="status: in_progress"):
+        await genie_agent_tool("space-1")(question="q", ws=ws)
+
+
+@pytest.mark.asyncio
+async def test_stale_obo_scope_becomes_the_reauthorize_hint():
+    ws = MagicMock()
+    ws.api_client.do.side_effect = PermissionDenied("Invalid scope, required scopes: genie")
+
+    with pytest.raises(ToolError, match="Re-authorize the app"):
+        await genie_agent_tool("space-1")(question="q", ws=ws)
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_is_a_tool_error_not_a_500():
+    ws = MagicMock()
+    ws.api_client.do.side_effect = PermissionDenied("caller lacks CAN QUERY on the agent")
+
+    with pytest.raises(ToolError, match="Genie Agent request failed: caller lacks CAN QUERY"):
+        await genie_agent_tool("space-1")(question="q", ws=ws)
+
+
+class _HangingStream(_Stream):
+    """Sends ``response.created`` then blocks until closed, like a stalled response."""
+
+    def __init__(self) -> None:
+        super().__init__(_sse(_events()[:1]))
+        self._closed = threading.Event()
+
+    def read(self, n: int = -1) -> bytes:
+        chunk = super().read(n)
+        if chunk:
+            return chunk
+        self._closed.wait(5)
+        raise OSError("stream closed")
+
+    def close(self) -> None:
+        super().close()
+        self._closed.set()
+
+
+@pytest.mark.asyncio
+async def test_timeout_cancels_the_response_and_is_a_tool_error():
+    ws = MagicMock()
+    stream = _HangingStream()
+    ws.api_client.do.side_effect = [{"contents": stream}, {}]
+
+    with pytest.raises(ToolError, match="did not finish within 0s"):
+        await genie_agent_tool("space-1", wait_s=0.2)(question="q", ws=ws)
+
+    assert stream.closed
+    cancel = ws.api_client.do.call_args_list[1]
+    assert cancel.args == ("POST", "/api/2.0/genie/agents/space-1/conversations/c1/responses/r-c1/cancel")
+
+
+def test_wait_s_and_space_id_are_validated():
+    with pytest.raises(ValueError, match="positive wait_s"):
+        genie_agent_tool("space-1", wait_s=0)
+    with pytest.raises(ValueError, match="non-empty space_id"):
+        genie_agent_tool("")
+
+
+def test_declares_the_genie_space_and_scope():
+    tool = genie_agent_tool("space-1")
+    assert tool.__name__ == "ask_genie_agent"
+    assert "genie" in tool._apx_user_api_scopes
+
+
+@pytest.mark.asyncio
+async def test_follow_ups_continue_the_sessions_agent_conversation():
+    ws = _ws("c1", "c1")
+    tool = genie_agent_tool("space-1")
+
+    _ACTIVE_SESSION.set("s1")
+    await tool(question="revenue?", ws=ws)
+    await tool(question="and last year?", ws=ws)
+
+    assert "conversation_id" not in _body(ws, 0)
+    assert _body(ws, 1)["conversation_id"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_sessions_and_follow_ups_off_get_new_conversations():
+    ws = _ws("c1", "c2", "c3")
+    tool = genie_agent_tool("space-1")
+    _ACTIVE_SESSION.set("s1")
+    await tool(question="q", ws=ws)
+    _ACTIVE_SESSION.set("s2")
+    await tool(question="q", ws=ws)
+    await genie_agent_tool("space-1", follow_ups=False)(question="q", ws=ws)
+
+    assert all("conversation_id" not in _body(ws, i) for i in range(3))
+
+
+@pytest.mark.asyncio
+async def test_missing_agent_conversation_is_replaced(_fresh_registry):
+    ws = _ws("c2")
+    ws.api_client.do.side_effect = [NotFound("conversation gone"), *ws.api_client.do.side_effect]
+    _fresh_registry.put("s1", "space-1", "c1", ws)
+    _ACTIVE_SESSION.set("s1")
+
+    text = await genie_agent_tool("space-1")(question="q", ws=ws)
+
+    assert text.startswith("West leads revenue.")
+    assert _body(ws, 0)["conversation_id"] == "c1"
+    assert "conversation_id" not in _body(ws, 1)
+    assert _fresh_registry.get("s1", "space-1") == "c2"
+
+
+@pytest.mark.asyncio
+async def test_ending_the_session_deletes_its_agent_conversation(monkeypatch):
+    monkeypatch.setattr(g, "_CONVERSATIONS", g.GenieConversations())
+    ws = _ws("c1")
+    _ACTIVE_SESSION.set("s1")
+    await genie_agent_tool("space-1")(question="q", ws=ws)
+
+    assert end_genie_session("s1") == 1
+    ws.genie.delete_conversation.assert_called_once_with(space_id="space-1", conversation_id="c1")

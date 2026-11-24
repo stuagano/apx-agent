@@ -134,6 +134,7 @@ These are pre-built tools for the Databricks platform. Each factory returns a re
 | `uc_function_tool(name)` | Execute a registered UC function with a `params` dictionary. UC types guide SQL literal conversion. | `DatabricksFunction` |
 | `uc_function_toolkit(schema)` | All agent-facing functions in a UC schema as tools | `DatabricksFunction` (×N) |
 | `genie_tool(space_id)` | Ask a natural-language question to a Genie space; follow-ups in one session continue the same conversation | `DatabricksGenieSpace` |
+| `genie_agent_tool(space_id)` | Ask a Genie Agent in Agent mode; streams reasoning and SQL as trace progress and returns the cited report (`structured=True` for a dict) | `DatabricksGenieSpace`, `genie` user scope |
 | `genie_one_tool()` | Ask Genie One (workspace-wide Genie) via its managed MCP; asks and polls in one call, as the calling user, and returns the finished answer or a deep link after `wait_s` | `genie` user scope |
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
 | `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse | `DatabricksSQLWarehouse` |
@@ -200,6 +201,43 @@ from apx_agent import sweep_genie_conversations
 stale = sweep_genie_conversations(ws, "space-abc", older_than_s=86400)          # dry run
 deleted = sweep_genie_conversations(ws, "space-abc", older_than_s=86400, dry_run=False)
 ```
+
+### Genie Agent mode — `genie_agent_tool`
+
+`genie_agent_tool(space_id)` sends the prompt to the Genie Agent in
+[Agent mode](https://docs.databricks.com/aws/en/genie-agents/conversation-api)
+(`POST /api/2.0/genie/agents/{space_id}/responses`) as the calling user (OBO).
+Agent mode plans the work, runs several SQL queries and any MCP tools attached
+to the Genie Agent, and writes a report with citations. It can take minutes.
+
+- **Progress.** The answer streams over Server-Sent Events. Each finished
+  reasoning step and each SQL query is recorded as an `apx.progress` event on
+  the tool's trace span (the slow-tool progress from #1116), so the dev UI trace
+  shows the steps while the call runs. Without an active trace the tool still
+  returns the final report.
+- **Result.** By default the tool returns the report text followed by its
+  sources. `structured=True` returns a dict with `report`, `citations` (the
+  report's annotations as Genie sends them), `queries` (each `call_id`, its
+  `sql`, and its `result` summary), `tables`, `conversation_id`, `response_id`,
+  and `status`.
+- **Follow-ups.** One Agent mode conversation is continued per apx session per
+  space, kept apart from the Chat mode conversations of `genie_tool`, and
+  deleted the same way (`end_genie_session`, idle, or LRU eviction).
+  `follow_ups=False` starts a new conversation for every prompt.
+- **Limits and errors.** `wait_s` (default 600) bounds the whole call. Past it
+  apx closes the stream, cancels the response (closing alone does not cancel
+  it), and the tool raises a `ToolError`. A failed response, a stream that ends
+  early, a permission error, or a stale OBO consent (with the re-authorize hint)
+  also become a `ToolError`, never a 500.
+
+```python
+from apx_agent import Agent, genie_agent_tool
+
+agent = Agent(tools=[genie_agent_tool("space-abc", wait_s=900)])
+```
+
+Callers need CAN VIEW on the Genie Agent and `SELECT` on its data. The tool
+declares the Genie space resource and the `genie` user scope.
 
 ### UC functions as tools — `uc_function_tool` and `uc_function_toolkit`
 

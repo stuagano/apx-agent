@@ -1,6 +1,6 @@
-"""genie_tool / genie_query_tool / genie_one_tool — Genie as a registered apx-agent tool.
+"""genie_tool / genie_query_tool / genie_one_tool / genie_agent_tool — Genie as apx-agent tools.
 
-Three factories:
+Four factories:
 
   * ``genie_tool(space_id)`` — returns the Genie space's *text answer* as a string.
     Use when the agent needs a narrative response ("what's our top-selling region?").
@@ -12,6 +12,9 @@ Three factories:
   * ``genie_one_tool()`` — asks Genie One (the workspace-wide Genie, not one space)
     through its managed MCP and returns the finished answer as one tool call.
 
+  * ``genie_agent_tool(space_id)`` — asks a Genie Agent in Agent mode, streams its
+    reasoning and SQL as progress events, and returns the cited final report.
+
 ``genie_tool`` and ``genie_query_tool`` continue one Genie conversation per apx
 session per space, so follow-up questions keep their context (#1254). apx deletes
 the conversations it started when the session ends or is evicted, and
@@ -22,10 +25,13 @@ so that ``UserClientDependency`` is resolved eagerly at function definition time
 ``get_type_hints()`` in ``_inspection.py`` sees the real Annotated[...] type, not a string.
 """
 
+import asyncio
 import collections
+import json
 import logging
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,7 +39,7 @@ from databricks.sdk.errors import NotFound
 from databricks.sdk.errors.base import DatabricksError
 
 from ._errors import ToolError
-from ._mlflow_tracing import current_session_id
+from ._mlflow_tracing import current_session_id, emit_progress
 from ._obo import reauthorize_hint
 
 logger = logging.getLogger(__name__)
@@ -146,7 +152,7 @@ def end_genie_session(session_id: str) -> int:
     up by idle/LRU eviction. Returns how many conversations the session had.
     Deletion failures are logged, never raised.
     """
-    return _CONVERSATIONS.end_session(session_id)
+    return _CONVERSATIONS.end_session(session_id) + _AGENT_CONVERSATIONS.end_session(session_id)
 
 
 def _ask(ws: Any, space_id: str, question: str, *, follow_ups: bool) -> Any:
@@ -499,5 +505,300 @@ def genie_one_tool(
         return _genie_one_text(state, wait_s)
 
     tool = build_tool(_ask_genie_one, name=name, description=_desc)
+    require_user_api_scopes(tool, ["genie"])
+    return tool
+
+
+# ---------------------------------------------------------------------------
+# Factory 4: Genie Agent mode — streamed reasoning and SQL, cited final report (#1256)
+# ---------------------------------------------------------------------------
+
+GENIE_AGENT_RESPONSES_PATH = "/api/2.0/genie/agents/{space_id}/responses"
+GENIE_AGENT_CANCEL_PATH = (
+    "/api/2.0/genie/agents/{space_id}/conversations/{conversation_id}/responses/{response_id}/cancel"
+)
+
+# Agent mode conversations are tracked apart from Chat mode ones: the two modes
+# answer through different endpoints, so a session's Chat conversation is never
+# continued in Agent mode or the other way round. Cleanup is shared (#1255).
+_AGENT_CONVERSATIONS = GenieConversations()
+
+
+def _sse_events(stream: Any) -> Iterator[dict[str, Any]]:
+    """Yield each Server-Sent Event's JSON ``data`` as it arrives, typed by ``event:``.
+
+    Reads in small blocks so an event surfaces soon after the server sends it.
+    """
+    buf = b""
+    while True:
+        chunk = stream.read(1024)
+        if chunk:
+            buf = (buf + chunk).replace(b"\r\n", b"\n")
+        while b"\n\n" in buf or (not chunk and buf.strip()):
+            raw, _, buf = buf.partition(b"\n\n")
+            name = None
+            data: list[str] = []
+            for line in raw.decode("utf-8").split("\n"):
+                if line.startswith("event:"):
+                    name = line[len("event:"):].strip()
+                elif line.startswith("data:"):
+                    data.append(line[len("data:"):].strip())
+            if data:
+                event = json.loads("\n".join(data))
+                if name is not None:
+                    event.setdefault("type", name)
+                yield event
+        if not chunk:
+            return
+
+
+def _function_call_sql(item: dict[str, Any]) -> str:
+    """The SQL of an ``execute_sql`` function call (its JSON arguments, else the raw string)."""
+    arguments = item.get("arguments")
+    try:
+        parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except ValueError:
+        return str(arguments)
+    if isinstance(parsed, dict):
+        for key in ("sql", "query"):
+            if isinstance(parsed.get(key), str):
+                return parsed[key]
+    return str(arguments)
+
+
+def _report_progress(item: Any) -> None:
+    """Surface a finished reasoning step or SQL query as a slow-tool progress event (#1116)."""
+    if not isinstance(item, dict):
+        return
+    if item.get("type") == "reasoning":
+        parts = list(item.get("content") or []) + list(item.get("summary") or [])
+        text = " ".join(str(p["text"]) for p in parts if isinstance(p, dict) and p.get("text"))
+        if text:
+            emit_progress(f"Genie reasoning: {text[:500]}", kind="reasoning")
+    elif item.get("type") == "function_call":
+        emit_progress("Genie is running SQL", kind="sql", sql=_function_call_sql(item)[:2000])
+
+
+def _stream_agent_response(
+    ws: Any, space_id: str, question: str, conversation_id: str | None, live: dict[str, Any]
+) -> dict[str, Any]:
+    """POST one Agent mode prompt and read its SSE stream to the terminal response.
+
+    ``live`` holds the open stream and the latest response so a timed-out caller
+    can close the stream and cancel the response from another thread.
+    """
+    body: dict[str, Any] = {
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": question}],
+        }],
+    }
+    if conversation_id is not None:
+        body["conversation_id"] = conversation_id
+    raw = ws.api_client.do(
+        "POST",
+        GENIE_AGENT_RESPONSES_PATH.format(space_id=space_id),
+        body=body,
+        headers={"Accept": "text/event-stream", "Content-Type": "application/json"},
+        raw=True,
+    )
+    stream = raw["contents"]
+    live["stream"] = stream
+    response: dict[str, Any] = {}
+    try:
+        for event in _sse_events(stream):
+            if isinstance(event.get("response"), dict):
+                response = event["response"]
+                live["response"] = response
+            if event.get("type") == "response.output_item.done":
+                _report_progress(event.get("item"))
+            if event.get("type") in ("response.completed", "response.failed"):
+                break
+    finally:
+        stream.close()
+    return response
+
+
+def _agent_turn(
+    ws: Any, space_id: str, question: str, *, follow_ups: bool, live: dict[str, Any]
+) -> dict[str, Any]:
+    """One Agent mode turn, continuing this session's Agent conversation when there is one."""
+    session_id = current_session_id() if follow_ups else None
+    if session_id is None:
+        return _stream_agent_response(ws, space_id, question, None, live)
+    conversation_id = _AGENT_CONVERSATIONS.get(session_id, space_id)
+    if conversation_id is not None:
+        try:
+            return _stream_agent_response(ws, space_id, question, conversation_id, live)
+        except NotFound:
+            logger.info(
+                "Genie Agent conversation %s is gone in space %s; starting a new one",
+                conversation_id, space_id,
+            )
+            _AGENT_CONVERSATIONS.forget(session_id, space_id)
+    response = _stream_agent_response(ws, space_id, question, None, live)
+    if response.get("conversation_id"):
+        _AGENT_CONVERSATIONS.put(session_id, space_id, str(response["conversation_id"]), ws)
+    return response
+
+
+def _cancel_agent_response(ws: Any, space_id: str, live: dict[str, Any]) -> None:
+    """Close a timed-out stream and cancel its response (closing alone does not cancel)."""
+    stream = live.get("stream")
+    if stream is not None:
+        try:
+            stream.close()
+        except Exception as exc:
+            logger.debug("Could not close Genie Agent stream: %s", exc)
+    response = live.get("response")
+    if not isinstance(response, dict) or not response.get("id") or not response.get("conversation_id"):
+        return
+    try:
+        ws.api_client.do("POST", GENIE_AGENT_CANCEL_PATH.format(
+            space_id=space_id,
+            conversation_id=response["conversation_id"],
+            response_id=response["id"],
+        ), body={})
+    except Exception as exc:
+        logger.warning("Could not cancel Genie Agent response %s: %s", response["id"], exc)
+
+
+def _agent_result(question: str, response: dict[str, Any]) -> dict[str, Any]:
+    """The final report, its citations, and the SQL Genie ran, from a completed response."""
+    report: list[str] = []
+    citations: list[Any] = []
+    tables: list[Any] = []
+    queries: dict[str, dict[str, Any]] = {}
+    for item in response.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if kind == "message" and item.get("role") == "assistant":
+            for chunk in item.get("content") or []:
+                if not isinstance(chunk, dict):
+                    continue
+                if chunk.get("type") == "output_text":
+                    if chunk.get("text"):
+                        report.append(str(chunk["text"]))
+                    citations.extend(chunk.get("annotations") or [])
+                else:
+                    tables.append(chunk)
+        elif kind == "function_call":
+            call_id = str(item.get("call_id"))
+            queries.setdefault(call_id, {"call_id": call_id})["sql"] = _function_call_sql(item)
+        elif kind == "function_call_output":
+            call_id = str(item.get("id")).removesuffix("_output")
+            queries.setdefault(call_id, {"call_id": call_id})["result"] = item.get("output")
+    return {
+        "question": question,
+        "report": "\n\n".join(report),
+        "citations": citations,
+        "queries": list(queries.values()),
+        "tables": tables,
+        "conversation_id": response.get("conversation_id"),
+        "response_id": response.get("id"),
+        "status": response.get("status"),
+    }
+
+
+def _citation_label(citation: Any) -> str:
+    if isinstance(citation, dict):
+        title, url = citation.get("title"), citation.get("url")
+        if title and url:
+            return f"[{title}]({url})"
+        if title or url:
+            return str(title or url)
+    return json.dumps(citation, sort_keys=True, default=str)
+
+
+def _agent_text(result: dict[str, Any]) -> str:
+    text = result["report"] or "Genie Agent returned no report."
+    if result["citations"]:
+        text += "\n\nSources:\n" + "\n".join(f"- {_citation_label(c)}" for c in result["citations"])
+    return text
+
+
+def genie_agent_tool(
+    space_id: str,
+    *,
+    name: str = "ask_genie_agent",
+    description: str | None = None,
+    wait_s: float = 600.0,
+    structured: bool = False,
+    follow_ups: bool = True,
+) -> Any:
+    """Return a tool that asks a Genie Agent in Agent mode and returns its cited report.
+
+    Agent mode plans, runs several SQL queries (and any MCP tools attached to the
+    Genie Agent), and writes a report with citations. It streams its reasoning and
+    SQL as it works; each finished step is recorded as an ``apx.progress`` event
+    on the tool's trace span, so the dev UI shows it while the call runs. The call
+    runs as the calling user (OBO) and declares the ``genie`` user scope.
+
+    Like ``genie_tool``, one Agent mode conversation is continued per apx session
+    per space, and apx deletes it when the session ends or is evicted.
+
+    Args:
+        space_id: Genie Agent (space) ID.
+        name: Tool name shown to the LLM. Defaults to ``"ask_genie_agent"``.
+        description: Tool description shown to the LLM.
+        wait_s: Longest total wait for the report. Past it apx cancels the
+            response and the tool raises a ``ToolError``. Defaults to 600s.
+        structured: Return a dict (``report``, ``citations``, ``queries`` with
+            each SQL and its result, ``tables``, ``conversation_id``,
+            ``response_id``, ``status``) instead of the report text.
+        follow_ups: Continue one Agent mode conversation per apx session.
+            ``False`` starts a new conversation for every prompt.
+
+    Example::
+
+        from apx_agent import Agent, genie_agent_tool
+
+        agent = Agent(tools=[genie_agent_tool("abc123")])
+    """
+    if not space_id:
+        raise ValueError("genie_agent_tool() requires a non-empty space_id")
+    if wait_s <= 0:
+        raise ValueError("genie_agent_tool() requires a positive wait_s")
+
+    from ._defaults import UserClientDependency
+    from ._resources import ResourceSpec, require_user_api_scopes
+    from ._tool_factory import build_tool
+
+    _desc = description or (
+        "Ask the Genie Agent a research question in Agent mode. It reasons over the data, "
+        "runs several SQL queries, and returns a report with citations. Use for multi-step "
+        f"analysis; answers can take minutes. (space_id={space_id})"
+    )
+
+    async def _ask_genie_agent(question: str, ws: UserClientDependency) -> Any:  # type: ignore[valid-type]
+        """Placeholder doc — overwritten below."""
+        live: dict[str, Any] = {}
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _agent_turn, ws, space_id, question, follow_ups=follow_ups, live=live
+                ),
+                timeout=wait_s,
+            )
+        except asyncio.TimeoutError as e:
+            _cancel_agent_response(ws, space_id, live)
+            raise ToolError(
+                f"Genie Agent did not finish within {wait_s:.0f}s; the response was cancelled."
+            ) from e
+        except Exception as e:
+            hint = reauthorize_hint(e)
+            if hint is not None:
+                raise ToolError(str(hint)) from e
+            raise ToolError(f"Genie Agent request failed: {e}") from e
+        if response.get("status") != "completed":
+            detail = response.get("error") or f"status: {response.get('status')}"
+            raise ToolError(f"Genie Agent response did not complete ({detail}).")
+        result = _agent_result(question, response)
+        return result if structured else _agent_text(result)
+
+    tool = build_tool(_ask_genie_agent, name=name, description=_desc,
+                      resources=[ResourceSpec("genie_space", space_id)])
     require_user_api_scopes(tool, ["genie"])
     return tool

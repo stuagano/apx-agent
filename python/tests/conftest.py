@@ -210,3 +210,19 @@ def _no_mlflow_experiment_id(monkeypatch: pytest.MonkeyPatch) -> None:
     a later test on the same xdist worker, even one leaked at import or by a
     module-scoped fixture."""
     monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_genie_session(monkeypatch: pytest.MonkeyPatch):
+    """#1254: a sync test that binds a trace session (``set_trace_session`` / an AGENT
+    span) leaves it in the context, and the Genie tools then continue a conversation
+    from an earlier test's mock. Every test starts with no session and empty Genie
+    conversation registries."""
+    from apx_agent import genie
+    from apx_agent._mlflow_tracing import _ACTIVE_SESSION
+
+    monkeypatch.setattr(genie, "_CONVERSATIONS", genie.GenieConversations())
+    monkeypatch.setattr(genie, "_AGENT_CONVERSATIONS", genie.GenieConversations())
+    token = _ACTIVE_SESSION.set("")
+    yield
+    _ACTIVE_SESSION.reset(token)

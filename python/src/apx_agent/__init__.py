@@ -98,6 +98,7 @@ from ._eval_sweep import SweepResult, evaluate_sweep
 # Genie tool factories
 from .genie import (
     end_genie_session,
+    genie_agent_tool,
     genie_one_tool,
     genie_query_tool,
     genie_tool,
@@ -527,6 +528,7 @@ __all__ = [
     "pinned_judge",
     "SweepResult",
     # Tool factories
+    "genie_agent_tool",
     "genie_one_tool",
     "genie_query_tool",
     "genie_tool",
