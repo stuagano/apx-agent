@@ -58,11 +58,11 @@ _CLOSING_ISSUE = re.compile(
 )
 _TOKEN = re.compile(r"x-access-token:[^@\s]+")
 PUSH_ATTEMPTS = 5
-# Docs PR #1236 (2026-11-23T16:49:41Z) and the explanation on #1246
-# (2026-11-23T17:49:08Z) name the #911 bead without finishing that work.
-# Ignore merges before 17:50Z so the scheduled replay does not close it.
-# Once the 12-hour window starts later, this floor no longer moves the cutoff.
-MERGE_SCAN_FLOOR = datetime(2026, 11, 23, 17, 50, tzinfo=timezone.utc)
+# (PR number, bead id) pairs where the PR names a bead without finishing it.
+# A merge never closes the bead in its pair, on any path and any window.
+# Docs PR #1236 and the explanation in #1246 name apx-e0i (#911), which
+# stays open until Databricks ships a read API for external policies.
+MERGE_CLOSE_SKIP = frozenset({(1236, "apx-e0i"), (1246, "apx-e0i")})
 
 
 @dataclass(frozen=True)
@@ -801,7 +801,11 @@ def close_pull_request(
     gate. Return True when the hive changed.
     """
     numbers = closing_issue_numbers(f"{pr.title}\n{pr.body}")
-    bead_ids = linked_bead_ids(cwd, pr.title, pr.body, pr.branch, repository, numbers)
+    bead_ids = [
+        bead_id
+        for bead_id in linked_bead_ids(cwd, pr.title, pr.body, pr.branch, repository, numbers)
+        if (pr.number, bead_id) not in MERGE_CLOSE_SKIP
+    ]
     if not bead_ids and not numbers:
         print(f"PR #{pr.number}: no bead id; nothing to close")
         return False
@@ -877,16 +881,13 @@ def select_recent_prs(payload: Any, *, within_hours: int, now: datetime) -> list
 
     ``within_hours`` of 0 keeps every row. A positive window drops a pull
     request whose ``mergedAt`` is older than that, which is how the schedule
-    avoids replaying merges from earlier in the week. The cutoff never moves
-    earlier than ``MERGE_SCAN_FLOOR``.
+    avoids replaying merges from earlier in the week.
     """
     if not isinstance(payload, list):
         raise SystemExit("pull requests file is not a list")
     if within_hours < 0:
         raise SystemExit("within-hours must be >= 0")
     cutoff = None if within_hours == 0 else now - timedelta(hours=within_hours)
-    if cutoff is not None and cutoff < MERGE_SCAN_FLOOR:
-        cutoff = MERGE_SCAN_FLOOR
     selected: list[PrSnapshot] = []
     for row in payload:
         if not isinstance(row, dict):

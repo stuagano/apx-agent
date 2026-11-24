@@ -590,7 +590,7 @@ def test_select_recent_prs_drops_merges_outside_the_window() -> None:
         within_hours=12,
         now=now,
     )
-    assert [pr.number for pr in rows] == [1247]
+    assert [pr.number for pr in rows] == [1247, 1246, 1242, 1236]
     assert rows[0].body == "Fixes #1"
     later = beads.select_recent_prs(
         [
@@ -615,6 +615,67 @@ def test_select_recent_prs_drops_merges_outside_the_window() -> None:
     assert [pr.number for pr in later] == [1300]
     with pytest.raises(SystemExit, match="within-hours"):
         beads.select_recent_prs([], within_hours=-1, now=now)
+
+
+@pytest.mark.parametrize("within_hours", [0, 12])
+def test_skip_list_keeps_the_911_bead_open_under_any_window(
+    monkeypatch: pytest.MonkeyPatch, within_hours: int
+) -> None:
+    monkeypatch.setattr(beads, "find_bead", lambda _cwd, _url: None)
+    monkeypatch.setattr(beads, "merge_close_force", lambda _cwd, _bead_id: False)
+    monkeypatch.setattr(beads, "close_linked_issue", lambda _repo, _number, _note: "closed")
+    closed: list[tuple[str, str]] = []
+
+    def fake_close(
+        _cwd: Path,
+        bead_id: str,
+        reason: str,
+        *,
+        dry_run: bool,
+        force: bool = False,
+    ) -> str:
+        closed.append((bead_id, reason))
+        return "closed"
+
+    monkeypatch.setattr(beads, "close_bead", fake_close)
+    payload = [
+        {
+            "number": 1250,
+            "title": "Normal work (apx-n0r)",
+            "body": "",
+            "headRefName": "cursor/normal-work",
+            "mergedAt": "2026-11-24T11:00:00Z",
+        },
+        {
+            "number": 1246,
+            "title": "Force-close a merged bead only when intake-hold gates are the blockers (apx-9rz)",
+            "body": "`#1236` names `apx-e0i` as a docs reference",
+            "headRefName": "cursor/beads-reconcile-f7e5",
+            "mergedAt": "2026-11-24T10:00:00Z",
+        },
+        {
+            "number": 1236,
+            "title": "docs: name the UI step for Unity Gateway external guardrails",
+            "body": "Refs #911\napx-e0i",
+            "headRefName": "cursor/unity-gateway-guardrail-docs-8a76",
+            "mergedAt": "2026-11-24T09:00:00Z",
+        },
+    ]
+    prs = beads.select_recent_prs(
+        payload,
+        within_hours=within_hours,
+        now=datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc),
+    )
+    assert [pr.number for pr in prs] == [1250, 1246, 1236]
+    changed = [
+        beads.close_pull_request(Path("."), pr, "stuagano/apx-agent", f"Merged PR #{pr.number}", dry_run=False)
+        for pr in prs
+    ]
+    assert changed == [True, True, False]
+    assert closed == [("apx-n0r", "Merged PR #1250"), ("apx-9rz", "Merged PR #1246")]
+    other = beads.PrSnapshot(1251, "Finish the guardrail (apx-e0i)", "", "cursor/finish")
+    assert beads.close_pull_request(Path("."), other, "stuagano/apx-agent", "Merged PR #1251", dry_run=False)
+    assert closed[-1] == ("apx-e0i", "Merged PR #1251")
 
 
 def test_close_merged_ignores_pull_requests_outside_the_window(tmp_path: Path) -> None:
