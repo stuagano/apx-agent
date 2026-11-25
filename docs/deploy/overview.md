@@ -21,7 +21,7 @@ backend = "apps_api"     # absent or "agentbricks": path 2, or path 3 with deplo
 entrypoint = "my_agent"  # required: the module run as `python -m my_agent`
 ```
 
-The chat model and each model-service `foundation_model_tool` are granted to
+The chat model and each `foundation_model_tool` are granted to
 the App service principal as Unity Gateway `MODEL_SERVICE` resources with
 `EXECUTE` (Public Preview). An App Space must already carry each tool's model
 service. See

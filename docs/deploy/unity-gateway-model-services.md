@@ -41,13 +41,14 @@ agent = Agent(
 )
 ```
 
-- A dotted name is always a model service. Model Serving endpoint names cannot
-  contain `.`.
-- A chat model named `databricks-<id>` is still accepted. apx sends it as the
-  model service `system.ai.<id>`.
-- `foundation_model_tool("databricks-claude-opus-4-7")`, with no dots, is the
-  classic Model Serving tool. It still queries the serving endpoint as the
-  calling user and declares a `serving_endpoint` resource with `CAN_QUERY`.
+- A dotted name must be a three-part `catalog.schema.service`.
+- A chat model or `foundation_model_tool` named `databricks-<id>` is still
+  accepted. apx sends it as the model service `system.ai.<id>`, so
+  `foundation_model_tool("databricks-claude-opus-4-7")` calls
+  `system.ai.claude-opus-4-7` and declares that `MODEL_SERVICE` resource.
+- Any other plain name, such as a custom Model Serving endpoint, is rejected
+  when the tool is built. Put that model behind a Unity Gateway model service
+  and pass its three-part name.
 
 ## What deploy emits
 
@@ -81,7 +82,7 @@ resource revokes only `EXECUTE`.
 
 ## Who calls the service
 
-Both the chat model and a model-service `foundation_model_tool` call Unity
+Both the chat model and every `foundation_model_tool` call Unity
 Gateway as the **App service principal**, the identity the `MODEL_SERVICE`
 resource grants. A Model Serving `CAN_QUERY` grant does **not** grant access to
 a Unity Gateway service.

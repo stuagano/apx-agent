@@ -141,7 +141,7 @@ These are pre-built tools for the Databricks platform. Each factory returns a re
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
 | `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse | `DatabricksSQLWarehouse` |
 | `document_extract_tool(warehouse_id=..., volume=..., schema=...)` | Parse a UC volume file with `ai_parse_document` and extract a committed schema via `ai_extract` | `DatabricksSQLWarehouse` |
-| `foundation_model_tool(endpoint)` | Ask another model — agent-to-model routing. A dotted `catalog.schema.service` name (e.g. `system.ai.claude-sonnet-4-5`) is a **Unity Gateway model service**, queried through `/ai-gateway/mlflow/v1` as the App service principal. A plain name is a Model Serving endpoint, queried as the calling user. | Model service: `uc_securable` `MODEL_SERVICE` / `EXECUTE` (Apps resource, Public Preview). Endpoint: `DatabricksServingEndpoint` / `CAN_QUERY` |
+| `foundation_model_tool(model)` | Ask another model — agent-to-model routing. Takes a **Unity Gateway model service** `catalog.schema.service` (e.g. `system.ai.claude-sonnet-4-5`), or `databricks-<id>`, which becomes `system.ai.<id>`. Queried through `/ai-gateway/mlflow/v1` as the App service principal. Any other plain name is rejected. | `uc_securable` `MODEL_SERVICE` / `EXECUTE` (Apps resource, Public Preview) |
 | `lineage_tool()` | Get upstream/downstream lineage for a UC table | — |
 | `schema_tool()` | Describe columns of a UC table | — |
 | `catalog_tool(catalog, schema)` | List tables in a UC schema | — |
@@ -159,16 +159,14 @@ agent = Agent(
                            columns=["doc_id", "title", "content"],
                            num_results=5),
         sql_tool(warehouse_id="wh-prod"),
-        foundation_model_tool("databricks-claude-opus-4-7",
+        foundation_model_tool("system.ai.claude-opus-4-7",   # Unity Gateway model service
                               name="ask_opus",
                               description="Ask the specialist for hard reasoning."),
-        foundation_model_tool("system.ai.claude-sonnet-4-5",   # Unity Gateway model service
-                              name="ask_sonnet"),
     ],
 )
 ```
 
-A model-service `foundation_model_tool` needs `EXECUTE` on the service (plus
+A `foundation_model_tool` needs `EXECUTE` on the service (plus
 `USE CATALOG` / `USE SCHEMA`) for the App service principal; deploy declares
 the `MODEL_SERVICE` Apps resource that grants it. A Model Serving `CAN_QUERY`
 grant does not grant access to a Unity Gateway service. See

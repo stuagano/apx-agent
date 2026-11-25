@@ -67,9 +67,10 @@ An external guardrail on that service is attached in the Unity Gateway UI.
 The steps, and what a gateway `DENY` or `ASK` looks like in the agent, are in
 [unity-gateway-external-guardrails.md](../safety/unity-gateway-external-guardrails.md).
 
-## Explicit Model Serving tools
+## Model Serving endpoints
 
-Existing endpoints can still be used by explicitly declared endpoint tools,
-including `foundation_model.py`. Those tools retain their own endpoint and
-permission contracts. This chat migration does not delete endpoints or change
-those tools; remove an obsolete endpoint only after checking its other callers.
+`foundation_model_tool` no longer queries Model Serving: like chat, it calls a
+Unity Gateway model service as the App service principal. Knowledge Assistant
+tools, embeddings and sub-agent endpoints still use their serving endpoints.
+This migration does not delete endpoints; remove an obsolete endpoint only
+after checking its other callers.

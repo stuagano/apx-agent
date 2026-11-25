@@ -156,10 +156,43 @@ async def test_service_tool_explains_gateway_errors(error_code: str, message: st
     assert SERVICE in result
 
 
-def test_serving_endpoint_tool_is_unchanged() -> None:
+def test_databricks_name_rewrites_to_system_ai_service() -> None:
     fn = foundation_model_tool("databricks-claude-opus-4-7")
-    assert get_resources(fn) == [ResourceSpec("serving_endpoint", "databricks-claude-opus-4-7")]
-    assert infer_operation_authorization(fn).execution_identity == "user"
+    assert get_resources(fn) == [ResourceSpec("model_service", "system.ai.claude-opus-4-7")]
+    assert infer_operation_authorization(fn).execution_identity == "service"
+    assert not any(r.kind == "serving_endpoint" for r in get_resources(fn))
+
+
+@pytest.mark.asyncio
+async def test_databricks_name_posts_system_ai_to_gateway() -> None:
+    ws = MagicMock()
+    ws.api_client.do.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    assert await foundation_model_tool("databricks-claude-opus-4-7")(prompt="hi", ws=ws) == "ok"
+    ws.api_client.do.assert_called_once_with("POST", AI_GATEWAY_CHAT_PATH, body={
+        "model": "system.ai.claude-opus-4-7",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    ws.serving_endpoints.query.assert_not_called()
+
+
+def test_databricks_tool_compiles_to_model_service_grant() -> None:
+    plan = compile_authorization_plan(
+        Agent(tools=[foundation_model_tool("databricks-claude-opus-4-7", name="ask_opus")]),
+        model=SERVICE,
+    )
+    assert ResourceSpec("model_service", "system.ai.claude-opus-4-7") in plan.service_resources
+    assert not any(r.kind == "serving_endpoint" for r in plan.service_resources)
+    [entry] = [
+        e for e in resources_to_databricks_yml(plan.service_resources)
+        if e["uc_securable"]["securable_full_name"] == "system.ai.claude-opus-4-7"
+    ]
+    assert entry["uc_securable"]["securable_type"] == "MODEL_SERVICE"
+    assert entry["uc_securable"]["permission"] == "EXECUTE"
+
+
+def test_custom_endpoint_name_fails_at_factory_time() -> None:
+    with pytest.raises(ValueError, match="declare a Unity Gateway model service"):
+        foundation_model_tool("my-custom-endpoint")
 
 
 # --- doctor --------------------------------------------------------------------

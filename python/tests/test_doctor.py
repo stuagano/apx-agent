@@ -864,9 +864,10 @@ class TestCheckDeclaredTools:
 
     # One row per host-bound kind (#968): (tool expr, row name, ws getter path, expected call kwargs/args).
     _LAKEBASE = "build_tool(lambda q: q, name='lb', description='d', resources=[ResourceSpec('lakebase_instance', 'lb-x')])"
+    _SERVING = "build_tool(lambda q: q, name='ep', description='d', resources=[ResourceSpec('serving_endpoint', 'ep-x')])"
     _WORKSPACE_BOUND = {
         "sql_warehouse": ("sql_tool(warehouse_id='wh-x')", "SQL warehouse (wh-x)", "warehouses.get", "wh-x"),
-        "serving_endpoint": ("foundation_model_tool('ep-x')", "Serving endpoint (ep-x)", "serving_endpoints.get", "ep-x"),
+        "serving_endpoint": (_SERVING, "Serving endpoint (ep-x)", "serving_endpoints.get", "ep-x"),
         "lakebase_instance": (_LAKEBASE, "Lakebase (lb-x)", "database.get_database_instance", "lb-x"),
     }
 
