@@ -47,6 +47,21 @@ CONNECTOR_SIGN_IN = (
 )
 
 
+def _dbsql_pending(state: dict[str, Any]) -> bool:
+    """A system.ai.dbsql result whose statement is still ``PENDING`` or ``RUNNING``."""
+    status = state.get("status")
+    return isinstance(status, dict) and status.get("state") in {"PENDING", "RUNNING"}
+
+
+# system.ai.dbsql answers a slow query with a statement_id and status.state PENDING/RUNNING;
+# the wrapped execute tools poll poll_sql_result until it finishes, for at most wait_s (#1277).
+_DBSQL_EXECUTE = frozenset({"execute_sql", "execute_sql_read_only"})
+_DBSQL_POLL: dict[str, Any] = {
+    "poll_tool": "poll_sql_result", "poll_ids": ("statement_id",),
+    "wait_s": 150.0, "poll_s": 2.0, "is_pending": _dbsql_pending,
+}
+
+
 def unity_gateway_mcp_path(service: str) -> str:
     """Workspace path of a Unity Gateway MCP service, e.g. ``/ai-gateway/mcp-services/system.ai.dbsql``."""
     if len(service.split(".")) != 3 or "" in service.split("."):
@@ -103,9 +118,11 @@ def unity_gateway_mcp(
         remote = _discover(service, path)
     out = []
     for remote_name, description in remote.items():
+        poll = _DBSQL_POLL if service == "system.ai.dbsql" and remote_name in _DBSQL_EXECUTE else None
         tool = _make_mcp_tool(
             path, remote_name, description=_mark_remote_description(description) or "",
             headers=None, transport="http", name=_slug(f"{short}_{remote_name}"), timeout_s=timeout_s,
+            poll=poll,
         )
         require_user_api_scopes(tool, ["ai-gateway"])
         out.append(bind_service(tool, binding))
@@ -122,8 +139,12 @@ def _discover(service: str, path: str) -> dict[str, str | None]:
     try:
         listed = _run_sync(_list_remote_tools(url, ws.config.authenticate(), "http"))
     except Exception as exc:
-        hint = ENABLE_ENHANCED_UG if service in ENHANCED_UG_SERVICES else (
-            "Grant the identity access to the MCP service in Unity Gateway.")
+        if service in CONNECTOR_SERVICES and "401" in str(exc):
+            hint = f"The user has not signed in to the provider yet. {CONNECTOR_SIGN_IN}"
+        elif service in ENHANCED_UG_SERVICES:
+            hint = ENABLE_ENHANCED_UG
+        else:
+            hint = "Grant the identity access to the MCP service in Unity Gateway."
         raise ValueError(
             f"Could not list the tools on Unity Gateway MCP service {service} ({exc}). {hint} "
             "Pass tools=[...] to skip discovery."

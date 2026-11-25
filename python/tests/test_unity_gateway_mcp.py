@@ -129,6 +129,94 @@ def test_discovery_failure_names_the_enhanced_unity_gateway_preview(monkeypatch)
     assert "Enhanced Unity Gateway" in str(err.value) and "tools=[...]" in str(err.value)
 
 
+def test_connector_discovery_401_names_provider_sign_in(monkeypatch):
+    """Live fevm-classic shape: listing system.ai.slack before sign-in is rejected with HTTP 401 (#1277)."""
+    ws = MagicMock()
+    ws.config.host = HOST
+
+    @asynccontextmanager
+    async def _rejected(*a, **k):
+        raise RuntimeError("The MCP service request was rejected (HTTP 401)")
+        yield
+
+    monkeypatch.setattr("apx_agent._defaults._make_workspace_client", lambda: ws)
+    with patch("apx_agent.mcp_consume._open_session", _rejected), pytest.raises(ValueError) as err:
+        unity_gateway_mcp("system.ai.slack")
+    msg = str(err.value)
+    assert ug.CONNECTOR_SIGN_IN in msg and "tools=[...]" in msg
+    assert "Grant the identity access" not in msg
+
+
+def _dbsql_result(state, statement_id="st-1", **extra):
+    return SimpleNamespace(structuredContent={"statement_id": statement_id, "status": {"state": state}, **extra},
+                           content=[], isError=False)
+
+
+@pytest.mark.asyncio
+async def test_dbsql_execute_polls_until_the_statement_finishes():
+    """A slow execute_sql answers PENDING; the tool polls poll_sql_result until SUCCEEDED (#1277)."""
+    (tool,) = unity_gateway_mcp("system.ai.dbsql", tools=["execute_sql"])
+    obo = MagicMock()
+    obo.config.host = HOST
+    obo.config.token = "user-token"
+    session = _session()
+    done = _dbsql_result("SUCCEEDED", result={"data_typed_array": [[1]]})
+    session.call_tool = AsyncMock(side_effect=[_dbsql_result("PENDING"), _dbsql_result("RUNNING"), done])
+    p, _ = _patch_open(session)
+    with p, patch.dict(ug._DBSQL_POLL, poll_s=0.001):
+        out = await tool(arguments={"query": "select 1"}, ws=obo)
+
+    assert out["result"]["status"] == {"state": "SUCCEEDED"}
+    assert [c.args for c in session.call_tool.await_args_list] == [
+        ("execute_sql", {"query": "select 1"}),
+        ("poll_sql_result", {"statement_id": "st-1"}),
+        ("poll_sql_result", {"statement_id": "st-1"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dbsql_execute_polls_a_json_text_result():
+    """The pending state is read from JSON text content when structuredContent is absent."""
+    (tool,) = unity_gateway_mcp("system.ai.dbsql", tools=["execute_sql"])
+    obo = MagicMock()
+    obo.config.host = HOST
+    obo.config.token = "user-token"
+    pending = SimpleNamespace(structuredContent=None, isError=False, content=[
+        SimpleNamespace(type="text", text='{"statement_id": "st-9", "status": {"state": "PENDING"}}')])
+    session = _session()
+    session.call_tool = AsyncMock(side_effect=[pending, _dbsql_result("SUCCEEDED", statement_id="st-9")])
+    p, _ = _patch_open(session)
+    with p, patch.dict(ug._DBSQL_POLL, poll_s=0.001):
+        out = await tool(arguments={"query": "select 1"}, ws=obo)
+
+    assert out["result"]["status"] == {"state": "SUCCEEDED"}
+    assert session.call_tool.await_args_list[1].args == ("poll_sql_result", {"statement_id": "st-9"})
+
+
+@pytest.mark.asyncio
+async def test_dbsql_polling_stops_at_the_bounded_wait():
+    """A query that never finishes returns its last RUNNING result after wait_s, not an endless poll."""
+    (tool,) = unity_gateway_mcp("system.ai.dbsql", tools=["execute_sql"])
+    obo = MagicMock()
+    obo.config.host = HOST
+    obo.config.token = "user-token"
+    session = _session()
+    session.call_tool = AsyncMock(return_value=_dbsql_result("RUNNING"))
+    p, _ = _patch_open(session)
+    with p, patch.dict(ug._DBSQL_POLL, wait_s=0.05, poll_s=0.02):
+        out = await tool(arguments={"query": "select 1"}, ws=obo)
+
+    assert out["result"]["status"] == {"state": "RUNNING"}
+    assert 2 <= session.call_tool.await_count < 10
+
+
+def test_only_dbsql_execute_tools_poll():
+    with patch("apx_agent.mcp_consume._make_mcp_tool") as make:
+        unity_gateway_mcp("system.ai.dbsql", tools=["execute_sql", "execute_sql_read_only", "poll_sql_result"])
+        unity_gateway_mcp("system.ai.web_search", tools=["execute_sql"])
+    assert [c.kwargs["poll"] is ug._DBSQL_POLL for c in make.call_args_list] == [True, True, False, False]
+
+
 @pytest.mark.asyncio
 async def test_call_runs_as_the_caller_on_the_callers_workspace():
     (tool,) = unity_gateway_mcp("system.ai.dbsql", tools=["execute_sql"])
@@ -158,6 +246,25 @@ def test_doctor_fails_with_enhanced_unity_gateway_steps_for_a_beta_service():
 
     assert check.status is Status.FAIL
     assert check.fix == ug.ENABLE_ENHANCED_UG
+
+
+@pytest.mark.parametrize(("service", "beta"), [("system.ai.dbsql", True), ("system.ai.slack", False)])
+@pytest.mark.parametrize("exc", [
+    DatabricksError("Resource not found", error_code="NOT_FOUND"),
+    RuntimeError("NOT_FOUND Resource not found"),
+])
+def test_doctor_fails_when_the_service_does_not_exist(service, beta, exc):
+    """Live fevm-classic shape: a missing service is NOT_FOUND, not a grant problem (#1277)."""
+    ws = MagicMock()
+    ws.api_client.do.side_effect = exc
+
+    check = check_service_binding(ServiceBinding(service), ws)
+
+    assert check.status is Status.FAIL
+    assert "does not exist" in check.detail
+    assert check.fix is not None and "Check the service name" in check.fix
+    assert "Grant" not in check.fix
+    assert (ug.ENABLE_ENHANCED_UG in check.fix) is beta
 
 
 def test_doctor_warns_when_the_service_is_not_readable():

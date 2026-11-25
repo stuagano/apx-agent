@@ -23,8 +23,10 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
@@ -174,6 +176,7 @@ async def call_until_done(
     wait_s: float,
     poll_s: float,
     pending: str = "in_progress",
+    is_pending: Callable[[dict[str, Any]], bool] | None = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> Any:
     """Call an async MCP tool and poll until its result stops being ``pending``.
@@ -182,17 +185,34 @@ async def call_until_done(
     pending`` plus ids (e.g. Genie One's ``genie_ask`` → ``genie_poll_response``),
     this keeps the polling in code: one tool call for the model, however many
     polls the server needs. ``poll_ids`` are copied from the latest result into
-    each ``poll_tool`` call. Stops after ``wait_s`` and returns the last result,
-    still ``pending``, so the caller can report it (#1116).
+    each ``poll_tool`` call. ``is_pending`` replaces the ``status == pending``
+    test for servers with another shape (``system.ai.dbsql``'s
+    ``status.state``, #1277). The result state is ``structuredContent``, or the
+    text content parsed as a JSON object. Stops after ``wait_s`` and returns the
+    last result, still pending, so the caller can report it (#1116).
     """
+    still = is_pending or (lambda s: s.get("status") == pending)
     read = timedelta(seconds=timeout_s)
     deadline = time.monotonic() + wait_s
     result = await session.call_tool(tool, arguments, read_timeout_seconds=read)
-    while (result.structuredContent or {}).get("status") == pending and time.monotonic() < deadline:
+    while still(state := _result_state(result)) and time.monotonic() < deadline:
         await asyncio.sleep(poll_s)
-        state = result.structuredContent
         result = await session.call_tool(poll_tool, {k: state[k] for k in poll_ids}, read_timeout_seconds=read)
     return result
+
+
+def _result_state(result: Any) -> dict[str, Any]:
+    """A CallToolResult's ``structuredContent``, else its text parsed as a JSON object."""
+    structured = getattr(result, "structuredContent", None)
+    if structured:
+        return structured
+    content = getattr(result, "content", None) or []
+    text = "\n".join(c.text for c in content if getattr(c, "type", None) == "text")
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _gateway_denial(payload: Any) -> Any:
