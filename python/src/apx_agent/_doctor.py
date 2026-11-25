@@ -2121,7 +2121,12 @@ def check_mcp_service(service: str, ws: Any, name: str) -> Check:
         ws.api_client.do("GET", f"/api/2.1/unity-catalog/mcp-services/{service}")
     except Exception as exc:
         short = str(exc)[:160]
-        if beta and (preview_off(exc) or getattr(exc, "error_code", None) == "RESOURCE_DOES_NOT_EXIST"):
+        code = getattr(exc, "error_code", None)
+        if code in {"NOT_FOUND", "RESOURCE_DOES_NOT_EXIST"} or str(exc).startswith("NOT_FOUND"):
+            return Check(name, Status.FAIL, f"Unity Gateway MCP service {service} does not exist ({short})",
+                         f"Check the service name ({service}) against the Unity Gateway MCP services in the "
+                         "workspace. " + (ENABLE_ENHANCED_UG if beta else "Unity Gateway MCP services are GA."))
+        if beta and preview_off(exc):
             return Check(name, Status.FAIL, f"Unity Gateway MCP service unavailable ({short})", ENABLE_ENHANCED_UG)
         return Check(name, Status.WARN, f"MCP service not readable with the checking identity ({short})",
                      f"Grant the calling users EXECUTE on {service} in Unity Gateway. "
