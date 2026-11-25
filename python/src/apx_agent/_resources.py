@@ -195,6 +195,50 @@ def get_user_api_scopes(fn: Any) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Tool-side Databricks-provided service binding (system.ai.*)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ServiceBinding:
+    """A Databricks-provided ``system.ai.*`` service a tool runs on, and as whom.
+
+    The same shape as an Agent Bricks ``[[tools]]`` entry: ``service`` is the
+    three-part Unity Gateway service name and ``auth`` is ``"user"`` (OBO) or
+    ``"app"`` (the App service principal). ``sandbox_tool`` declares
+    ``ServiceBinding("system.ai.sandbox", auth)``, the binding that
+    ``agentbricks tools add sandbox [--auth app]`` writes; ``apx-agent doctor``
+    checks the preview behind each declared service. These services have no
+    Apps resource, so a binding adds nothing to ``databricks.yml``.
+    """
+
+    service: str
+    auth: str = "user"
+
+    def __post_init__(self) -> None:
+        if not self.service.startswith("system.ai."):
+            raise ValueError(f"ServiceBinding needs a system.ai.* service, got {self.service!r}")
+        if self.auth not in ("user", "app"):
+            raise ValueError(f"ServiceBinding auth must be 'user' or 'app', got {self.auth!r}")
+
+
+def bind_service(fn: Any, binding: ServiceBinding) -> Any:
+    """Annotate ``fn`` with a ``system.ai.*`` service binding. Returns ``fn``."""
+    fn._apx_service_bindings = [*getattr(fn, "_apx_service_bindings", []), binding]  # type: ignore[attr-defined]
+    return fn
+
+
+def collect_service_bindings(agent: "BaseAgent") -> list[ServiceBinding]:
+    """Every service binding declared by tools anywhere in the agent tree, deduplicated in order."""
+    out: list[ServiceBinding] = []
+    for fn in _iter_tool_fns(agent):
+        for binding in getattr(fn, "_apx_service_bindings", []):
+            if binding not in out:
+                out.append(binding)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Sub-agent URL → endpoint name
 # ---------------------------------------------------------------------------
 

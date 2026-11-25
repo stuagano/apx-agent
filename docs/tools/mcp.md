@@ -37,6 +37,13 @@ URL patterns the platform hosts:
 | Genie Agent | `https://<host>/api/2.0/mcp/genie/{space_id}` |
 | Genie One | `https://<host>/api/2.0/mcp/genie` — asynchronous (`genie_ask` then `genie_poll_response`, typically 40–260s); use `genie_one_tool()` so polling stays out of the model's step budget |
 
+Unity Gateway also serves Databricks-provided MCP services such as `system.ai.sandbox`
+(`https://<host>/ai-gateway/mcp-services/system.ai.sandbox`, Beta, needs the Enhanced Unity
+Gateway account preview). apx does not wire these as factories yet (#1268); declare them in
+agent.toml (`agentbricks tools add sandbox`) and reference them with `platform_tools(...)`. To run
+model-generated code from Python, use [`sandbox_tool`](overview.md#code-execution--sandbox_tool),
+which calls the Sandbox API and declares the same `system.ai.sandbox` service binding.
+
 ### Slow and asynchronous MCP tools
 
 `mcp_tool(...)` and `mcp_toolkit(...)` take `timeout_s=` (per request, default 30s) for tools that legitimately run long.

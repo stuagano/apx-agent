@@ -136,6 +136,7 @@ These are pre-built tools for the Databricks platform. Each factory returns a re
 | `genie_tool(space_id)` | Ask a natural-language question to a Genie space; follow-ups in one session continue the same conversation | `DatabricksGenieSpace` |
 | `genie_agent_tool(space_id)` | Ask a Genie Agent in Agent mode; streams reasoning and SQL as trace progress and returns the cited report (`structured=True` for a dict) | `DatabricksGenieSpace`, `genie` user scope |
 | `genie_one_tool()` | Ask Genie One (workspace-wide Genie) via its managed MCP; asks and polls in one call, as the calling user, and returns the finished answer or a deep link after `wait_s` | `genie` user scope |
+| `sandbox_tool(sandbox_id=None, auth="user")` | **Beta.** Run model-generated Python or shell in a Databricks Sandbox and return exit code, stdout and stderr; the code never runs in the App process | `system.ai.sandbox` service binding (no Apps resource) |
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
 | `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse | `DatabricksSQLWarehouse` |
 | `document_extract_tool(warehouse_id=..., volume=..., schema=...)` | Parse a UC volume file with `ai_parse_document` and extract a committed schema via `ai_extract` | `DatabricksSQLWarehouse` |
@@ -238,6 +239,65 @@ agent = Agent(tools=[genie_agent_tool("space-abc", wait_s=900)])
 
 Callers need CAN VIEW on the Genie Agent and `SELECT` on its data. The tool
 declares the Genie space resource and the `genie` user scope.
+
+### Code execution — `sandbox_tool`
+
+`sandbox_tool()` lets an agent run Python or shell code in a
+[Databricks Sandbox](https://docs.databricks.com/aws/en/compute/serverless/sandbox):
+an isolated serverless Linux environment with 4 vCPUs and 8 GB RAM. The model
+passes `code` and `language` (`"python"` runs `python3 -c`, `"shell"` runs
+`bash -c`); the tool returns `exit_code`, `stdout`, `stderr` and `truncated`.
+The code is sent to the Sandbox API and runs there, never in the App process.
+
+```python
+from apx_agent import Agent, sandbox_tool
+
+agent = Agent(tools=[sandbox_tool()])                       # a new sandbox per call, as the user
+analyst = Agent(tools=[sandbox_tool("scratch", wait_s=600)])  # one named sandbox, files persist
+service = Agent(tools=[sandbox_tool(auth="app")])           # as the App service principal
+```
+
+**Beta.** Databricks Sandbox is in Beta. Databricks does not charge for it
+during Beta, pricing may change, and Databricks may purge data stored in
+sandboxes when Beta ends. To enable it:
+
+1. Use a workspace in a
+   [supported serverless region](https://docs.databricks.com/resources/feature-region-support#serverless-availability).
+2. A workspace admin enables **Databricks Sandbox** on the workspace
+   [Previews](https://docs.databricks.com/aws/en/admin/workspace-settings/manage-previews) page.
+3. Only when you call `system.ai.sandbox` through Unity Gateway MCP instead
+   (agent.toml `agentbricks tools add sandbox` with `platform_tools(...)`), an
+   account admin also enables **Enhanced Unity Gateway** in the account console
+   Previews page. `sandbox_tool` calls the Sandbox API directly and does not
+   need it.
+
+`apx-agent doctor --online` probes the Sandbox API for every declared
+`sandbox_tool` and fails with these steps when the preview is off.
+
+- **Identity.** `auth="user"` (default) runs as the calling user (OBO), so
+  sandbox code can reach only what that user can. `auth="app"` runs as the App
+  service principal, like `agentbricks tools add sandbox --auth app`.
+- **Sandboxes.** With no `sandbox_id`, each call creates a sandbox, runs the
+  code, and deletes the sandbox. With `sandbox_id="name"`, apx creates that
+  sandbox on first use, starts it when it has stopped, and never deletes it, so
+  files under `/home/sandbox-agent` persist between calls (other paths,
+  including `/tmp`, are cleared when the sandbox stops).
+- **Limits and errors.** `wait_s` (default 300) bounds the whole call: sandbox
+  start plus the command, which the Sandbox API terminates at the deadline. A
+  non-zero exit code is a result the model can read. A timed-out or failed
+  command, a disabled preview (with the enable step), a permission error, or a
+  stale OBO consent (with the re-authorize hint) become a `ToolError`, never a
+  500. The tool returns the final result; it does not stream output.
+- **Binding.** The tool declares `ServiceBinding("system.ai.sandbox", auth)`,
+  the same service and identity an Agent Bricks `[[tools]]` sandbox entry
+  binds. The service has no Apps resource, so it adds nothing to
+  `databricks.yml`. There is no downscope ceiling yet: sandbox code runs with
+  the identity's own Unity Catalog access (#1146).
+
+Live execution needs a workspace with the preview on, so CI covers it with a
+mocked Sandbox API. To check it by hand, run `apx-agent doctor --online`, then
+ask the agent in `apx-agent dev` to run `print(2 + 2)` and confirm `stdout` is
+`4` and the run's trace shows the sandbox progress events.
 
 ### UC functions as tools — `uc_function_tool` and `uc_function_toolkit`
 

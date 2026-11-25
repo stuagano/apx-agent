@@ -796,6 +796,21 @@ class TestCheckDeclaredTools:
         ws.vector_search_indexes.get_index.assert_called_once_with(index_name="cat.sch.idx")
         ws.warehouses.get.assert_called_once_with(id="wh-abc")
 
+    def test_sandbox_tool_binding_reports_a_disabled_preview(self, tmp_path):
+        from databricks.sdk.errors.base import DatabricksError
+
+        (tmp_path / "pyproject.toml").write_text("[tool.apx.deploy]\nname='x'\n")
+        (tmp_path / "agent.py").write_text(
+            "from apx_agent import LlmAgent, sandbox_tool\n"
+            "agent = LlmAgent(name='x', target='responses_agent', tools=[sandbox_tool()])\n"
+        )
+        ws = MagicMock()
+        ws.api_client.do.side_effect = DatabricksError("Sandbox is not enabled", error_code="FEATURE_DISABLED")
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
+        assert [(c.name, c.status) for c in checks] == [("Service (system.ai.sandbox, auth=user)", Status.FAIL)]
+        assert "Previews page" in checks[0].fix
+
     def test_uc_function_resource_is_probed(self, tmp_path):
         self._project(tmp_path, "uc_function_tool('main.tools.my_fn')")
         ws = MagicMock()
