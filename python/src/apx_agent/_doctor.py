@@ -2088,13 +2088,14 @@ def check_service_binding(binding: ServiceBinding, ws: Any) -> Check:
     """Probe the preview behind a declared ``system.ai.*`` service binding (#1266).
 
     ``system.ai.sandbox`` (``sandbox_tool``) lists one sandbox through the
-    Sandbox API. Other services are #1268's and are not probed yet.
+    Sandbox API. Other services (``unity_gateway_mcp``, #1268) are looked up as
+    Unity Gateway MCP services.
     """
     from .sandbox import ENABLE_SANDBOX, SANDBOX_SERVICE, SANDBOXES_PATH, preview_off  # noqa: PLC0415
 
     name = f"Service ({binding.service}, auth={binding.auth})"
     if binding.service != SANDBOX_SERVICE:
-        return Check(name, Status.SKIP, "doctor has no preview probe for this service yet")
+        return check_mcp_service(binding.service, ws, name)
     try:
         ws.api_client.do("GET", SANDBOXES_PATH, query={"page_size": 1})
     except Exception as exc:
@@ -2102,12 +2103,47 @@ def check_service_binding(binding: ServiceBinding, ws: Any) -> Check:
         if preview_off(exc):
             return Check(name, Status.FAIL, f"Databricks Sandbox looks disabled ({short})",
                          f"{ENABLE_SANDBOX} Calling system.ai.sandbox through Unity Gateway MCP "
-                         "(agent.toml `agentbricks tools add sandbox`) also needs an account admin "
+                         "(unity_gateway_mcp('system.ai.sandbox') or agent.toml `agentbricks tools add sandbox`) also needs an account admin "
                          "to enable the Enhanced Unity Gateway preview in the account console.")
         return Check(name, Status.WARN, f"Sandbox API not readable with the checking identity ({short})",
                      f"Confirm the {binding.auth} identity can use Databricks Sandbox. {ENABLE_SANDBOX}")
     return Check(name, Status.OK, "Databricks Sandbox API reachable with the checking identity; "
                  "runtime identity is not proven")
+
+
+def check_mcp_service(service: str, ws: Any, name: str) -> Check:
+    """Look up a ``system.ai.*`` Unity Gateway MCP service and explain how to enable it (#1268)."""
+    from .sandbox import preview_off  # noqa: PLC0415
+    from ._unity_gateway_mcp import CONNECTOR_SERVICES, CONNECTOR_SIGN_IN, ENABLE_ENHANCED_UG, ENHANCED_UG_SERVICES  # noqa: PLC0415
+
+    beta = service in ENHANCED_UG_SERVICES
+    try:
+        ws.api_client.do("GET", f"/api/2.1/unity-catalog/mcp-services/{service}")
+    except Exception as exc:
+        short = str(exc)[:160]
+        if beta and (preview_off(exc) or getattr(exc, "error_code", None) == "RESOURCE_DOES_NOT_EXIST"):
+            return Check(name, Status.FAIL, f"Unity Gateway MCP service unavailable ({short})", ENABLE_ENHANCED_UG)
+        return Check(name, Status.WARN, f"MCP service not readable with the checking identity ({short})",
+                     f"Grant the calling users EXECUTE on {service} in Unity Gateway. "
+                     + (ENABLE_ENHANCED_UG if beta else "Unity Gateway MCP services are GA."))
+    if service in CONNECTOR_SERVICES:
+        return Check(name, Status.OK, "MCP service readable with the checking identity; "
+                     "per-user provider sign-in is not proven", CONNECTOR_SIGN_IN)
+    return Check(name, Status.OK, "MCP service readable with the checking identity; "
+                 "runtime identity is not proven")
+
+
+def check_workspace_managed_mcp(plan: Any) -> Check | None:
+    """Tools calling workspace ``/api/2.0/mcp/...`` need the Managed MCP Servers preview (#1268)."""
+    urls = sorted({op.remote_url for op in plan.operations
+                   if op.remote_url is not None and "/api/2.0/mcp/" in op.remote_url})
+    if not urls:
+        return None
+    return Check("Workspace Managed MCP", Status.SKIP,
+                 f"{len(urls)} tool(s) call workspace Managed MCP (Public Preview, bypasses Unity Gateway): "
+                 + ", ".join(urls),
+                 "A workspace admin enables Managed MCP Servers on the workspace Previews page. For new "
+                 "integrations prefer unity_gateway_mcp('system.ai.*') when a Unity Gateway MCP covers it.")
 
 
 def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> list[Check]:
@@ -2281,6 +2317,9 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
     from ._resources import collect_service_bindings  # noqa: PLC0415
 
     checks.extend(check_service_binding(binding, ws) for binding in collect_service_bindings(agent))
+    managed = check_workspace_managed_mcp(plan)
+    if managed is not None:
+        checks.append(managed)
     checks.append(check_workspace_scope_allowlist(plan, ws))
     if cfg is not None:
         checks.append(check_apps_service_principal(cfg.name, ws))

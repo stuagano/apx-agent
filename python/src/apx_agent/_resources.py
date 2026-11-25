@@ -209,9 +209,13 @@ class ServiceBinding:
     three-part Unity Gateway service name and ``auth`` is ``"user"`` (OBO) or
     ``"app"`` (the App service principal). ``sandbox_tool`` declares
     ``ServiceBinding("system.ai.sandbox", auth)``, the binding that
-    ``agentbricks tools add sandbox [--auth app]`` writes; ``apx-agent doctor``
-    checks the preview behind each declared service. These services have no
-    Apps resource, so a binding adds nothing to ``databricks.yml``.
+    ``agentbricks tools add sandbox [--auth app]`` writes.
+    ``unity_gateway_mcp(service)`` (#1268) declares ``ServiceBinding(service,
+    "user")`` on each MCP tool it wraps, so ``sandbox_tool()`` and
+    ``unity_gateway_mcp("system.ai.sandbox")`` share one binding.
+    ``apx-agent doctor`` checks the preview behind each declared service. These
+    services have no Apps resource, so a binding adds nothing to
+    ``databricks.yml``; the ``ai-gateway`` user scope carries the call.
     """
 
     service: str

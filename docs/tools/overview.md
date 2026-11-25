@@ -26,7 +26,7 @@ Tools fall into three categories:
 |----------|---------|
 | **Function tools** | `@tool`-decorated Python functions you write |
 | **Built-in tools** | `sql_tool`, `genie_tool`, `vector_search_tool`, `uc_function_tool`, … |
-| **Advanced tools** | `http_tool`, `openapi_tool`, `mcp_tool`, `mcp_toolkit`, `agent_tool` |
+| **Advanced tools** | `http_tool`, `openapi_tool`, `mcp_tool`, `mcp_toolkit`, `unity_gateway_mcp`, `agent_tool` |
 
 ---
 
@@ -137,6 +137,7 @@ These are pre-built tools for the Databricks platform. Each factory returns a re
 | `genie_agent_tool(space_id)` | Ask a Genie Agent in Agent mode; streams reasoning and SQL as trace progress and returns the cited report (`structured=True` for a dict) | `DatabricksGenieSpace`, `genie` user scope |
 | `genie_one_tool()` | Ask Genie One (workspace-wide Genie) via its managed MCP; asks and polls in one call, as the calling user, and returns the finished answer or a deep link after `wait_s` | `genie` user scope |
 | `sandbox_tool(sandbox_id=None, auth="user")` | **Beta.** Run model-generated Python or shell in a Databricks Sandbox and return exit code, stdout and stderr; the code never runs in the App process | `system.ai.sandbox` service binding (no Apps resource) |
+| `unity_gateway_mcp(service, tools=None)` | Wrap a Unity Gateway MCP service (`system.ai.web_search`, `system.ai.dbsql`, `system.ai.sandbox`, `system.ai.genie_one_mcp`, connectors such as `system.ai.github`) as tools run as the calling user, governed by Unity Gateway. See [mcp.md](mcp.md#unity-gateway-mcp-services-systemai) | `ai-gateway` user scope, `ServiceBinding(service, "user")` (no Apps resource) |
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
 | `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse | `DatabricksSQLWarehouse` |
 | `document_extract_tool(warehouse_id=..., volume=..., schema=...)` | Parse a UC volume file with `ai_parse_document` and extract a committed schema via `ai_extract` | `DatabricksSQLWarehouse` |
@@ -275,7 +276,8 @@ sandboxes when Beta ends. To enable it:
 2. A workspace admin enables **Databricks Sandbox** on the workspace
    [Previews](https://docs.databricks.com/aws/en/admin/workspace-settings/manage-previews) page.
 3. Only when you call `system.ai.sandbox` through Unity Gateway MCP instead
-   (agent.toml `agentbricks tools add sandbox` with `platform_tools(...)`), an
+   ([`unity_gateway_mcp("system.ai.sandbox")`](mcp.md#systemaisandbox-and-sandbox_tool),
+   or agent.toml `agentbricks tools add sandbox` with `platform_tools(...)`), an
    account admin also enables **Enhanced Unity Gateway** in the account console
    Previews page. `sandbox_tool` calls the Sandbox API directly and does not
    need it.

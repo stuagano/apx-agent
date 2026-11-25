@@ -81,14 +81,15 @@ def test_genie_url_pattern() -> None:
     assert genie_ep.oauth_scope == "genie"
 
 
-def test_vector_search_url_pattern() -> None:
+def test_ai_search_url_pattern() -> None:
+    """Current Databricks docs: /api/2.0/mcp/ai-search/... with the ai-search scope (#1268)."""
     agent = Agent(tools=[vector_search_tool("main.search.docs_index")])
     endpoints = managed_mcp_urls(agent, workspace_host="https://workspace.cloud.databricks.com")
     vs_ep = next(e for e in endpoints if e.kind == "vector_search_index")
     assert vs_ep.url == (
-        "https://workspace.cloud.databricks.com/api/2.0/mcp/vector-search/main/search/docs_index"
+        "https://workspace.cloud.databricks.com/api/2.0/mcp/ai-search/main/search/docs_index"
     )
-    assert vs_ep.oauth_scope == "vector-search"
+    assert vs_ep.oauth_scope == "ai-search"
 
 
 # ---------------------------------------------------------------------------
