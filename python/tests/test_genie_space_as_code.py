@@ -273,6 +273,27 @@ def test_push_creates_with_escaped_serialized_space() -> None:
     ws.genie.trash_space.assert_not_called()
 
 
+def test_attached_volume_fields_survive_pull_and_push(tmp_path: Path) -> None:
+    """#1269: volumes are attached in the Sources tab, and the Management API does
+    not document how serialized_space carries them. Whatever data_sources field the
+    server returns must round-trip through the file and push back unchanged."""
+    live_space = copy.deepcopy(_space())
+    # Stand-in for an undocumented server-side field; not a claimed API shape.
+    live_space["data_sources"]["attached_volumes"] = [{"identifier": "main.docs.board"}]
+    ws = _ws({"s1": _live("s1", live_space)})
+    path = tmp_path / "sales.yml"
+    gs.dump_config(gs.pull(ws, "s1"), path)
+    verify(Artifact(str(path), min_bytes=200, must_contain="main.docs.board"))
+
+    config = gs.load_config(path)
+    assert gs.validate_config(config) == []
+    config.serialized_space["config"]["sample_questions"][0]["question"] = ["Biggest customers?"]
+    gs.push(ws, config)
+
+    sent = json.loads(ws.genie.update_space.call_args.kwargs["serialized_space"])
+    assert sent["data_sources"]["attached_volumes"] == [{"identifier": "main.docs.board"}]
+
+
 def test_push_updates_existing_space() -> None:
     changed = copy.deepcopy(_space())
     changed["config"]["sample_questions"][0]["question"] = ["Biggest customers?"]

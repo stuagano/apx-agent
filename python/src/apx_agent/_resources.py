@@ -56,6 +56,7 @@ _VALID_KINDS = frozenset({
     "sql_warehouse",
     "vector_search_index",
     "uc_table",
+    "uc_volume",
     "uc_connection",
     "lakebase_instance",
     "job",
@@ -73,11 +74,13 @@ class ResourceSpec:
     Args:
         kind: One of ``"uc_function"``, ``"genie_space"``,
             ``"serving_endpoint"``, ``"sql_warehouse"``,
-            ``"vector_search_index"``, ``"uc_table"``, ``"uc_connection"``,
-            ``"lakebase_instance"``, ``"job"``, ``"app"``, ``"model_service"``.
+            ``"vector_search_index"``, ``"uc_table"``, ``"uc_volume"``,
+            ``"uc_connection"``, ``"lakebase_instance"``, ``"job"``, ``"app"``,
+            ``"model_service"``.
         identifier: The natural identifier for the kind — function name,
             space ID, endpoint name, warehouse ID, index name, table name,
-            three-part Unity Gateway model service name.
+            ``catalog.schema.volume`` name, three-part Unity Gateway model
+            service name.
     """
 
     kind: str
@@ -442,6 +445,7 @@ _DAB_KIND_SUFFIX: dict[str, str] = {
     "uc_function": "function",
     "vector_search_index": "vsi",
     "uc_table": "table",
+    "uc_volume": "volume",
     "uc_connection": "connection",
     "lakebase_instance": "lakebase",
     "job": "job",
@@ -553,6 +557,12 @@ def _spec_to_yml_entry(spec: "ResourceSpec") -> dict[str, Any] | None:
             "uc_securable",
             {"securable_full_name": ident, "securable_type": "TABLE", "permission": "SELECT"},
         ),
+        # UC volume, e.g. one attached to a Genie Agent. READ_VOLUME is the
+        # read level (WRITE_VOLUME is the other Apps option).
+        "uc_volume": (
+            "uc_securable",
+            {"securable_full_name": ident, "securable_type": "VOLUME", "permission": "READ_VOLUME"},
+        ),
         # Unity Gateway model service (Apps resource, Public Preview). EXECUTE is
         # the only level. Apps also grants the app SP USE CATALOG / USE SCHEMA when
         # the deployer holds MANAGE or account users already have them.
@@ -599,6 +609,8 @@ def resources_to_databricks_yml(
       |                      | permission: CAN_CONNECT_AND_CREATE}}``         |
       | uc_table             | ``{uc_securable: {..., securable_type: TABLE,  |
       |                      | permission: SELECT}}``                         |
+      | uc_volume            | ``{uc_securable: {..., securable_type: VOLUME, |
+      |                      | permission: READ_VOLUME}}``                    |
       | job                  | ``{job: {name, id,                             |
       |                      | permission: CAN_MANAGE_RUN}}``                 |
       | app                  | ``{app: {name, permission: CAN_USE}}``         |

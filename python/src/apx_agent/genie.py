@@ -31,7 +31,7 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -517,6 +517,8 @@ GENIE_AGENT_RESPONSES_PATH = "/api/2.0/genie/agents/{space_id}/responses"
 GENIE_AGENT_CANCEL_PATH = (
     "/api/2.0/genie/agents/{space_id}/conversations/{conversation_id}/responses/{response_id}/cancel"
 )
+# Documented limit on volumes attached to one Genie Agent (genie-agents/volumes).
+MAX_GENIE_VOLUMES = 10
 
 # Agent mode conversations are tracked apart from Chat mode ones: the two modes
 # answer through different endpoints, so a session's Chat conversation is never
@@ -694,6 +696,7 @@ def _agent_result(question: str, response: dict[str, Any]) -> dict[str, Any]:
         "question": question,
         "report": "\n\n".join(report),
         "citations": citations,
+        "files": [f for f in map(_file_citation, citations) if f is not None],
         "queries": list(queries.values()),
         "tables": tables,
         "conversation_id": response.get("conversation_id"),
@@ -702,7 +705,37 @@ def _agent_result(question: str, response: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _first(citation: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    return next((citation[k] for k in keys if citation.get(k) is not None), None)
+
+
+def _file_citation(citation: Any) -> dict[str, Any] | None:
+    """``path``, ``page``, ``snippet`` and ``title`` of a citation to a volume file.
+
+    The Agent mode reference does not document the annotation schema, so this
+    accepts a ``file_citation`` annotation or any annotation whose path or URL
+    is a ``/Volumes/`` path, and reads the common field spellings.
+    """
+    if not isinstance(citation, dict):
+        return None
+    path = _first(citation, ("path", "file_path", "filename", "url"))
+    if not isinstance(path, str):
+        return None
+    if citation.get("type") != "file_citation" and not path.startswith("/Volumes/"):
+        return None
+    return {
+        "path": path,
+        "page": _first(citation, ("page", "page_number")),
+        "snippet": _first(citation, ("snippet", "quote")),
+        "title": citation.get("title"),
+    }
+
+
 def _citation_label(citation: Any) -> str:
+    file = _file_citation(citation)
+    if file is not None:
+        label = file["path"] if file["page"] is None else f"{file['path']}, page {file['page']}"
+        return f"{label}: \"{file['snippet']}\"" if file["snippet"] else label
     if isinstance(citation, dict):
         title, url = citation.get("title"), citation.get("url")
         if title and url:
@@ -727,6 +760,7 @@ def genie_agent_tool(
     wait_s: float = 600.0,
     structured: bool = False,
     follow_ups: bool = True,
+    volumes: Sequence[str] = (),
 ) -> Any:
     """Return a tool that asks a Genie Agent in Agent mode and returns its cited report.
 
@@ -745,11 +779,18 @@ def genie_agent_tool(
         description: Tool description shown to the LLM.
         wait_s: Longest total wait for the report. Past it apx cancels the
             response and the tool raises a ``ToolError``. Defaults to 600s.
-        structured: Return a dict (``report``, ``citations``, ``queries`` with
-            each SQL and its result, ``tables``, ``conversation_id``,
-            ``response_id``, ``status``) instead of the report text.
+        structured: Return a dict (``report``, ``citations``, ``files`` with
+            the ``path``, ``page``, ``snippet`` and ``title`` of each cited
+            volume file, ``queries`` with each SQL and its result, ``tables``,
+            ``conversation_id``, ``response_id``, ``status``) instead of the
+            report text.
         follow_ups: Continue one Agent mode conversation per apx session.
             ``False`` starts a new conversation for every prompt.
+        volumes: UC volumes (``catalog.schema.volume``, at most 10) attached
+            to the Genie Agent, declared as ``uc_volume`` resources with
+            ``READ_VOLUME``. Attach them to the agent in its Sources tab; the
+            workspace needs the **Analyze Files in Volumes with Genie Agents**
+            preview (Public Preview), and each caller needs ``READ VOLUME``.
 
     Example::
 
@@ -761,15 +802,25 @@ def genie_agent_tool(
         raise ValueError("genie_agent_tool() requires a non-empty space_id")
     if wait_s <= 0:
         raise ValueError("genie_agent_tool() requires a positive wait_s")
+    if isinstance(volumes, str):
+        raise ValueError("genie_agent_tool() volumes must be a list of catalog.schema.volume names")
+    if len(volumes) > MAX_GENIE_VOLUMES:
+        raise ValueError(
+            f"genie_agent_tool() accepts at most {MAX_GENIE_VOLUMES} volumes per Genie Agent, "
+            f"got {len(volumes)}"
+        )
 
     from ._defaults import UserClientDependency
     from ._resources import ResourceSpec, require_user_api_scopes
     from ._tool_factory import build_tool
+    from .document_extract import _parse_volume
 
+    volume_names = [_parse_volume(v).fqn for v in volumes]
     _desc = description or (
         "Ask the Genie Agent a research question in Agent mode. It reasons over the data, "
         "runs several SQL queries, and returns a report with citations. Use for multi-step "
         f"analysis; answers can take minutes. (space_id={space_id})"
+        + (" It can also read and cite pages of files in its attached volumes." if volume_names else "")
     )
 
     async def _ask_genie_agent(question: str, ws: UserClientDependency) -> Any:  # type: ignore[valid-type]
@@ -799,6 +850,7 @@ def genie_agent_tool(
         return result if structured else _agent_text(result)
 
     tool = build_tool(_ask_genie_agent, name=name, description=_desc,
-                      resources=[ResourceSpec("genie_space", space_id)])
+                      resources=[ResourceSpec("genie_space", space_id),
+                                 *(ResourceSpec("uc_volume", v) for v in volume_names)])
     require_user_api_scopes(tool, ["genie"])
     return tool

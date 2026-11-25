@@ -178,6 +178,7 @@ async def test_structured_returns_citations_queries_and_tables():
         "question": "q",
         "report": "West leads revenue.",
         "citations": [{"type": "url_citation", "title": "sales", "url": "https://x/sales"}],
+        "files": [],
         "queries": [{"call_id": "call1", "sql": "SELECT region, SUM(rev) FROM sales GROUP BY region",
                      "result": CALL_OUT["output"]}],
         "tables": [TABLE],
@@ -276,6 +277,82 @@ def test_declares_the_genie_space_and_scope():
     tool = genie_agent_tool("space-1")
     assert tool.__name__ == "ask_genie_agent"
     assert "genie" in tool._apx_user_api_scopes
+
+
+# A report citing files in attached UC volumes (#1269). The Agent mode reference
+# does not document the annotation schema, so the fixture covers both a typed
+# file_citation and a citation identified only by its /Volumes/ path.
+VOLUME_REPORT = {"type": "message", "role": "assistant", "id": "m2", "content": [
+    {"type": "output_text", "text": "Q3 churn rose; the board deck explains why.",
+     "annotations": [
+         {"type": "file_citation", "path": "/Volumes/main/docs/board/q3.pdf", "page": 4,
+          "snippet": "Churn rose 2 points", "title": "q3.pdf"},
+         {"type": "citation", "url": "/Volumes/main/docs/board/notes.docx", "page_number": 2},
+         {"type": "url_citation", "title": "churn", "url": "https://x/churn"},
+     ]},
+]}
+
+
+def _ws_report(report: dict[str, Any]) -> MagicMock:
+    ws = MagicMock()
+    done = {"type": "response.completed", "sequence_number": 0,
+            "response": _response("c1", "completed", [report])}
+    ws.api_client.do.side_effect = [{"contents": _Stream(_sse([done]))}]
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_structured_maps_page_level_volume_file_citations():
+    result = await genie_agent_tool("space-1", structured=True)(question="q", ws=_ws_report(VOLUME_REPORT))
+
+    assert result["citations"] == VOLUME_REPORT["content"][0]["annotations"]
+    assert result["files"] == [
+        {"path": "/Volumes/main/docs/board/q3.pdf", "page": 4,
+         "snippet": "Churn rose 2 points", "title": "q3.pdf"},
+        {"path": "/Volumes/main/docs/board/notes.docx", "page": 2, "snippet": None, "title": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_text_sources_name_the_file_page_and_snippet():
+    text = await genie_agent_tool("space-1")(question="q", ws=_ws_report(VOLUME_REPORT))
+
+    assert text == (
+        "Q3 churn rose; the board deck explains why.\n\nSources:\n"
+        '- /Volumes/main/docs/board/q3.pdf, page 4: "Churn rose 2 points"\n'
+        "- /Volumes/main/docs/board/notes.docx, page 2\n"
+        "- [churn](https://x/churn)"
+    )
+
+
+def test_declared_volumes_are_uc_volume_resources_in_the_apps_manifest():
+    from apx_agent._resources import ResourceSpec, get_resources, resources_to_databricks_yml
+
+    tool = genie_agent_tool("space-1", volumes=["main.docs.board", "main.docs.contracts"])
+
+    assert get_resources(tool) == [
+        ResourceSpec("genie_space", "space-1"),
+        ResourceSpec("uc_volume", "main.docs.board"),
+        ResourceSpec("uc_volume", "main.docs.contracts"),
+    ]
+    assert tool._apx_user_api_scopes == ["genie"]
+    assert "attached volumes" in tool.__doc__
+    volume_entries = [e["uc_securable"] for e in resources_to_databricks_yml(get_resources(tool))
+                      if "uc_securable" in e]
+    assert volume_entries == [
+        {"securable_full_name": "main.docs.board", "securable_type": "VOLUME", "permission": "READ_VOLUME"},
+        {"securable_full_name": "main.docs.contracts", "securable_type": "VOLUME", "permission": "READ_VOLUME"},
+    ]
+
+
+@pytest.mark.parametrize("volumes, match", [
+    ("main.docs.board", "must be a list"),
+    (["main.docs"], "catalog.schema.volume"),
+    ([f"main.docs.v{i}" for i in range(11)], "at most 10 volumes"),
+])
+def test_rejects_malformed_or_too_many_volumes(volumes, match):
+    with pytest.raises(ValueError, match=match):
+        genie_agent_tool("space-1", volumes=volumes)
 
 
 @pytest.mark.asyncio

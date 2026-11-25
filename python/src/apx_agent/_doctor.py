@@ -2284,6 +2284,25 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
                     f"Confirm endpoint {endpoint_name!r} exists in this workspace. The forwarded OBO token cannot leave the app workspace.",
                 ))
 
+        elif typ == "uc_volume":
+            volume_name = spec.identifier
+            try:
+                ws.volumes.read(volume_name)
+                checks.append(Check(
+                    f"UC volume ({volume_name})", Status.OK,
+                    "readable with the checking identity; runtime access is not proven. "
+                    "A Genie Agent reads it only when the workspace preview "
+                    "'Analyze Files in Volumes with Genie Agents' is on (doctor cannot detect the flag)",
+                    None,
+                ))
+            except Exception as exc:
+                checks.append(Check(
+                    f"UC volume ({volume_name})",
+                    Status.WARN,
+                    _resource_missing_in_workspace("uc_volume", volume_name, exc),
+                    f"Confirm {volume_name!r} exists and callers have READ VOLUME on it.",
+                ))
+
         elif typ == "model_service":
             # The chat model's service is check_model_endpoint's; this covers tools.
             if plan.model is None or spec.identifier != model_service_name(plan.model):
