@@ -134,13 +134,13 @@ These are pre-built tools for the Databricks platform. Each factory returns a re
 | `uc_function_tool(name)` | Execute a registered UC function with a `params` dictionary. UC types guide SQL literal conversion. | `DatabricksFunction` |
 | `uc_function_toolkit(schema)` | All agent-facing functions in a UC schema as tools | `DatabricksFunction` (×N) |
 | `genie_tool(space_id)` | Ask a natural-language question to a Genie space; follow-ups in one session continue the same conversation | `DatabricksGenieSpace` |
-| `genie_agent_tool(space_id)` | Ask a Genie Agent in Agent mode; streams reasoning and SQL as trace progress and returns the cited report (`structured=True` for a dict) | `DatabricksGenieSpace`, `genie` user scope |
+| `genie_agent_tool(space_id, volumes=[...])` | Ask a Genie Agent in Agent mode; streams reasoning and SQL as trace progress and returns the cited report (`structured=True` for a dict). With attached UC volumes it also answers from files and cites their pages (Public Preview) | `DatabricksGenieSpace`, `genie` user scope; `uc_securable` `VOLUME` / `READ_VOLUME` per declared volume |
 | `genie_one_tool()` | Ask Genie One (workspace-wide Genie) via its managed MCP; asks and polls in one call, as the calling user, and returns the finished answer or a deep link after `wait_s` | `genie` user scope |
 | `sandbox_tool(sandbox_id=None, auth="user")` | **Beta.** Run model-generated Python or shell in a Databricks Sandbox and return exit code, stdout and stderr; the code never runs in the App process | `system.ai.sandbox` service binding (no Apps resource) |
 | `unity_gateway_mcp(service, tools=None)` | Wrap a Unity Gateway MCP service (`system.ai.web_search`, `system.ai.dbsql`, `system.ai.sandbox`, `system.ai.genie_one_mcp`, connectors such as `system.ai.github`) as tools run as the calling user, governed by Unity Gateway. See [mcp.md](mcp.md#unity-gateway-mcp-services-systemai) | `ai-gateway` user scope, `ServiceBinding(service, "user")` (no Apps resource) |
 | `vector_search_tool(index_name)` | Query a Vector Search index — top-k results, optional column projection | `DatabricksVectorSearchIndex` |
 | `sql_tool(warehouse_id=...)` | Run arbitrary SQL against a SQL warehouse | `DatabricksSQLWarehouse` |
-| `document_extract_tool(warehouse_id=..., volume=..., schema=...)` | Parse a UC volume file with `ai_parse_document` and extract a committed schema via `ai_extract` | `DatabricksSQLWarehouse` |
+| `document_extract_tool(warehouse_id=..., volume=..., schema=...)` | Parse one UC volume file with `ai_parse_document` and extract a committed schema via `ai_extract`. For open questions across a volume's files, use `genie_agent_tool(..., volumes=[...])` | `DatabricksSQLWarehouse` |
 | `foundation_model_tool(model)` | Ask another model — agent-to-model routing. Takes a **Unity Gateway model service** `catalog.schema.service` (e.g. `system.ai.claude-sonnet-4-5`), or `databricks-<id>`, which becomes `system.ai.<id>`. Queried through `/ai-gateway/mlflow/v1` as the App service principal. Any other plain name is rejected. | `uc_securable` `MODEL_SERVICE` / `EXECUTE` (Apps resource, Public Preview) |
 | `lineage_tool()` | Get upstream/downstream lineage for a UC table | — |
 | `schema_tool()` | Describe columns of a UC table | — |
@@ -225,10 +225,12 @@ to the Genie Agent, and writes a report with citations. It can take minutes.
   shows the steps while the call runs. Without an active trace the tool still
   returns the final report.
 - **Result.** By default the tool returns the report text followed by its
-  sources. `structured=True` returns a dict with `report`, `citations` (the
-  report's annotations as Genie sends them), `queries` (each `call_id`, its
-  `sql`, and its `result` summary), `tables`, `conversation_id`, `response_id`,
-  and `status`.
+  sources; a cited volume file is listed as its path, page and snippet.
+  `structured=True` returns a dict with `report`, `citations` (the report's
+  annotations as Genie sends them), `files` (each cited volume file's `path`,
+  `page`, `snippet` and `title`, `None` where Genie leaves one out), `queries`
+  (each `call_id`, its `sql`, and its `result` summary), `tables`,
+  `conversation_id`, `response_id`, and `status`.
 - **Follow-ups.** One Agent mode conversation is continued per apx session per
   space, kept apart from the Chat mode conversations of `genie_tool`, and
   deleted the same way (`end_genie_session`, idle, or LRU eviction).
@@ -247,6 +249,44 @@ agent = Agent(tools=[genie_agent_tool("space-abc", wait_s=900)])
 
 Callers need CAN VIEW on the Genie Agent and `SELECT` on its data. The tool
 declares the Genie space resource and the `genie` user scope.
+
+#### Files in UC volumes (Public Preview)
+
+A Genie Agent can also answer from unstructured files in the Unity Catalog
+volumes attached to it: PDF, Word, PowerPoint, images, Markdown and text. Its
+citations can point to a page of the source file.
+See [Analyze files in volumes](https://docs.databricks.com/aws/en/genie-agents/volumes).
+
+1. A workspace admin turns on **Analyze Files in Volumes with Genie Agents** on
+   the workspace [Previews](https://docs.databricks.com/aws/en/admin/workspace-settings/manage-previews)
+   page.
+2. The Genie Agent author attaches the volumes in the agent's **Sources** tab
+   (**Add**). Genie indexes the whole volume and keeps the index in sync. Only
+   managed volumes support content search. The limit is 10 volumes per Genie
+   Agent.
+3. Declare the same volumes on the tool so they appear in the App's resource
+   manifest:
+
+```python
+genie_agent_tool("space-abc", volumes=["main.docs.board", "main.docs.contracts"])
+```
+
+Each volume becomes a `uc_securable` `VOLUME` / `READ_VOLUME` Apps resource.
+The tool still runs as the calling user, so each caller needs `READ VOLUME` on
+the volumes they ask about, plus the Workspace access and Databricks SQL access
+entitlements. A caller who can read only some of the attached volumes gets an
+answer from those volumes alone. `apx-agent doctor --online` checks that each
+declared volume is readable. Doctor cannot detect whether the preview is on:
+no documented API reports it.
+
+Use the two volume tools for different jobs:
+
+- **`genie_agent_tool(..., volumes=...)`**: open questions across many files,
+  combined with the agent's tables, answered with page citations. Genie does
+  the parsing and retrieval.
+- **`document_extract_tool`**: a fixed schema extracted from one named file
+  with `ai_parse_document` and `ai_extract` on your SQL warehouse. Use it when
+  you need typed fields, not a cited report.
 
 ### Code execution — `sandbox_tool`
 

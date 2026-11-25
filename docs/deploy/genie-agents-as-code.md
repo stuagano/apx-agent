@@ -75,6 +75,18 @@ appended items stay sorted):
 python3 -c "import random,datetime;t=int((datetime.datetime.now()-datetime.datetime(1582,10,15)).total_seconds()*1e7);print(f'{(t&0xFFFFFFFFFFFF0000)|(1<<12)|((t&0xFFFF)>>4):016x}{random.getrandbits(62)|0x8000000000000000:016x}')"
 ```
 
+## Attached UC volumes
+
+Volumes that a Genie Agent reads files from (Public Preview, **Analyze Files in
+Volumes with Genie Agents**) are attached in the agent's **Sources** tab. The
+Management API does not document how `serialized_space` carries them, so apx
+does not validate or generate a volumes field. Whatever `data_sources` fields
+the workspace returns are kept as they are: `pull` writes them to the file and
+`push` sends them back unchanged. To declare the volumes as App resources,
+pass them to the tool:
+`genie_agent_tool(space_id, volumes=["catalog.schema.volume", ...])`. See
+[Genie Agent mode](../tools/overview.md#files-in-uc-volumes-public-preview).
+
 ## How push finds the space
 
 1. The ID recorded under `deployments` for the target workspace host, if that

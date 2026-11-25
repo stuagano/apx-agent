@@ -6,6 +6,17 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Genie Agents can cite files in UC volumes (#1269).**
+  `genie_agent_tool(space_id, volumes=["catalog.schema.volume", ...])` declares
+  the volumes attached to a Genie Agent as `uc_volume` resources. Each one is a
+  `uc_securable` `VOLUME` / `READ_VOLUME` entry in the Apps manifest, with at
+  most 10 volumes per tool. `structured=True` results gain `files`, with the
+  `path`, `page`, `snippet` and `title` of each cited volume file. The default
+  text lists each file citation as its path, page and snippet.
+  `apx-agent doctor --online` probes each declared volume and names the
+  **Analyze Files in Volumes with Genie Agents** preview. Doctor cannot detect
+  whether that preview is on.
+
 - **Breaking: `foundation_model_tool` has no Model Serving mode (#1275).**
   Every `foundation_model_tool` call now goes through Unity Gateway, as the
   chat model already does.

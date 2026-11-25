@@ -743,7 +743,7 @@ class TestCheckDeclaredTools:
         (tmp_path / "agent.py").write_text(
             "from apx_agent import LlmAgent, ResourceSpec, build_tool\n"
             "from apx_agent.foundation_model import foundation_model_tool\n"
-            "from apx_agent.genie import genie_tool\n"
+            "from apx_agent.genie import genie_agent_tool, genie_tool\n"
             "from apx_agent.vector_search import vector_search_tool\n"
             "from apx_agent.sql_tools import sql_tool\n"
             "from apx_agent.catalog import uc_function_tool, uc_function_toolkit\n"
@@ -851,6 +851,26 @@ class TestCheckDeclaredTools:
         assert len(checks) == 1
         assert checks[0].status is Status.OK
         ws.genie.get_space.assert_called_once_with(space_id="space-1")
+
+    def test_genie_agent_volumes_are_probed_and_name_the_preview(self, tmp_path):
+        self._project(tmp_path, "genie_agent_tool('space-1', volumes=['main.docs.board'])")
+        ws = MagicMock()
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
+        volume = next(c for c in checks if c.name == "UC volume (main.docs.board)")
+        assert volume.status is Status.OK
+        assert "Analyze Files in Volumes with Genie Agents" in volume.detail
+        ws.volumes.read.assert_called_once_with("main.docs.board")
+
+    def test_genie_agent_volume_not_readable_warns_with_the_privilege(self, tmp_path):
+        self._project(tmp_path, "genie_agent_tool('space-1', volumes=['main.docs.board'])")
+        ws = MagicMock()
+        ws.volumes.read.side_effect = RuntimeError("404 not found")
+        with patch("apx_agent._defaults._make_workspace_client", return_value=ws):
+            checks = self._resource_checks(doctor.check_declared_tools(tmp_path, auth_ok=True))
+        volume = next(c for c in checks if c.name == "UC volume (main.docs.board)")
+        assert volume.status is Status.WARN
+        assert "READ VOLUME" in volume.fix
 
     def test_genie_not_found(self, tmp_path):
         self._project(tmp_path, "genie_tool('bad-space')")
