@@ -305,7 +305,12 @@ def test_doctor_warns_on_other_errors():
     assert check_service_binding(ServiceBinding("system.ai.sandbox"), ws).status is Status.WARN
 
 
-def test_doctor_skips_services_it_cannot_probe_yet():
-    check = check_service_binding(ServiceBinding("system.ai.web_search"), MagicMock())
+def test_doctor_looks_up_other_services_as_unity_gateway_mcp_services():
+    """Non-sandbox system.ai services are #1268's Unity Gateway MCP lookup."""
+    ws = MagicMock()
+    ws.api_client.do.return_value = {"name": "system.ai.web_search"}
 
-    assert check.status is Status.SKIP
+    check = check_service_binding(ServiceBinding("system.ai.web_search"), ws)
+
+    assert check.status is Status.OK
+    ws.api_client.do.assert_called_once_with("GET", "/api/2.1/unity-catalog/mcp-services/system.ai.web_search")

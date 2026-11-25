@@ -108,6 +108,9 @@ from .genie import (
 # Databricks Sandbox tool factory
 from .sandbox import sandbox_tool
 
+# Unity Gateway MCP services (system.ai.*)
+from ._unity_gateway_mcp import unity_gateway_mcp, unity_gateway_mcp_url
+
 # Unity Catalog tool factories
 from .catalog import (
     catalog_tool,
@@ -541,6 +544,8 @@ __all__ = [
     "end_genie_session",
     "sweep_genie_conversations",
     "sandbox_tool",
+    "unity_gateway_mcp",
+    "unity_gateway_mcp_url",
     "catalog_tool",
     "lineage_tool",
     "workspace_graph_tools",

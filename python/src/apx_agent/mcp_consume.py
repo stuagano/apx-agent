@@ -216,14 +216,20 @@ def _make_mcp_tool(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     poll: dict[str, Any] | None = None,
 ) -> Any:
-    """Wrap one remote MCP tool as a local apx-agent tool."""
+    """Wrap one remote MCP tool as a local apx-agent tool.
+
+    A ``server_url`` that starts with ``/`` is a path on the caller's own
+    workspace, joined to ``ws.config.host`` on each call (Unity Gateway MCP
+    services, #1268).
+    """
     from ._defaults import UserClientDependency
     from ._tool_factory import build_tool, resolve_description
 
     static_headers = dict(headers or {})
     tool_name = name or _slug(remote_name)
+    workspace_path = server_url.startswith("/")
 
-    def _call_headers(ws: Any) -> dict[str, str]:
+    def _call_headers(ws: Any, url: str) -> dict[str, str]:
         h = dict(static_headers)
         if not any(k.lower() == "authorization" for k in h):
             cfg = getattr(ws, "config", None)
@@ -232,7 +238,7 @@ def _make_mcp_tool(
             # Only forward the OBO token to the SAME workspace origin (scheme +
             # host + port) — never leak it to a third-party MCP host, and never
             # over an http downgrade or alternate port of the same host.
-            if token and host and _same_origin(server_url, host):
+            if token and host and _same_origin(url, host):
                 h["Authorization"] = f"Bearer {token}"
         return h
 
@@ -242,8 +248,9 @@ def _make_mcp_tool(
         ws: UserClientDependency,  # type: ignore[valid-type]
     ) -> dict[str, Any]:
         """Placeholder doc — overwritten by build_tool below."""
+        url = f"{ws.config.host.rstrip('/')}{server_url}" if workspace_path else server_url
         try:
-            async with _open_session(server_url, _call_headers(ws), transport, timeout_s=timeout_s) as session:
+            async with _open_session(url, _call_headers(ws, url), transport, timeout_s=timeout_s) as session:
                 if poll is None:
                     result = await session.call_tool(
                         remote_name, arguments or {}, read_timeout_seconds=timedelta(seconds=timeout_s),
@@ -255,7 +262,7 @@ def _make_mcp_tool(
             refusal = _gateway_denial(e)
             if refusal is not None:
                 raise refusal
-            logger.warning("mcp_tool %s on %s failed: %s", remote_name, server_url, e)
+            logger.warning("mcp_tool %s on %s failed: %s", remote_name, url, e)
             return {"error": str(e)}
         refusal = _gateway_denial(result)
         if refusal is not None:
@@ -270,7 +277,8 @@ def _make_mcp_tool(
             f"Pass `arguments` as a dict matching the tool's input schema."
         ),
     )
-    return build_tool(_call_mcp, name=tool_name, description=_desc, remote_url=server_url)
+    return build_tool(_call_mcp, name=tool_name, description=_desc,
+                      remote_url=None if workspace_path else server_url)
 
 
 def mcp_tool(

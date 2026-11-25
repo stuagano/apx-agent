@@ -6,6 +6,19 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Unity Gateway MCP services (#1268).** `unity_gateway_mcp("system.ai.web_search")`
+  (also `system.ai.dbsql`, `system.ai.sandbox`, `system.ai.genie_one_mcp`, and
+  the GA connectors such as `system.ai.github` / `system.ai.slack`) wraps a
+  `system.ai.*` MCP service at `/ai-gateway/mcp-services/<name>`, run as the
+  calling user. Each tool declares the `ai-gateway` user scope and a
+  `ServiceBinding(service, "user")`, the shape `sandbox_tool` uses (#1266).
+  `doctor` looks each service up and names the Enhanced Unity Gateway preview
+  for the Beta services, per-user sign-in for connectors, and Managed MCP
+  Servers for tools that call workspace `/api/2.0/mcp/...` endpoints. The
+  Managed MCP AI Search URL is now `/api/2.0/mcp/ai-search/...` with the
+  `ai-search` scope (was `/mcp/vector-search/...`). See
+  [docs/tools/mcp.md](docs/tools/mcp.md).
+
 - **Unity Gateway model services as Apps resources (#1267).** The chat model
   and `foundation_model_tool("catalog.schema.service")` now declare a
   `model_service` resource, emitted as an Apps `uc_securable` /

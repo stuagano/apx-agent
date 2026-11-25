@@ -1,7 +1,11 @@
 """Databricks Managed MCP integration — generate URLs and client configs.
 
-Databricks Managed MCP (Public Preview, Jan 2026) exposes Unity Catalog
-functions, Genie spaces, and Vector Search indexes as MCP servers, hosted
+Workspace Managed MCP (Public Preview; a workspace admin enables "Managed MCP
+Servers" on the Previews page) exposes Unity Catalog functions, Genie spaces,
+and AI Search indexes as MCP servers. These endpoints bypass Unity Gateway (no
+UG tracing, MCP grants, or policies); for new integrations prefer the
+``system.ai.*`` Unity Gateway MCP services (``unity_gateway_mcp``, #1268)
+when they cover the use case. They are hosted
 by the platform. Anything an apx-agent declares as a Mosaic AI resource
 becomes a Managed MCP endpoint automatically — there's no per-agent MCP
 server to deploy, no app.yaml to maintain, no naming conventions for
@@ -21,7 +25,7 @@ This module provides two helpers:
 URL patterns (from the Databricks managed MCP docs):
   * UC function:   ``/api/2.0/mcp/functions/{catalog}/{schema}/{function_name}``
   * Genie space:   ``/api/2.0/mcp/genie/{genie_space_id}``
-  * Vector Search: ``/api/2.0/mcp/vector-search/{catalog}/{schema}/{index_name}``
+  * AI Search:     ``/api/2.0/mcp/ai-search/{catalog}/{schema}/{index_name}`` (scope ``ai-search``)
 
 Resources outside those three kinds (serving endpoints, SQL warehouses,
 UC tables) don't have a corresponding Managed MCP server today — the
@@ -84,7 +88,7 @@ class ManagedMCPEndpoint:
 _KIND_TO_PATH: dict[str, tuple[str, str]] = {
     "uc_function": ("/api/2.0/mcp/functions/{0}/{1}/{2}", "unity-catalog"),
     "genie_space": ("/api/2.0/mcp/genie/{0}", "genie"),
-    "vector_search_index": ("/api/2.0/mcp/vector-search/{0}/{1}/{2}", "vector-search"),
+    "vector_search_index": ("/api/2.0/mcp/ai-search/{0}/{1}/{2}", "ai-search"),
 }
 
 
