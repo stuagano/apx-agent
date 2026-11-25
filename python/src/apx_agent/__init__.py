@@ -105,6 +105,9 @@ from .genie import (
     sweep_genie_conversations,
 )
 
+# Databricks Sandbox tool factory
+from .sandbox import sandbox_tool
+
 # Unity Catalog tool factories
 from .catalog import (
     catalog_tool,
@@ -170,8 +173,11 @@ from ._obo import apps_inbound_oauth_headers, extract_obo_headers, make_obo_work
 # Resource declaration — auto-derive MLflow resources from the agent tree
 from ._resources import (
     ResourceSpec,
+    ServiceBinding,
     attach_resources,
+    bind_service,
     collect_resource_specs,
+    collect_service_bindings,
     require_user_api_scopes,
     resources_to_databricks_yml,
 )
@@ -534,6 +540,7 @@ __all__ = [
     "genie_tool",
     "end_genie_session",
     "sweep_genie_conversations",
+    "sandbox_tool",
     "catalog_tool",
     "lineage_tool",
     "workspace_graph_tools",
@@ -575,9 +582,12 @@ __all__ = [
     "make_obo_workspace_client",
     # Resource declaration
     "ResourceSpec",
+    "ServiceBinding",
     "attach_resources",
+    "bind_service",
     "require_user_api_scopes",
     "collect_resource_specs",
+    "collect_service_bindings",
     "resources_to_databricks_yml",
     # @tool decorator and UC publishing
     "tool",

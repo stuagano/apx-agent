@@ -26,6 +26,7 @@ from ._models import AgentConfig
 
 if TYPE_CHECKING:
     from ._agents import BaseAgent
+    from ._resources import ServiceBinding
 
 MIN_PYTHON = (3, 11)
 
@@ -2077,6 +2078,32 @@ def check_workspace_scope_allowlist(plan: Any, ws: Any) -> Check:
     )
 
 
+def check_service_binding(binding: ServiceBinding, ws: Any) -> Check:
+    """Probe the preview behind a declared ``system.ai.*`` service binding (#1266).
+
+    ``system.ai.sandbox`` (``sandbox_tool``) lists one sandbox through the
+    Sandbox API. Other services are #1268's and are not probed yet.
+    """
+    from .sandbox import ENABLE_SANDBOX, SANDBOX_SERVICE, SANDBOXES_PATH, preview_off  # noqa: PLC0415
+
+    name = f"Service ({binding.service}, auth={binding.auth})"
+    if binding.service != SANDBOX_SERVICE:
+        return Check(name, Status.SKIP, "doctor has no preview probe for this service yet")
+    try:
+        ws.api_client.do("GET", SANDBOXES_PATH, query={"page_size": 1})
+    except Exception as exc:
+        short = str(exc)[:160]
+        if preview_off(exc):
+            return Check(name, Status.FAIL, f"Databricks Sandbox looks disabled ({short})",
+                         f"{ENABLE_SANDBOX} Calling system.ai.sandbox through Unity Gateway MCP "
+                         "(agent.toml `agentbricks tools add sandbox`) also needs an account admin "
+                         "to enable the Enhanced Unity Gateway preview in the account console.")
+        return Check(name, Status.WARN, f"Sandbox API not readable with the checking identity ({short})",
+                     f"Confirm the {binding.auth} identity can use Databricks Sandbox. {ENABLE_SANDBOX}")
+    return Check(name, Status.OK, "Databricks Sandbox API reachable with the checking identity; "
+                 "runtime identity is not proven")
+
+
 def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> list[Check]:
     """Probe resources on the resolved Python agent, using the checking identity.
 
@@ -2239,6 +2266,9 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
                 f"Confirm warehouse {session_warehouse!r} exists in this workspace. The forwarded OBO token cannot leave the app workspace.",
             ))
 
+    from ._resources import collect_service_bindings  # noqa: PLC0415
+
+    checks.extend(check_service_binding(binding, ws) for binding in collect_service_bindings(agent))
     checks.append(check_workspace_scope_allowlist(plan, ws))
     if cfg is not None:
         checks.append(check_apps_service_principal(cfg.name, ws))
