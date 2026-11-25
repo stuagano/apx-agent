@@ -273,17 +273,22 @@ def test_push_creates_with_escaped_serialized_space() -> None:
     ws.genie.trash_space.assert_not_called()
 
 
-def test_attached_volume_fields_survive_pull_and_push(tmp_path: Path) -> None:
-    """#1269: volumes are attached in the Sources tab, and the Management API does
-    not document how serialized_space carries them. Whatever data_sources field the
-    server returns must round-trip through the file and push back unchanged."""
+VOLUME = {
+    "path": "/Volumes/main/docs/handbooks",
+    "description": ["Project Nimbus handbook (PDF). Cite the file and page."],
+}
+
+
+def test_declared_volumes_survive_pull_and_push(tmp_path: Path) -> None:
+    """#1281: the live get-space / create-space shape is data_sources.volumes[]
+    with {path, description[]}. It validates, round-trips through the file, and
+    push sends it, which attaches the volume when as-code manages the space."""
     live_space = copy.deepcopy(_space())
-    # Stand-in for an undocumented server-side field; not a claimed API shape.
-    live_space["data_sources"]["attached_volumes"] = [{"identifier": "main.docs.board"}]
+    live_space["data_sources"]["volumes"] = [VOLUME]
     ws = _ws({"s1": _live("s1", live_space)})
     path = tmp_path / "sales.yml"
     gs.dump_config(gs.pull(ws, "s1"), path)
-    verify(Artifact(str(path), min_bytes=200, must_contain="main.docs.board"))
+    verify(Artifact(str(path), min_bytes=200, must_contain="/Volumes/main/docs/handbooks"))
 
     config = gs.load_config(path)
     assert gs.validate_config(config) == []
@@ -291,7 +296,33 @@ def test_attached_volume_fields_survive_pull_and_push(tmp_path: Path) -> None:
     gs.push(ws, config)
 
     sent = json.loads(ws.genie.update_space.call_args.kwargs["serialized_space"])
-    assert sent["data_sources"]["attached_volumes"] == [{"identifier": "main.docs.board"}]
+    assert sent["data_sources"]["volumes"] == [VOLUME]
+
+
+def test_push_create_attaches_declared_volumes() -> None:
+    space = copy.deepcopy(_space())
+    space["data_sources"]["volumes"] = [VOLUME, {"path": "/Volumes/main/docs/contracts"}]
+    ws = _ws({})
+    gs.push(ws, _config(serialized_space=space))
+    sent = json.loads(ws.genie.create_space.call_args.kwargs["serialized_space"])
+    assert sent["data_sources"]["volumes"] == space["data_sources"]["volumes"]
+
+
+@pytest.mark.parametrize(
+    ("volumes", "expected"),
+    [
+        ([{"path": "main.docs.handbooks"}], "volumes[0].path: must be a /Volumes/<catalog>/<schema>/<volume> path"),
+        ([{"path": "/Volumes/main/docs"}], "volumes[0].path: must be a /Volumes/"),
+        ([{"description": ["d"]}], "volumes[0].path: must be a /Volumes/"),
+        ([VOLUME, VOLUME], "volumes[1].path: /Volumes/main/docs/handbooks is already declared"),
+        ([{**VOLUME, "description": "not a list"}], "volumes[0].description: must be a non-empty list"),
+        ([{"path": f"/Volumes/main/docs/v{i}"} for i in range(11)], "11 volumes; at most 10 per agent"),
+        ({"path": "/Volumes/main/docs/handbooks"}, "data_sources.volumes: must be a list"),
+    ],
+)
+def test_volume_violations_are_reported(volumes: Any, expected: str) -> None:
+    errors = _break(lambda s: s["data_sources"].update(volumes=volumes))
+    assert any(expected in e for e in errors), errors
 
 
 def test_push_updates_existing_space() -> None:

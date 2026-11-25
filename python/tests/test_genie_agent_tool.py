@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -323,6 +324,85 @@ async def test_text_sources_name_the_file_page_and_snippet():
         "- /Volumes/main/docs/board/notes.docx, page 2\n"
         "- [churn](https://x/churn)"
     )
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+HANDBOOK = "/Volumes/main/docs/handbooks/nimbus_handbook.pdf"
+
+
+def _ws_fixture(name: str) -> MagicMock:
+    """A client streaming the sanitized live Agent mode events in ``fixtures/<name>``."""
+    events = json.loads((FIXTURES / name).read_text())["events"]
+    ws = MagicMock()
+    ws.api_client.do.side_effect = [{"contents": _Stream(_sse(events))}]
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_live_volume_answer_maps_explorer_link_and_context_chunk_to_files():
+    """Live shape (#1281): no annotations, an explorer link in the report, a search chunk."""
+    result = await genie_agent_tool("space-1", structured=True)(
+        question="q", ws=_ws_fixture("genie_agent_volume_answer.json"))
+
+    assert result["citations"] == []
+    [file] = result["files"]
+    assert file["path"] == HANDBOOK
+    assert file["page"] == 1
+    assert file["snippet"].startswith("This handbook is a synthetic test document")
+    assert len(file["snippet"]) <= 300
+    assert file["title"] is None
+
+
+@pytest.mark.asyncio
+async def test_live_volume_answer_text_has_a_sources_line():
+    text = await genie_agent_tool("space-1")(question="q", ws=_ws_fixture("genie_agent_volume_answer.json"))
+
+    report, sources = text.split("\n\nSources:\n")
+    assert "ZIRCON-4419" in report
+    assert sources.startswith(f'- {HANDBOOK}, page 1: "This handbook is a synthetic')
+
+
+@pytest.mark.parametrize("chunk, page", [
+    ('<chunk source="a.pdf (p.3)">page_number: Page 1 of 3\nbody</chunk>', 3),  # source wins
+    ('<chunk source="a.pdf">page_number: Page 2 of 3\nbody</chunk>', 2),
+    ('<chunk source="a.pdf">no page here</chunk>', None),
+    ('<chunk source="a.pdf (p.x)">page_number: Page two</chunk>', None),
+])
+def test_chunk_page_is_best_effort(chunk, page):
+    [file] = g._context_chunks(chunk)
+    assert file["page"] == page
+    assert file["path"].startswith("a.pdf")
+
+
+def test_chunks_without_a_source_and_non_explorer_links_are_ignored():
+    assert g._context_chunks('<chunk rank="1">x</chunk>') == []
+    assert g._context_chunks(None) == []
+    assert g._explorer_files("[a](https://h/explore/data/tables/c/s/t) [b](https://h/explore/data/volumes/c/s/v)") == []
+
+
+def test_chunk_only_file_keeps_its_name_and_a_second_page_is_its_own_entry():
+    files = g._volume_files(
+        [], "[1](https://h/explore/data/volumes/c/s/v?filePreviewPath=dir%2Fa.pdf)",
+        [*g._context_chunks('<chunk source="a.pdf (p.1)">x</chunk><chunk source="a.pdf (p.2)">y</chunk>'),
+         *g._context_chunks('<chunk source="other.pdf">z</chunk>')],
+    )
+    assert [(f["path"], f["page"], f["snippet"]) for f in files] == [
+        ("/Volumes/c/s/v/dir/a.pdf", 1, "x"),
+        ("/Volumes/c/s/v/dir/a.pdf", 2, "y"),
+        ("other.pdf", None, "z"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_volume_index_not_ready_is_a_retryable_indexing_error():
+    with pytest.raises(ToolError) as exc:
+        await genie_agent_tool("space-1")(
+            question="q", ws=_ws_fixture("genie_agent_volume_index_not_ready.json"))
+
+    message = str(exc.value)
+    assert "volume_index_not_ready" in message
+    assert "still indexing" in message
+    assert "several minutes" in message and "retryable" in message
 
 
 def test_declared_volumes_are_uc_volume_resources_in_the_apps_manifest():

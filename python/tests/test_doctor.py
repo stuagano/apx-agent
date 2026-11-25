@@ -860,6 +860,7 @@ class TestCheckDeclaredTools:
         volume = next(c for c in checks if c.name == "UC volume (main.docs.board)")
         assert volume.status is Status.OK
         assert "Analyze Files in Volumes with Genie Agents" in volume.detail
+        assert "several minutes" in volume.detail and "volume_index_not_ready" in volume.detail
         ws.volumes.read.assert_called_once_with("main.docs.board")
 
     def test_genie_agent_volume_not_readable_warns_with_the_privilege(self, tmp_path):

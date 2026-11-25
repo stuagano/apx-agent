@@ -61,7 +61,7 @@ rules before touching a workspace. `validate` needs no workspace or credentials.
 | Sorting | `data_sources.tables` and `metric_views` by `identifier`; each `column_configs` by `column_name`; ID collections by `id`; `sql_functions` by `(id, identifier)`. |
 | Uniqueness | IDs are unique across sample questions plus benchmark questions, and across all instruction collections; each `(table, column_name)` is configured once. |
 | Limits | Every string at most 25,000 characters; every list at most 10,000 items; at most 1 text instruction. |
-| Names | Table, metric view and join identifiers use the three-level `catalog.schema.table` name; MCP connections need `connection_name`. |
+| Names | Table, metric view and join identifiers use the three-level `catalog.schema.table` name; MCP connections need `connection_name`; each `data_sources.volumes` entry needs a unique `/Volumes/<catalog>/<schema>/<volume>` `path`, at most 10 volumes. |
 | Join specs | `sql` is exactly two strings: a condition referencing both aliases backtick-quoted (`` `orders`.`customer_id` ``) and a `--rt=FROM_RELATIONSHIP_TYPE_{MANY_TO_ONE,ONE_TO_MANY,ONE_TO_ONE,MANY_TO_MANY}--` annotation. |
 | Snippets / benchmarks | Snippet `sql` is not empty; each benchmark has exactly one answer with `format: SQL`. |
 
@@ -78,12 +78,30 @@ python3 -c "import random,datetime;t=int((datetime.datetime.now()-datetime.datet
 ## Attached UC volumes
 
 Volumes that a Genie Agent reads files from (Public Preview, **Analyze Files in
-Volumes with Genie Agents**) are attached in the agent's **Sources** tab. The
-Management API does not document how `serialized_space` carries them, so apx
-does not validate or generate a volumes field. Whatever `data_sources` fields
-the workspace returns are kept as they are: `pull` writes them to the file and
-`push` sends them back unchanged. To declare the volumes as App resources,
-pass them to the tool:
+Volumes with Genie Agents**) can be attached in the agent's **Sources** tab or
+declared in `serialized_space` under `data_sources.volumes`. This is the shape
+`get-space --include-serialized-space` returns and `create-space` accepts
+(checked live on 25 Nov 2026):
+
+```yaml
+serialized_space:
+  data_sources:
+    volumes:
+      - path: /Volumes/main/docs/handbooks
+        description:
+          - Project handbook (PDF). Cite the file and page.
+```
+
+`validate` checks that each `path` is a `/Volumes/<catalog>/<schema>/<volume>`
+path, declared once, that `description` (optional) is a non-empty list of
+strings, and that there are at most 10 volumes. `push` sends `serialized_space`
+as a full replacement, so a declared volume is attached on create and update.
+Removing a volume from the file should detach it on the next push; that has
+not been checked against a live workspace. Content search then indexes the
+volume. That takes several minutes (about 5 for a 3-page PDF), and questions
+asked before it finishes fail with `volume_index_not_ready`.
+
+To declare the volumes as App resources, also pass them to the tool:
 `genie_agent_tool(space_id, volumes=["catalog.schema.volume", ...])`. See
 [Genie Agent mode](../tools/overview.md#files-in-uc-volumes-public-preview).
 

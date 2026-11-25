@@ -6,6 +6,21 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Genie volume citations use the live Agent mode shapes (#1281).** A live
+  Agent mode answer from a UC volume sent no annotations, so #1269's mapping
+  returned `files: []` and no Sources line. `genie_agent_tool` now also reads
+  markdown volume-explorer links in the report
+  (`/explore/data/volumes/<catalog>/<schema>/<volume>?…&filePreviewPath=<file>`,
+  mapped to `/Volumes/<catalog>/<schema>/<volume>/<file>`) and the
+  `<chunk source="<file> (p.N)">` blocks in `search_context_files` output for
+  page and snippet. Pages are best-effort and never fail the tool. Annotation
+  mapping is unchanged. A `volume_index_not_ready` (or
+  `volume_content_search_failed`) response is now a `ToolError` that says
+  content search is still indexing and to retry in a few minutes. Genie as
+  code validates `data_sources.volumes[]` (`path`, `description[]`, at most
+  10), and `push` sends it, which attaches the volumes. Doctor and docs note
+  that indexing takes several minutes after a volume is attached.
+
 - **Genie Agents can cite files in UC volumes (#1269).**
   `genie_agent_tool(space_id, volumes=["catalog.schema.volume", ...])` declares
   the volumes attached to a Genie Agent as `uc_volume` resources. Each one is a

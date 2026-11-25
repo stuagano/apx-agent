@@ -1,0 +1,82 @@
+{
+  "_source": "Live Genie Agent mode SSE events (fevm-classic, 2026-11-25, #1281), sanitized: host, workspace id, catalog/schema/volume/file names and ids replaced. Duplicate output_item.added events dropped.",
+  "events": [
+    {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "r-volume-1",
+        "status": "in_progress",
+        "output": [],
+        "conversation_id": "c-volume-1",
+        "created_at": 1795623459.661,
+        "model": "genie-agent",
+        "object": "response"
+      }
+    },
+    {
+      "type": "response.output_item.done",
+      "output_index": 1,
+      "sequence_number": 3,
+      "item": {
+        "type": "function_call_output",
+        "id": "pub_toolu_1_output",
+        "call_id": "pub_toolu_1",
+        "status": "completed",
+        "output": "<chunk rank=\"1\" citation_id=\"file_edc777d4f8d6\" source=\"nimbus_handbook.pdf (p.1)\">\nInventory Code: ZIRCON-4419\nProject Name: Project Nimbus\npage_number: Page 1 of 3\nsection_header: Project Nimbus Handbook — Page 1\nSections: Project Nimbus Handbook — Page 1; Project Nimbus Handbook — Page 2; Project Nimbus Handbook — Page 3\n\nCreated by synthetic test system, type: Project Nimbus Handbook.\n\nContent:\n\nThis handbook is a synthetic test document for apx-agent live verification.\nIt is not a real operations manual.\n\nThe official mascot of Project Nimbus is a silver otter named Kestrel.\nThe project motto is 'Measure twice, launch once.'\n\nShipment instructions for the 2026 winter cycle only.\nThe secret inventory code for the 2026 winter shipment is ZIRCON-4419\nand it ships from Port Meridian.\nDo not reuse this code for any other season.\n\nDock staffing notes.\n\nThe warehouse night-shift supervisor for the Meridian dock is Imani Solano.\nThe backup supervisor is Priya Voss.\n\n</chunk>",
+        "metadata": {"message_id": "r-volume-1"},
+        "created_at": 1795623464.556,
+        "completed_at": 1795623464.556
+      }
+    },
+    {
+      "type": "response.completed",
+      "sequence_number": 6,
+      "response": {
+        "id": "r-volume-1",
+        "status": "completed",
+        "output": [
+          {
+            "type": "function_call",
+            "id": "pub_toolu_1",
+            "call_id": "pub_toolu_1",
+            "name": "search_context_files",
+            "arguments": "{}",
+            "metadata": {"message_id": "r-volume-1"},
+            "created_at": 1795623462.439
+          },
+          {
+            "type": "function_call_output",
+            "id": "pub_toolu_1_output",
+            "call_id": "pub_toolu_1",
+            "status": "completed",
+            "output": "<chunk rank=\"1\" citation_id=\"file_edc777d4f8d6\" source=\"nimbus_handbook.pdf (p.1)\">\nInventory Code: ZIRCON-4419\nProject Name: Project Nimbus\npage_number: Page 1 of 3\nsection_header: Project Nimbus Handbook — Page 1\nSections: Project Nimbus Handbook — Page 1; Project Nimbus Handbook — Page 2; Project Nimbus Handbook — Page 3\n\nCreated by synthetic test system, type: Project Nimbus Handbook.\n\nContent:\n\nThis handbook is a synthetic test document for apx-agent live verification.\nIt is not a real operations manual.\n\nThe official mascot of Project Nimbus is a silver otter named Kestrel.\nThe project motto is 'Measure twice, launch once.'\n\nShipment instructions for the 2026 winter cycle only.\nThe secret inventory code for the 2026 winter shipment is ZIRCON-4419\nand it ships from Port Meridian.\nDo not reuse this code for any other season.\n\nDock staffing notes.\n\nThe warehouse night-shift supervisor for the Meridian dock is Imani Solano.\nThe backup supervisor is Priya Voss.\n\n</chunk>",
+            "metadata": {"message_id": "r-volume-1"},
+            "created_at": 1795623464.556,
+            "completed_at": 1795623464.556
+          },
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "## 2026 Winter Shipment Details\n\nAccording to the Project Nimbus handbook:\n\n- **Secret inventory code:** ZIRCON-4419\n- **Shipping port:** Port Meridian\n\nThe handbook also notes that this code should **not be reused for any other season**. \\[[1](https://example.cloud.databricks.com/explore/data/volumes/main/docs/handbooks?o=1234567890123456&filePreviewPath=nimbus_handbook.pdf)\\]",
+                "annotations": []
+              }
+            ],
+            "id": "pub_toolu_2",
+            "status": "completed",
+            "metadata": {"message_id": "r-volume-1"},
+            "created_at": 1795623466.588,
+            "completed_at": 1795623466.588
+          }
+        ],
+        "conversation_id": "c-volume-1",
+        "created_at": 1795623459.661,
+        "model": "genie-agent",
+        "object": "response"
+      }
+    }
+  ]
+}

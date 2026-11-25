@@ -2292,7 +2292,9 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
                     f"UC volume ({volume_name})", Status.OK,
                     "readable with the checking identity; runtime access is not proven. "
                     "A Genie Agent reads it only when the workspace preview "
-                    "'Analyze Files in Volumes with Genie Agents' is on (doctor cannot detect the flag)",
+                    "'Analyze Files in Volumes with Genie Agents' is on (doctor cannot detect the flag), "
+                    "and only after content search indexes it, which can take several minutes "
+                    "after the volume is attached (until then Genie answers volume_index_not_ready)",
                     None,
                 ))
             except Exception as exc:

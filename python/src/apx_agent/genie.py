@@ -29,8 +29,10 @@ import asyncio
 import collections
 import json
 import logging
+import re
 import threading
 import time
+import urllib.parse
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -525,6 +527,20 @@ MAX_GENIE_VOLUMES = 10
 # continued in Agent mode or the other way round. Cleanup is shared (#1255).
 _AGENT_CONVERSATIONS = GenieConversations()
 
+# Agent mode cites volume files outside message annotations (live check, #1281):
+# markdown links to the volume explorer in the report, and <chunk> blocks in the
+# output of its search_context_files tool.
+_CONTEXT_SEARCH_TOOL = "search_context_files"
+_MARKDOWN_LINK = re.compile(r"\]\((https?://[^)\s]+)\)")
+_EXPLORER_VOLUME = re.compile(r"/explore/data/volumes/([^/]+)/([^/]+)/([^/]+)/?")
+_CHUNK = re.compile(r"<chunk\b([^>]*)>(.*?)</chunk>", re.DOTALL)
+_CHUNK_ATTR = re.compile(r'(\w+)="([^"]*)"')
+_SOURCE_PAGE = re.compile(r"(.*?)\s*\(p\.\s*(\d+)\)\s*")
+_PAGE_NUMBER = re.compile(r"^page_number:\s*Page\s+(\d+)", re.MULTILINE | re.IGNORECASE)
+_SNIPPET_CHARS = 300
+# Error codes for volumes content search is not ready to answer from.
+_VOLUME_SEARCH_CODES = ("volume_index_not_ready", "volume_content_search_failed")
+
 
 def _sse_events(stream: Any) -> Iterator[dict[str, Any]]:
     """Yield each Server-Sent Event's JSON ``data`` as it arrives, typed by ``event:``.
@@ -672,6 +688,8 @@ def _agent_result(question: str, response: dict[str, Any]) -> dict[str, Any]:
     citations: list[Any] = []
     tables: list[Any] = []
     queries: dict[str, dict[str, Any]] = {}
+    tool_names: dict[str, str] = {}
+    chunks: list[dict[str, Any]] = []
     for item in response.get("output") or []:
         if not isinstance(item, dict):
             continue
@@ -688,15 +706,19 @@ def _agent_result(question: str, response: dict[str, Any]) -> dict[str, Any]:
                     tables.append(chunk)
         elif kind == "function_call":
             call_id = str(item.get("call_id"))
+            tool_names[call_id] = str(item.get("name"))
             queries.setdefault(call_id, {"call_id": call_id})["sql"] = _function_call_sql(item)
         elif kind == "function_call_output":
             call_id = str(item.get("id")).removesuffix("_output")
             queries.setdefault(call_id, {"call_id": call_id})["result"] = item.get("output")
+            if tool_names.get(call_id) == _CONTEXT_SEARCH_TOOL:
+                chunks.extend(_context_chunks(item.get("output")))
+    report_text = "\n\n".join(report)
     return {
         "question": question,
-        "report": "\n\n".join(report),
+        "report": report_text,
         "citations": citations,
-        "files": [f for f in map(_file_citation, citations) if f is not None],
+        "files": _volume_files(citations, report_text, chunks),
         "queries": list(queries.values()),
         "tables": tables,
         "conversation_id": response.get("conversation_id"),
@@ -710,11 +732,13 @@ def _first(citation: dict[str, Any], keys: tuple[str, ...]) -> Any:
 
 
 def _file_citation(citation: Any) -> dict[str, Any] | None:
-    """``path``, ``page``, ``snippet`` and ``title`` of a citation to a volume file.
+    """``path``, ``page``, ``snippet`` and ``title`` of an annotation citing a volume file.
 
     The Agent mode reference does not document the annotation schema, so this
     accepts a ``file_citation`` annotation or any annotation whose path or URL
-    is a ``/Volumes/`` path, and reads the common field spellings.
+    is a ``/Volumes/`` path, and reads the common field spellings. A live
+    Agent mode answer from a volume sent no annotations (#1281); see
+    ``_explorer_files`` and ``_context_chunks`` for the shapes it did send.
     """
     if not isinstance(citation, dict):
         return None
@@ -731,11 +755,84 @@ def _file_citation(citation: Any) -> dict[str, Any] | None:
     }
 
 
+def _volume_file(path: str, page: int | None = None, snippet: str | None = None) -> dict[str, Any]:
+    return {"path": path, "page": page, "snippet": snippet, "title": None}
+
+
+def _explorer_files(report: str) -> list[dict[str, Any]]:
+    """Volume files cited by markdown links to the volume explorer in the report.
+
+    Live shape: ``[1](https://<host>/explore/data/volumes/<catalog>/<schema>/<volume>
+    ?o=<workspace_id>&filePreviewPath=<file>)``, mapped to
+    ``/Volumes/<catalog>/<schema>/<volume>/<file>``.
+    """
+    files = []
+    for url in _MARKDOWN_LINK.findall(report):
+        parts = urllib.parse.urlsplit(url)
+        match = _EXPLORER_VOLUME.fullmatch(parts.path)
+        preview = urllib.parse.parse_qs(parts.query).get("filePreviewPath")
+        if match is None or not preview:
+            continue
+        volume = "/".join(urllib.parse.unquote(p) for p in match.groups())
+        files.append(_volume_file(f"/Volumes/{volume}/{preview[0].lstrip('/')}"))
+    return files
+
+
+def _context_chunks(output: Any) -> list[dict[str, Any]]:
+    """Files in ``search_context_files`` output: ``<chunk source="<file> (p.N)">body</chunk>``.
+
+    The page is best-effort: the ``(p.N)`` in ``source``, else the body's
+    ``page_number: Page N`` line, else ``None``. Genie can label a whole
+    multi-page file as one chunk, so the page may not be the cited one.
+    """
+    if not isinstance(output, str):
+        return []
+    files = []
+    for attrs, body in _CHUNK.findall(output):
+        source = dict(_CHUNK_ATTR.findall(attrs)).get("source")
+        if not source:
+            continue
+        labelled = _SOURCE_PAGE.fullmatch(source)
+        numbered = _PAGE_NUMBER.search(body)
+        if labelled is not None:
+            source, page = labelled.group(1), int(labelled.group(2))
+        else:
+            page = int(numbered.group(1)) if numbered is not None else None
+        snippet = " ".join(body.split("Content:", 1)[-1].split())[:_SNIPPET_CHARS]
+        files.append(_volume_file(source, page, snippet if snippet else None))
+    return files
+
+
+def _volume_files(
+    citations: list[Any], report: str, chunks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Cited volume files from annotations, explorer links and context-search chunks.
+
+    A chunk names only the file, so it takes the full ``/Volumes/`` path of a
+    cited file with the same name and fills that entry's page and snippet.
+    """
+    files = [f for f in map(_file_citation, citations) if f is not None]
+    for linked in _explorer_files(report):
+        if all(f["path"] != linked["path"] for f in files):
+            files.append(linked)
+    for chunk in chunks:
+        path = next((f["path"] for f in files if f["path"].rsplit("/", 1)[-1] == chunk["path"]),
+                    chunk["path"])
+        blank = next((f for f in files if f["path"] == path
+                      and f["page"] is None and f["snippet"] is None), None)
+        if blank is not None:
+            blank["page"], blank["snippet"] = chunk["page"], chunk["snippet"]
+        elif all(f["path"] != path or f["page"] != chunk["page"] for f in files):
+            files.append({**chunk, "path": path})
+    return files
+
+
+def _file_label(file: dict[str, Any]) -> str:
+    label = file["path"] if file["page"] is None else f"{file['path']}, page {file['page']}"
+    return f"{label}: \"{file['snippet']}\"" if file["snippet"] else label
+
+
 def _citation_label(citation: Any) -> str:
-    file = _file_citation(citation)
-    if file is not None:
-        label = file["path"] if file["page"] is None else f"{file['path']}, page {file['page']}"
-        return f"{label}: \"{file['snippet']}\"" if file["snippet"] else label
     if isinstance(citation, dict):
         title, url = citation.get("title"), citation.get("url")
         if title and url:
@@ -747,9 +844,25 @@ def _citation_label(citation: Any) -> str:
 
 def _agent_text(result: dict[str, Any]) -> str:
     text = result["report"] or "Genie Agent returned no report."
-    if result["citations"]:
-        text += "\n\nSources:\n" + "\n".join(f"- {_citation_label(c)}" for c in result["citations"])
+    sources = [_file_label(f) for f in result["files"]] + [
+        _citation_label(c) for c in result["citations"] if _file_citation(c) is None
+    ]
+    if sources:
+        text += "\n\nSources:\n" + "\n".join(f"- {s}" for s in sources)
     return text
+
+
+def _incomplete_error(response: dict[str, Any]) -> ToolError:
+    """The ToolError for a response that did not complete; volume indexing says so."""
+    error = response.get("error")
+    if isinstance(error, dict) and error.get("code") in _VOLUME_SEARCH_CODES:
+        return ToolError(
+            f"Genie Agent could not search its volumes ({error['code']}): {error.get('message')} "
+            "Content search indexes a volume after it is attached, which can take several "
+            "minutes. This is retryable: ask again in a few minutes."
+        )
+    detail = error or f"status: {response.get('status')}"
+    return ToolError(f"Genie Agent response did not complete ({detail}).")
 
 
 def genie_agent_tool(
@@ -788,9 +901,13 @@ def genie_agent_tool(
             ``False`` starts a new conversation for every prompt.
         volumes: UC volumes (``catalog.schema.volume``, at most 10) attached
             to the Genie Agent, declared as ``uc_volume`` resources with
-            ``READ_VOLUME``. Attach them to the agent in its Sources tab; the
-            workspace needs the **Analyze Files in Volumes with Genie Agents**
-            preview (Public Preview), and each caller needs ``READ VOLUME``.
+            ``READ_VOLUME``. Attach them to the agent in its Sources tab or
+            with ``data_sources.volumes`` in Genie as code; the workspace
+            needs the **Analyze Files in Volumes with Genie Agents** preview
+            (Public Preview), and each caller needs ``READ VOLUME``. Content
+            search indexes a volume for several minutes after it is attached;
+            until then the tool raises a retryable ``volume_index_not_ready``
+            ``ToolError``.
 
     Example::
 
@@ -844,8 +961,7 @@ def genie_agent_tool(
                 raise ToolError(str(hint)) from e
             raise ToolError(f"Genie Agent request failed: {e}") from e
         if response.get("status") != "completed":
-            detail = response.get("error") or f"status: {response.get('status')}"
-            raise ToolError(f"Genie Agent response did not complete ({detail}).")
+            raise _incomplete_error(response)
         result = _agent_result(question, response)
         return result if structured else _agent_text(result)
 

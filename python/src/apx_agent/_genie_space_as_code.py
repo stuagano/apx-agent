@@ -30,6 +30,8 @@ from typing import Any
 
 import click
 
+from .genie import MAX_GENIE_VOLUMES
+
 SPACE_VERSION = 2
 MAX_STRING_CHARS = 25_000
 MAX_ITEMS = 10_000
@@ -37,6 +39,7 @@ MAX_TEXT_INSTRUCTIONS = 1
 
 _ID = re.compile(r"[0-9a-f]{32}")
 _THREE_PART = re.compile(r"[^.\s]+\.[^.\s]+\.[^.\s]+")
+_VOLUME_PATH = re.compile(r"/Volumes/[^/\s]+/[^/\s]+/[^/\s]+")
 _RELATIONSHIP = re.compile(
     r"--rt=FROM_RELATIONSHIP_TYPE_(MANY_TO_ONE|ONE_TO_MANY|ONE_TO_ONE|MANY_TO_MANY)--"
 )
@@ -184,6 +187,23 @@ def _check_data_sources(space: dict[str, Any], errors: list[str]) -> None:
         name = item.get("connection_name")
         if not isinstance(name, str) or not name:
             errors.append(f"data_sources.mcp_connections[{i}].connection_name: required")
+    volumes = _items(space, ("data_sources", "volumes"), errors)
+    if len(volumes) > MAX_GENIE_VOLUMES:
+        errors.append(
+            f"data_sources.volumes: {len(volumes)} volumes; at most {MAX_GENIE_VOLUMES} per agent"
+        )
+    seen: set[str] = set()
+    for i, item in enumerate(volumes):
+        where = f"data_sources.volumes[{i}]"
+        path = item.get("path")
+        if not isinstance(path, str) or not _VOLUME_PATH.fullmatch(path):
+            errors.append(f"{where}.path: must be a /Volumes/<catalog>/<schema>/<volume> path, got {path!r}")
+        elif path in seen:
+            errors.append(f"{where}.path: {path} is already declared")
+        else:
+            seen.add(path)
+        if "description" in item and not _non_empty_strings(item["description"]):
+            errors.append(f"{where}.description: must be a non-empty list of strings")
 
 
 def _check_join_specs(space: dict[str, Any], errors: list[str]) -> None:
