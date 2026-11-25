@@ -183,8 +183,10 @@ def test_compile_partitions_resources_scopes_and_structural_dependencies() -> No
         ResourceSpec("uc_table", "main.sales.orders"),
         ResourceSpec("uc_table", "main.shared.accounts"),
     )
+    # The chat model is the Unity Gateway service the App SP calls (#1267).
     assert plan.service_resources == (
         ResourceSpec("job", "telemetry-job"),
+        ResourceSpec("model_service", "system.ai.claude-sonnet-4-6"),
         ResourceSpec("uc_table", "main.shared.accounts"),
     )
     assert plan.user_api_scopes == ("ai-gateway", "catalog.tables:read", "sql")

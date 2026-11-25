@@ -60,6 +60,7 @@ _VALID_KINDS = frozenset({
     "lakebase_instance",
     "job",
     "app",
+    "model_service",
 })
 
 
@@ -73,9 +74,10 @@ class ResourceSpec:
         kind: One of ``"uc_function"``, ``"genie_space"``,
             ``"serving_endpoint"``, ``"sql_warehouse"``,
             ``"vector_search_index"``, ``"uc_table"``, ``"uc_connection"``,
-            ``"lakebase_instance"``, ``"job"``, ``"app"``.
+            ``"lakebase_instance"``, ``"job"``, ``"app"``, ``"model_service"``.
         identifier: The natural identifier for the kind — function name,
-            space ID, endpoint name, warehouse ID, index name, table name.
+            space ID, endpoint name, warehouse ID, index name, table name,
+            three-part Unity Gateway model service name.
     """
 
     kind: str
@@ -440,6 +442,7 @@ _DAB_KIND_SUFFIX: dict[str, str] = {
     "lakebase_instance": "lakebase",
     "job": "job",
     "app": "app",
+    "model_service": "model",
 }
 
 
@@ -546,6 +549,13 @@ def _spec_to_yml_entry(spec: "ResourceSpec") -> dict[str, Any] | None:
             "uc_securable",
             {"securable_full_name": ident, "securable_type": "TABLE", "permission": "SELECT"},
         ),
+        # Unity Gateway model service (Apps resource, Public Preview). EXECUTE is
+        # the only level. Apps also grants the app SP USE CATALOG / USE SCHEMA when
+        # the deployer holds MANAGE or account users already have them.
+        "model_service": (
+            "uc_securable",
+            {"securable_full_name": ident, "securable_type": "MODEL_SERVICE", "permission": "EXECUTE"},
+        ),
     }
     if spec.kind not in blocks:
         return None  # pragma: no cover — guarded by _VALID_KINDS above
@@ -588,6 +598,8 @@ def resources_to_databricks_yml(
       | job                  | ``{job: {name, id,                             |
       |                      | permission: CAN_MANAGE_RUN}}``                 |
       | app                  | ``{app: {name, permission: CAN_USE}}``         |
+      | model_service        | ``{uc_securable: {..., securable_type:         |
+      |                      | MODEL_SERVICE, permission: EXECUTE}}``         |
       +----------------------+------------------------------------------------+
 
     Each entry's ``name`` field is auto-derived from the resource identifier
@@ -625,6 +637,7 @@ _KIND_TO_SCOPE: dict[str, str] = {
     "vector_search_index": "vector-search",
     "lakebase_instance": "postgres",
     "app": "apps",
+    "model_service": "ai-gateway",
 }
 
 

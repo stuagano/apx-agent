@@ -140,6 +140,49 @@ def ai_gateway_chat_model(model: str) -> str:
     return model
 
 
+AI_GATEWAY_CHAT_PATH = "/ai-gateway/mlflow/v1/chat/completions"
+
+
+def model_service_name(model: str) -> str | None:
+    """Three-part Unity Gateway model service ``model`` resolves to, or None.
+
+    ``databricks-<id>`` resolves to ``system.ai.<id>``; a ``catalog.schema.service``
+    name is itself. That name is the Apps ``MODEL_SERVICE`` resource and the
+    ``model`` id sent to ``/ai-gateway/mlflow/v1``.
+    """
+    name = ai_gateway_chat_model(model)
+    parts = name.split(".")
+    return name if len(parts) == 3 and all(parts) else None
+
+
+def explain_model_service_error(service: str, exc: Exception) -> str:
+    """Name the Unity Gateway failure behind ``exc`` instead of a generic serving error."""
+    msg = str(exc)
+    lower = msg.lower()
+    code = getattr(exc, "error_code", None)
+    if code == "FEATURE_DISABLED" or "not enabled" in lower or "not supported" in lower:
+        return (
+            f"Unity Gateway is unavailable for {service} ({msg}). Confirm the workspace "
+            "region supports Unity Gateway and that the Apps model-service resource "
+            "(Public Preview) is enabled."
+        )
+    denied = code == "PERMISSION_DENIED" or "403" in msg or "permission" in lower
+    missing = code in ("NOT_FOUND", "RESOURCE_DOES_NOT_EXIST") or "404" in msg or "not found" in lower
+    if denied and code not in ("NOT_FOUND", "RESOURCE_DOES_NOT_EXIST"):
+        return (
+            f"Access to model service {service} was denied ({msg}). The calling identity "
+            f"needs EXECUTE on {service} plus USE CATALOG and USE SCHEMA on its parents; "
+            "declare it as an Apps MODEL_SERVICE resource. A Model Serving CAN_QUERY "
+            "grant does not grant access to a Unity Gateway service."
+        )
+    if missing or "does not exist" in lower:
+        return (
+            f"Model service {service} was not found ({msg}). Use an existing "
+            "catalog.schema.service name from Unity Gateway, e.g. system.ai.<model>."
+        )
+    return f"Model service {service} query failed: {msg}"
+
+
 def validate_chat_model(model: str) -> str:
     """Validate the Gateway binding without rewriting the authored name."""
     if not model or model != model.strip() or ":" in model:

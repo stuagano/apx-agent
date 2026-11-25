@@ -209,7 +209,14 @@ def validate_space_deployment(
         raise click.ClickException(
             f"App Space {space!r} is missing required scopes; ask the space admin to grant them:\n" + "\n".join(lines))
     resources = [resource.as_dict() for resource in inherited.resources or []]
-    for required in resources_to_databricks_yml(plan.service_resources):
+    # Existing spaces never configured the chat model's MODEL_SERVICE grant (#1267);
+    # requiring it would break their deploys. Tool model services are new
+    # declarations and must be configured in the space.
+    from ._llm import model_service_name
+
+    chat = model_service_name(plan.model or "")
+    required_resources = [r for r in plan.service_resources if not (r.kind == "model_service" and r.identifier == chat)]
+    for required in resources_to_databricks_yml(required_resources):
         if not any(all(entry.get(key) == value for key, value in required.items() if key != "name") for entry in resources):
             raise click.ClickException("App Space lacks a required service resource; configure it in the space before deployment.")
     try:

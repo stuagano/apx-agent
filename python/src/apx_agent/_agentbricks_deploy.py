@@ -253,10 +253,35 @@ def validate_native_app(app: dict[str, Any], *, app_name: str, profile: str | No
             raise click.ClickException("Agent Bricks cannot carry bundle resource-backed environment references.")
 
 
+def native_model_services(services: list[str], chat_service: str | None) -> dict[str, str]:
+    """Role → Unity Gateway model service for agent.toml ``[experimental.model_services]``.
+
+    The chat model takes Agent Bricks' default role; a tool's service takes a
+    role from its last name part. ``agentbricks deploy`` grants the App
+    service principal ``EXECUTE`` on each bound service (#1267).
+    """
+    import re
+
+    from databricks_agentbricks.projects.agent_project import DEFAULT_MODEL_ROLE
+
+    roles: dict[str, str] = {}
+    for service in sorted(services, key=lambda name: name != chat_service):
+        if service == chat_service:
+            role = DEFAULT_MODEL_ROLE
+        else:
+            role = re.sub(r"[^a-z0-9_]", "_", service.rsplit(".", 1)[-1].lower())
+            role = role if role[:1].isalpha() else f"model_{role}"
+        while role in roles:
+            role += "_2"
+        roles[role] = service
+    return roles
+
+
 def deploy_native_project(
     source: Path, *, app: dict[str, Any], app_name: str, profile: str,
     experiment_name: str | None,
     transient_env_keys: list[str],
+    model_services: dict[str, str],
 ) -> dict[str, Any]:
     """Stage resolved runtime config, invoke the CLI, and verify its result."""
     import yaml
@@ -272,6 +297,10 @@ def deploy_native_project(
     project.set_deployment_name(app_name)
     if experiment_name is not None:
         project.bind_tracing(experiment_name)
+    bound = {binding.name for binding in project.model_services.values()}
+    for role, service in model_services.items():
+        if service not in bound:  # an authored binding already carries the grant
+            project.bind_model_service(service, role=role)
     project.write()
     runtime = app.get("config", {})
     if not runtime.get("command"):

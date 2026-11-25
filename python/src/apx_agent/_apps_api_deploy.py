@@ -332,8 +332,19 @@ def _apply_grants(
     from databricks.sdk.service.apps import App, AppResource
     from ._resources import resources_to_databricks_yml
 
+    class _DeclaredResource(AppResource):
+        """Serializes the declared entry as-is. ``AppResource.from_dict`` maps an enum
+        value the installed SDK does not know (``MODEL_SERVICE``) to None."""
+
+        def __init__(self, entry: dict[str, Any]) -> None:
+            super().__init__(name=entry["name"])
+            self._entry = entry
+
+        def as_dict(self) -> dict[str, Any]:
+            return dict(self._entry)
+
     attachments = resources_to_databricks_yml(plan.service_resources) if resources is None else resources
-    app_resources = [AppResource.from_dict(entry) for entry in attachments]
+    app_resources: list[AppResource] = [_DeclaredResource(entry) for entry in attachments]
     # The SDK requires name. The mask is what the API applies; name is not in it.
     # Empty lists are the declared sets. Omitting them could leave old grants in place.
     app = App(name=app_name, user_api_scopes=list(plan.user_api_scopes), resources=app_resources)

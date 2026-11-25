@@ -14,7 +14,8 @@ import yaml
 from click.testing import CliRunner
 
 from apx_agent import AgentConfig, LlmAgent
-from apx_agent._agentbricks_deploy import deploy_native_project, validate_cli_deployment
+from apx_agent._agentbricks_deploy import deploy_native_project, native_model_services, validate_cli_deployment
+from apx_agent._llm import model_service_name
 from apx_agent._apps_authorization import compile_authorization_plan
 from apx_agent._durable_agent import build_native_manifest
 from apx_agent._project_gen import _build_databricks_yml, generate_project
@@ -97,8 +98,15 @@ def test_installed_cli_rollout_preserves_native_contract(
         {"name": "APX_APPS_HOST", "value": "agentbricks"},
         {"name": "TRANSIENT", "value": "synthetic-secret"},
     ]}}
+    # The chat model's Unity Gateway service rides the native manifest (#1267).
+    model_services = native_model_services(
+        [r.identifier for r in plan.service_resources if r.kind == "model_service"],
+        model_service_name(config.model),
+    )
+    assert model_services == {"agent": model_service_name(config.model)}
     kwargs = dict(app=app, app_name="agent-bricks-proof", profile="chosen",
-                  experiment_name="/Users/owner/proof", transient_env_keys=["TRANSIENT"])
+                  experiment_name="/Users/owner/proof", transient_env_keys=["TRANSIENT"],
+                  model_services=model_services)
     if failure:
         with pytest.raises(click.ClickException) as error:
             deploy_native_project(tmp_path, **kwargs)
@@ -110,6 +118,8 @@ def test_installed_cli_rollout_preserves_native_contract(
         # Redeploy must accept the files rewritten by the real CLI.
         deploy_native_project(tmp_path, **kwargs)
         verify(Artifact(str(tmp_path / "agent.toml"), must_contain="[auth.user]"))
+        verify(Artifact(str(tmp_path / "agent.toml"), must_contain="[experimental.model_services.agent]"))
+        sdk.grant_model_service_execute.assert_called_with(model_services["agent"], "app-sp")
         sdk.create_runtime_store.assert_called_with("agent-bricks-proof", "app-sp", app_name="agent-bricks-proof", retry_transient=True)
     project = AgentProject.load(tmp_path)
     assert project.memory_store == "memory" and project.session_store == "sessions"
@@ -162,7 +172,7 @@ def test_native_staging_preserves_authored_files(tmp_path: Path, symlink: bool) 
         staged.write_text(authored.read_text())
     with pytest.raises(click.ClickException, match="symlinked|authored"):
         deploy_native_project(tmp_path, app={}, app_name="agent-bricks-proof", profile="chosen",
-                              experiment_name=None, transient_env_keys=[])
+                              experiment_name=None, transient_env_keys=[], model_services={})
     assert authored.read_text() == "command: [user-command]\n"
     assert staged.read_text() == authored.read_text()
 
