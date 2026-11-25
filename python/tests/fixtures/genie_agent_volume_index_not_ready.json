@@ -1,0 +1,70 @@
+{
+  "_source": "Live Genie Agent mode SSE events (fevm-classic, 2026-11-25, #1281) for a question asked before volume content search finished indexing, sanitized: catalog/schema/volume names and ids replaced. Intermediate events dropped.",
+  "events": [
+    {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "r-index-1",
+        "status": "in_progress",
+        "output": [],
+        "conversation_id": "c-index-1",
+        "created_at": 1795623236.99,
+        "model": "genie-agent",
+        "object": "response"
+      }
+    },
+    {
+      "type": "response.failed",
+      "sequence_number": 5,
+      "response": {
+        "id": "r-index-1",
+        "status": "failed",
+        "output": [
+          {
+            "type": "function_call",
+            "id": "pub_toolu_1",
+            "call_id": "pub_toolu_1",
+            "name": "search_context_files",
+            "arguments": "{}",
+            "metadata": {"message_id": "r-index-1"},
+            "created_at": 1795623239.487
+          },
+          {
+            "type": "function_call_output",
+            "id": "pub_toolu_1_output",
+            "call_id": "pub_toolu_1",
+            "status": "in_progress",
+            "output": "Error: main.docs.handbooks",
+            "metadata": {"message_id": "r-index-1"},
+            "created_at": 1795623239.659,
+            "completed_at": 1795623239.659
+          },
+          {
+            "type": "message",
+            "role": "system",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "The agent couldn't answer from your Volumes because content search is still indexing them. Try again in a few minutes.",
+                "annotations": []
+              }
+            ],
+            "id": "r-index-1_error",
+            "status": "failed",
+            "metadata": {"message_id": "r-index-1"}
+          }
+        ],
+        "conversation_id": "c-index-1",
+        "created_at": 1795623236.99,
+        "error": {
+          "type": "invalid_request",
+          "message": "The agent couldn't answer from your Volumes because content search is still indexing them. Try again in a few minutes.",
+          "code": "volume_index_not_ready"
+        },
+        "model": "genie-agent",
+        "object": "response"
+      }
+    }
+  ]
+}

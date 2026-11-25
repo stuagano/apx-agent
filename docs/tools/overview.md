@@ -228,7 +228,8 @@ to the Genie Agent, and writes a report with citations. It can take minutes.
   sources; a cited volume file is listed as its path, page and snippet.
   `structured=True` returns a dict with `report`, `citations` (the report's
   annotations as Genie sends them), `files` (each cited volume file's `path`,
-  `page`, `snippet` and `title`, `None` where Genie leaves one out), `queries`
+  `page`, `snippet` and `title`, `None` where Genie leaves one out; see
+  [how files are found](#how-volume-citations-are-mapped)), `queries`
   (each `call_id`, its `sql`, and its `result` summary), `tables`,
   `conversation_id`, `response_id`, and `status`.
 - **Follow-ups.** One Agent mode conversation is continued per apx session per
@@ -261,9 +262,15 @@ See [Analyze files in volumes](https://docs.databricks.com/aws/en/genie-agents/v
    the workspace [Previews](https://docs.databricks.com/aws/en/admin/workspace-settings/manage-previews)
    page.
 2. The Genie Agent author attaches the volumes in the agent's **Sources** tab
-   (**Add**). Genie indexes the whole volume and keeps the index in sync. Only
-   managed volumes support content search. The limit is 10 volumes per Genie
-   Agent.
+   (**Add**), or declares them under `data_sources.volumes` in
+   [Genie Agents as code](../deploy/genie-agents-as-code.md#attached-uc-volumes).
+   Genie indexes the whole volume and keeps the index in sync. Only managed
+   volumes support content search. The limit is 10 volumes per Genie Agent.
+   Indexing a newly attached volume takes several minutes (about 5 for a
+   3-page PDF in a live check). A question asked before it finishes fails
+   with error code `volume_index_not_ready`, and the tool raises a
+   `ToolError` that says content search is still indexing and to retry in a
+   few minutes. `volume_content_search_failed` gets the same message.
 3. Declare the same volumes on the tool so they appear in the App's resource
    manifest:
 
@@ -278,6 +285,31 @@ entitlements. A caller who can read only some of the attached volumes gets an
 answer from those volumes alone. `apx-agent doctor --online` checks that each
 declared volume is readable. Doctor cannot detect whether the preview is on:
 no documented API reports it.
+
+##### How volume citations are mapped
+
+The Agent mode reference does not document how a volume file is cited. A live
+answer from a volume PDF (25 Nov 2026) sent empty message `annotations` and
+cited the file in two other places. apx reads all three:
+
+- **Markdown links in the report** to the volume explorer:
+  `[1](https://<host>/explore/data/volumes/<catalog>/<schema>/<volume>?o=<workspace_id>&filePreviewPath=<file>)`
+  becomes `/Volumes/<catalog>/<schema>/<volume>/<file>`. The live link had no
+  page parameter.
+- **`search_context_files` output.** Agent mode calls this tool to search the
+  volumes, and its output holds chunks such as
+  `<chunk rank="1" citation_id="file_…" source="<file> (p.N)">…</chunk>`. apx
+  takes the file name and page from `source` (else the body's
+  `page_number: Page N` line), and the first 300 characters after `Content:`
+  as the snippet. A chunk names only the file, so it takes the `/Volumes/` path
+  of a linked file with the same name; a chunk with no matching link keeps the
+  bare file name as its `path`.
+- **Annotations**, when Genie sends them: a `file_citation` annotation, or one
+  whose path or URL starts with `/Volumes/`.
+
+The page is best-effort. In the live check Genie returned a 3-page PDF as one
+chunk labelled `(p.1)` / `Page 1 of 3`, though the cited fact was on page 2. A
+missing or wrong page never fails the tool.
 
 Use the two volume tools for different jobs:
 
