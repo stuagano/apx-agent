@@ -575,15 +575,40 @@ def _ai_gateway_model_service_name(model: str) -> str | None:
     UC name maps directly. A ``databricks-*`` foundation endpoint is the
     ``system.ai.<id>`` service ``get_llm`` sends.
     """
-    from ._llm import ai_gateway_chat_model
+    from ._llm import model_service_name
 
-    model = ai_gateway_chat_model(model)
     if model.startswith("model-services/"):
         return model
-    parts = model.split(".")
-    if len(parts) == 3 and all(parts):
-        return f"model-services/{model}"
-    return None
+    service = model_service_name(model)
+    return f"model-services/{service}" if service else None
+
+
+def check_model_service(service: str, ws: Any, label: str | None = None) -> Check:
+    """Look up one Unity Gateway model service and explain why it is unusable (#1267).
+
+    A missing service, a missing ``EXECUTE`` grant and an unavailable Unity
+    Gateway each get their own message rather than a generic serving-endpoint
+    error. The lookup runs as the checking identity; the App service principal
+    gets ``EXECUTE`` from the ``MODEL_SERVICE`` Apps resource at deploy.
+    """
+    from ._llm import explain_model_service_error
+
+    label = label or f"Model service ({service})"
+    try:
+        found = ws.api_client.do("GET", f"/api/2.1/unity-catalog/model-services/{service}")
+    except Exception as exc:
+        detail = explain_model_service_error(service, exc)
+        # An unclassified error (network, auth) is not proof the service is unusable.
+        status = Status.WARN if detail.startswith(f"Model service {service} query failed") else Status.FAIL
+        return Check(label, status, detail,
+                     "Name an existing Unity Gateway model service in agent.py (`model=` or "
+                     "foundation_model_tool). Apps model-service resources are Public Preview; "
+                     f"deploy declares uc_securable {service} (MODEL_SERVICE, EXECUTE) for the "
+                     "App service principal.")
+    if not (isinstance(found, dict) and found.get("name")):
+        return Check(label, Status.WARN, "model service lookup returned no name",
+                     "Confirm the model service under Unity Gateway.")
+    return Check(label, Status.OK, "model service exists and is reachable", None)
 
 
 def _declared_settings(cwd: Path) -> "dict[str, Any] | Check":
@@ -647,29 +672,10 @@ def check_model_endpoint(cwd: Path, *, auth_ok: bool) -> Check | None:
     try:
         from databricks.sdk import WorkspaceClient
         ws = WorkspaceClient()
-        service = ws.api_client.do("GET", f"/api/2.1/unity-catalog/{service_name}")
-        name = service.get("name") if isinstance(service, dict) else None
-        if not name:
-            return Check(
-                label, Status.WARN,
-                "model service lookup returned no name",
-                "Confirm the model under Unity Catalog AI Gateway.",
-            )
-        return Check(label, Status.OK, "model service exists and is reachable", None)
     except Exception as e:
-        msg = str(e)
-        if "404" in msg or "does not exist" in msg.lower() or "not found" in msg.lower():
-            return Check(
-                label, Status.FAIL,
-                f"model service not found: {service_name}",
-                "Update `model=` on the agent in agent.py to a "
-                "Unity Catalog AI Gateway model service (catalog.schema.id).",
-            )
-        return Check(
-            label, Status.WARN,
-            f"could not verify model service ({msg})",
-            "Model-service lookup failed — check auth and workspace access.",
-        )
+        return Check(label, Status.WARN, f"could not verify model service ({e})",
+                     "Model-service lookup failed — check auth and workspace access.")
+    return check_model_service(service_name.removeprefix("model-services/"), ws, label)
 
 
 def check_gateway_guardrails(cwd: Path, *, auth_ok: bool) -> Check | None:
@@ -2118,6 +2124,7 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
     from ._apps_authorization import compile_authorization_plan  # noqa: PLC0415
     from ._defaults import _make_workspace_client  # noqa: PLC0415
     from ._inspection import _load_agent_config  # noqa: PLC0415
+    from ._llm import model_service_name  # noqa: PLC0415
     from ._tool_config import ToolConfigError, reject_legacy_tool_config  # noqa: PLC0415
     from ._wiring import finalize_agent, resolve_agent  # noqa: PLC0415
     from .cli import _detect_module_spec  # noqa: PLC0415
@@ -2235,6 +2242,11 @@ def check_declared_tools(cwd: Path, *, auth_ok: bool, online: bool = True) -> li
                     _resource_missing_in_workspace("serving_endpoint", endpoint_name, exc),
                     f"Confirm endpoint {endpoint_name!r} exists in this workspace. The forwarded OBO token cannot leave the app workspace.",
                 ))
+
+        elif typ == "model_service":
+            # The chat model's service is check_model_endpoint's; this covers tools.
+            if plan.model is None or spec.identifier != model_service_name(plan.model):
+                checks.append(check_model_service(spec.identifier, ws))
 
         elif typ == "lakebase_instance":
             instance_name = spec.identifier

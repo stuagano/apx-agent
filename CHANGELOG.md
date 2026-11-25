@@ -6,6 +6,18 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Unity Gateway model services as Apps resources (#1267).** The chat model
+  and `foundation_model_tool("catalog.schema.service")` now declare a
+  `model_service` resource, emitted as an Apps `uc_securable` /
+  `MODEL_SERVICE` / `EXECUTE` resource (Public Preview) for the App service
+  principal. On the Agent Bricks CLI path it is bound in the staged
+  `agent.toml` `[experimental.model_services]`. A dotted
+  `foundation_model_tool` name queries `/ai-gateway/mlflow/v1` with the
+  three-part name; a plain endpoint name keeps the Model Serving path.
+  `doctor` names a missing service, a missing `EXECUTE`, or unavailable Unity
+  Gateway. See
+  [docs/deploy/unity-gateway-model-services.md](docs/deploy/unity-gateway-model-services.md).
+
 - **Agent Bricks CLI changelog, and install hints match the pin.**
   [docs/running/agentbricks-cli-changelog.md](docs/running/agentbricks-cli-changelog.md)
   records every PyPI release of `databricks-agentbricks` (0.2.0 through 0.11.0),

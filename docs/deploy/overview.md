@@ -21,6 +21,12 @@ backend = "apps_api"     # absent or "agentbricks": path 2, or path 3 with deplo
 entrypoint = "my_agent"  # required: the module run as `python -m my_agent`
 ```
 
+The chat model and each model-service `foundation_model_tool` are granted to
+the App service principal as Unity Gateway `MODEL_SERVICE` resources with
+`EXECUTE` (Public Preview). An App Space must already carry each tool's model
+service. See
+[Unity Gateway model services](unity-gateway-model-services.md).
+
 Choose `apps_api` when the App name must not change — for example an `mcp-`
 name Databricks needs in order to discover the App as an MCP server. Details:
 [Deploy through the Agent Bricks CLI](../running/runtime-targets.md#deploy-through-the-agent-bricks-cli)

@@ -39,6 +39,8 @@ databricks --profile prod schemas get main.agents
 
 **Diagnosis.** The agent chat model is called through **Unity Catalog AI Gateway** (`{host}/ai-gateway/mlflow/v1`). `get_llm` sends a declared `databricks-<id>` foundation endpoint as the model service `system.ai.<id>`. A `catalog.schema.service` name is sent as declared. Confirm that model service exists and that the caller can access it. Serving endpoints still matter for explicit endpoint tools, embeddings, and sub-agent endpoints. Provider-prefixed chat declarations such as `bedrock:...` are rejected; configure the provider in AI Gateway and declare its model-service name instead. See [the migration guide](../reference/bedrock-via-ai-gateway.md).
 
+The App service principal calls the model service. Deploy grants it `EXECUTE` through a `MODEL_SERVICE` Apps resource (Public Preview). A `PERMISSION_DENIED` on a three-part name means that grant is missing. A serving-endpoint `CAN_QUERY` grant does not cover it. See [Unity Gateway model services](unity-gateway-model-services.md).
+
 **Fix.**
 
 ```bash

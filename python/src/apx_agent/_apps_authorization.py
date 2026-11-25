@@ -20,6 +20,7 @@ from ._defaults import (
 )
 from ._env import resolve_env_var
 from ._inspection import _tool_dependency_callables
+from ._llm import model_service_name
 from ._resources import (
     ResourceSpec,
     _iter_sub_agents,
@@ -115,7 +116,7 @@ class AuthorizationPlan:
     agent_identity: str | None = None
     # Chat model this plan was compiled for. None when there is no chat model.
     # ``user_api_scopes`` includes ``ai-gateway`` when this is set; the model is
-    # not a ``serving_endpoint`` resource.
+    # a ``model_service`` service resource, not a ``serving_endpoint``.
     model: str | None = None
     # Every ``http(s)`` ``sub_agents`` URL, called from the app process.
     sub_agent_urls: tuple[str, ...] = ()
@@ -439,11 +440,16 @@ def compile_authorization_plan(
     operations = tuple(by_name.values())
     user_resources: set[ResourceSpec] = set()
     # The chat model is not a serving_endpoint grant. get_llm always calls it
-    # through Unity Catalog AI Gateway, so the OBO scope is ``ai-gateway``
+    # through Unity Gateway (``/ai-gateway/mlflow/v1``) with the App's own
+    # credentials, so it is a ``model_service`` resource the App service
+    # principal gets EXECUTE on (#1267), plus the ``ai-gateway`` OBO scope
     # (added below). A ``bedrock:…`` scheme still provisions an external-model
     # serving endpoint (``_external_model``), but that endpoint is not the
     # chat-model transport and is not granted here.
     service_resources: set[ResourceSpec] = set()
+    chat_service = model_service_name(model) if model else None
+    if chat_service is not None:
+        service_resources.add(ResourceSpec("model_service", chat_service))
     raw_user_scopes: set[str] = {"ai-gateway"} if model else set()
 
     for operation in operations:

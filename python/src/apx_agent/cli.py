@@ -10359,7 +10359,8 @@ def _deploy_apps_body(
         require_workspace_scope_allowlist(workspace, authorization_plan)
 
     if native_cli:
-        if authorization_plan.service_resources:
+        # Model services are bound in agent.toml, which Agent Bricks grants (#1267).
+        if any(r.kind != "model_service" for r in authorization_plan.service_resources):
             raise click.ClickException("Agent Bricks deployment cannot yet represent this agent's service-resource grants.")
         if authorization_plan.app_dependencies:
             # Bound peers are trusted per hop through the request user's OBO token
@@ -10664,9 +10665,16 @@ def _deploy_apps_body(
                 experiment_name = f"/Users/{user_name}/{app_name}-{bundle_target}"
             log("# agentbricks deploy " + app_name)
             deploy_t0 = time.monotonic()
+            from ._agentbricks_deploy import native_model_services
+            from ._llm import model_service_name
+
             native_result = deploy_native_project(
                 source, app=resolved_app, app_name=app_name, profile=profile,
                 experiment_name=experiment_name, transient_env_keys=injected_env_keys,
+                model_services=native_model_services(
+                    [r.identifier for r in authorization_plan.service_resources if r.kind == "model_service"],
+                    model_service_name(authorization_plan.model or ""),
+                ),
             )
             deploy_seconds = round(time.monotonic() - deploy_t0, 2)
             run_seconds = None

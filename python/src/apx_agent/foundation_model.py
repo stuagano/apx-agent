@@ -53,9 +53,20 @@ def foundation_model_tool(
             ],
         )
 
+    Unity Gateway model service — pass a three-part name instead of an
+    endpoint id. The tool posts to ``{host}/ai-gateway/mlflow/v1`` as the App
+    service principal and declares an Apps ``uc_securable`` /
+    ``MODEL_SERVICE`` resource with ``EXECUTE``, so deploy grants that
+    principal access::
+
+        foundation_model_tool("system.ai.claude-sonnet-4-5", name="ask_claude")
+
     Args:
         endpoint_name: Databricks Model Serving endpoint name (e.g.
-            ``"databricks-claude-sonnet-4-6"``, or a custom endpoint).
+            ``"databricks-claude-sonnet-4-6"``, or a custom endpoint), or a
+            Unity Gateway model service ``catalog.schema.service`` (e.g.
+            ``"system.ai.claude-sonnet-4-5"``). Endpoint names cannot contain
+            ``.``, so a dotted name is always a model service.
         system_prompt: Optional system prompt prepended to every call.
             Fixed at factory time. For per-call system prompts, expose a
             custom tool.
@@ -65,7 +76,8 @@ def foundation_model_tool(
         description: Tool description shown to the calling LLM. When
             omitted, generated from the endpoint name.
     """
-    from ._defaults import UserClientDependency
+    from ._defaults import ClientDependency, UserClientDependency
+    from ._llm import AI_GATEWAY_CHAT_PATH, explain_model_service_error
     from ._resources import ResourceSpec
     from ._tool_factory import build_tool
 
@@ -73,6 +85,42 @@ def foundation_model_tool(
         f"Ask the `{endpoint_name}` foundation model a question. "
         f"Pass a natural-language prompt and get the model's response back."
     )
+
+    if "." in endpoint_name:
+        if len(endpoint_name.split(".")) != 3 or not all(endpoint_name.split(".")):
+            raise ValueError(
+                f"foundation_model_tool({endpoint_name!r}): a Unity Gateway model service "
+                "is catalog.schema.service; a Model Serving endpoint name has no dots."
+            )
+        service = endpoint_name
+
+        async def _ask_service(prompt: str, ws: ClientDependency) -> str:  # type: ignore[valid-type]
+            """Placeholder doc — overwritten below."""
+            messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
+            messages.append({"role": "user", "content": prompt})
+            body: dict[str, Any] = {"model": service, "messages": messages}
+            if temperature is not None:
+                body["temperature"] = temperature
+            if max_tokens is not None:
+                body["max_tokens"] = max_tokens
+            try:
+                response = ws.api_client.do("POST", AI_GATEWAY_CHAT_PATH, body=body)
+            except Exception as e:
+                logger.warning("Unity Gateway query failed on %s: %s", service, e)
+                return explain_model_service_error(service, e)
+            choices = response.get("choices") if isinstance(response, dict) else None
+            if not choices:
+                return ""
+            content = choices[0].get("message", {}).get("content")
+            return content if isinstance(content, str) else ""
+
+        return build_tool(
+            _ask_service,
+            name=name,
+            description=_desc,
+            resources=[ResourceSpec("model_service", service)],
+            execution="service",
+        )
 
     async def _ask_model(prompt: str, ws: UserClientDependency) -> str:  # type: ignore[valid-type]
         """Placeholder doc — overwritten below."""
