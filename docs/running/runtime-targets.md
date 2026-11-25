@@ -389,8 +389,9 @@ workspace: `mcp_tool` / `mcp_toolkit` servers, `remote_agent_tool` and
 `*.databricksapps.com` URL passes only when `apps.get` resolves it to an App in
 this workspace; a peer App in another workspace is public internet from the
 space, and the forwarded user token is scoped to this workspace. `http_tool` and
-`openapi_tool` calls stay allowed because they egress from the SQL warehouse
-through a UC HTTP connection. Preflight cannot see a plain `@tool` function that
+`openapi_tool` calls stay allowed because the app process only calls the
+workspace's own Unity Catalog connection proxy; Databricks makes the external
+call. Preflight cannot see a plain `@tool` function that
 opens its own HTTP client; such a tool deploys and then fails when it reaches
 outside the workspace, so route external calls through `http_tool` instead.
 

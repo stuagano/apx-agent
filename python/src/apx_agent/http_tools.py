@@ -1,17 +1,24 @@
 """External-HTTP tool factories backed by governed Unity Catalog connections.
 
-``http_tool`` calls an external HTTP service through a UC **HTTP connection**
-using Databricks' ``http_request`` SQL function, executed under the calling
-user's identity (OBO). The credential lives in the connection — the app never
-sees it, and Unity Catalog enforces ``USE_CONNECTION`` per user. The tool
-declares a ``ResourceSpec("uc_connection", ...)`` so the compile/deploy path
-wires the grant automatically.
+``http_tool`` calls an external HTTP service through the Unity Catalog
+**HTTP connection proxy**::
+
+    https://<workspace>/api/2.0/unity-catalog/connections/<connection>/proxy/<path>
+
+The request carries the calling user's Databricks token (OBO). Databricks
+authenticates the caller, checks ``USE CONNECTION`` on the connection, injects
+the external service's credential stored in the connection, and forwards the
+request to ``{host}{base_path}{path}``. The app never sees the third-party
+credential, and no SQL warehouse is involved. The tool declares a
+``ResourceSpec("uc_connection", ...)`` so deploy adds the connection as an App
+resource with the ``USE_CONNECTION`` permission.
 
 Set up the connection once (governed by your data team)::
 
     CREATE CONNECTION my_api TYPE HTTP
       OPTIONS (host 'https://api.example.com', port '443', base_path '/v1',
                bearer_token SECRET('scope', 'key'));
+    GRANT USE CONNECTION ON CONNECTION my_api TO `user@example.com`;
 
 Then expose an operation as a tool::
 
@@ -27,11 +34,32 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import warnings
 from typing import Any
+from urllib.parse import quote
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
 _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "PATCH"})
+
+CONNECTION_PROXY_PATH = "/api/2.0/unity-catalog/connections/{connection}/proxy"
+_PROXY_TIMEOUT_S = 30.0
+
+
+def connection_proxy_url(host: str, connection: str, path: str) -> str:
+    """Return the UC HTTP connection proxy URL for ``path`` on ``connection``.
+
+    ``connection`` is percent-encoded as one path segment, so a ``/`` in a name
+    cannot escape into a different API route. ``path`` follows ``/proxy``;
+    Databricks forwards it to ``{host}{base_path}{path}``.
+    """
+    encoded = quote(connection, safe="")
+    base = host.rstrip("/") + CONNECTION_PROXY_PATH.format(connection=encoded)
+    if not path:
+        return base + "/"
+    return base + (path if path.startswith("/") else "/" + path)
 
 
 def http_tool(
@@ -46,10 +74,11 @@ def http_tool(
 ) -> Any:
     """Return a tool that calls an external HTTP service via a UC HTTP connection.
 
-    The request runs server-side through Databricks' ``http_request`` SQL
-    function under the calling user's identity. Credentials are resolved from
-    the Unity Catalog connection (never seen by the app), and ``USE_CONNECTION``
-    is enforced per user.
+    The request goes to the Unity Catalog connection proxy
+    (``/api/2.0/unity-catalog/connections/<connection>/proxy/<path>``) with the
+    calling user's Databricks token. Databricks enforces ``USE CONNECTION`` per
+    user and injects the external credential from the connection; the app never
+    holds it.
 
     The LLM controls two optional inputs:
 
@@ -58,29 +87,28 @@ def http_tool(
 
     ``method`` and ``path`` are fixed at factory time (developer-supplied,
     trusted), so each ``http_tool`` exposes one specific API operation. The
-    tool returns ``{"status_code": int | None, "text": str}``.
+    tool returns ``{"status_code": int, "text": str}``, or ``{"error": str}``
+    when the request cannot be sent.
 
     Args:
         connection: Name of the Unity Catalog HTTP connection. Declared as a
-            ``uc_connection`` resource so deploy wires the ``USE_CONNECTION``
-            grant.
+            ``uc_connection`` resource so deploy adds it as an App resource
+            with ``USE_CONNECTION``.
         method: HTTP method — one of GET, POST, PUT, DELETE, PATCH.
         path: Path appended to the connection's ``base_path``. Fixed at factory
             time.
         name: LLM-facing tool name. Defaults to ``"http_request"``.
         description: LLM-facing description. When omitted, generated from the
             method, path, and connection.
-        warehouse_id: SQL warehouse to run ``http_request`` on. When set, it is
-            declared as a ``sql_warehouse`` resource; when omitted, a warehouse
-            is auto-discovered at call time.
+        warehouse_id: Deprecated and ignored (emits ``DeprecationWarning``).
+            The connection proxy does not run on a SQL warehouse.
         max_chars: Truncate the response ``text`` to this many characters.
 
     Returns:
         An apx-agent tool callable — register it in ``Agent(tools=[...])``.
     """
     from ._defaults import UserClientDependency
-    from ._resources import ResourceSpec
-    from ._sql import sql_str_literal
+    from ._resources import ResourceSpec, require_user_api_scopes
     from ._tool_factory import build_tool, resolve_description
 
     _method = method.upper()
@@ -88,11 +116,15 @@ def http_tool(
         raise ValueError(
             f"http_tool: method must be one of {sorted(_ALLOWED_METHODS)}, got {method!r}"
         )
+    if warehouse_id is not None:
+        warnings.warn(
+            "http_tool(warehouse_id=...) is ignored: requests go through the Unity "
+            "Catalog connection proxy, which needs no SQL warehouse. Remove the argument.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     _path = path if path is not None else ""
-    _conn_lit = sql_str_literal(connection)
-    _method_lit = sql_str_literal(_method)
-    _path_lit = sql_str_literal(_path)
 
     _desc = resolve_description(
         description,
@@ -110,49 +142,40 @@ def http_tool(
         ws: UserClientDependency,  # type: ignore[valid-type]
     ) -> dict[str, Any]:
         """Placeholder doc — overwritten by build_tool below."""
-        from ._sql import run_sql
-
-        # CONN / METHOD / PATH are trusted factory-time values, inlined as
-        # escaped literals. Everything from the LLM (query keys+values, body)
-        # is passed as bind parameters — never string-interpolated.
-        args = [f"CONN => {_conn_lit}", f"METHOD => {_method_lit}", f"PATH => {_path_lit}"]
-        params: list[dict[str, str]] = []
-        if query:
-            pairs: list[str] = []
-            for i, (k, v) in enumerate(query.items()):
-                kp, vp = f"k{i}", f"v{i}"
-                pairs.append(f":{kp}, :{vp}")
-                params.append({"name": kp, "value": str(k), "type": "STRING"})
-                params.append({"name": vp, "value": str(v), "type": "STRING"})
-            args.append(f"PARAMS => map({', '.join(pairs)})")
+        # The URL is built from trusted factory-time values only. LLM input
+        # travels as httpx query params (encoded) and a JSON body.
+        url = connection_proxy_url(ws.config.host, connection, _path)
+        # The Databricks token authenticates to the proxy; Databricks strips it
+        # before forwarding and injects the connection's own credential.
+        headers = dict(ws.config.authenticate())
+        content: bytes | None = None
         if body is not None:
-            params.append({"name": "body", "value": _json.dumps(body), "type": "STRING"})
-            args.append("JSON => :body")
-
-        sql = (
-            "WITH resp AS (SELECT http_request(" + ", ".join(args) + ") AS r) "
-            "SELECT r.status_code AS status_code, r.text AS text FROM resp"
-        )
+            content = _json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        params = {str(k): str(v) for k, v in query.items()} if query else None
         try:
-            rows = run_sql(ws, sql, warehouse_id=warehouse_id, parameters=params or None)
-        except Exception as e:  # noqa: BLE001
+            async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT_S) as client:
+                resp = await client.request(
+                    _method, url, params=params, content=content, headers=headers
+                )
+        except httpx.HTTPError as e:
             logger.warning(
                 "http_tool %s %s via connection %s failed: %s", _method, _path, connection, e
             )
             return {"error": str(e)}
 
-        if not rows:
-            return {"status_code": None, "text": ""}
-        row = rows[0]
-        text = row.get("text") or ""
-        if isinstance(text, str) and len(text) > max_chars:
+        text = resp.text
+        if len(text) > max_chars:
             text = text[:max_chars] + f"… [truncated to {max_chars} chars]"
-        return {"status_code": row.get("status_code"), "text": text}
+        return {"status_code": resp.status_code, "text": text}
 
-    resources = [ResourceSpec("uc_connection", connection)]
-    if warehouse_id:
-        resources.append(ResourceSpec("sql_warehouse", warehouse_id))
-    return build_tool(_http_request, name=name, description=_desc, resources=resources)
+    tool = build_tool(
+        _http_request,
+        name=name,
+        description=_desc,
+        resources=[ResourceSpec("uc_connection", connection)],
+    )
+    return require_user_api_scopes(tool, ["catalog.connections"])
 
 
 _HTTP_METHOD_KEYS = ("get", "post", "put", "delete", "patch")
@@ -216,7 +239,8 @@ def openapi_tool(
         spec: URL or local file path to an OpenAPI 3.x / Swagger 2.0 spec.
         connection: Unity Catalog HTTP connection name, passed to each
             ``http_tool`` (declared as a ``uc_connection`` resource).
-        warehouse_id: Optional SQL warehouse, forwarded to each ``http_tool``.
+        warehouse_id: Deprecated and ignored (emits ``DeprecationWarning``).
+            Each ``http_tool`` uses the connection proxy, not a SQL warehouse.
         include: Optional filter — keep only operations whose ``operationId``
             OR ``path`` contains any of these substrings. ``None`` keeps all.
 
@@ -236,6 +260,13 @@ def openapi_tool(
     """
     from ._tool_config import _check_allowlist
 
+    if warehouse_id is not None:
+        warnings.warn(
+            "openapi_tool(warehouse_id=...) is ignored: the generated http_tools go "
+            "through the Unity Catalog connection proxy. Remove the argument.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     _check_allowlist(None, "openapi", {"spec": spec})
     doc = _load_openapi_spec(spec)
     if not isinstance(doc, dict):
@@ -272,7 +303,6 @@ def openapi_tool(
                     path=path,
                     name=name,
                     description=desc,
-                    warehouse_id=warehouse_id,
                 )
             )
 

@@ -289,7 +289,15 @@ agent_tool(
 
 ## `http_tool` — governed external HTTP
 
-Calls an external HTTP service through a Unity Catalog HTTP connection. The request runs server-side via Databricks' `http_request` SQL function under the calling user's identity — credentials live in the UC connection and are never seen by the app.
+Calls an external HTTP service through the Unity Catalog **HTTP connection proxy**. The tool sends the request to
+
+```
+https://<workspace-host>/api/2.0/unity-catalog/connections/<connection>/proxy/<path>
+```
+
+with the calling user's Databricks token (OBO). Databricks authenticates the caller, checks `USE CONNECTION`, strips the Databricks `Authorization` header, injects the external service's credential stored in the connection, and forwards the request to `{connection host}{base_path}{path}`. The third-party token lives only in the connection: it never appears in `agent.py`, the app env, or the request the app sends. No SQL warehouse is involved.
+
+> **Prefer a Databricks-provided MCP when one exists.** For Slack, GitHub, Gmail, and other systems that have a managed `system.ai.*` connector, use [`unity_gateway_mcp`](mcp.md#unity-gateway-mcp-services-systemai) instead of hand-describing REST operations. Use `http_tool` / `openapi_tool` for APIs that only have a UC HTTP connection.
 
 ```python
 from apx_agent import Agent, http_tool
@@ -312,7 +320,7 @@ At call time the LLM can pass two optional inputs:
 | `query` | `dict[str, str]` | URL query parameters appended to the request |
 | `body` | JSON dict | Request body (for POST/PUT/PATCH) |
 
-The tool returns `{"status_code": int | None, "text": str}`.
+`query` becomes URL query parameters on the proxy URL; `body` is sent as JSON with `Content-Type: application/json`. The tool returns `{"status_code": int, "text": str}` (non-2xx responses pass through, so the LLM sees the external error), or `{"error": str}` when the request cannot be sent.
 
 **Signature:**
 
@@ -320,20 +328,37 @@ The tool returns `{"status_code": int | None, "text": str}`.
 http_tool(
     connection: str,
     *,
-    method: str = "GET",
+    method: str = "GET",          # GET, POST, PUT, DELETE, PATCH
     path: str = "",
     name: str = "http_request",
     description: str | None = None,
-    warehouse_id: str | None = None,
+    warehouse_id: str | None = None,   # deprecated, ignored
     max_chars: int = 8000,
 ) -> tool
 ```
 
 Each `http_tool` covers one fixed operation. To expose multiple operations from one API, create multiple `http_tool`s or use `openapi_tool`.
 
+`connection` goes into the proxy path as a single percent-encoded segment, so a schema-level three-part name such as `main.connections.slack` is sent as `.../connections/main.connections.slack/proxy/...`. (The Databricks docs show only bare names in proxy URLs; the three-part form has not been verified against a live workspace yet.)
+
+### Schema-level vs metastore-level connections
+
+- **Schema-level** UC HTTP connections are **generally available**. Prefer them.
+- **Metastore-level** connections are **Public Preview**. They still work with `http_tool`, but treat them as preview for production Apps.
+
 ### Declaring the connection resource
 
-`http_tool` declares its UC HTTP connection as a `uc_connection` resource, so `apx-agent agents deploy` wires the `USE_CONNECTION` grant with no extra step. A custom tool that calls a connection some other way declares it with `attach_resources`:
+`http_tool` declares its UC HTTP connection as a `uc_connection` resource. `apx-agent agents deploy` compiles it into a Databricks App resource:
+
+```yaml
+- name: weather-api-<hash>
+  uc_securable:
+    securable_full_name: weather_api
+    securable_type: CONNECTION
+    permission: USE_CONNECTION
+```
+
+That is the same resource as **App resources → + Add resource → UC connection → Use Connection** in the Apps UI, and it grants the app's service principal `USE CONNECTION`. The tool also requests the `catalog.connections` user-authorization scope so the forwarded user token can reach the proxy. Each calling user still needs their own `USE CONNECTION` grant, because the request runs as that user. A custom tool that calls a connection some other way declares it with `attach_resources`:
 
 ```python
 from apx_agent import ResourceSpec, attach_resources
@@ -353,24 +378,40 @@ service; keep tokens and OAuth credentials in the connection, never in
 See the authoritative [Connect to external HTTP services](https://docs.databricks.com/aws/en/query-federation/http)
 guide for the supported authentication modes and `CREATE CONNECTION` examples.
 
-After creating the connection, grant the deployed app identity (or the user
-running locally) permission to use it:
+After creating the connection, grant every principal that calls it — the users
+of the app, and the app's service principal — permission to use it:
 
 ```sql
 GRANT USE CONNECTION ON CONNECTION `weather_api` TO `<principal>`;
 ```
 
-Then declare the same connection name in `pyproject.toml` as above. For a
-Databricks App deployment, the generated resource declaration requests the
-`USE_CONNECTION` grant; confirm the app resource grant is approved before
-testing the tool. For local runs, the calling user needs `USE CONNECTION` and
-the SQL warehouse used by the tool must be available.
+For a Databricks App deployment, the generated resource declaration requests
+the `USE_CONNECTION` grant for the app's service principal; confirm the app
+resource grant is approved before testing the tool. For local runs, the calling
+user needs `USE CONNECTION`. No SQL warehouse is needed.
+
+### Migrating from `http_request()` SQL
+
+Earlier releases ran `http_tool` through the `http_request()` SQL function on a
+SQL warehouse. Databricks now documents that path, and UC functions that wrap
+`http_request()`, as legacy. `http_tool` now always uses the connection proxy:
+drop any `warehouse_id=` argument (it is ignored with a `DeprecationWarning`).
+The proxy also supports connection types that `http_request()` blocks, such as
+OAuth U2M Per User.
+
+### Ungoverned HTTP
+
+For local experiments or a public API with no credential, a plain `@tool` with
+its own `httpx` client is fine. Production Apps should route third-party calls
+through a UC HTTP connection and `http_tool`: a token read from app env or
+`agent.py` is visible to everyone who can read the app, and App Space apps have
+no public internet egress at all.
 
 ---
 
 ## `openapi_tool` — OpenAPI spec → many tools
 
-Turns every operation in an OpenAPI spec into a separate `http_tool`. Mirrors how `uc_function_toolkit` expands a Unity Catalog schema.
+Turns every operation in an OpenAPI spec into a separate `http_tool`. Mirrors how `uc_function_toolkit` expands a Unity Catalog schema. Every generated tool calls its operation through the connection proxy for `connection`. The spec's `paths` are appended after the connection's `base_path`, so set `base_path` to the spec's server path prefix. Path templates such as `/users/{id}` are sent literally; the tools do not fill them in.
 
 ```python
 from apx_agent import Agent, openapi_tool
@@ -402,7 +443,7 @@ openapi_tool(
     spec: str,
     connection: str,
     *,
-    warehouse_id: str | None = None,
+    warehouse_id: str | None = None,   # deprecated, ignored
     include: list[str] | None = None,
 ) -> list[tool]
 ```
@@ -512,7 +553,7 @@ tools = mcp_toolkit("https://api.example.com/mcp",
 
 ### Governed credentials via UC HTTP connections
 
-For `http_tool` and `openapi_tool`, credentials are stored in a Unity Catalog HTTP connection and never appear in application code. The request runs under the calling user's identity via Databricks' `http_request` SQL function.
+For `http_tool` and `openapi_tool`, credentials are stored in a Unity Catalog HTTP connection and never appear in application code. The tool sends the calling user's Databricks token to `/api/2.0/unity-catalog/connections/<connection>/proxy/<path>`; Databricks checks `USE CONNECTION` and injects the connection's credential before forwarding the request.
 
 ```python
 # Credentials stored in UC — not in code
@@ -530,6 +571,7 @@ fetch = http_tool("my_api_connection", method="GET", path="/data")
 | Sync tool to UC catalog | `@tool(uc=..., grant=[...])` |
 | All UC functions in a schema | `uc_function_toolkit(schema)` |
 | LLM-driven delegation to another agent | `agent_tool(agent)` |
+| Slack, GitHub, Gmail, or another system with a `system.ai.*` connector | `unity_gateway_mcp` |
 | One governed HTTP call (known endpoint) | `http_tool` |
 | Full REST API via OpenAPI spec | `openapi_tool` |
 | One tool from an MCP server you don't own | `mcp_tool` |

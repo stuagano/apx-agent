@@ -44,13 +44,41 @@ class TestFanOut:
         for t in tools:
             assert ResourceSpec("uc_connection", "my_api") in get_resources(t)
 
-    def test_warehouse_forwarded_to_each_tool(self, tmp_path):
-        tools = openapi_tool(
-            _write_spec(tmp_path), connection="my_api", warehouse_id="wh-1"
-        )
+    def test_warehouse_id_deprecated_and_not_declared(self, tmp_path):
+        with pytest.warns(DeprecationWarning, match="connection proxy"):
+            tools = openapi_tool(
+                _write_spec(tmp_path), connection="my_api", warehouse_id="wh-1"
+            )
         for t in tools:
-            kinds = {(s.kind, s.identifier) for s in get_resources(t)}
-            assert ("sql_warehouse", "wh-1") in kinds
+            assert "sql_warehouse" not in {s.kind for s in get_resources(t)}
+
+    @pytest.mark.asyncio
+    async def test_operation_calls_connection_proxy(self, tmp_path):
+        import httpx
+
+        tools = openapi_tool(
+            _write_spec(tmp_path), connection="my_api", include=["createUser"]
+        )
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(201, text="{}")
+
+        real_client = httpx.AsyncClient
+        ws = MagicMock()
+        ws.config.host = "https://ws.example.com"
+        ws.config.authenticate.return_value = {"Authorization": "Bearer dbx"}
+        with patch(
+            "apx_agent.http_tools.httpx.AsyncClient",
+            lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+        ):
+            out = await tools[0](body={"name": "a"}, ws=ws)
+        assert out == {"status_code": 201, "text": "{}"}
+        assert seen[0].method == "POST"
+        assert str(seen[0].url) == (
+            "https://ws.example.com/api/2.0/unity-catalog/connections/my_api/proxy/users"
+        )
 
     def test_empty_spec_returns_empty_list(self, tmp_path):
         path = _write_spec(tmp_path, {"openapi": "3.0.0", "paths": {}})

@@ -6,6 +6,24 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Breaking: `http_tool` routes through the Unity Catalog HTTP connection
+  proxy (#1270).** `http_tool(connection, ...)` and the tools `openapi_tool`
+  builds now send each request to
+  `https://<workspace>/api/2.0/unity-catalog/connections/<connection>/proxy/<path>`
+  with the calling user's Databricks token, instead of running the legacy
+  `http_request()` SQL function on a SQL warehouse. Databricks checks
+  `USE CONNECTION` and injects the connection's stored credential, so the app
+  never holds the third-party token. `query` becomes URL query parameters,
+  `body` is sent as JSON, and non-2xx responses pass through as
+  `{"status_code", "text"}`. The connection still compiles to a `uc_securable`
+  `CONNECTION` / `USE_CONNECTION` App resource, and the tool now also requests
+  the `catalog.connections` user scope. **Migrate:** drop `warehouse_id=` from
+  `http_tool` and `openapi_tool`. It is ignored with a `DeprecationWarning` and
+  no `sql_warehouse` resource is declared for it. Make sure each calling user
+  has `USE CONNECTION`. Docs cover schema-level (GA) vs metastore-level (Public
+  Preview) connections, and point to `unity_gateway_mcp` when a `system.ai.*`
+  connector covers the system.
+
 - **Genie volume citations use the live Agent mode shapes (#1281).** A live
   Agent mode answer from a UC volume sent no annotations, so #1269's mapping
   returned `files: []` and no Sources line. `genie_agent_tool` now also reads
