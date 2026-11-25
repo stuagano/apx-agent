@@ -1227,15 +1227,18 @@ class RouterAgent(BaseAgent):
         ]
 
     async def _select_route(self, messages: list[Message], request: Request) -> str | None:
-        """One model serving call to pick a route. Returns agent name or None (fallback)."""
+        """One Unity Gateway chat call to pick a route. Returns agent name or None (fallback)."""
         from databricks.sdk import WorkspaceClient
         from httpx import AsyncClient
+
+        from ._llm import AI_GATEWAY_CHAT_PATH, ai_gateway_chat_model
 
         ctx: AgentContext = request.app.state.agent_context
         ws: WorkspaceClient = request.app.state.workspace_client
 
         auth_headers = ws.config.authenticate()
-        endpoint_url = f"{ws.config.host.rstrip('/')}/serving-endpoints/{ctx.config.model}/invocations"
+        endpoint_url = f"{ws.config.host.rstrip('/')}{AI_GATEWAY_CHAT_PATH}"
+        model = ai_gateway_chat_model(ctx.config.model)
 
         system_content = " ".join(filter(None, [
             self._instructions,
@@ -1250,7 +1253,11 @@ class RouterAgent(BaseAgent):
             try:
                 response = await client.post(
                     endpoint_url,
-                    json={"messages": payload_messages, "tools": self._transfer_tool_schemas()},
+                    json={
+                        "model": model,
+                        "messages": payload_messages,
+                        "tools": self._transfer_tool_schemas(),
+                    },
                     headers=auth_headers,
                     timeout=30.0,
                 )

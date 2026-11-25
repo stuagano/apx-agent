@@ -5,7 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -13,22 +13,27 @@ from click.testing import CliRunner
 from apx_agent.cli import main
 
 
+def _gw_chat(content: str) -> dict[str, Any]:
+    """Unity Gateway chat-completions body returned by ``ws.api_client.do``."""
+    return {"choices": [{"message": {"content": content}}]}
+
+
 def test_generate_produces_a_describable_project(tmp_path: Path) -> None:
-    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    classify_response = _gw_chat(
         content=json.dumps({
             "template": "base", "name": "ctk-helper-agent", "persona": None,
             "objective": None, "join_key": None, "catalog_hint": None,
             "schema_hint": None, "missing": [],
         })
-    ))])
-    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    )
+    author_response = _gw_chat(
         content=(
             "name: ctk-helper-agent\nmodel: databricks-claude-sonnet-4-6\n"
             "instructions: Answer general questions.\ntools: []\n"
         )
-    ))])
+    )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+    fake_ws.api_client.do.side_effect = [classify_response, author_response]
 
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
         result = CliRunner().invoke(

@@ -185,16 +185,17 @@ async def test_sql_tool_returns_error_payload_on_exception(monkeypatch: pytest.M
 # ===========================================================================
 
 
-def _fake_chat_response(text: str) -> Any:
-    """Build a fake response shape matching ws.serving_endpoints.query."""
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
-    )
+def _fake_chat_response(text: str) -> dict[str, Any]:
+    """Unity Gateway chat-completions body returned by ``ws.api_client.do``."""
+    return {"choices": [{"message": {"content": text}}]}
 
 
-def test_foundation_model_attaches_serving_endpoint_resource() -> None:
+def test_foundation_model_attaches_model_service_resource() -> None:
+    from apx_agent._apps_authorization import infer_operation_authorization
+
     tool_fn = foundation_model_tool("databricks-claude-opus-4-7")
-    assert ResourceSpec("serving_endpoint", "databricks-claude-opus-4-7") in get_resources(tool_fn)
+    assert get_resources(tool_fn) == [ResourceSpec("model_service", "system.ai.claude-opus-4-7")]
+    assert infer_operation_authorization(tool_fn).execution_identity == "service"
 
 
 def test_foundation_model_default_name() -> None:
@@ -214,6 +215,8 @@ def test_foundation_model_custom_name_and_description() -> None:
 
 @pytest.mark.asyncio
 async def test_foundation_model_returns_response_text() -> None:
+    from apx_agent._llm import AI_GATEWAY_CHAT_PATH
+
     tool_fn = foundation_model_tool(
         "databricks-claude-opus-4-7",
         system_prompt="You are concise.",
@@ -222,18 +225,21 @@ async def test_foundation_model_returns_response_text() -> None:
     )
 
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.return_value = _fake_chat_response("the answer is 42")
+    fake_ws.api_client.do.return_value = _fake_chat_response("the answer is 42")
 
     result = await tool_fn(prompt="what's the answer?", ws=fake_ws)
 
     assert result == "the answer is 42"
-    call_kwargs = fake_ws.serving_endpoints.query.call_args.kwargs
-    assert call_kwargs["name"] == "databricks-claude-opus-4-7"
-    assert call_kwargs["temperature"] == 0.2
-    assert call_kwargs["max_tokens"] == 128
-    # System prompt prepended; user prompt is the second message
-    messages = call_kwargs["messages"]
-    assert len(messages) == 2
+    fake_ws.api_client.do.assert_called_once_with("POST", AI_GATEWAY_CHAT_PATH, body={
+        "model": "system.ai.claude-opus-4-7",
+        "messages": [
+            {"role": "system", "content": "You are concise."},
+            {"role": "user", "content": "what's the answer?"},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 128,
+    })
+    fake_ws.serving_endpoints.query.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -241,12 +247,12 @@ async def test_foundation_model_no_system_prompt_sends_only_user() -> None:
     tool_fn = foundation_model_tool("databricks-claude-sonnet-4-6")
 
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.return_value = _fake_chat_response("hi")
+    fake_ws.api_client.do.return_value = _fake_chat_response("hi")
 
     await tool_fn(prompt="hello", ws=fake_ws)
 
-    messages = fake_ws.serving_endpoints.query.call_args.kwargs["messages"]
-    assert len(messages) == 1
+    messages = fake_ws.api_client.do.call_args.kwargs["body"]["messages"]
+    assert messages == [{"role": "user", "content": "hello"}]
 
 
 @pytest.mark.asyncio
@@ -254,30 +260,23 @@ async def test_foundation_model_returns_error_string_on_exception() -> None:
     tool_fn = foundation_model_tool("databricks-claude-opus-4-7")
 
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = RuntimeError("endpoint unreachable")
+    fake_ws.api_client.do.side_effect = RuntimeError("gateway unreachable")
 
     result = await tool_fn(prompt="anything", ws=fake_ws)
 
-    assert "Model query failed" in result
-    assert "endpoint unreachable" in result
-
-
-@pytest.mark.asyncio
-async def test_foundation_model_scope_denial_hints_reauthorize() -> None:
-    tool_fn = foundation_model_tool("databricks-claude-opus-4-7")
-    fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = RuntimeError(
-        "Invalid scope, required scopes: model-serving"
-    )
-    result = await tool_fn(prompt="anything", ws=fake_ws)
-    assert "re-authorize" in result.lower()
-    assert "required scopes: model-serving" in result
+    assert "system.ai.claude-opus-4-7 query failed" in result
+    assert "gateway unreachable" in result
 
 
 @pytest.mark.asyncio
 async def test_foundation_model_returns_empty_on_no_choices() -> None:
     tool_fn = foundation_model_tool("databricks-claude-opus-4-7")
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(choices=[])
+    fake_ws.api_client.do.return_value = {"choices": []}
     result = await tool_fn(prompt="anything", ws=fake_ws)
     assert result == ""
+
+
+def test_foundation_model_rejects_custom_serving_endpoint_name() -> None:
+    with pytest.raises(ValueError, match="Unity Gateway model service"):
+        foundation_model_tool("my-custom-endpoint")

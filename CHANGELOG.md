@@ -6,6 +6,28 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Breaking: `foundation_model_tool` has no Model Serving mode (#1275).**
+  Every `foundation_model_tool` call now goes through Unity Gateway, as the
+  chat model already does.
+  - **Transport.** A plain `foundation_model_tool("databricks-<id>")` no longer
+    queries Model Serving. It is rewritten to `system.ai.<id>`, the same rewrite
+    `get_llm` applies, and posted to `/ai-gateway/mlflow/v1`.
+  - **Identity.** Those calls run as the App service principal, not as the
+    calling user (OBO). The tool no longer takes `UserClientDependency`.
+  - **Grants.** Deploy emits `MODEL_SERVICE` / `EXECUTE` for the tool instead of
+    `serving_endpoint` / `CAN_QUERY`. A leftover `CAN_QUERY` grant does not
+    grant Unity Gateway access.
+  - **Custom endpoints.** Any other plain name (not `databricks-*`, not
+    `catalog.schema.service`) now raises `ValueError` when the tool is built.
+    Put that model behind a Unity Gateway model service and pass its
+    three-part name.
+  - `RouterAgent`'s routing call, the dev-UI tool scaffolder, and the
+    `onboard` / `generate` / `enrich` CLI helpers also call
+    `/ai-gateway/mlflow/v1`; the CLI uses `system.ai.claude-sonnet-4-6`.
+  The `serving_endpoint` resource kind, `CAN_QUERY` emission, the doctor
+  serving-endpoint probe, Knowledge Assistant tools, embeddings and sub-agent
+  endpoints are unchanged.
+
 - **Unity Gateway MCP services (#1268).** `unity_gateway_mcp("system.ai.web_search")`
   (also `system.ai.dbsql`, `system.ai.sandbox`, `system.ai.genie_one_mcp`, and
   the GA connectors such as `system.ai.github` / `system.ai.slack`) wraps a
@@ -26,7 +48,7 @@ All notable changes to apx-agent. Format loosely follows
   principal. On the Agent Bricks CLI path it is bound in the staged
   `agent.toml` `[experimental.model_services]`. A dotted
   `foundation_model_tool` name queries `/ai-gateway/mlflow/v1` with the
-  three-part name; a plain endpoint name keeps the Model Serving path.
+  three-part name. Plain names follow the same path since #1275 (above).
   `doctor` names a missing service, a missing `EXECUTE`, or unavailable Unity
   Gateway. See
   [docs/deploy/unity-gateway-model-services.md](docs/deploy/unity-gateway-model-services.md).

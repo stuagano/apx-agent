@@ -288,18 +288,18 @@ def register(router: APIRouter, ctx: DevRouteContext) -> None:
             user_content += f"Available tables ({uc_schema}):\n{table_schema_ctx}\n\n"
         user_content += f"New tool description:\n{prompt}"
 
+        from apx_agent._llm import AI_GATEWAY_CHAT_PATH, ai_gateway_chat_model
+
         ws_client = request.app.state.workspace_client
         auth_headers = ws_client.config.authenticate()
-        endpoint_url = (
-            f"{ws_client.config.host.rstrip('/')}"
-            f"/serving-endpoints/{ctx.config.model}/invocations"
-        )
+        endpoint_url = f"{ws_client.config.host.rstrip('/')}{AI_GATEWAY_CHAT_PATH}"
 
         async with AsyncClient() as client:
             r = await client.post(
                 endpoint_url,
                 headers={**auth_headers, "Content-Type": "application/json"},
                 json={
+                    "model": ai_gateway_chat_model(ctx.config.model),
                     "messages": [
                         {"role": "system", "content": system_msg},
                         {"role": "user", "content": user_content},

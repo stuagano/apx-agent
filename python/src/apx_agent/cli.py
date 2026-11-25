@@ -2582,28 +2582,41 @@ No other text before, between, or after them.
 """
 
 
-def _query_onboarding_llm(ws: "Any", prompt_text: str) -> str:
-    """One LLM call for onboarding generation; raises ClickException on failure."""
-    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+_CLI_LLM_SERVICE = "system.ai.claude-sonnet-4-6"
+
+
+def _query_gateway_llm(ws: "Any", prompt_text: str, *, max_tokens: int, hint: str) -> str:
+    """One Unity Gateway chat completion; raises ClickException on failure."""
+    from ._llm import AI_GATEWAY_CHAT_PATH
 
     try:
-        response = ws.serving_endpoints.query(
-            name="databricks-claude-sonnet-4-6",
-            messages=[ChatMessage(role=ChatMessageRole.USER, content=prompt_text)],
-            max_tokens=2000,
+        response = ws.api_client.do(
+            "POST",
+            AI_GATEWAY_CHAT_PATH,
+            body={
+                "model": _CLI_LLM_SERVICE,
+                "messages": [{"role": "user", "content": prompt_text}],
+                "max_tokens": max_tokens,
+            },
         )
-        choices = response.choices
-        if not choices or choices[0].message is None or choices[0].message.content is None:
+        choices = response.get("choices") if isinstance(response, dict) else None
+        content = choices[0].get("message", {}).get("content") if choices else None
+        if not isinstance(content, str):
             raise click.ClickException("LLM returned an empty response.")
-        return choices[0].message.content.strip()
+        return content.strip()
     except click.ClickException:
         raise
     except Exception as exc:
         raise click.ClickException(
             f"LLM generation failed: {exc}\n"
-            "Ensure you have a valid Databricks profile with access to "
-            "databricks-claude-sonnet-4-6."
+            "Ensure you have a valid Databricks profile with EXECUTE on the "
+            f"Unity Gateway model service {_CLI_LLM_SERVICE}{hint}."
         ) from exc
+
+
+def _query_onboarding_llm(ws: "Any", prompt_text: str) -> str:
+    """One LLM call for onboarding generation; raises ClickException on failure."""
+    return _query_gateway_llm(ws, prompt_text, max_tokens=2000, hint="")
 
 
 def _onboarding_response_error(split: "_SplitOnboardingResponse", *, retry: bool) -> "str | None":
@@ -2741,27 +2754,12 @@ Output ONLY the JSON object. No explanation, no markdown fences.
 
 def _query_generate_llm(ws: "Any", prompt_text: str, *, max_tokens: int = 1500) -> str:
     """One LLM call for `generate` / `enrich`; raises ClickException on failure."""
-    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-
-    try:
-        response = ws.serving_endpoints.query(
-            name="databricks-claude-sonnet-4-6",
-            messages=[ChatMessage(role=ChatMessageRole.USER, content=prompt_text)],
-            max_tokens=max_tokens,
-        )
-        choices = response.choices
-        if not choices or choices[0].message is None or choices[0].message.content is None:
-            raise click.ClickException("LLM returned an empty response.")
-        return choices[0].message.content.strip()
-    except click.ClickException:
-        raise
-    except Exception as exc:
-        raise click.ClickException(
-            f"LLM generation failed: {exc}\n"
-            "Ensure you have a valid Databricks profile with access to "
-            "databricks-claude-sonnet-4-6, or use `apx-agent agents scaffold` "
-            "for the deterministic wizard instead."
-        ) from exc
+    return _query_gateway_llm(
+        ws,
+        prompt_text,
+        max_tokens=max_tokens,
+        hint=", or use `apx-agent agents scaffold` for the deterministic wizard instead",
+    )
 
 
 _GENERATE_TEMPLATES = ("base", "data", "coworker")

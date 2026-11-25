@@ -20,7 +20,7 @@ import sys
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -36,6 +36,11 @@ from apx_agent.cli import (
     _scaffold_databricks_host_resolves,
     main,
 )
+
+
+def _gw_chat(content: str) -> dict[str, Any]:
+    """Unity Gateway chat-completions body returned by ``ws.api_client.do``."""
+    return {"choices": [{"message": {"content": content}}]}
 
 
 @pytest.fixture(autouse=True)
@@ -6193,9 +6198,7 @@ class TestGenerateOnboardingPlan:
         from apx_agent.cli import _generate_onboarding_plan
 
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=_VALID_ONBOARDING_RESPONSE))]
-        )
+        fake_ws.api_client.do.return_value = _gw_chat(content=_VALID_ONBOARDING_RESPONSE)
         answers = _canned_onboarding_answers()
         with patch(
             "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
@@ -6206,27 +6209,27 @@ class TestGenerateOnboardingPlan:
         assert "Phase 1: Land the data" in result.plan_markdown
         assert result.validation_error is None
         assert 'catalog = "TBD-catalog"' in result.spec_toml
-        assert fake_ws.serving_endpoints.query.call_count == 1
+        assert fake_ws.api_client.do.call_count == 1
 
-    def test_passes_chatmessage_not_dicts(self) -> None:
-        """The SDK calls .as_dict() on each message, so dicts AttributeError at runtime."""
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-
+    def test_posts_to_unity_gateway_not_model_serving(self) -> None:
+        from apx_agent._llm import AI_GATEWAY_CHAT_PATH
         from apx_agent.cli import _generate_onboarding_plan
 
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=_VALID_ONBOARDING_RESPONSE))]
-        )
+        fake_ws.api_client.do.return_value = _gw_chat(content=_VALID_ONBOARDING_RESPONSE)
         answers = _canned_onboarding_answers()
         with patch(
             "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
         ), patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
             _generate_onboarding_plan(None)
 
-        msgs = fake_ws.serving_endpoints.query.call_args.kwargs["messages"]
-        assert msgs and all(isinstance(m, ChatMessage) for m in msgs)
-        assert msgs[0].role == ChatMessageRole.USER
+        assert fake_ws.api_client.do.call_args.args == ("POST", AI_GATEWAY_CHAT_PATH)
+        body = fake_ws.api_client.do.call_args.kwargs["body"]
+        assert body["model"] == "system.ai.claude-sonnet-4-6"
+        assert body["max_tokens"] == 2000
+        [msg] = body["messages"]
+        assert msg["role"] == "user" and msg["content"]
+        fake_ws.serving_endpoints.query.assert_not_called()
 
     def test_retries_on_invalid_toml(self) -> None:
         from apx_agent.cli import _generate_onboarding_plan
@@ -6236,11 +6239,9 @@ class TestGenerateOnboardingPlan:
             "```toml\ncatalog = not valid @@@\n```\n"
         )
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.side_effect = [
-            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=bad_response))]),
-            SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content=_VALID_ONBOARDING_RESPONSE))]
-            ),
+        fake_ws.api_client.do.side_effect = [
+            _gw_chat(content=bad_response),
+            _gw_chat(content=_VALID_ONBOARDING_RESPONSE),
         ]
         answers = _canned_onboarding_answers()
         with patch(
@@ -6249,7 +6250,7 @@ class TestGenerateOnboardingPlan:
             result = _generate_onboarding_plan(None)
 
         assert result.validation_error is None
-        assert fake_ws.serving_endpoints.query.call_count == 2
+        assert fake_ws.api_client.do.call_count == 2
 
     def test_falls_back_when_retry_also_invalid(self) -> None:
         from apx_agent.cli import _generate_onboarding_plan
@@ -6259,9 +6260,7 @@ class TestGenerateOnboardingPlan:
             "```toml\ncatalog = still not valid @@@\n```\n"
         )
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=bad_response))]
-        )
+        fake_ws.api_client.do.return_value = _gw_chat(content=bad_response)
         answers = _canned_onboarding_answers()
         with patch(
             "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
@@ -6270,16 +6269,14 @@ class TestGenerateOnboardingPlan:
 
         assert result.validation_error is not None
         assert "Plan" in result.plan_markdown  # plan still captured though spec failed
-        assert fake_ws.serving_endpoints.query.call_count == 2
+        assert fake_ws.api_client.do.call_count == 2
 
     def test_missing_toml_block_is_treated_as_invalid(self) -> None:
         from apx_agent.cli import _generate_onboarding_plan
 
         no_toml_response = "```markdown\n# Plan\nPhase 1: land data.\n```\n"
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=no_toml_response))]
-        )
+        fake_ws.api_client.do.return_value = _gw_chat(content=no_toml_response)
         answers = _canned_onboarding_answers()
         with patch(
             "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
@@ -6288,7 +6285,7 @@ class TestGenerateOnboardingPlan:
 
         assert result.validation_error is not None
         assert "no ```toml block" in result.validation_error
-        assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
+        assert fake_ws.api_client.do.call_count == 2  # one retry attempted
 
     def test_missing_markdown_block_is_treated_as_invalid(self) -> None:
         from apx_agent.cli import _generate_onboarding_plan
@@ -6303,9 +6300,7 @@ class TestGenerateOnboardingPlan:
             "```\n"
         )
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=no_markdown_response))]
-        )
+        fake_ws.api_client.do.return_value = _gw_chat(content=no_markdown_response)
         answers = _canned_onboarding_answers()
         with patch(
             "apx_agent.cli.click.prompt", side_effect=lambda *a, **k: next(answers)
@@ -6314,14 +6309,14 @@ class TestGenerateOnboardingPlan:
 
         assert result.validation_error is not None
         assert "no ```markdown block" in result.validation_error
-        assert fake_ws.serving_endpoints.query.call_count == 2  # one retry attempted
+        assert fake_ws.api_client.do.call_count == 2  # one retry attempted
 
 
 class TestClassifyAgentDescription:
     def test_classify_agent_description_parses_coworker_shape(self) -> None:
         from apx_agent.cli import _classify_agent_description
 
-        fake_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        fake_response = _gw_chat(
             content=json.dumps({
                 "template": "coworker",
                 "name": "unbilled-revenue-agent",
@@ -6332,9 +6327,9 @@ class TestClassifyAgentDescription:
                 "schema_hint": None,
                 "missing": [],
             })
-        ))])
+        )
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.return_value = fake_response
+        fake_ws.api_client.do.return_value = fake_response
 
         with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
             result = _classify_agent_description(
@@ -6350,30 +6345,30 @@ class TestClassifyAgentDescription:
     def test_classify_agent_description_retries_on_invalid_json(self) -> None:
         from apx_agent.cli import _classify_agent_description
 
-        bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))])
-        good = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        bad = _gw_chat(content="not json")
+        good = _gw_chat(
             content=json.dumps({
                 "template": "base", "name": "helper-agent", "persona": None,
                 "objective": None, "join_key": None, "catalog_hint": None,
                 "schema_hint": None, "missing": [],
             })
-        ))])
+        )
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.side_effect = [bad, good]
+        fake_ws.api_client.do.side_effect = [bad, good]
 
         with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
             result = _classify_agent_description(None, "a simple helper agent")
 
         assert result.template == "base"
-        assert fake_ws.serving_endpoints.query.call_count == 2
+        assert fake_ws.api_client.do.call_count == 2
 
     def test_classify_agent_description_raises_after_second_failure(self) -> None:
         import click
         from apx_agent.cli import _classify_agent_description
 
-        bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="still not json"))])
+        bad = _gw_chat(content="still not json")
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.return_value = bad
+        fake_ws.api_client.do.return_value = bad
 
         with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
             with pytest.raises(click.ClickException):
@@ -6386,28 +6381,28 @@ class TestClassifyAgentDescription:
         # like any other malformed classification and trigger the retry.
         from apx_agent.cli import _classify_agent_description
 
-        bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        bad = _gw_chat(
             content=json.dumps({
                 "template": "analytics", "name": "x", "persona": None,
                 "objective": None, "join_key": None, "catalog_hint": None,
                 "schema_hint": None, "missing": [],
             })
-        ))])
-        good = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        )
+        good = _gw_chat(
             content=json.dumps({
                 "template": "base", "name": "helper-agent", "persona": None,
                 "objective": None, "join_key": None, "catalog_hint": None,
                 "schema_hint": None, "missing": [],
             })
-        ))])
+        )
         fake_ws = MagicMock()
-        fake_ws.serving_endpoints.query.side_effect = [bad, good]
+        fake_ws.api_client.do.side_effect = [bad, good]
 
         with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
             result = _classify_agent_description(None, "a simple helper agent")
 
         assert result.template == "base"
-        assert fake_ws.serving_endpoints.query.call_count == 2
+        assert fake_ws.api_client.do.call_count == 2
 
 
 class TestOnboardCommand:
@@ -7818,9 +7813,7 @@ def test_author_agent_yaml_base_template_round_trips_through_load_spec(tmp_path:
     yaml_text = "name: helper-agent\nmodel: databricks-claude-sonnet-4-6\ninstructions: Help with things.\ntools: []\n"
 
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=yaml_text))]
-    )
+    fake_ws.api_client.do.return_value = _gw_chat(content=yaml_text)
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
         result = _author_agent_yaml(None, classification, data_source, {})
 
@@ -7841,18 +7834,18 @@ def test_author_agent_yaml_retries_on_invalid_yaml(tmp_path: Path) -> None:
     )
     data_source = _ResolvedDataSource(catalog=None, schema=None)
 
-    bad = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="not: valid: : yaml: :"))])
-    good = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    bad = _gw_chat(content="not: valid: : yaml: :")
+    good = _gw_chat(
         content="name: helper-agent\nmodel: databricks-claude-sonnet-4-6\ninstructions: Help.\ntools: []\n"
-    ))])
+    )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = [bad, good]
+    fake_ws.api_client.do.side_effect = [bad, good]
 
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
         result = _author_agent_yaml(None, classification, data_source, {})
 
     assert "helper-agent" in result
-    assert fake_ws.serving_endpoints.query.call_count == 2
+    assert fake_ws.api_client.do.call_count == 2
 
 
 def test_author_agent_yaml_coworker_template_round_trips(tmp_path: Path) -> None:
@@ -7877,9 +7870,7 @@ def test_author_agent_yaml_coworker_template_round_trips(tmp_path: Path) -> None
         "tools: []\n"
     )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=yaml_text))]
-    )
+    fake_ws.api_client.do.return_value = _gw_chat(content=yaml_text)
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
         result = _author_agent_yaml(None, classification, data_source, {})
 
@@ -7907,9 +7898,7 @@ def test_author_agent_yaml_data_template_round_trips(tmp_path: Path) -> None:
         "tools: []\n"
     )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.return_value = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=yaml_text))]
-    )
+    fake_ws.api_client.do.return_value = _gw_chat(content=yaml_text)
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
         result = _author_agent_yaml(None, classification, data_source, {})
 
@@ -7925,21 +7914,21 @@ def test_author_agent_yaml_data_template_round_trips(tmp_path: Path) -> None:
 
 
 def test_generate_command_materializes_describable_project(tmp_path: Path) -> None:
-    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    classify_response = _gw_chat(
         content=json.dumps({
             "template": "base", "name": "helper-agent", "persona": None,
             "objective": None, "join_key": None, "catalog_hint": None,
             "schema_hint": None, "missing": [],
         })
-    ))])
-    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    )
+    author_response = _gw_chat(
         content=(
             "name: helper-agent\nmodel: databricks-claude-sonnet-4-6\n"
             "instructions: Help with general questions.\ntools: []\n"
         )
-    ))])
+    )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+    fake_ws.api_client.do.side_effect = [classify_response, author_response]
 
     runner = CliRunner()
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
@@ -7977,23 +7966,23 @@ def test_generate_deploy_refuses_when_receipt_blocked(tmp_path: Path) -> None:
     """--deploy must fail closed when the governance receipt is not green."""
     import apx_agent.cli as cli
 
-    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    classify_response = _gw_chat(
         content=json.dumps({
             "template": "data", "name": "sales-agent", "persona": None,
             "objective": None, "join_key": None, "catalog_hint": "main",
             "schema_hint": "sales", "missing": [],
         })
-    ))])
-    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    )
+    author_response = _gw_chat(
         content=(
             "name: sales-agent\nmodel: databricks-claude-sonnet-4-6\n"
             "instructions: Answer sales questions.\n"
             "template:\n  name: data\n  catalog: main\n  schema: sales\n"
             "tools: []\n"
         )
-    ))])
+    )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+    fake_ws.api_client.do.side_effect = [classify_response, author_response]
     deploy_mock = MagicMock(return_value="https://app.example/")
 
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
@@ -8017,21 +8006,21 @@ def test_generate_deploy_runs_when_receipt_green(tmp_path: Path) -> None:
     """Green receipt gates Apps deploy and appends URL/readyz to the receipt."""
     import apx_agent.cli as cli
 
-    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    classify_response = _gw_chat(
         content=json.dumps({
             "template": "base", "name": "helper-agent", "persona": None,
             "objective": None, "join_key": None, "catalog_hint": None,
             "schema_hint": None, "missing": [],
         })
-    ))])
-    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    )
+    author_response = _gw_chat(
         content=(
             "name: helper-agent\nmodel: databricks-claude-sonnet-4-6\n"
             "instructions: Help with general questions.\ntools: []\n"
         )
-    ))])
+    )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+    fake_ws.api_client.do.side_effect = [classify_response, author_response]
     deploy_mock = MagicMock(return_value="https://helper.databricksapps.com")
 
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws), \
@@ -8106,21 +8095,21 @@ def test_generate_sanitizes_llm_authored_name_before_building_path(tmp_path: Pat
     # contain a path-traversal-shaped name. generate() must not use it
     # unsanitized to build the materialize target, matching the guard
     # scaffold() already applies to its own `name` argument.
-    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    classify_response = _gw_chat(
         content=json.dumps({
             "template": "base", "name": "escape-agent", "persona": None,
             "objective": None, "join_key": None, "catalog_hint": None,
             "schema_hint": None, "missing": [],
         })
-    ))])
-    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    )
+    author_response = _gw_chat(
         content=(
             "name: ../../escaped-agent\nmodel: databricks-claude-sonnet-4-6\n"
             "instructions: Help.\ntools: []\n"
         )
-    ))])
+    )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+    fake_ws.api_client.do.side_effect = [classify_response, author_response]
 
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
         result = CliRunner().invoke(
@@ -8135,18 +8124,18 @@ def test_generate_target_exists_needs_force(tmp_path: Path) -> None:
     (tmp_path / "helper-agent").mkdir()
     (tmp_path / "helper-agent" / "junk.txt").write_text("hi")
 
-    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    classify_response = _gw_chat(
         content=json.dumps({
             "template": "base", "name": "helper-agent", "persona": None,
             "objective": None, "join_key": None, "catalog_hint": None,
             "schema_hint": None, "missing": [],
         })
-    ))])
-    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    )
+    author_response = _gw_chat(
         content="name: helper-agent\nmodel: databricks-claude-sonnet-4-6\ninstructions: Help.\ntools: []\n"
-    ))])
+    )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+    fake_ws.api_client.do.side_effect = [classify_response, author_response]
 
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
         result = CliRunner().invoke(
@@ -8158,7 +8147,7 @@ def test_generate_target_exists_needs_force(tmp_path: Path) -> None:
 
 def test_generate_llm_failure_points_at_scaffold_fallback() -> None:
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = RuntimeError("connection refused")
+    fake_ws.api_client.do.side_effect = RuntimeError("connection refused")
 
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
         result = CliRunner().invoke(main, ["generate", "a helper agent"])
@@ -8170,23 +8159,23 @@ def test_generate_prompts_only_for_classifier_flagged_missing_fields(tmp_path: P
     # missing=["objective"] must drive exactly one click.prompt for the
     # objective field — proves `filled` is actually threaded from the
     # classifier's `missing` list through to the interactive fill step.
-    classify_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    classify_response = _gw_chat(
         content=json.dumps({
             "template": "data", "name": "sales-agent", "persona": None,
             "objective": None, "join_key": None, "catalog_hint": None,
             "schema_hint": None, "missing": ["objective"],
         })
-    ))])
-    author_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+    )
+    author_response = _gw_chat(
         content=(
             "name: sales-agent\nmodel: databricks-claude-sonnet-4-6\n"
             "instructions: Answer sales questions.\n"
             "template:\n  name: data\n  catalog: main\n  schema: sales\n"
             "tools: []\n"
         )
-    ))])
+    )
     fake_ws = MagicMock()
-    fake_ws.serving_endpoints.query.side_effect = [classify_response, author_response]
+    fake_ws.api_client.do.side_effect = [classify_response, author_response]
 
     with patch("databricks.sdk.WorkspaceClient", return_value=fake_ws):
         result = CliRunner().invoke(
