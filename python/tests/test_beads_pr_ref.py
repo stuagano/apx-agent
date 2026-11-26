@@ -365,6 +365,8 @@ def test_ci_completion_dispatches_merge_followups() -> None:
     job = after["jobs"]["dispatch"]
     assert "github.event.workflow_run.event == 'pull_request'" in job["if"]
     assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+    # GitHub empties pull_requests once the PR merges (#1288); never gate on it.
+    assert "pull_requests" not in job["if"]
     script = job["steps"][0]["run"]
     assert "gh workflow run beads-merge.yml" in script
     assert "gh workflow run post-merge-ci.yml" in script
@@ -372,6 +374,57 @@ def test_ci_completion_dispatches_merge_followups() -> None:
     for name in ("beads-merge.yml", "post-merge-ci.yml", "ci.yml"):
         dispatched = yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
         assert "workflow_dispatch" in dispatched[True], name
+
+
+_FAKE_GH = """#!/usr/bin/env bash
+case "$1 $2" in
+  "pr list")
+    # Resolves only the #1287 head branch at its CI head_sha.
+    case "$*" in
+      *"--head stuart/memory-store-limit"*0878ccc53e12d449e1a574bae97cfa1e29a8a3c9*) echo 1287 ;;
+    esac ;;
+  "pr view") echo "PR $3" >> "$GH_LOG"; echo "$FAKE_STATE" ;;
+  "workflow run") echo "dispatch $3" >> "$GH_LOG" ;;
+esac
+"""
+
+
+@pytest.mark.parametrize(
+    ("pr", "sha", "state", "expected"),
+    [
+        # #1287: auto-merge landed before workflow_run, so pull_requests was [].
+        ("", "0878ccc53e12d449e1a574bae97cfa1e29a8a3c9", "MERGED",
+         ["PR 1287", "dispatch beads-merge.yml", "dispatch post-merge-ci.yml"]),
+        # #1285: the event arrived before the merge and carried the PR number.
+        ("1285", "unused", "MERGED",
+         ["PR 1285", "dispatch beads-merge.yml", "dispatch post-merge-ci.yml"]),
+        ("", "0878ccc53e12d449e1a574bae97cfa1e29a8a3c9", "CLOSED", ["PR 1287"]),
+        ("", "0000000000000000000000000000000000000000", "MERGED", []),
+    ],
+)
+def test_after_auto_merge_resolves_pr_when_pull_requests_is_empty(
+    tmp_path: Path, pr: str, sha: str, state: str, expected: list[str]
+) -> None:
+    after = yaml.safe_load((ROOT / ".github" / "workflows" / "after-auto-merge.yml").read_text(encoding="utf-8"))
+    script = after["jobs"]["dispatch"]["steps"][0]["run"]
+    gh = tmp_path / "bin" / "gh"
+    gh.parent.mkdir()
+    gh.write_text(_FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    log = tmp_path / "gh.log"
+    log.touch()
+    env = {
+        "PATH": f"{gh.parent}:/usr/bin:/bin",
+        "GH_LOG": str(log),
+        "FAKE_STATE": state,
+        "GITHUB_REPOSITORY": "stuagano/apx-agent",
+        "PR": pr,
+        "HEAD_BRANCH": "stuart/memory-store-limit",
+        "HEAD_SHA": sha,
+    }
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    assert log.read_text(encoding="utf-8").splitlines() == expected
 
 
 def test_closing_keywords_find_issue_numbers() -> None:

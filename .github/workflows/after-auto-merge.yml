@@ -7,6 +7,11 @@ name: After auto-merge
 # request to merge, then dispatches both workflows. GITHUB_TOKEN may trigger
 # workflow_dispatch. It exits quietly if the pull request closes unmerged or
 # is still open after about 10 minutes; the crons remain the backstop.
+#
+# GitHub empties workflow_run.pull_requests once the pull request has merged.
+# Auto-merge can land before the event is delivered (#1283, #1287), so the job
+# does not require that array: it falls back to the open-or-merged pull request
+# whose head is the CI run's head_branch at head_sha (#1288).
 on:
   workflow_run:
     workflows: [CI]
@@ -25,8 +30,7 @@ jobs:
   dispatch:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.pull_requests[0].number
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -34,8 +38,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state all \
+              --json number,headRefOid \
+              --jq "map(select(.headRefOid == \"$HEAD_SHA\"))[0].number // empty")
+          fi
+          if [ -z "$PR" ]; then
+            echo "No pull request has head $HEAD_BRANCH at $HEAD_SHA; leaving it to the cron"
+            exit 0
+          fi
           for _ in $(seq 20); do
             state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state -q .state)
             case "$state" in

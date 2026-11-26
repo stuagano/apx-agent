@@ -6,6 +6,14 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **CI: after-auto-merge dispatches even when the merge beats `workflow_run`
+  (#1288).** GitHub empties `workflow_run.pull_requests` once a pull request
+  has merged, so when auto-merge landed seconds before the event was delivered
+  (#1283, #1287) the job skipped and `beads-merge.yml` / `post-merge-ci.yml`
+  were never dispatched. The job no longer gates on that array; it resolves the
+  pull request from the CI run's `head_branch` and `head_sha` instead, and still
+  runs only after a successful `pull_request` CI.
+
 - **Docs: a workspace can have at most 50 managed memory stores (#1286).** The
   managed-memory docs and the managed-state contract map now record the
   workspace-wide store cap from the Databricks docs of 23 Nov 2026; raising it
