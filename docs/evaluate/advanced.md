@@ -207,82 +207,95 @@ scheduler or replaying the agent in a Lakeflow Job. The scorer evaluates the
 outputs already recorded on each selected trace and writes its assessment back
 to that trace.
 
-Start with a small sampling rate and one calibrated decision. The process that
-runs this setup must be authenticated to the intended Databricks workspace; APX
-does not choose a profile or deploy monitoring on your behalf.
+Production monitoring is **Beta**, and `Scorer.start()` is experimental in
+MLflow `3.14`. Keep the APX-supported `mlflow>=3.14,<3.15` boundary and
+revalidate this setup before upgrading MLflow.
+
+Start with a small sampling rate and one calibrated decision. `apx-agent eval
+monitor` wraps the native lifecycle for one scorer on the project's
+experiment. It uses the profile you pass with `--profile` (or your ambient
+Databricks auth); it never picks a workspace for you, and it does not deploy
+anything besides the scorer's sampling configuration.
+
+```bash
+# `label align --new-version domain_quality-v2` registered this scorer.
+apx-agent eval monitor start \
+  --experiment /Shared/claims-agent-production \
+  --scorer domain_quality-v2 \
+  --sample-rate 0.10 \
+  --filter "attributes.status = 'OK' AND tags.\`apx.agent.name\` = 'claims-agent'" \
+  --warehouse-id 0123456789abcdef \
+  --profile my-workspace
+```
+
+- **Experiment:** `--experiment` (name, path, or id), else `experiment` in
+  `[tool.apx]`, else `MLFLOW_EXPERIMENT_ID` (or the project's `.env`).
+- **Scorer:** `--scorer` names a registered scorer. Without it, `start` and
+  `stop` use the judge registered by the newest `label align` run on the
+  experiment. To register a scorer defined in code, pass
+  `--from module:attr`; it is registered under `--scorer` (or its own name)
+  only if that name is not registered yet.
+- **Sampling:** `--sample-rate` is required and must be in `(0, 1]`;
+  `--filter` is an MLflow `search_traces` filter string.
+- **Warehouse:** when the experiment stores traces in Unity Catalog,
+  monitoring needs a SQL warehouse. `--warehouse-id` calls
+  `set_databricks_monitoring_sql_warehouse_id` on the experiment. If the
+  experiment has UC traces and no warehouse is set, `start` fails and asks for
+  one.
+
+The authenticated principal needs `CAN USE` on the monitoring SQL warehouse
+and `CAN EDIT` on the experiment. The monitoring job runs as the identity that
+first registered a scorer on the experiment, and registration may create or
+update Databricks-managed monitoring resources, so run setup as the intended
+operator, not from an end-user request path. If the workspace does not allow
+the default serverless budget policy, set a serverless budget policy on the
+experiment first; the CLI does not set one.
+
+Allow 15–20 minutes after `start` before expecting assessments.
+
+The same lifecycle is available from Python. `eval monitor` makes these calls:
 
 ```python
-import mlflow
 from mlflow.genai.scorers import ScorerSamplingConfig, get_scorer
 from mlflow.tracing import set_databricks_monitoring_sql_warehouse_id
 
-experiment = mlflow.set_experiment("/Shared/claims-agent-production")
-
-set_databricks_monitoring_sql_warehouse_id(
-    "0123456789abcdef",
-    experiment_id=experiment.experiment_id,
+set_databricks_monitoring_sql_warehouse_id("0123456789abcdef", experiment_id=EXPERIMENT_ID)
+scorer = get_scorer(name="domain_quality-v2", experiment_id=EXPERIMENT_ID)
+scorer.start(
+    experiment_id=EXPERIMENT_ID,
+    sampling_config=ScorerSamplingConfig(sample_rate=0.10, filter_string=FILTER),
 )
-
-# `label align --new-version domain_quality-v2` registered this scorer.
-scorer = get_scorer(
-    name="domain_quality-v2",
-    experiment_id=experiment.experiment_id,
-)
-active_scorer = scorer.start(
-    experiment_id=experiment.experiment_id,
-    sampling_config=ScorerSamplingConfig(
-        sample_rate=0.10,
-        filter_string=(
-            "attributes.status = 'OK' AND "
-            "tags.`apx.agent.name` = 'claims-agent'"
-        ),
-    ),
-)
-print(active_scorer.sampling_config)
 ```
 
-Both `register()` and `start()` are required for a new scorer. The example uses
-`get_scorer()` because the calibration flow already registered a versioned
-judge. `start()` is experimental in MLflow `3.14`; keep the APX-supported
-`mlflow>=3.14,<3.15` boundary and revalidate this setup before upgrading.
-
-The authenticated principal needs `CAN USE` on the monitoring SQL warehouse
-and `CAN EDIT` on the experiment. Scorer registration may create or update
-Databricks-managed monitoring resources, so run setup as the intended operator,
-not from an end-user request path.
+Both `register()` and `start()` are required for a new scorer; `label align`
+already registers its judge, so `start` only needs `get_scorer()` for it.
 
 ### Verify and roll back
 
-Confirm the scorer is registered with the intended sample rate, then inspect a
-sampled trace for the assessment named `domain_quality-v2`:
-
-```python
-from mlflow.genai.scorers import get_scorer, list_scorers
-
-for registered in list_scorers(experiment_id=experiment.experiment_id):
-    print(registered.name, registered.sampling_config)
-
-current = get_scorer(
-    name="domain_quality-v2",
-    experiment_id=experiment.experiment_id,
-)
-```
+Confirm the scorer has the intended sample rate, then inspect a sampled trace
+for the assessment named `domain_quality-v2`:
 
 ```bash
+apx-agent eval monitor status --experiment /Shared/claims-agent-production
 apx-agent traces feedback-view TRACE_ID --format json
 ```
+
+`status` lists every registered scorer with `STARTED` or `STOPPED`, its
+sample rate and filter, the experiment's trace destination, and the monitoring
+warehouse. Pass `--scorer` to show one, or `--format json` for scripts.
 
 Registration alone does not prove that production scoring is active. Verify
 that new eligible traces receive the assessment and record the delay before
 increasing the sample rate. To stop new scoring without deleting the registered
 judge:
 
-```python
-current.stop(experiment_id=experiment.experiment_id)
+```bash
+apx-agent eval monitor stop --experiment /Shared/claims-agent-production --scorer domain_quality-v2
 ```
 
-Stopping preserves the scorer for inspection or restart and does not remove
-assessments already attached to traces.
+`stop` calls the native `Scorer.stop()`, which sets the sample rate to 0.
+It keeps the scorer registered for inspection or restart and does not remove
+assessments already attached to traces. Restart with `eval monitor start`.
 
 ### Production scorecard
 
