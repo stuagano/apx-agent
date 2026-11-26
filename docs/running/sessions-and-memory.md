@@ -491,7 +491,8 @@ full-text (BM25) and semantic matching over each entry's `content` and
 importance and metadata are not persisted or filtered. A workspace can have at
 most 50 managed memory stores; to raise that limit, contact your Databricks
 representative (see [Agent memory](https://docs.databricks.com/aws/en/agents/agent-memory/managed-memory),
-Limitations). Managed sessions are a
+Limitations). Online `apx-agent doctor` counts the workspace's memory stores and
+warns when 5 or fewer slots remain. Managed sessions are a
 separate declaration; see the [runtime guide](runtime-targets.md).
 
 ---

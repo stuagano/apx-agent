@@ -6,6 +6,18 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **`apx-agent doctor` counts workspace memory stores against the 50-store cap
+  (#1289).** For a managed-memory agent, online doctor lists the workspace's
+  memory stores (every page) and adds a `Memory store capacity` check: OK below
+  45, WARN at 45 or more (5 or fewer slots left), and FAIL at 50 only when the
+  declared store does not exist yet and so cannot be created. The fix points at
+  the Databricks docs and says that raising the limit means contacting a
+  Databricks representative. The count covers the stores the checking identity
+  can list, so a non-admin may see fewer than the workspace holds. Offline doctor
+  still skips workspace probes. A native Agent Bricks deploy that fails with
+  `Workspace has reached the maximum of … managed memory stores` now gets the
+  same hint instead of the generic failure. Neither check blocks provisioning.
+
 - **CI: after-auto-merge dispatches even when the merge beats `workflow_run`
   (#1288).** GitHub empties `workflow_run.pull_requests` once a pull request
   has merged, so when auto-merge landed seconds before the event was delivered

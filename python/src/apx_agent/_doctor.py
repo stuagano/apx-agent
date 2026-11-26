@@ -1356,6 +1356,9 @@ def check_agent_prerequisites(
         return checks
     from databricks.sdk.errors import NotFound
 
+    if managed_memory:
+        assert config.memory is not None
+        checks.append(_memory_store_capacity(client, config.memory.store_name))
     for label, resource, name in probes:
         if not name:
             checks.append(Check(label, Status.FAIL, "No store_name is declared", "Declare a managed store_name before deploying."))
@@ -1389,6 +1392,34 @@ def check_agent_prerequisites(
         else:
             checks.append(Check(label, Status.OK, f"{name!r}: declared resource is readable with the checking identity; runtime write access is not proven"))
     return checks
+
+
+# Databricks documents a hard cap of 50 managed memory stores per workspace (#1286).
+# No number is published for session stores, so there is no session-store count.
+MEMORY_STORE_CAP = 50
+_MEMORY_STORE_WARN_AT = MEMORY_STORE_CAP - 5  # warn when 5 or fewer slots remain
+MEMORY_STORE_DOCS = "https://docs.databricks.com/aws/en/agents/agent-memory/managed-memory"
+MEMORY_STORE_CAP_FIX = (
+    f"Delete unused memory stores, or contact your Databricks representative to raise the limit ({MEMORY_STORE_DOCS})."
+)
+
+
+def _memory_store_capacity(client: Any, store_name: str | None) -> Check:
+    """Count workspace memory stores (all pages) against the documented cap."""
+    label = "Memory store capacity"
+    try:
+        ids = {store.id for store in client.memory_stores.list()}
+    except Exception:
+        return Check(label, Status.WARN, "Could not list workspace memory stores; capacity is unverified",
+                     "Rerun doctor as a workspace admin to count memory stores.")
+    count = len(ids)
+    detail = f"{count} of {MEMORY_STORE_CAP} memory stores per workspace (counts stores visible to the checking identity)"
+    if count < _MEMORY_STORE_WARN_AT:
+        return Check(label, Status.OK, detail)
+    if count >= MEMORY_STORE_CAP and store_name not in ids:
+        return Check(label, Status.FAIL, f"{detail}; the workspace is at the cap and {store_name!r} cannot be created",
+                     MEMORY_STORE_CAP_FIX)
+    return Check(label, Status.WARN, f"{detail}; the workspace is near or at the cap", MEMORY_STORE_CAP_FIX)
 
 
 def check_agent_image(cwd: Path, config: AgentConfig | None) -> Check | None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import importlib.metadata
+import re
 import subprocess
 import sys
 import shutil
@@ -328,6 +329,12 @@ def deploy_native_project(
     if process.returncode:
         # The CLI can echo environment values and backend details. Keep its raw
         # output out of APX errors and deployment manifests.
+        if re.search(r"reached the maximum of (\d+ )?managed memory stores", process.stdout + process.stderr, re.IGNORECASE):
+            from ._doctor import MEMORY_STORE_CAP_FIX
+
+            raise click.ClickException(
+                f"Agent Bricks deploy failed (exit {process.returncode}): the workspace has reached its managed memory "
+                f"store limit. {MEMORY_STORE_CAP_FIX} Run `apx-agent doctor` online to see the count.")
         raise click.ClickException(f"Agent Bricks deploy failed (exit {process.returncode}); deployment is unverified.")
     # The CLI emits progress text before its final JSON object, even in JSON mode.
     result = None
