@@ -175,6 +175,18 @@ scored evaluation.
 
 ## Sampled production scoring
 
+`apx-agent eval monitor start|stop|status` runs a registered judge (by
+default the one from your newest `label align` run) on a sample of production
+traces through MLflow production monitoring, which is Beta. `Scorer.start()`
+is experimental in the supported MLflow `3.14` range, so revalidate before
+bumping MLflow.
+
+```bash
+apx-agent eval monitor start --sample-rate 0.1 --warehouse-id <id>  # UC traces need a warehouse
+apx-agent eval monitor status
+apx-agent eval monitor stop     # keeps the judge and existing assessments
+```
+
 [Sample production traces, verify results, and roll back](advanced.md#sampled-production-scoring).
 
 ## Human issue triage

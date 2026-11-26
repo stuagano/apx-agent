@@ -6,6 +6,20 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **`apx-agent eval monitor start|stop|status` (#1271).** Wraps MLflow
+  production monitoring (Beta) for one registered scorer on the project's
+  experiment (`--experiment`, then `[tool.apx] experiment`, then
+  `MLFLOW_EXPERIMENT_ID`). `start` takes `--sample-rate` (required, in
+  `(0, 1]`) and `--filter`, defaults `--scorer` to the judge from the newest
+  `label align` run, and can register a code-defined scorer with
+  `--from module:attr`. For experiments with Unity Catalog traces, it sets the
+  monitoring SQL warehouse with `--warehouse-id`, or fails with the `CAN USE` /
+  `CAN EDIT` guidance when no warehouse is set. `stop` calls the native
+  `Scorer.stop()` (sample rate 0) and keeps the judge and its assessments.
+  `status` lists scorers with their sampling config. There is no APX
+  scheduler or job. `Scorer.start()` is experimental in MLflow `3.14`, so
+  revalidate before bumping MLflow.
+
 - **Breaking: `http_tool` routes through the Unity Catalog HTTP connection
   proxy (#1270).** `http_tool(connection, ...)` and the tools `openapi_tool`
   builds now send each request to

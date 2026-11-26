@@ -6599,6 +6599,128 @@ def eval_cmd(
     _warn_empty_predictions(result)
 
 
+@eval_group.group("monitor", cls=_ApxGroup)
+def eval_monitor_group() -> None:
+    """Sampled production scoring with MLflow production monitoring (Beta).
+
+    Starts, stops, and reports a registered scorer on the project's experiment.
+    The Databricks monitoring service samples traces and writes assessments;
+    allow 15-20 minutes after `start` before expecting them. `Scorer.start()`
+    is experimental in MLflow 3.14 — revalidate before bumping MLflow.
+    """
+
+
+def _monitor_options(fn: Any) -> Any:
+    fn = click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text")(fn)
+    fn = click.option("--profile", default=None, help="Databricks CLI profile. Defaults to the ambient auth.")(fn)
+    fn = click.option(
+        "--scorer", "scorer_name", default=None,
+        help="Registered scorer name. start/stop default to the judge from the newest "
+             "`label align` run; status lists every scorer.",
+    )(fn)
+    fn = click.option(
+        "--experiment", default=None,
+        help="MLflow experiment name/path or id. Falls back to experiment in [tool.apx], "
+             "then MLFLOW_EXPERIMENT_ID.",
+    )(fn)
+    return fn
+
+
+def _monitor_target(profile: str | None, experiment: str | None) -> str:
+    from apx_agent import _eval_monitor
+
+    _label_mlflow_setup(profile)
+    try:
+        return _eval_monitor.resolve_experiment(experiment or _read_apx_agent_config().get("experiment"))
+    except _eval_monitor.MonitorError as e:
+        raise click.ClickException(str(e)) from e
+
+
+def _echo_monitor_report(report: Any, fmt: str) -> None:
+    if fmt == "json":
+        import dataclasses
+
+        click.echo(json.dumps(dataclasses.asdict(report)))
+        return
+    click.echo(f"experiment:  {report.experiment_id}")
+    click.echo(f"traces:      {report.trace_destination or 'MLflow experiment (not Unity Catalog)'}")
+    click.echo(f"warehouse:   {report.warehouse_id or '-'}")
+    if not report.scorers:
+        click.echo("no registered scorers")
+    for s in report.scorers:
+        filt = f"  filter: {s.filter_string}" if s.filter_string else ""
+        click.echo(f"  {s.name}: {s.status}  sample_rate={s.sample_rate}{filt}")
+
+
+@eval_monitor_group.command("start")
+@_monitor_options
+@click.option(
+    "--sample-rate", required=True, type=click.FloatRange(0, 1, min_open=True),
+    help="Fraction of traces to score, in (0, 1]. Start small (for example 0.1).",
+)
+@click.option("--filter", "filter_string", default=None, help="MLflow search_traces filter_string for eligible traces.")
+@click.option(
+    "--warehouse-id", default=None,
+    help="SQL warehouse for monitoring Unity Catalog traces; set on the experiment. "
+         "Needs CAN USE on the warehouse and CAN EDIT on the experiment.",
+)
+@click.option(
+    "--from", "scorer_spec", default=None,
+    help="module:attr of a scorer defined in code; registered under --scorer if it is not yet registered.",
+)
+def eval_monitor_start(
+    experiment: str | None, scorer_name: str | None, profile: str | None, fmt: str,
+    sample_rate: float, filter_string: str | None, warehouse_id: str | None, scorer_spec: str | None,
+) -> None:
+    """Register (if needed) and start a scorer on sampled production traces."""
+    from apx_agent import _eval_monitor
+
+    eid = _monitor_target(profile, experiment)
+    try:
+        scorer_obj = _eval_monitor.load_scorer(scorer_spec) if scorer_spec else None
+        if scorer_name is None:
+            scorer_name = str(scorer_obj.name) if scorer_obj is not None else _eval_monitor.default_scorer_name(eid)
+        report = _eval_monitor.start(
+            experiment_id=eid, scorer_name=scorer_name, sample_rate=sample_rate,
+            filter_string=filter_string, warehouse_id=warehouse_id, scorer_obj=scorer_obj,
+        )
+    except _eval_monitor.MonitorError as e:
+        raise click.ClickException(str(e)) from e
+    _echo_monitor_report(report, fmt)
+    if fmt == "text":
+        click.echo("Allow 15-20 minutes before expecting assessments on new traces.")
+
+
+@eval_monitor_group.command("stop")
+@_monitor_options
+def eval_monitor_stop(experiment: str | None, scorer_name: str | None, profile: str | None, fmt: str) -> None:
+    """Stop sampling (sample rate 0). Keeps the registered judge and existing assessments."""
+    from apx_agent import _eval_monitor
+
+    eid = _monitor_target(profile, experiment)
+    try:
+        report = _eval_monitor.stop(
+            experiment_id=eid, scorer_name=scorer_name or _eval_monitor.default_scorer_name(eid),
+        )
+    except _eval_monitor.MonitorError as e:
+        raise click.ClickException(str(e)) from e
+    _echo_monitor_report(report, fmt)
+
+
+@eval_monitor_group.command("status")
+@_monitor_options
+def eval_monitor_status(experiment: str | None, scorer_name: str | None, profile: str | None, fmt: str) -> None:
+    """Show registered scorers, their sampling config, and the monitoring warehouse."""
+    from apx_agent import _eval_monitor
+
+    eid = _monitor_target(profile, experiment)
+    try:
+        report = _eval_monitor.status(experiment_id=eid, scorer_name=scorer_name)
+    except _eval_monitor.MonitorError as e:
+        raise click.ClickException(str(e)) from e
+    _echo_monitor_report(report, fmt)
+
+
 @eval_group.group("dataset", cls=_ApxGroup)
 def eval_dataset_group() -> None:
     """Build MLflow evaluation datasets in Unity Catalog for `eval run`."""

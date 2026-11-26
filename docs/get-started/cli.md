@@ -23,6 +23,9 @@ apx-agent eval run chain-cases.json --fixtures  # typed step checks using record
 apx-agent eval dataset add main.evals.support evalset.jsonl --from-traces --labeled  # build a UC eval dataset
 apx-agent eval run main.evals.support  # score a UC eval dataset; the run records its digest
 apx-agent eval sweep evalset.jsonl --model endpoint-a --model endpoint-b  # compare quality, latency, estimated LLM cost
+apx-agent eval monitor start --sample-rate 0.1 --warehouse-id <id>  # Beta: score sampled production traces with the aligned judge
+apx-agent eval monitor status               # registered scorers, sample rate, filter, monitoring warehouse
+apx-agent eval monitor stop                 # sample rate 0; keeps the judge and existing assessments
 apx-agent agents logs --app my-app --profile prod   # Databricks Apps logs (via the CLI)
 apx-agent agents describe                   # introspect tools, sub-agents, declared resources
 apx-agent eval lint                         # static checks: instructions, docstrings, env vars, model names
