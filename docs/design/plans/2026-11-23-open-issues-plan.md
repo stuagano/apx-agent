@@ -301,7 +301,7 @@ Still open, and the opt-in tests already name them (`python/tests/test_managed_s
 
 ### #856 — managed-memory SDK, unsupported-service left
 
-**Current state.** The hand-written UC REST backend is gone. `_memory_managed.py` uses the AgentKit workspace-scoped store. The 2026-11-20 update on the issue is accurate against the contract map: permission-denied was verified (`AgentCliError` / `PERMISSION_DENIED` on `a-team-dev-memory`, probe `verified=true`). Create/read/search/update/delete and actor isolation have earlier live records. Pagination and the BM25 top-N cap are documented, not claimed as full parity. Migration of old rows stays on #859, which was closed only for a bounded import slice.
+**Current state.** The hand-written UC REST backend is gone. `_memory_managed.py` uses the AgentKit workspace-scoped store. The 2026-11-20 update on the issue is accurate against the contract map: permission-denied was verified (`AgentCliError` / `PERMISSION_DENIED` on `a-team-dev-memory`, probe `verified=true`). Create/read/search/update/delete and actor isolation have earlier live records. Pagination and the 100-result search cap (hybrid BM25 + semantic ranking since the 23 Nov 2026 docs, #1272) are documented, not claimed as full parity. Migration of old rows stays on #859, which was closed only for a bounded import slice.
 
 The open checkbox is live unsupported-service. Configured workspaces return absence (`NOT_FOUND`), not `FEATURE_DISABLED`, `NOT_IMPLEMENTED`, or `UNIMPLEMENTED`. The probe correctly refuses to treat absence as "feature off" (`docs/design/managed-state-contract-map.md`, failure-path probe 2026-11-20).
 

@@ -6,6 +6,13 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Docs: managed memory search is hybrid BM25 + semantic (#1272).** The
+  managed-memory docs, the managed-state contract map and the
+  `ManagedMemoryStore.recall` docstring now describe search the way the
+  Databricks docs of 23 Nov 2026 do: entries are ranked by relevance, combining
+  full-text (BM25) and semantic matching over `content` and `description`, with
+  at most 100 results and no search pagination. Behavior and API are unchanged.
+
 - **`apx-agent eval monitor start|stop|status` (#1271).** Wraps MLflow
   production monitoring (Beta) for one registered scorer on the project's
   experiment (`--experiment`, then `[tool.apx] experiment`, then

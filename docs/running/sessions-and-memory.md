@@ -8,8 +8,8 @@
 > Store (the `managed` backends below) are the Agent Bricks product surface,
 > documented canonically in [`databricks/databricks-ai-bridge` ›
 > `integrations/agentbricks`](https://github.com/databricks/databricks-ai-bridge/tree/main/integrations/agentbricks).
-> This page tracks that contract (store semantics, `actor_id` scoping, BM25
-> retrieval, forking) and adds the APX agent declaration (`memory=` / `session=` on the agent), the
+> This page tracks that contract (store semantics, `actor_id` scoping, hybrid
+> BM25 + semantic retrieval, forking) and adds the APX agent declaration (`memory=` / `session=` on the agent), the
 > `ConversationStore` / `MemoryStore` seams, and the local/Lakebase backends.
 > The operation-by-operation map — including what the managed Session Store
 > does **not** cover (transcript search, `session_state`, approval resume) —
@@ -191,7 +191,7 @@ Memory access patterns
 └─────────────────────────────────────────────┘
 ```
 
-Long-term memory uses Lakebase pgvector or AgentKit managed memory, with `principal_id` + `namespace` scoping. Lakebase offers vector retrieval; managed memory uses BM25 full-text retrieval.
+Long-term memory uses Lakebase pgvector or AgentKit managed memory, with `principal_id` + `namespace` scoping. Lakebase offers vector retrieval; managed memory ranks entries by relevance, combining full-text (BM25) and semantic matching over each entry's `content` and `description`.
 
 ```python
 from apx_agent import LakebaseMemoryStore, RecallOptions
@@ -485,7 +485,9 @@ when you want entries directly.
 APX derives `actor_id` from trusted caller identity and checks entry ownership for
 ID-based reads and mutations. Actor IDs partition data but are not access-control
 boundaries: any principal with store access can reach every actor. Use separate
-stores for strict isolation. Retrieval is BM25, capped at 100 results; tags,
+stores for strict isolation. Search ranks entries by relevance, combining
+full-text (BM25) and semantic matching over each entry's `content` and
+`description`. It returns at most 100 entries and has no search pagination; tags,
 importance and metadata are not persisted or filtered. Managed sessions are a
 separate declaration; see the [runtime guide](runtime-targets.md).
 
@@ -541,5 +543,5 @@ A worked example lives in [`python/examples/memory_demo/`](../../python/examples
 | Cross-session facts (user preferences, past decisions) | MemoryStore — `make_memory_tools` or `assemble_memory_context` |
 | Few-shot examples for a specific agent | `ExampleStore` — seed with `store.add`/`add_batch` (or `examples save`), recall via `make_example_tools` |
 | Fast dev/test, single process | `InMemoryConversationStore` / `InMemoryMemoryStore` |
-| Managed long-term storage and full-text retrieval | `ManagedMemoryStore`; managed Session Store is declared separately |
+| Managed long-term storage and hybrid (BM25 + semantic) retrieval | `ManagedMemoryStore`; managed Session Store is declared separately |
 | Low-latency chat (high turns/sec), full session+memory parity | `LakebaseConversationStore` / `LakebaseMemoryStore` |

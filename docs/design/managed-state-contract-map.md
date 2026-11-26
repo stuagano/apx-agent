@@ -219,8 +219,20 @@ auto-enable memory; it remains an explicit opt-in
 | `get(memory_id)` | by id | by id | `get(id)` then **ownership check** against trusted scope | GET-by-ID is not actor-scoped in the service. Missing trusted principal → `None`. |
 | `update` / `delete` | by id | by id | same ownership gate; update writes `content` + `description` only | cannot patch tags / importance / metadata. |
 | `list(principal_id, namespace, tags, min_importance, limit)` | all filters | all filters | `list(actor_id, path_prefix=/memories/{ns}/)` then client-side `actor_id` re-check | tags / min_importance ignored. |
-| `recall(query, k, …)` | cosine if embedder else recency | pgvector | BM25 `search`, `limit=min(k, 100)` | no vector recall; no tag/importance filter; no search pagination (SDK returns a list, not a page token). |
+| `recall(query, k, …)` | cosine if embedder else recency | pgvector | `search` ranked by the service, combining full-text (BM25) and semantic matching over `content` + `description`; `limit=min(k, 100)` | no APX-side embedder or pgvector recall (ranking is service-side and opaque); no tag/importance filter; no search pagination (SDK returns a list, not a page token). |
 | store name | n/a | table name | workspace display name `[a-z][a-z0-9-]{1,54}[a-z0-9]` | catalog.schema.name rejected. Historical UC rows need explicit export/import (#859). |
+
+Retrieval contract (updated for the Databricks managed-memory docs of
+2026-11-23, [#1272](https://github.com/stuagano/apx-agent/issues/1272)): search
+"ranks entries by relevance, combining full-text (BM25) and semantic matching
+over each entry's content and description", returns at most 100 entries, and
+does not support pagination. Earlier rows on this page that say BM25 record what
+the service documented at the time. The ranking formula and score scale are not
+published, so APX treats `score` as an opaque relevance value that is comparable
+only within one store. APX still calls the same SDK `search`, with no
+client-side re-ranking. The rest of the contract is unchanged in that docs
+revision: `actor_id` / `path` / `session_id`, the store-level ACL, no tags /
+importance / metadata, and no documented retention.
 
 Trusted principal:
 
@@ -256,7 +268,7 @@ bind as a checkpointer instead.
 | `list_items` (cursor `after`/`before`, `type` filter) | yes | `Session.list_items(page_size, order_by)` — opaque `data`, page_size ≤ 100 | **partial**. No item-type filter; APX cursors are item ids, SDK uses page tokens. |
 | `append` typed conversation items | yes | `Session.append_items(items)` opaque JSON | **unmapped** for the served transcript. Saver writes checkpoint/channel/writes events, not ChatAgent messages. |
 | `list_conversations` (kind, agent_id, title search) | yes | `SessionStore.list(filter, order_by)` | **unmapped**. Filter language is SDK-specific, not APX `kind`/`agent_id`. |
-| `search` full-text over items | yes | **no session-item search API** | **gap**. Memory `search` is BM25 over memories, not transcripts. |
+| `search` full-text over items | yes | **no session-item search API** | **gap**. Memory `search` ranks memories (BM25 + semantic), not transcripts. |
 | `update_conversation` (title, reasoning_effort, model_override) | yes | `Session.update(metadata=…)` string map only | **gap** for typed fields. |
 | `set_session_state` JSON dict, `temp:` stripped | yes | no dedicated field. Could be one opaque item or `metadata` (strings only). | **gap** for ConversationStore hosts. Durable composites persist allow-listed keys as `{"type": "apx_session_state", "state": {...}}` items in an `apx-state` Session ([composite-session-keys.md](composite-session-keys.md)). |
 | `delete_conversation` | yes | `Session.delete(force=False)` | **unmapped**. Descendants require `force=True`. |
@@ -445,7 +457,7 @@ deleted; workspace `memory_stores.list` then showed only
 | APX `add` for actor `apx-854-actor-a`, namespace `probe` | OK. APX id is the entry UUID (`16cb0b33-…`). Tags / importance / metadata stayed at the adapter defaults (`()`, `0.5`, `{}`). |
 | APX `get` as actor A | OK. Content matched. |
 | APX `get` as actor B (`scope_resolver` only) | `None`. Service `get` has no actor argument; `_owned_entry` hid the row. |
-| APX `list` / `recall` as A | 1 row. BM25 `recall` score ≈ 2.86. |
+| APX `list` / `recall` as A | 1 row. `recall` score ≈ 2.86 (observed on this date, when the service documented BM25-only ranking; see the retrieval note above). |
 | APX `list` / `recall` as B | 0 rows. |
 | Direct `MemoryStore.list` / `search` as B | 0 rows. The service itself filters list/search by `actor_id`. Isolation on those calls is not APX-only. |
 | APX `update` then `delete` as A | Update matched. Delete returned true. Subsequent `get` was `None`. |
