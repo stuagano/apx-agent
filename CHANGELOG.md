@@ -6,6 +6,11 @@ All notable changes to apx-agent. Format loosely follows
 
 ## [Unreleased]
 
+- **Docs: a workspace can have at most 50 managed memory stores (#1286).** The
+  managed-memory docs and the managed-state contract map now record the
+  workspace-wide store cap from the Databricks docs of 23 Nov 2026; raising it
+  means contacting a Databricks representative. Behavior and API are unchanged.
+
 - **Docs: managed memory search is hybrid BM25 + semantic (#1272).** The
   managed-memory docs, the managed-state contract map and the
   `ManagedMemoryStore.recall` docstring now describe search the way the
