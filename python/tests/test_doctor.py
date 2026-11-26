@@ -32,10 +32,12 @@ def test_agent_prerequisites_read_real_sdk_responses_only(monkeypatch):
     ws.api_client.do.side_effect = read
     checks = doctor.check_agent_prerequisites(config, online=True, ws=ws, session_store="agent-sessions")
     assert all(check.status is Status.OK for check in checks)
-    assert calls == [("GET", "/api/2.0/agents/memory-stores/agent-memory"),
+    assert calls == [("GET", "/api/2.0/agents/memory-stores"),
+                     ("GET", "/api/2.0/agents/memory-stores/agent-memory"),
                      ("GET", "/api/2.0/agents/session-stores/agent-sessions")]
     ws.apps.get_space.assert_called_once_with("agent-space")
-    assert all("write access is not proven" in c.detail for c in checks[1:])
+    assert checks[1].name == "Memory store capacity" and "0 of 50" in checks[1].detail
+    assert all("write access is not proven" in c.detail for c in checks[2:])
     ws.reset_mock()
     offline = doctor.check_agent_prerequisites(config, online=False, ws=ws, session_store="agent-sessions")
     assert [c.status for c in offline] == [Status.OK, Status.SKIP, Status.SKIP, Status.SKIP]
@@ -101,13 +103,68 @@ def test_native_provisioning_defers_only_missing_stores(code):
     ws.apps.get_space.side_effect = failure
     checks = doctor.check_agent_prerequisites(config, online=True, ws=ws, provision_stores=True, session_store="new-sessions")
     expected = Status.WARN if code in {"NOT_FOUND", "RESOURCE_DOES_NOT_EXIST"} else Status.FAIL
-    assert [check.status for check in checks] == [Status.OK, expected, expected, Status.FAIL]
+    # The capacity count fails on the same error and stays a WARN; it never blocks provisioning.
+    assert [check.status for check in checks] == [Status.OK, Status.WARN, expected, expected, Status.FAIL]
     assert "sensitive-response" not in repr(checks)
     if expected is Status.WARN:
-        assert all("Agent Bricks" in check.fix and "unverified" in check.detail for check in checks[1:3])
+        assert all("Agent Bricks" in check.fix and "unverified" in check.detail for check in checks[2:4])
     assert all(call.args[0] == "GET" for call in ws.api_client.do.call_args_list)
     strict = doctor.check_agent_prerequisites(config, online=True, ws=ws, session_store="new-sessions")
-    assert all(check.status is Status.FAIL for check in strict[1:])
+    assert all(check.status is Status.FAIL for check in strict[2:])
+
+
+@pytest.mark.parametrize("count,declared_exists,expected", [
+    (44, False, Status.OK),
+    (45, False, Status.WARN),
+    (49, False, Status.WARN),
+    (50, True, Status.WARN),
+    (50, False, Status.FAIL),
+])
+def test_memory_store_capacity_warns_near_and_at_workspace_cap(count, declared_exists, expected):
+    from apx_agent import AgentConfig
+
+    names = [f"memory-stores/store-{i}" for i in range(count)]
+    if declared_exists:
+        names[0] = "memory-stores/agent-memory"
+    pages = [names[i:i + 20] for i in range(0, max(count, 1), 20)]
+    requests = []
+
+    def read(method, path, query=None, **kwargs):
+        if path == "/api/2.0/agents/memory-stores":
+            token = (query or {}).get("page_token")
+            index = int(token) if token else 0
+            requests.append(index)
+            page = {"managed_memory_stores": [{"name": n, "display_name": n} for n in pages[index]]}
+            if index + 1 < len(pages):
+                page["next_page_token"] = str(index + 1)
+            return page
+        return {"name": path.removeprefix("/api/2.0/agents/"), "display_name": "agent-memory"}
+
+    ws = MagicMock()
+    ws.api_client.do.side_effect = read
+    config = AgentConfig(name="agent", memory={"type": "managed", "store_name": "agent-memory"})
+    checks = {c.name: c for c in doctor.check_agent_prerequisites(config, online=True, ws=ws)}
+    capacity = checks["Memory store capacity"]
+    assert requests == list(range(len(pages)))  # every page is counted
+    assert capacity.status is expected
+    assert f"{count} of 50" in capacity.detail
+    if expected is not Status.OK:
+        assert "Databricks representative" in capacity.fix
+        assert "https://docs.databricks.com/aws/en/agents/agent-memory/managed-memory" in capacity.fix
+    if expected is Status.FAIL:
+        assert "'agent-memory' cannot be created" in capacity.detail
+
+
+def test_memory_store_capacity_skips_offline_and_without_managed_memory():
+    from apx_agent import AgentConfig
+
+    ws = MagicMock()
+    managed = AgentConfig(name="agent", memory={"type": "managed", "store_name": "agent-memory"})
+    durable = AgentConfig(name="agent", target="durable_agent_server")
+    for config, online in [(managed, False), (durable, True)]:
+        checks = doctor.check_agent_prerequisites(config, online=online, ws=ws)
+        assert "Memory store capacity" not in [c.name for c in checks]
+    ws.api_client.do.assert_not_called()
 
 
 def test_offline_doctor_includes_unverified_agent_features(tmp_path, monkeypatch):

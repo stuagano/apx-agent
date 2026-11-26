@@ -1140,6 +1140,7 @@ def test_native_deploy_hands_rollout_to_agentbricks(
     assert len(commands) == 1, result.output
     reconcile.assert_not_called()
     assert {call.args[1] for call in ws.api_client.do.call_args_list} == {
+        "/api/2.0/agents/memory-stores",  # #1289 workspace capacity count
         "/api/2.0/agents/memory-stores/apx-my-app-memory", "/api/2.0/agents/session-stores/apx-my-app-sessions",
     }
     assert not any(call[:2] in (["bundle", "deploy"], ["bundle", "run"]) for call in calls)

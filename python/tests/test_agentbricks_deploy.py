@@ -293,3 +293,30 @@ def test_deploy_tolerates_stale_run_manifest_only(tmp_path: Path) -> None:
     (tmp_path / "app.yml").write_text(MARKER + "\n")  # apx never writes app.yml
     with pytest.raises(click.ClickException, match="app.yml"):
         refuse_root_manifest(tmp_path, "Native APX deployment")
+
+
+@pytest.mark.parametrize("output,mapped", [
+    ("Error: Workspace has reached the maximum of 50 managed memory stores. backend-secret", True),
+    ("Error: workspace has reached the maximum of managed memory stores backend-secret", True),
+    ("Error: backend-secret", False),
+])
+def test_native_deploy_maps_memory_store_cap_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str, mapped: bool,
+) -> None:
+    """#1289: the workspace memory-store cap gets an actionable message; raw CLI output stays out."""
+    config = AgentConfig(name="proof", target="durable_agent_server",
+                         memory={"type": "managed", "store_name": "memory"})
+    agent = LlmAgent(name="proof")
+    plan = compile_authorization_plan(agent, model=config.model)
+    (tmp_path / "agent.toml").write_text(build_native_manifest(config=config, authorization_plan=plan, agent=agent))
+    monkeypatch.setattr("apx_agent._agentbricks_deploy.subprocess.run",
+                        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "progress\n", output))
+    app = {"config": {"command": ["python", "-m", "agent_server.start_host"], "env": []}}
+    with pytest.raises(click.ClickException) as error:
+        deploy_native_project(tmp_path, app=app, app_name="agent-bricks-proof", profile="chosen",
+                              experiment_name=None, transient_env_keys=[], model_services={})
+    message = str(error.value)
+    assert "backend-secret" not in message
+    assert "deploy failed (exit 1)" in message
+    assert ("managed memory store limit" in message) is mapped
+    assert ("Databricks representative" in message) is mapped
