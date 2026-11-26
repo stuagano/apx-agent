@@ -809,7 +809,9 @@ returning, updating or deleting an entry by ID. Actor IDs partition data; access
 control is at the store level. Use separate stores for strict security boundaries.
 Missing or degraded memory fails native compilation.
 
-Search uses BM25, returns at most 100 results, and has no search pagination.
+Search ranks entries by relevance, combining full-text (BM25) and semantic
+matching over each entry's `content` and `description`. It returns at most 100
+results and has no search pagination.
 Tags, importance and arbitrary metadata are not persisted or filtered by this
 backend. List pagination is handled by the SDK.
 

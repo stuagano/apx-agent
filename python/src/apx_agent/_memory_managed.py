@@ -144,7 +144,8 @@ class ManagedMemoryStore:
                 if entry.actor_id == filter.principal_id]
 
     def recall(self, opts: RecallOptions) -> list[RecallResult]:
-        """BM25 retrieval: at most 100 results, with no search pagination."""
+        """Service-ranked search (full-text BM25 plus semantic matching over content and
+        description): at most 100 results, with no search pagination."""
         if not opts.principal_id.strip():
             raise ValueError("Managed memory requires a trusted principal_id")
         if opts.k <= 0:

@@ -135,7 +135,7 @@ single-call path is unchanged.
 - **Auto-recall:** with strategies declared, recall covers `facts`, `preferences`
   and `namespace_default`, merges the results by score within the one store, and
   keeps the top `recall_k` above `recall_min_score`. Scores are compared only within
-  a store (BM25 for managed, cosine for Lakebase). `summary` is **not** recalled by
+  a store (the service's hybrid BM25 + semantic relevance score for managed, cosine for Lakebase). `summary` is **not** recalled by
   default: summaries match the latest user message poorly and lengthen the prompt.
   An agent opts in by listing it in `recall_namespaces`. Prefer one store query over
   a namespace list where the store supports it; otherwise one query per namespace

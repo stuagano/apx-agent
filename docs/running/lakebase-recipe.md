@@ -20,7 +20,7 @@ Why Postgres for these:
 - **pgvector in SQL.** Cosine ranking via `embedding <=> :q::vector` runs server-side. No client-side scoring loop and no extra Vector Search index to keep in sync with the source-of-truth table.
 - **Per-user OAuth.** Lakebase mints short-lived database credentials per request via `databricks database generate-database-credential`, so the calling user's identity threads through to Postgres-level row-level security if you wire it.
 
-For long-term memory, `ManagedMemoryStore` uses the AgentKit managed-memory API and Databricks-managed Lakebase storage. It offers BM25 retrieval with workspace store permissions and actor partitioning. Use the Lakebase backend below when you need vector retrieval or custom metadata. Managed session storage is also available separately; see [sessions-and-memory.md](sessions-and-memory.md) and [runtime-targets.md](runtime-targets.md).
+For long-term memory, `ManagedMemoryStore` uses the AgentKit managed-memory API and Databricks-managed Lakebase storage. It offers service-ranked retrieval (full-text BM25 combined with semantic matching) with workspace store permissions and actor partitioning. Use the Lakebase backend below when you need your own embeddings and pgvector retrieval, or custom metadata. Managed session storage is also available separately; see [sessions-and-memory.md](sessions-and-memory.md) and [runtime-targets.md](runtime-targets.md).
 
 ## 2. One-time provisioning
 
